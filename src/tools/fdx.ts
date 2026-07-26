@@ -173,26 +173,26 @@ function nativeLsFallback(targetPath: string = "."): string {
   }
 }
 
-function nativeContextFallback(action: "append" | "read" | "clear", topic: string, agent?: string, stage?: string, summary?: string): string {
+async function nativeContextFallback(action: "append" | "read" | "clear", topic: string, agent?: string, stage?: string, summary?: string): Promise<string> {
   const path = topicContextPath(".", topic)
   if (action === "append") {
     const line = `### ${agent || "Agent"} (${stage || "Stage"})\n${summary || ""}\n`
-    appendWithLock(path, line)
+    await appendWithLock(path, line)
     return `[FDX Context Fallback] Appended to ${path}`
   } else if (action === "read") {
     const res = readOrMissing(path)
     return res.exists ? res.content : `[No context logged for topic "${topic}"]`
   } else {
-    clearFileWithLock(path)
+    await clearFileWithLock(path)
     return `[Context cleared for topic "${topic}"]`
   }
 }
 
-function nativeDecisionsFallback(action: "record" | "read", topic: string, decision?: string, rationale?: string, made_by?: string): string {
+async function nativeDecisionsFallback(action: "record" | "read", topic: string, decision?: string, rationale?: string, made_by?: string): Promise<string> {
   const path = topicDecisionsPath(".", topic)
   if (action === "record") {
     const line = `- **${decision || "Decision"}**: ${rationale || ""} (By: ${made_by || "Unknown"})\n`
-    appendWithLock(path, line)
+    await appendWithLock(path, line)
     return `[FDX Decisions Fallback] Recorded to ${path}`
   } else {
     const res = readOrMissing(path)

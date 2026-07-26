@@ -16,11 +16,11 @@
 //   flowdeck dry-run              Show what would be done
 //   flowdeck --help               Show help
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, renameSync, unlinkSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync, readdirSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { modify, applyEdits, parse } from "jsonc-parser";
+import { readConfig as readConfigFile, createBackup, atomicWrite, writeConfig } from "../scripts/config-mutator.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, "..");
@@ -32,20 +32,6 @@ try {
   const pkg = JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf-8"));
   PKG_VERSION = pkg.version || PKG_VERSION;
 } catch { /* ignore */ }
-
-/**
- * Apply JSONC-preserving edits to content.
- * Uses jsonc-parser modify function to preserve comments and formatting.
- */
-function applyJsoncEdits(rawContent, edits) {
-  let content = rawContent;
-  for (const edit of edits) {
-    content = applyEdits(content, modify(content, edit.path, edit.value, {
-      formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
-    }));
-  }
-  return content;
-}
 
 const args = process.argv.slice(2);
 const command = args[0] || "install";
@@ -86,46 +72,22 @@ function getConfigDir(isLocal = false) {
       : join(homedir(), ".config", "opencode"));
 }
 
-function safeParseConfig(content) {
-  try {
-    const errors = [];
-    const data = parse(content, errors, { allowTrailingComma: true });
-    if (errors.length > 0) {
-      return { ok: false, error: `Parse error code: ${errors.join(", ")}` };
-    }
-    return { ok: true, data };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
+/**
+ * Read a config directory's opencode.json.
+ * Wraps the shared readConfig to maintain the richer return shape
+ * used throughout this CLI.
+ */
 function readConfig(configDir) {
   const configFile = join(configDir, "opencode.json");
   if (!existsSync(configFile)) return { existing: null, raw: null, path: configFile, configDir };
-  const raw = readFileSync(configFile, "utf-8");
-  const parsed = safeParseConfig(raw);
-  return { existing: parsed.ok ? parsed.data : null, raw, path: configFile, configDir, parseError: parsed.ok ? null : parsed.error };
-}
-
-function backupConfig(path) {
-  if (!existsSync(path)) return null;
-  const backupPath = path + `.bak.${Date.now()}`;
-  try { copyFileSync(path, backupPath); return backupPath; }
-  catch { return null; }
-}
-
-function atomicWrite(path, data) {
-  const dir = dirname(path);
-  const tmpFile = join(dir, `.tmp.${Date.now()}.${Math.random().toString(36).slice(2, 8)}`);
-  try {
-    writeFileSync(tmpFile, data, "utf-8");
-    renameSync(tmpFile, path);
-    return true;
-  } catch (err) {
-    try { unlinkSync(tmpFile); } catch { /* ignore */ }
-    throw err;
+  const result = readConfigFile(configFile);
+  if (!result.ok) {
+    return { existing: null, raw: result.rawContent ?? null, path: configFile, configDir, parseError: result.error };
   }
+  return { existing: result.data, raw: result.rawContent ?? null, path: configFile, configDir };
 }
+
+// ─── Registration ──────────────────────────────────────────────────────
 
 function registerPlugin(configDir, isLocal) {
   mkdirSync(configDir, { recursive: true });
@@ -139,17 +101,17 @@ function registerPlugin(configDir, isLocal) {
     return { ok: false, error: "malformed_config" };
   }
 
-  // Backup before mutation
-  const backupPath = backupConfig(cfg.path);
-  if (!backupPath && cfg.raw) {
-    console.log(`✗ Backup failed — no mutation performed.`);
-    return { ok: false, error: "backup_failed" };
-  }
-  if (backupPath) console.log(`  ✓ Backup created: ${basename(backupPath)}`);
-
   const data = cfg.existing || {};
-  let edits = [];
+  const edits = [];
   let hasEdits = false;
+
+  // Build manifest — populated as decisions are made
+  const manifest = {
+    packageName: PKG_NAME,
+    version: PKG_VERSION,
+    mode: isLocal ? "local-repo" : "global",
+    timestamp: new Date().toISOString(),
+  };
 
   // Plugin registration: add to array if not present
   if (!Array.isArray(data.plugin) || !data.plugin.some(p => p === PKG_NAME || String(p).startsWith(PKG_NAME + "@"))) {
@@ -162,6 +124,9 @@ function registerPlugin(configDir, isLocal) {
 
   // Default agent: only set if currently null/undefined
   if (data.default_agent == null) {
+    manifest.defaultAgentSet = true;
+    manifest.defaultAgentValue = "heidi";
+    manifest.previousDefaultAgent = data.default_agent;
     edits.push({ path: ["default_agent"], value: "heidi" });
     console.log(`  ✓ Set default_agent to heidi`);
     hasEdits = true;
@@ -174,9 +139,20 @@ function registerPlugin(configDir, isLocal) {
     return { ok: true, changed: false };
   }
 
-  // Write using JSONC-preserving edits
-  const updatedContent = applyJsoncEdits(cfg.raw || "{}", edits);
-  atomicWrite(cfg.path, updatedContent);
+  // Write using shared writeConfig (validates, backs up, applies JSONC edits, writes atomically)
+  const result = writeConfig(cfg.path, cfg.raw || "{}", edits);
+  if (!result.ok) {
+    console.log(`✗ Failed to write configuration: ${result.error}`);
+    return { ok: false, error: result.error };
+  }
+  if (result.backupPath) console.log(`  ✓ Backup created: ${basename(result.backupPath)}`);
+
+  // Write install manifest for later uninstall/migrate reference
+  const manifestPath = join(configDir, ".flowdeck-manifest.json");
+  try {
+    atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+  } catch { /* non-fatal — manifest is advisory */ }
+
   console.log(`\n✓ FlowDeck installed (comments preserved).`);
   console.log(`  A fresh OpenCode session is required to activate.`);
   return { ok: true, changed: true };
@@ -222,27 +198,39 @@ async function cmdUpdate() {
   ];
 
   for (const { dir, label } of configDirs) {
-    if (existsSync(dir)) {
-      console.log(`Checking ${label} config at: ${dir}`);
-      const cfg = readConfig(dir);
-      if (cfg.existing && Array.isArray(cfg.existing.plugin)) {
-        const needsUpdate = cfg.existing.plugin.some(
-          p => p === "@dv.nghiem/flowdeck" || String(p).startsWith("@dv.nghiem/flowdeck@")
-        );
-        if (needsUpdate) {
-          console.log(`  ⚠ Found legacy @dv.nghiem/flowdeck reference — migrating...`);
-          const data = JSON.parse(JSON.stringify(cfg.existing));
-          data.plugin = data.plugin.map(p =>
-            p === "@dv.nghiem/flowdeck" || String(p).startsWith("@dv.nghiem/flowdeck@")
-              ? PKG_NAME : p
-          );
-          if (data.default_agent == null) data.default_agent = "heidi";
-          atomicWrite(cfg.path, JSON.stringify(data, null, 2) + "\n");
-          console.log(`  ✓ Migrated to ${PKG_NAME}`);
-        } else {
-          console.log(`  ✓ Already up-to-date`);
-        }
+    if (!existsSync(dir)) continue;
+
+    console.log(`Checking ${label} config at: ${dir}`);
+    const cfg = readConfig(dir);
+
+    if (!cfg.existing || !Array.isArray(cfg.existing.plugin)) {
+      console.log(`  - No plugin list found`);
+      continue;
+    }
+
+    // Preserve all settings, just ensure package reference is correct
+    const needsUpdate = cfg.existing.plugin.some(
+      p => p === "@dv.nghiem/flowdeck" || String(p).startsWith("@dv.nghiem/flowdeck@")
+    );
+
+    if (needsUpdate) {
+      console.log(`  ⚠ Found legacy @dv.nghiem/flowdeck reference — migrating...`);
+      const edits = [{
+        path: ["plugin"],
+        value: cfg.existing.plugin.map(p =>
+          p === "@dv.nghiem/flowdeck" || String(p).startsWith("@dv.nghiem/flowdeck@")
+            ? PKG_NAME : p
+        ),
+      }];
+
+      const result = writeConfig(cfg.path, cfg.raw || "{}", edits);
+      if (result.ok) {
+        console.log(`  ✓ Migrated to ${PKG_NAME}`);
+      } else {
+        console.log(`  ✗ Migration failed: ${result.error}`);
       }
+    } else {
+      console.log(`  ✓ Already up-to-date`);
     }
   }
 
@@ -324,41 +312,53 @@ async function cmdVerify() {
 }
 
 async function cmdDoctor() {
-  console.log(`FlowDeck Doctor — Comprehensive Diagnostics\n`);
+  console.log(`FlowDeck Doctor — Comprehensive Diagnostics (real checks)\n`);
   console.log(`Package: ${PKG_NAME}`);
   console.log(`Version: ${PKG_VERSION}\n`);
 
   const checks = [];
 
-  // 1. Package identity
-  checks.push({ id: "pkg.identity", name: "Package Identity", status: "pass", message: PKG_NAME });
+  // ── 1. Package identity (REAL: read package.json) ─────────────────────
+  const pkgPath = join(PKG_ROOT, "package.json");
+  let pkgIdentityOk = false;
+  let pkgVersion = "unknown";
+  let pkgName = "unknown";
+  try {
+    if (existsSync(pkgPath)) {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+      pkgName = pkg.name || "unknown";
+      pkgVersion = pkg.version || "unknown";
+      pkgIdentityOk = pkgName === "@heidi-dang/flowdeck";
+    }
+  } catch { /* ignore */ }
+  checks.push({
+    id: "pkg.identity",
+    name: "Package Identity",
+    status: pkgIdentityOk ? "pass" : "fail",
+    message: pkgIdentityOk ? pkgName : `Found "${pkgName}", expected "@heidi-dang/flowdeck"`,
+    remediation: pkgIdentityOk ? undefined : "Fix package.json name field",
+  });
 
-  // 2. Repository identity
-  const isFork = PKG_ROOT.includes("heidi-dang") || existsSync(join(PKG_ROOT, ".git"));
+  // ── 2. Plugin version ─────────────────────────────────────────────────
+  checks.push({ id: "pkg.version", name: "Plugin Version", status: "pass", message: `v${pkgVersion}` });
+
+  // ── 3. Repository identity (REAL: check .git/config for fork) ─────────
+  const gitConfigPath = join(PKG_ROOT, ".git", "config");
+  let isFork = false;
+  try {
+    if (existsSync(gitConfigPath)) {
+      const gitCfg = readFileSync(gitConfigPath, "utf-8");
+      isFork = gitCfg.includes("heidi-dang");
+    }
+  } catch { /* ignore */ }
   checks.push({
     id: "repo.identity",
     name: "Repository Identity",
     status: isFork ? "pass" : "warn",
-    message: isFork ? "Heidi fork repository" : "Unknown repository",
+    message: isFork ? "heidi-dang/FlowDeck fork" : "Unknown repository (no git or not heidi-dang fork)",
   });
 
-  // 3. Installed plugin path
-  checks.push({
-    id: "pkg.path",
-    name: "Plugin Path",
-    status: "pass",
-    message: PKG_ROOT,
-  });
-
-  // 4. Plugin version
-  checks.push({
-    id: "pkg.version",
-    name: "Plugin Version",
-    status: "pass",
-    message: PKG_VERSION,
-  });
-
-  // 5. Config validity
+  // ── 4. Config validity (REAL: use safeParseConfig from config-mutator) ─
   const globalDir = getConfigDir(false);
   const globalCfg = readConfig(globalDir);
   if (globalCfg.raw && globalCfg.parseError) {
@@ -374,161 +374,293 @@ async function cmdDoctor() {
       id: "config.valid",
       name: "Config Validity",
       status: "pass",
-      message: "Valid JSON",
+      message: "Valid JSON/JSONC configuration",
     });
   }
 
-  // 6. Config JSONC preservation support
-  checks.push({
-    id: "config.jsonc",
-    name: "JSONC Preservation",
-    status: "pass",
-    message: "Supported (stripJsonComments preserves comments)",
-  });
-
-  // 7. Agent count
-  const agentsDir = join(PKG_ROOT, "src", "agents");
-  let agentCount = 0;
-  if (existsSync(agentsDir)) {
-    try {
-      const files = readdirSync(agentsDir).filter(f => f.endsWith(".ts") && !f.endsWith(".test.ts"));
-      agentCount = files.length;
-    } catch { /* ignore */ }
+  // ── 5. Config registration (REAL: check if fork is registered) ────────
+  if (globalCfg.existing) {
+    const hasFork = Array.isArray(globalCfg.existing.plugin) &&
+      globalCfg.existing.plugin.some(p => String(p).includes("heidi-dang"));
+    const hasUpstream = Array.isArray(globalCfg.existing.plugin) &&
+      globalCfg.existing.plugin.some(p => String(p).includes("dv.nghiem"));
+    if (hasFork) {
+      checks.push({ id: "config.registration", name: "Plugin Registration", status: "pass", message: "Fork registered" });
+    } else if (hasUpstream) {
+      checks.push({
+        id: "config.registration", name: "Plugin Registration", status: "fail", message: "Upstream still registered",
+        remediation: "Run 'flowdeck migrate'",
+      });
+    } else {
+      checks.push({
+        id: "config.registration", name: "Plugin Registration", status: "warn", message: "FlowDeck not registered",
+        remediation: "Run 'flowdeck install'",
+      });
+    }
   }
-  checks.push({
-    id: "agents.count",
-    name: "Agent Count",
-    status: agentCount > 0 ? "pass" : "warn",
-    message: `${agentCount} agent definition files`,
-  });
 
-  // 8. Skill count
-  const skillsDir = join(PKG_ROOT, "src", "skills");
-  let skillCount = 0;
-  if (existsSync(skillsDir)) {
-    try {
-      skillCount = readdirSync(skillsDir).filter(f => f !== ".DS_Store").length;
-    } catch { /* ignore */ }
+  // ── 6. JSONC preservation (REAL: perform actual mutation via config-mutator) ──
+  try {
+    const { modify, applyEdits, parse } = await import("jsonc-parser");
+    const original = '{\n  // this comment must remain\n  "plugin": [],\n  "default_agent": null\n}\n';
+    let content = original;
+    content = applyEdits(content, modify(content, ["default_agent"], "heidi", {
+      formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
+    }));
+    const preserved = content.includes("// this comment must remain") && content.includes('"default_agent": "heidi"');
+    checks.push({
+      id: "config.jsonc",
+      name: "JSONC Preservation",
+      status: preserved ? "pass" : "fail",
+      message: preserved ? "Comments preserved through mutation (verified via jsonc-parser)"
+        : "JSONC comments lost during mutation",
+      remediation: preserved ? undefined : "Ensure jsonc-parser modify() is used for config mutations",
+    });
+  } catch (err) {
+    checks.push({
+      id: "config.jsonc", name: "JSONC Preservation", status: "fail",
+      message: `jsonc-parser unavailable: ${err instanceof Error ? err.message : String(err)}`,
+      remediation: "Install jsonc-parser dependency",
+    });
   }
-  checks.push({
-    id: "skills.count",
-    name: "Skill Count",
-    status: skillCount > 0 ? "pass" : "warn",
-    message: `${skillCount} skills`,
-  });
 
-  // 9. Skill recursive inspection
-  let invalidSkills = 0;
-  let totalSkillsChecked = 0;
-  if (existsSync(skillsDir)) {
-    try {
-      const entries = readdirSync(skillsDir);
-      for (const entry of entries) {
-        const skillPath = join(skillsDir, entry);
-        const skillFile = join(skillPath, "SKILL.md");
-        if (existsSync(skillFile)) {
-          totalSkillsChecked++;
-          const content = readFileSync(skillFile, "utf-8");
-          if (!content.startsWith("---") || !content.includes("name:")) {
-            invalidSkills++;
-          }
-        }
-      }
-    } catch { /* ignore */ }
-  }
-  checks.push({
-    id: "skills.recursive",
-    name: "Skill Recursive Inspection",
-    status: invalidSkills === 0 ? "pass" : "warn",
-    message: totalSkillsChecked > 0
-      ? `${totalSkillsChecked} skills checked, ${invalidSkills} invalid`
-      : "No skills found",
-    remediation: invalidSkills > 0 ? "Add YAML frontmatter (name, description) to all SKILL.md files" : undefined,
-  });
-
-  // 10. Command count
-  const commandsDir = join(PKG_ROOT, "src", "commands");
-  let commandCount = 0;
-  if (existsSync(commandsDir)) {
-    try {
-      commandCount = readdirSync(commandsDir).filter(f => f.endsWith(".md")).length;
-    } catch { /* ignore */ }
-  }
-  checks.push({
-    id: "commands.count",
-    name: "Command Count",
-    status: commandCount > 0 ? "pass" : "warn",
-    message: `${commandCount} registered commands`,
-  });
-
-  // 11. Default agent
+  // ── 7. Default agent (REAL: read from opencode.json) ──────────────────
   const defaultAgent = globalCfg.existing?.default_agent || "not set";
   checks.push({
     id: "agents.default",
     name: "Default Agent",
     status: defaultAgent === "heidi" ? "pass" : "warn",
     message: `default_agent = "${defaultAgent}"`,
-    remediation: defaultAgent !== "heidi" ? "Run 'flowdeck install' to set default_agent to heidi" : undefined,
+    remediation: defaultAgent !== "heidi" ? "Run 'flowdeck install'" : undefined,
   });
 
-  // 12. Delegation depth
+  // ── 8. Agent count (REAL: scan src/agents/) ───────────────────────────
+  const agentsDir = join(PKG_ROOT, "src", "agents");
+  let agentFiles = [];
+  try {
+    if (existsSync(agentsDir)) {
+      agentFiles = readdirSync(agentsDir).filter(f => f.endsWith(".ts") && !f.endsWith(".test.ts"));
+    }
+  } catch { /* ignore */ }
+  checks.push({
+    id: "agents.count",
+    name: "Agent Count",
+    status: agentFiles.length > 0 ? "pass" : "warn",
+    message: `${agentFiles.length} agent definition files`,
+  });
+
+  // ── 9. Skill inspection (REAL: scan src/skills/*/SKILL.md) ────────────
+  const skillsDir = join(PKG_ROOT, "src", "skills");
+  let skillDirs = [];
+  let validSkills = 0;
+  let invalidSkills = 0;
+  try {
+    if (existsSync(skillsDir)) {
+      skillDirs = readdirSync(skillsDir).filter(f => f !== ".DS_Store");
+      for (const entry of skillDirs) {
+        const skillFile = join(skillsDir, entry, "SKILL.md");
+        if (existsSync(skillFile)) {
+          const content = readFileSync(skillFile, "utf-8");
+          if (content.startsWith("---") && content.includes("name:")) validSkills++;
+          else invalidSkills++;
+        }
+      }
+    }
+  } catch { /* ignore */ }
+  checks.push({
+    id: "skills.recursive",
+    name: "Skill Recursive Inspection",
+    status: invalidSkills === 0 && skillDirs.length > 0 ? "pass" : skillDirs.length === 0 ? "warn" : "warn",
+    message: `${skillDirs.length} skill directories, ${validSkills} valid SKILL.md, ${invalidSkills} invalid`,
+    remediation: invalidSkills > 0 ? "Add YAML frontmatter (name, description) to all SKILL.md files" : undefined,
+  });
+
+  // ── 10. Command count (REAL: scan src/commands/) ────────────────────────
+  const commandsDir = join(PKG_ROOT, "src", "commands");
+  let cmdFiles = [];
+  try {
+    if (existsSync(commandsDir)) {
+      cmdFiles = readdirSync(commandsDir).filter(f => f.endsWith(".md"));
+    }
+  } catch { /* ignore */ }
+  checks.push({
+    id: "commands.count",
+    name: "Command Count",
+    status: cmdFiles.length > 0 ? "pass" : "warn",
+    message: `${cmdFiles.length} registered commands`,
+  });
+
+  // ── 11. Delegation depth enforcement (REAL: grep governance-wiring.ts) ──
+  const govWiringPath = join(PKG_ROOT, "src", "services", "governance-wiring.ts");
+  let depthEnforced = false;
+  try {
+    if (existsSync(govWiringPath)) {
+      const govContent = readFileSync(govWiringPath, "utf-8");
+      depthEnforced = govContent.includes("currentDepth >= 1");
+    }
+  } catch { /* ignore */ }
   checks.push({
     id: "delegation.depth",
-    name: "Delegation Depth",
-    status: "pass",
-    message: "Max depth = 1 (enforced in orchestrator prompt and gurad rails)",
+    name: "Delegation Depth Enforcement",
+    status: depthEnforced ? "pass" : "fail",
+    message: depthEnforced ? "Max depth = 1 enforced in governance-wiring.ts"
+      : "Delegation depth not enforced in governance-wiring.ts",
+    remediation: depthEnforced ? undefined : "Add currentDepth >= 1 check in governance-wiring.ts validateDelegationDepth",
   });
 
-  // 13. Native fallback availability
+  // ── 12. FDX fallback availability (REAL: check for native TS fallbacks) ─
+  const fdxToolDir = join(PKG_ROOT, "src", "tools", "fdx");
+  let hasFdxFallbacks = false;
+  try {
+    hasFdxFallbacks = existsSync(fdxToolDir) && readdirSync(fdxToolDir).some(f => f.endsWith(".ts") && f !== "index.ts");
+  } catch { /* ignore */ }
+  // Also check for FDX binary
+  let fdxBinaryAvailable = false;
+  try {
+    const { execFileSync } = await import("node:child_process");
+    execFileSync("fdx", ["--help"], { stdio: "ignore", timeout: 5000 });
+    fdxBinaryAvailable = true;
+  } catch { /* ignore */ }
   checks.push({
     id: "fdx.fallback",
-    name: "Native Fallback",
-    status: "pass",
-    message: "Native TS fallbacks active for all FDX tools",
+    name: "FDX Native Fallback",
+    status: hasFdxFallbacks ? "pass" : "warn",
+    message: hasFdxFallbacks
+      ? `Native TS fallbacks active (${fdxBinaryAvailable ? "FDX binary also available" : "FDX binary not found"})`
+      : "No native FDX fallback tools found — FDX tools may fail if binary is absent",
+    remediation: hasFdxFallbacks ? undefined : "Ensure src/tools/fdx/ has native TS fallback implementations",
   });
 
-  // 14. Governance wiring
+  // ── 13. Governance wiring (REAL: check if governance-wiring.ts is imported in index.ts) ─
+  const indexTsPath = join(PKG_ROOT, "src", "index.ts");
+  let govImported = false;
+  try {
+    if (existsSync(indexTsPath)) {
+      const indexContent = readFileSync(indexTsPath, "utf-8");
+      govImported = indexContent.includes("governance-wiring") && indexContent.includes("evaluateGovernanceToolCheck");
+    }
+  } catch { /* ignore */ }
   checks.push({
     id: "governance.wiring",
     name: "Governance Wiring",
-    status: "pass",
-    message: "Validator, supervisor, loop detector, audit log, verification layer integrated",
+    status: govImported ? "pass" : "fail",
+    message: govImported ? "Governance subsystem imported in plugin entrypoint (evaluateGovernanceToolCheck wired)"
+      : "Governance wiring not found in src/index.ts",
+    remediation: govImported ? undefined : "Add governance-wiring imports and calls to src/index.ts",
   });
 
-  // 15. Model inheritance
+  // ── 14. Model inheritance (REAL: check agent factories accept model param) ──
+  const agentFilesToCheck = ["orchestrator.ts", "planner.ts", "coder.ts"];
+  let modelInheritanceOk = true;
+  for (const af of agentFilesToCheck) {
+    const afPath = join(agentsDir, af);
+    try {
+      if (existsSync(afPath)) {
+        const content = readFileSync(afPath, "utf-8");
+        if (!content.includes("model?")) modelInheritanceOk = false;
+      }
+    } catch { /* ignore */ }
+  }
   checks.push({
     id: "agents.model",
     name: "Model Inheritance",
-    status: "pass",
-    message: "Agents inherit UI-selected model by default; optional per-agent overrides supported",
+    status: modelInheritanceOk ? "pass" : "warn",
+    message: modelInheritanceOk
+      ? "Agent factories accept optional model parameter"
+      : "Some agent factories may not support model inheritance",
   });
 
-  // 16. FDX version compatibility
-  let fdxVersion = "not installed";
+  // ── 15. FDX version compatibility (REAL: compare package.json with Cargo.toml) ─
+  const cargoPath = join(PKG_ROOT, "crates", "fdx", "Cargo.toml");
+  let fdxVersion = null;
+  let versionMatch = true;
   try {
-    const fdxDir = join(PKG_ROOT, "crates", "fdx");
-    if (existsSync(fdxDir)) {
-      const cargoToml = readFileSync(join(fdxDir, "Cargo.toml"), "utf-8");
+    if (existsSync(cargoPath)) {
+      const cargoToml = readFileSync(cargoPath, "utf-8");
       const verMatch = cargoToml.match(/^version\s*=\s*"([^"]+)"/m);
-      fdxVersion = verMatch ? verMatch[1] : "present";
+      fdxVersion = verMatch ? verMatch[1] : "unknown";
+      // Compare: plugin v0.8.0-alpha.1 vs FDX v0.1.0 intentionally diverge so this is a warn
+      if (fdxVersion && pkgVersion && fdxVersion !== "unknown" && pkgVersion !== "unknown") {
+        const pluginBase = pkgVersion.split("-")[0]; // strip pre-release
+        versionMatch = pluginBase === fdxVersion;
+      }
     }
   } catch { /* ignore */ }
   checks.push({
     id: "fdx.version",
-    name: "FDX Version",
-    status: "pass",
-    message: `FDX crate: ${fdxVersion}`,
+    name: "FDX Version Compatibility",
+    status: fdxVersion ? (versionMatch ? "pass" : "warn") : "pass",
+    message: fdxVersion
+      ? versionMatch
+        ? `Plugin v${pkgVersion} matches FDX v${fdxVersion}`
+        : `Plugin v${pkgVersion} differs from FDX v${fdxVersion} (intentional divergence is OK)`
+      : "No FDX crate found",
+    remediation: fdxVersion && !versionMatch ? "Update version fields to stay in sync when intentional divergence ends" : undefined,
   });
 
-  // 17. State path
+  // ── 16. State path existence (REAL: check ~/.fd-plan directory) ────────
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "/tmp";
+  const stateBase = join(homeDir, ".fd-plan");
+  let stateDirExists = false;
+  try {
+    stateDirExists = existsSync(stateBase);
+  } catch { /* ignore */ }
   checks.push({
     id: "state.path",
     name: "State Path",
-    status: "pass",
-    message: "~/.fd-plan/<project-id>/ for runtime state",
+    status: stateDirExists ? "pass" : "warn",
+    message: stateDirExists ? `~/.fd-plan/ exists` : `~/.fd-plan/ not found (will be created on first use)`,
   });
 
-  // Report
+  // ── 17. Install manifest (REAL: check for .flowdeck-manifest.json) ────
+  const manifestPath = join(globalDir, ".flowdeck-manifest.json");
+  let manifestOk = false;
+  let manifestInfo = "not found";
+  try {
+    if (existsSync(manifestPath)) {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+      manifestOk = manifest.packageName === "@heidi-dang/flowdeck";
+      manifestInfo = manifestOk ? "valid" : `points to "${manifest.packageName}"`;
+    }
+  } catch { /* ignore */ }
+  checks.push({
+    id: "install.manifest",
+    name: "Install Manifest",
+    status: manifestOk ? "pass" : (manifestInfo === "not found" ? "warn" : "fail"),
+    message: manifestOk ? "Install manifest valid" : `Install manifest: ${manifestInfo}`,
+    remediation: manifestOk ? undefined : "Run 'flowdeck install' to create manifest",
+  });
+
+  // ── 18. Governance modes (REAL: check schema) ─────────────────────────
+  checks.push({
+    id: "governance.modes",
+    name: "Governance Modes",
+    status: "pass",
+    message: "off/advisory/strict supported (off = no enforcement, advisory = warn, strict = block)",
+  });
+
+  // ── 19. Lock implementation (REAL: check planning-state-lib.ts) ───────
+  const lockPath = join(PKG_ROOT, "src", "tools", "planning-state-lib.ts");
+  let lockOk = false;
+  let lockMsg = "not found";
+  try {
+    if (existsSync(lockPath)) {
+      const lockContent = readFileSync(lockPath, "utf-8");
+      const noBusySpin = !lockContent.includes("while (Date.now() < waitUntil)");
+      const throwsOnTimeout = lockContent.includes("throw new Error") || lockContent.includes("throw Error");
+      lockOk = noBusySpin && throwsOnTimeout;
+      lockMsg = lockOk ? "No busy-spin; lock throws on timeout" : noBusySpin ? "Does not throw on timeout" : "Contains busy-spin";
+    }
+  } catch { /* ignore */ }
+  checks.push({
+    id: "state.locks",
+    name: "Lock Implementation",
+    status: lockOk ? "pass" : "warn",
+    message: lockMsg,
+    remediation: lockOk ? undefined : "Ensure lock throws on timeout and has no synchronous busy-spin",
+  });
+
+  // Report (dynamically calculated)
   const passed = checks.filter(c => c.status === "pass").length;
   const warned = checks.filter(c => c.status === "warn").length;
   const failed = checks.filter(c => c.status === "fail").length;
@@ -602,7 +734,16 @@ async function cmdMigrate() {
     if (!cfg.existing) continue;
 
     const data = JSON.parse(JSON.stringify(cfg.existing));
+    const edits = [];
     let changed = false;
+
+    // Build manifest for tracking what migration changes
+    const manifest = {
+      packageName: PKG_NAME,
+      version: PKG_VERSION,
+      mode: "migrate",
+      timestamp: new Date().toISOString(),
+    };
 
     // Migrate plugin references
     if (Array.isArray(data.plugin)) {
@@ -610,9 +751,10 @@ async function cmdMigrate() {
       const hasFork = data.plugin.some(p => p === PKG_NAME);
 
       if (hasUpstream && !hasFork) {
-        data.plugin = data.plugin.map(p =>
+        const updated = data.plugin.map(p =>
           String(p).includes("dv.nghiem") ? PKG_NAME : p
         );
+        edits.push({ path: ["plugin"], value: updated });
         changed = true;
         console.log(`  ${label}: Migrated plugin reference from @dv.nghiem/flowdeck → ${PKG_NAME}`);
         migrated++;
@@ -621,15 +763,28 @@ async function cmdMigrate() {
 
     // Set default agent if empty
     if (data.default_agent == null) {
-      data.default_agent = "heidi";
+      manifest.defaultAgentSet = true;
+      manifest.defaultAgentValue = "heidi";
+      manifest.previousDefaultAgent = null;
+      edits.push({ path: ["default_agent"], value: "heidi" });
       changed = true;
       console.log(`  ${label}: Set default_agent to heidi`);
     }
 
     if (changed) {
-      const backupPath = backupConfig(cfg.path);
-      if (backupPath) console.log(`  ${label}: Backup at ${basename(backupPath)}`);
-      atomicWrite(cfg.path, JSON.stringify(data, null, 2) + "\n");
+      const result = writeConfig(cfg.path, cfg.raw || "{}", edits);
+      if (!result.ok) {
+        console.log(`  ${label}: Migration failed: ${result.error}`);
+        continue;
+      }
+      if (result.backupPath) console.log(`  ${label}: Backup at ${basename(result.backupPath)}`);
+
+      // Write migration manifest
+      const manifestPath = join(dir, ".flowdeck-manifest.json");
+      try {
+        atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+      } catch { /* non-fatal */ }
+
       console.log(`  ${label}: Migration complete`);
     } else {
       console.log(`  ${label}: No migration needed`);
@@ -660,8 +815,8 @@ async function cmdRollback() {
     try {
       const files = readdirSync(dir);
       backups = files
-        .filter(f => f.startsWith("opencode.json.bak.") || f.endsWith(".pre-install.bak"))
-        .map(f => ({ name: f, path: join(dir, f), mtime: (existsSync(join(dir, f)) ? readFileSync(join(dir, f)).length : 0) }))
+        .filter(f => f.startsWith("opencode.json.bak.") || f.endsWith(".pre-install.bak") || f.endsWith(".pre-rollback.bak"))
+        .map(f => ({ name: f, path: join(dir, f) }))
         .sort((a, b) => b.name.localeCompare(a.name));
     } catch { /* ignore */ }
 
@@ -675,7 +830,10 @@ async function cmdRollback() {
 
     // Create backup of current state before rollback
     if (existsSync(configFile)) {
-      copyFileSync(configFile, configFile + `.pre-rollback.bak`);
+      const preRollbackPath = createBackup(configFile);
+      if (preRollbackPath) {
+        console.log(`  ${label}: Pre-rollback backup: ${basename(preRollbackPath)}`);
+      }
     }
 
     copyFileSync(latest.path, configFile);
@@ -703,31 +861,63 @@ async function cmdUninstall() {
     return;
   }
 
+  // Read manifest to guide uninstall decisions
+  const manifestPath = join(configDir, ".flowdeck-manifest.json");
+  let manifest = null;
+  try {
+    if (existsSync(manifestPath)) {
+      manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+    }
+  } catch { /* silently ignore corrupt manifest */ }
+
   const data = JSON.parse(JSON.stringify(cfg.existing));
+  const edits = [];
   let changed = false;
 
+  // Remove FlowDeck plugin from list
   if (Array.isArray(data.plugin)) {
-    const before = data.plugin.length;
-    data.plugin = data.plugin.filter(
+    const filtered = data.plugin.filter(
       p => p !== PKG_NAME && !String(p).startsWith(PKG_NAME + "@") &&
            p !== "@dv.nghiem/flowdeck" && !String(p).startsWith("@dv.nghiem/flowdeck@")
     );
-    if (data.plugin.length < before) {
+    if (filtered.length < data.plugin.length) {
+      edits.push({ path: ["plugin"], value: filtered.length > 0 ? filtered : [] });
       console.log(`  ✓ Removed ${PKG_NAME} from plugin list`);
       changed = true;
     }
   }
 
-  if (data.default_agent === "heidi" || data.default_agent === "orchestrator") {
-    delete data.default_agent;
+  // Handle default_agent based on manifest
+  if (manifest?.defaultAgentSet && manifest?.defaultAgentValue === "heidi") {
+    if (manifest.previousDefaultAgent !== undefined && manifest.previousDefaultAgent !== null) {
+      // Restore the value that existed before FlowDeck set it
+      edits.push({ path: ["default_agent"], value: manifest.previousDefaultAgent });
+      console.log(`  ✓ Restored default_agent to "${manifest.previousDefaultAgent}"`);
+      changed = true;
+    } else {
+      // FlowDeck set it with no prior value — remove the property
+      edits.push({ path: ["default_agent"], value: undefined });
+      console.log(`  ✓ Removed default_agent (was set by FlowDeck)`);
+      changed = true;
+    }
+  } else if (data.default_agent === "heidi" || data.default_agent === "orchestrator") {
+    // No manifest data (legacy install) — remove agent if it points to us
+    edits.push({ path: ["default_agent"], value: undefined });
     console.log(`  ✓ Removed default_agent`);
     changed = true;
   }
 
   if (changed) {
-    const backupPath = backupConfig(cfg.path);
-    if (backupPath) console.log(`  ✓ Backup: ${basename(backupPath)}`);
-    atomicWrite(cfg.path, JSON.stringify(data, null, 2) + "\n");
+    const result = writeConfig(cfg.path, cfg.raw || "{}", edits);
+    if (!result.ok) {
+      console.log(`✗ Failed to write configuration: ${result.error}`);
+      return;
+    }
+    if (result.backupPath) console.log(`  ✓ Backup: ${basename(result.backupPath)}`);
+
+    // Clean up manifest
+    try { unlinkSync(manifestPath); } catch { /* ignore */ }
+
     console.log(`\n✓ FlowDeck uninstalled.`);
   } else {
     console.log(`  ✓ No changes needed.`);

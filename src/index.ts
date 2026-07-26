@@ -73,6 +73,22 @@ import { runSupervisorReview, shouldProceed, resolveSupervisorConfig } from "./s
 import { appendAuditEvent } from "./services/audit-log"
 import { isSpecialistAgent, getAllAgentIds } from "./services/canonical-registry"
 
+// ─── Session budget tracking ──────────────────────────────────────────────
+const MAX_TOOL_CALLS_PER_SESSION = 200
+const MAX_RETRIES_PER_SESSION = 10
+const MAX_DELEGATIONS_PER_SESSION = 20
+
+/** Tracks tool call count per session ID. */
+const sessionToolCalls = new Map<string, number>()
+/** Tracks retry count per session ID. */
+const sessionRetries = new Map<string, number>()
+/** Tracks delegation (task tool use) count per session ID. */
+const sessionDelegations = new Map<string, number>()
+/** Tracks total blocks per session. */
+const sessionBlocks = new Map<string, number>()
+/** Tracks total warnings per session. */
+const sessionWarnings = new Map<string, number>()
+
 const __dir = dirname(fileURLToPath(import.meta.url))
 
 /** Select FlowDeck rule paths for cfg.instructions injection. */
@@ -203,6 +219,22 @@ const plugin: Plugin = async ({ directory, client }) => {
       const sessionID = toolInput.sessionID ?? ""
       const agent = toolInput.agent ?? "unknown"
 
+      // ── 0. Tool call budget tracking ─────────────────────────────────
+      if (sessionID) {
+        const callCount = (sessionToolCalls.get(sessionID) ?? 0) + 1
+        sessionToolCalls.set(sessionID, callCount)
+        if (callCount > MAX_TOOL_CALLS_PER_SESSION) {
+          const msg = `Tool call budget exceeded: ${callCount} > ${MAX_TOOL_CALLS_PER_SESSION} for session ${sessionID}`
+          recordRecoveryAudit({
+            directory, sessionID, agent,
+            errorKey: "tool_call_budget_exceeded",
+            action: "circuit_breaker_block",
+            message: msg,
+          })
+          throw new Error(msg)
+        }
+      }
+
       // ── 1. Orchestrator guard ──────────────────────────────────────────
       orchestratorGuard.check(
         sessionID,
@@ -221,10 +253,14 @@ const plugin: Plugin = async ({ directory, client }) => {
       })
 
       if (governanceResult.action === "block") {
+        if (sessionID) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
         throw new Error(governanceResult.reason ?? `Tool ${toolName} blocked by governance policy`)
       }
+      if (governanceResult.action === "warn") {
+        if (sessionID) sessionWarnings.set(sessionID, (sessionWarnings.get(sessionID) ?? 0) + 1)
+      }
 
-      // ── 3. Delegation depth check ─────────────────────────────────────
+      // ── 3. Delegation depth check & budget ───────────────────────────
       if (toolName === "task") {
         // Read depth from session state or tool args
         const currentDepth = (toolInput.args?.depth as number) ?? 0
@@ -239,7 +275,24 @@ const plugin: Plugin = async ({ directory, client }) => {
             action: "circuit_breaker_block",
             message: depthResult.reason ?? "Delegation not allowed",
           })
+          if (sessionID) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
           throw new Error(depthResult.reason ?? "Delegation blocked")
+        }
+
+        // Track delegation count per session
+        if (sessionID) {
+          const delCount = (sessionDelegations.get(sessionID) ?? 0) + 1
+          sessionDelegations.set(sessionID, delCount)
+          if (delCount > MAX_DELEGATIONS_PER_SESSION) {
+            const msg = `Delegation budget exceeded: ${delCount} > ${MAX_DELEGATIONS_PER_SESSION} for session ${sessionID}`
+            recordRecoveryAudit({
+              directory, sessionID, agent,
+              errorKey: "delegation_budget_exceeded",
+              action: "circuit_breaker_block",
+              message: msg,
+            })
+            throw new Error(msg)
+          }
         }
       }
 
@@ -313,7 +366,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         "success"
       )
 
-      // ── 4. Recovery tracking ──────────────────────────────────────────
+      // ── 4. Recovery tracking & retry budget ──────────────────────────
       if (toolInput.error) {
         recordRecoveryAudit({
           directory,
@@ -323,6 +376,20 @@ const plugin: Plugin = async ({ directory, client }) => {
           action: "targeted_diagnosis",
           message: `Tool ${toolName} failed: ${String(toolInput.error).slice(0, 200)}`,
         })
+
+        // Track retries per session and enforce retry budget
+        if (sessionID) {
+          const retryCount = (sessionRetries.get(sessionID) ?? 0) + 1
+          sessionRetries.set(sessionID, retryCount)
+          if (retryCount > MAX_RETRIES_PER_SESSION) {
+            recordRecoveryAudit({
+              directory, sessionID, agent,
+              errorKey: "retry_budget_exceeded",
+              action: "circuit_breaker_block",
+              message: `Retry budget exceeded: ${retryCount} > ${MAX_RETRIES_PER_SESSION} for session ${sessionID}`,
+            })
+          }
+        }
       }
     },
 
@@ -352,6 +419,39 @@ const plugin: Plugin = async ({ directory, client }) => {
             decision: "complete",
             reason: "Session completed",
           })
+
+          // Generate scorecard with real session metrics
+          if (sessionID) {
+            const toolCalls = sessionToolCalls.get(sessionID) ?? 0
+            const retries = sessionRetries.get(sessionID) ?? 0
+            const delegations = sessionDelegations.get(sessionID) ?? 0
+            const blocks = sessionBlocks.get(sessionID) ?? 0
+            const warnings = sessionWarnings.get(sessionID) ?? 0
+
+            const scorecard = generateScorecard({
+              commandsRun: toolCalls,
+              testsPassed: 0,
+              testsFailed: 0,
+              buildResult: "not_run",
+              typecheckResult: "not_run",
+              filesChanged: 0,
+              toolCalls,
+              delegations,
+              retries,
+              blocks,
+              warnings,
+              durationMs: 0,
+              remainingFindings: 0,
+            })
+            appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
+
+            // Clean up session state
+            sessionToolCalls.delete(sessionID)
+            sessionRetries.delete(sessionID)
+            sessionDelegations.delete(sessionID)
+            sessionBlocks.delete(sessionID)
+            sessionWarnings.delete(sessionID)
+          }
         }
       }
       orchestratorGuard.onEvent(event)

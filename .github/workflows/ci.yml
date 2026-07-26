@@ -133,6 +133,58 @@ jobs:
         run: node bin/flowdeck.js dry-run 2>&1
       - name: Uninstall
         run: node bin/flowdeck.js uninstall 2>&1
+      - name: CLI Integration Test (all commands)
+        run: |
+          set -e
+          HOME_TMP=$(mktemp -d)
+          HOME=$HOME_TMP OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          echo '{"plugin":[],"default_agent":null}' > $OPENCODE_CONFIG_DIR/opencode.json
+          node bin/flowdeck.js --help 2>&1 | grep -q "FlowDeck v" && echo "PASS: --help"
+          node bin/flowdeck.js install 2>&1 | grep -q "FlowDeck installed" && echo "PASS: install"
+          node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" && echo "PASS: verify"
+          node bin/flowdeck.js doctor 2>&1 && echo "PASS: doctor"
+          node bin/flowdeck.js config validate 2>&1 | grep -q "Valid JSON" && echo "PASS: config validate"
+          node bin/flowdeck.js dry-run 2>&1 | grep -q "DRY RUN" && echo "PASS: dry-run"
+          node bin/flowdeck.js uninstall 2>&1 | grep -q "Uninstalled" && echo "PASS: uninstall"
+          echo "ALL CLI COMMANDS PASSED"
+      - name: State Migration Test
+        run: |
+          set -e
+          HOME_TMP=$(mktemp -d)
+          HOME=$HOME_TMP OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p $OPENCODE_CONFIG_DIR
+          # Simulate upstream config
+          echo '{"plugin":["@dv.nghiem/flowdeck"],"default_agent":null}' > $OPENCODE_CONFIG_DIR/opencode.json
+          node bin/flowdeck.js migrate 2>&1 | grep -q "Migrated" && echo "PASS: migrate from upstream"
+          node -e "
+            const c = JSON.parse(require('fs').readFileSync('$OPENCODE_CONFIG_DIR/opencode.json','utf-8'));
+            console.assert(c.plugin.includes('@heidi-dang/flowdeck'), 'Fork not registered after migrate');
+            console.assert(c.default_agent === 'heidi', 'Default agent not set');
+            console.log('PASS: Migration state verified');
+          "
+          # Test rollback
+          node bin/flowdeck.js rollback 2>&1 | grep -q "Rolled back" && echo "PASS: rollback"
+          node bin/flowdeck.js install 2>&1 && echo "PASS: reinstall after rollback"
+      - name: FDX Version Compatibility Test
+        run: |
+          set -e
+          PLUGIN_VER=$(node -e "console.log(require('./package.json').version)")
+          FDX_VER=""
+          if [ -f crates/fdx/Cargo.toml ]; then
+            FDX_VER=$(grep '^version' crates/fdx/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          fi
+          if [ -n "$FDX_VER" ]; then
+            echo "Plugin v$PLUGIN_VER, FDX v$FDX_VER"
+            # Plugin 0.8.0-alpha.1 and FDX 0.1.0 intentionally diverge
+            PLUGIN_BASE=$(echo "$PLUGIN_VER" | sed 's/-.*//')
+            if [ "$PLUGIN_BASE" != "$FDX_VER" ]; then
+              echo "WARN: Versions diverge (plugin base $PLUGIN_BASE != fdx $FDX_VER) - intentional"
+            else
+              echo "PASS: Versions match"
+            fi
+          else
+            echo "No FDX crate found - skipping"
+          fi
 
   rust-gates:
     name: Rust Gates (FDX)
@@ -173,9 +225,14 @@ jobs:
             exit 1
           fi
           echo "PASS: No hardcoded credentials detected"
+      - name: Secret Detection (trufflehog)
+        uses: trufflesecurity/trufflehog@v3
+        with:
+          path: ./
+          extra_args: --results=verified --fail
       - name: Dependency Audit
         run: |
-          npm audit --production --audit-level=high 2>&1 || echo "WARN: npm audit found issues (non-blocking for now)"
+          npm audit --production --audit-level=high 2>&1
 
   completion:
     name: Pipeline Completion

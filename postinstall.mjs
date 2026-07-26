@@ -1,25 +1,19 @@
+#!/usr/bin/env node
 // postinstall.mjs — Safe, minimal postinstall for @heidi-dang/flowdeck
 //
 // Performs ONLY:
 // 1. Plugin registration in opencode.json (plugin list), preserving JSONC comments
 // 2. Sets default_agent to "heidi" for new installations only
 //
-// Does NOT:
-// - Clone any Git repository
-// - Pull latest branch
-// - Install Rust or rustup
-// - Compile FDX
-// - Change existing default_agent
-// - Hide errors behind unconditional exit code zero
-// - Require machine-level toolchain installation
+// Uses shared config-mutator for all JSONC-safe file operations.
 //
 // For full installation features, use: npx @heidi-dang/flowdeck install
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { modify, applyEdits, parse } from "jsonc-parser";
+import { readConfig as readConfigFile, writeConfig } from "../scripts/config-mutator.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -32,20 +26,6 @@ function getOpenCodeConfigDir() {
   );
 }
 
-/**
- * Apply JSONC-preserving edits using jsonc-parser.
- * Preserves comments, formatting, and trailing commas.
- */
-function applyJsoncEdits(rawContent, edits) {
-  let content = rawContent;
-  for (const edit of edits) {
-    content = applyEdits(content, modify(content, edit.path, edit.value, {
-      formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
-    }));
-  }
-  return content;
-}
-
 function main() {
   const configDir = getOpenCodeConfigDir();
   const configFile = join(configDir, "opencode.json");
@@ -56,23 +36,16 @@ function main() {
   let existingData = {};
 
   if (existsSync(configFile)) {
-    rawContent = readFileSync(configFile, "utf-8");
-    const errors = [];
-    existingData = parse(rawContent, errors, { allowTrailingComma: true });
-    if (errors.length > 0 || existingData === undefined) {
-      console.log(`⚠️  opencode.json is malformed (parse error code: ${errors.join(", ") || "unknown"}).`);
+    const result = readConfigFile(configFile);
+    if (!result.ok) {
+      console.log(`⚠️  opencode.json is malformed: ${result.error}`);
       console.log("⚠️  Preserving existing configuration without mutation.");
       console.log("   Run 'npx @heidi-dang/flowdeck doctor' for diagnosis.");
       console.log("   Run 'npx @heidi-dang/flowdeck install' to attempt repair.");
       return;
     }
-  }
-
-  // Create backup before any mutation
-  try {
-    copyFileSync(configFile, configFile + ".pre-install.bak");
-  } catch {
-    // Failed backup — still proceed for registration
+    rawContent = result.rawContent ?? "{}";
+    existingData = result.data ?? {};
   }
 
   const edits = [];
@@ -106,17 +79,13 @@ function main() {
     return;
   }
 
-  // Apply JSONC-preserving edits and write atomically
-  const updatedContent = applyJsoncEdits(rawContent, edits);
-  const tmpFile = join(configDir, `.opencode.json.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`);
-  try {
-    writeFileSync(tmpFile, updatedContent, "utf-8");
-    renameSync(tmpFile, configFile);
+  // Use shared writeConfig: validates, backs up, applies JSONC edits, writes atomically
+  const result = writeConfig(configFile, rawContent, edits);
+  if (result.ok) {
     console.log(`\n✓ FlowDeck ready! A fresh OpenCode session is required to activate.`);
     console.log(`  Config: ${configDir}`);
-  } catch (err) {
-    try { unlinkSync(tmpFile); } catch { /* ignore cleanup */ }
-    console.error(`✗ Failed to write configuration: ${err.message}`);
+  } else {
+    console.error(`✗ Failed to write configuration: ${result.error}`);
     process.exit(1);
   }
 }

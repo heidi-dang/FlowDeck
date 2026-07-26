@@ -497,9 +497,23 @@ function testFdxVersionCompatibility(directory: string): { ok: boolean; message:
   const pkgRaw = tryReadFile(join(directory, "package.json"))
   const pluginVersion = pkgRaw ? (JSON.parse(pkgRaw).version || "unknown") : "unknown"
 
+  // Compare base versions (strip pre-release tags like -alpha.1)
+  const pluginBase = pluginVersion.split("-")[0]
+  const fdxBase = fdxVersion.split("-")[0]
+
+  if (pluginBase === "unknown" || fdxBase === "unknown") {
+    return { ok: true, message: `FDX v${fdxVersion}, Plugin v${pluginVersion}` }
+  }
+
+  if (pluginBase === fdxBase) {
+    return { ok: true, message: `FDX v${fdxVersion} matches Plugin v${pluginVersion}` }
+  }
+
+  // Versions diverge — this is a warn (not fail) since plugin and FDX may intentionally
+  // be on different release cycles (e.g. plugin v0.8.0-alpha.1 vs FDX v0.1.0)
   return {
-    ok: true,
-    message: `FDX v${fdxVersion}, Plugin v${pluginVersion}`,
+    ok: false,
+    message: `Plugin v${pluginVersion} (base ${pluginBase}) differs from FDX v${fdxVersion} (base ${fdxBase}) — intentional divergence is acceptable during development`,
   }
 }
 

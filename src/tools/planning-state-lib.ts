@@ -1,7 +1,8 @@
 import { join, dirname, resolve, basename, sep } from "path"
 import { homedir } from "os"
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, rmSync } from "fs"
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from "fs"
 import { createHash } from "crypto"
+import { withLock } from "../services/async-lock"
 
 const STATE_FILE = "STATE.md"
 const PLAN_FILE = "plan.md"
@@ -144,114 +145,25 @@ export function clearFile(path: string): void {
   if (existsSync(path)) writeFileSync(path, "", "utf-8")
 }
 
-/** Maximum age (ms) for a held lock before we treat it as stale and steal it. */
-const LOCK_STALE_MS = 5_000
-
-/** Polling interval (ms) when waiting for a held lock. */
-const LOCK_POLL_MS = 50
-
-/** Total time (ms) we will wait to acquire a lock before falling through. */
-const LOCK_ACQUIRE_TIMEOUT_MS = 1_000
-
-/**
- * Atomically check if a lock is held, and if so, whether the holder PID is
- * still alive and the lock age is under `LOCK_STALE_MS`. Returns `true` when
- * the lock should be considered free (stolen or absent), `false` when held.
- */
-function tryClaimLock(lockPath: string): boolean {
-  if (!existsSync(lockPath)) {
-    // No lock present — try to claim it.
-    try {
-      writeFileSync(lockPath, `${process.pid}:${Date.now()}`, { flag: "wx" })
-      return true
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err
-      return false
-    }
-  }
-
-  // Lock is present. Check staleness.
-  try {
-    const stat = statSync(lockPath)
-    if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-      // Stale lock from a crashed process — steal it.
-      try {
-        rmSync(lockPath)
-      } catch {
-        // Another process may have stolen it first; fall through to the
-        // EEXIST path below.
-      }
-      try {
-        writeFileSync(lockPath, `${process.pid}:${Date.now()}`, { flag: "wx" })
-        return true
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err
-        return false
-      }
-    }
-    return false
-  } catch {
-    // Could not stat the lock (race with cleanup); treat as held.
-    return false
-  }
-}
-
 /**
  * Append a single line to a file under a per-topic advisory lock.
  *
- * Acquire pattern: write `path + ".lock"` with `wx` (atomic create-or-fail).
- * On contention, poll every `LOCK_POLL_MS` up to `LOCK_ACQUIRE_TIMEOUT_MS`
- * total.
- *
- * On timeout: throws an error rather than writing unlocked. This prevents
- * data corruption from concurrent writers.
- *
- * Stale-lock detection: if the existing lock is older than `LOCK_STALE_MS`,
- * it's stolen. This prevents a single crashed append from blocking all
- * subsequent appends forever.
+ * Uses the async `withLock` from `async-lock` service for non-spinning
+ * `setTimeout`-based retry. Stale lock detection (5s) and configurable
+ * timeout (5s default) are handled by the lock service.
  *
  * Single-host advisory lock; does not work across machines. Used by
  * `fdx-context append` and `fdx-decisions record` to prevent concurrent
  * subagents from interleaving lines.
  */
-export function appendWithLock(path: string, line: string): void {
+export async function appendWithLock(path: string, line: string): Promise<void> {
   const lockPath = path + ".lock"
   const dir = dirname(path)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
-  const deadline = Date.now() + LOCK_ACQUIRE_TIMEOUT_MS
-  let acquired = false
-  while (Date.now() < deadline) {
-    if (tryClaimLock(lockPath)) {
-      acquired = true
-      break
-    }
-    // Short sleep using Atomics.wait or similar would be ideal,
-    // but in synchronous context we use a minimal spin with yield.
-    // The total spin time is capped at LOCK_ACQUIRE_TIMEOUT_MS (1s).
-    const waitUntil = Date.now() + LOCK_POLL_MS
-    while (Date.now() < waitUntil) {
-      /* bounded spin ≤ 1s total */
-    }
-  }
-
-  if (!acquired) {
-    throw new Error(
-      `[appendWithLock] Cannot acquire lock for ${path} after ${LOCK_ACQUIRE_TIMEOUT_MS}ms. ` +
-      `Lock held by PID ${existsSync(lockPath) ? readFileSync(lockPath, 'utf-8') : 'unknown'}. ` +
-      `Retry later or manually remove ${lockPath} if holder is dead.`
-    )
-  }
-
-  try {
+  await withLock(lockPath, async () => {
     appendWithMkdir(path, line)
-  } finally {
-    try {
-      rmSync(lockPath)
-    } catch {
-      // Lock already gone or unreadable; nothing to do.
-    }
-  }
+  })
 }
 
 /**
@@ -259,40 +171,14 @@ export function appendWithLock(path: string, line: string): void {
  * used by `appendWithLock`. Used by `fdx-context.clear` to prevent racing
  * with a concurrent append.
  */
-export function clearFileWithLock(path: string): void {
+export async function clearFileWithLock(path: string): Promise<void> {
   const lockPath = path + ".lock"
   const dir = dirname(path)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
-  const deadline = Date.now() + LOCK_ACQUIRE_TIMEOUT_MS
-  let acquired = false
-  while (Date.now() < deadline) {
-    if (tryClaimLock(lockPath)) {
-      acquired = true
-      break
-    }
-    const waitUntil = Date.now() + LOCK_POLL_MS
-    while (Date.now() < waitUntil) {
-      /* bounded spin ≤ 1s total */
-    }
-  }
-
-  if (!acquired) {
-    throw new Error(
-      `[clearFileWithLock] Cannot acquire lock for ${path} after ${LOCK_ACQUIRE_TIMEOUT_MS}ms. ` +
-      `Retry later or manually remove ${lockPath} if holder is dead.`
-    )
-  }
-
-  try {
+  await withLock(lockPath, async () => {
     clearFile(path)
-  } finally {
-    try {
-      rmSync(lockPath)
-    } catch {
-      // Lock already gone.
-    }
-  }
+  })
 }
 
 /**
