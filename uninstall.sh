@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 # uninstall.sh — Remove FlowDeck from OpenCode
-# Usage: bash uninstall.sh [--local]
+# Usage: bash uninstall.sh [--local] [--yes|-y] [--dry-run] [--clean]
 set -euo pipefail
 
 IS_LOCAL=0
+NON_INTERACTIVE=0
+DRY_RUN=0
+CLEAN_BACKUPS=0
+
 for arg in "$@"; do
-  [ "$arg" = "--local" ] && IS_LOCAL=1
+  case "$arg" in
+    --local) IS_LOCAL=1 ;;
+    --yes|-y) NON_INTERACTIVE=1 ;;
+    --dry-run) DRY_RUN=1 ;;
+    --clean) CLEAN_BACKUPS=1 ;;
+  esac
 done
 
 if [ "$IS_LOCAL" -eq 1 ]; then
@@ -19,6 +28,14 @@ CACHE_GLOB="$HOME/.cache/opencode/packages/@dv.nghiem/flowdeck@*"
 info()    { echo "[INFO] $*"; }
 success() { echo "[OK]   $*"; }
 warn()    { echo "[WARN] $*"; }
+
+if [ "$DRY_RUN" -eq 1 ]; then
+  info "DRY RUN MODE — No files will be deleted."
+  info "Target OpenCode dir: $OPENCODE_DIR"
+  info "Action: Remove @dv.nghiem/flowdeck plugin entry from opencode.json"
+  success "Dry run complete."
+  exit 0
+fi
 
 if [ ! -d "$OPENCODE_DIR" ]; then
   warn "OpenCode directory not found at $OPENCODE_DIR"
@@ -42,8 +59,8 @@ if (Array.isArray(cfg.plugin)) {
   if (cfg.plugin.length < before) changed = true;
 }
 
-// Remove default_agent if it points to orchestrator
-if (cfg.default_agent === "orchestrator") {
+// Remove default_agent if it points to orchestrator or heidi
+if (cfg.default_agent === "orchestrator" || cfg.default_agent === "heidi") {
   delete cfg.default_agent;
   changed = true;
 }
@@ -65,38 +82,39 @@ for cache_dir in $CACHE_GLOB; do
   fi
 done 2>/dev/null || true
 
-# Clean up backup files if they exist
-backup_count=0
-for bk in "$OPENCODE_DIR/agent/"*.md.bk "$OPENCODE_DIR/agent/"*.md.bak; do
-  [ -f "$bk" ] && rm -f "$bk" && backup_count=$((backup_count + 1))
-done
-if [ $backup_count -gt 0 ]; then
-  success "Removed $backup_count backup files"
+# Clean up backup files if explicit --clean flag is set
+if [ "$CLEAN_BACKUPS" -eq 1 ]; then
+  backup_count=0
+  for bk in "$OPENCODE_DIR/agent/"*.md.bk "$OPENCODE_DIR/agent/"*.md.bak; do
+    [ -f "$bk" ] && rm -f "$bk" && backup_count=$((backup_count + 1))
+  done
+  if [ $backup_count -gt 0 ]; then
+    success "Removed $backup_count backup files"
+  fi
+else
+  info "Preserving configuration backups (.bak / .bk files)."
 fi
 
 # ── fdx uninstall ────────────────────────────────────────────────────────────
 
 uninstall_fdx() {
-  # Skip if FDX_SKIP is set
   if [ -n "${FDX_SKIP:-}" ]; then
     info "fdx uninstall skipped (FDX_SKIP is set)"
     return 0
   fi
 
-  # Skip if fdx is not installed
   if ! command -v fdx >/dev/null 2>&1; then
-    info "fdx not found, skipping"
+    info "fdx binary not found, skipping cargo uninstall"
     return 0
   fi
 
-  # Skip if cargo is not available
   if ! command -v cargo >/dev/null 2>&1; then
-    warn "cargo not found — cannot uninstall fdx. Remove manually if needed."
+    warn "cargo not found — cannot uninstall fdx binary"
     return 0
   fi
 
-  info "Uninstalling fdx..."
-  cargo uninstall fdx --quiet 2>/dev/null || warn "cargo uninstall fdx failed — may need manual removal"
+  info "Uninstalling fdx binary..."
+  cargo uninstall fdx --quiet 2>/dev/null || warn "cargo uninstall fdx failed"
   success "fdx uninstalled"
 }
 

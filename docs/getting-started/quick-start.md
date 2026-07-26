@@ -5,7 +5,7 @@ Get FlowDeck installed and run your first feature workflow in under 15 minutes.
 ## Step 1: Install FlowDeck
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/DVNghiem/flowdeck/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash
 ```
 
 See [Installation](installation.md) for alternative install methods.
