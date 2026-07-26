@@ -18,6 +18,7 @@
     "dist",
     "bin",
     "scripts/config-mutator.mjs",
+    "scripts/config-transaction.mjs",
     "scripts/doctor-engine.mjs",
     "src/commands",
     "src/rules",
