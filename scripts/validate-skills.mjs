@@ -40,8 +40,8 @@ const warnings = []
 
 for (const file of collectSkillFiles(skillsDir)) {
   const raw = readFileSync(file, "utf-8")
-  const rel = file.replace(`${root}/`, "")
-  const fmMatch = raw.match(/^---\n([\s\S]*?)\n---\n/)
+  const rel = file.replace(`${root}/`, "").replace(/\\/g, "/")
+  const fmMatch = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/)
   if (!fmMatch) {
     failures.push(`${rel}: missing YAML frontmatter`)
     continue
