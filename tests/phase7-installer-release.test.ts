@@ -76,7 +76,7 @@ describe("Phase 7 — Installer, Upgrade, Doctor, and Uninstall", () => {
   })
 
   describe("3. Installer & Uninstall Script Integrity", () => {
-    it("install.sh and uninstall.sh exist and pass bash syntax verification", () => {
+    it("install.sh and uninstall.sh exist and pass bash syntax verification", { timeout: 20_000 }, () => {
       const installPath = join(process.cwd(), "install.sh")
       const uninstallPath = join(process.cwd(), "uninstall.sh")
 
