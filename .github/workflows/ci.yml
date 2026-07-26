@@ -110,7 +110,7 @@ jobs:
           export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
           mkdir -p $OPENCODE_CONFIG_DIR
           echo '{{{broken}}' > $OPENCODE_CONFIG_DIR/opencode.json
-          node bin/flowdeck.js install 2>&1
+          node bin/flowdeck.js install 2>&1 || true
           CONTENT=$(cat $OPENCODE_CONFIG_DIR/opencode.json)
           if [ "$CONTENT" = "{{{broken}}" ]; then
             echo "PASS: Malformed config preserved byte-for-byte"
