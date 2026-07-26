@@ -20,6 +20,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, renam
 import { join, dirname, basename } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { modify, applyEdits, parse } from "jsonc-parser";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, "..");
@@ -31,6 +32,20 @@ try {
   const pkg = JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf-8"));
   PKG_VERSION = pkg.version || PKG_VERSION;
 } catch { /* ignore */ }
+
+/**
+ * Apply JSONC-preserving edits to content.
+ * Uses jsonc-parser modify function to preserve comments and formatting.
+ */
+function applyJsoncEdits(rawContent, edits) {
+  let content = rawContent;
+  for (const edit of edits) {
+    content = applyEdits(content, modify(content, edit.path, edit.value, {
+      formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
+    }));
+  }
+  return content;
+}
 
 const args = process.argv.slice(2);
 const command = args[0] || "install";
@@ -71,39 +86,14 @@ function getConfigDir(isLocal = false) {
       : join(homedir(), ".config", "opencode"));
 }
 
-function stripJsonComments(jsoncText) {
-  let insideString = false;
-  let insideComment = false;
-  let result = "";
-  for (let i = 0; i < jsoncText.length; i++) {
-    const char = jsoncText[i];
-    const nextChar = jsoncText[i + 1];
-    if (insideComment === "single") {
-      if (char === "\n" || char === "\r") { insideComment = false; result += char; }
-      continue;
-    }
-    if (insideComment === "multi") {
-      if (char === "*" && nextChar === "/") { insideComment = false; i++; }
-      continue;
-    }
-    if (insideString) {
-      result += char;
-      if (char === "\\" && i + 1 < jsoncText.length) result += jsoncText[++i];
-      else if (char === insideString) insideString = false;
-      continue;
-    }
-    if (char === '"' || char === "'") { insideString = char; result += char; continue; }
-    if (char === "/" && nextChar === "/") { insideComment = "single"; i++; continue; }
-    if (char === "/" && nextChar === "*") { insideComment = "multi"; i++; continue; }
-    result += char;
-  }
-  return result;
-}
-
 function safeParseConfig(content) {
   try {
-    const stripped = stripJsonComments(content);
-    return { ok: true, data: JSON.parse(stripped) };
+    const errors = [];
+    const data = parse(content, errors, { allowTrailingComma: true });
+    if (errors.length > 0) {
+      return { ok: false, error: `Parse error code: ${errors.join(", ")}` };
+    }
+    return { ok: true, data };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -151,38 +141,43 @@ function registerPlugin(configDir, isLocal) {
 
   // Backup before mutation
   const backupPath = backupConfig(cfg.path);
+  if (!backupPath && cfg.raw) {
+    console.log(`✗ Backup failed — no mutation performed.`);
+    return { ok: false, error: "backup_failed" };
+  }
   if (backupPath) console.log(`  ✓ Backup created: ${basename(backupPath)}`);
 
   const data = cfg.existing || {};
-  const updated = JSON.parse(JSON.stringify(data));
-  let changed = false;
+  let edits = [];
+  let hasEdits = false;
 
-  // Plugin registration
-  if (!Array.isArray(updated.plugin)) updated.plugin = [];
-  if (!updated.plugin.some(p => p === PKG_NAME || String(p).startsWith(PKG_NAME + "@"))) {
-    updated.plugin.push(PKG_NAME);
+  // Plugin registration: add to array if not present
+  if (!Array.isArray(data.plugin) || !data.plugin.some(p => p === PKG_NAME || String(p).startsWith(PKG_NAME + "@"))) {
+    edits.push({ path: ["plugin"], value: [...(data.plugin || []), PKG_NAME] });
     console.log(`  ✓ Added ${PKG_NAME} to plugin list`);
-    changed = true;
+    hasEdits = true;
   } else {
     console.log(`  ✓ ${PKG_NAME} already registered`);
   }
 
-  // Default agent
-  if (updated.default_agent == null) {
-    updated.default_agent = "heidi";
+  // Default agent: only set if currently null/undefined
+  if (data.default_agent == null) {
+    edits.push({ path: ["default_agent"], value: "heidi" });
     console.log(`  ✓ Set default_agent to heidi`);
-    changed = true;
+    hasEdits = true;
   } else {
-    console.log(`  ✓ default_agent already set to "${updated.default_agent}" — preserved`);
+    console.log(`  ✓ default_agent already set to "${data.default_agent}" — preserved`);
   }
 
-  if (!changed) {
+  if (!hasEdits) {
     console.log(`\n✓ No changes needed.`);
     return { ok: true, changed: false };
   }
 
-  atomicWrite(cfg.path, JSON.stringify(updated, null, 2) + "\n");
-  console.log(`\n✓ FlowDeck installed.`);
+  // Write using JSONC-preserving edits
+  const updatedContent = applyJsoncEdits(cfg.raw || "{}", edits);
+  atomicWrite(cfg.path, updatedContent);
+  console.log(`\n✓ FlowDeck installed (comments preserved).`);
   console.log(`  A fresh OpenCode session is required to activate.`);
   return { ok: true, changed: true };
 }

@@ -38,7 +38,14 @@
     "validate:docs": "node scripts/validate-docs.mjs",
     "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\""
   },
-  "keywords": ["opencode", "plugin", "ai", "workflow", "planning", "heidi"],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "ai",
+    "workflow",
+    "planning",
+    "heidi"
+  ],
   "author": "Heidi Dang",
   "license": "MIT",
   "repository": {
@@ -59,7 +66,8 @@
     "opencode": ">=1.4.0"
   },
   "dependencies": {
-    "@opencode-ai/plugin": "^1.17.3"
+    "@opencode-ai/plugin": "^1.17.3",
+    "jsonc-parser": "^3.3.1"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

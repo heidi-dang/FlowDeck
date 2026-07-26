@@ -1,7 +1,7 @@
 // postinstall.mjs — Safe, minimal postinstall for @heidi-dang/flowdeck
 //
 // Performs ONLY:
-// 1. Plugin registration in opencode.json (plugin list)
+// 1. Plugin registration in opencode.json (plugin list), preserving JSONC comments
 // 2. Sets default_agent to "heidi" for new installations only
 //
 // Does NOT:
@@ -19,6 +19,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkS
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { modify, applyEdits, parse } from "jsonc-parser";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -32,70 +33,17 @@ function getOpenCodeConfigDir() {
 }
 
 /**
- * Strip single-line and multi-line comments from JSONC text safely,
- * preserving strings that contain comment delimiters.
+ * Apply JSONC-preserving edits using jsonc-parser.
+ * Preserves comments, formatting, and trailing commas.
  */
-function stripJsonComments(jsoncText) {
-  let insideString = false;
-  let insideComment = false; // false | "single" | "multi"
-  let result = "";
-  for (let i = 0; i < jsoncText.length; i++) {
-    const char = jsoncText[i];
-    const nextChar = jsoncText[i + 1];
-    if (insideComment === "single") {
-      if (char === "\n" || char === "\r") {
-        insideComment = false;
-        result += char;
-      }
-      continue;
-    }
-    if (insideComment === "multi") {
-      if (char === "*" && nextChar === "/") {
-        insideComment = false;
-        i++;
-      }
-      continue;
-    }
-    if (insideString) {
-      result += char;
-      if (char === "\\" && i + 1 < jsoncText.length) {
-        result += jsoncText[++i];
-      } else if (char === insideString) {
-        insideString = false;
-      }
-      continue;
-    }
-    if (char === '"' || char === "'") {
-      insideString = char;
-      result += char;
-      continue;
-    }
-    if (char === "/" && nextChar === "/") {
-      insideComment = "single";
-      i++;
-      continue;
-    }
-    if (char === "/" && nextChar === "*") {
-      insideComment = "multi";
-      i++;
-      continue;
-    }
-    result += char;
+function applyJsoncEdits(rawContent, edits) {
+  let content = rawContent;
+  for (const edit of edits) {
+    content = applyEdits(content, modify(content, edit.path, edit.value, {
+      formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
+    }));
   }
-  return result;
-}
-
-/**
- * Safe parse with exact error location.
- */
-function safeParse(content) {
-  try {
-    const stripped = stripJsonComments(content);
-    return { ok: true, data: JSON.parse(stripped), rawContent: content };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg, rawContent: content };
-  }
+  return content;
 }
 
 function main() {
@@ -109,38 +57,35 @@ function main() {
 
   if (existsSync(configFile)) {
     rawContent = readFileSync(configFile, "utf-8");
-    const parsed = safeParse(rawContent);
-    if (!parsed.ok) {
-      // Malformed config — do NOT modify. Preserve byte-for-byte.
-      console.log(`⚠️  opencode.json is malformed: ${parsed.error}`);
+    const errors = [];
+    existingData = parse(rawContent, errors, { allowTrailingComma: true });
+    if (errors.length > 0 || existingData === undefined) {
+      console.log(`⚠️  opencode.json is malformed (parse error code: ${errors.join(", ") || "unknown"}).`);
       console.log("⚠️  Preserving existing configuration without mutation.");
       console.log("   Run 'npx @heidi-dang/flowdeck doctor' for diagnosis.");
+      console.log("   Run 'npx @heidi-dang/flowdeck install' to attempt repair.");
       return;
     }
-    existingData = parsed.data || {};
   }
 
   // Create backup before any mutation
-  const isJsonc = rawContent.trim().includes("//") || rawContent.trim().includes("/*");
-  // We always back up the raw content (JSONC preserves comments in backup)
-  const backupPath = configFile + ".pre-install.bak";
   try {
-    copyFileSync(configFile, backupPath);
+    copyFileSync(configFile, configFile + ".pre-install.bak");
   } catch {
     // Failed backup — still proceed for registration
   }
 
-  const updated = JSON.parse(JSON.stringify(existingData));
+  const edits = [];
   let changed = false;
 
   // Plugin registration
-  if (!Array.isArray(updated.plugin)) updated.plugin = [];
   const pluginRef = "@heidi-dang/flowdeck";
-  const alreadyRegistered = updated.plugin.some(
+  const pluginList = Array.isArray(existingData?.plugin) ? existingData.plugin : [];
+  const alreadyRegistered = pluginList.some(
     (p) => p === pluginRef || String(p).startsWith(pluginRef + "@")
   );
   if (!alreadyRegistered) {
-    updated.plugin.push(pluginRef);
+    edits.push({ path: ["plugin"], value: [...pluginList, pluginRef] });
     console.log(`✓ Added ${pluginRef} to plugin list`);
     changed = true;
   } else {
@@ -148,13 +93,12 @@ function main() {
   }
 
   // Set default_agent to heidi for new installations ONLY
-  // Preserve existing explicit settings
-  if (updated.default_agent === undefined || updated.default_agent === null) {
-    updated.default_agent = "heidi";
+  if (existingData?.default_agent === undefined || existingData?.default_agent === null) {
+    edits.push({ path: ["default_agent"], value: "heidi" });
     console.log(`✓ Set default_agent to heidi`);
     changed = true;
   } else {
-    console.log(`✓ default_agent already set to "${updated.default_agent}" — preserved`);
+    console.log(`✓ default_agent already set to "${existingData.default_agent}" — preserved`);
   }
 
   if (!changed) {
@@ -162,10 +106,11 @@ function main() {
     return;
   }
 
-  // Atomic write: temp file + rename
+  // Apply JSONC-preserving edits and write atomically
+  const updatedContent = applyJsoncEdits(rawContent, edits);
   const tmpFile = join(configDir, `.opencode.json.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`);
   try {
-    writeFileSync(tmpFile, JSON.stringify(updated, null, 2) + "\n", "utf-8");
+    writeFileSync(tmpFile, updatedContent, "utf-8");
     renameSync(tmpFile, configFile);
     console.log(`\n✓ FlowDeck ready! A fresh OpenCode session is required to activate.`);
     console.log(`  Config: ${configDir}`);
