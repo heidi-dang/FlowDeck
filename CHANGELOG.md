@@ -95,4 +95,4 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Delegation budget service and context ingress service.
 
-[0.6.0]: https://github.com/DVNghiem/flowdeck/compare/0.4.12...0.6.0
+[0.6.0]: https://github.com/heidi-dang/flowdeck/compare/0.4.12...0.6.0
