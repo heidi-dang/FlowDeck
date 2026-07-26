@@ -40,12 +40,12 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DVNghiem/FlowDeck.git"
+    "url": "git+https://github.com/heidi-dang/FlowDeck.git"
   },
   "bugs": {
-    "url": "https://github.com/DVNghiem/FlowDeck/issues"
+    "url": "https://github.com/heidi-dang/FlowDeck/issues"
   },
-  "homepage": "https://github.com/DVNghiem/FlowDeck#readme",
+  "homepage": "https://github.com/heidi-dang/FlowDeck#readme",
   "dependencies": {
     "@opencode-ai/plugin": "^1.17.3"
   },
