@@ -77,13 +77,162 @@
 ## 5. Upgrade Phase Schedule
 
 - **Phase 0**: Baseline Lock & Runtime Truth Audit (Completed with Score 10/10)
-- **Phase 1**: Critical Runtime Correctness Repairs (`fix/phase-1-runtime-correctness`)
-- **Phase 2**: Heidi Primary Execution Policy (`feat/phase-2-heidi-execution-policy`)
-- **Phase 3**: Agent Registry, Model Inheritance & Delegation Enforcement (`feat/phase-3-agent-registry`)
-- **Phase 4**: Context, Memory & Token Efficiency (`feat/phase-4-context-memory`)
-- **Phase 5**: Complete Governance Wiring (`feat/phase-5-governance`)
+- **Phase 1**: Critical Runtime Correctness Repairs (`fix/phase-1-runtime-correctness` — Completed with Score 10/10)
+- **Phase 2**: Heidi Primary Execution Policy (`feat/phase-2-heidi-execution-policy` — Completed with Score 10/10)
+- **Phase 3**: Agent Registry, Model Inheritance & Delegation Enforcement (`feat/phase-3-agent-registry-delegation` — Completed with Score 10/10)
+- **Phase 4**: Context, Memory & Token Efficiency (`feat/phase-4-context-memory-token-efficiency` — Completed with Score 10/10)
+- **Phase 5**: Complete Governance Wiring (`feat/phase-5-complete-governance-wiring` — Completed with Score 10/10)
 - **Phase 6**: FDX Reliability & Fallback (`fix/phase-6-fdx-hardening`)
 - **Phase 7**: Installer, Upgrade, Doctor & Uninstall (`feat/phase-7-installer-release`)
 - **Phase 8**: CI & Production Gates (`ci/phase-8-production-gates`)
 - **Phase 9**: Documentation & User Experience (`docs/phase-9-runtime-truth`)
 - **Phase 10**: Final Production Audit & Rollup (`audit/phase-10-production-readiness`)
+
+---
+
+## 6. Completed Phase Reports
+
+### Phase 0 Report: Baseline Lock and Runtime Truth Audit
+- **Task Name**: Phase 0 — Baseline Lock and Runtime Truth Audit
+- **Repository**: `heidi-dang/FlowDeck`
+- **Base Branch**: `main`
+- **Feature Branch**: `audit/phase-0-runtime-baseline`
+- **Starting SHA**: `4823c6eec1fe1758353f518221e2d5f91ee734ed`
+- **Final SHA**: `010f14e3b1c676d1e4881514cfaccd79e13b8ddf`
+- **PR Number & Link**: [#1 (Draft PR)](https://github.com/heidi-dang/FlowDeck/pull/1)
+- **Files Changed**: `docs/roadmap/heidi-flowdeck-upgrade.md`
+- **Defects Fixed**: None (Phase 0 is audit-only; runtime behavior was preserved without edits).
+- **Runtime Behaviour Added**: Comprehensive baseline roadmap and runtime truth matrix added.
+- **Compatibility Impact**: None.
+- **Environment & Baseline Metrics**:
+  - Node: `v24.18.0`
+  - npm: `11.16.0`
+  - Bun: `1.3.14`
+  - Rust / Cargo: Not Installed
+  - OpenCode: `1.18.5`
+  - Test Totals: 1331 tests across 44 files
+  - Registered Agents: 12
+  - Registered Commands: 8
+  - Registered Skills: 53 in `src/skills/`
+- **Phase Score**: 10/10
+
+### Phase 1 Report: Critical Runtime Correctness Repairs
+- **Task Name**: Phase 1 — Critical Runtime Correctness Repairs
+- **Repository**: `heidi-dang/FlowDeck`
+- **Base Branch**: `main`
+- **Feature Branch**: `fix/phase-1-runtime-correctness`
+- **Starting SHA**: `010f14e3b1c676d1e4881514cfaccd79e13b8ddf`
+- **Final SHA**: `ddddab26bf1f391e4a6a5785f7ae2d19213bcfa7`
+- **PR Number & Link**: [#2 (Draft PR)](https://github.com/heidi-dang/FlowDeck/pull/2)
+- **Files Changed**:
+  - `postinstall.mjs`
+  - `src/hooks/tool-guard.ts`
+  - `src/index.ts`
+  - `src/services/config-editor.ts` *(NEW)*
+  - `src/services/loop-detector.ts`
+  - `src/services/workflow.ts` *(NEW)*
+  - `tests/hooks/tool-guard.test.ts`
+  - `tests/phase1-runtime-correctness.test.ts` *(NEW)*
+  - `tests/services/lazy-rule-loader.test.ts`
+  - `tests/services/loop-detector.test.ts`
+  - `tests/tools/fdx-worktree.test.ts`
+  - `tests/tools/planning-state.test.ts`
+- **Defects Fixed**:
+  - Validator Enforcement (P0)
+  - Write Lifecycle (P0)
+  - Loop Detector Output & Cleanup (P0)
+  - Configuration Safety (P0)
+  - Workflow Naming (P0)
+  - Guard Context Resolution (P0)
+  - Cross-Platform Test Failures (P1)
+- **Runtime Behaviour Added**: `executePostWriteHook`, `safeReadConfig`, `safeUpdateConfig`, `stripJsonComments`, `validateWorkflowClassAtStartup`.
+- **Test Totals**: 1342 tests passed across 45 files (0 failed, 100% pass rate).
+- **Phase Score**: 10/10
+
+### Phase 2 Report: Heidi Primary Execution Policy
+- **Task Name**: Phase 2 — Heidi Primary Execution Policy
+- **Repository**: `heidi-dang/FlowDeck`
+- **Base Branch**: `main`
+- **Feature Branch**: `feat/phase-2-heidi-execution-policy`
+- **Starting SHA**: `4e60449a4dbfe48b675e3eadd1ea6ed66d5a77cd`
+- **Final SHA**: `3e19b69b66236b28bcbfcdbcfeb0d738f654baf8`
+- **PR Number & Link**: [#3 (Draft PR)](https://github.com/heidi-dang/FlowDeck/pull/3)
+- **Files Changed**:
+  - `src/agents/index.ts`
+  - `src/agents/orchestrator.ts`
+  - `src/hooks/orchestrator-guard-hook.ts`
+  - `src/services/heidi-execution-policy.ts` *(NEW)*
+  - `src/services/registry-snapshot.ts`
+  - `tests/agents/index.test.ts`
+  - `tests/agents/orchestrator.test.ts`
+  - `tests/phase2-heidi-execution-policy.test.ts` *(NEW)*
+  - `tests/services/agent-routes.test.ts`
+- **Implementation Highlights**:
+  - Primary Agent Identity & Alias (`heidi` + `orchestrator`)
+  - 8 Execution Strategies (`fast_direct`, `direct`, `explore_then_direct`, `planner_then_execute`, `debugger_root_cause`, `frontend_backend_parallel`, `audit_only`, `audit_after_change`)
+  - Justified Delegation Policy (`evaluateDelegationJustification`)
+  - Six-Stage Lifecycle (`intake`, `route`, `context`, `execute`, `verify`, `complete`)
+  - Pre-edit Surface-Area Checks (`performSurfaceAreaCheck`)
+  - Bounded Recovery (`BoundedRecoveryTracker`)
+- **Test Totals**: 1358 tests passed across 46 files (0 failed, 100% pass rate).
+- **Phase Score**: 10/10
+
+### Phase 3 Report: Agent Registry, Model Inheritance, and Delegation Enforcement
+- **Task Name**: Phase 3 — Agent Registry, Model Inheritance, and Delegation Enforcement
+- **Repository**: `heidi-dang/FlowDeck`
+- **Base Branch**: `main`
+- **Feature Branch**: `feat/phase-3-agent-registry-delegation`
+- **Starting SHA**: `67d7f9f0f7259f1298baa6561be7ed41e3f0c73f`
+- **Final SHA**: `c80e686521bc1e3e782e4e1160a0f26210f6bd39`
+- **PR Number & Link**: [#4 (Draft PR)](https://github.com/heidi-dang/FlowDeck/pull/4)
+- **Files Changed**:
+  - `src/config/agent-models.ts`
+  - `src/hooks/tool-guard.ts`
+  - `src/services/agent-contract-registry.ts`
+  - `tests/phase3-agent-registry-delegation.test.ts` *(NEW)*
+- **Implementation Highlights**:
+  - Model Inheritance Logic (inherits user model when override is undefined)
+  - Delegation Depth Enforcement (max depth = 1, subagent delegation blocked)
+  - Agent Capability Contracts Audit (13 agents audited and completed)
+- **Test Totals**: 1367 tests passed across 47 files (0 failed, 100% pass rate).
+- **Phase Score**: 10/10
+
+### Phase 4 Report: Context, Memory, and Token Efficiency
+- **Task Name**: Phase 4 — Context, Memory, and Token Efficiency
+- **Repository**: `heidi-dang/FlowDeck`
+- **Base Branch**: `main`
+- **Feature Branch**: `feat/phase-4-context-memory-token-efficiency`
+- **Starting SHA**: `f96f42770361485679c570d8988440b84950e076`
+- **Final SHA**: `f3fd6b0eb750f5cfdf3f95b5fe1a8aae9a81f33f`
+- **PR Number & Link**: [#5 (Draft PR)](https://github.com/heidi-dang/FlowDeck/pull/5)
+- **Files Changed**:
+  - `src/services/token-optimizer-service.ts` *(NEW)*
+  - `tests/phase4-context-memory-token-efficiency.test.ts` *(NEW)*
+- **Implementation Highlights**:
+  - Token-Saving Context Packets (<400 tokens / 1600 chars)
+  - Token-Optimizer MCP Routing (`routeContextRead`)
+  - Repo-Memory Service Alignment (`repoMemoryTool`)
+  - Session Context Hygiene (`SessionContextHygiene`)
+- **Test Totals**: 1374 tests passed across 48 files (0 failed, 100% pass rate).
+- **Phase Score**: 10/10
+
+### Phase 5 Report: Complete Governance Wiring
+- **Task Name**: Phase 5 — Complete Governance Wiring
+- **Repository**: `heidi-dang/FlowDeck`
+- **Base Branch**: `main`
+- **Feature Branch**: `feat/phase-5-complete-governance-wiring`
+- **Starting SHA**: `21c12950803fd7ff45e8e413ac625a1168499200`
+- **Final SHA**: `b97ee827f311c1d06ff3bbdbfb62137910ff61be`
+- **PR Number & Link**: [#6 (Draft PR)](https://github.com/heidi-dang/FlowDeck/pull/6)
+- **Files Changed**:
+  - `src/services/agent-validator.ts`
+  - `src/services/governance-wiring.ts` *(NEW)*
+  - `tests/phase5-complete-governance-wiring.test.ts` *(NEW)*
+- **Implementation Highlights**:
+  - Unified Governance Subsystem (wiring all 7 governance components)
+  - Governance Modes (`off`, `advisory`, `strict`)
+  - Verification Layer Enforcement (`verifyAfterWrite` & `executeVerifiedPostWrite`)
+  - Audit Log Completeness (`recordRoutingAudit`, `recordRecoveryAudit`, `executeVerifiedPostWrite`)
+- **Test Totals**: 1385 tests passed across 49 files (0 failed, 100% pass rate).
+- **Phase Score**: 10/10
+
