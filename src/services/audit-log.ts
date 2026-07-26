@@ -14,10 +14,14 @@ export type AuditEventKind =
   | "guard.block"
   | "guard.warn"
   | "supervisor.decision"
+  | "supervisor.block"
+  | "supervisor.approve"
   | "recovery.action"
   | "verification.event"
   | "lifecycle.transition"
   | "routing.decision"
+  | "session.started"
+  | "session.completed"
 
 export interface AuditEvent {
   kind: AuditEventKind

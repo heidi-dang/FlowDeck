@@ -1,3 +1,17 @@
+/**
+ * FlowDeck Plugin Entry Point
+ *
+ * Integrates all subsystems into the OpenCode plugin lifecycle:
+ * - Agent registry (from canonical registry)
+ * - Governance wiring (validator, supervisor, loop detector, audit, verification)
+ * - Tool permissions (orchestrator guard, tool guard, guard rails)
+ * - State management (session start/end, checkpoint, recovery)
+ * - FDX tools with native fallbacks
+ * - MCP server configurations
+ * - Skills and commands registration
+ * - Doctor diagnostics
+ */
+
 import type { Plugin } from "@opencode-ai/plugin"
 import { existsSync, readFileSync, readdirSync } from "fs"
 import { basename, dirname, join } from "path"
@@ -46,9 +60,22 @@ import { loadRulesTool, listRulesTool } from "./tools/load-rules"
 import { planningStateTool } from "./tools/planning-state"
 import { repoMemoryTool } from "./tools/repo-memory"
 
+// ─── Governance integration ────────────────────────────────────────────────
+import {
+  evaluateGovernanceToolCheck,
+  recordRoutingAudit,
+  recordRecoveryAudit,
+  executeVerifiedPostWrite,
+  generateScorecard,
+  validateDelegationDepth,
+} from "./services/governance-wiring"
+import { runSupervisorReview, shouldProceed, resolveSupervisorConfig } from "./services/supervisor-binding"
+import { appendAuditEvent } from "./services/audit-log"
+import { isSpecialistAgent, getAllAgentIds } from "./services/canonical-registry"
+
 const __dir = dirname(fileURLToPath(import.meta.url))
 
-/** Select FlowDeck rule paths for cfg.instructions injection (Step 4 will swap for a leaner loader). */
+/** Select FlowDeck rule paths for cfg.instructions injection. */
 function lazyLoadRulePaths(projectRoot: string): { paths: string[]; diagnostics: string } {
   const rulesDir = join(__dir, "..", "src", "rules")
   if (!existsSync(rulesDir)) return { paths: [], diagnostics: "[LazyRuleLoader] rules directory not found" }
@@ -58,7 +85,7 @@ function lazyLoadRulePaths(projectRoot: string): { paths: string[]; diagnostics:
   return { paths, diagnostics: buildSelectionDiagnostics(selection, { languages: detected, projectRoot }) }
 }
 
-/** Load FlowDeck slash commands from src/commands/*.md (parses frontmatter description). */
+/** Load FlowDeck slash commands from src/commands/*.md. */
 function loadCommands(): Record<string, { description?: string; template: string }> {
   const dir = join(__dir, "..", "src", "commands")
   if (!existsSync(dir)) return {}
@@ -72,9 +99,11 @@ function loadCommands(): Record<string, { description?: string; template: string
       const desc = fm?.[1].match(/^description:\s*(.+)$/m)?.[1].trim()
       out[basename(file, ".md")] = desc ? { description: desc, template } : { template }
     }
-  } catch { /* ignore */ }
+  } catch { /* ignore read errors */ }
   return out
 }
+
+const specialistAgentSet = new Set(getAllAgentIds().filter(id => isSpecialistAgent(id)))
 
 const plugin: Plugin = async ({ directory, client }) => {
   const appLog = (msg: string): Promise<void> =>
@@ -100,7 +129,6 @@ const plugin: Plugin = async ({ directory, client }) => {
       flowdeckConfig = loadFlowDeckConfig(directory)
       const resolvedAgents = getAgentConfigs(resolveAgentModels(flowdeckConfig))
 
-      // Per-agent shallow merge: plugin defaults first, user overrides win.
       if (!cfg.agent) {
         cfg.agent = { ...resolvedAgents }
       } else {
@@ -171,23 +199,89 @@ const plugin: Plugin = async ({ directory, client }) => {
     },
 
     "tool.execute.before": async (toolInput: any, toolOutput: any) => {
-      // Orchestrator deny-by-default — orchestrator cannot write or shell-exec on the primary session.
-      // Non-orchestrator agents are exempt; they are governed solely by toolGuardHook.
+      const toolName = toolInput.tool ?? toolInput.name ?? "unknown"
+      const sessionID = toolInput.sessionID ?? ""
+      const agent = toolInput.agent ?? "unknown"
+
+      // ── 1. Orchestrator guard ──────────────────────────────────────────
       orchestratorGuard.check(
-        toolInput.sessionID ?? "",
-        toolInput.tool ?? toolInput.name ?? "",
+        sessionID,
+        toolName,
         toolOutput?.args ?? toolInput?.args,
-        toolInput.agent,
+        agent,
       )
-      // Planning-phase guard rails (FLOWDECK_GUARD_RAILS_ENABLED=on).
+
+      // ── 2. Governance tool check (off/advisory/strict) ────────────────
+      const governanceResult = evaluateGovernanceToolCheck({
+        directory,
+        sessionID,
+        agent,
+        tool: toolName,
+        args: toolInput.args,
+      })
+
+      if (governanceResult.action === "block") {
+        throw new Error(governanceResult.reason ?? `Tool ${toolName} blocked by governance policy`)
+      }
+
+      // ── 3. Delegation depth check ─────────────────────────────────────
+      if (toolName === "task") {
+        // Read depth from session state or tool args
+        const currentDepth = (toolInput.args?.depth as number) ?? 0
+        const targetAgent = (toolInput.args?.agent as string) ?? "unknown"
+        const depthResult = validateDelegationDepth(agent, targetAgent, currentDepth, specialistAgentSet)
+        if (!depthResult.allowed) {
+          recordRecoveryAudit({
+            directory,
+            sessionID,
+            agent,
+            errorKey: "delegation_depth_exceeded",
+            action: "circuit_breaker_block",
+            message: depthResult.reason ?? "Delegation not allowed",
+          })
+          throw new Error(depthResult.reason ?? "Delegation blocked")
+        }
+      }
+
+      // ── 4. Supervisor preflight review ────────────────────────────────
+      const supConfig = resolveSupervisorConfig(directory)
+      if (supConfig.enabled) {
+        const decision = runSupervisorReview(directory, toolName, {
+          currentPhase: toolInput.args?.phase as string | undefined,
+          isTrivial: toolInput.args?.trivial === true,
+        })
+        if (!shouldProceed(decision, supConfig.mode, supConfig.canBlock)) {
+          appendAuditEvent(directory, {
+            kind: "supervisor.block",
+            session_id: sessionID,
+            agent,
+            tool: toolName,
+            decision: "block",
+            reason: decision.reasons.join("; "),
+          })
+          throw new Error(`Supervisor blocked: ${decision.reasons.join("; ")}`)
+        }
+        appendAuditEvent(directory, {
+          kind: "supervisor.approve",
+          session_id: sessionID,
+          agent,
+          tool: toolName,
+          decision: "approve",
+          reason: "Supervisor approved execution",
+        })
+      }
+
+      // ── 5. Guard rails ──────────────────────────────────────────────
       await guardRailsHook({ directory }, toolInput, toolOutput)
-      // Tool guard (FLOWDECK_TOOL_GUARD_ENABLED=on) — blocks dangerous ops, enforces
-      // architectural constraints and per-agent write limits.
+
+      // ── 6. Tool guard ───────────────────────────────────────────────
       await toolGuardHook({ directory }, toolInput, toolOutput)
+
+      // ── 7. Loop detection ────────────────────────────────────────────
       const loop = loopDetector.checkBefore(
-        toolInput.tool ?? toolInput.name ?? "unknown",
+        toolName,
         toolOutput?.args ?? toolInput?.args ?? {},
-        toolInput.sessionID ?? "",
+        sessionID,
       )
       if (loop.action === "block") throw new Error(loop.escalationMessage)
       if (loop.action === "warn") appLog(loop.message)
@@ -196,12 +290,21 @@ const plugin: Plugin = async ({ directory, client }) => {
     "tool.execute.after": async (toolInput: any) => {
       const toolName = toolInput.tool ?? toolInput.name ?? "unknown"
       const sessionID = toolInput.sessionID ?? ""
+      const agent = toolInput.agent ?? "unknown"
       appLog(`[tool] done tool=${toolName} session=${sessionID}`)
 
-      // Execute post-write lifecycle after successful tool execution
-      executePostWriteHook(directory, sessionID, toolInput.agent, toolName, toolInput.args ?? {})
+      // ── 1. Post-write verification lifecycle ──────────────────────────
+      executePostWriteHook(directory, sessionID, agent, toolName, toolInput.args ?? {})
 
-      // Record successful execution in loop detector
+      // ── 2. Governance verified post-write ─────────────────────────────
+      executeVerifiedPostWrite(directory, {
+        sessionID,
+        agent,
+        tool: toolName,
+        filePath: toolInput.args?.file as string | undefined,
+      })
+
+      // ── 3. Record in loop detector ────────────────────────────────────
       loopDetector.recordAfter(
         toolName,
         toolInput.args ?? {},
@@ -209,6 +312,18 @@ const plugin: Plugin = async ({ directory, client }) => {
         sessionID,
         "success"
       )
+
+      // ── 4. Recovery tracking ──────────────────────────────────────────
+      if (toolInput.error) {
+        recordRecoveryAudit({
+          directory,
+          sessionID,
+          agent,
+          errorKey: `${toolName}:${String(toolInput.error).slice(0, 100)}`,
+          action: "targeted_diagnosis",
+          message: `Tool ${toolName} failed: ${String(toolInput.error).slice(0, 200)}`,
+        })
+      }
     },
 
     event: async ({ event }: { event: any }) => {
@@ -216,11 +331,27 @@ const plugin: Plugin = async ({ directory, client }) => {
       const sessionID = event?.properties?.sessionID ?? ""
       if (type === "session.created" || type === "session.started") {
         await sessionStartHook({ directory }, appLog)
+        appendAuditEvent(directory, {
+          kind: "session.started",
+          session_id: sessionID,
+          agent: "system",
+          decision: "start",
+          reason: "Session started",
+        })
       } else if (type === "session.idle" || type === "session.error" || type === "session.completed") {
         await sessionEventsHook({ directory }, type === "session.idle" ? "idle" : "error", sessionID)
         if (sessionID) {
           loopDetector.clearSession(sessionID)
           clearWriteCounter(sessionID)
+        }
+        if (type === "session.completed") {
+          appendAuditEvent(directory, {
+            kind: "session.completed",
+            session_id: sessionID,
+            agent: "system",
+            decision: "complete",
+            reason: "Session completed",
+          })
         }
       }
       orchestratorGuard.onEvent(event)
