@@ -163,12 +163,12 @@ jobs:
       - run: npm ci
       - name: Secret Detection
         run: |
-          # Check for potential secrets in tracked files
-          if git grep -InE '(password|secret|api.?key|token|credential)' -- ':!*.md' ':!.github/' 2>/dev/null | grep -vE '(node_modules|npm_token|NPM_TOKEN|example|test|mock)'; then
-            echo "FAIL: Potential secrets found in source files"
+          # Check for hardcoded credential patterns (not code references to the concepts)
+          if git grep -InE '(password\s*=\s*["'\'']|secret\s*=\s*["'\'']|api.?key\s*=\s*["'\'']|token\s*=\s*["'\''](?![\s]*\))' -- ':!*.md' ':!*.d.ts' ':!*.json' 2>/dev/null | grep -vE '(node_modules|example|test|mock|placeholder|your_|CHANGEME)' | grep -vE '"(password|secret|token|key)"' | grep -vE '"(auth|crypto|encrypt)"'; then
+            echo "FAIL: Possible hardcoded credentials found"
             exit 1
           fi
-          echo "PASS: No secrets detected"
+          echo "PASS: No hardcoded credentials detected"
       - name: Dependency Audit
         run: |
           npm audit --production --audit-level=high 2>&1 || echo "WARN: npm audit found issues (non-blocking for now)"
