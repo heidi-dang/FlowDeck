@@ -74,9 +74,10 @@ function isDirEmpty(p: string): boolean {
 
 function normalizePath(p: string): string {
   try {
-    return realpathSync(pathResolve(p))
+    const fn = (realpathSync as any).native ?? realpathSync
+    return fn(pathResolve(p)).toLowerCase().replace(/\\/g, "/")
   } catch {
-    return pathResolve(p)
+    return pathResolve(p).toLowerCase().replace(/\\/g, "/")
   }
 }
 
