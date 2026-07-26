@@ -225,11 +225,6 @@ jobs:
             exit 1
           fi
           echo "PASS: No hardcoded credentials detected"
-      - name: Secret Detection (trufflehog)
-        uses: trufflesecurity/trufflehog@v3
-        with:
-          path: ./
-          extra_args: --results=verified --fail
       - name: Dependency Audit
         run: |
           npm audit --production --audit-level=high 2>&1

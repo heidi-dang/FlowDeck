@@ -13,7 +13,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { readConfig as readConfigFile, writeConfig } from "../scripts/config-mutator.mjs";
+import { readConfig as readConfigFile, writeConfig } from "./scripts/config-mutator.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
