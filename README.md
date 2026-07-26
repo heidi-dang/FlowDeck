@@ -36,13 +36,13 @@ See [docs/getting-started/installation.md](docs/getting-started/installation.md)
 
 | Step | Command | What happens |
 |------|---------|--------------|
-| **Task Lifecycle** | `/fd-task "…"` | Execute task through the Heidi workflow lifecycle |
+| **Task Lifecycle** | `/fd-task` | Execute task through the Heidi workflow lifecycle |
 | **Execute** | `/fd-execute` | Implement feature with TDD discipline and parallel agents |
 | **Verify** | `/fd-verify` | Full verification pipeline: tests, code review, security scan |
 | **Review** | `/fd-review` | Supervisor code review gate |
-| `/fd-checkpoint` | Save mid-session checkpoint to `STATE.md` |
-| `/fd-resume` | Reload `STATE.md` to continue interrupted session |
-| `/fd-status` | View project progress and roadmap |
+| **Checkpoint** | `/fd-checkpoint` | Save mid-session checkpoint to `STATE.md` |
+| **Resume** | `/fd-resume` | Reload `STATE.md` to continue interrupted session |
+| **Status** | `/fd-status` | View project progress and roadmap |
 | **Done** | `/fd-done` | Mark feature complete, verify post-write state, and clear session locks |
 
 ---
