@@ -7,7 +7,7 @@ export type { AgentDefinition, AgentFactory } from './types';
 export type { AgentRoute } from './routing';
 
 // Import all agent factories
-import { createOrchestratorAgent } from './orchestrator';
+import { createHeidiAgent, createOrchestratorAgent } from './orchestrator';
 import { createPlannerAgent } from './planner';
 import {
   createBackendCoderAgent,
@@ -25,6 +25,7 @@ import { createArchitectAgent } from './architect';
 /** All agent names registered by FlowDeck. */
 export const AGENT_NAMES: readonly string[] = [
   'orchestrator',
+  'heidi',
   'planner',
   'architect',
   'researcher',
@@ -42,7 +43,7 @@ export const AGENT_NAMES: readonly string[] = [
 export type AgentMode = 'primary' | 'subagent' | 'all';
 
 // Define which agents are primary (UI-selected) vs subagent (internal/delegated)
-const PRIMARY_AGENTS = new Set(['orchestrator']);
+const PRIMARY_AGENTS = new Set(['heidi', 'orchestrator']);
 const ALL_MODES_AGENTS = new Set<string>();
 const HIDDEN_AGENTS = new Set<string>();
 
@@ -70,6 +71,13 @@ export function createAgent(
   _disabledAgents?: Set<string>,
 ): AgentDefinition | undefined {
   switch (name) {
+    case 'heidi':
+      return createHeidiAgent(
+        model,
+        customPrompt,
+        customAppendPrompt,
+        undefined,
+      );
     case 'orchestrator':
       return createOrchestratorAgent(
         model,
@@ -175,7 +183,7 @@ export function getAgentConfigs(
  * and what do they do" in default configuration. The orchestrator guard
  * receives this list and renders it into its block message.
  *
- * - Excludes `orchestrator` (the guard message must not route to the
+ * - Excludes `orchestrator` and `heidi` (the guard message must not route to the
  *   coordinator itself).
  * - Skips agents whose `description` is empty (defensive; the registry
  *   currently always provides one).
@@ -184,7 +192,7 @@ export function getAgentConfigs(
 export function getAgentRoutes(): AgentRoute[] {
   const out: AgentRoute[] = []
   for (const name of AGENT_NAMES) {
-    if (name === "orchestrator") continue
+    if (name === "orchestrator" || name === "heidi") continue
     const agent = createAgent(name)
     if (!agent) continue
     const desc = agent.description ?? ""
@@ -197,6 +205,7 @@ export function getAgentRoutes(): AgentRoute[] {
 
 // Export all agent factories for direct access
 export {
+  createHeidiAgent,
   createOrchestratorAgent,
   createPlannerAgent,
   createArchitectAgent,

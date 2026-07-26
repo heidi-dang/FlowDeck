@@ -22,7 +22,7 @@ describe("AGENT_NAMES", () => {
   })
 
   it("contains exactly the trimmed roster — no more, no less", () => {
-    expect(AGENT_NAMES).toHaveLength(12)
+    expect(AGENT_NAMES).toHaveLength(13)
   })
 
   it("includes all expected agents", () => {
@@ -97,7 +97,7 @@ describe("getAgentConfigs", () => {
   it("marks all non-orchestrator agents as subagent mode", () => {
     const configs = getAgentConfigs()
     for (const [name, config] of Object.entries(configs)) {
-      if (name !== "orchestrator") {
+      if (name !== "orchestrator" && name !== "heidi") {
         expect(config.mode).toBe("subagent")
       }
     }
@@ -113,10 +113,10 @@ describe("getAgentConfigs", () => {
 })
 
 describe("every agent prompt: token optimization rules (Step 6)", () => {
-  // The orchestrator delegates rather than reads, and its prompt is
+  // The orchestrator and heidi delegate rather than read, and their prompts are
   // deliberately kept minimal — the token optimization rules apply to the
   // specialist agents that actually consume files.
-  const agents = createAgents().filter((a) => a.name !== "orchestrator")
+  const agents = createAgents().filter((a) => a.name !== "orchestrator" && a.name !== "heidi")
 
   it("every agent has a Token Optimization section", () => {
     const offenders: string[] = []

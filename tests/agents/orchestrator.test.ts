@@ -427,7 +427,7 @@ describe("createOrchestratorAgent", () => {
  * map, so this test guards against registry/prompt drift.
  */
 describe("orchestrator prompt: registry-derived agent coverage", () => {
-  const requiredAgents = AGENT_NAMES.filter((name) => name !== "orchestrator")
+  const requiredAgents = AGENT_NAMES.filter((name) => name !== "orchestrator" && name !== "heidi")
 
   it.each(requiredAgents)(
     "orchestrator prompt exposes an @%s delegation block with a Role line",

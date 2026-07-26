@@ -1,7 +1,40 @@
 import type { AgentDefinition } from './types';
 import { resolvePrompt } from './types';
+import { getAgentRoutes } from './index';
+import type { AgentRoute } from './routing';
 
-const ORCHESTRATOR_PROMPT = `You are the FlowDeck orchestrator. You coordinate the pipeline and delegate work to specialist agents.
+const ORCHESTRATOR_PROMPT = `You are the FlowDeck orchestrator (Heidi Primary Coordinator). You coordinate the pipeline and delegate work to specialist agents.
+
+## Core Execution Policy (Heidi Direct Execution)
+
+1. Direct Execution First: Execute tasks directly using available tools whenever possible.
+2. Justified Delegation Only: Delegate to specialist subagents ONLY when at least one condition is met:
+   - User explicitly requests a specialist.
+   - Work can run independently on non-overlapping file ownership.
+   - The task requires a specialist domain (e.g. security audit, devops infra).
+   - A read-only audit or security review is requested.
+   - Direct repository discovery failed.
+   - Change spans multiple technical domains requiring coordinated ownership.
+   Do NOT delegate merely because a specialist exists.
+
+3. Delegation Depth: Maximum automatic delegation depth is EXACTLY ONE level. Subagents CANNOT spawn further subagents.
+
+4. Six-Stage Lifecycle:
+   - Stage 1: Intake — Understand user prompt, goal, and constraints.
+   - Stage 2: Route — Select execution strategy (fast_direct, direct, explore_then_direct, planner_then_execute, debugger_root_cause, frontend_backend_parallel, audit_only, audit_after_change).
+   - Stage 3: Context — Perform before-edit surface-area checks (dependents/callers, existing tests, related config, assumptions & error paths).
+   - Stage 4: Execute — Perform direct edits or delegate justified independent workstreams.
+   - Stage 5: Verify — Run unit tests, typechecks, build, and verification rules.
+   - Stage 6: Complete — Summarize changes, test results, and final status.
+
+5. Bounded Recovery:
+   - 1st failure: Targeted diagnosis on root cause.
+   - 2nd failure: Change hypothesis or implementation strategy.
+   - 3rd failure: Trigger circuit breaker, stop retries, and report exact findings to human.
+   - Receive at most one automatic repair cycle after verification failure unless running a deeper recovery workflow.
+
+6. Safety Guarantees:
+   - Never restart OpenCode, reboot the machine, log out, terminate the current session, or perform hardware/BIOS actions.
 
 ## Pipeline
 
@@ -82,13 +115,6 @@ After each stage completes, write \`~/.fd-plan/<project-slug>/checkpoint.json\`:
 3. Three failures → STOP and report to human with exact details.
 4. Call \`capture-lesson\` on repeated failures.
 
-## Observability hooks
-
-After each \`task\` tool call returns successfully, call \`fdx-context action:append\` to
-record what the agent did. If the append returns an error (IO / disk full / etc.),
-log the error to the console and continue. Context logging is observability, not
-control flow — never halt a task because the context log failed to write.
-
 On block:
 \`\`\`
 Blocked at: <stage>
@@ -96,6 +122,13 @@ Why:        <reason>
 Needed:     <missing input>
 To resume:  /fd-resume
 \`\`\`
+
+## Observability hooks
+
+After each \`task\` tool call returns successfully, call \`fdx-context action:append\` to
+record what the agent did. If the append returns an error (IO / disk full / etc.),
+log the error to the console and continue. Context logging is observability, not
+control flow — never halt a task because the context log failed to write.
 
 ## Tool Permissions
 
@@ -109,20 +142,9 @@ Mutating bash: NOT allowed (delegate to subagents). Use \`fdx-worktree\` instead
 raw \`git worktree\` calls — it returns a typed conflict object on merge failures.
 `;
 
-import { getAgentRoutes } from './index';
-import type { AgentRoute } from './routing';
-
-/**
- * Build agent directory entries from the live registry.
- *
- * This keeps the orchestrator prompt in sync with the actual agent factories
- * defined in src/agents/index.ts. Descriptions come from each agent's
- * `description` field; the format preserves the existing "@name / - Role:"
- * shape so prompt-parsing tests stay stable.
- */
 function buildAgentDirectoryFromRoutes(routes: AgentRoute[], disabledAgents?: Set<string>): string {
   return routes
-    .filter(({ name }) => name !== 'orchestrator')
+    .filter(({ name }) => name !== 'orchestrator' && name !== 'heidi')
     .map(({ name, description }) => {
       const disabledHint = disabledAgents?.has(name) ? ' (disabled for current stage)' : '';
       return `@${name}${disabledHint}\n- Role: ${description}`;
@@ -130,7 +152,7 @@ function buildAgentDirectoryFromRoutes(routes: AgentRoute[], disabledAgents?: Se
     .join('\n\n');
 }
 
-export function buildOrchestratorPrompt(disabledAgents?: Set<string>): string {
+export function buildHeidiCoordinatorPrompt(disabledAgents?: Set<string>): string {
   const routes = getAgentRoutes();
   const enabledAgents = buildAgentDirectoryFromRoutes(routes, disabledAgents);
 
@@ -174,19 +196,30 @@ ${enabledAgents}
 </Delegation>`;
 }
 
-export function createOrchestratorAgent(
+export const buildOrchestratorPrompt = buildHeidiCoordinatorPrompt;
+
+/**
+ * Base coordinator factory supporting both `heidi` (preferred primary)
+ * and `orchestrator` (compatibility alias).
+ */
+export function createCoordinatorAgent(
+  name: 'heidi' | 'orchestrator',
   model?: string | Array<string | { id: string; variant?: string }>,
   customPrompt?: string,
   customAppendPrompt?: string,
   disabledAgents?: Set<string>,
 ): AgentDefinition {
-  const basePrompt = buildOrchestratorPrompt(disabledAgents);
+  const basePrompt = buildHeidiCoordinatorPrompt(disabledAgents);
   const prompt = resolvePrompt(basePrompt, customPrompt, customAppendPrompt);
 
+  const description =
+    name === 'heidi'
+      ? 'Heidi primary execution coordinator. Direct execution by default, delegating to specialists only when justified.'
+      : 'AI coding orchestrator that coordinates specialist agents. Routes all work to appropriate agents and workflows. Does not execute tasks directly.';
+
   const definition: AgentDefinition = {
-    name: 'orchestrator',
-    description:
-      'AI coding orchestrator that coordinates specialist agents. Routes all work to appropriate agents and workflows. Does not execute tasks directly.',
+    name,
+    description,
     config: {
       temperature: 0.1,
       prompt,
@@ -202,4 +235,22 @@ export function createOrchestratorAgent(
   }
 
   return definition;
+}
+
+export function createHeidiAgent(
+  model?: string | Array<string | { id: string; variant?: string }>,
+  customPrompt?: string,
+  customAppendPrompt?: string,
+  disabledAgents?: Set<string>,
+): AgentDefinition {
+  return createCoordinatorAgent('heidi', model, customPrompt, customAppendPrompt, disabledAgents);
+}
+
+export function createOrchestratorAgent(
+  model?: string | Array<string | { id: string; variant?: string }>,
+  customPrompt?: string,
+  customAppendPrompt?: string,
+  disabledAgents?: Set<string>,
+): AgentDefinition {
+  return createCoordinatorAgent('orchestrator', model, customPrompt, customAppendPrompt, disabledAgents);
 }
