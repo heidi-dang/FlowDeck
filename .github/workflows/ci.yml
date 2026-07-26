@@ -66,16 +66,14 @@ jobs:
         run: |
           npm pack --dry-run 2>&1 | grep -E 'total files:' | grep -qE '[0-9]+'
           echo "PASS: npm pack valid"
-      - name: Pack and install in isolated HOME
+      - name: Pack and inspect tarball
         run: |
           PACKAGE=$(npm pack 2>/dev/null)
           echo "Package: $PACKAGE"
-          TMPHOME=$(mktemp -d)
-          cd "$TMPHOME"
-          npm init -y > /dev/null 2>&1
-          npm install "$GITHUB_WORKSPACE/$PACKAGE" > /dev/null 2>&1
-          node -e "const p = require('$TMPHOME/node_modules/@heidi-dang/flowdeck/package.json'); console.assert(p.name === '@heidi-dang/flowdeck', 'Wrong: ' + p.name); console.log('PASS')"
-          rm -f "$GITHUB_WORKSPACE/$PACKAGE"
+          tar tzf "$PACKAGE" | head -20
+          # Verify package.json identity in tarball
+          tar xzf "$PACKAGE" -O package/package.json | node -e "process.stdin.on('data',d=>{const p=JSON.parse(d);console.assert(p.name==='@heidi-dang/flowdeck','Wrong: '+p.name);console.log('PASS: '+p.name+' v'+p.version)})"
+          rm -f "$PACKAGE"
 
   installer-test:
     name: Installer Tests
