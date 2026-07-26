@@ -17,7 +17,7 @@ describe("getAgentRoutes", () => {
     const routes = getAgentRoutes()
     const names = new Set(routes.map((r) => r.name))
     for (const name of AGENT_NAMES) {
-      if (name === "orchestrator") continue
+      if (name === "orchestrator" || name === "heidi") continue
       expect(names.has(name)).toBe(true)
     }
   })

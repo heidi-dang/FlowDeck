@@ -70,12 +70,14 @@ export async function buildRegistrySnapshot(projectRoot: string): Promise<Regist
   const srcDir = resolveSrcDir(projectRoot)
   const { getAgentRoutes, createAgent } = await import("../agents/index")
   const agentRoutes = getAgentRoutes()
-  const orchestrator = createAgent("orchestrator")
-  if (orchestrator) {
-    agentRoutes.push({
-      name: orchestrator.name,
-      description: orchestrator.description ?? "FlowDeck orchestrator",
-    })
+  for (const primaryName of ["orchestrator", "heidi"]) {
+    const primaryAgent = createAgent(primaryName)
+    if (primaryAgent) {
+      agentRoutes.push({
+        name: primaryAgent.name,
+        description: primaryAgent.description ?? `FlowDeck ${primaryName}`,
+      })
+    }
   }
   return {
     agents: agentRoutes.sort((a, b) => a.name.localeCompare(b.name)),

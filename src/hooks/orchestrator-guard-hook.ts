@@ -635,7 +635,7 @@ export class OrchestratorGuard {
     // (per-agent allowedTools/forbiddenActions contracts).
     // Only the orchestrator agent (or unknown/undefined — conservative default)
     // is subject to this deny-by-default guard.
-    if (agentName !== undefined && agentName !== "orchestrator") return
+    if (agentName !== undefined && agentName !== "orchestrator" && agentName !== "heidi") return
     if (this.primarySessionId === null) return
     if (sessionId !== this.primarySessionId) return
     if (isAlwaysAllowed(toolName)) {
