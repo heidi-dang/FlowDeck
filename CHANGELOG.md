@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-26
+
+### Added
+- **Heidi Primary Execution Policy**: 8 canonical execution strategies (`fast_direct`, `direct`, `explore_then_direct`, `planner_then_execute`, `debugger_root_cause`, `frontend_backend_parallel`, `audit_only`, `audit_after_change`) with `heidi` primary identity and `orchestrator` alias compatibility.
+- **Justified Delegation Enforcement**: Enforced that delegation to subagents occurs ONLY when explicitly justified, with max delegation depth 1.
+- **Complete Governance Wiring**: Integrated `OrchestratorGuard`, `toolGuardHook`, `guardRailsHook`, `loopDetector`, `agent-validator`, append-only audit logging (`.codebase/AUDIT.jsonl`), post-write verification (`.codebase/VERIFICATION.jsonl`), and `doctorTool`.
+- **Native TypeScript FDX Fallbacks**: Pure JS/TS fallback handlers for all 15 FDX tools (`fdx-read`, `fdx-grep`, `fdx-search`, `fdx-outline`, `fdx-tree`, `fdx-ls`, `fdx-impact`, `fdx-diff`, `fdx-git`, `fdx-batch`, `fdx-context`, `fdx-decisions`, `fdx-worktree`, `fdx-validate`, `fdx-test`).
+- **Doctor Health Diagnostic Service**: `doctorTool` and CLI diagnostics running automated checks across Node environment, workspace writability, `.flowdeck.json`, agent contracts, skill frontmatter, and FDX availability.
+- **GitHub Actions Matrix CI**: 9-job CI workflow running tests across 3 operating systems (`ubuntu-latest`, `windows-latest`, `macos-latest`) and 3 Node.js versions (`20.x`, `22.x`, `24.x`).
+- **Curated Skill Adoption**: Adopted 8 top-tier agent skills (`verification-before-completion`, `systematic-debugging`, `subagent-driven-development`, `writing-plans`, `executing-plans`, `improve-codebase-architecture`, `writing-skills`, `workflow-skill-creator`), bringing total validated skill count to 61 in `src/skills/`.
+
+### Fixed
+- **Validator Enforcement**: Fixed severity checking so `advisory` governance mode emits warnings without blocking tool execution.
+- **Write Lifecycle Execution Order**: Moved `verifyAfterWrite` and `recordWrite` to `tool.execute.after` to inspect true post-write state.
+- **Windows Path Normalization**: Fixed Windows 8.3 short paths (`RUNNER~1`) and symlinks in `fdxWorktreeTool` and test suites.
+
 ## [0.7.0] - 2026-07-24
 
 ### Added
