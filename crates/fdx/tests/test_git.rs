@@ -5,7 +5,9 @@ fn fdx_bin() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     // Try debug first (cargo test), then release (cargo test --release)
     let debug = manifest.join("../../target/debug/fdx");
-    if debug.exists() { return debug }
+    if debug.exists() {
+        return debug;
+    }
     manifest.join("../../target/release/fdx")
 }
 
