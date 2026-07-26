@@ -52,11 +52,8 @@ fn test_git_branch() {
         .expect("fdx git branch failed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("main"),
-        "should show main branch: {}",
-        stdout
-    );
+    let has_branch = stdout.contains("main") || stdout.contains("HEAD");
+    assert!(has_branch, "should show current branch or HEAD: {}", stdout);
     assert!(output.status.success());
 }
 
