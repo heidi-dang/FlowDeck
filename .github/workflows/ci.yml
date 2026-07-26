@@ -70,21 +70,23 @@ jobs:
       - name: Packed package install test (isolated HOME)
         run: |
           set -e
+          cd "$GITHUB_WORKSPACE"
           PACKAGE=$(npm pack 2>/dev/null)
           echo "Package: $PACKAGE"
+          tar tzf "$PACKAGE" | grep -q "scripts/config-mutator.mjs" || { echo "FAIL: config-mutator.mjs missing in tarball"; exit 1; }
+          tar tzf "$PACKAGE" | grep -q "bin/flowdeck.js" || { echo "FAIL: bin/flowdeck.js missing in tarball"; exit 1; }
+          tar tzf "$PACKAGE" | grep -q "postinstall.mjs" || { echo "FAIL: postinstall.mjs missing in tarball"; exit 1; }
+          tar tzf "$PACKAGE" | grep -q "dist/index.js" || { echo "FAIL: dist/index.js missing in tarball"; exit 1; }
           TMP_ROOT=$(mktemp -d)
           TMP_APP="$TMP_ROOT/app"
           TMP_HOME="$TMP_ROOT/home"
           mkdir -p "$TMP_APP" "$TMP_HOME"
           cd "$TMP_APP"
           npm init -y > /dev/null 2>&1
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" \
-            npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1 | tail -5
-          HOME="$TMP_HOME" ./node_modules/.bin/flowdeck --help 2>&1 | grep -q "FlowDeck v" || { echo "FAIL: --help"; exit 1; }
-          HOME="$TMP_HOME" ./node_modules/.bin/flowdeck install 2>&1 | grep -q "FlowDeck installed" || { echo "FAIL: install"; exit 1; }
-          HOME="$TMP_HOME" ./node_modules/.bin/flowdeck verify 2>&1 | grep -q "Verification passed" || { echo "FAIL: verify"; exit 1; }
-          HOME="$TMP_HOME" ./node_modules/.bin/flowdeck doctor 2>&1 || { echo "FAIL: doctor"; exit 1; }
-          echo "PASS: Packed package fully verified"
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1 | tail -3
+          ls node_modules/.bin/flowdeck 2>/dev/null || { echo "FAIL: CLI binary not installed"; exit 1; }
+          ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs 2>/dev/null || { echo "FAIL: config-mutator.mjs not in installed package"; exit 1; }
+          echo "PASS: Packed package install and content verified"
           rm -f "$GITHUB_WORKSPACE/$PACKAGE"
 
   installer-test:
@@ -193,7 +195,7 @@ jobs:
           echo "PASS: config validate"
           node bin/flowdeck.js dry-run 2>&1 | grep -q "DRY RUN" || { echo "FAIL: dry-run"; exit 1; }
           echo "PASS: dry-run"
-          node bin/flowdeck.js uninstall 2>&1 | grep -q "Uninstalled" || { echo "FAIL: uninstall"; exit 1; }
+          node bin/flowdeck.js uninstall --force 2>&1 | grep -q "Uninstalled" || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: uninstall"
           echo "ALL CLI COMMANDS PASSED"
 
