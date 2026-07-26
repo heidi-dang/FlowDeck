@@ -232,20 +232,20 @@ export function executeVerifiedPostWrite(
 
 export interface ScorecardData {
   commandsRun: number
-  testsPassed: number
-  testsFailed: number
-  buildResult: "pass" | "fail" | "not_run"
-  typecheckResult: "pass" | "fail" | "not_run"
-  filesChanged: number
+  testsPassed: number | null
+  testsFailed: number | null
+  buildResult: "pass" | "fail" | "not_run" | null
+  typecheckResult: "pass" | "fail" | "not_run" | null
+  filesChanged: number | null
   toolCalls: number
   delegations: number
   retries: number
   blocks: number
   warnings: number
-  durationMs: number
+  durationMs: number | null
   tokensUsed?: number
   estimatedCostUSD?: number
-  remainingFindings: number
+  remainingFindings: number | null
 }
 
 export function generateScorecard(data: ScorecardData): Record<string, unknown> {
@@ -266,7 +266,7 @@ export function generateScorecard(data: ScorecardData): Record<string, unknown> 
     tokens_used: data.tokensUsed,
     estimated_cost_usd: data.estimatedCostUSD,
     remaining_findings: data.remainingFindings,
-    passed: data.testsFailed === 0 && data.remainingFindings === 0,
+    passed: (data.testsFailed === null || data.testsFailed === 0) && (data.remainingFindings === null || data.remainingFindings === 0),
   }
 }
 

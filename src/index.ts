@@ -68,16 +68,13 @@ import {
   executeVerifiedPostWrite,
   generateScorecard,
   validateDelegationDepth,
+  resolveGovernanceMode,
 } from "./services/governance-wiring"
 import { runSupervisorReview, shouldProceed, resolveSupervisorConfig } from "./services/supervisor-binding"
 import { appendAuditEvent } from "./services/audit-log"
 import { isSpecialistAgent, getAllAgentIds } from "./services/canonical-registry"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
-const MAX_TOOL_CALLS_PER_SESSION = 200
-const MAX_RETRIES_PER_SESSION = 10
-const MAX_DELEGATIONS_PER_SESSION = 20
-
 /** Tracks tool call count per session ID. */
 const sessionToolCalls = new Map<string, number>()
 /** Tracks retry count per session ID. */
@@ -129,6 +126,11 @@ const plugin: Plugin = async ({ directory, client }) => {
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
   const orchestratorGuard = new OrchestratorGuard({ routes: getAgentRoutes() })
   const loopDetector = new LoopDetector(flowdeckConfig.governance?.loopDetection, appLog)
+
+  // Resolve budget limits from config (with safe defaults)
+  const maxToolCalls = flowdeckConfig.governance?.delegationBudget?.maxToolCalls ?? 200
+  const maxRetries = flowdeckConfig.governance?.delegationBudget?.maxSameStepRetries ?? 3
+  const maxDelegations = flowdeckConfig.governance?.delegationBudget?.maxDepth ?? 1
 
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
@@ -223,15 +225,20 @@ const plugin: Plugin = async ({ directory, client }) => {
       if (sessionID) {
         const callCount = (sessionToolCalls.get(sessionID) ?? 0) + 1
         sessionToolCalls.set(sessionID, callCount)
-        if (callCount > MAX_TOOL_CALLS_PER_SESSION) {
-          const msg = `Tool call budget exceeded: ${callCount} > ${MAX_TOOL_CALLS_PER_SESSION} for session ${sessionID}`
+        if (callCount > maxToolCalls) {
+          const msg = `Tool call budget exceeded: ${callCount} > ${maxToolCalls} for session ${sessionID}`
+          const govMode = resolveGovernanceMode(directory)
           recordRecoveryAudit({
             directory, sessionID, agent,
             errorKey: "tool_call_budget_exceeded",
-            action: "circuit_breaker_block",
+            action: govMode === "strict" ? "circuit_breaker_block" : "targeted_diagnosis",
             message: msg,
           })
-          throw new Error(msg)
+          if (govMode === "strict") {
+            throw new Error(msg)
+          }
+          // advisory: warn and continue
+          appLog(`[ADVISORY] ${msg}`)
         }
       }
 
@@ -283,15 +290,20 @@ const plugin: Plugin = async ({ directory, client }) => {
         if (sessionID) {
           const delCount = (sessionDelegations.get(sessionID) ?? 0) + 1
           sessionDelegations.set(sessionID, delCount)
-          if (delCount > MAX_DELEGATIONS_PER_SESSION) {
-            const msg = `Delegation budget exceeded: ${delCount} > ${MAX_DELEGATIONS_PER_SESSION} for session ${sessionID}`
+          if (delCount > maxDelegations) {
+            const msg = `Delegation budget exceeded: ${delCount} > ${maxDelegations} for session ${sessionID}`
+            const govMode = resolveGovernanceMode(directory)
             recordRecoveryAudit({
               directory, sessionID, agent,
               errorKey: "delegation_budget_exceeded",
-              action: "circuit_breaker_block",
+              action: govMode === "strict" ? "circuit_breaker_block" : "targeted_diagnosis",
               message: msg,
             })
-            throw new Error(msg)
+            if (govMode === "strict") {
+              throw new Error(msg)
+            }
+            // advisory: warn and continue
+            appLog(`[ADVISORY] ${msg}`)
           }
         }
       }
@@ -381,13 +393,20 @@ const plugin: Plugin = async ({ directory, client }) => {
         if (sessionID) {
           const retryCount = (sessionRetries.get(sessionID) ?? 0) + 1
           sessionRetries.set(sessionID, retryCount)
-          if (retryCount > MAX_RETRIES_PER_SESSION) {
+          if (retryCount > maxRetries) {
+            const msg = `Retry budget exceeded: ${retryCount} > ${maxRetries} for session ${sessionID}`
+            const govMode = resolveGovernanceMode(directory)
             recordRecoveryAudit({
               directory, sessionID, agent,
               errorKey: "retry_budget_exceeded",
-              action: "circuit_breaker_block",
-              message: `Retry budget exceeded: ${retryCount} > ${MAX_RETRIES_PER_SESSION} for session ${sessionID}`,
+              action: govMode === "strict" ? "circuit_breaker_block" : "targeted_diagnosis",
+              message: msg,
             })
+            if (govMode === "strict") {
+              throw new Error(msg)
+            }
+            // advisory: warn and continue
+            appLog(`[ADVISORY] ${msg}`)
           }
         }
       }
@@ -430,18 +449,18 @@ const plugin: Plugin = async ({ directory, client }) => {
 
             const scorecard = generateScorecard({
               commandsRun: toolCalls,
-              testsPassed: 0,
-              testsFailed: 0,
-              buildResult: "not_run",
-              typecheckResult: "not_run",
-              filesChanged: 0,
+              testsPassed: null,
+              testsFailed: null,
+              buildResult: null,
+              typecheckResult: null,
+              filesChanged: null,
               toolCalls,
               delegations,
               retries,
               blocks,
               warnings,
-              durationMs: 0,
-              remainingFindings: 0,
+              durationMs: null,
+              remainingFindings: null,
             })
             appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
 

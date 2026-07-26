@@ -17,6 +17,8 @@
   "files": [
     "dist",
     "bin",
+    "scripts/config-mutator.mjs",
+    "scripts/doctor-engine.mjs",
     "src/commands",
     "src/rules",
     "src/skills",
@@ -60,6 +62,9 @@
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org"
+  },
+  "flowdeckFdxCompatibility": {
+    "required": "^0.1.0"
   },
   "engines": {
     "node": ">=18.0.0",

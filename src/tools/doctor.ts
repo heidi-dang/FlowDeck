@@ -9,7 +9,7 @@ export const doctorTool: ToolDefinition = tool({
   },
   async execute(args, context) {
     const dir = args.directory ?? context?.directory ?? process.cwd()
-    const report = runDoctorChecks(dir)
+    const report = await runDoctorChecks(dir)
 
     const lines: string[] = [
       `# FlowDeck Doctor Health Report`,
