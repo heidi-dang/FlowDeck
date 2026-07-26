@@ -1,7 +1,7 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 import { execFileSync, execSync } from "node:child_process"
 import { resolve as pathResolve, sep } from "path"
-import { existsSync, statSync, readdirSync } from "fs"
+import { existsSync, statSync, readdirSync, realpathSync } from "fs"
 import { basename } from "path"
 
 /** Timeout for each `git` call. */
@@ -72,6 +72,15 @@ function isDirEmpty(p: string): boolean {
   return readdirSync(p).length === 0
 }
 
+function normalizePath(p: string): string {
+  try {
+    const fn = (realpathSync as any).native ?? realpathSync
+    return fn(pathResolve(p)).toLowerCase().replace(/\\/g, "/")
+  } catch {
+    return pathResolve(p).toLowerCase().replace(/\\/g, "/")
+  }
+}
+
 function isRegisteredWorktree(p: string, cwd: string): boolean {
   try {
     const out = execFileSync("git", ["worktree", "list", "--porcelain"], {
@@ -79,7 +88,7 @@ function isRegisteredWorktree(p: string, cwd: string): boolean {
       encoding: "utf-8",
       timeout: GIT_TIMEOUT_MS,
     })
-    return parsePorcelain(out).some((e) => pathResolve(e.path) === pathResolve(p))
+    return parsePorcelain(out).some((e) => normalizePath(e.path) === normalizePath(p))
   } catch {
     return false
   }
