@@ -131,9 +131,10 @@ export const fdxValidateTool: ToolDefinition = tool({
     }
 
     const errors: string[] = []
-    const taskPath = topicTaskPath(context.directory, args.topic)
-    const affectPath = topicAffectPath(context.directory, args.topic)
-    const planPath = topicPlanPath(context.directory, args.topic)
+    const dir = context?.directory ?? process.cwd()
+    const taskPath = topicTaskPath(dir, args.topic)
+    const affectPath = topicAffectPath(dir, args.topic)
+    const planPath = topicPlanPath(dir, args.topic)
 
     // Step 1: required files exist
     for (const [name, p] of [
