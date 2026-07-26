@@ -343,6 +343,20 @@ export async function toolGuardHook(
 
   const args = output.args ?? input.args ?? {}
 
+  // HOOK-04-DD: Delegation-depth guard — subagents cannot spawn nested subagents.
+  if (toolName === "task") {
+    const config: FlowDeckConfig = loadFlowDeckConfig(ctx.directory)
+    const maxDepth = config.maxDelegationDepth ?? 1
+    if (agentName !== "orchestrator" && agentName !== "heidi") {
+      const msg = `[FlowDeck Delegation] Delegation depth limit reached (configured max: ${maxDepth}). Subagent "${agentName}" cannot spawn nested subagents.`
+      decision.allowed = false
+      decision.reason = msg
+      decision.checks.push("delegation-depth-limit")
+      logDecision(ctx, decision, { sessionID, agent: agentName, tool: toolName })
+      throw new Error(msg)
+    }
+  }
+
   // HOOK-04-WL: Write-limit guard — cap unique files modified per agent session.
   if (WRITE_TOOLS.has(toolName)) {
     const filePath = getFilePath(args) ?? ""

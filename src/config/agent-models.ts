@@ -13,7 +13,7 @@ export interface AgentModelConfig {
 
 export const DEFAULT_CONFIG: FlowDeckConfig = {
   agentModels: {},
-  maxDelegationDepth: 4,
+  maxDelegationDepth: 1,
   maxWritesPerAgent: 15,
 }
 
