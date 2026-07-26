@@ -71,10 +71,11 @@ jobs:
           PACKAGE=$(npm pack 2>/dev/null)
           echo "Package: $PACKAGE"
           TMPHOME=$(mktemp -d)
-          HOME=$TMPHOME npm init -y > /dev/null 2>&1
-          HOME=$TMPHOME npm install ./$PACKAGE --prefix $TMPHOME > /dev/null 2>&1
-          HOME=$TMPHOME node -e "const p = require('$TMPHOME/node_modules/@heidi-dang/flowdeck/package.json'); console.assert(p.name === '@heidi-dang/flowdeck', 'Wrong package name: ' + p.name); console.log('PASS: Package install verified')"
-          rm -f $PACKAGE
+          cd "$TMPHOME"
+          npm init -y > /dev/null 2>&1
+          npm install "$GITHUB_WORKSPACE/$PACKAGE" > /dev/null 2>&1
+          node -e "const p = require('$TMPHOME/node_modules/@heidi-dang/flowdeck/package.json'); console.assert(p.name === '@heidi-dang/flowdeck', 'Wrong: ' + p.name); console.log('PASS')"
+          rm -f "$GITHUB_WORKSPACE/$PACKAGE"
 
   installer-test:
     name: Installer Tests
@@ -137,8 +138,10 @@ jobs:
         run: |
           set -e
           HOME_TMP=$(mktemp -d)
-          HOME=$HOME_TMP OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
-          echo '{"plugin":[],"default_agent":null}' > $OPENCODE_CONFIG_DIR/opencode.json
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{"plugin":[],"default_agent":null}' > "$OPENCODE_CONFIG_DIR"/opencode.json
           node bin/flowdeck.js --help 2>&1 | grep -q "FlowDeck v" && echo "PASS: --help"
           node bin/flowdeck.js install 2>&1 | grep -q "FlowDeck installed" && echo "PASS: install"
           node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" && echo "PASS: verify"
