@@ -30,6 +30,39 @@ export interface AgentContract {
 
 const CONTRACTS: AgentContract[] = [
   {
+    agent: "heidi",
+    role: "Heidi primary execution coordinator. Direct execution by default, delegating to specialists only when justified.",
+    allowedTaskTypes: ["coordination", "orchestration", "direct-execution", "delegation", "phase-management"],
+    requiredInputs: ["user prompt or STATE.md"],
+    expectedOutputFields: ["execution_strategy", "completed_steps", "summary"],
+    allowedTools: [
+      "read", "read_file", "view", "glob", "grep", "search",
+      "planning-state", "codebase-state", "repo-memory",
+      "codegraph", "codegraph-search", "codegraph-node", "codegraph-explore",
+      "load-rules", "list-rules", "task", "capture-lesson", "review-lessons",
+      "fdx-read", "fdx-search", "fdx-grep", "fdx-outline", "fdx-batch",
+      "fdx-impact", "fdx-diff", "fdx-git", "fdx-ls", "fdx-tree",
+    ],
+    forbiddenActions: [
+      "restart_opencode", "reboot_system", "logout_user", "spawn_nested_subagent",
+    ],
+    escalationConditions: [
+      "specialist agent fails twice",
+      "circuit breaker triggered on 3rd failure",
+      "ambiguous user requirements",
+    ],
+    stopConditions: [
+      "all task steps completed and verified",
+      "circuit breaker triggered",
+      "user requests stop",
+    ],
+    successCriteria: [
+      "task executed directly or via justified delegation",
+      "verifications pass with 0 errors",
+      "summary provided to user",
+    ],
+  },
+  {
     agent: "orchestrator",
     role: "Coordinate multi-agent execution, inspect context directly, and route specialist work when appropriate.",
     allowedTaskTypes: ["orchestration", "coordination", "delegation", "phase-management"],
@@ -61,6 +94,35 @@ const CONTRACTS: AgentContract[] = [
       "all plan steps completed",
       "STATE.md phase updated to review",
       "specialist agents used for implementation, testing, and deep investigation",
+    ],
+  },
+  {
+    agent: "mapper",
+    role: "Explore and map codebase architecture, entry points, dependencies, and file structures.",
+    allowedTaskTypes: ["mapping", "codebase-exploration", "structure-analysis", "dependency-graph"],
+    requiredInputs: ["project root directory or mapping prompt"],
+    expectedOutputFields: ["architecture_map", "entry_points", "dependencies"],
+    allowedTools: [
+      "read", "read_file", "view", "glob", "grep", "search",
+      "codebase-state", "repo-memory", "codegraph", "codegraph-search",
+      "codegraph-node", "codegraph-explore", "fdx-read", "fdx-search",
+      "fdx-grep", "fdx-outline", "fdx-ls", "fdx-tree",
+    ],
+    forbiddenActions: [
+      "write_file", "edit_file", "create_file", "bash", "patch", "apply_patch",
+    ],
+    escalationConditions: [
+      "codebase directory inaccessible",
+      "unparseable AST structures",
+    ],
+    stopConditions: [
+      "architecture.md generated or map completed",
+      "exploration finished",
+    ],
+    successCriteria: [
+      "codebase structural relationships mapped",
+      "architecture document written to global plan dir",
+      "no source file modifications",
     ],
   },
   {
