@@ -5,7 +5,8 @@ import { tmpdir } from "os"
 import { validateAgent } from "@/services/agent-validator"
 import { toolGuardHook, executePostWriteHook, getWriteCount, clearWriteCounter } from "@/hooks/tool-guard"
 import { LoopDetector } from "@/services/loop-detector"
-import { safeReadConfig, safeUpdateConfig, stripJsonComments } from "@/services/config-editor"
+import { safeReadConfig, safeUpdateConfig } from "@/services/config-editor"
+import { parse } from "jsonc-parser"
 
 describe("Phase 1 — Critical Runtime Correctness Repairs", () => {
   let tmpDir: string
@@ -121,10 +122,12 @@ describe("Phase 1 — Critical Runtime Correctness Repairs", () => {
       expect(readFileSync(configFile, "utf-8")).toBe(malformedContent)
     })
 
-    it("JSONC comments survive valid updates and stripping works correctly", () => {
+    it("JSONC comments survive valid updates and parsing works correctly", () => {
       const jsoncWithComments = `{\n  // This is a comment\n  "default_agent": "orchestrator"\n}`
-      const stripped = stripJsonComments(jsoncWithComments)
-      expect(stripped).not.toContain("// This is a comment")
+      const errors = [] as any[]
+      const data = parse(jsoncWithComments, errors, { allowTrailingComma: true })
+      expect(errors.length).toBe(0)
+      expect(data.default_agent).toBe("orchestrator")
 
       const parseRes = safeReadConfig<Record<string, unknown>>(join(tmpDir, "nonexistent.json"))
       expect(parseRes.ok).toBe(false)

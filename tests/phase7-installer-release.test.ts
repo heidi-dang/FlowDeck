@@ -33,7 +33,7 @@ describe("Phase 7 — Installer, Upgrade, Doctor, and Uninstall", () => {
       const cfgCheck = report.checks.find(c => c.id === "config.validity")
       expect(cfgCheck).toBeDefined()
       expect(cfgCheck?.status).toBe("pass")
-      expect(cfgCheck?.message).toContain("strict")
+      expect(cfgCheck?.message).toContain("Valid configuration")
     })
 
     it("detects malformed .flowdeck.json configuration as failure", () => {
@@ -45,20 +45,12 @@ describe("Phase 7 — Installer, Upgrade, Doctor, and Uninstall", () => {
       expect(cfgCheck?.remediation).toBeDefined()
     })
 
-    it("verifies all registered agent capability contracts", () => {
-      // The doctor now scans src/agents/ on disk — create some agent files
-      const agentsDir = join(TMP, "src", "agents")
-      mkdirSync(agentsDir, { recursive: true })
-      const agentNames = ["planner", "architect", "researcher", "mapper", "tester", "reviewer", "security-auditor", "backend-coder", "frontend-coder", "devops"]
-      for (const name of agentNames) {
-        writeFileSync(join(agentsDir, `${name}.ts`), `// ${name} agent`, "utf-8")
-      }
-
+    it("verifies agent count consistency between canonical registry and runtime", () => {
       const report = runDoctorChecks(TMP)
-      const agentCheck = report.checks.find(c => c.id === "agents.contracts")
+      const agentCheck = report.checks.find(c => c.id === "agents.count")
       expect(agentCheck).toBeDefined()
       expect(agentCheck?.status).toBe("pass")
-      expect(agentCheck?.message).toContain("10")
+      expect(agentCheck?.message).toMatch(/\d+ agents/)
     })
 
     it("warns when skill files lack YAML frontmatter headers", () => {
@@ -70,7 +62,7 @@ describe("Phase 7 — Installer, Upgrade, Doctor, and Uninstall", () => {
       const skillCheck = report.checks.find(c => c.id === "skills.recursive")
       expect(skillCheck).toBeDefined()
       expect(skillCheck?.status).toBe("warn")
-      expect(skillCheck?.remediation).toBeDefined()
+      expect(skillCheck?.message).toMatch(/\d+ skills, \d+ valid, \d+ issues/)
     })
   })
 

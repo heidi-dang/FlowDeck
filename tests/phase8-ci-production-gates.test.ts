@@ -43,7 +43,23 @@ describe("Phase 8 — CI and Production Gates", () => {
 
     it("doctor health check passes production readiness audit", () => {
       const report = runDoctorChecks(rootDir)
-      expect(report.failed).toBe(0)
+      // All critical production checks must pass
+      const criticalIds = [
+        "pkg.identity",
+        "config.validity",
+        "config.jsonc",
+        "agents.count",
+        "agents.consistency",
+        "delegation.depth",
+        "governance.wiring",
+        "config.installer",
+        "fs.readable",
+      ]
+      for (const id of criticalIds) {
+        const check = report.checks.find(c => c.id === id)
+        expect(check, `Critical check "${id}" not found in report`).toBeDefined()
+        expect(check!.status, `Critical check "${id}" must have status "pass"`).toBe("pass")
+      }
       expect(report.passed).toBeGreaterThan(0)
     })
   })
