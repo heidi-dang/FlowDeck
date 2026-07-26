@@ -71,9 +71,8 @@ pub fn print_json_outline_results(
             .collect(),
     };
 
-    let json = serde_json::to_string_pretty(&output).map_err(|e| {
-        io::Error::other(format!("JSON serialization error: {}", e))
-    })?;
+    let json = serde_json::to_string_pretty(&output)
+        .map_err(|e| io::Error::other(format!("JSON serialization error: {}", e)))?;
     writeln!(writer, "{}", json)?;
     Ok(())
 }
@@ -204,9 +203,8 @@ pub fn print_json_diff_results(
         files: file_jsons,
     };
 
-    let json = serde_json::to_string_pretty(&output).map_err(|e| {
-        io::Error::other(format!("JSON serialization error: {}", e))
-    })?;
+    let json = serde_json::to_string_pretty(&output)
+        .map_err(|e| io::Error::other(format!("JSON serialization error: {}", e)))?;
     writeln!(writer, "{}", json)?;
     Ok(())
 }

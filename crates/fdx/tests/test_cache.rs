@@ -1,6 +1,4 @@
-use fdx::reader::code::{
-    cache::AstCache, parser::parse_source,
-};
+use fdx::reader::code::{cache::AstCache, parser::parse_source};
 use std::time::SystemTime;
 
 #[test]

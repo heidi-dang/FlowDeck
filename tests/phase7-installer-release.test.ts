@@ -30,7 +30,7 @@ describe("Phase 7 — Installer, Upgrade, Doctor, and Uninstall", () => {
     it("detects valid .flowdeck.json configuration", () => {
       writeFileSync(join(TMP, ".flowdeck.json"), JSON.stringify({ governance: { validator: { mode: "strict" } } }), "utf-8")
       const report = runDoctorChecks(TMP)
-      const cfgCheck = report.checks.find(c => c.id === "config.flowdeck")
+      const cfgCheck = report.checks.find(c => c.id === "config.validity")
       expect(cfgCheck).toBeDefined()
       expect(cfgCheck?.status).toBe("pass")
       expect(cfgCheck?.message).toContain("strict")
@@ -39,27 +39,35 @@ describe("Phase 7 — Installer, Upgrade, Doctor, and Uninstall", () => {
     it("detects malformed .flowdeck.json configuration as failure", () => {
       writeFileSync(join(TMP, ".flowdeck.json"), "{ malformed json", "utf-8")
       const report = runDoctorChecks(TMP)
-      const cfgCheck = report.checks.find(c => c.id === "config.flowdeck")
+      const cfgCheck = report.checks.find(c => c.id === "config.validity")
       expect(cfgCheck).toBeDefined()
       expect(cfgCheck?.status).toBe("fail")
       expect(cfgCheck?.remediation).toBeDefined()
     })
 
-    it("verifies all 13 registered agent capability contracts", () => {
+    it("verifies all registered agent capability contracts", () => {
+      // The doctor now scans src/agents/ on disk — create some agent files
+      const agentsDir = join(TMP, "src", "agents")
+      mkdirSync(agentsDir, { recursive: true })
+      const agentNames = ["planner", "architect", "researcher", "mapper", "tester", "reviewer", "security-auditor", "backend-coder", "frontend-coder", "devops"]
+      for (const name of agentNames) {
+        writeFileSync(join(agentsDir, `${name}.ts`), `// ${name} agent`, "utf-8")
+      }
+
       const report = runDoctorChecks(TMP)
       const agentCheck = report.checks.find(c => c.id === "agents.contracts")
       expect(agentCheck).toBeDefined()
       expect(agentCheck?.status).toBe("pass")
-      expect(agentCheck?.message).toContain("13")
+      expect(agentCheck?.message).toContain("10")
     })
 
     it("warns when skill files lack YAML frontmatter headers", () => {
-      const skillsDir = join(TMP, "src", "skills")
+      const skillsDir = join(TMP, "src", "skills", "bad-skill")
       mkdirSync(skillsDir, { recursive: true })
-      writeFileSync(join(skillsDir, "bad-skill.md"), "# Bad Skill\nNo frontmatter here", "utf-8")
+      writeFileSync(join(skillsDir, "SKILL.md"), "# Bad Skill\nNo frontmatter here", "utf-8")
 
       const report = runDoctorChecks(TMP)
-      const skillCheck = report.checks.find(c => c.id === "skills.frontmatter")
+      const skillCheck = report.checks.find(c => c.id === "skills.recursive")
       expect(skillCheck).toBeDefined()
       expect(skillCheck?.status).toBe("warn")
       expect(skillCheck?.remediation).toBeDefined()

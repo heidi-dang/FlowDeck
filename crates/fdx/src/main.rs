@@ -371,60 +371,57 @@ fn main() {
                 Ok(result) => {
                     let mut stdout = std::io::stdout();
                     match result {
-                        fdx::reader::ReadResult::Code(code_result) => {
-                            match options.format {
-                                OutputFormat::Text => {
-                                    if let Err(e) = text::print_text_output(
+                        fdx::reader::ReadResult::Code(code_result) => match options.format {
+                            OutputFormat::Text => {
+                                if let Err(e) = text::print_text_output(
+                                    &mut stdout,
+                                    &code_result.path,
+                                    &code_result.language,
+                                    &code_result.mode,
+                                    code_result.total_lines,
+                                    &code_result.symbols,
+                                    code_result.parse_error.as_deref(),
+                                ) {
+                                    eprintln!("Output error: {}", e);
+                                    process::exit(1);
+                                }
+                                if code_result.mode == "deep" {
+                                    if let Err(e) = text::print_dependencies(
                                         &mut stdout,
-                                        &code_result.path,
-                                        &code_result.language,
-                                        &code_result.mode,
-                                        code_result.total_lines,
-                                        &code_result.symbols,
-                                        code_result.parse_error.as_deref(),
-                                    ) {
-                                        eprintln!("Output error: {}", e);
-                                        process::exit(1);
-                                    }
-                                    if code_result.mode == "deep" {
-                                        if let Err(e) = text::print_dependencies(
-                                            &mut stdout,
-                                            &code_result.dependencies,
-                                        ) {
-                                            eprintln!("Output error: {}", e);
-                                            process::exit(1);
-                                        }
-                                    }
-                                }
-                                OutputFormat::Json => {
-                                    if let Err(e) = json::print_json_output(&mut stdout, &code_result)
-                                    {
-                                        eprintln!("Output error: {}", e);
-                                        process::exit(1);
-                                    }
-                                }
-                            }
-                        }
-                        fdx::reader::ReadResult::Text(text_result) => {
-                            match options.format {
-                                OutputFormat::Text => {
-                                    if let Err(e) = text::print_text_result(
-                                        &mut stdout, &text_result.path, &text_result,
+                                        &code_result.dependencies,
                                     ) {
                                         eprintln!("Output error: {}", e);
                                         process::exit(1);
                                     }
                                 }
-                                OutputFormat::Json => {
-                                    if let Err(e) =
-                                        json::print_json_text_result(&mut stdout, &text_result)
-                                    {
-                                        eprintln!("Output error: {}", e);
-                                        process::exit(1);
-                                    }
+                            }
+                            OutputFormat::Json => {
+                                if let Err(e) = json::print_json_output(&mut stdout, &code_result) {
+                                    eprintln!("Output error: {}", e);
+                                    process::exit(1);
                                 }
                             }
-                        }
+                        },
+                        fdx::reader::ReadResult::Text(text_result) => match options.format {
+                            OutputFormat::Text => {
+                                if let Err(e) = text::print_text_result(
+                                    &mut stdout,
+                                    &text_result.path,
+                                    &text_result,
+                                ) {
+                                    eprintln!("Output error: {}", e);
+                                    process::exit(1);
+                                }
+                            }
+                            OutputFormat::Json => {
+                                if let Err(e) =
+                                    json::print_json_text_result(&mut stdout, &text_result)
+                                {
+                                    eprintln!("Output error: {}", e);
+                                    process::exit(1);
+                                }
+                            }
+                        },
                     }
                 }
                 Err(e) => {
@@ -460,13 +457,17 @@ fn main() {
                     let mut stdout = std::io::stdout();
                     match format {
                         OutputFormat::Text => {
-                            if let Err(e) = text::print_search_results(&mut stdout, &matches, &pattern) {
+                            if let Err(e) =
+                                text::print_search_results(&mut stdout, &matches, &pattern)
+                            {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
                         }
                         OutputFormat::Json => {
-                            if let Err(e) = json::print_json_search_results(&mut stdout, &matches, &pattern) {
+                            if let Err(e) =
+                                json::print_json_search_results(&mut stdout, &matches, &pattern)
+                            {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
@@ -499,24 +500,43 @@ fn main() {
             let context = context.min(fdx::reader::grep::ABSOLUTE_MAX_CONTEXT);
             let max_matches = max_matches.min(fdx::reader::grep::ABSOLUTE_MAX_MATCHES);
 
-            match grep::grep_files(&pattern, &paths, context, fixed_strings, case_sensitive, max_matches) {
+            match grep::grep_files(
+                &pattern,
+                &paths,
+                context,
+                fixed_strings,
+                case_sensitive,
+                max_matches,
+            ) {
                 Ok((files, total_matches, truncated)) => {
                     let tee_path = if truncated {
                         let full_output = build_full_grep_output(&files, total_matches);
-                        fdx::tee::save_tee("grep", &full_output).ok().map(|p| p)
+                        fdx::tee::save_tee("grep", &full_output).ok()
                     } else {
                         None
                     };
                     let mut stdout = std::io::stdout();
                     match format {
                         OutputFormat::Text => {
-                            if let Err(e) = text::print_grep_results(&mut stdout, &files, total_matches, truncated, tee_path.as_deref()) {
+                            if let Err(e) = text::print_grep_results(
+                                &mut stdout,
+                                &files,
+                                total_matches,
+                                truncated,
+                                tee_path.as_deref(),
+                            ) {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
                         }
                         OutputFormat::Json => {
-                            if let Err(e) = json::print_json_grep_results(&mut stdout, &files, total_matches, truncated, tee_path.as_deref()) {
+                            if let Err(e) = json::print_json_grep_results(
+                                &mut stdout,
+                                &files,
+                                total_matches,
+                                truncated,
+                                tee_path.as_deref(),
+                            ) {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
@@ -547,18 +567,30 @@ fn main() {
             let format = parse_format(&format);
             let cache = AstCache::new();
 
-            match batch::batch_read(&patterns, mode, symbol.as_deref(), format.clone(), no_cache, max_files, &cache) {
+            match batch::batch_read(
+                &patterns,
+                mode,
+                symbol.as_deref(),
+                format.clone(),
+                no_cache,
+                max_files,
+                &cache,
+            ) {
                 Ok((items, _count, truncated)) => {
                     let mut stdout = std::io::stdout();
                     match format {
                         OutputFormat::Text => {
-                            if let Err(e) = text::print_batch_results(&mut stdout, &items, truncated) {
+                            if let Err(e) =
+                                text::print_batch_results(&mut stdout, &items, truncated)
+                            {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
                         }
                         OutputFormat::Json => {
-                            if let Err(e) = json::print_json_batch_results(&mut stdout, &items, truncated) {
+                            if let Err(e) =
+                                json::print_json_batch_results(&mut stdout, &items, truncated)
+                            {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
@@ -624,20 +656,28 @@ fn main() {
             let format = parse_format(&format);
             let path = path.unwrap_or_else(|| PathBuf::from("."));
 
-            let options = fdx::reader::ls::LsOptions { all, format: format.clone() };
+            let options = fdx::reader::ls::LsOptions {
+                all,
+                format: format.clone(),
+            };
 
             match fdx::reader::ls::ls_paths(&path, &options) {
                 Ok(result) => {
                     let mut stdout = std::io::stdout();
                     match format {
                         OutputFormat::Text => {
-                            if let Err(e) = fdx::output::ls_tree_text::print_ls_results(&mut stdout, &result) {
+                            if let Err(e) =
+                                fdx::output::ls_tree_text::print_ls_results(&mut stdout, &result)
+                            {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
                         }
                         OutputFormat::Json => {
-                            if let Err(e) = fdx::output::ls_tree_json::print_json_ls_results(&mut stdout, &result) {
+                            if let Err(e) = fdx::output::ls_tree_json::print_json_ls_results(
+                                &mut stdout,
+                                &result,
+                            ) {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
@@ -651,7 +691,12 @@ fn main() {
             }
         }
 
-        Commands::Tree { path, depth, dirs_only, format } => {
+        Commands::Tree {
+            path,
+            depth,
+            dirs_only,
+            format,
+        } => {
             let format = parse_format(&format);
             let path = path.unwrap_or_else(|| PathBuf::from("."));
 
@@ -662,13 +707,18 @@ fn main() {
                     let mut stdout = std::io::stdout();
                     match format {
                         OutputFormat::Text => {
-                            if let Err(e) = fdx::output::ls_tree_text::print_tree_results(&mut stdout, &result) {
+                            if let Err(e) =
+                                fdx::output::ls_tree_text::print_tree_results(&mut stdout, &result)
+                            {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
                         }
                         OutputFormat::Json => {
-                            if let Err(e) = fdx::output::ls_tree_json::print_json_tree_results(&mut stdout, &result) {
+                            if let Err(e) = fdx::output::ls_tree_json::print_json_tree_results(
+                                &mut stdout,
+                                &result,
+                            ) {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
@@ -726,23 +776,21 @@ fn main() {
             }
         }
 
-        Commands::Lint { linter, args } => {
-            match fdx::reader::lint::run_linter(&linter, &args) {
-                Ok(output) => {
-                    print!("{}", output.stdout);
-                    if !output.stderr.is_empty() {
-                        eprint!("{}", output.stderr);
-                    }
-                    if !output.success {
-                        process::exit(output.exit_code);
-                    }
+        Commands::Lint { linter, args } => match fdx::reader::lint::run_linter(&linter, &args) {
+            Ok(output) => {
+                print!("{}", output.stdout);
+                if !output.stderr.is_empty() {
+                    eprint!("{}", output.stderr);
                 }
-                Err(e) => {
-                    eprintln!("{}", e);
-                    process::exit(1);
+                if !output.success {
+                    process::exit(output.exit_code);
                 }
             }
-        }
+            Err(e) => {
+                eprintln!("{}", e);
+                process::exit(1);
+            }
+        },
 
         Commands::Outline {
             paths,
@@ -779,13 +827,21 @@ fn main() {
                     let mut stdout = std::io::stdout();
                     match format {
                         OutputFormat::Text => {
-                            if let Err(e) = fdx::output::outline_diff_text::print_outline_results(&mut stdout, &results) {
+                            if let Err(e) = fdx::output::outline_diff_text::print_outline_results(
+                                &mut stdout,
+                                &results,
+                            ) {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
                         }
                         OutputFormat::Json => {
-                            if let Err(e) = fdx::output::outline_diff_json::print_json_outline_results(&mut stdout, &results) {
+                            if let Err(e) =
+                                fdx::output::outline_diff_json::print_json_outline_results(
+                                    &mut stdout,
+                                    &results,
+                                )
+                            {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
@@ -825,13 +881,23 @@ fn main() {
                     let mut stdout = std::io::stdout();
                     match format {
                         OutputFormat::Text => {
-                            if let Err(e) = fdx::output::outline_diff_text::print_diff_results(&mut stdout, &results, &commit_str, staged) {
+                            if let Err(e) = fdx::output::outline_diff_text::print_diff_results(
+                                &mut stdout,
+                                &results,
+                                &commit_str,
+                                staged,
+                            ) {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
                         }
                         OutputFormat::Json => {
-                            if let Err(e) = fdx::output::outline_diff_json::print_json_diff_results(&mut stdout, &results, &commit_str, staged) {
+                            if let Err(e) = fdx::output::outline_diff_json::print_json_diff_results(
+                                &mut stdout,
+                                &results,
+                                &commit_str,
+                                staged,
+                            ) {
                                 eprintln!("Output error: {}", e);
                                 process::exit(1);
                             }
@@ -862,11 +928,7 @@ fn main() {
             let project_slug = std::path::Path::new(".")
                 .canonicalize()
                 .ok()
-                .and_then(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|s| s.to_owned())
-                })
+                .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_owned()))
                 .unwrap_or_default();
             let result = match action.as_str() {
                 "append" => fdx::commands::context::append(
@@ -906,11 +968,7 @@ fn main() {
             let project_slug = std::path::Path::new(".")
                 .canonicalize()
                 .ok()
-                .and_then(|p| {
-                    p.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(|s| s.to_owned())
-                })
+                .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_owned()))
                 .unwrap_or_default();
             let result = match action.as_str() {
                 "record" => fdx::commands::decisions::record(
@@ -956,11 +1014,15 @@ fn parse_format(format: &str) -> OutputFormat {
 }
 
 /// Reconstruct the full grep output as a string for teeing.
-fn build_full_grep_output(files: &[fdx::reader::grep::GrepFileResult], total_matches: usize) -> String {
+fn build_full_grep_output(
+    files: &[fdx::reader::grep::GrepFileResult],
+    total_matches: usize,
+) -> String {
     use std::fmt::Write as _;
     let mut output = String::new();
     for file in files {
-        let _ = writeln!(&mut output,
+        let _ = writeln!(
+            &mut output,
             "[file] {}  ({} matches)",
             file.path,
             file.matches.len()

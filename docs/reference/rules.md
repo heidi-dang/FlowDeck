@@ -102,8 +102,8 @@ To load only specific rules, add them to the `instructions` array in `opencode.j
 ```json
 {
   "instructions": [
-    "node_modules/@dv.nghiem/flowdeck/src/rules/common/coding-style.md",
-    "node_modules/@dv.nghiem/flowdeck/src/rules/typescript/patterns.md"
+    "node_modules/@heidi-dang/flowdeck/src/rules/common/coding-style.md",
+    "node_modules/@heidi-dang/flowdeck/src/rules/typescript/patterns.md"
   ]
 }
 ```

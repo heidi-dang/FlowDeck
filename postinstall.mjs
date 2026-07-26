@@ -1,53 +1,26 @@
-// postinstall.mjs
-// Runs after `npm install @dv.nghiem/flowdeck`
-// Only registers the plugin in opencode.json — agents/skills come from the npm package
+// postinstall.mjs — Safe, minimal postinstall for @heidi-dang/flowdeck
+//
+// Performs ONLY:
+// 1. Plugin registration in opencode.json (plugin list)
+// 2. Sets default_agent to "heidi" for new installations only
+//
+// Does NOT:
+// - Clone any Git repository
+// - Pull latest branch
+// - Install Rust or rustup
+// - Compile FDX
+// - Change existing default_agent
+// - Hide errors behind unconditional exit code zero
+// - Require machine-level toolchain installation
+//
+// For full installation features, use: npx @heidi-dang/flowdeck install
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, createWriteStream } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync, copyFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { execSync, execFileSync } from "node:child_process";
-import { get as httpsGet } from "node:https";
-import { createInterface } from "node:readline";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-
-const MIN_OPENCODE_VERSION = "1.4.0";
-const FLOWDECK_REPO_URL = "https://github.com/DVNghiem/FlowDeck.git";
-const FLOWDECK_INSTALL_DIR = process.env.FLOWDECK_INSTALL_DIR || join(homedir(), ".local", "share", "flowdeck");
-
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-function parseVersion(version) {
-  return version
-    .replace(/^v/, "")
-    .split("-")[0]
-    .split(".")
-    .map((p) => Number.parseInt(p, 10) || 0);
-}
-
-function versionMeetsMin(current, minimum) {
-  const cur = parseVersion(current);
-  const min = parseVersion(minimum);
-  const len = Math.max(cur.length, min.length);
-  for (let i = 0; i < len; i++) {
-    if ((cur[i] ?? 0) > (min[i] ?? 0)) return true;
-    if ((cur[i] ?? 0) < (min[i] ?? 0)) return false;
-  }
-  return true;
-}
-
-function checkOpenCodeVersion() {
-  try {
-    const out = execSync("opencode --version", {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "ignore"],
-    }).trim();
-    return { ok: versionMeetsMin(out, MIN_OPENCODE_VERSION), version: out };
-  } catch {
-    return { ok: true, version: null }; // opencode not on PATH yet — non-fatal
-  }
-}
 
 function getOpenCodeConfigDir() {
   return (
@@ -58,314 +31,149 @@ function getOpenCodeConfigDir() {
   );
 }
 
-// ── repo clone ───────────────────────────────────────────────────────────────
+/**
+ * Strip single-line and multi-line comments from JSONC text safely,
+ * preserving strings that contain comment delimiters.
+ */
+function stripJsonComments(jsoncText) {
+  let insideString = false;
+  let insideComment = false; // false | "single" | "multi"
+  let result = "";
+  for (let i = 0; i < jsoncText.length; i++) {
+    const char = jsoncText[i];
+    const nextChar = jsoncText[i + 1];
+    if (insideComment === "single") {
+      if (char === "\n" || char === "\r") {
+        insideComment = false;
+        result += char;
+      }
+      continue;
+    }
+    if (insideComment === "multi") {
+      if (char === "*" && nextChar === "/") {
+        insideComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (insideString) {
+      result += char;
+      if (char === "\\" && i + 1 < jsoncText.length) {
+        result += jsoncText[++i];
+      } else if (char === insideString) {
+        insideString = false;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      insideString = char;
+      result += char;
+      continue;
+    }
+    if (char === "/" && nextChar === "/") {
+      insideComment = "single";
+      i++;
+      continue;
+    }
+    if (char === "/" && nextChar === "*") {
+      insideComment = "multi";
+      i++;
+      continue;
+    }
+    result += char;
+  }
+  return result;
+}
 
 /**
- * Clone or update the FlowDeck repo to FLOWDECK_INSTALL_DIR.
- * Used when crates/fdx is not available locally (e.g., npm install).
+ * Safe parse with exact error location.
  */
-function cloneRepo() {
-  if (existsSync(join(FLOWDECK_INSTALL_DIR, ".git"))) {
-    console.log(`📥 FlowDeck repo already cloned at ${FLOWDECK_INSTALL_DIR}`);
-    console.log("📥 Pulling latest changes...");
-    try {
-      execSync("git pull --quiet", {
-        cwd: FLOWDECK_INSTALL_DIR,
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "ignore"],
-        timeout: 60_000,
-      });
-    } catch {
-      console.warn("⚠️  git pull failed, using existing code");
-    }
-    return FLOWDECK_INSTALL_DIR;
-  }
-
-  console.log(`📥 Cloning FlowDeck repo to ${FLOWDECK_INSTALL_DIR}...`);
+function safeParse(content) {
   try {
-    mkdirSync(dirname(FLOWDECK_INSTALL_DIR), { recursive: true });
-    execSync(`git clone --depth 1 --quiet "${FLOWDECK_REPO_URL}" "${FLOWDECK_INSTALL_DIR}"`, {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 120_000,
-    });
-    return FLOWDECK_INSTALL_DIR;
+    const stripped = stripJsonComments(content);
+    return { ok: true, data: JSON.parse(stripped), rawContent: content };
   } catch (err) {
-    console.warn("⚠️  Failed to clone FlowDeck repo:", String(err.stderr || err.message || err).split("\n")[0]);
-    return null;
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg, rawContent: content };
   }
 }
 
-// ── fdx install ──────────────────────────────────────────────────────────────
-
-/**
- * Install the fdx Rust CLI via cargo install.
- *
- * Decision tree:
- * 1. FDX_SKIP set? → skip
- * 2. fdx already in PATH? → done
- * 3. Resolve fdx source: local crates/fdx or clone repo
- * 4. cargo in PATH? → build (step 5)
- * 5. No cargo → offer rustup install
- * 6. cargo install --path crates/fdx
- * 7. Verify with fdx --version
- *
- * Never throws. All errors are warnings. fdx is optional.
- */
-async function installFdx() {
-  // Step 0: skip flag
-  if (process.env.FDX_SKIP === "1") {
-    console.log("⏭  fdx install skipped (FDX_SKIP=1)");
-    return;
-  }
-
-  // Step 1: already installed?
-  try {
-    const version = execSync("fdx --version", {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "ignore"],
-      timeout: 10_000,
-    }).trim();
-    console.log(`✅ fdx already installed (${version})`);
-    return;
-  } catch {
-    // not in PATH — proceed
-  }
-
-  // Step 2: resolve fdx source path
-  let fdxPath = join(__dirname, "crates", "fdx");
-  if (!existsSync(fdxPath)) {
-    const clonedDir = cloneRepo();
-    if (clonedDir) {
-      fdxPath = join(clonedDir, "crates", "fdx");
-    } else {
-      console.warn("⚠️  crates/fdx not found locally and repo clone failed — skipping fdx install");
-      return;
-    }
-  }
-
-  if (!existsSync(fdxPath)) {
-    console.warn(`⚠️  crates/fdx not found at ${fdxPath} — skipping fdx install`);
-    return;
-  }
-
-  // Step 3: cargo available?
-  let hasCargo = false;
-  try {
-    execSync("cargo --version", {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "ignore"],
-      timeout: 10_000,
-    });
-    hasCargo = true;
-  } catch {
-    hasCargo = false;
-  }
-
-  // Step 4: install Rust if needed
-  if (!hasCargo) {
-    const isCI = process.env.CI === "true" || process.env.CI === "1";
-    const noPrompt = process.env.FDX_NO_PROMPT === "1";
-    const autoInstall = process.env.FDX_AUTO_INSTALL === "1";
-
-    if ((isCI || noPrompt) && !autoInstall) {
-      console.warn(
-        "⚠️  cargo not found. Set FDX_AUTO_INSTALL=1 to install Rust automatically, or install manually: https://rustup.rs"
-      );
-      return;
-    }
-
-    if (!autoInstall && !isCI && !noPrompt) {
-      // Interactive prompt
-      const rl = createInterface({
-        input: process.stdin,
-        output: process.stdout,
-      });
-      const answer = await Promise.race([
-        new Promise((resolve) => {
-          rl.question("cargo not found. Install Rust via rustup? [y/N] ", (ans) => {
-            resolve(ans.trim().toLowerCase());
-          });
-        }),
-        new Promise((resolve) => setTimeout(() => resolve("n"), 30_000)),
-      ]);
-      rl.close();
-
-      if (answer !== "y" && answer !== "yes") {
-        console.warn("⚠️  Skipping fdx install");
-        return;
-      }
-    }
-
-    // Step 4a: install rustup non-interactively
-    console.log("Installing Rust via rustup...");
-
-    if (process.platform === "win32") {
-      // Windows: download rustup-init.exe
-      const rustupExe = join(homedir(), ".rustup-init.exe");
-      await new Promise((resolve, reject) => {
-        const file = createWriteStream(rustupExe);
-        httpsGet("https://win.rustup.rs/x86_64", (res) => {
-          if (res.statusCode !== 200) {
-            reject(new Error(`HTTP ${res.statusCode}`));
-            return;
-          }
-          res.pipe(file);
-          file.on("finish", () => {
-            file.close();
-            resolve(undefined);
-          });
-        }).on("error", reject);
-      });
-
-      try {
-        execSync(`"${rustupExe}" /S /NORESTART`, {
-          encoding: "utf-8",
-          stdio: ["pipe", "pipe", "pipe"],
-          timeout: 300_000,
-        });
-      } finally {
-        try {
-          unlinkSync(rustupExe);
-        } catch {
-          // ignore cleanup failure
-        }
-      }
-    } else {
-      // Unix
-      try {
-        execSync(
-          "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path",
-          {
-            encoding: "utf-8",
-            stdio: ["pipe", "pipe", "pipe"],
-            shell: true,
-            timeout: 300_000,
-          }
-        );
-      } catch (err) {
-        console.warn("⚠️  rustup install failed:", String(err.stderr || err.message || err));
-        console.warn("   Install Rust manually: https://rustup.rs");
-        return;
-      }
-    }
-
-    // Add cargo bin to PATH for this process
-    const cargoBin = join(homedir(), ".cargo", "bin");
-    process.env.PATH = `${cargoBin}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`;
-
-    // Verify cargo works now
-    try {
-      execSync("cargo --version", {
-        encoding: "utf-8",
-        stdio: ["pipe", "pipe", "ignore"],
-        timeout: 10_000,
-      });
-    } catch {
-      console.warn("⚠️  cargo still not available after rustup install");
-      return;
-    }
-  }
-
-  // Step 5: build and install fdx
-  console.log("Building fdx (this may take a minute on first build)...");
-  try {
-    execSync("cargo install --path . --quiet", {
-      cwd: fdxPath,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 300_000,
-    });
-    console.log("✅ fdx installed successfully");
-  } catch (err) {
-    console.warn("⚠️  fdx build failed — agents will fall back to native tools");
-    console.warn("   ", String(err.stderr || err.message || err).split("\n")[0]);
-    return;
-  }
-
-  // Step 6: verify
-  try {
-    const version = execSync("fdx --version", {
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "ignore"],
-      timeout: 10_000,
-    }).trim();
-    console.log(`✅ fdx ${version}`);
-  } catch {
-    console.warn("⚠️  fdx installed but --version check failed");
-  }
-}
-
-// ── main ─────────────────────────────────────────────────────────────────────
-
-async function main() {
-  // Version check (advisory only)
-  const versionCheck = checkOpenCodeVersion();
-  if (versionCheck.version && !versionCheck.ok) {
-    console.warn(`⚠  @dv.nghiem/flowdeck requires OpenCode >= ${MIN_OPENCODE_VERSION}`);
-    console.warn(`   Detected: ${versionCheck.version}`);
-    console.warn(`   Please update OpenCode: https://opencode.ai/docs`);
-  }
-
-  // Install fdx (optional, never fails npm install)
-  await installFdx();
-
+function main() {
   const configDir = getOpenCodeConfigDir();
   const configFile = join(configDir, "opencode.json");
 
   mkdirSync(configDir, { recursive: true });
 
-  let cfg = {};
+  let rawContent = "{}";
+  let existingData = {};
+
   if (existsSync(configFile)) {
-    const raw = readFileSync(configFile, "utf-8");
-    // Strip comments safely before checking validity
-    const stripped = raw.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, "$1");
-    try {
-      cfg = JSON.parse(stripped);
-    } catch (err) {
-      console.warn(`⚠️  Configuration at ${configFile} is malformed JSON/JSONC: ${err.message}`);
-      console.warn(`⚠️  Preserving existing configuration byte-for-byte without mutation.`);
+    rawContent = readFileSync(configFile, "utf-8");
+    const parsed = safeParse(rawContent);
+    if (!parsed.ok) {
+      // Malformed config — do NOT modify. Preserve byte-for-byte.
+      console.log(`⚠️  opencode.json is malformed: ${parsed.error}`);
+      console.log("⚠️  Preserving existing configuration without mutation.");
+      console.log("   Run 'npx @heidi-dang/flowdeck doctor' for diagnosis.");
       return;
     }
-
-    // Create backup before mutation
-    try {
-      writeFileSync(`${configFile}.bak`, raw, "utf-8");
-    } catch { /* ignore */ }
+    existingData = parsed.data || {};
   }
 
-  if (!Array.isArray(cfg.plugin)) cfg.plugin = [];
-  const already = cfg.plugin.some(
-    (p) => p === "@dv.nghiem/flowdeck" || String(p).startsWith("@dv.nghiem/flowdeck@")
+  // Create backup before any mutation
+  const isJsonc = rawContent.trim().includes("//") || rawContent.trim().includes("/*");
+  // We always back up the raw content (JSONC preserves comments in backup)
+  const backupPath = configFile + ".pre-install.bak";
+  try {
+    copyFileSync(configFile, backupPath);
+  } catch {
+    // Failed backup — still proceed for registration
+  }
+
+  const updated = JSON.parse(JSON.stringify(existingData));
+  let changed = false;
+
+  // Plugin registration
+  if (!Array.isArray(updated.plugin)) updated.plugin = [];
+  const pluginRef = "@heidi-dang/flowdeck";
+  const alreadyRegistered = updated.plugin.some(
+    (p) => p === pluginRef || String(p).startsWith(pluginRef + "@")
   );
-  if (!already) {
-    cfg.plugin.push("@dv.nghiem/flowdeck");
-    console.log(`✓ Added @dv.nghiem/flowdeck to plugin list`);
+  if (!alreadyRegistered) {
+    updated.plugin.push(pluginRef);
+    console.log(`✓ Added ${pluginRef} to plugin list`);
+    changed = true;
   } else {
     console.log(`✓ Plugin already registered`);
   }
 
-  if (!cfg.default_agent) {
-    cfg.default_agent = "orchestrator";
-    console.log(`✓ Set default_agent to orchestrator`);
+  // Set default_agent to heidi for new installations ONLY
+  // Preserve existing explicit settings
+  if (updated.default_agent === undefined || updated.default_agent === null) {
+    updated.default_agent = "heidi";
+    console.log(`✓ Set default_agent to heidi`);
+    changed = true;
   } else {
-    console.log(`✓ default_agent already set`);
+    console.log(`✓ default_agent already set to "${updated.default_agent}" — preserved`);
   }
 
-  const tmpFile = join(configDir, `.opencode.json.tmp.${Math.random().toString(36).slice(2)}`);
-  writeFileSync(tmpFile, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+  if (!changed) {
+    console.log("\n✓ FlowDeck postinstall complete (no changes needed).");
+    return;
+  }
+
+  // Atomic write: temp file + rename
+  const tmpFile = join(configDir, `.opencode.json.tmp.${Date.now()}.${Math.random().toString(36).slice(2)}`);
   try {
-    const fs = await import("node:fs");
-    fs.renameSync(tmpFile, configFile);
-  } catch {
-    writeFileSync(configFile, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+    writeFileSync(tmpFile, JSON.stringify(updated, null, 2) + "\n", "utf-8");
+    renameSync(tmpFile, configFile);
+    console.log(`\n✓ FlowDeck ready! A fresh OpenCode session is required to activate.`);
+    console.log(`  Config: ${configDir}`);
+  } catch (err) {
+    try { unlinkSync(tmpFile); } catch { /* ignore cleanup */ }
+    console.error(`✗ Failed to write configuration: ${err.message}`);
+    process.exit(1);
   }
-
-  console.log(`\n✅ FlowDeck ready! Restart OpenCode to activate.`);
-  console.log(`   Config: ${configDir}`);
 }
 
-main().catch(() => {
-  // Never fail npm install
-  process.exit(0);
-});
+main();

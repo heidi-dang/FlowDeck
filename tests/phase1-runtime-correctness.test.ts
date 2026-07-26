@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync } from "fs"
-import { join } from "path"
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from "fs"
+import { join, dirname, basename } from "path"
 import { tmpdir } from "os"
 import { validateAgent } from "@/services/agent-validator"
 import { toolGuardHook, executePostWriteHook, getWriteCount, clearWriteCounter } from "@/hooks/tool-guard"
@@ -143,7 +143,11 @@ describe("Phase 1 — Critical Runtime Correctness Repairs", () => {
       expect(res.ok).toBe(true)
       expect(res.data?.default_agent).toBe("heidi")
       expect(res.data?.plugin).toEqual(["existing-plugin"])
-      expect(existsSync(`${configFile}.bak`)).toBe(true)
+      // Backup is now created as .bak.<timestamp> — check for existence of any backup file
+      const backupFiles = readdirSync(dirname(configFile)).filter((f) =>
+        f.startsWith(basename(configFile) + ".bak."),
+      )
+      expect(backupFiles.length).toBeGreaterThan(0)
     })
   })
 

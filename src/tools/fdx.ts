@@ -1,5 +1,5 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
-import { execFileSync, execSync } from "node:child_process"
+import { execFileSync } from "node:child_process"
 import { existsSync, readFileSync, readdirSync, statSync } from "fs"
 import { join, resolve } from "path"
 import {
@@ -9,6 +9,40 @@ import {
   readOrMissing,
   clearFileWithLock,
 } from "./planning-state-lib"
+
+// ─── Security: Executable and argument validation ──────────────────────────
+
+/**
+ * Validate that an executable name is in the allowlist.
+ * Prevents command injection via arbitrary executable names.
+ */
+function validateExecutable(name: string, allowlist: string[]): string {
+  if (!allowlist.includes(name)) {
+    throw new Error(`Executable "${name}" is not in the allowlist. Allowed: ${allowlist.join(", ")}`)
+  }
+  // Ensure the name contains no path separators or shell metacharacters
+  if (/[\\/;|&`$(){}[\]<>#!~]/.test(name)) {
+    throw new Error(`Executable name "${name}" contains invalid characters`)
+  }
+  return name
+}
+
+/**
+ * Validate argument array for shell injection attempts.
+ * Rejects args containing shell metacharacters.
+ * Allows normal file paths and flags.
+ */
+function validateArgs(args: string[]): string[] {
+  // Shell metacharacters that enable command injection
+  const INJECTION_CHARS = /[;|&`$(){}[\]<>!#~]/  // includes ;, |, &, `, $, etc.
+
+  for (const arg of args) {
+    if (INJECTION_CHARS.test(arg)) {
+      throw new Error(`Argument "${arg}" rejected: contains shell metacharacters`)
+    }
+  }
+  return args
+}
 
 let fdxAvailableCache: boolean | null = null
 
@@ -20,7 +54,7 @@ export function checkFdxAvailability(forceRefresh = false): boolean {
     return fdxAvailableCache
   }
   try {
-    execSync("fdx --help", { stdio: "ignore" })
+    execFileSync("fdx", ["--help"], { stdio: "ignore" })
     fdxAvailableCache = true
   } catch {
     fdxAvailableCache = false
@@ -122,7 +156,7 @@ function nativeSearchFallback(query: string, searchPath: string = "."): string {
 
 function nativeGitFallback(args: string[]): string {
   try {
-    return execSync(`git ${args.join(" ")}`, { encoding: "utf-8", timeout: 15000 })
+    return execFileSync("git", args, { encoding: "utf-8", timeout: 15000 })
   } catch (err: any) {
     return `[FDX Git Fallback Output]\n${err.stdout || err.stderr || err.message}`
   }
@@ -491,8 +525,9 @@ export const fdxTestTool: ToolDefinition = tool({
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
       try {
-        const cmdStr = `${args.runner} ${args.args ? args.args.join(" ") : ""}`
-        return execSync(cmdStr, { encoding: "utf-8", timeout: 30000 })
+        const safeRunner = validateExecutable(args.runner, ["cargo", "pytest", "jest", "vitest", "go", "rspec", "rails"])
+        const safeArgs = validateArgs(args.args ?? [])
+        return execFileSync(safeRunner, safeArgs, { encoding: "utf-8", timeout: 30000 })
       } catch (err: any) {
         return `[FDX Test Fallback Output]\n${err.stdout || err.stderr || err.message}`
       }
@@ -503,8 +538,9 @@ export const fdxTestTool: ToolDefinition = tool({
       return runFdx(cmd)
     } catch {
       try {
-        const cmdStr = `${args.runner} ${args.args ? args.args.join(" ") : ""}`
-        return execSync(cmdStr, { encoding: "utf-8", timeout: 30000 })
+        const safeRunner = validateExecutable(args.runner, ["cargo", "pytest", "jest", "vitest", "go", "rspec", "rails"])
+        const safeArgs = validateArgs(args.args ?? [])
+        return execFileSync(safeRunner, safeArgs, { encoding: "utf-8", timeout: 30000 })
       } catch (err: any) {
         return `[FDX Test Fallback Output]\n${err.stdout || err.stderr || err.message}`
       }
@@ -525,8 +561,9 @@ export const fdxLintTool: ToolDefinition = tool({
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
       try {
-        const cmdStr = `${args.linter} ${args.args ? args.args.join(" ") : ""}`
-        return execSync(cmdStr, { encoding: "utf-8", timeout: 30000 })
+        const safeLinter = validateExecutable(args.linter, ["ruff", "clippy", "tsc", "eslint", "biome", "golangci", "rubocop"])
+        const safeArgs = validateArgs(args.args ?? [])
+        return execFileSync(safeLinter, safeArgs, { encoding: "utf-8", timeout: 30000 })
       } catch (err: any) {
         return `[FDX Lint Fallback Output]\n${err.stdout || err.stderr || err.message}`
       }
@@ -537,8 +574,9 @@ export const fdxLintTool: ToolDefinition = tool({
       return runFdx(cmd)
     } catch {
       try {
-        const cmdStr = `${args.linter} ${args.args ? args.args.join(" ") : ""}`
-        return execSync(cmdStr, { encoding: "utf-8", timeout: 30000 })
+        const safeLinter = validateExecutable(args.linter, ["ruff", "clippy", "tsc", "eslint", "biome", "golangci", "rubocop"])
+        const safeArgs = validateArgs(args.args ?? [])
+        return execFileSync(safeLinter, safeArgs, { encoding: "utf-8", timeout: 30000 })
       } catch (err: any) {
         return `[FDX Lint Fallback Output]\n${err.stdout || err.stderr || err.message}`
       }

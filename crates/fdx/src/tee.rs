@@ -33,7 +33,13 @@ pub fn save_tee(command_label: &str, full_output: &str) -> Result<PathBuf> {
 fn sanitize_label(label: &str) -> String {
     label
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

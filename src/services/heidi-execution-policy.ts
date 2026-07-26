@@ -114,6 +114,7 @@ export interface SurfaceAreaCheckResult {
 /**
  * Perform before-edit surface-area check.
  * Inspects callers/dependents, tests, config, and error paths before making changes.
+ * Uses real filesystem inspection to provide meaningful data.
  */
 export function performSurfaceAreaCheck(input: {
   targetFiles: string[]
@@ -123,11 +124,12 @@ export function performSurfaceAreaCheck(input: {
   assumptions?: string[]
   errorPaths?: string[]
 }): SurfaceAreaCheckResult {
-  const dependents = input.knownDependents ?? []
-  const existingTests = input.knownTests ?? []
-  const relatedConfig = input.knownConfig ?? []
-  const assumptions = input.assumptions ?? []
-  const errorPaths = input.errorPaths ?? []
+  // Perform actual filesystem inspection for real data
+  const dependents = discoverActualDependents(input.targetFiles)
+  const existingTests = discoverActualTests(input.targetFiles)
+  const relatedConfig = discoverRelatedConfig(input.targetFiles)
+  const assumptions = input.assumptions ?? deriveAssumptions(input.targetFiles)
+  const errorPaths = input.errorPaths ?? discoverErrorPaths(input.targetFiles)
 
   return {
     dependents,
@@ -137,6 +139,169 @@ export function performSurfaceAreaCheck(input: {
     errorPaths,
     readyForEdit: input.targetFiles.length > 0,
   }
+}
+
+/**
+ * Discover actual dependent files by looking for imports/references to target files.
+ * In a real runtime, this would use codegraph or grep-based dependency analysis.
+ */
+function discoverActualDependents(targetFiles: string[]): string[] {
+  const results: string[] = []
+  for (const file of targetFiles) {
+    try {
+      const { existsSync, readFileSync, readdirSync } = require("fs") as any
+      const { dirname, basename, extname, join } = require("path") as any
+      if (!existsSync(file)) continue
+      const name = basename(file, extname(file))
+      const dir = dirname(file)
+
+      // Check sibling files for imports
+      const siblings = readdirSync(dir).filter((f: string) => f.endsWith(".ts") || f.endsWith(".tsx"))
+      for (const sibling of siblings) {
+        if (sibling === basename(file)) continue
+        try {
+          const content = readFileSync(join(dir, sibling), "utf-8")
+          if (content.includes(`./${name}`) || content.includes(`"${name}"`) || content.includes(`'${name}'`)) {
+            results.push(join(dir, sibling))
+          }
+        } catch { /* skip unreadable */ }
+      }
+
+      // Check index files that might re-export
+      const indexFiles = ["index.ts", "index.tsx", "index.js"]
+      for (const idx of indexFiles) {
+        const idxPath = join(dir, idx)
+        if (idxPath !== file && existsSync(idxPath)) {
+          try {
+            const content = readFileSync(idxPath, "utf-8")
+            if (content.includes(`./${name}`) || content.includes(`"${name}"`)) {
+              results.push(idxPath)
+            }
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* silent fallback */ }
+  }
+  return results
+}
+
+/**
+ * Discover actual test files related to target files.
+ */
+function discoverActualTests(targetFiles: string[]): string[] {
+  const results: string[] = []
+  for (const file of targetFiles) {
+    try {
+      const { existsSync, readdirSync } = require("fs") as any
+      const { dirname, basename, extname, join } = require("path") as any
+      const dir = dirname(file)
+      const name = basename(file, extname(file))
+
+      // Look for corresponding test files
+      const testPatterns = [
+        `${name}.test.ts`, `${name}.test.tsx`, `${name}.spec.ts`,
+        `${name}.test.js`, `${name}.spec.js`,
+        `${name}.test.mjs`, `${name}.spec.mjs`,
+      ]
+
+      // Check in same directory
+      const siblings = readdirSync(dir)
+      for (const pattern of testPatterns) {
+        const testPath = join(dir, pattern)
+        if (existsSync(testPath)) results.push(testPath)
+      }
+
+      // Check in __tests__ directory
+      const testsDir = join(dir, "__tests__")
+      if (existsSync(testsDir)) {
+        const testFiles = readdirSync(testsDir)
+        for (const tf of testFiles) {
+          if (tf.includes(name) && (tf.endsWith(".test.ts") || tf.endsWith(".spec.ts") || tf.endsWith(".test.js"))) {
+            results.push(join(testsDir, tf))
+          }
+        }
+      }
+
+      // Check top-level tests directory
+      const rootTests = join(process.cwd(), "tests")
+      if (existsSync(rootTests)) {
+        const rootFiles = readdirSync(rootTests)
+        for (const rf of rootFiles) {
+          if (rf.includes(name) && (rf.endsWith(".test.ts") || rf.endsWith(".spec.ts"))) {
+            results.push(join(rootTests, rf))
+          }
+        }
+      }
+    } catch { /* silent fallback */ }
+  }
+  return results
+}
+
+/**
+ * Discover related configuration files.
+ */
+function discoverRelatedConfig(targetFiles: string[]): string[] {
+  const configPatterns = [
+    "package.json", "tsconfig.json", "tsconfig.build.json",
+    ".flowdeck.json", ".flowdeck.jsonc", ".gitignore",
+    "Cargo.toml", "Cargo.lock", "mkdocs.yml",
+    ".eslintrc.js", ".eslintrc.json", ".prettierrc",
+    "vitest.config.ts", "vitest.config.js", "jest.config.ts",
+  ]
+  const results: string[] = []
+  for (const pattern of configPatterns) {
+    try {
+      const { existsSync, join } = require("path") as any
+      const { readdirSync } = require("fs") as any
+      const configPath = join(process.cwd(), pattern)
+      if (existsSync(configPath)) results.push(configPath)
+    } catch { /* skip */ }
+  }
+  return results
+}
+
+/**
+ * Derive assumptions from file types being modified.
+ */
+function deriveAssumptions(targetFiles: string[]): string[] {
+  const assumptions: string[] = []
+  for (const file of targetFiles) {
+    if (file.endsWith(".ts") || file.endsWith(".tsx")) {
+      if (!assumptions.includes("TypeScript types are valid")) assumptions.push("TypeScript types are valid")
+      if (!assumptions.includes("Strict null checks pass")) assumptions.push("Strict null checks pass")
+    }
+    if (file.endsWith(".test.ts") || file.endsWith(".spec.ts")) {
+      if (!assumptions.includes("Existing tests pass before change")) assumptions.push("Existing tests pass before change")
+    }
+    if (file.endsWith(".json") || file.endsWith(".jsonc")) {
+      if (!assumptions.includes("JSON/JSONC is valid")) assumptions.push("JSON/JSONC is valid")
+    }
+  }
+  assumptions.push("No side effects on unrelated modules")
+  return assumptions
+}
+
+/**
+ * Discover error paths by checking for error handling patterns in similar files.
+ */
+function discoverErrorPaths(targetFiles: string[]): string[] {
+  const errorPaths: string[] = []
+  for (const file of targetFiles) {
+    try {
+      const { existsSync, readFileSync } = require("fs") as any
+      if (!existsSync(file)) continue
+      const content = readFileSync(file, "utf-8")
+      if (content.includes("throw ") && !errorPaths.includes("Error paths from existing code")) {
+        errorPaths.push("Error paths from existing code")
+      }
+      if (content.includes("catch") && !errorPaths.includes("Exception handling exists")) {
+        errorPaths.push("Exception handling exists")
+      }
+      if (content.includes("undefined") || content.includes("null"))
+        if (!errorPaths.includes("Null/undefined checks needed")) errorPaths.push("Null/undefined checks needed")
+    } catch { /* skip */ }
+  }
+  return errorPaths
 }
 
 export interface FailureRecoveryState {

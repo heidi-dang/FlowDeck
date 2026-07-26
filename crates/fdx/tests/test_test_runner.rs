@@ -32,7 +32,14 @@ fn test_test_unsupported_runner() {
         .output()
         .expect("fdx test failed");
 
-    assert!(!output.status.success(), "should fail for unsupported runner");
+    assert!(
+        !output.status.success(),
+        "should fail for unsupported runner"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unsupported"), "should show unsupported error: {}", stderr);
+    assert!(
+        stderr.contains("unsupported"),
+        "should show unsupported error: {}",
+        stderr
+    );
 }

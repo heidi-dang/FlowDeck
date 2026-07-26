@@ -42,14 +42,26 @@ fn test_tree_dirs_only() {
     fs::write(temp.path().join("file.txt"), "hello").unwrap();
 
     let output = Command::new(fdx_bin())
-        .args(["tree", ".", "--depth", "2", "--dirs-only", "--format", "text"])
+        .args([
+            "tree",
+            ".",
+            "--depth",
+            "2",
+            "--dirs-only",
+            "--format",
+            "text",
+        ])
         .current_dir(temp.path())
         .output()
         .expect("fdx tree failed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("subdir"), "should show subdir: {}", stdout);
-    assert!(!stdout.contains("file.txt"), "should not show file: {}", stdout);
+    assert!(
+        !stdout.contains("file.txt"),
+        "should not show file: {}",
+        stdout
+    );
 }
 
 #[test]

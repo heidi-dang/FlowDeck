@@ -32,7 +32,14 @@ fn test_lint_unsupported() {
         .output()
         .expect("fdx lint failed");
 
-    assert!(!output.status.success(), "should fail for unsupported linter");
+    assert!(
+        !output.status.success(),
+        "should fail for unsupported linter"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unsupported"), "should show unsupported error: {}", stderr);
+    assert!(
+        stderr.contains("unsupported"),
+        "should show unsupported error: {}",
+        stderr
+    );
 }

@@ -88,13 +88,13 @@ const plugin: Plugin = async ({ directory, client }) => {
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
   return {
-    name: "@dv.nghiem/flowdeck",
+    name: "@heidi-dang/flowdeck",
     agent: {},
     mcp: mcps,
 
     config: async (cfg: Record<string, unknown>) => {
       if (!(cfg as { default_agent?: string }).default_agent) {
-        (cfg as { default_agent?: string }).default_agent = "orchestrator"
+        (cfg as { default_agent?: string }).default_agent = "heidi"
       }
 
       flowdeckConfig = loadFlowDeckConfig(directory)

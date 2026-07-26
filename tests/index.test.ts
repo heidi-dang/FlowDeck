@@ -79,7 +79,7 @@ describe("plugin entry", () => {
     const client = createMockClient()
     const instance = await loadPlugin(client)
 
-    expect(instance.name).toBe("@dv.nghiem/flowdeck")
+    expect(instance.name).toBe("@heidi-dang/flowdeck")
     expect(instance.agent).toBeDefined()
     expect(instance.mcp).toBeDefined()
     expect(instance.tool).toBeDefined()

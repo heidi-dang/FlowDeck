@@ -631,18 +631,40 @@ export class OrchestratorGuard {
 
   check(sessionId: string, toolName: string, args?: unknown, agentName?: string): void {
     if (DISABLED) return
+
+    // ── Agent-specific guard policies ────────────────────────────────────
+    // heidi: direct execution permitted, justified delegation permitted.
+    // Only destructive operations (rm -rf, system changes, etc.) are blocked
+    // by toolGuardHook. The orchestrator guard does NOT apply deny-by-default
+    // to Heidi.
+    if (agentName === "heidi") {
+      // Heidi is allowed direct execution. Only block destructive shell
+      // commands that would modify system state beyond the project.
+      if (isShellTool(toolName)) {
+        const cmd = readCommandArg(args)
+        if (cmd === null) return // no command string — allow
+        const cls = classifyShellCommand(cmd, { workingDir: process.cwd() })
+        // Allow read, allow mutating within project (Heidi can edit files)
+        // Only block truly dangerous/risky operations
+        if (cls.category === "risky" || cls.category === "unknown") {
+          throw new Error(`[Orchestrator Guard] [block-${cls.category}] Heidi blocked a ${cls.category} shell command: ${cls.reason}`)
+        }
+        return
+      }
+      return // Heidi: no deny-by-default for non-shell tools
+    }
+
     // Non-orchestrator agents are governed solely by toolGuardHook
     // (per-agent allowedTools/forbiddenActions contracts).
+    if (agentName !== undefined && agentName !== "orchestrator") return
+
+    // orchestrator (compatibility mode): coordinate, don't execute.
     // Only the orchestrator agent (or unknown/undefined — conservative default)
     // is subject to this deny-by-default guard.
-    if (agentName !== undefined && agentName !== "orchestrator" && agentName !== "heidi") return
     if (this.primarySessionId === null) return
     if (sessionId !== this.primarySessionId) return
+
     if (isAlwaysAllowed(toolName)) {
-      // Multiplexed dispatchers (codegraph, memory) sit on the always-allowed
-      // list for the read-only case, but we still need to inspect args when
-      // the caller invokes the bare dispatcher. If the args describe a
-      // mutating action, reject here.
       const multiplexed = isReadOnlyMultiplexedAction(toolName, args)
       if (multiplexed === false) {
         throw new Error(this.blockMessage(toolName))
@@ -650,9 +672,7 @@ export class OrchestratorGuard {
       return
     }
     if (isReadOnlyMcpTool(toolName)) return
-    // Shell-execution tools: not in BLOCKED_TOOLS, not in ALWAYS_ALLOWED, and
-    // not MCP prefixes. The orchestrator IS allowed to use them for read-only
-    // inspection, but the actual command must be classified first.
+    // Shell-execution tools for orchestrator (read-only only)
     if (isShellTool(toolName)) {
       const cmd = readCommandArg(args)
       if (cmd === null) {
@@ -662,9 +682,7 @@ export class OrchestratorGuard {
       if (cls.category === "read") return
       throw new Error(this.shellBlockMessage(toolName, cls.reason, cls.category))
     }
-    // Anything not explicitly allowed for the primary session is rejected.
-    // This is a deny-by-default policy: unknown tool names and mutating
-    // operations on normally-allowed MCP families both fall through to here.
+    // Deny-by-default for orchestrator only
     throw new Error(this.blockMessage(toolName))
   }
 

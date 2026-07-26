@@ -46,11 +46,7 @@ fn try_claim(data_path: &Path) -> bool {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&lock)
-    {
+    match OpenOptions::new().write(true).create_new(true).open(&lock) {
         Ok(mut f) => {
             let _ = writeln!(f, "{}:{}", pid, ts);
             true
@@ -114,7 +110,11 @@ pub fn append_with_lock(data_path: &Path, line: &str) {
         .and_then(|mut f| f.write_all(line.as_bytes()));
 
     if let Err(e) = result {
-        eprintln!("[appendWithLock] write failed for {}: {}", data_path.display(), e);
+        eprintln!(
+            "[appendWithLock] write failed for {}: {}",
+            data_path.display(),
+            e
+        );
     }
 
     if acquired {

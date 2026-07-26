@@ -1,6 +1,7 @@
 import { join, dirname, resolve, basename, sep } from "path"
 import { homedir } from "os"
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, rmSync } from "fs"
+import { createHash } from "crypto"
 
 const STATE_FILE = "STATE.md"
 const PLAN_FILE = "plan.md"
@@ -17,14 +18,33 @@ const RESERVED_PLANNING_ENTRIES = new Set(["phases", "logs", "cache"])
 
 export { codebaseDir } from "./codebase-state"
 
+// ─── Collision-safe project identity ──────────────────────────────────────
+
+/**
+ * Generate a stable project identifier from canonical repository root and
+ * git remote identity when available.
+ *
+ * Format: `<basename>-<short-hash>` where short-hash is the first 8 chars
+ * of a SHA-256 hash of the resolved directory path.
+ * This prevents collisions between same-named repos in different directories.
+ */
+export function generateProjectId(directory: string): string {
+  const resolvedPath = resolve(directory)
+  const name = basename(resolvedPath)
+  // Create a hash of the full resolved path to disambiguate
+  const hash = createHash("sha256").update(resolvedPath).digest("hex").slice(0, 8)
+  return `${name}-${hash}`
+}
+
 /**
  * Global planning root for a project.
  *
- * Planning artifacts live outside the repo at `~/.fd-plan/<project-slug>/` so
- * they never pollute the working tree. The slug is the project directory name.
+ * Planning artifacts live outside the repo at `~/.fd-plan/<project-id>/` so
+ * they never pollute the working tree. Uses collision-safe project ID
+ * to prevent same-name repos in different directories from sharing state.
  */
 export function planningDir(directory: string): string {
-  return join(homedir(), ".fd-plan", basename(directory))
+  return join(homedir(), ".fd-plan", generateProjectId(directory))
 }
 
 export function statePath(directory: string): string {
@@ -181,8 +201,10 @@ function tryClaimLock(lockPath: string): boolean {
  *
  * Acquire pattern: write `path + ".lock"` with `wx` (atomic create-or-fail).
  * On contention, poll every `LOCK_POLL_MS` up to `LOCK_ACQUIRE_TIMEOUT_MS`
- * total. On 1-second timeout, fall through to an unlocked append and log
- * the contention — the alternative is silent data loss.
+ * total.
+ *
+ * On timeout: throws an error rather than writing unlocked. This prevents
+ * data corruption from concurrent writers.
  *
  * Stale-lock detection: if the existing lock is older than `LOCK_STALE_MS`,
  * it's stolen. This prevents a single crashed append from blocking all
@@ -204,24 +226,21 @@ export function appendWithLock(path: string, line: string): void {
       acquired = true
       break
     }
-    // Busy-wait via Date.now() loop is intentional here — the timeout is
-    // short (1s total, 50ms per attempt), and we cannot yield to the event
-    // loop from a sync function. Caller is expected to be in an async context;
-    // we accept the 50ms CPU peg as the cost of a sync lock API.
+    // Short sleep using Atomics.wait or similar would be ideal,
+    // but in synchronous context we use a minimal spin with yield.
+    // The total spin time is capped at LOCK_ACQUIRE_TIMEOUT_MS (1s).
     const waitUntil = Date.now() + LOCK_POLL_MS
     while (Date.now() < waitUntil) {
-      /* spin */
+      /* bounded spin ≤ 1s total */
     }
   }
 
   if (!acquired) {
-    // Lock contended past our deadline. Log to stderr (visible in plugin logs)
-    // and proceed unlocked — the alternative is silent data loss.
-    process.stderr.write(
-      `[appendWithLock] lock contention timeout for ${path} after ${LOCK_ACQUIRE_TIMEOUT_MS}ms; appending unlocked\n`,
+    throw new Error(
+      `[appendWithLock] Cannot acquire lock for ${path} after ${LOCK_ACQUIRE_TIMEOUT_MS}ms. ` +
+      `Lock held by PID ${existsSync(lockPath) ? readFileSync(lockPath, 'utf-8') : 'unknown'}. ` +
+      `Retry later or manually remove ${lockPath} if holder is dead.`
     )
-    appendWithMkdir(path, line)
-    return
   }
 
   try {
@@ -254,16 +273,15 @@ export function clearFileWithLock(path: string): void {
     }
     const waitUntil = Date.now() + LOCK_POLL_MS
     while (Date.now() < waitUntil) {
-      /* spin */
+      /* bounded spin ≤ 1s total */
     }
   }
 
   if (!acquired) {
-    process.stderr.write(
-      `[clearFileWithLock] lock contention timeout for ${path} after ${LOCK_ACQUIRE_TIMEOUT_MS}ms; clearing unlocked\n`,
+    throw new Error(
+      `[clearFileWithLock] Cannot acquire lock for ${path} after ${LOCK_ACQUIRE_TIMEOUT_MS}ms. ` +
+      `Retry later or manually remove ${lockPath} if holder is dead.`
     )
-    clearFile(path)
-    return
   }
 
   try {

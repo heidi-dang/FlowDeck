@@ -89,11 +89,7 @@ pub fn print_dependencies(writer: &mut dyn Write, deps: &[Dependency]) -> io::Re
     writeln!(writer, "[dependencies]")?;
     for dep in deps {
         if let Some(source) = &dep.source {
-            writeln!(
-                writer,
-                "  {} ({}, from: {})",
-                dep.name, dep.kind, source
-            )?;
+            writeln!(writer, "  {} ({}, from: {})", dep.name, dep.kind, source)?;
         } else {
             writeln!(writer, "  {} ({}, external)", dep.name, dep.kind)?;
         }
@@ -258,10 +254,7 @@ pub fn print_batch_results(
 }
 
 /// Print impact results in text format.
-pub fn print_impact_results(
-    writer: &mut dyn Write,
-    results: &[ImpactResult],
-) -> io::Result<()> {
+pub fn print_impact_results(writer: &mut dyn Write, results: &[ImpactResult]) -> io::Result<()> {
     for result in results {
         writeln!(writer, "[impact] {}", result.target)?;
         writeln!(writer)?;

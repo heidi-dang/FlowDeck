@@ -41,9 +41,15 @@ fn test_grep_no_matches() {
     let file = format!("{}/test.rs", temp_dir);
     std::fs::write(&file, "fn foo() {}\n").unwrap();
 
-    let (files, total_matches, _truncated) =
-        grep::grep_files("nonexistent", &[PathBuf::from(temp_dir)], 1, false, false, 50)
-            .unwrap();
+    let (files, total_matches, _truncated) = grep::grep_files(
+        "nonexistent",
+        &[PathBuf::from(temp_dir)],
+        1,
+        false,
+        false,
+        50,
+    )
+    .unwrap();
 
     assert!(files.is_empty());
     assert_eq!(total_matches, 0);
@@ -73,9 +79,15 @@ pub fn calculate_tax(base: f64) -> f64 {
     .unwrap();
 
     // Request far more than the absolute ceiling; should be clamped to 200.
-    let (files, total_matches, truncated) =
-        grep::grep_files("calculate", &[PathBuf::from(temp_dir)], 1, false, false, 10_000)
-            .unwrap();
+    let (files, total_matches, truncated) = grep::grep_files(
+        "calculate",
+        &[PathBuf::from(temp_dir)],
+        1,
+        false,
+        false,
+        10_000,
+    )
+    .unwrap();
 
     assert!(!files.is_empty());
     assert_eq!(total_matches, 2);

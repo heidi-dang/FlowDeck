@@ -1,5 +1,5 @@
+use crate::reader::diff::{ChangeType, DiffFileResult, FileStatus};
 use crate::reader::outline::OutlineFileResult;
-use crate::reader::diff::{DiffFileResult, FileStatus, ChangeType};
 use std::io::{self, Write};
 
 /// Print outline results in text format.
@@ -135,11 +135,7 @@ pub fn print_diff_results(
         writeln!(writer)?;
 
         if result.status == FileStatus::Deleted {
-            writeln!(
-                writer,
-                "  (file removed — {} lines)",
-                result.lines_removed
-            )?;
+            writeln!(writer, "  (file removed — {} lines)", result.lines_removed)?;
             writeln!(writer)?;
             continue;
         }

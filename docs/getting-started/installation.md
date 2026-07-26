@@ -19,7 +19,7 @@ This downloads and runs the official installer script. It clones the repository 
 ### Method 2: npx
 
 ```bash
-npx @dv.nghiem/flowdeck install
+npx @heidi-dang/flowdeck install
 ```
 
 No git required. Uses npx to fetch and install the package directly.
@@ -96,7 +96,7 @@ FlowDeck respects the following environment variables:
 ### Method 1: npm
 
 ```bash
-npm uninstall -g @dv.nghiem/flowdeck
+npm uninstall -g @heidi-dang/flowdeck
 ```
 
 ### Method 2: Run uninstall script

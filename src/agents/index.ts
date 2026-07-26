@@ -22,10 +22,10 @@ import { createMapperAgent } from './mapper';
 import { createDebugSpecialistAgent } from './debug';
 import { createArchitectAgent } from './architect';
 
-/** All agent names registered by FlowDeck. */
+/** All agent names registered by FlowDeck. Heidi is the primary default. */
 export const AGENT_NAMES: readonly string[] = [
-  'orchestrator',
   'heidi',
+  'orchestrator',
   'planner',
   'architect',
   'researcher',

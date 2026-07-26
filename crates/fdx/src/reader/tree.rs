@@ -137,10 +137,7 @@ fn build_tree(
         let name = entry.file_name().to_string_lossy().into_owned();
         let is_dir = entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false);
 
-        children_map
-            .entry(parent)
-            .or_default()
-            .push((name, is_dir));
+        children_map.entry(parent).or_default().push((name, is_dir));
     }
 
     // Sort children within each parent: dirs first, then alphabetically
@@ -185,10 +182,7 @@ fn build_node_recursive(
     }
 
     let file_count = if is_dir {
-        Some(count_files_in_subtree(&children,
-            full_path,
-            children_map,
-        ))
+        Some(count_files_in_subtree(&children, full_path, children_map))
     } else {
         None
     };

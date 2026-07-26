@@ -1,7 +1,7 @@
 {
-  "name": "@dv.nghiem/flowdeck",
-  "version": "0.7.0-alpha.1",
-  "description": "FlowDeck — structured planning and execution workflows for OpenCode",
+  "name": "@heidi-dang/flowdeck",
+  "version": "0.8.0-alpha.1",
+  "description": "FlowDeck — structured planning and execution workflows for OpenCode (Heidi fork)",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -21,7 +21,9 @@
     "src/rules",
     "src/skills",
     "docs",
-    "postinstall.mjs"
+    "postinstall.mjs",
+    "install.sh",
+    "uninstall.sh"
   ],
   "scripts": {
     "clean": "rm -rf dist",
@@ -33,10 +35,11 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "validate:skills": "node scripts/validate-skills.mjs",
-    "validate:docs": "node scripts/validate-docs.mjs"
+    "validate:docs": "node scripts/validate-docs.mjs",
+    "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\""
   },
-  "keywords": ["opencode", "plugin", "ai", "workflow", "planning"],
-  "author": "DVNghiem",
+  "keywords": ["opencode", "plugin", "ai", "workflow", "planning", "heidi"],
+  "author": "Heidi Dang",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -46,6 +49,15 @@
     "url": "https://github.com/heidi-dang/FlowDeck/issues"
   },
   "homepage": "https://github.com/heidi-dang/FlowDeck#readme",
+  "funding": "https://github.com/sponsors/heidi-dang",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "opencode": ">=1.4.0"
+  },
   "dependencies": {
     "@opencode-ai/plugin": "^1.17.3"
   },

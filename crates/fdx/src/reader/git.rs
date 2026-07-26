@@ -52,8 +52,8 @@ fn git_status(args: &[&str]) -> Result<CommandOutput> {
 
         if status.starts_with('?') {
             untracked.push(file.to_string());
-        } else if status.starts_with(' ') {
-            unstaged.push((status[1..].to_string(), file.to_string()));
+        } else if let Some(stripped) = status.strip_prefix(' ') {
+            unstaged.push((stripped.to_string(), file.to_string()));
         } else {
             staged.push((status[0..1].to_string(), file.to_string()));
         }
@@ -296,8 +296,7 @@ fn git_pull(args: &[&str]) -> Result<CommandOutput> {
     cmd_args.extend_from_slice(args);
     let output = run("git", &cmd_args)?;
 
-    if output.stdout.contains("Already up to date")
-        || output.stdout.contains("Already up-to-date")
+    if output.stdout.contains("Already up to date") || output.stdout.contains("Already up-to-date")
     {
         return Ok(CommandOutput {
             stdout: "ok up-to-date\n".to_string(),
@@ -312,16 +311,10 @@ fn git_pull(args: &[&str]) -> Result<CommandOutput> {
         let summary = output
             .stdout
             .lines()
-            .find(|line| {
-                line.contains("files changed") || line.contains("file changed")
-            })
+            .find(|line| line.contains("files changed") || line.contains("file changed"))
             .unwrap_or("");
 
-        let files = summary
-            .split_whitespace()
-            .next()
-            .unwrap_or("0")
-            .to_string();
+        let files = summary.split_whitespace().next().unwrap_or("0").to_string();
         let added = summary
             .split("insertion")
             .next()
@@ -357,7 +350,7 @@ fn git_branch(args: &[&str]) -> Result<CommandOutput> {
             continue;
         }
         let current = line.starts_with('*');
-        let rest = if current { &line[2..] } else { &line[2..] };
+        let rest = &line[2..];
 
         let parts: Vec<&str> = rest.split_whitespace().collect();
         if parts.is_empty() {
@@ -372,10 +365,7 @@ fn git_branch(args: &[&str]) -> Result<CommandOutput> {
             .unwrap_or("no remote");
 
         let prefix = if current { "*" } else { " " };
-        result.push_str(&format!(
-            "{} {} → {}\n",
-            prefix, branch_name, tracking
-        ));
+        result.push_str(&format!("{} {} → {}\n", prefix, branch_name, tracking));
     }
 
     Ok(CommandOutput {

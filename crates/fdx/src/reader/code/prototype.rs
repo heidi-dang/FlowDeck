@@ -102,6 +102,7 @@ pub fn extract_doc_comment(node: Node, source: &str) -> Option<String> {
 }
 
 /// Find a child node by its kind.
+#[allow(clippy::manual_find)]
 pub fn find_child_by_kind<'a>(node: Node<'a>, kind: &str) -> Option<Node<'a>> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -120,10 +121,9 @@ pub fn node_text(node: Node, source: &str) -> String {
 /// Map tree-sitter node kind to our symbol kind.
 pub fn map_kind(ts_kind: &str) -> String {
     match ts_kind {
-        "function_item"
-        | "function_declaration"
-        | "function_definition"
-        | "function_signature" => "function".to_string(),
+        "function_item" | "function_declaration" | "function_definition" | "function_signature" => {
+            "function".to_string()
+        }
         "method_definition" | "method_signature" => "method".to_string(),
         "struct_item" | "struct_declaration" | "class_declaration" | "class_definition" => {
             "class".to_string()
@@ -141,6 +141,12 @@ pub fn map_kind(ts_kind: &str) -> String {
 }
 
 pub struct PrototypeReader;
+
+impl Default for PrototypeReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl PrototypeReader {
     pub fn new() -> Self {
