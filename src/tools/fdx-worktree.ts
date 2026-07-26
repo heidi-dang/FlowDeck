@@ -103,7 +103,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
     phase: tool.schema.number().optional(),
   },
   async execute(args, context) {
-    const directory = context.directory
+    const directory = context?.directory ?? process.cwd()
     const projectSlug = basename(directory)
 
     if (args.action === "create") {
