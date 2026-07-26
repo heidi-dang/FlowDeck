@@ -79,17 +79,16 @@ jobs:
           mkdir -p "$TMP_APP" "$TMP_HOME"
           cd "$TMP_APP"
           npm init -y > /dev/null 2>&1
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1 | tail -3
-          echo "=== Running packed CLI (isolated from source checkout) ==="
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck --help 2>&1 || { echo "FAIL: --help"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1
+          echo "=== Running packed CLI ==="
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck --help || { echo "FAIL: --help"; exit 1; }
           echo "PASS: --help"
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck install 2>&1 || { echo "FAIL: install"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck install || { echo "FAIL: install"; exit 1; }
           echo "PASS: install"
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck verify 2>&1 || { echo "FAIL: verify"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck verify || { echo "FAIL: verify"; exit 1; }
           echo "PASS: verify"
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck doctor 2>&1; echo "Doctor exit: $?"
-          ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs 2>/dev/null || { echo "FAIL: config-mutator.mjs not in installed package"; exit 1; }
-          echo "PASS: All packed CLI commands executed outside source checkout"
+          ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs || { echo "FAIL: config-mutator.mjs missing"; exit 1; }
+          echo "PASS: Runtime files verified"
           rm -f "$GITHUB_WORKSPACE/$PACKAGE"
 
   installer-test:
