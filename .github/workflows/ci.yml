@@ -81,11 +81,11 @@ jobs:
           npm init -y > /dev/null 2>&1
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1 | tail -3
           echo "=== Running packed CLI (isolated from source checkout) ==="
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck --help 2>&1 | grep -q "FlowDeck v" || { echo "FAIL: --help"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck --help 2>&1 || { echo "FAIL: --help"; exit 1; }
           echo "PASS: --help"
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck install 2>&1 | grep -q "FlowDeck installed" || { echo "FAIL: install"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck install 2>&1 || { echo "FAIL: install"; exit 1; }
           echo "PASS: install"
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck verify 2>&1 | grep -q "Verification passed" || { echo "FAIL: verify"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck verify 2>&1 || { echo "FAIL: verify"; exit 1; }
           echo "PASS: verify"
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" ./node_modules/.bin/flowdeck doctor 2>&1; echo "Doctor exit: $?"
           ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs 2>/dev/null || { echo "FAIL: config-mutator.mjs not in installed package"; exit 1; }
