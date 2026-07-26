@@ -22,6 +22,7 @@ import { buildFlowDeckMcpsWithMeta } from "./mcp/index"
 import { captureLessonTool, reviewLessonsTool } from "./tools/capture-lesson"
 import { codegraphTool } from "./tools/codegraph-tool"
 import { codebaseStateTool } from "./tools/codebase-state"
+import { doctorTool } from "./tools/doctor"
 import { fdxValidateTool } from "./tools/fdx-validate"
 import { fdxWorktreeTool } from "./tools/fdx-worktree"
 import {
@@ -141,6 +142,7 @@ const plugin: Plugin = async ({ directory, client }) => {
     },
 
     tool: {
+      "doctor": doctorTool,
       "planning-state": planningStateTool,
       "codebase-state": codebaseStateTool,
       "repo-memory": repoMemoryTool,
