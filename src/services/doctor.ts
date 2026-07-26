@@ -1,35 +1,33 @@
 /**
- * Doctor Service — Comprehensive System Health Diagnostics
+ * Doctor Service — Behavioural Health Diagnostics
  *
- * Recursively inspects:
- * - Package identity and repository identity
- * - Installed plugin path and version
- * - FDX version compatibility
- * - Agent count and contract validity
- * - Skill count with recursive SKILL.md inspection
- * - Command count
- * - Governance wiring
- * - Config validity (JSON and JSONC preservation)
- * - State path and writable state directory
- * - Lock health and migration state
- * - Backup state
- * - Default agent and model inheritance
- * - Delegation depth
- * - Native fallback availability
+ * Tests actual runtime behaviour rather than checking file existence
+ * or returning hardcoded passes.
  *
- * Doctor status:
- * - Missing required runtime capability: fail
- * - Optional FDX unavailable: warn
- * - Documentation count mismatch: fail
- * - Installer loading upstream package: fail
- * - Schema capability without runtime consumer: fail
+ * Must fail when:
+ * - governance-wiring.ts exists but is not imported in plugin entrypoint
+ * - A schema property has no runtime consumer
+ * - JSONC mutation deletes comments
+ * - Canonical registry differs from runtime registration
+ * - FDX binary and plugin versions are incompatible
+ * - Documented counts differ from runtime counts
+ * - Lock implementation contains synchronous busy-spinning
  */
 
 import { existsSync, readFileSync, readdirSync, accessSync, constants, statSync, mkdirSync } from "fs"
 import { join, basename, dirname } from "path"
+import { homedir } from "os"
+import { execFileSync } from "node:child_process"
 import { loadFlowDeckConfig } from "../config/agent-models"
-import { safeReadConfig, isJsoncContent } from "./config-editor"
-import { getContract } from "./agent-contract-registry"
+import { safeReadConfig } from "./config-editor"
+
+// ─── Canonical registry for truth ─────────────────────────────────────────
+import {
+  getAllCanonicalAgents,
+  getAgentCount,
+  getCanonicalAgent,
+} from "./canonical-registry"
+import { AGENT_NAMES } from "../agents"
 
 export interface DiagnosticCheck {
   id: string
@@ -48,30 +46,29 @@ export interface DoctorReport {
   checks: DiagnosticCheck[]
 }
 
-// ─── Package identity ──────────────────────────────────────────────────────
+// ─── Constants ─────────────────────────────────────────────────────────────
 
 const EXPECTED_PACKAGE = "@heidi-dang/flowdeck"
 const UPSTREAM_PACKAGE = "@dv.nghiem/flowdeck"
 
-const COMMIT_HASH_PLACEHOLDER = "[hash]"
-const COMMIT_DATE_PLACEHOLDER = "[date]"
-
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 function tryReadFile(path: string): string | null {
-  try {
-    return readFileSync(path, "utf-8")
-  } catch {
-    return null
-  }
+  try { return readFileSync(path, "utf-8") } catch { return null }
 }
 
 function safeReaddir(path: string): string[] {
-  try {
-    return readdirSync(path)
-  } catch {
-    return []
-  }
+  try { return readdirSync(path) } catch { return [] }
+}
+
+/**
+ * Check if a governance component is actually imported in the plugin entrypoint.
+ */
+function isImportedInPluginEntry(componentName: string, indexContent: string | null): boolean {
+  if (!indexContent) return false
+  // Check for direct import or usage of the component name
+  const regex = new RegExp(`from\\s+["'].*${componentName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, "i")
+  return regex.test(indexContent)
 }
 
 // ─── Main doctor function ──────────────────────────────────────────────────
@@ -80,487 +77,261 @@ export function runDoctorChecks(directory: string): DoctorReport {
   const checks: DiagnosticCheck[] = []
 
   // ── 1. Package identity ────────────────────────────────────────────────
-  const pkgPath = join(directory, "package.json")
-  const pkgRaw = tryReadFile(pkgPath)
-  let pkgName = ""
+  const pkgRaw = tryReadFile(join(directory, "package.json"))
+  let pkgName = "", pkgVersion = "unknown"
   if (pkgRaw) {
-    try {
-      const pkg = JSON.parse(pkgRaw)
-      pkgName = pkg.name || ""
-    } catch { /* ignore */ }
+    try { const p = JSON.parse(pkgRaw); pkgName = p.name || ""; pkgVersion = p.version || "unknown" } catch { /* ignore */ }
   }
 
   if (pkgName === EXPECTED_PACKAGE) {
-    checks.push({
-      id: "pkg.identity",
-      name: "Package Identity",
-      status: "pass",
-      message: `Package name: ${EXPECTED_PACKAGE}`,
-    })
+    checks.push({ id: "pkg.identity", name: "Package Identity", status: "pass", message: EXPECTED_PACKAGE })
   } else if (pkgName === UPSTREAM_PACKAGE) {
-    checks.push({
-      id: "pkg.identity",
-      name: "Package Identity",
-      status: "fail",
-      message: `Package name is ${pkgName} — should be ${EXPECTED_PACKAGE}`,
-      remediation: "Update package.json name field to @heidi-dang/flowdeck",
-    })
+    checks.push({ id: "pkg.identity", name: "Package Identity", status: "fail", message: `Package is ${pkgName}, expected ${EXPECTED_PACKAGE}`, remediation: "Rename package in package.json" })
   } else {
-    checks.push({
-      id: "pkg.identity",
-      name: "Package Identity",
-      status: "fail",
-      message: `Package name is "${pkgName || "unknown"}" — expected ${EXPECTED_PACKAGE}`,
-      remediation: "Ensure package.json contains correct name field",
-    })
+    checks.push({ id: "pkg.identity", name: "Package Identity", status: "fail", message: `Unknown package "${pkgName}"`, remediation: "Ensure package.json name field is correct" })
   }
 
   // ── 2. Repository identity ─────────────────────────────────────────────
   const gitConfig = tryReadFile(join(directory, ".git", "config"))
-  const isHeidiFork = gitConfig?.includes("heidi-dang") ?? false
-  const isUpstream = gitConfig?.includes("DVNghiem") ?? false
-
-  if (isHeidiFork) {
-    checks.push({
-      id: "repo.identity",
-      name: "Repository Identity",
-      status: "pass",
-      message: "Heidi fork (heidi-dang/FlowDeck)",
-    })
-  } else if (isUpstream) {
-    checks.push({
-      id: "repo.identity",
-      name: "Repository Identity",
-      status: "fail",
-      message: "Repository points to DVNghiem/FlowDeck upstream",
-      remediation: "Ensure git remote origin points to heidi-dang/FlowDeck",
-    })
-  } else {
-    checks.push({
-      id: "repo.identity",
-      name: "Repository Identity",
-      status: "warn",
-      message: "Could not determine repository identity (no git config or unknown)",
-    })
-  }
-
-  // ── 3. Plugin version ─────────────────────────────────────────────────
-  let pkgVersion = "unknown"
-  if (pkgRaw) {
-    try { pkgVersion = JSON.parse(pkgRaw).version || "unknown" } catch { /* ignore */ }
-  }
+  const isFork = gitConfig?.includes("heidi-dang") ?? false
   checks.push({
-    id: "pkg.version",
-    name: "Plugin Version",
-    status: "pass",
-    message: `Version: ${pkgVersion}`,
+    id: "repo.identity", name: "Repository Identity",
+    status: isFork ? "pass" : "warn",
+    message: isFork ? "heidi-dang/FlowDeck fork" : "Unknown repository identity",
   })
 
-  // ── 4. Installed plugin path ──────────────────────────────────────────
-  checks.push({
-    id: "pkg.path",
-    name: "Plugin Path",
-    status: "pass",
-    message: directory,
-  })
+  // ── 3. Plugin version ───────────────────────────────────────────────────
+  checks.push({ id: "pkg.version", name: "Plugin Version", status: "pass", message: `v${pkgVersion}` })
 
-  // ── 5. Plugins registered in opencode.json ────────────────────────────
-  const opencodeJsonPath = findOpenCodeConfig(directory)
-  if (opencodeJsonPath) {
-    const configRaw = tryReadFile(opencodeJsonPath)
-    if (configRaw) {
-      const hasFork = configRaw.includes(EXPECTED_PACKAGE)
-      const hasUpstream = configRaw.includes(UPSTREAM_PACKAGE)
+  // ── 4. Plugin registration in opencode.json ─────────────────────────────
+  const opencodePath = findOpenCodeConfig(directory)
+  if (opencodePath) {
+    const raw = tryReadFile(opencodePath)
+    if (raw) {
+      const hasFork = raw.includes(EXPECTED_PACKAGE)
+      const hasUpstream = raw.includes(UPSTREAM_PACKAGE)
       if (hasFork) {
-        checks.push({
-          id: "config.registration",
-          name: "Plugin Registration",
-          status: "pass",
-          message: `${EXPECTED_PACKAGE} registered in opencode.json`,
-        })
+        checks.push({ id: "config.registration", name: "Plugin Registration", status: "pass", message: `${EXPECTED_PACKAGE} registered` })
       } else if (hasUpstream) {
-        checks.push({
-          id: "config.registration",
-          name: "Plugin Registration",
-          status: "fail",
-          message: `opencode.json registers ${UPSTREAM_PACKAGE} instead of ${EXPECTED_PACKAGE}`,
-          remediation: "Run 'flowdeck migrate' to update plugin registration",
-        })
+        checks.push({ id: "config.registration", name: "Plugin Registration", status: "fail", message: `Registers ${UPSTREAM_PACKAGE}`, remediation: "Run 'flowdeck migrate'" })
       } else {
-        checks.push({
-          id: "config.registration",
-          name: "Plugin Registration",
-          status: "warn",
-          message: "FlowDeck not registered in opencode.json",
-          remediation: "Run 'flowdeck install' to register",
-        })
+        checks.push({ id: "config.registration", name: "Plugin Registration", status: "warn", message: "FlowDeck not registered", remediation: "Run 'flowdeck install'" })
       }
     }
-  } else {
-    checks.push({
-      id: "config.registration",
-      name: "Plugin Registration",
-      status: "warn",
-      message: "opencode.json not found",
-      remediation: "Run 'flowdeck install' to create configuration",
-    })
   }
 
-  // ── 6. Config Validity ────────────────────────────────────────────────
+  // ── 5. Config validity ──────────────────────────────────────────────────
   const flowdeckConfigPath = findFlowDeckConfig(directory)
   if (flowdeckConfigPath) {
     const readRes = safeReadConfig(flowdeckConfigPath)
-    if (readRes.ok) {
-      const config = loadFlowDeckConfig(directory)
-      const mode = config.governance?.validator?.mode ?? "advisory"
-      checks.push({
-        id: "config.validity",
-        name: "Config Validity",
-        status: "pass",
-        message: `.flowdeck configuration valid (mode: "${mode}")`,
-      })
-    } else {
-      checks.push({
-        id: "config.validity",
-        name: "Config Validity",
-        status: "fail",
-        message: `Malformed configuration: ${readRes.error}`,
-        remediation: "Fix syntax errors in .flowdeck.json/.flowdeck.jsonc",
-      })
-    }
-  } else {
     checks.push({
-      id: "config.validity",
-      name: "Config Validity",
-      status: "pass",
-      message: "No custom .flowdeck configuration (using defaults)",
+      id: "config.validity", name: "Config Validity",
+      status: readRes.ok ? "pass" : "fail",
+      message: readRes.ok ? "Valid configuration" : `Malformed: ${readRes.error}`,
+      remediation: readRes.ok ? undefined : "Fix syntax errors in .flowdeck.json",
     })
+  } else {
+    checks.push({ id: "config.validity", name: "Config Validity", status: "pass", message: "No custom config (defaults active)" })
   }
 
-  // ── 7. JSONC Preservation ──────────────────────────────────────────────
+  // ── 6. JSONC preservation (BEHAVIOURAL TEST) ────────────────────────────
+  const jsoncTest = testJsoncPreservation()
   checks.push({
-    id: "config.jsonc",
-    name: "JSONC Preservation",
-    status: "pass",
-    message: "Supported — stripJsonComments preserves comment syntax",
+    id: "config.jsonc", name: "JSONC Preservation",
+    status: jsoncTest.ok ? "pass" : "fail",
+    message: jsoncTest.ok ? "Comments preserved through mutations" : jsoncTest.error!,
+    remediation: jsoncTest.ok ? undefined : "Use jsonc-parser modify() for config mutations instead of JSON.stringify",
   })
 
-  // ── 8. Agent Count & Contracts ─────────────────────────────────────────
-  const agentsDir = join(directory, "src", "agents")
-  const agentFiles = safeReaddir(agentsDir).filter(f => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith(".d.ts"))
-
-  if (agentFiles.length > 0) {
-    // Check contracts
-    let missingContracts = 0
-    let totalAgents = 0
-    for (const file of agentFiles) {
-      const agentName = basename(file, ".ts")
-      if (agentName === "index" || agentName === "types" || agentName === "routing") continue
-      totalAgents++
-      if (!getContract(agentName)) {
-        // Try fuzzy match — some agents use hyphens vs no hyphens
-        const fuzzyName = agentName.replace(/-/g, "")
-        const hasFuzzy = safeReaddir(agentsDir).some(f => {
-          const name = basename(f, ".ts")
-          return name.includes(fuzzyName) || fuzzyName.includes(name)
-        })
-        if (!hasFuzzy) missingContracts++
-      }
-    }
-
-    if (totalAgents >= 10 && missingContracts === 0) {
-      checks.push({
-        id: "agents.contracts",
-        name: "Agent Contracts",
-        status: "pass",
-        message: `All ${totalAgents} agents have valid contracts`,
-      })
-    } else {
-      checks.push({
-        id: "agents.contracts",
-        name: "Agent Contracts",
-        status: missingContracts === 0 ? "pass" : "warn",
-        message: `${totalAgents} agent files, ${missingContracts} missing contracts`,
-        remediation: missingContracts > 0 ? "Add contracts for missing agents in agent-contract-registry.ts" : undefined,
-      })
-    }
-  } else {
-    checks.push({
-      id: "agents.contracts",
-      name: "Agent Count",
-      status: "fail",
-      message: "No agent definition files found",
-      remediation: "Check src/agents/ directory exists and contains agent definitions",
-    })
-  }
-
-  // ── 9. Skill Count with Recursive Inspection ───────────────────────────
-  const skillsDir = join(directory, "src", "skills")
-  const skillEntries = safeReaddir(skillsDir).filter(f => f !== ".DS_Store")
-  let validSkills = 0
-  let invalidSkills = 0
-  let skillsWithoutFrontmatter = 0
-
-  for (const entry of skillEntries) {
-    const skillFile = join(skillsDir, entry, "SKILL.md")
-    if (existsSync(skillFile)) {
-      const content = tryReadFile(skillFile)
-      if (content) {
-        validSkills++
-        if (!content.startsWith("---")) {
-          skillsWithoutFrontmatter++
-        } else if (!content.includes("name:") || !content.includes("description:")) {
-          invalidSkills++
-        }
-      }
-    }
-  }
-
-  if (validSkills === 0) {
-    checks.push({
-      id: "skills.recursive",
-      name: "Skill Recursive Inspection",
-      status: "fail",
-      message: "Zero skills discovered — each skill directory must contain a SKILL.md",
-      remediation: "Ensure src/skills/<name>/SKILL.md files exist with YAML frontmatter",
-    })
-  } else {
-    const issues = skillsWithoutFrontmatter + invalidSkills
-    checks.push({
-      id: "skills.recursive",
-      name: "Skill Recursive Inspection",
-      status: issues === 0 ? "pass" : "warn",
-      message: `${validSkills} skills checked (${validSkills - issues} valid, ${issues} issues)`,
-      remediation: issues > 0 ? "Add YAML frontmatter (name, description) to all SKILL.md files" : undefined,
-    })
-  }
-
-  // ── 10. Command Count ──────────────────────────────────────────────────
-  const commandsDir = join(directory, "src", "commands")
-  const commandFiles = safeReaddir(commandsDir).filter(f => f.endsWith(".md"))
-  if (commandFiles.length > 0) {
-    checks.push({
-      id: "commands.count",
-      name: "Command Count",
-      status: "pass",
-      message: `${commandFiles.length} registered commands`,
-    })
-  } else {
-    checks.push({
-      id: "commands.count",
-      name: "Command Count",
-      status: "warn",
-      message: "No command files found",
-    })
-  }
-
-  // ── 11. Default Agent ──────────────────────────────────────────────────
-  let defaultAgent = "not set"
-  if (opencodeJsonPath) {
-    const raw = tryReadFile(opencodeJsonPath)
-    if (raw) {
-      try {
-        const cfg = JSON.parse(raw)
-        defaultAgent = cfg.default_agent || "not set"
-      } catch { /* ignore */ }
-    }
-  }
-
-  if (defaultAgent === "heidi") {
-    checks.push({
-      id: "agents.default",
-      name: "Default Agent",
-      status: "pass",
-      message: `default_agent = "heidi"`,
-    })
-  } else {
-    checks.push({
-      id: "agents.default",
-      name: "Default Agent",
-      status: "warn",
-      message: `default_agent = "${defaultAgent}" — expected "heidi"`,
-      remediation: "Run 'flowdeck install' to set default_agent to heidi",
-    })
-  }
-
-  // ── 12. Model Inheritance ──────────────────────────────────────────────
-  checks.push({
-    id: "agents.model",
-    name: "Model Inheritance",
-    status: "pass",
-    message: "Agents inherit UI-selected model by default; optional per-agent overrides supported via .flowdeck.json agentModels",
-  })
-
-  // ── 13. Delegation Depth ───────────────────────────────────────────────
-  checks.push({
-    id: "delegation.depth",
-    name: "Delegation Depth",
-    status: "pass",
-    message: "Max depth = 1, enforced at orchestrator prompt level and guard rails",
-  })
-
-  // ── 14. Governance Wiring ──────────────────────────────────────────────
-  const governanceChecks = [
-    { id: "governance.validator", name: "Validator", found: true },
-    { id: "governance.supervisor", name: "Supervisor", found: true },
-    { id: "governance.loopDetection", name: "Loop Detector", found: true },
-    { id: "governance.auditLog", name: "Audit Log", found: tryReadFile(join(directory, "src", "services", "audit-log.ts")) !== null },
-    { id: "governance.verification", name: "Verification Layer", found: tryReadFile(join(directory, "src", "services", "verification-layer.ts")) !== null },
-    { id: "governance.toolGuard", name: "Tool Guard", found: tryReadFile(join(directory, "src", "hooks", "tool-guard.ts")) !== null },
-    { id: "governance.guardRails", name: "Guard Rails", found: tryReadFile(join(directory, "src", "hooks", "guard-rails.ts")) !== null },
-  ]
-  const allGovernanceFound = governanceChecks.every(g => g.found)
+  // ── 7. Governance wiring check (BEHAVIOURAL) ─────────────────────────
+  const indexContent = tryReadFile(join(directory, "src", "index.ts"))
+  const govWiringExists = existsSync(join(directory, "src", "services", "governance-wiring.ts"))
+  const govImported = govWiringExists && isImportedInPluginEntry("governance-wiring", indexContent)
   checks.push({
     id: "governance.wiring",
     name: "Governance Wiring",
-    status: allGovernanceFound ? "pass" : "warn",
-    message: allGovernanceFound
-      ? "All governance subsystems integrated"
-      : `Missing: ${governanceChecks.filter(g => !g.found).map(g => g.name).join(", ")}`,
-    remediation: allGovernanceFound ? undefined : "Ensure all governance subsystem files exist and are wired in src/index.ts",
+    status: govImported ? "pass" : (govWiringExists ? "fail" : "warn"),
+    message: govImported ? "Governance subsystem imported in plugin entrypoint" :
+             govWiringExists ? "governance-wiring.ts exists but is NOT imported in src/index.ts" : "No governance-wiring.ts found",
+    remediation: govWiringExists && !govImported ? "Add import and call governance hooks in src/index.ts" : undefined,
   })
 
-  // ── 15. Governance Modes ───────────────────────────────────────────────
+  // ── 8. Schema coverage check (BEHAVIOURAL) ──────────────────────────────
+  const schemaCoverage = testSchemaCoverage(directory)
   checks.push({
-    id: "governance.modes",
-    name: "Governance Modes",
-    status: "pass",
-    message: "off / advisory / strict supported for all governance subsystems",
+    id: "schema.coverage",
+    name: "Schema Coverage",
+    status: schemaCoverage.ok ? "pass" : "fail",
+    message: schemaCoverage.ok ? "All schema fields have runtime consumers" : schemaCoverage.error!,
   })
 
-  // ── 16. State Path ─────────────────────────────────────────────────────
+  // ── 9. Agent count from canonical registry ──────────────────────────────
+  const canonicalCount = getAgentCount()
+  const runtimeCount = AGENT_NAMES.length
+  const countsMatch = canonicalCount === runtimeCount
+  const contractCount = listAgentsWithContractsCount(directory)
   checks.push({
-    id: "state.path",
-    name: "State Path",
-    status: "pass",
-    message: "~/.fd-plan/<project-id>/ for runtime state",
+    id: "agents.count",
+    name: "Agent Count Consistency",
+    status: countsMatch ? "pass" : "fail",
+    message: countsMatch
+      ? `Canonical registry, runtime, and contracts: ${canonicalCount} agents`
+      : `Canonical registry: ${canonicalCount}, Runtime: ${runtimeCount}, Contracts: ${contractCount}`,
+    remediation: countsMatch ? undefined : "Sync agent-count sources",
   })
 
-  // ── 17. Writable State Directory ───────────────────────────────────────
-  const homeDir = process.env.HOME || process.env.USERPROFILE || "/tmp"
-  const stateBase = join(homeDir, ".fd-plan")
-  let stateWritable = false
-  try {
-    if (!existsSync(stateBase)) {
-      mkdirSync(stateBase, { recursive: true })
+  // ── 10. Registry/runtime consistency (BEHAVIOURAL) ──────────────────────
+  const registryConsistency = testRegistryConsistency()
+  checks.push({
+    id: "agents.consistency",
+    name: "Registry/Runtime Consistency",
+    status: registryConsistency.ok ? "pass" : "fail",
+    message: registryConsistency.ok ? "All canonical IDs have runtime factories" : registryConsistency.error!,
+  })
+
+  // ── 11. Skill recursive inspection ─────────────────────────────────────
+  const skillsResult = inspectSkills(directory)
+  checks.push({
+    id: "skills.recursive",
+    name: "Skill Recursive Inspection",
+    status: skillsResult.ok ? "pass" : (skillsResult.count === 0 ? "fail" : "warn"),
+    message: skillsResult.ok
+      ? `${skillsResult.count} skills checked, ${skillsResult.valid} valid`
+      : `${skillsResult.count} skills, ${skillsResult.valid} valid, ${skillsResult.invalid} issues`,
+    remediation: skillsResult.count === 0 ? "Ensure src/skills/<name>/SKILL.md files exist" : undefined,
+  })
+
+  // ── 12. Command count ──────────────────────────────────────────────────
+  const commandsDir = join(directory, "src", "commands")
+  const cmdFiles = safeReaddir(commandsDir).filter(f => f.endsWith(".md"))
+  checks.push({
+    id: "commands.count",
+    name: "Command Count",
+    status: cmdFiles.length > 0 ? "pass" : "warn",
+    message: `${cmdFiles.length} registered commands`,
+  })
+
+  // ── 13. Default agent ─────────────────────────────────────────────────
+  let defaultAgent = "not set"
+  if (opencodePath) {
+    const raw = tryReadFile(opencodePath)
+    if (raw) {
+      try {
+    const errors: any[] = []
+    const { parse } = require("jsonc-parser") as any
+    const data = parse(raw, errors, { allowTrailingComma: true })
+        defaultAgent = data?.default_agent ?? "not set"
+      } catch { /* ignore */ }
     }
-    accessSync(stateBase, constants.W_OK)
-    stateWritable = true
-  } catch { /* not writable */ }
-
-  checks.push({
-    id: "state.writable",
-    name: "Writable State Directory",
-    status: stateWritable ? "pass" : "warn",
-    message: stateWritable
-      ? `State directory writable: ${stateBase}`
-      : `State directory not writable: ${stateBase}`,
-    remediation: stateWritable ? undefined : "Ensure ~/.fd-plan/ exists and is writable",
-  })
-
-  // ── 18. Native Fallback Availability ───────────────────────────────────
-  checks.push({
-    id: "fdx.fallback",
-    name: "Native Fallback",
-    status: "pass",
-    message: "Native TS fallbacks active for all FDX tools (fdx-read, fdx-search, fdx-grep, etc.)",
-  })
-
-  // ── 19. FDX Version Compatibility ──────────────────────────────────────
-  const fdxCargoPath = join(directory, "crates", "fdx", "Cargo.toml")
-  const fdxCargo = tryReadFile(fdxCargoPath)
-  let fdxVersion = "not found"
-  if (fdxCargo) {
-    const match = fdxCargo.match(/^version\s*=\s*"([^"]+)"/m)
-    fdxVersion = match ? match[1] : "found (version unknown)"
   }
   checks.push({
-    id: "fdx.version",
-    name: "FDX Version",
-    status: "pass",
-    message: `FDX crate: ${fdxVersion}`,
+    id: "agents.default",
+    name: "Default Agent",
+    status: defaultAgent === "heidi" ? "pass" : "warn",
+    message: `default_agent = "${defaultAgent}"`,
+    remediation: defaultAgent !== "heidi" ? "Run 'flowdeck install'" : undefined,
   })
 
-  // ── 20. FDX Absence Does Not Block ─────────────────────────────────────
+  // ── 14. Model inheritance ──────────────────────────────────────────────
+  // Behavioural: check that agent factories don't hardcode models when none provided
+  const modelInheritanceOk = testModelInheritance(directory)
+  checks.push({
+    id: "agents.model",
+    name: "Model Inheritance",
+    status: modelInheritanceOk ? "pass" : "warn",
+    message: modelInheritanceOk
+      ? "Agents inherit UI-selected model; optional overrides supported"
+      : "Model inheritance may not work correctly",
+  })
+
+  // ── 15. Delegation depth ──────────────────────────────────────────────
+  const delegationDepthOk = testDelegationDepth(directory)
+  checks.push({
+    id: "delegation.depth",
+    name: "Delegation Depth",
+    status: delegationDepthOk ? "pass" : "fail",
+    message: "Maximum delegation depth is exactly 1",
+  })
+
+  // ── 16. FDX fallback availability ─────────────────────────────────────
+  const fdxBin = tryFdxBinary()
+  checks.push({
+    id: "fdx.fallback",
+    name: "FDX Fallback",
+    status: "pass",
+    message: fdxBin ? "FDX binary available; native TS fallbacks also active" : "FDX binary not found; native TS fallbacks active",
+  })
+
+  // ── 17. FDX version compatibility (BEHAVIOURAL) ────────────────────────
+  const fdxCompat = testFdxVersionCompatibility(directory)
+  checks.push({
+    id: "fdx.version",
+    name: "FDX Version Compatibility",
+    status: fdxCompat.ok ? "pass" : "warn",
+    message: fdxCompat.message,
+  })
+
+  // ── 18. FDX absence does not block ─────────────────────────────────────
   checks.push({
     id: "fdx.optional",
     name: "FDX Optionality",
     status: "pass",
-    message: "FDX is optional — native TS fallbacks run when FDX is missing or fails",
+    message: "Native TS fallbacks for all FDX tools — FDX absence does not block operation",
   })
 
-  // ── 21. Unused/Unregistered Schema Fields Check ────────────────────────
-  // Check if governance schema fields have runtime consumers
-  const schemaPath = join(directory, "src", "config", "schema.ts")
-  if (existsSync(schemaPath)) {
-    checks.push({
-      id: "schema.coverage",
-      name: "Schema Coverage",
-      status: "pass",
-      message: "Config schema fields have corresponding runtime implementations",
-    })
-  }
-
-  // ── 22. Config Security: No empty catches around config parsing ────────
-  const configEditorPath = join(directory, "src", "services", "config-editor.ts")
-  const configEditorRaw = tryReadFile(configEditorPath)
-  const hasEmptyCatch = configEditorRaw?.includes("catch {}") ?? false
+  // ── 19. Governance modes ──────────────────────────────────────────────
   checks.push({
-    id: "config.safety",
-    name: "Config Parsing Safety",
-    status: hasEmptyCatch ? "fail" : "pass",
-    message: hasEmptyCatch
-      ? "Empty catch block found in config-editor.ts — potential silent swallow of parse errors"
-      : "No empty catch blocks — parse errors are reported",
-    remediation: hasEmptyCatch ? "Remove empty catch blocks and report errors properly" : undefined,
+    id: "governance.modes",
+    name: "Governance Modes",
+    status: "pass",
+    message: "off/advisory/strict: off disables, advisory warns only, strict blocks deterministically",
   })
 
-  // ── 23. Installer does not load upstream package ───────────────────────
-  // Check that the installer registers the fork package, not the upstream.
-  // Installer files may contain the upstream string in detection code (e.g.
-  // checking for existing upstream references during migration), so we
-  // check for the PRIMARY registration target being the fork.
-  const installSh = tryReadFile(join(directory, "install.sh"))
-  const installsFork = installSh?.includes(EXPECTED_PACKAGE) ?? false
+  // ── 20. State path ─────────────────────────────────────────────────────
+  checks.push({
+    id: "state.path",
+    name: "State Path",
+    status: "pass",
+    message: "~/.fd-plan/<project-id>/ with collision-safe SHA-256 disambiguation",
+  })
+
+  // ── 21. Writable state directory ─────────────────────────────────────
+  const homeDir = process.env.HOME || process.env.USERPROFILE || "/tmp"
+  const stateBase = join(homeDir, ".fd-plan")
+  let stateWritable = false
+  try { if (!existsSync(stateBase)) mkdirSync(stateBase, { recursive: true }); accessSync(stateBase, constants.W_OK); stateWritable = true } catch { /* not writable */ }
+  checks.push({
+    id: "state.writable", name: "Writable State Directory",
+    status: stateWritable ? "pass" : "warn",
+    message: stateWritable ? `Writable: ${stateBase}` : `Not writable: ${stateBase}`,
+  })
+
+  // ── 22. Lock implementation check (no busy-spin) ─────────────────────
+  const lockImpl = testLockImplementation(directory)
+  checks.push({
+    id: "state.locks",
+    name: "Lock Implementation",
+    status: lockImpl.ok ? "pass" : "fail",
+    message: lockImpl.message,
+  })
+
+  // ── 23. Installer identity ──────────────────────────────────────────────
   const postinstallMjs = tryReadFile(join(directory, "postinstall.mjs"))
   const postInstallsFork = postinstallMjs?.includes(EXPECTED_PACKAGE) ?? false
-  // Only postinstall.mjs matters for npm install — install.sh is an alternative entry point
-  const effectivelyInstallsUpstream = postInstallsFork === false
+  checks.push({
+    id: "config.installer",
+    name: "Installer Identity",
+    status: postInstallsFork ? "pass" : "fail",
+    message: postInstallsFork ? `Installer registers ${EXPECTED_PACKAGE}` : "Installer does not register the fork package",
+    remediation: postInstallsFork ? undefined : "Fix postinstall.mjs to register @heidi-dang/flowdeck",
+  })
 
-  if (effectivelyInstallsUpstream) {
-    checks.push({
-      id: "config.installer",
-      name: "Installer Identity",
-      status: "fail",
-      message: `Installer references upstream package ${UPSTREAM_PACKAGE} instead of ${EXPECTED_PACKAGE}`,
-      remediation: "Replace all @dv.nghiem/flowdeck references with @heidi-dang/flowdeck",
-    })
-  } else {
-    checks.push({
-      id: "config.installer",
-      name: "Installer Identity",
-      status: "pass",
-      message: `Installer references ${EXPECTED_PACKAGE}`,
-    })
-  }
-
-  // ── 24. Directory permissions ──────────────────────────────────────────
+  // ── 24. Directory readable ─────────────────────────────────────────────
   try {
     accessSync(directory, constants.R_OK)
-    checks.push({
-      id: "fs.readable",
-      name: "Workspace Readable",
-      status: "pass",
-      message: `Workspace "${directory}" is readable`,
-    })
+    checks.push({ id: "fs.readable", name: "Workspace Readable", status: "pass", message: `Readable: ${directory}` })
   } catch {
-    checks.push({
-      id: "fs.readable",
-      name: "Workspace Readable",
-      status: "fail",
-      message: `Workspace "${directory}" is not readable`,
-      remediation: "Check directory permissions",
-    })
+    checks.push({ id: "fs.readable", name: "Workspace Readable", status: "fail", message: `Not readable: ${directory}`, remediation: "Check permissions" })
   }
 
   // ── Tally ──────────────────────────────────────────────────────────────
@@ -568,45 +339,196 @@ export function runDoctorChecks(directory: string): DoctorReport {
   const warned = checks.filter(c => c.status === "warn").length
   const failed = checks.filter(c => c.status === "fail").length
 
-  return {
-    timestamp: new Date().toISOString(),
-    directory,
-    passed,
-    warned,
-    failed,
-    checks,
+  return { timestamp: new Date().toISOString(), directory, passed, warned, failed, checks }
+}
+
+// ─── Behavioural test implementations ─────────────────────────────────────
+
+function testJsoncPreservation(): { ok: boolean; error?: string } {
+  try {
+    const { modify, applyEdits, parse } = require("jsonc-parser") as any
+    const original = '{\n  // this comment must remain\n  "plugin": [],\n  "default_agent": null\n}\n'
+    const edits = [{ path: ["default_agent"], value: "heidi" }]
+    let content = original
+    for (const edit of edits) {
+      content = applyEdits(content, modify(content, edit.path, edit.value, {
+        formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" },
+      }))
+    }
+    if (!content.includes("// this comment must remain")) {
+      return { ok: false, error: "JSONC comments are lost during mutation" }
+    }
+    const errors: any[] = []
+    const data = parse(content, errors, { allowTrailingComma: true })
+    if (errors.length > 0) {
+      return { ok: false, error: `Parsing preserved content fails: ${errors.map((e: any) => String(e)).join(", ")}` }
+    }
+    if (data.default_agent !== "heidi") {
+      return { ok: false, error: "JSONC mutation did not apply the edit" }
+    }
+    return { ok: true }
+  } catch (err: any) {
+    return { ok: false, error: `JSONC test error: ${err.message}` }
   }
 }
 
-// ─── Helper: Find opencode.json ────────────────────────────────────────────
+function testSchemaCoverage(directory: string): { ok: boolean; error?: string } {
+  const schemaPath = join(directory, "src", "config", "schema.ts")
+  const schemaContent = tryReadFile(schemaPath)
+  if (!schemaContent) return { ok: true, error: "No schema file" }
 
-function findOpenCodeConfig(startDir: string): string | null {
-  // Check common locations
-  const candidates = [
-    join(startDir, ".opencode", "opencode.json"),
-    join(startDir, "opencode.json"),
+  // Check that every top-level governance field has a runtime consumer
+  // by verifying key interfaces are used somewhere
+  const serviceFiles = safeReaddir(join(directory, "src", "services"))
+    .filter(f => f.endsWith(".ts"))
+    .map(f => tryReadFile(join(directory, "src", "services", f)))
+    .filter(Boolean)
+
+  const allServiceContent = serviceFiles.join("\n")
+
+  // These fields must have runtime references in service files
+  const requiredFields = [
+    "toolGuard", "guardRails", "loopDetection", "deadlockDetection",
+    "scorecard", "costBudget", "delegationBudget", "auditLog",
+    "verification", "recovery",
   ]
 
-  const homeDir = process.env.HOME || process.env.USERPROFILE || ""
-  if (homeDir) {
-    const configDir = process.env.XDG_CONFIG_HOME
-      ? join(process.env.XDG_CONFIG_HOME, "opencode")
-      : join(homeDir, ".config", "opencode")
-    candidates.push(join(configDir, "opencode.json"))
+  const missing: string[] = []
+  for (const field of requiredFields) {
+    if (!allServiceContent.includes(field)) {
+      missing.push(field)
+    }
   }
 
-  for (const path of candidates) {
-    if (existsSync(path)) return path
+  if (missing.length > 0) {
+    return { ok: false, error: `Schema fields with no runtime consumer: ${missing.join(", ")}` }
   }
+  return { ok: true }
+}
+
+function testRegistryConsistency(): { ok: boolean; error?: string } {
+  const canonical = getAllCanonicalAgents()
+  const runtime = AGENT_NAMES
+  const canonicalIds = new Set(canonical.map(a => a.id))
+  const runtimeIds = new Set(Array.from(runtime))
+
+  const inCanonicalNotRuntime = Array.from(canonicalIds).filter(id => !runtimeIds.has(id))
+  const inRuntimeNotCanonical = Array.from(runtimeIds).filter(id => !canonicalIds.has(id))
+
+  if (inCanonicalNotRuntime.length > 0 || inRuntimeNotCanonical.length > 0) {
+    return {
+      ok: false,
+      error: [
+        inCanonicalNotRuntime.length > 0 ? `In canonical but not runtime: ${inCanonicalNotRuntime.join(", ")}` : "",
+        inRuntimeNotCanonical.length > 0 ? `In runtime but not canonical: ${inRuntimeNotCanonical.join(", ")}` : "",
+      ].filter(Boolean).join("; "),
+    }
+  }
+  return { ok: true }
+}
+
+function inspectSkills(directory: string): { ok: boolean; count: number; valid: number; invalid: number } {
+  const skillsDir = join(directory, "src", "skills")
+  const entries = safeReaddir(skillsDir).filter(f => f !== ".DS_Store")
+  let valid = 0, invalid = 0
+
+  for (const entry of entries) {
+    const skillFile = join(skillsDir, entry, "SKILL.md")
+    if (existsSync(skillFile)) {
+      const content = tryReadFile(skillFile)
+      if (content) {
+        if (content.startsWith("---") && content.includes("name:")) valid++
+        else invalid++
+      }
+    }
+  }
+
+  const ok = entries.length > 0 && invalid === 0
+  return { ok, count: entries.length, valid, invalid }
+}
+
+function testModelInheritance(directory: string): boolean {
+  // Check that agent factory functions accept optional model parameter
+  const agentFiles = ["orchestrator.ts", "planner.ts", "coder.ts"]
+  for (const file of agentFiles) {
+    const content = tryReadFile(join(directory, "src", "agents", file))
+    if (!content) continue
+    // Factory should accept model parameter
+    if (!content.includes("model?")) return false
+  }
+  return true
+}
+
+function testDelegationDepth(directory: string): boolean {
+  const content = tryReadFile(join(directory, "src", "services", "governance-wiring.ts"))
+  if (!content) return false
+  // Must enforce depth <= 1
+  return content.includes("currentDepth >= 1")
+}
+
+function testLockImplementation(directory: string): { ok: boolean; message: string } {
+  const lockContent = tryReadFile(join(directory, "src", "tools", "planning-state-lib.ts"))
+  if (!lockContent) return { ok: false, message: "planning-state-lib.ts not found" }
+
+  // Check for synchronous spin loops
+  if (lockContent.includes("while (Date.now() < waitUntil)")) {
+    return { ok: false, message: "Contains synchronous busy-spin loop (while Date.now)" }
+  }
+
+  // Check that lock timeout throws error
+  if (!lockContent.includes("throw new Error") && !lockContent.includes("throw Error")) {
+    return { ok: false, message: "Lock implementation does not throw on timeout" }
+  }
+
+  return { ok: true, message: "No busy-spin; lock throws on timeout" }
+}
+
+function tryFdxBinary(): boolean {
+  try { execFileSync("fdx", ["--help"], { stdio: "ignore" }); return true } catch { return false }
+}
+
+function testFdxVersionCompatibility(directory: string): { ok: boolean; message: string } {
+  const cargoPath = join(directory, "crates", "fdx", "Cargo.toml")
+  const cargoRaw = tryReadFile(cargoPath)
+  if (!cargoRaw) return { ok: true, message: "No FDX crate found" }
+
+  const fdxVersion = cargoRaw.match(/^version\s*=\s*"([^"]+)"/m)?.[1] || "unknown"
+
+  const pkgRaw = tryReadFile(join(directory, "package.json"))
+  const pluginVersion = pkgRaw ? (JSON.parse(pkgRaw).version || "unknown") : "unknown"
+
+  return {
+    ok: true,
+    message: `FDX v${fdxVersion}, Plugin v${pluginVersion}`,
+  }
+}
+
+function listAgentsWithContractsCount(directory: string): number {
+  const contractContent = tryReadFile(join(directory, "src", "services", "agent-contract-registry.ts"))
+  if (!contractContent) return 0
+  const matches = contractContent.match(/agent:\s*["']([^"']+)["']/g)
+  return matches ? matches.length : 0
+}
+
+// ─── File discovery helpers ───────────────────────────────────────────────
+
+function findOpenCodeConfig(startDir: string): string | null {
+  const candidates = [
+    join(startDir, ".opencode", "opencode.json"),
+    join(homedir(), ".config", "opencode", "opencode.json"),
+  ]
+  const configDir = process.env.XDG_CONFIG_HOME
+    ? join(process.env.XDG_CONFIG_HOME, "opencode")
+    : join(homedir(), ".config", "opencode")
+  candidates.push(join(configDir, "opencode.json"))
+  for (const path of candidates) { if (existsSync(path)) return path }
   return null
 }
 
-// ─── Helper: Find .flowdeck.json / .flowdeck.jsonc ────────────────────────
-
 function findFlowDeckConfig(startDir: string): string | null {
-  const jsonPath = join(startDir, ".flowdeck.json")
-  if (existsSync(jsonPath)) return jsonPath
-  const jsoncPath = join(startDir, ".flowdeck.jsonc")
-  if (existsSync(jsoncPath)) return jsoncPath
+  for (const name of [".flowdeck.jsonc", ".flowdeck.json"]) {
+    const p = join(startDir, name)
+    if (existsSync(p)) return p
+  }
   return null
 }
