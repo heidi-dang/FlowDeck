@@ -2,9 +2,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn fdx_bin() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("../../target/release/fdx");
-    path
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // Try debug first (cargo test), then release (cargo test --release)
+    let debug = manifest.join("../../target/debug/fdx");
+    if debug.exists() { return debug }
+    manifest.join("../../target/release/fdx")
 }
 
 #[test]
