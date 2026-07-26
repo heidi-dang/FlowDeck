@@ -292,24 +292,26 @@ export function atomicWrite(filePath, content) {
 // ── Combined Workflow ────────────────────────────────────────────────────────
 
 /**
- * Read, validate, back up, apply edits, and write atomically — the primary
- * workflow for safe JSONC configuration mutation.
+ * Validate, apply edits, and write atomically.
+ *
+ * The caller is responsible for backup creation before calling this function.
+ * This function does NOT create backups — it only validates, applies edits,
+ * and atomically writes the result.
  *
  * Guarantees:
  * 1. Content is valid and parseable before any mutation (rejects malformed)
- * 2. Backup is created and confirmed on disk *before* the write proceeds
- * 3. Edits preserve JSONC comments, formatting, and trailing commas
- * 4. Write is atomic (temp file + rename)
+ * 2. Edits preserve JSONC comments, formatting, and trailing commas
+ * 3. Write is atomic (temp file + rename)
  *
  * @param {string} filePath - Path to the JSONC file
  * @param {string} rawContent - Current raw text content of the file
  * @param {Array<{ path: string[], value: any }>} edits - Edits to apply
- * @returns {{ ok: boolean, backupPath?: string | null, error?: string }}
+ * @returns {{ ok: boolean, error?: string }}
  */
 export function writeConfig(filePath, rawContent, edits) {
   // No edits → no work
   if (!Array.isArray(edits) || edits.length === 0) {
-    return { ok: true, backupPath: null, error: undefined };
+    return { ok: true, error: undefined };
   }
 
   // Step 1: Validate content — never mutate malformed data
@@ -317,51 +319,26 @@ export function writeConfig(filePath, rawContent, edits) {
   if (!parseResult.ok) {
     return {
       ok: false,
-      backupPath: undefined,
       error: `Malformed content — edits rejected: ${parseResult.error}`,
     };
   }
 
-  // Step 2: Backup before mutation (only if file already exists)
-  let backupPath = null;
-  if (existsSync(filePath)) {
-    try {
-      backupPath = createBackup(filePath);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        ok: false,
-        backupPath: undefined,
-        error: `Backup failed — no mutation performed: ${message}`,
-      };
-    }
-
-    // Confirm the backup file actually exists on disk
-    if (!backupPath || !existsSync(backupPath)) {
-      return {
-        ok: false,
-        backupPath: undefined,
-        error: "Backup failed — backup file does not exist after creation attempt",
-      };
-    }
-  }
-
-  // Step 3: Apply edits
+  // Step 2: Apply edits
   let updatedContent;
   try {
     updatedContent = applyJsoncEdits(rawContent, edits);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, backupPath, error: `Failed to apply edits: ${message}` };
+    return { ok: false, error: `Failed to apply edits: ${message}` };
   }
 
-  // Step 4: Atomic write
+  // Step 3: Atomic write
   try {
     atomicWrite(filePath, updatedContent);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    return { ok: false, backupPath, error: `Atomic write failed: ${message}` };
+    return { ok: false, error: `Atomic write failed: ${message}` };
   }
 
-  return { ok: true, backupPath, error: undefined };
+  return { ok: true, error: undefined };
 }

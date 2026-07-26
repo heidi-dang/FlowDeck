@@ -185,7 +185,7 @@ export async function runDoctorChecks(directory) {
   checks.push({
     id: "skills.recursive",
     name: "Skill Recursive Inspection",
-    status: invalidSkills === 0 && skillDirs.length > 0 ? "pass" : skillDirs.length === 0 ? "warn" : "warn",
+    status: invalidSkills === 0 && skillDirs.length > 0 ? "pass" : skillDirs.length === 0 ? "fail" : "warn",
     message: `${skillDirs.length} skills, ${validSkills} valid, ${invalidSkills} issues`,
     remediation: invalidSkills > 0 ? "Add YAML frontmatter (name, description) to all SKILL.md files" : undefined,
   })
@@ -243,7 +243,7 @@ export async function runDoctorChecks(directory) {
   checks.push({
     id: "fdx.version",
     name: "FDX Version Compatibility",
-    status: fdxCompat.ok ? "pass" : "warn",
+    status: fdxCompat.status,
     message: fdxCompat.message,
     remediation: fdxCompat.remediation,
   })
@@ -494,51 +494,44 @@ async function testJsoncPreservation() {
 }
 
 function testFdxVersionCompatibility(directory, pkgRaw) {
-  if (!pkgRaw) return { ok: true, message: "No package.json found", remediation: undefined }
+  if (!pkgRaw) return { status: "pass", message: "No package.json found", remediation: undefined }
 
   let pkg
-  try { pkg = JSON.parse(pkgRaw) } catch { return { ok: true, message: "Malformed package.json", remediation: undefined } }
+  try { pkg = JSON.parse(pkgRaw) } catch { return { status: "pass", message: "Malformed package.json", remediation: undefined } }
 
   const compatDecl = pkg.flowdeckFdxCompatibility
   const requiredRange = compatDecl?.required ?? "^0.1.0"
-  const pluginVersion = pkg.version ?? "unknown"
 
-  const cargoRaw = (() => { try { return readFileSync(join(directory, "crates", "fdx", "Cargo.toml"), "utf-8") } catch { return null } })()
-  if (!cargoRaw) return { ok: true, message: "No FDX crate found (compatibility not checked)", remediation: undefined }
+  // Try to get installed FDX version via `fdx --version`
+  let installedVersion = null
+  try {
+    const output = execFileSync("fdx", ["--version"], { encoding: "utf-8", timeout: 5000 })
+    const match = output.trim().match(/^fdx\s+(.+)/)
+    if (match) {
+      installedVersion = match[1]
+    }
+  } catch { /* fdx not available */ }
 
-  const fdxVersion = cargoRaw.match(/^version\s*=\s*"([^"]+)"/m)?.[1]
-  if (!fdxVersion) return { ok: true, message: "FDX crate has no version field", remediation: undefined }
+  if (!installedVersion) {
+    return { status: "warn", message: "FDX binary not found — fallback active", remediation: undefined }
+  }
 
   const platform = process.platform
   const arch = process.arch
-  const supportedPlatforms = ["linux", "darwin", "win32"]
-  const supportedArches = ["x64", "arm64"]
-  if (!supportedPlatforms.includes(platform) || !supportedArches.includes(arch)) {
-    return { ok: false, message: `Unsupported platform: ${platform} ${arch}`, remediation: `Run on ${supportedPlatforms.join(", ")} with ${supportedArches.join(", ")} architecture` }
-  }
 
-  // FDX doesn't support --version; check binary availability via --help instead
-  let binaryAvailable = false
-  try { execFileSync("fdx", ["--help"], { stdio: "ignore", timeout: 5000 }); binaryAvailable = true } catch { /* ignore */ }
-
-  if (!binaryAvailable) {
-    return { ok: true, message: `FDX binary not found; native TS fallbacks active. Package requires ${requiredRange}, crate is v${fdxVersion}`, remediation: undefined }
-  }
-
-  // Binary exists — use crate version as the expected version for compatibility check
-  const isCompatible = satisfiesCaretRange(fdxVersion, requiredRange)
+  const isCompatible = satisfiesCaretRange(installedVersion, requiredRange)
   if (isCompatible) {
-    return { ok: true, message: `FDX v${fdxVersion} (crate) satisfies ${requiredRange} on ${platform}/${arch}`, remediation: undefined }
+    return { status: "pass", message: `FDX v${installedVersion} satisfies ${requiredRange} on ${platform}/${arch}`, remediation: undefined }
   }
 
   const reqParts = requiredRange.replace("^", "").split(".").map(Number)
-  const fdxParts = fdxVersion.split(".").map(Number)
+  const fdxParts = installedVersion.split(".").map(Number)
   const isTooOld = fdxParts[0] < reqParts[0] || (fdxParts[0] === reqParts[0] && fdxParts[1] < reqParts[1]) || (fdxParts[0] === reqParts[0] && fdxParts[1] === reqParts[1] && (fdxParts[2] ?? 0) < (reqParts[2] ?? 0))
   const isTooNew = fdxParts[0] > reqParts[0] || (fdxParts[0] === reqParts[0] && fdxParts[1] > reqParts[1])
 
-  if (isTooOld) return { ok: false, message: `FDX v${fdxVersion} is too old for ${requiredRange}`, remediation: "Upgrade FDX via 'cargo install --path crates/fdx'" }
-  if (isTooNew) return { ok: false, message: `FDX v${fdxVersion} is newer than ${requiredRange}`, remediation: "Update flowdeckFdxCompatibility in package.json" }
-  return { ok: false, message: `FDX v${fdxVersion} does not satisfy required range ${requiredRange}`, remediation: "Update FDX crate version" }
+  if (isTooOld) return { status: "fail", message: `FDX v${installedVersion} is too old for ${requiredRange}`, remediation: "Upgrade FDX via 'cargo install --path crates/fdx'" }
+  if (isTooNew) return { status: "fail", message: `FDX v${installedVersion} is newer than ${requiredRange}`, remediation: "Update flowdeckFdxCompatibility in package.json" }
+  return { status: "fail", message: `FDX v${installedVersion} does not satisfy required range ${requiredRange}`, remediation: "Update FDX crate version" }
 }
 
 function satisfiesCaretRange(version, range) {

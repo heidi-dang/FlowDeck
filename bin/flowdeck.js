@@ -19,7 +19,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync, readdirSync } from "node:fs";
 import { join, dirname, basename, resolve } from "node:path";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { readConfig as readConfigFile, createBackup, atomicWrite, writeConfig } from "../scripts/config-mutator.mjs";
 import { runDoctorChecks } from "../scripts/doctor-engine.mjs";
 
@@ -186,11 +186,7 @@ function registerPlugin(configDir, { pluginRef, installationMode, checkoutPath }
       throw new Error(`Configuration write failed: ${writeResult.error}`);
     }
 
-    // Step 6: Finalize manifest with any backup path from writeConfig
-    if (writeResult.backupPath) {
-      manifest.backupPath = writeResult.backupPath;
-      atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-    }
+    // Step 6: manifest is already finalized with backupPath from step 3
 
     if (pluginAdded) console.log(`  ✓ Added ${pluginRef} to plugin list`);
     if (defaultAgentAdded) console.log(`  ✓ Set default_agent to heidi`);
@@ -233,7 +229,7 @@ async function cmdInstall() {
 
   if (isLocalRepo) {
     const absPath = resolve(PKG_ROOT);
-    pluginRef = `file://${absPath}`;
+    pluginRef = pathToFileURL(absPath).href;
     installationMode = "local-repo";
     checkoutPath = absPath;
     configDir = getConfigDir(false);
@@ -516,14 +512,28 @@ async function cmdMigrate() {
   let migrated = 0;
   for (const { dir, label } of configDirs) {
     if (!existsSync(dir)) continue;
+
+    // ── Step 1: Read and validate config ──────────────────────────────
     const cfg = readConfig(dir);
-    if (!cfg.existing) continue;
+    if (!cfg.existing) {
+      console.log(`  ${label}: No configuration found`);
+      continue;
+    }
+
+    // Reject malformed config — never mutate garbage
+    if (cfg.raw && cfg.parseError) {
+      console.log(`  ✗ ${label}: Configuration is malformed: ${cfg.parseError}`);
+      console.log(`    File: ${cfg.path}`);
+      console.log(`    Fix the syntax error and re-run the migration.`);
+      continue;
+    }
 
     const data = JSON.parse(JSON.stringify(cfg.existing));
-    const edits = [];
-    let changed = false;
+    const configFile = cfg.path;
+    const manifestPath = join(dir, ".flowdeck-manifest.json");
 
-    // Build manifest for tracking what migration changes
+    // ── Step 2: Determine exact intended edits ───────────────────────
+    const edits = [];
     const manifest = {
       schemaVersion: 2,
       pluginRef: PKG_NAME,
@@ -532,7 +542,7 @@ async function cmdMigrate() {
       defaultAgentAdded: false,
       previousDefaultAgent: null,
       installationMode: "migrate",
-      configPath: cfg.path,
+      configPath: configFile,
       checkoutPath: null,
       version: PKG_VERSION,
       backupPath: null,
@@ -551,9 +561,7 @@ async function cmdMigrate() {
         edits.push({ path: ["plugin"], value: updated });
         manifest.pluginAdded = true;
         manifest.pluginPreviouslyPresent = false;
-        changed = true;
         console.log(`  ${label}: Migrated plugin reference from @dv.nghiem/flowdeck → ${PKG_NAME}`);
-        migrated++;
       }
     }
 
@@ -562,37 +570,64 @@ async function cmdMigrate() {
       manifest.defaultAgentAdded = true;
       manifest.previousDefaultAgent = null;
       edits.push({ path: ["default_agent"], value: "heidi" });
-      changed = true;
       console.log(`  ${label}: Set default_agent to heidi`);
     } else {
       manifest.previousDefaultAgent = data.default_agent;
     }
 
-    if (changed) {
-      // Create backup first
-      let backupPath = null;
-      if (existsSync(cfg.path)) {
-        backupPath = createBackup(cfg.path);
-      }
-
-      const result = writeConfig(cfg.path, cfg.raw || "{}", edits);
-      if (!result.ok) {
-        console.log(`  ${label}: Migration failed: ${result.error}`);
-        continue;
-      }
-      if (result.backupPath) console.log(`  ${label}: Backup at ${basename(result.backupPath)}`);
-
-      manifest.backupPath = result.backupPath || backupPath;
-
-      // Write migration manifest
-      const manifestPath = join(dir, ".flowdeck-manifest.json");
-      try {
-        atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-      } catch { /* non-fatal */ }
-
-      console.log(`  ${label}: Migration complete`);
-    } else {
+    if (edits.length === 0) {
       console.log(`  ${label}: No migration needed`);
+      continue;
+    }
+
+    // ── Transactional migration ──────────────────────────────────────
+    let backupPath = null;
+    let manifestWritten = false;
+
+    try {
+      // Step 3: Create backup (MUST succeed or abort entirely)
+      if (existsSync(configFile)) {
+        backupPath = createBackup(configFile);
+        if (!backupPath) {
+          throw new Error("Backup failed — no backup file created");
+        }
+        console.log(`  ✓ ${label}: Backup created: ${basename(backupPath)}`);
+      }
+
+      manifest.backupPath = backupPath;
+
+      // Step 4: Write provisional manifest
+      atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+      manifestWritten = true;
+
+      // Step 5: Apply edits atomically
+      const writeResult = writeConfig(configFile, cfg.raw || "{}", edits);
+      if (!writeResult.ok) {
+        throw new Error(`Configuration write failed: ${writeResult.error}`);
+      }
+
+      // Step 6: Finalize manifest (manifest is already correct at this point)
+      migrated++;
+
+      console.log(`  ✓ ${label}: Migration complete`);
+    } catch (err) {
+      console.log(`  ✗ ${label}: Migration failed: ${err.message}`);
+
+      // Step 7: On failure — restore backup, remove manifest, report error
+      if (backupPath && existsSync(backupPath) && existsSync(configFile)) {
+        try {
+          copyFileSync(backupPath, configFile);
+          console.log(`  ✓ ${label}: Configuration rolled back from backup`);
+        } catch (restoreErr) {
+          console.log(`  ⚠ ${label}: Backup exists at ${backupPath} but could not be restored: ${restoreErr.message}`);
+        }
+      }
+
+      if (manifestWritten && existsSync(manifestPath)) {
+        try { unlinkSync(manifestPath); } catch { /* best-effort cleanup */ }
+      }
+
+      // Continue to next config dir
     }
   }
 
@@ -752,12 +787,20 @@ async function cmdUninstall() {
   }
 
   if (changed) {
+    // Create backup before mutation (caller responsibility now that writeConfig doesn't create backups)
+    let uninstallBackupPath = null;
+    if (existsSync(cfg.path)) {
+      try {
+        uninstallBackupPath = createBackup(cfg.path);
+      } catch { /* non-fatal for uninstall */ }
+    }
+
     const result = writeConfig(cfg.path, cfg.raw || "{}", edits);
     if (!result.ok) {
       console.log(`✗ Failed to write configuration: ${result.error}`);
       return;
     }
-    if (result.backupPath) console.log(`  ✓ Backup: ${basename(result.backupPath)}`);
+    if (uninstallBackupPath) console.log(`  ✓ Backup: ${basename(uninstallBackupPath)}`);
 
     // Clean up manifest
     if (manifest && manifest.pluginRef) {

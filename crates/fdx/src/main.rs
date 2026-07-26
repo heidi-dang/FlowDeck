@@ -12,6 +12,7 @@ use fdx::reader::{read_file, ReadMode, ReaderOptions};
 
 #[derive(Parser)]
 #[command(name = "fdx")]
+#[command(version = "0.1.0")]
 #[command(about = "FlowDeck token-optimized file reader")]
 struct Cli {
     #[command(subcommand)]
@@ -339,6 +340,12 @@ enum Commands {
 }
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("fdx {}", env!("CARGO_PKG_VERSION"));
+        return;
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
