@@ -188,6 +188,10 @@ function classifyObservation(
     return { observation: "new_information", outputHash: contentHash, outputPreview }
   }
 
+  if (output === "[unavailable]" || outputPreview === "[unavailable]") {
+    return { observation: "same_result", outputHash: "unavailable", outputPreview: "[unavailable]" }
+  }
+
   const outputHash = hashOutput(output)
 
   if (!previous) {
@@ -418,6 +422,10 @@ export class LoopDetector {
   ): void {
     let sessionHistory = this.history.get(sessionId)
     if (!sessionHistory) {
+      if (this.history.size >= 100) {
+        const oldestSessionKey = this.history.keys().next().value
+        if (oldestSessionKey) this.history.delete(oldestSessionKey)
+      }
       sessionHistory = new Map()
       this.history.set(sessionId, sessionHistory)
     }
