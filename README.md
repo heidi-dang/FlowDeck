@@ -8,9 +8,9 @@ FlowDeck adds a structured, multi-agent development workflow to OpenCode. It coo
 
 ## Features
 
-- 🤖 **13 agents** — `heidi` (primary policy), `orchestrator`, `planner`, `architect`, `backend-coder`, `frontend-coder`, `devops`, `tester`, `reviewer`, `researcher`, `security-auditor`, `mapper`, and `debug-specialist`.
+- 🤖 **13 registered agents** — `heidi` (primary policy), `orchestrator`, `planner`, `architect`, `backend-coder`, `frontend-coder`, `devops`, `tester`, `reviewer`, `researcher`, `security-auditor`, `mapper`, and `debug-specialist`.
 - 🛠️ **61 skills** — validated workflow patterns in `src/skills/` (TDD, verification-before-completion, systematic-debugging, subagent-driven-development, writing-plans, executing-plans, improve-codebase-architecture, workflow-skill-creator, and more).
-- ⚡ **8 commands** — slash-command entry points for planning, execution, verification, and support (`/fd-task`, `/fd-execute`, `/fd-verify`, `/fd-review`, `/fd-checkpoint`, `/fd-resume`, `/fd-status`, `/fd-done`).
+- ⚡ **8 slash commands** — slash-command entry points for planning, execution, verification, and support (`/fd-task`, `/fd-execute`, `/fd-verify`, `/fd-review`, `/fd-checkpoint`, `/fd-resume`, `/fd-status`, `/fd-done`).
 - 📋 **Heidi Execution Policy** — 8 canonical execution strategies (`fast_direct`, `direct`, `explore_then_direct`, `planner_then_execute`, `debugger_root_cause`, `frontend_backend_parallel`, `audit_only`, `audit_after_change`) with justified delegation enforcement (max depth 1).
 - 🔄 **Persistent state** — resume exactly where you left off across sessions via `.planning/STATE.md`.
 - 🔀 **Parallel execution** — independent tasks run simultaneously through the orchestrator.
