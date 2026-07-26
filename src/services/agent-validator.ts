@@ -83,7 +83,10 @@ export function validateAgent(
     if (ctx.toolUsed) {
       const toolAllowed = contract.allowedTools.includes(ctx.toolUsed)
       const toolForbidden = contract.forbiddenActions.some(
-        fa => ctx.toolUsed!.includes(fa) || fa.includes(ctx.toolUsed!),
+        fa =>
+          ctx.toolUsed!.includes(fa) ||
+          fa.includes(ctx.toolUsed!) ||
+          fa.split(/\s+/).some(w => w.length >= 4 && ctx.toolUsed!.toLowerCase().includes(w.toLowerCase()))
       )
       if (!toolAllowed) {
         violations.push({
