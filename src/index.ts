@@ -54,6 +54,7 @@ import {
   fdxSearchTool,
   fdxTestTool,
   fdxTreeTool,
+  setActiveProjectDir,
 } from "./tools/fdx"
 import { hashEditTool } from "./tools/hash-edit"
 import { loadRulesTool, listRulesTool } from "./tools/load-rules"
@@ -85,6 +86,10 @@ const sessionDelegations = new Map<string, number>()
 const sessionBlocks = new Map<string, number>()
 /** Tracks total warnings per session. */
 const sessionWarnings = new Map<string, number>()
+/** Tracks session start timestamps. */
+const sessionStartTimes = new Map<string, number>()
+/** Tracks files changed per session. */
+const sessionFilesChanged = new Map<string, Set<string>>()
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
@@ -123,6 +128,9 @@ const plugin: Plugin = async ({ directory, client }) => {
     client.app.log({ body: { service: "flowdeck", level: "info", message: msg } })
       .then(() => undefined).catch(() => {})
 
+  // Set active project directory for FDX native fallback functions
+  setActiveProjectDir(directory)
+
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
   const orchestratorGuard = new OrchestratorGuard({ routes: getAgentRoutes() })
   const loopDetector = new LoopDetector(flowdeckConfig.governance?.loopDetection, appLog)
@@ -130,7 +138,8 @@ const plugin: Plugin = async ({ directory, client }) => {
   // Resolve budget limits from config (with safe defaults)
   const maxToolCalls = flowdeckConfig.governance?.delegationBudget?.maxToolCalls ?? 200
   const maxRetries = flowdeckConfig.governance?.delegationBudget?.maxSameStepRetries ?? 3
-  const maxDelegations = flowdeckConfig.governance?.delegationBudget?.maxDepth ?? 1
+  const maxDelegations = flowdeckConfig.governance?.delegationBudget?.maxDelegations ?? 20
+  const maxDepth = flowdeckConfig.governance?.delegationBudget?.maxDepth ?? 1
 
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
@@ -272,7 +281,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         // Read depth from session state or tool args
         const currentDepth = (toolInput.args?.depth as number) ?? 0
         const targetAgent = (toolInput.args?.agent as string) ?? "unknown"
-        const depthResult = validateDelegationDepth(agent, targetAgent, currentDepth, specialistAgentSet)
+        const depthResult = validateDelegationDepth(agent, targetAgent, currentDepth, specialistAgentSet, maxDepth)
         if (!depthResult.allowed) {
           recordRecoveryAudit({
             directory,
@@ -358,6 +367,14 @@ const plugin: Plugin = async ({ directory, client }) => {
       const agent = toolInput.agent ?? "unknown"
       appLog(`[tool] done tool=${toolName} session=${sessionID}`)
 
+      // ── 0. Track files changed for scorecard ─────────────────────────
+      if (sessionID && toolName && toolInput.args?.file && !toolInput.error) {
+        if (!sessionFilesChanged.has(sessionID)) {
+          sessionFilesChanged.set(sessionID, new Set())
+        }
+        sessionFilesChanged.get(sessionID)!.add(String(toolInput.args.file))
+      }
+
       // ── 1. Post-write verification lifecycle ──────────────────────────
       executePostWriteHook(directory, sessionID, agent, toolName, toolInput.args ?? {})
 
@@ -424,6 +441,10 @@ const plugin: Plugin = async ({ directory, client }) => {
           decision: "start",
           reason: "Session started",
         })
+        // Track session start time for duration calculation
+        if (sessionID) {
+          sessionStartTimes.set(sessionID, Date.now())
+        }
       } else if (type === "session.idle" || type === "session.error" || type === "session.completed") {
         await sessionEventsHook({ directory }, type === "session.idle" ? "idle" : "error", sessionID)
         if (sessionID) {
@@ -446,6 +467,10 @@ const plugin: Plugin = async ({ directory, client }) => {
             const delegations = sessionDelegations.get(sessionID) ?? 0
             const blocks = sessionBlocks.get(sessionID) ?? 0
             const warnings = sessionWarnings.get(sessionID) ?? 0
+            const startTime = sessionStartTimes.get(sessionID)
+            const durationMs = startTime ? Date.now() - startTime : null
+            const filesChangedSet = sessionFilesChanged.get(sessionID)
+            const filesChanged = filesChangedSet ? filesChangedSet.size : null
 
             const scorecard = generateScorecard({
               commandsRun: toolCalls,
@@ -453,13 +478,13 @@ const plugin: Plugin = async ({ directory, client }) => {
               testsFailed: null,
               buildResult: null,
               typecheckResult: null,
-              filesChanged: null,
+              filesChanged,
               toolCalls,
               delegations,
               retries,
               blocks,
               warnings,
-              durationMs: null,
+              durationMs,
               remainingFindings: null,
             })
             appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
@@ -470,6 +495,8 @@ const plugin: Plugin = async ({ directory, client }) => {
             sessionDelegations.delete(sessionID)
             sessionBlocks.delete(sessionID)
             sessionWarnings.delete(sessionID)
+            sessionStartTimes.delete(sessionID)
+            sessionFilesChanged.delete(sessionID)
           }
         }
       }

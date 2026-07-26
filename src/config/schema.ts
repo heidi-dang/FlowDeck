@@ -95,6 +95,7 @@ export interface GovernanceConfig {
   delegationBudget?: {
     maxToolCalls?: number;
     maxDepth?: number;
+    maxDelegations?: number;
     maxSameStepRetries?: number;
   };
   /** Audit log configuration. */

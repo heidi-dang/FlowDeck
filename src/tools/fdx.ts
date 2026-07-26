@@ -44,6 +44,18 @@ function validateArgs(args: string[]): string[] {
   return args
 }
 
+/** Active project directory used by native fallback functions. */
+let activeProjectDir = process.cwd()
+
+/**
+ * Set the active project directory for native fallback operations.
+ * Called during plugin initialization to ensure fallbacks use the correct
+ * project root rather than process.cwd() or a hardcoded ".".
+ */
+export function setActiveProjectDir(dir: string): void {
+  activeProjectDir = dir
+}
+
 let fdxAvailableCache: boolean | null = null
 
 /**
@@ -174,7 +186,7 @@ function nativeLsFallback(targetPath: string = "."): string {
 }
 
 async function nativeContextFallback(action: "append" | "read" | "clear", topic: string, agent?: string, stage?: string, summary?: string): Promise<string> {
-  const path = topicContextPath(".", topic)
+  const path = topicContextPath(activeProjectDir, topic)
   if (action === "append") {
     const line = `### ${agent || "Agent"} (${stage || "Stage"})\n${summary || ""}\n`
     await appendWithLock(path, line)
@@ -189,7 +201,7 @@ async function nativeContextFallback(action: "append" | "read" | "clear", topic:
 }
 
 async function nativeDecisionsFallback(action: "record" | "read", topic: string, decision?: string, rationale?: string, made_by?: string): Promise<string> {
-  const path = topicDecisionsPath(".", topic)
+  const path = topicDecisionsPath(activeProjectDir, topic)
   if (action === "record") {
     const line = `- **${decision || "Decision"}**: ${rationale || ""} (By: ${made_by || "Unknown"})\n`
     await appendWithLock(path, line)

@@ -249,6 +249,29 @@ export interface ScorecardData {
 }
 
 export function generateScorecard(data: ScorecardData): Record<string, unknown> {
+  // Determine "passed" status with strict null handling:
+  // - null when results are unknown (not yet run)
+  // - true only when there's actual evidence that everything passed
+  let passed: boolean | null
+  const evidenceOfFailure = data.testsFailed !== null && data.testsFailed > 0
+  const evidenceOfBuildFail = data.buildResult === "fail"
+  const evidenceOfTypecheckFail = data.typecheckResult === "fail"
+  const evidenceOfFindings = data.remainingFindings !== null && data.remainingFindings > 0
+
+  if (evidenceOfFailure || evidenceOfBuildFail || evidenceOfTypecheckFail || evidenceOfFindings) {
+    passed = false
+  } else {
+    const hasAnyEvidence = data.testsPassed !== null || data.testsFailed !== null ||
+      data.buildResult !== null || data.typecheckResult !== null || data.remainingFindings !== null
+    if (hasAnyEvidence) {
+      // Some results known and none indicate failure
+      passed = true
+    } else {
+      // All results unknown — not enough evidence to determine pass/fail
+      passed = null
+    }
+  }
+
   return {
     timestamp: new Date().toISOString(),
     commands_run: data.commandsRun,
@@ -266,7 +289,7 @@ export function generateScorecard(data: ScorecardData): Record<string, unknown> 
     tokens_used: data.tokensUsed,
     estimated_cost_usd: data.estimatedCostUSD,
     remaining_findings: data.remainingFindings,
-    passed: (data.testsFailed === null || data.testsFailed === 0) && (data.remainingFindings === null || data.remainingFindings === 0),
+    passed,
   }
 }
 
@@ -274,14 +297,15 @@ export function generateScorecard(data: ScorecardData): Record<string, unknown> 
 
 /**
  * Verify delegation depth is valid.
- * Maximum delegation depth is exactly 1.
- * Specialists cannot delegate. Heidi cannot delegate to itself.
+ * maxDepth is configurable (default 1). Specialists cannot delegate.
+ * Heidi cannot delegate to itself.
  */
 export function validateDelegationDepth(
   delegatingAgent: string,
   targetAgent: string,
   currentDepth: number,
   specialistAgents: Set<string>,
+  maxDepth: number = 1,
 ): { allowed: boolean; reason?: string } {
   // Specialists cannot delegate
   if (specialistAgents.has(delegatingAgent)) {
@@ -293,9 +317,9 @@ export function validateDelegationDepth(
     return { allowed: false, reason: `Heidi cannot delegate to itself. Execute directly or delegate to a different agent.` }
   }
 
-  // Depth limit
-  if (currentDepth >= 1) {
-    return { allowed: false, reason: `Maximum delegation depth of 1 exceeded. Use direct execution or escalate to user.` }
+  // Depth limit (capped at maxDepth from config)
+  if (currentDepth >= maxDepth) {
+    return { allowed: false, reason: `Maximum delegation depth of ${maxDepth} exceeded (current: ${currentDepth}). Use direct execution or escalate to user.` }
   }
 
   return { allowed: true }

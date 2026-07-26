@@ -67,15 +67,24 @@ jobs:
           tar tzf "$PACKAGE" | head -20
           tar xzf "$PACKAGE" -O package/package.json | node -e "process.stdin.on('data',d=>{const p=JSON.parse(d);console.assert(p.name==='@heidi-dang/flowdeck','Wrong: '+p.name);console.log('PASS: '+p.name+' v'+p.version)})"
           rm -f "$PACKAGE"
-      - name: Packed package install test
+      - name: Packed package install test (isolated HOME)
         run: |
+          set -e
           PACKAGE=$(npm pack 2>/dev/null)
-          TMPDIR=$(mktemp -d)
-          cd "$TMPDIR"
+          echo "Package: $PACKAGE"
+          TMP_ROOT=$(mktemp -d)
+          TMP_APP="$TMP_ROOT/app"
+          TMP_HOME="$TMP_ROOT/home"
+          mkdir -p "$TMP_APP" "$TMP_HOME"
+          cd "$TMP_APP"
           npm init -y > /dev/null 2>&1
-          npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1 | tail -5
-          ls node_modules/.bin/flowdeck 2>/dev/null && echo "PASS: CLI binary installed" || echo "FAIL: CLI binary not found"
-          ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs 2>/dev/null && echo "PASS: config-mutator.mjs in installed package" || echo "FAIL: config-mutator.mjs missing"
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" \
+            npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1 | tail -5
+          HOME="$TMP_HOME" ./node_modules/.bin/flowdeck --help 2>&1 | grep -q "FlowDeck v" || { echo "FAIL: --help"; exit 1; }
+          HOME="$TMP_HOME" ./node_modules/.bin/flowdeck install 2>&1 | grep -q "FlowDeck installed" || { echo "FAIL: install"; exit 1; }
+          HOME="$TMP_HOME" ./node_modules/.bin/flowdeck verify 2>&1 | grep -q "Verification passed" || { echo "FAIL: verify"; exit 1; }
+          HOME="$TMP_HOME" ./node_modules/.bin/flowdeck doctor 2>&1 || { echo "FAIL: doctor"; exit 1; }
+          echo "PASS: Packed package fully verified"
           rm -f "$GITHUB_WORKSPACE/$PACKAGE"
 
   installer-test:
@@ -164,6 +173,29 @@ jobs:
         run: node bin/flowdeck.js dry-run 2>&1
       - name: Uninstall (with manifest)
         run: node bin/flowdeck.js uninstall 2>&1
+      - name: CLI Integration Test
+        run: |
+          set -e
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{"plugin":[],"default_agent":null}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js --help 2>&1 | grep -q "FlowDeck v" || { echo "FAIL: --help"; exit 1; }
+          echo "PASS: --help"
+          node bin/flowdeck.js install 2>&1 | grep -q "FlowDeck installed" || { echo "FAIL: install"; exit 1; }
+          echo "PASS: install"
+          node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" || { echo "FAIL: verify"; exit 1; }
+          echo "PASS: verify"
+          node bin/flowdeck.js doctor 2>&1 || { echo "FAIL: doctor"; exit 1; }
+          echo "PASS: doctor"
+          node bin/flowdeck.js config validate 2>&1 || { echo "FAIL: config validate"; exit 1; }
+          echo "PASS: config validate"
+          node bin/flowdeck.js dry-run 2>&1 | grep -q "DRY RUN" || { echo "FAIL: dry-run"; exit 1; }
+          echo "PASS: dry-run"
+          node bin/flowdeck.js uninstall 2>&1 | grep -q "Uninstalled" || { echo "FAIL: uninstall"; exit 1; }
+          echo "PASS: uninstall"
+          echo "ALL CLI COMMANDS PASSED"
 
   rust-gates:
     name: Rust Gates (FDX)

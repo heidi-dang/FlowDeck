@@ -9,7 +9,7 @@
 // All checks are real — nothing is hardcoded as pass.
 
 import { readFileSync, existsSync, readdirSync, mkdirSync, accessSync, constants } from "node:fs"
-import { join, basename } from "node:path"
+import { join, basename, resolve } from "node:path"
 import { homedir } from "node:os"
 import { execFileSync } from "node:child_process"
 import { safeParseConfig } from "./config-mutator.mjs"
@@ -203,7 +203,7 @@ export async function runDoctorChecks(directory) {
   // ── 11. Delegation depth enforcement ────────────────────────────────────
   const govWiringPath = join(directory, "src", "services", "governance-wiring.ts")
   const govWiringContent = tryRead(govWiringPath)
-  const depthEnforced = govWiringContent?.includes("currentDepth >= 1") ?? false
+  const depthEnforced = (govWiringContent?.includes("currentDepth") && govWiringContent?.includes("maxDepth")) ?? false
   checks.push({
     id: "delegation.depth",
     name: "Delegation Depth Enforcement",
@@ -269,39 +269,88 @@ export async function runDoctorChecks(directory) {
   // ── 16. Install manifest ───────────────────────────────────────────────
   const manifestPath = join(configDir, ".flowdeck-manifest.json")
   let manifestOk = false, manifestInfo = "not found"
+  let manifestMode = null, manifestRef = null, manifestCheckout = null
   const manifestRaw = tryRead(manifestPath)
   if (manifestRaw) {
     try {
       const m = JSON.parse(manifestRaw)
-      manifestOk = m.pluginRef === "@heidi-dang/flowdeck" || m.packageName === "@heidi-dang/flowdeck"
-      manifestInfo = manifestOk ? "valid" : `points to "${m.pluginRef || m.packageName || "unknown"}"`
+      manifestRef = m.pluginRef || m.packageName || null
+      manifestMode = m.installationMode || null
+      manifestCheckout = m.checkoutPath || null
+      manifestOk = manifestRef === "@heidi-dang/flowdeck" || manifestRef === "file://" + resolve(directory) || manifestRef === "file://" + directory
+      // If mode is local-repo, verify checkoutPath resolves to an actual directory
+      if (manifestOk && manifestMode === "local-repo" && manifestCheckout) {
+        const resolvedPath = resolve(manifestCheckout)
+        manifestOk = existsSync(resolvedPath)
+        if (!manifestOk) manifestInfo = `checkoutPath "${manifestCheckout}" resolves to "${resolvedPath}" which does not exist`
+      }
+      if (manifestOk) manifestInfo = "valid"
+      else if (manifestInfo === "not found") manifestInfo = `points to "${manifestRef || "unknown"}"`
     } catch { manifestInfo = "corrupt" }
+  }
+  let manifestMsg = manifestOk ? "Install manifest valid (transactional ownership tracked)" : `Install manifest: ${manifestInfo}`
+  if (manifestMode) {
+    const modeLabels = {
+      "npm": "npm (global)",
+      "project": "project (local .opencode/)",
+      "local-repo": "local repository",
+      "postinstall": "npm postinstall",
+      "migrate": "migration from upstream",
+    }
+    manifestMsg += ` | mode: ${modeLabels[manifestMode] || manifestMode}`
+  }
+  if (manifestCheckout) {
+    manifestMsg += ` | checkout: ${manifestCheckout}`
   }
   checks.push({
     id: "install.manifest",
     name: "Install Manifest",
     status: manifestOk ? "pass" : (manifestInfo === "not found" ? "warn" : "fail"),
-    message: manifestOk ? "Install manifest valid (transactional ownership tracked)" : `Install manifest: ${manifestInfo}`,
+    message: manifestMsg,
     remediation: manifestOk ? undefined : "Run 'flowdeck install' to create manifest",
   })
 
   // ── 17. Install mode detection ─────────────────────────────────────────
-  const hasGit = existsSync(join(directory, ".git"))
-  const hasSrc = existsSync(join(directory, "src"))
-  const inNodeModules = directory.includes("node_modules")
+  // Prefer manifest's installationMode when available (more reliable)
   let installMode, modeOk
-  if (hasGit && hasSrc) {
-    installMode = "source checkout"
-    modeOk = true
-  } else if (inNodeModules) {
-    installMode = "npm install"
-    modeOk = existsSync(join(directory, "scripts", "config-mutator.mjs"))
-  } else if (hasSrc) {
-    installMode = "local-repo"
+  const manifestPath17 = join(configDir, ".flowdeck-manifest.json")
+  const manifestRaw17 = tryRead(manifestPath17)
+  let installModeFromManifest = null
+  if (manifestRaw17) {
+    try {
+      const m = JSON.parse(manifestRaw17)
+      if (m.installationMode) installModeFromManifest = m.installationMode
+    } catch { /* ignore */ }
+  }
+
+  if (installModeFromManifest) {
+    const modeLabels = {
+      "npm": "npm (global install)",
+      "project": "project (local .opencode/)",
+      "local-repo": "local repository checkout",
+      "postinstall": "npm postinstall hook",
+      "migrate": "migration from upstream",
+    }
+    installMode = modeLabels[installModeFromManifest] || installModeFromManifest
     modeOk = true
   } else {
-    installMode = "unknown"
-    modeOk = false
+    // Fall back to heuristics when no manifest exists
+    const hasGit = existsSync(join(directory, ".git"))
+    const hasSrc = existsSync(join(directory, "src"))
+    const inNodeModules = directory.includes("node_modules")
+    if (hasGit && hasSrc) {
+      installMode = "source checkout (no manifest)"
+      modeOk = true
+    } else if (inNodeModules) {
+      installMode = "npm install (no manifest)"
+      modeOk = existsSync(join(directory, "scripts", "config-mutator.mjs"))
+    } else if (hasSrc) {
+      installMode = "local-repo (no manifest)"
+      modeOk = true
+    } else {
+      installMode = "unknown"
+      modeOk = false
+    }
   }
   checks.push({
     id: "install.mode",
@@ -364,11 +413,21 @@ export async function runDoctorChecks(directory) {
   })
 
   // ── 22. Governance modes ─────────────────────────────────────────────
+  // Check if governance configuration files reference the supported modes
+  const govWiringContent22 = govWiringContent || tryRead(govWiringPath) || ""
+  const schemaContent = tryRead(join(directory, "src", "config", "schema.ts")) || ""
+  const govModeRegex = /"off"\s*\|?\s*"advisory"\s*\|?\s*"strict"/g
+  const wiringHasModes = govModeRegex.test(govWiringContent22)
+  const schemaHasModes = govModeRegex.test(schemaContent)
+  const govModesOk = wiringHasModes || schemaHasModes
   checks.push({
     id: "governance.modes",
     name: "Governance Modes",
-    status: "pass",
-    message: "off/advisory/strict supported (off = no enforcement, advisory = warn, strict = block)",
+    status: govModesOk ? "pass" : "warn",
+    message: govModesOk
+      ? "off/advisory/strict supported (off = no enforcement, advisory = warn, strict = block)"
+      : "Governance mode constants not found in governance-wiring.ts or schema.ts",
+    remediation: govModesOk ? undefined : "Define GovernanceMode type with 'off' | 'advisory' | 'strict' in schema.ts",
   })
 
   // ── 23. Model inheritance ─────────────────────────────────────────────
@@ -386,14 +445,18 @@ export async function runDoctorChecks(directory) {
   })
 
   // ── 24. Installer identity ──────────────────────────────────────────────
+  const flowdeckJs = tryRead(join(directory, "bin", "flowdeck.js"))
+  const installsFork = flowdeckJs?.includes("@heidi-dang/flowdeck") ?? false
   const postinstallMjs = tryRead(join(directory, "postinstall.mjs"))
-  const postInstallsFork = postinstallMjs?.includes("@heidi-dang/flowdeck") ?? false
+  const postinstallClean = postinstallMjs && !postinstallMjs.includes("writeConfig") && !postinstallMjs.includes("opencode.json") && postinstallMjs.includes("side-effect-free")
   checks.push({
     id: "config.installer",
     name: "Installer Identity",
-    status: postInstallsFork ? "pass" : "fail",
-    message: postInstallsFork ? "Installer registers @heidi-dang/flowdeck" : "Installer does not register the fork package",
-    remediation: postInstallsFork ? undefined : "Fix postinstall.mjs to register @heidi-dang/flowdeck",
+    status: installsFork && postinstallClean ? "pass" : "warn",
+    message: installsFork
+      ? (postinstallClean ? "Postinstall is side-effect-free; 'flowdeck install' handles setup" : "FlowDeck installer registers @heidi-dang/flowdeck")
+      : "Installer does not register the fork package",
+    remediation: installsFork ? undefined : "Fix bin/flowdeck.js to register @heidi-dang/flowdeck",
   })
 
   // ── 25. Directory readable ─────────────────────────────────────────────
@@ -454,6 +517,7 @@ function testFdxVersionCompatibility(directory, pkgRaw) {
     return { ok: false, message: `Unsupported platform: ${platform} ${arch}`, remediation: `Run on ${supportedPlatforms.join(", ")} with ${supportedArches.join(", ")} architecture` }
   }
 
+  // FDX doesn't support --version; check binary availability via --help instead
   let binaryAvailable = false
   try { execFileSync("fdx", ["--help"], { stdio: "ignore", timeout: 5000 }); binaryAvailable = true } catch { /* ignore */ }
 
@@ -461,9 +525,10 @@ function testFdxVersionCompatibility(directory, pkgRaw) {
     return { ok: true, message: `FDX binary not found; native TS fallbacks active. Package requires ${requiredRange}, crate is v${fdxVersion}`, remediation: undefined }
   }
 
+  // Binary exists — use crate version as the expected version for compatibility check
   const isCompatible = satisfiesCaretRange(fdxVersion, requiredRange)
   if (isCompatible) {
-    return { ok: true, message: `FDX v${fdxVersion} satisfies ${requiredRange} on ${platform}/${arch}`, remediation: undefined }
+    return { ok: true, message: `FDX v${fdxVersion} (crate) satisfies ${requiredRange} on ${platform}/${arch}`, remediation: undefined }
   }
 
   const reqParts = requiredRange.replace("^", "").split(".").map(Number)
