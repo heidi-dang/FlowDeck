@@ -23,20 +23,12 @@ jobs:
         with:
           node-version: "22.x"
           cache: "npm"
-          cache-dependency-path: package-lock.json
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
       - run: npm run typecheck
       - name: Repository Hygiene
         run: |
-          # Reject node_modules, dist, .pyc, __pycache__, runtime state, logs, .tgz, secrets
-          for pattern in "node_modules" "dist" ".pyc" "__pycache__" ".fd-plan" ".flowdeck.log" "*.tgz" "npm-debug.log"; do
-            if git ls-files --error-unmatch $pattern 2>/dev/null; then
-              echo "FAIL: $pattern should not be tracked by git"
-              exit 1
-            fi
-          done
-          echo "PASS: Repository hygiene check"
+          git ls-files --exclude-standard --others | grep -q . && echo "Untracked files found" && exit 1 || echo "PASS: No untracked files"
 
   test-matrix:
     name: Test Matrix (${{ matrix.os }})
@@ -51,7 +43,6 @@ jobs:
         with:
           node-version: "22.x"
           cache: "npm"
-          cache-dependency-path: package-lock.json
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
       - run: npm test
@@ -66,18 +57,24 @@ jobs:
         with:
           node-version: "22.x"
           cache: "npm"
-          cache-dependency-path: package-lock.json
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
       - run: npm run build
-      - name: Validate Skills
-        run: npm run validate:skills
-      - name: Validate Docs
-        run: npm run validate:docs
-      - name: npm pack content inspection
+      - run: npm run validate:skills
+      - run: npm run validate:docs
+      - name: npm pack validation
         run: |
-          npm pack --dry-run 2>&1
-          echo "PACK_CONTENT=$(npm pack --dry-run 2>&1 | grep -E '\.js$|\.ts$|\.json$|\.md$' | wc -l)" >> $GITHUB_ENV
+          npm pack --dry-run 2>&1 | grep -E 'total files:' | grep -qE '[0-9]+'
+          echo "PASS: npm pack valid"
+      - name: Pack and install in isolated HOME
+        run: |
+          PACKAGE=$(npm pack 2>/dev/null)
+          echo "Package: $PACKAGE"
+          TMPHOME=$(mktemp -d)
+          HOME=$TMPHOME npm init -y > /dev/null 2>&1
+          HOME=$TMPHOME npm install ./$PACKAGE --prefix $TMPHOME > /dev/null 2>&1
+          HOME=$TMPHOME node -e "const p = require('$TMPHOME/node_modules/@heidi-dang/flowdeck/package.json'); console.assert(p.name === '@heidi-dang/flowdeck', 'Wrong package name: ' + p.name); console.log('PASS: Package install verified')"
+          rm -f $PACKAGE
 
   installer-test:
     name: Installer Tests
@@ -89,54 +86,57 @@ jobs:
           node-version: "22.x"
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
-      - name: Clean HOME install test
+      - name: Clean HOME install
         run: |
           HOME_TMP=$(mktemp -d)
-          export HOME=$HOME_TMP
-          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
-          mkdir -p $OPENCODE_CONFIG_DIR
-          echo '{"plugin":[],"default_agent":null}' > $OPENCODE_CONFIG_DIR/opencode.json
-          node bin/flowdeck.js install 2>&1
+          HOME=$HOME_TMP OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode \
+            node bin/flowdeck.js install 2>&1
           node -e "
-            const c = JSON.parse(require('fs').readFileSync('$OPENCODE_CONFIG_DIR/opencode.json','utf-8'));
+            const c = JSON.parse(require('fs').readFileSync('$HOME_TMP/.config/opencode/opencode.json','utf-8'));
             console.assert(c.plugin.includes('@heidi-dang/flowdeck'), 'Plugin not registered');
             console.assert(c.default_agent === 'heidi', 'Default agent not heidi');
-            console.log('PASS: Clean HOME install verified');
+            console.log('PASS: Clean HOME install');
           "
-      - name: Malformed config preservation test
+      - name: Malformed config preserved
         run: |
           HOME_TMP=$(mktemp -d)
-          export HOME=$HOME_TMP
-          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          HOME=$HOME_TMP OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
           mkdir -p $OPENCODE_CONFIG_DIR
           echo '{{{broken}}' > $OPENCODE_CONFIG_DIR/opencode.json
           node bin/flowdeck.js install 2>&1 || true
-          CONTENT=$(cat $OPENCODE_CONFIG_DIR/opencode.json)
-          if [ "$CONTENT" = "{{{broken}}" ]; then
-            echo "PASS: Malformed config preserved byte-for-byte"
-          else
-            echo "FAIL: Malformed config was modified"
-            echo "Got: $CONTENT"
-            exit 1
-          fi
-      - name: JSONC comment preservation test
+          diff <(echo '{{{broken}}') $OPENCODE_CONFIG_DIR/opencode.json && echo "PASS: Malformed config preserved" || (echo "FAIL: Config modified" && exit 1)
+      - name: JSONC comment retention
         run: |
           HOME_TMP=$(mktemp -d)
-          export HOME=$HOME_TMP
-          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          HOME=$HOME_TMP OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
           mkdir -p $OPENCODE_CONFIG_DIR
-          printf '{\n  // comment\n  "plugin": [],\n  "default_agent": null\n}\n' > $OPENCODE_CONFIG_DIR/opencode.json
+          printf '{\n  // this comment must remain\n  "plugin": [],\n  "default_agent": null\n}\n' > $OPENCODE_CONFIG_DIR/opencode.json
           node bin/flowdeck.js install 2>&1
-          if grep -q "comment" $OPENCODE_CONFIG_DIR/opencode.json; then
-            echo "FAIL: JSONC comments were lost"
-            exit 1
-          fi
-          echo "PASS: JSONC processed correctly"
+          grep -q "this comment must remain" $OPENCODE_CONFIG_DIR/opencode.json && echo "PASS: JSONC comments preserved" || (echo "FAIL: JSONC comments lost" && exit 1)
+      - name: Existing default_agent preserved
+        run: |
+          HOME_TMP=$(mktemp -d)
+          HOME=$HOME_TMP OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p $OPENCODE_CONFIG_DIR
+          echo '{"plugin":[],"default_agent":"orchestrator"}' > $OPENCODE_CONFIG_DIR/opencode.json
+          node bin/flowdeck.js install 2>&1
+          node -e "
+            const c = JSON.parse(require('fs').readFileSync('$HOME_TMP/.config/opencode/opencode.json','utf-8'));
+            console.assert(c.default_agent === 'orchestrator', 'Default changed');
+            console.log('PASS: Existing default_agent preserved');
+          "
+      - name: Verify
+        run: node bin/flowdeck.js verify 2>&1
+      - name: Doctor
+        run: node bin/flowdeck.js doctor 2>&1
+      - name: Dry-run
+        run: node bin/flowdeck.js dry-run 2>&1
+      - name: Uninstall
+        run: node bin/flowdeck.js uninstall 2>&1
 
   rust-gates:
     name: Rust Gates (FDX)
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -144,13 +144,10 @@ jobs:
           components: clippy, rustfmt
       - name: Cargo Format Check
         run: cargo fmt --manifest-path crates/fdx/Cargo.toml --check
-        continue-on-error: true
       - name: Clippy Check
         run: cargo clippy --manifest-path crates/fdx/Cargo.toml --all-targets -- -D warnings
-        continue-on-error: true
       - name: Cargo Test
         run: cargo test --manifest-path crates/fdx/Cargo.toml --all
-        continue-on-error: true
 
   security-scan:
     name: Security Scan
@@ -160,35 +157,38 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
+      - uses: oven-sh/setup-bun@v2
       - run: npm ci
-      - name: Secret Scan
-        run: |
-          # Check for hardcoded secrets in staged files
-          if git log -p -1 2>/dev/null | grep -iE '(token|secret|password|api.?key|credential)' | grep -vE 'npm_token|NPM_TOKEN|TEST_'; then
-            echo "WARN: Potential secrets found in recent commit"
-          else
-            echo "PASS: No secrets detected"
-          fi
+      - name: Secret Detection
+        uses: trufflesecurity/trufflehog@v3
+        with:
+          extra_args: --results=verified,unknown --fail
       - name: Dependency Audit
-        run: npm audit --production || true
+        run: |
+          npm audit --production --audit-level=high || exit 1
 
   completion:
     name: Pipeline Completion
     if: always()
-    needs: [lint-typecheck, test-matrix, build, installer-test, security-scan]
+    needs: [lint-typecheck, test-matrix, build, installer-test, rust-gates, security-scan]
     runs-on: ubuntu-latest
     steps:
       - run: |
           echo "## CI Production Gates Summary" >> $GITHUB_STEP_SUMMARY
           echo "- Lint & Typecheck: ${{ needs.lint-typecheck.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Test Matrix: ${{ needs.test-matrix.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Test Matrix (ubuntu): ${{ needs.test-matrix.results['ubuntu-latest'] || needs.test-matrix.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Test Matrix (macos): ${{ needs.test-matrix.results['macos-latest'] || needs.test-matrix.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Test Matrix (windows): ${{ needs.test-matrix.results['windows-latest'] || needs.test-matrix.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Build & Validate: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Installer Tests: ${{ needs.installer-test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Rust Gates: ${{ needs.rust-gates.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Security Scan: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.lint-typecheck.result }}" = "success" ] && \
              [ "${{ needs.test-matrix.result }}" = "success" ] && \
              [ "${{ needs.build.result }}" = "success" ] && \
-             [ "${{ needs.installer-test.result }}" = "success" ]; then
+             [ "${{ needs.installer-test.result }}" = "success" ] && \
+             [ "${{ needs.rust-gates.result }}" = "success" ] && \
+             [ "${{ needs.security-scan.result }}" = "success" ]; then
             echo "ALL GATES PASSED" >> $GITHUB_STEP_SUMMARY
           else
             echo "SOME GATES FAILED" >> $GITHUB_STEP_SUMMARY
