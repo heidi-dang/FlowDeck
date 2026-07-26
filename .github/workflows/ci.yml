@@ -223,22 +223,62 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
       - run: npm ci
       - name: Dependency Audit
         run: npm audit --production --audit-level=high 2>&1
-      - name: Secret Detection
+      - name: Install Gitleaks
         run: |
-          # Install and run Gitleaks
-          which gitleaks 2>/dev/null || curl -fsSL https://github.com/gitleaks/gitleaks/releases/download/v8.18.2/gitleaks_8.18.2_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz 2>/dev/null && tar xzf /tmp/gitleaks.tar.gz -C /tmp 2>/dev/null && /tmp/gitleaks detect --no-git --source . -v 2>&1 || echo "PASS: No secrets detected (gitleaks not available, skipped)"
+          set -euo pipefail
+          VERSION="8.18.2"
+          curl --fail --show-error --location \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            --output /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp
+          /tmp/gitleaks version
+      - name: Scan Git history
+        run: |
+          set -euo pipefail
+          /tmp/gitleaks detect \
+            --source . \
+            --log-opts="--all" \
+            --redact \
+            --verbose
+
+  local-installer:
+    name: Local Installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - name: Local-repo install test
+        run: |
+          node bin/flowdeck.js install --local-repo 2>&1
+          node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" || (echo "FAIL: verify"; exit 1)
+          echo "PASS: local-repo install on ${{ matrix.os }}"
+      - name: Project install test
+        run: |
+          node bin/flowdeck.js install --project 2>&1
+          echo "PASS: project install on ${{ matrix.os }}"
 
   completion:
     name: Pipeline Completion
     if: always()
-    needs: [lint-typecheck, test-matrix, build, installer-test, rust-gates, security-scan]
+    needs: [lint-typecheck, test-matrix, build, installer-test, rust-gates, security-scan, local-installer]
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -249,12 +289,14 @@ jobs:
           echo "- Installer Tests: ${{ needs.installer-test.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Rust Gates: ${{ needs.rust-gates.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Security Scan: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Local Installer: ${{ needs.local-installer.result }}" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.lint-typecheck.result }}" = "success" ] && \
              [ "${{ needs.test-matrix.result }}" = "success" ] && \
              [ "${{ needs.build.result }}" = "success" ] && \
              [ "${{ needs.installer-test.result }}" = "success" ] && \
              [ "${{ needs.rust-gates.result }}" = "success" ] && \
-             [ "${{ needs.security-scan.result }}" = "success" ]; then
+             [ "${{ needs.security-scan.result }}" = "success" ] && \
+             [ "${{ needs.local-installer.result }}" = "success" ]; then
             echo "ALL GATES PASSED" >> $GITHUB_STEP_SUMMARY
           else
             echo "SOME GATES FAILED" >> $GITHUB_STEP_SUMMARY

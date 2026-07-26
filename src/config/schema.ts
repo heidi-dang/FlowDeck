@@ -67,29 +67,10 @@ export interface GovernanceConfig {
     /** Maximum actions in memory per session. Default: 20 */
     historySize?: number;
   };
-  /** Deadlock detection configuration. */
-  deadlockDetection?: {
-    enabled?: boolean;
-    /** Agent-pair transitions before agent_bounce signal. Default: 3 */
-    bounceThreshold?: number;
-    /** Same-stage retries before step_retry_loop signal. Default: 3 */
-    retryLoopThreshold?: number;
-    /** Minutes a run can stay "running" before stage_stall. Default: 30 */
-    stageStallMinutes?: number;
-    /** Auto-stop run on signal. Default: false */
-    autoStop?: boolean;
-  };
   /** Scorecard configuration. */
   scorecard?: {
     enabled?: boolean;
     storageMode?: "jsonl" | "none";
-  };
-  /** Cost budget configuration. */
-  costBudget?: {
-    maxEstimatedCostUSD?: number;
-    maxInputTokens?: number;
-    maxOutputTokens?: number;
-    onExhaustion?: "warn" | "stop" | "escalate";
   };
   /** Delegation budget configuration. */
   delegationBudget?: {
@@ -109,11 +90,6 @@ export interface GovernanceConfig {
     enabled?: boolean;
     requireVerificationBeforeComplete?: boolean;
   };
-  /** Recovery configuration. */
-  recovery?: {
-    maxAutomaticRepairCycles?: number;
-    circuitBreakAfterFailures?: number;
-  };
 }
 
 export interface SupervisorConfig {
@@ -124,6 +100,4 @@ export interface SupervisorConfig {
   canBlock?: boolean;
   /** Confidence threshold (0-1) for approve decision. Default: 0.7 */
   confidenceThreshold?: number;
-  /** Whether to run post-execution review. Default: false */
-  postExecutionReview?: boolean;
 }

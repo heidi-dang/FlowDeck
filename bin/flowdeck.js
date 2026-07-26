@@ -16,11 +16,12 @@
 //   flowdeck dry-run              Show what would be done
 //   flowdeck --help               Show help
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, unlinkSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync } from "node:fs";
 import { join, dirname, basename, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readConfig as readConfigFile, createBackup, atomicWrite, writeConfig } from "../scripts/config-mutator.mjs";
+import { readConfig as readConfigFile, createBackup } from "../scripts/config-mutator.mjs";
+import { executeTransaction } from "../scripts/config-transaction.mjs";
 import { runDoctorChecks } from "../scripts/doctor-engine.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -93,14 +94,8 @@ function readConfig(configDir) {
 /**
  * Register FlowDeck plugin in opencode.json.
  *
- * Implements a full transactional flow:
- *   1. Read and validate config
- *   2. Determine exact intended edits (plugin ref, default_agent)
- *   3. Create backup (MUST succeed or abort entirely)
- *   4. Write provisional manifest (if this fails, restore backup and abort)
- *   5. Apply config edits atomically (if this fails, restore backup, remove manifest, abort)
- *   6. Finalize manifest atomically (if this fails, restore backup, remove manifest, abort)
- *   7. Report success
+ * Uses the shared executeTransaction from config-transaction.mjs for
+ * safe, atomic, rollback-capable config mutation.
  *
  * @param {string} configDir - Config directory path
  * @param {object} options
@@ -109,8 +104,10 @@ function readConfig(configDir) {
  * @param {string|null} options.checkoutPath - Absolute checkout path for local-repo mode
  * @returns {{ ok: boolean, changed?: boolean, error?: string }}
  */
-function registerPlugin(configDir, { pluginRef, installationMode, checkoutPath }) {
+async function registerPlugin(configDir, { pluginRef, installationMode, checkoutPath }) {
   mkdirSync(configDir, { recursive: true });
+  const configPath = join(configDir, "opencode.json");
+  const manifestPath = join(configDir, ".flowdeck-manifest.json");
   const cfg = readConfig(configDir);
 
   // Step 1: Validate config
@@ -122,7 +119,6 @@ function registerPlugin(configDir, { pluginRef, installationMode, checkoutPath }
   }
 
   const data = cfg.existing || {};
-  const configFile = cfg.path;
 
   // Step 2: Determine exact intended edits before writing anything
   const pluginPreviouslyPresent = Array.isArray(data.plugin) && data.plugin.some(p => {
@@ -146,22 +142,11 @@ function registerPlugin(configDir, { pluginRef, installationMode, checkoutPath }
     return { ok: true, changed: false };
   }
 
-  const manifestPath = join(configDir, ".flowdeck-manifest.json");
-  let backupPath = null;
-  let manifestWritten = false;
-
-  try {
-    // Step 3: Create backup (MUST succeed or abort entirely)
-    if (existsSync(configFile)) {
-      backupPath = createBackup(configFile);
-      if (!backupPath) {
-        throw new Error("Backup failed — no backup file created");
-      }
-      console.log(`  ✓ Backup created: ${basename(backupPath)}`);
-    }
-
-    // Step 4: Write provisional manifest (if this fails, restore backup and abort)
-    const manifest = {
+  // Step 3-6: Execute via transaction service
+  const result = await executeTransaction({
+    configPath,
+    edits,
+    manifest: {
       schemaVersion: 2,
       pluginRef,
       pluginAdded,
@@ -169,50 +154,21 @@ function registerPlugin(configDir, { pluginRef, installationMode, checkoutPath }
       defaultAgentAdded,
       previousDefaultAgent,
       installationMode,
-      configPath: configFile,
       checkoutPath: checkoutPath || null,
       version: PKG_VERSION,
-      backupPath: backupPath || null,
-      installedAt: new Date().toISOString(),
-    };
+    },
+    manifestPath,
+  });
 
-    atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-    manifestWritten = true;
-    console.log(`  ✓ Install manifest created`);
-
-    // Step 5: Apply config edits atomically
-    const writeResult = writeConfig(configFile, cfg.raw || "{}", edits);
-    if (!writeResult.ok) {
-      throw new Error(`Configuration write failed: ${writeResult.error}`);
-    }
-
-    // Step 6: manifest is already finalized with backupPath from step 3
-
+  if (result.ok) {
     if (pluginAdded) console.log(`  ✓ Added ${pluginRef} to plugin list`);
     if (defaultAgentAdded) console.log(`  ✓ Set default_agent to heidi`);
-
     console.log(`\n✓ FlowDeck installed (comments preserved).`);
     console.log(`  A fresh OpenCode session is required to activate.`);
     return { ok: true, changed: true };
-  } catch (err) {
-    console.log(`✗ ${err.message}`);
-
-    // Rollback: restore backup if config file exists and backup is available
-    if (backupPath && existsSync(backupPath) && existsSync(configFile)) {
-      try {
-        copyFileSync(backupPath, configFile);
-        console.log(`  ✓ Configuration rolled back from backup`);
-      } catch (restoreErr) {
-        console.log(`  ⚠ Backup exists at ${backupPath} but could not be restored: ${restoreErr.message}`);
-      }
-    }
-
-    // Remove manifest if it was written
-    if (manifestWritten && existsSync(manifestPath)) {
-      try { unlinkSync(manifestPath); } catch { /* best-effort cleanup */ }
-    }
-
-    return { ok: false, error: err.message };
+  } else {
+    console.log(`✗ ${result.error}`);
+    return { ok: false, error: result.error };
   }
 }
 
@@ -248,7 +204,7 @@ async function cmdInstall() {
     console.log(`Installing FlowDeck (${PKG_NAME} v${PKG_VERSION})...\n`);
   }
 
-  const result = registerPlugin(configDir, { pluginRef, installationMode, checkoutPath });
+  const result = await registerPlugin(configDir, { pluginRef, installationMode, checkoutPath });
 
   if (!result.ok) {
     process.exit(1);
@@ -269,44 +225,63 @@ async function cmdUpdate() {
     { dir: getConfigDir(true), label: "project" },
   ];
 
+  let anyFailure = false;
   for (const { dir, label } of configDirs) {
     if (!existsSync(dir)) continue;
 
-    console.log(`Checking ${label} config at: ${dir}`);
-    const cfg = readConfig(dir);
+    const configPath = join(dir, "opencode.json");
+    const manifestPath = join(dir, ".flowdeck-manifest.json");
 
-    if (!cfg.existing || !Array.isArray(cfg.existing.plugin)) {
-      console.log(`  - No plugin list found`);
+    let edits = [];
+    let needsUpdate = false;
+
+    const cfg = readConfig(dir);
+    if (cfg.existing && Array.isArray(cfg.existing.plugin)) {
+      const hasUpstream = cfg.existing.plugin.some(p => String(p).includes("dv.nghiem"));
+      const hasFork = cfg.existing.plugin.some(p => p === PKG_NAME);
+      if (hasUpstream && !hasFork) {
+        edits.push({
+          path: ["plugin"],
+          value: cfg.existing.plugin.map(p => String(p).includes("dv.nghiem") ? PKG_NAME : p),
+        });
+        needsUpdate = true;
+      }
+    }
+
+    if (!needsUpdate) {
+      console.log(`  ${label}: Already up-to-date`);
       continue;
     }
 
-    // Preserve all settings, just ensure package reference is correct
-    const needsUpdate = cfg.existing.plugin.some(
-      p => p === "@dv.nghiem/flowdeck" || String(p).startsWith("@dv.nghiem/flowdeck@")
-    );
+    const result = await executeTransaction({
+      configPath,
+      edits,
+      manifest: {
+        schemaVersion: 2,
+        pluginRef: PKG_NAME,
+        pluginAdded: false,
+        pluginPreviouslyPresent: true,
+        defaultAgentAdded: false,
+        previousDefaultAgent: null,
+        installationMode: "update",
+        version: PKG_VERSION,
+      },
+      manifestPath,
+    });
 
-    if (needsUpdate) {
-      console.log(`  ⚠ Found legacy @dv.nghiem/flowdeck reference — migrating...`);
-      const edits = [{
-        path: ["plugin"],
-        value: cfg.existing.plugin.map(p =>
-          p === "@dv.nghiem/flowdeck" || String(p).startsWith("@dv.nghiem/flowdeck@")
-            ? PKG_NAME : p
-        ),
-      }];
-
-      const result = writeConfig(cfg.path, cfg.raw || "{}", edits);
-      if (result.ok) {
-        console.log(`  ✓ Migrated to ${PKG_NAME}`);
-      } else {
-        console.log(`  ✗ Migration failed: ${result.error}`);
-      }
+    if (result.ok) {
+      console.log(`  ${label}: Updated successfully`);
     } else {
-      console.log(`  ✓ Already up-to-date`);
+      console.error(`  ${label}: Update FAILED: ${result.error}`);
+      anyFailure = true;
     }
   }
 
-  console.log(`\n✓ Update complete.`);
+  if (anyFailure) {
+    console.error("\n✗ Update failed for one or more targets");
+    process.exit(1);
+  }
+  console.log("\n✓ Update complete.");
 }
 
 async function cmdVerify() {
@@ -528,8 +503,7 @@ async function cmdMigrate() {
       continue;
     }
 
-    const data = JSON.parse(JSON.stringify(cfg.existing));
-    const configFile = cfg.path;
+    const configPath = join(dir, "opencode.json");
     const manifestPath = join(dir, ".flowdeck-manifest.json");
 
     // ── Step 2: Determine exact intended edits ───────────────────────
@@ -542,37 +516,32 @@ async function cmdMigrate() {
       defaultAgentAdded: false,
       previousDefaultAgent: null,
       installationMode: "migrate",
-      configPath: configFile,
-      checkoutPath: null,
       version: PKG_VERSION,
-      backupPath: null,
-      installedAt: new Date().toISOString(),
     };
 
     // Migrate plugin references
-    if (Array.isArray(data.plugin)) {
-      const hasUpstream = data.plugin.some(p => String(p).includes("dv.nghiem"));
-      const hasFork = data.plugin.some(p => p === PKG_NAME);
+    if (Array.isArray(cfg.existing.plugin)) {
+      const hasUpstream = cfg.existing.plugin.some(p => String(p).includes("dv.nghiem"));
+      const hasFork = cfg.existing.plugin.some(p => p === PKG_NAME);
 
       if (hasUpstream && !hasFork) {
-        const updated = data.plugin.map(p =>
+        const updated = cfg.existing.plugin.map(p =>
           String(p).includes("dv.nghiem") ? PKG_NAME : p
         );
         edits.push({ path: ["plugin"], value: updated });
         manifest.pluginAdded = true;
-        manifest.pluginPreviouslyPresent = false;
         console.log(`  ${label}: Migrated plugin reference from @dv.nghiem/flowdeck → ${PKG_NAME}`);
       }
     }
 
     // Set default agent if empty
-    if (data.default_agent == null) {
+    if (cfg.existing.default_agent == null) {
       manifest.defaultAgentAdded = true;
       manifest.previousDefaultAgent = null;
       edits.push({ path: ["default_agent"], value: "heidi" });
       console.log(`  ${label}: Set default_agent to heidi`);
     } else {
-      manifest.previousDefaultAgent = data.default_agent;
+      manifest.previousDefaultAgent = cfg.existing.default_agent;
     }
 
     if (edits.length === 0) {
@@ -580,53 +549,19 @@ async function cmdMigrate() {
       continue;
     }
 
-    // ── Transactional migration ──────────────────────────────────────
-    let backupPath = null;
-    let manifestWritten = false;
+    // ── Steps 3-6: Execute via transaction service ────────────────────
+    const result = await executeTransaction({
+      configPath,
+      edits,
+      manifest,
+      manifestPath,
+    });
 
-    try {
-      // Step 3: Create backup (MUST succeed or abort entirely)
-      if (existsSync(configFile)) {
-        backupPath = createBackup(configFile);
-        if (!backupPath) {
-          throw new Error("Backup failed — no backup file created");
-        }
-        console.log(`  ✓ ${label}: Backup created: ${basename(backupPath)}`);
-      }
-
-      manifest.backupPath = backupPath;
-
-      // Step 4: Write provisional manifest
-      atomicWrite(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
-      manifestWritten = true;
-
-      // Step 5: Apply edits atomically
-      const writeResult = writeConfig(configFile, cfg.raw || "{}", edits);
-      if (!writeResult.ok) {
-        throw new Error(`Configuration write failed: ${writeResult.error}`);
-      }
-
-      // Step 6: Finalize manifest (manifest is already correct at this point)
-      migrated++;
-
+    if (result.ok) {
       console.log(`  ✓ ${label}: Migration complete`);
-    } catch (err) {
-      console.log(`  ✗ ${label}: Migration failed: ${err.message}`);
-
-      // Step 7: On failure — restore backup, remove manifest, report error
-      if (backupPath && existsSync(backupPath) && existsSync(configFile)) {
-        try {
-          copyFileSync(backupPath, configFile);
-          console.log(`  ✓ ${label}: Configuration rolled back from backup`);
-        } catch (restoreErr) {
-          console.log(`  ⚠ ${label}: Backup exists at ${backupPath} but could not be restored: ${restoreErr.message}`);
-        }
-      }
-
-      if (manifestWritten && existsSync(manifestPath)) {
-        try { unlinkSync(manifestPath); } catch { /* best-effort cleanup */ }
-      }
-
+      migrated++;
+    } else {
+      console.log(`  ✗ ${label}: Migration FAILED: ${result.error}`);
       // Continue to next config dir
     }
   }
@@ -702,8 +637,10 @@ async function cmdUninstall() {
     return;
   }
 
-  // ── READ MANIFEST ───────────────────────────────────────────────────
+  const configPath = cfg.path;
   const manifestPath = join(configDir, ".flowdeck-manifest.json");
+
+  // ── READ MANIFEST ───────────────────────────────────────────────────
   let manifest = null;
   try {
     if (existsSync(manifestPath)) {
@@ -711,7 +648,6 @@ async function cmdUninstall() {
     }
   } catch { /* silently ignore corrupt manifest */ }
 
-  const data = JSON.parse(JSON.stringify(cfg.existing));
   const edits = [];
   let changed = false;
 
@@ -721,13 +657,13 @@ async function cmdUninstall() {
 
     // Only remove plugin ref when FlowDeck added it
     if (manifest.pluginAdded === true) {
-      if (Array.isArray(data.plugin)) {
+      if (Array.isArray(cfg.existing.plugin)) {
         const pluginRef = manifest.pluginRef;
-        const filtered = data.plugin.filter(p => {
+        const filtered = cfg.existing.plugin.filter(p => {
           if (pluginRef.startsWith("file://")) return p !== pluginRef;
           return p !== pluginRef && !String(p).startsWith(pluginRef + "@");
         });
-        if (filtered.length < data.plugin.length) {
+        if (filtered.length < cfg.existing.plugin.length) {
           edits.push({ path: ["plugin"], value: filtered.length > 0 ? filtered : [] });
           console.log(`  ✓ Removed ${pluginRef} from plugin list`);
           changed = true;
@@ -773,9 +709,9 @@ async function cmdUninstall() {
 
     // --force: only remove exact plugin ref match; NEVER touch default_agent
     console.log(`  ─ Forced uninstall — removing only exact plugin reference`);
-    if (Array.isArray(data.plugin)) {
-      const filtered = data.plugin.filter(p => p !== PKG_NAME && !String(p).startsWith(PKG_NAME + "@"));
-      if (filtered.length < data.plugin.length) {
+    if (Array.isArray(cfg.existing.plugin)) {
+      const filtered = cfg.existing.plugin.filter(p => p !== PKG_NAME && !String(p).startsWith(PKG_NAME + "@"));
+      if (filtered.length < cfg.existing.plugin.length) {
         edits.push({ path: ["plugin"], value: filtered.length > 0 ? filtered : [] });
         console.log(`  ✓ Removed ${PKG_NAME} from plugin list`);
         changed = true;
@@ -787,27 +723,33 @@ async function cmdUninstall() {
   }
 
   if (changed) {
-    // Create backup before mutation (caller responsibility now that writeConfig doesn't create backups)
-    let uninstallBackupPath = null;
-    if (existsSync(cfg.path)) {
-      try {
-        uninstallBackupPath = createBackup(cfg.path);
-      } catch { /* non-fatal for uninstall */ }
-    }
+    // Build manifest — preserve existing manifest fields and tag as uninstall
+    const uninstallManifest = manifest
+      ? { ...manifest, installationMode: "uninstall" }
+      : {
+          schemaVersion: 2,
+          pluginRef: PKG_NAME,
+          pluginAdded: true,
+          pluginPreviouslyPresent: false,
+          defaultAgentAdded: false,
+          previousDefaultAgent: null,
+          installationMode: "uninstall-force",
+          version: PKG_VERSION,
+        };
 
-    const result = writeConfig(cfg.path, cfg.raw || "{}", edits);
-    if (!result.ok) {
-      console.log(`✗ Failed to write configuration: ${result.error}`);
-      return;
-    }
-    if (uninstallBackupPath) console.log(`  ✓ Backup: ${basename(uninstallBackupPath)}`);
+    // Execute via transaction service
+    const result = await executeTransaction({
+      configPath,
+      edits,
+      manifest: uninstallManifest,
+      manifestPath,
+    });
 
-    // Clean up manifest
-    if (manifest && manifest.pluginRef) {
-      try { unlinkSync(manifestPath); } catch { /* ignore */ }
+    if (result.ok) {
+      console.log(`\n✓ FlowDeck uninstalled. A fresh OpenCode session is required.`);
+    } else {
+      console.log(`✗ Uninstall FAILED: ${result.error}`);
     }
-
-    console.log(`\n✓ FlowDeck uninstalled.`);
   } else {
     console.log(`  ✓ No changes needed.`);
   }
