@@ -50,7 +50,7 @@ describe("Phase 6 — FDX Reliability and Fallback", () => {
       const file = join(TMP, "sample.ts")
       writeFileSync(file, "const a = 1;\nconst b = 2;\nconsole.log(a + b);", "utf-8")
 
-      const res = await fdxReadTool.execute({ file }, ctx)
+      const res = await fdxReadTool.execute({ file, mode: "raw" }, ctx)
       expect(typeof res).toBe("string")
       expect(res).toContain("const a = 1")
     })
@@ -59,7 +59,7 @@ describe("Phase 6 — FDX Reliability and Fallback", () => {
       const file = join(TMP, "lines.txt")
       writeFileSync(file, "line1\nline2\nline3\nline4\nline5", "utf-8")
 
-      const res = await fdxReadTool.execute({ file, offset: 2, limit: 2 }, ctx)
+      const res = await fdxReadTool.execute({ file, mode: "raw", offset: 2, limit: 2 }, ctx)
       expect(res).toContain("line2")
       expect(res).toContain("line3")
       expect(res).not.toContain("line5")
@@ -83,7 +83,7 @@ describe("Phase 6 — FDX Reliability and Fallback", () => {
       writeFileSync(f1, "hello f1", "utf-8")
       writeFileSync(f2, "hello f2", "utf-8")
 
-      const res = await fdxBatchTool.execute({ files: [f1, f2] }, ctx)
+      const res = await fdxBatchTool.execute({ files: [f1, f2], mode: "raw" }, ctx)
       expect(res).toContain("hello f1")
       expect(res).toContain("hello f2")
     })
