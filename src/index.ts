@@ -17,7 +17,7 @@ import { guardRailsHook } from "./hooks/guard-rails"
 import { OrchestratorGuard } from "./hooks/orchestrator-guard-hook"
 import { sessionStartHook } from "./hooks/session-start"
 import { sessionEventsHook } from "./hooks/session-events"
-import { toolGuardHook } from "./hooks/tool-guard"
+import { executePostWriteHook, clearWriteCounter, toolGuardHook } from "./hooks/tool-guard"
 import { buildFlowDeckMcpsWithMeta } from "./mcp/index"
 import { captureLessonTool, reviewLessonsTool } from "./tools/capture-lesson"
 import { codegraphTool } from "./tools/codegraph-tool"
@@ -82,7 +82,7 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
   const orchestratorGuard = new OrchestratorGuard({ routes: getAgentRoutes() })
-  const loopDetector = new LoopDetector(undefined, appLog)
+  const loopDetector = new LoopDetector(flowdeckConfig.governance?.loopDetection, appLog)
 
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
@@ -192,25 +192,34 @@ const plugin: Plugin = async ({ directory, client }) => {
     },
 
     "tool.execute.after": async (toolInput: any) => {
-      appLog(`[tool] done tool=${toolInput.tool ?? toolInput.name ?? "unknown"} session=${toolInput.sessionID ?? ""}`)
-      // SDK's tool.execute.after only exposes toolInput (toolOutput is unavailable here).
-      // Pass a sentinel for output so call-count tracking still works; if the SDK
-      // includes output on toolInput, prefer it for hash-based loop detection.
+      const toolName = toolInput.tool ?? toolInput.name ?? "unknown"
+      const sessionID = toolInput.sessionID ?? ""
+      appLog(`[tool] done tool=${toolName} session=${sessionID}`)
+
+      // Execute post-write lifecycle after successful tool execution
+      executePostWriteHook(directory, sessionID, toolInput.agent, toolName, toolInput.args ?? {})
+
+      // Record successful execution in loop detector
       loopDetector.recordAfter(
-        toolInput.tool ?? toolInput.name ?? "unknown",
+        toolName,
         toolInput.args ?? {},
         toolInput.output ?? "[unavailable]",
-        toolInput.sessionID ?? "",
+        sessionID,
+        "success"
       )
     },
 
     event: async ({ event }: { event: any }) => {
       const type: string = event?.type ?? ""
+      const sessionID = event?.properties?.sessionID ?? ""
       if (type === "session.created" || type === "session.started") {
         await sessionStartHook({ directory }, appLog)
-      } else if (type === "session.idle" || type === "session.error") {
-        const sessionID = event?.properties?.sessionID ?? ""
+      } else if (type === "session.idle" || type === "session.error" || type === "session.completed") {
         await sessionEventsHook({ directory }, type === "session.idle" ? "idle" : "error", sessionID)
+        if (sessionID) {
+          loopDetector.clearSession(sessionID)
+          clearWriteCounter(sessionID)
+        }
       }
       orchestratorGuard.onEvent(event)
     },

@@ -229,7 +229,7 @@ describe("planning-state tool: write_plan", () => {
     const result = await callTool({ action: "write_plan", content: "x" }, dir)
     expect(result.ok).toBe(true)
     const v = result.value as { plan_file?: string }
-    expect(v.plan_file).toMatch(/^\//)
+    expect(v.plan_file).toMatch(/^(\/|[A-Za-z]:[\\/])/)
     expect(v.plan_file).toBe(topicPlanPath(dir, "add-oauth"))
   })
 
@@ -239,7 +239,7 @@ describe("planning-state tool: write_plan", () => {
     expect(result.ok).toBe(true)
 
     const stateAfter = readFileSync(statePath(dir), "utf-8")
-    expect(stateAfter).toMatch(/^plan_file:\s+\/.+\/refactor-router\/plan\.md$/m)
+    expect(stateAfter.replace(/\\/g, "/")).toMatch(/^plan_file:\s+.+\/refactor-router\/plan\.md$/m)
     expect(stateAfter).toMatch(/^topic: "refactor-router"$/m)
   })
 

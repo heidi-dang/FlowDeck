@@ -405,7 +405,7 @@ describe("LoopDetector", () => {
     it("resolves file path for read tool", () => {
       const key = normalizeAction("read", { filePath: "./src/index.ts" })
       expect(key.startsWith("read:")).toBe(true)
-      expect(key).toContain("src/index.ts")
+      expect(key.replace(/\\/g, "/")).toContain("src/index.ts")
     })
 
     it("resolves file path for write tool", () => {

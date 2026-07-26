@@ -317,7 +317,21 @@ async function main() {
 
   let cfg = {};
   if (existsSync(configFile)) {
-    try { cfg = JSON.parse(readFileSync(configFile, "utf-8")); } catch { /* ignore */ }
+    const raw = readFileSync(configFile, "utf-8");
+    // Strip comments safely before checking validity
+    const stripped = raw.replace(/\/\*[\s\S]*?\*\/|([^\\:]|^)\/\/.*$/gm, "$1");
+    try {
+      cfg = JSON.parse(stripped);
+    } catch (err) {
+      console.warn(`⚠️  Configuration at ${configFile} is malformed JSON/JSONC: ${err.message}`);
+      console.warn(`⚠️  Preserving existing configuration byte-for-byte without mutation.`);
+      return;
+    }
+
+    // Create backup before mutation
+    try {
+      writeFileSync(`${configFile}.bak`, raw, "utf-8");
+    } catch { /* ignore */ }
   }
 
   if (!Array.isArray(cfg.plugin)) cfg.plugin = [];
@@ -338,7 +352,14 @@ async function main() {
     console.log(`✓ default_agent already set`);
   }
 
-  writeFileSync(configFile, JSON.stringify(cfg, null, 2) + "\n");
+  const tmpFile = join(configDir, `.opencode.json.tmp.${Math.random().toString(36).slice(2)}`);
+  writeFileSync(tmpFile, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+  try {
+    const fs = await import("node:fs");
+    fs.renameSync(tmpFile, configFile);
+  } catch {
+    writeFileSync(configFile, JSON.stringify(cfg, null, 2) + "\n", "utf-8");
+  }
 
   console.log(`\n✅ FlowDeck ready! Restart OpenCode to activate.`);
   console.log(`   Config: ${configDir}`);

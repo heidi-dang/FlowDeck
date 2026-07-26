@@ -316,7 +316,7 @@ interface ToolGuardInput {
  * the agent is supplied on the surrounding context/session metadata.
  */
 function resolveAgentName(ctx: ToolGuardContext, input: ToolGuardInput): string | undefined {
-  return ctx.agent ?? ctx.session?.agent ?? input.agent
+  return ctx.agent ?? ctx.session?.agent ?? input.agent ?? "orchestrator"
 }
 
 /**
@@ -344,7 +344,6 @@ export async function toolGuardHook(
   const args = output.args ?? input.args ?? {}
 
   // HOOK-04-WL: Write-limit guard — cap unique files modified per agent session.
-  let pendingWriteFilePath: string | null = null
   if (WRITE_TOOLS.has(toolName)) {
     const filePath = getFilePath(args) ?? ""
     if (filePath) {
@@ -359,7 +358,6 @@ export async function toolGuardHook(
           logDecision(ctx, decision, { sessionID, agent: agentName, tool: toolName })
           throw new Error(limitMsg)
         }
-        pendingWriteFilePath = filePath
       }
     }
   }
@@ -384,13 +382,16 @@ export async function toolGuardHook(
   if (agentName && typeof agentName === "string") {
     decision.checks.push("agent-contract")
     const validation = validateToolAccess(ctx.directory, agentName, toolName)
-    const hasBlockViolation = validation.violations.some((v) => v.severity === "block")
-    if (validation.action === "block" || hasBlockViolation) {
+    // Validator enforcement: check final action, not raw violation severity.
+    // 'off' never blocks, 'advisory' warns, 'strict' blocks.
+    if (validation.action === "block") {
       const msg = validation.message ?? `FLOWDECK: Agent ${agentName} is not permitted to use ${toolName}`
       decision.allowed = false
       decision.reason = msg
       logDecision(ctx, decision, { sessionID, agent: agentName, tool: toolName })
       throw new Error(msg)
+    } else if (validation.action === "warn") {
+      decision.checks.push("agent-contract-warning")
     }
   }
 
@@ -439,18 +440,42 @@ export async function toolGuardHook(
 
   decision.checks.push("allowed")
   logDecision(ctx, decision, { sessionID, agent: agentName, tool: toolName })
+}
 
-  // Record the write only after all guard checks have passed.
-  if (pendingWriteFilePath) {
-    recordWrite(sessionID, pendingWriteFilePath)
-    // Best-effort post-write verification; failures are logged but do not block.
-    verifyAfterWrite(ctx.directory, {
-      sessionID,
-      agent: agentName,
-      tool: toolName,
-      filePath: pendingWriteFilePath,
-    })
-  }
+/**
+ * Execute post-write lifecycle actions AFTER a write tool has executed successfully.
+ * Invoked from tool.execute.after.
+ */
+export function executePostWriteHook(
+  directory: string,
+  sessionID: string,
+  agentName: string | undefined,
+  toolName: string,
+  args: any
+): void {
+  if (!WRITE_TOOLS.has(toolName)) return
+  const filePath = getFilePath(args) ?? ""
+  if (!filePath) return
+
+  // Record the write only AFTER successful execution
+  recordWrite(sessionID, filePath)
+
+  // Verify the updated file after successful write
+  verifyAfterWrite(directory, {
+    sessionID,
+    agent: agentName,
+    tool: toolName,
+    filePath,
+  })
+
+  appendAuditEvent(directory, {
+    kind: "verification.event",
+    session_id: sessionID,
+    agent: agentName,
+    tool: toolName,
+    decision: "allow",
+    details: { filePath },
+  })
 }
 
 const NATIVE_READ_TOOLS = new Set(["read_file", "read", "grep", "glob", "find"])

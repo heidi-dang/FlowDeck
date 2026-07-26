@@ -1,12 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { execFileSync } from "node:child_process"
 import { mkdirSync, rmSync, existsSync, writeFileSync } from "fs"
-import { join } from "path"
+import { tmpdir } from "os"
+import { join, basename } from "path"
 import type { ToolContext } from "@opencode-ai/plugin"
 import { fdxWorktreeTool } from "@/tools/fdx-worktree"
 
-// Use a stable parent so /tmp/fd-worktrees/ can be cleared once per test.
-const ROOT = "/tmp"
+// Use a stable parent so tmpdir()/fd-worktrees/ can be cleared once per test.
+const ROOT = tmpdir()
 const WORKTREE_PARENT = join(ROOT, "fd-worktrees")
 
 // Smoke test: git must be available. Skip everything if not.
@@ -97,7 +98,7 @@ describe("fdx-worktree tool", () => {
   itIfGit("create refuses non-empty unregistered dir (does NOT force-delete user data)", async () => {
     // First create sets up a registered worktree.
     await fdxWorktreeTool.execute({ action: "create", topic: "auth-phase-1", phase: 1 }, ctx())
-    const wtPath = join(WORKTREE_PARENT, `${TMP.split("/").pop()}-auth-phase-1-1`)
+    const wtPath = join(WORKTREE_PARENT, `${basename(TMP)}-auth-phase-1-1`)
     // Force the worktree registration away: prune leaves the worktree dir
     // registered but the underlying branch detached. Then re-stage:
     // delete the dir and recreate as unregistered, non-empty.
@@ -142,7 +143,7 @@ describe("fdx-worktree tool", () => {
 
   itIfGit("merge on clean merge returns OK", async () => {
     await fdxWorktreeTool.execute({ action: "create", topic: "auth-phase-1", phase: 1 }, ctx())
-    const wtPath = join(WORKTREE_PARENT, `${TMP.split("/").pop()}-auth-phase-1-1`)
+    const wtPath = join(WORKTREE_PARENT, `${basename(TMP)}-auth-phase-1-1`)
     writeFileSync(join(wtPath, "feature.md"), "feature work", "utf-8")
     execFileSync("git", ["add", "-A"], { cwd: wtPath })
     execFileSync("git", ["commit", "-q", "-m", "feature"], { cwd: wtPath })
@@ -155,7 +156,7 @@ describe("fdx-worktree tool", () => {
 
   itIfGit("merge with conflict returns CONFLICT and aborts cleanly", async () => {
     await fdxWorktreeTool.execute({ action: "create", topic: "auth-phase-1", phase: 1 }, ctx())
-    const wtPath = join(WORKTREE_PARENT, `${TMP.split("/").pop()}-auth-phase-1-1`)
+    const wtPath = join(WORKTREE_PARENT, `${basename(TMP)}-auth-phase-1-1`)
     writeFileSync(join(wtPath, "README.md"), "worktree version", "utf-8")
     execFileSync("git", ["add", "-A"], { cwd: wtPath })
     execFileSync("git", ["commit", "-q", "-m", "worktree change"], { cwd: wtPath })

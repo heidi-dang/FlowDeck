@@ -175,7 +175,7 @@ describe("selectRulePaths: always_on rules", () => {
     writeRule(dir, "ts-only.md", { always_on: false, languages: ["typescript"] })
 
     const sel = selectRulePaths(dir, { languages: ["python"] })
-    const names = sel.selected.map(r => r.path).map(p => p.split("/").pop())
+    const names = sel.selected.map(r => r.path).map(p => p.split(/[/\\]/).pop())
     expect(names).toContain("always.md")
     expect(names).not.toContain("ts-only.md")
   })
