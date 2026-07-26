@@ -195,7 +195,7 @@ jobs:
           echo "PASS: config validate"
           node bin/flowdeck.js dry-run 2>&1 | grep -q "DRY RUN" || { echo "FAIL: dry-run"; exit 1; }
           echo "PASS: dry-run"
-          node bin/flowdeck.js uninstall --force 2>&1 | grep -q "Uninstalled" || { echo "FAIL: uninstall"; exit 1; }
+          node bin/flowdeck.js uninstall --force 2>&1 | grep -q "FlowDeck uninstalled" || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: uninstall"
           echo "ALL CLI COMMANDS PASSED"
 
