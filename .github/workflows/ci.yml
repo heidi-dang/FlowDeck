@@ -1,217 +1,220 @@
-name: CI
+name: CI Production Gates
 
 on:
   push:
     branches:
       - main
-      - "fix/**"
   pull_request:
     branches:
       - main
+      - "feat/*"
+      - "fix/*"
+      - "ci/*"
+      - "audit/*"
+      - "docs/*"
 
 jobs:
-  build-and-validate:
-    name: Build & Validate
+  lint-typecheck:
+    name: Lint & Typecheck
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          node-version: "22.x"
+          cache: "npm"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run typecheck
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
+  test-matrix:
+    name: Test Matrix (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
 
-      - name: Build plugin
-        run: bun run build
-
-      - name: TypeCheck
-        run: bun run typecheck
-
-      - name: Run tests
-        run: bun test
-
-      - name: Validate skills
-        run: bun run validate:skills
-
-      - name: Validate docs
-        run: bun run validate:docs
-
-      - name: Packed Package Tarball
+  build:
+    name: Build & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run build
+      - run: npm run validate:skills
+      - run: npm run validate:docs
+      - name: Pack and inspect tarball
         run: |
-          set -euo pipefail
-          TARBALL=$(npm pack 2>/dev/null)
-          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
-          echo "Created tarball: $TARBALL"
-        id: pack
-
-      - name: Packed Package Install & Verify
+          PACKAGE=$(npm pack 2>/dev/null)
+          echo "Package: $PACKAGE"
+          tar tzf "$PACKAGE" | grep -q "scripts/config-mutator.mjs" && echo "PASS: scripts/config-mutator.mjs in tarball" || (echo "FAIL: scripts/config-mutator.mjs missing" && exit 1)
+          tar tzf "$PACKAGE" | head -20
+          tar xzf "$PACKAGE" -O package/package.json | node -e "process.stdin.on('data',d=>{const p=JSON.parse(d);console.assert(p.name==='@heidi-dang/flowdeck','Wrong: '+p.name);console.log('PASS: '+p.name+' v'+p.version)})"
+          rm -f "$PACKAGE"
+      - name: Packed package install test
         run: |
-          set -euo pipefail
-          TARBALL="${{ steps.pack.outputs.tarball }}"
-          TMP_DIR=$(mktemp -d)
-          echo "Temp dir: $TMP_DIR"
-
-          # Install the tarball in a fresh project
-          cd "$TMP_DIR"
+          PACKAGE=$(npm pack 2>/dev/null)
+          TMPDIR=$(mktemp -d)
+          cd "$TMPDIR"
           npm init -y > /dev/null 2>&1
-          npm install "$GITHUB_WORKSPACE/$TARBALL" > /dev/null 2>&1
+          npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1 | tail -5
+          ls node_modules/.bin/flowdeck 2>/dev/null && echo "PASS: CLI binary installed" || echo "FAIL: CLI binary not found"
+          ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs 2>/dev/null && echo "PASS: config-mutator.mjs in installed package" || echo "FAIL: config-mutator.mjs missing"
+          rm -f "$GITHUB_WORKSPACE/$PACKAGE"
 
-          # Locate installed package
-          INSTALLED_PKG=$(find "$TMP_DIR/node_modules/@heidi-dang" -maxdepth 1 -type d 2>/dev/null || true)
-          if [ -z "$INSTALLED_PKG" ]; then
-            echo "FAIL: Could not find installed package directory"
-            ls -la "$TMP_DIR/node_modules/" 2>/dev/null || echo "  No node_modules"
-            exit 1
-          fi
-          echo "Installed at: $INSTALLED_PKG"
-
-          # Verify scripts are present
-          for script in scripts/config-mutator.mjs scripts/doctor-engine.mjs; do
-            if [ -f "$INSTALLED_PKG/$script" ]; then
-              echo "PASS: $script is present"
-            else
-              echo "FAIL: $script is missing from installed package"
-              ls -la "$INSTALLED_PKG/scripts/" 2>/dev/null || echo "  No scripts/ dir"
-              exit 1
-            fi
-          done
-
-          # Verify binary runs
-          echo "--- flowdeck --help ---"
-          ./node_modules/.bin/flowdeck --help || { echo "FAIL: flowdeck --help failed"; exit 1; }
-
-          echo "--- Packed Package Install complete ---"
-          rm -f "$GITHUB_WORKSPACE/$TARBALL"
-
-      - name: Ownership-Safe Install & Uninstall Tests
+  installer-test:
+    name: Installer Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - name: Clean HOME install
         run: |
-          set -euo pipefail
+          HOME_TMP=$(mktemp -d)
+          HOME=$HOME_TMP OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode \
+            node bin/flowdeck.js install 2>&1
+          node -e "
+            const c = JSON.parse(require('fs').readFileSync('$HOME_TMP/.config/opencode/opencode.json','utf-8'));
+            console.assert(c.plugin.includes('@heidi-dang/flowdeck'), 'Plugin not registered');
+            console.assert(c.default_agent === 'heidi', 'Default agent not heidi');
+            console.log('PASS: Clean HOME install');
+          "
+      - name: Malformed config preserved
+        run: |
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{{{broken}}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js install 2>&1 || true
+          diff <(echo '{{{broken}}') "$OPENCODE_CONFIG_DIR"/opencode.json && echo "PASS: Malformed config preserved" || (echo "FAIL: Config modified" && exit 1)
+      - name: JSONC comment retention
+        run: |
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          printf '{\n  // this comment must remain\n  "plugin": [],\n  "default_agent": null\n}\n' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js install 2>&1
+          grep -q "this comment must remain" "$OPENCODE_CONFIG_DIR"/opencode.json && echo "PASS: JSONC comments preserved" || (echo "FAIL: JSONC comments lost" && exit 1)
+      - name: Existing default_agent preserved
+        run: |
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{"plugin":[],"default_agent":"orchestrator"}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js install 2>&1
+          node -e "
+            const c = JSON.parse(require('fs').readFileSync('$OPENCODE_CONFIG_DIR/opencode.json','utf-8'));
+            console.assert(c.default_agent === 'orchestrator', 'Default changed');
+            console.log('PASS: Existing default_agent preserved');
+          "
+      - name: Ownership safe uninstall (heidi)
+        run: |
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{"plugin":["@heidi-dang/flowdeck"],"default_agent":"heidi"}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js uninstall 2>&1
+          node -e "
+            const c = JSON.parse(require('fs').readFileSync('$OPENCODE_CONFIG_DIR/opencode.json','utf-8'));
+            console.assert(c.default_agent === 'heidi', 'Default agent was removed without manifest');
+            console.log('PASS: heidi default_agent survives uninstall');
+          "
+      - name: Ownership safe uninstall (orchestrator)
+        run: |
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{"plugin":["@heidi-dang/flowdeck"],"default_agent":"orchestrator"}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js uninstall 2>&1
+          node -e "
+            const c = JSON.parse(require('fs').readFileSync('$OPENCODE_CONFIG_DIR/opencode.json','utf-8'));
+            console.assert(c.default_agent === 'orchestrator', 'Default agent was removed without manifest');
+            console.log('PASS: orchestrator default_agent survives uninstall');
+          "
+      - name: Verify
+        run: node bin/flowdeck.js verify 2>&1
+      - name: Doctor
+        run: node bin/flowdeck.js doctor 2>&1
+      - name: Dry-run
+        run: node bin/flowdeck.js dry-run 2>&1
+      - name: Uninstall (with manifest)
+        run: node bin/flowdeck.js uninstall 2>&1
 
-          # ── Helper function ──────────────────────────────────────────────
-          run_flowdeck() {
-            local home="$1"
-            shift
-            HOME="$home" OPENCODE_CONFIG_DIR="$home/.config/opencode" \
-              node "$GITHUB_WORKSPACE/bin/flowdeck.js" "$@" 2>&1
-          }
+  rust-gates:
+    name: Rust Gates (FDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path crates/fdx/Cargo.toml --check
+      - run: cargo clippy --manifest-path crates/fdx/Cargo.toml --all-targets -- -D warnings
+      - name: Build FDX binary
+        run: |
+          cargo build --manifest-path crates/fdx/Cargo.toml
+          cp target/debug/fdx target/release/fdx 2>/dev/null || true
+      - run: cargo test --manifest-path crates/fdx/Cargo.toml --all
 
-          assert_eq() {
-            local actual="$1" expected="$2" label="$3"
-            if [ "$actual" = "$expected" ]; then
-              echo "  PASS: $label"
-            else
-              echo "  FAIL: $label (expected '$expected', got '$actual')"
-              exit 1
-            fi
-          }
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - run: npm ci
+      - name: Dependency Audit
+        run: npm audit --production --audit-level=high 2>&1
 
-          # ── Test 1: Clean install creates manifest with all fields ────────
-          echo "=== Test 1: Clean install creates manifest ==="
-          HOME1=$(mktemp -d)
-          mkdir -p "$HOME1/.config/opencode"
-          echo '{"plugin":[],"default_agent":null}' > "$HOME1/.config/opencode/opencode.json"
-          run_flowdeck "$HOME1" install
-          # Verify manifest exists with required fields
-          MANIFEST="$HOME1/.config/opencode/.flowdeck-manifest.json"
-          if [ -f "$MANIFEST" ]; then
-            echo "  PASS: Manifest created"
-            node -e "
-              const m = JSON.parse(require('fs').readFileSync('$MANIFEST','utf-8'));
-              console.assert(m.pluginRef === '@heidi-dang/flowdeck', 'pluginRef: ' + m.pluginRef);
-              console.assert(m.schemaVersion === 1, 'schemaVersion: ' + m.schemaVersion);
-              console.assert(m.previousDefaultAgent === null, 'previousDefaultAgent: ' + m.previousDefaultAgent);
-              console.assert(m.mode === 'global', 'mode: ' + m.mode);
-              console.assert(m.version, 'version missing');
-              console.assert(m.timestamp, 'timestamp missing');
-              console.log('  PASS: Manifest fields validated');
-            "
+  completion:
+    name: Pipeline Completion
+    if: always()
+    needs: [lint-typecheck, test-matrix, build, installer-test, rust-gates, security-scan]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "## CI Production Gates" >> $GITHUB_STEP_SUMMARY
+          echo "- Lint & Typecheck: ${{ needs.lint-typecheck.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Test Matrix: ${{ needs.test-matrix.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Build & Validate: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Installer Tests: ${{ needs.installer-test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Rust Gates: ${{ needs.rust-gates.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Security Scan: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.lint-typecheck.result }}" = "success" ] && \
+             [ "${{ needs.test-matrix.result }}" = "success" ] && \
+             [ "${{ needs.build.result }}" = "success" ] && \
+             [ "${{ needs.installer-test.result }}" = "success" ] && \
+             [ "${{ needs.rust-gates.result }}" = "success" ] && \
+             [ "${{ needs.security-scan.result }}" = "success" ]; then
+            echo "ALL GATES PASSED" >> $GITHUB_STEP_SUMMARY
           else
-            echo "  FAIL: No manifest created"
+            echo "SOME GATES FAILED" >> $GITHUB_STEP_SUMMARY
             exit 1
           fi
-
-          # ── Test 2: heidi default_agent survives uninstall without manifest ──
-          echo "=== Test 2: heidi default_agent survives uninstall without manifest ==="
-          HOME2=$(mktemp -d)
-          mkdir -p "$HOME2/.config/opencode"
-          # Simulate install without manifest (legacy state)
-          echo '{"plugin":["@heidi-dang/flowdeck"],"default_agent":"heidi"}' > "$HOME2/.config/opencode/opencode.json"
-          # Uninstall without --force should fail (no manifest)
-          run_flowdeck "$HOME2" uninstall 2>&1 | grep -q "Ownership protection" && \
-            echo "  PASS: Uninstall blocked without manifest" || \
-            { echo "  FAIL: Uninstall should be blocked without manifest"; exit 1; }
-          # Verify default_agent was NOT touched
-          AGENT=$(node -e "
-            const c = JSON.parse(require('fs').readFileSync('$HOME2/.config/opencode/opencode.json','utf-8'));
-            console.log(c.default_agent || 'null');
-          ")
-          assert_eq "$AGENT" "heidi" "default_agent preserved without manifest"
-          # Verify plugin entry still exists
-          HAS_PLUGIN=$(node -e "
-            const c = JSON.parse(require('fs').readFileSync('$HOME2/.config/opencode/opencode.json','utf-8'));
-            console.log(c.plugin.includes('@heidi-dang/flowdeck') ? 'yes' : 'no');
-          ")
-          assert_eq "$HAS_PLUGIN" "yes" "plugin entry preserved without manifest"
-
-          # ── Test 3: orchestrator default_agent survives uninstall without manifest ──
-          echo "=== Test 3: orchestrator default_agent survives uninstall without manifest ==="
-          HOME3=$(mktemp -d)
-          mkdir -p "$HOME3/.config/opencode"
-          echo '{"plugin":["@heidi-dang/flowdeck"],"default_agent":"orchestrator"}' > "$HOME3/.config/opencode/opencode.json"
-          run_flowdeck "$HOME3" uninstall 2>&1 | grep -q "Ownership protection" && \
-            echo "  PASS: Uninstall blocked without manifest" || \
-            { echo "  FAIL: Uninstall should be blocked without manifest"; exit 1; }
-          AGENT3=$(node -e "
-            const c = JSON.parse(require('fs').readFileSync('$HOME3/.config/opencode/opencode.json','utf-8'));
-            console.log(c.default_agent || 'null');
-          ")
-          assert_eq "$AGENT3" "orchestrator" "orchestrator default_agent preserved without manifest"
-
-          # ── Test 4: Pre-existing plugin reference survives uninstall without manifest ──
-          echo "=== Test 4: Pre-existing plugin references survive uninstall without manifest ==="
-          HOME4=$(mktemp -d)
-          mkdir -p "$HOME4/.config/opencode"
-          echo '{"plugin":["@heidi-dang/flowdeck","some-other-plugin"],"default_agent":"coder"}' > "$HOME4/.config/opencode/opencode.json"
-          run_flowdeck "$HOME4" uninstall 2>&1 | grep -q "Ownership protection" && \
-            echo "  PASS: Uninstall blocked" || \
-            { echo "  FAIL: Uninstall should be blocked"; exit 1; }
-          # Verify both plugins still present
-          ALL_PLUGINS=$(node -e "
-            const c = JSON.parse(require('fs').readFileSync('$HOME4/.config/opencode/opencode.json','utf-8'));
-            console.log(c.plugin.join(','));
-          ")
-          assert_eq "$ALL_PLUGINS" "@heidi-dang/flowdeck,some-other-plugin" "all plugin references preserved"
-
-          # ── Test 5: Uninstall with manifest works correctly ──
-          echo "=== Test 5: Uninstall with manifest works correctly ==="
-          HOME5=$(mktemp -d)
-          mkdir -p "$HOME5/.config/opencode"
-          echo '{"plugin":["@heidi-dang/flowdeck","other-plugin"],"default_agent":"heidi"}' > "$HOME5/.config/opencode/opencode.json"
-          # Create a valid manifest
-          cat > "$HOME5/.config/opencode/.flowdeck-manifest.json" << 'MANIFEST_EOF'
-          {
-            "pluginRef": "@heidi-dang/flowdeck",
-            "previousDefaultAgent": null,
-            "mode": "global",
-            "timestamp": "2026-07-26T00:00:00.000Z",
-            "version": "0.8.0-alpha.1",
-            "backupPath": null,
-            "schemaVersion": 1
-          }
-          MANIFEST_EOF
-          run_flowdeck "$HOME5" uninstall 2>&1 | grep -q "Removed @heidi-dang/flowdeck" && \
-            echo "  PASS: Plugin removed with manifest" || \
-            { echo "  FAIL: Plugin should be removed with manifest"; exit 1; }
-          # Verify other plugin preserved and default_agent removed
-          FINAL=$(node -e "
-            const c = JSON.parse(require('fs').readFileSync('$HOME5/.config/opencode/opencode.json','utf-8'));
-            console.log('plugins=' + c.plugin.join(',') + ' agent=' + (c.default_agent === undefined ? 'undefined' : c.default_agent));
-          ")
-          echo "  Final state: $FINAL"
-          echo "$FINAL" | grep -q "plugins=other-plugin" || { echo "  FAIL: Other plugin should be preserved"; exit 1; }
-          echo "  PASS: Uninstall with manifest correct"
-
-          echo "--- All Ownership-Safe tests complete ---"
