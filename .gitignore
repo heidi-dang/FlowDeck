@@ -154,3 +154,6 @@ target/*
 
 # Worktree scratch space (test artifacts from fdx-worktree.test.ts)
 fd-worktrees/
+
+# Incremental TypeScript build cache (pre-push fast typecheck)
+.cache/

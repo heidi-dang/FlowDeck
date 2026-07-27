@@ -41,6 +41,8 @@
     "lint": "oxlint --deny-warnings",
     "validate:skills": "node scripts/validate-skills.mjs",
     "validate:docs": "node scripts/validate-docs.mjs",
+    "verify:fast": "node scripts/pre-push.mjs --fast",
+    "verify:full": "node scripts/pre-push.mjs --full",
     "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\""
   },
   "keywords": [
