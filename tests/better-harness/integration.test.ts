@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, afterAll, afterEach } from "vitest";
+import { describe, it, expect, afterAll, afterEach } from "vitest";
 import { existsSync, mkdirSync, writeFileSync, rmSync, renameSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";
@@ -33,6 +33,7 @@ import { saveRepairSession, listRepairSessions } from "../../src/better-harness/
 
 // ---- SSE ----
 import { SseManager } from "../../src/better-harness/transport/sse";
+import { HarnessHttpServer } from "../../src/better-harness/transport/http-server";
 
 // ---- Contracts ----
 import type { HarnessFinding } from "../../src/better-harness/contracts/report";
@@ -897,5 +898,100 @@ describe("RunCoordinator Recovery", () => {
   it("recoverActiveRuns does not throw", () => {
     const coord = new RunCoordinator();
     expect(() => coord.recoverActiveRuns()).not.toThrow();
+  });
+});
+
+// ─── HTTP Server edge cases ─────────────────────────────────────────
+describe("HarnessHttpServer", () => {
+  it("returns 0 when disabled", async () => {
+    const server = new HarnessHttpServer({ enabled: false });
+    const port = await server.start();
+    expect(port).toBe(0);
+  });
+
+  it("starts and stops on loopback", async () => {
+    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1" });
+    const port = await server.start();
+    expect(port).toBeGreaterThan(0);
+    await server.stop();
+  });
+
+  it("fails to start on invalid host", async () => {
+    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "999.999.999.999" });
+    await expect(server.start()).rejects.toThrow();
+  });
+
+  it("stop on non-running server resolves", async () => {
+    const server = new HarnessHttpServer({ enabled: true, port: 0 });
+    await server.stop();  // no-op should resolve
+  });
+});
+
+// ─── Router Edge Cases ─────────────────────────────────────────────
+describe("Router", () => {
+  it("returns 404 for unknown route", async () => {
+    const res = await routeRequest("GET", "/nonexistent", undefined);
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects path traversal in project key", async () => {
+    const res = await routeRequest("GET", "/api/v1/servers/s1/projects/../etc/passwd/better-harness/report", undefined);
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects project key with slashes", async () => {
+    const res = await routeRequest("GET", "/api/v1/servers/s1/projects/foo/bar/better-harness/report", undefined);
+    expect(res.status).toBe(404);  // unmatched route
+  });
+
+  it("rejects invalid JSON body on start run", async () => {
+    const res = await routeRequest("POST", "/api/v1/servers/s1/projects/p1/better-harness/runs", "invalid json");
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects missing findingIds on plan-fix", async () => {
+    const res = await routeRequest("POST", "/api/v1/servers/s1/projects/p1/better-harness/findings/plan-fix", {});
+    expect(res.status).toBe(400);
+  });
+});
+
+// ─── SseManager Edge Cases ─────────────────────────────────────────
+describe("SseManager", () => {
+  it("allows removing non-existent client", () => {
+    const bus = new EventBus();
+    const mgr = new SseManager(bus, undefined);
+    mgr.removeClient("nonexistent");
+  });
+
+  it("broadcasts to multiple clients", () => {
+    const bus = new EventBus();
+    const mgr = new SseManager(bus, undefined);
+    const received: string[][] = [[], []];
+    mgr.addClient({ id: "c1", lastEventId: null, send: (e) => { received[0].push(e.type); } });
+    mgr.addClient({ id: "c2", lastEventId: null, send: (e) => { received[1].push(e.type); } });
+    bus.emit("run.started", { runId: "r1" });
+    expect(received[0]).toContain("run.started");
+    expect(received[1]).toContain("run.started");
+    mgr.removeClient("c1");
+    mgr.removeClient("c2");
+  });
+
+  it("handles Last-Event-ID replay without match", () => {
+    const bus = new EventBus();
+    const mgr = new SseManager(bus, undefined);
+    bus.emit("run.started", { runId: "r1" });
+    const received: string[] = [];
+    mgr.addClient({ id: "c_replay", lastEventId: "999", send: (e) => { received.push(e.type); } });
+    mgr.removeClient("c_replay");
+    // No events should match an ID beyond history
+  });
+});
+
+// ─── HarnessRuntime Edge Cases ─────────────────────────────────────
+describe("HarnessRuntime", () => {
+  it("getStatus returns inactive when no run", () => {
+    const rt = new HarnessRuntime({ projectRoot: "/tmp" });
+    const status = rt.getStatus();
+    expect(status.active).toBe(false);
   });
 });
