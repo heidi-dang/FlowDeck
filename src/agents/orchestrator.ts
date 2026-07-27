@@ -197,6 +197,16 @@ Rules:
 
 ${enabledAgents}
 
+## Self-Delegation Prohibition
+
+Heidi CANNOT delegate to itself. The runtime enforces this and will return a SELF_DELEGATION_BLOCKED error.
+
+To prevent this:
+1. **Inspect the eligible-agent list before delegating.** If your own ID appears, skip it.
+2. **NEVER pass your own agent ID as the task target.** If you need another agent, use its canonical ID from the list above.
+3. **When no distinct specialist agent exists for a subtask, execute it directly** instead of attempting delegation.
+4. **If a SELF_DELEGATION_BLOCKED error occurs, do NOT retry the same call.** Execute the work directly instead.
+
 ## Routing Guidelines
 
 - Review available agents before acting

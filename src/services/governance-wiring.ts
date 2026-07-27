@@ -297,9 +297,55 @@ export function generateScorecard(data: ScorecardData): Record<string, unknown> 
 // ─── Delegation depth enforcement ──────────────────────────────────────────
 
 /**
- * Verify delegation depth is valid.
+ * Typed delegation error codes for machine-readable enforcement.
+ * These replace generic error strings so the runtime can distinguish
+ * self-delegation from depth limits or missing targets without parsing.
+ */
+export type DelegationErrorCode =
+  | "SPECIALIST_CANNOT_DELEGATE"
+  | "SELF_DELEGATION_BLOCKED"
+  | "DEPTH_LIMIT_EXCEEDED"
+  | "MISSING_TARGET_AGENT"
+  | "TARGET_NOT_FOUND"
+
+export interface DelegationResult {
+  allowed: boolean
+  errorCode?: DelegationErrorCode
+  reason?: string
+}
+
+/**
+ * Resolve an agent name to its canonical ID from the specialist set.
+ * Falls back to the raw name if not found in the specialist set
+ * (the caller handles the distinction).
+ */
+function resolveAgentId(name: string, specialistAgents: Set<string>): string {
+  // Canonical IDs are lowercase; try direct lookup first
+  const canonical = name.toLowerCase().trim()
+  if (specialistAgents.has(canonical)) return canonical
+  // Try exact case match in set
+  for (const id of specialistAgents) {
+    if (id.toLowerCase() === canonical) return id
+  }
+  // Not found in specialist set — this is a primary agent or unknown.
+  // Return the canonical lowercase form so self-delegation comparison
+  // is case-insensitive for all agents, not just specialists.
+  return canonical
+}
+
+/**
+ * Verify delegation is valid using canonical agent IDs.
+ *
+ * Returns typed error codes:
+ * - SELF_DELEGATION_BLOCKED: source === target (by canonical ID)
+ * - SPECIALIST_CANNOT_DELEGATE: source agent has no delegation rights
+ * - DEPTH_LIMIT_EXCEEDED: max depth reached
+ * - MISSING_TARGET_AGENT: no target provided
+ * - TARGET_NOT_FOUND: target is not a known specialist
+ *
  * maxDepth is configurable (default 1). Specialists cannot delegate.
- * Heidi cannot delegate to itself.
+ * No agent can delegate to itself. Missing target is blocked (not
+ * silently resolved to the current agent).
  */
 export function validateDelegationDepth(
   delegatingAgent: string,
@@ -307,20 +353,54 @@ export function validateDelegationDepth(
   currentDepth: number,
   specialistAgents: Set<string>,
   maxDepth: number = 1,
-): { allowed: boolean; reason?: string } {
+): DelegationResult {
   // Specialists cannot delegate
   if (specialistAgents.has(delegatingAgent)) {
-    return { allowed: false, reason: `Specialist agent "${delegatingAgent}" cannot delegate — only Heidi may delegate.` }
+    return {
+      allowed: false,
+      errorCode: "SPECIALIST_CANNOT_DELEGATE",
+      reason: `Specialist agent "${delegatingAgent}" cannot delegate — only Heidi may delegate.`,
+    }
   }
 
-  // Heidi cannot delegate to itself
-  if (delegatingAgent === targetAgent) {
-    return { allowed: false, reason: `Heidi cannot delegate to itself. Execute directly or delegate to a different agent.` }
+  // Missing target — never default to the current agent
+  if (!targetAgent || targetAgent === "unknown" || targetAgent.trim() === "") {
+    return {
+      allowed: false,
+      errorCode: "MISSING_TARGET_AGENT",
+      reason: `No target agent specified for delegation. Execute the task directly or specify a valid target agent.`,
+    }
+  }
+
+  // Resolve to canonical IDs for comparison
+  const sourceId = resolveAgentId(delegatingAgent, specialistAgents)
+  const targetId = resolveAgentId(targetAgent, specialistAgents)
+
+  // Self-delegation (by canonical ID)
+  if (sourceId === targetId) {
+    return {
+      allowed: false,
+      errorCode: "SELF_DELEGATION_BLOCKED",
+      reason: `Agent "${delegatingAgent}" cannot delegate to itself. Execute directly or delegate to a different agent.`,
+    }
+  }
+
+  // Target must be a known specialist
+  if (!specialistAgents.has(targetId)) {
+    return {
+      allowed: false,
+      errorCode: "TARGET_NOT_FOUND",
+      reason: `Target agent "${targetAgent}" is not a recognised specialist agent. Execute the task directly or use a known agent.`,
+    }
   }
 
   // Depth limit (capped at maxDepth from config)
   if (currentDepth >= maxDepth) {
-    return { allowed: false, reason: `Maximum delegation depth of ${maxDepth} exceeded (current: ${currentDepth}). Use direct execution or escalate to user.` }
+    return {
+      allowed: false,
+      errorCode: "DEPTH_LIMIT_EXCEEDED",
+      reason: `Maximum delegation depth of ${maxDepth} exceeded (current: ${currentDepth}). Use direct execution or escalate to user.`,
+    }
   }
 
   return { allowed: true }

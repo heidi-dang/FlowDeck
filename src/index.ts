@@ -327,19 +327,31 @@ const plugin: Plugin = async ({ directory, client }) => {
       if (toolName === "task") {
         // Read depth from session state or tool args
         const currentDepth = (toolInput.args?.depth as number) ?? 0
-        const targetAgent = (toolInput.args?.agent as string) ?? "unknown"
+        const targetAgent = (toolInput.args?.agent as string) ?? ""
+
+        // When no target agent is provided, default to direct execution
+        // (the task/command pattern — not delegation)
+        if (!targetAgent || targetAgent.trim() === "") {
+          // Allow through — this is a plain task tool call (direct execution or
+          // command dispatch), not a delegation. The task tool handles this.
+          return
+        }
+
         const depthResult = validateDelegationDepth(agent, targetAgent, currentDepth, specialistAgentSet, maxDepth)
         if (!depthResult.allowed) {
+          const errorCode = depthResult.errorCode ?? "DELEGATION_BLOCKED"
+          const isTerminal = errorCode === "SELF_DELEGATION_BLOCKED" || errorCode === "MISSING_TARGET_AGENT"
+
           recordRecoveryAudit({
             directory,
             sessionID,
             agent,
-            errorKey: "delegation_depth_exceeded",
-            action: "circuit_breaker_block",
+            errorKey: errorCode,
+            action: isTerminal ? "circuit_breaker_block" : "targeted_diagnosis",
             message: depthResult.reason ?? "Delegation not allowed",
           })
-          if (sessionID) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
-          throw new Error(depthResult.reason ?? "Delegation blocked")
+          if (sessionID && !isTerminal) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
+          throw new Error(`${errorCode}: ${depthResult.reason ?? "Delegation blocked"}`)
         }
 
         // Track delegation count per session
@@ -444,13 +456,21 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       // ── 4. Recovery tracking & retry budget ──────────────────────────
       if (toolInput.error) {
+        const errorMsg = String(toolInput.error)
+
+        // Terminal delegation errors must not consume retry budget or trigger recovery.
+        if (errorMsg.startsWith("SELF_DELEGATION_BLOCKED:") || errorMsg.startsWith("MISSING_TARGET_AGENT:")) {
+          appLog(`[ADVISORY] Terminal delegation error — not retrying: ${errorMsg.slice(0, 120)}`, "warn", sessionID)
+          return
+        }
+
         recordRecoveryAudit({
           directory,
           sessionID,
           agent,
-          errorKey: `${toolName}:${String(toolInput.error).slice(0, 100)}`,
+          errorKey: `${toolName}:${errorMsg.slice(0, 100)}`,
           action: "targeted_diagnosis",
-          message: `Tool ${toolName} failed: ${String(toolInput.error).slice(0, 200)}`,
+          message: `Tool ${toolName} failed: ${errorMsg.slice(0, 200)}`,
         })
 
         // Track retries per session and enforce retry budget
