@@ -25,8 +25,6 @@ import type { FlowDeckConfig, GovernanceMode } from "../config/schema"
 import { validateToolAccess } from "./agent-validator"
 import { appendAuditEvent, type AuditEventKind } from "./audit-log"
 import { verifyAfterWrite, type VerificationEvent } from "./verification-layer"
-import { LoopDetector } from "./loop-detector"
-import { BoundedRecoveryTracker } from "./heidi-execution-policy"
 
 // ─── Mode resolution ───────────────────────────────────────────────────────
 
@@ -188,6 +186,9 @@ export function evaluateGovernanceToolCheck(input: GovernanceCheckInput): Govern
       decision: "warn",
       reason: validation.message ?? `Tool ${input.tool} warned for agent ${input.agent}`,
     })
+    if (mode === "strict") {
+      return { action: "block", mode, reason: `[STRICT] ${validation.message}` }
+    }
     return { action: "warn", mode, reason: validation.message }
   }
 

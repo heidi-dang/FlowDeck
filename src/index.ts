@@ -461,42 +461,53 @@ const plugin: Plugin = async ({ directory, client }) => {
 
           // Generate scorecard with real session metrics
           if (sessionID) {
-            const toolCalls = sessionToolCalls.get(sessionID) ?? 0
-            const retries = sessionRetries.get(sessionID) ?? 0
-            const delegations = sessionDelegations.get(sessionID) ?? 0
-            const blocks = sessionBlocks.get(sessionID) ?? 0
-            const warnings = sessionWarnings.get(sessionID) ?? 0
-            const startTime = sessionStartTimes.get(sessionID)
-            const durationMs = startTime ? Date.now() - startTime : null
-            const filesChangedSet = sessionFilesChanged.get(sessionID)
-            const filesChanged = filesChangedSet ? filesChangedSet.size : null
+            try {
+              const toolCalls = sessionToolCalls.get(sessionID) ?? 0
+              const retries = sessionRetries.get(sessionID) ?? 0
+              const delegations = sessionDelegations.get(sessionID) ?? 0
+              const blocks = sessionBlocks.get(sessionID) ?? 0
+              const warnings = sessionWarnings.get(sessionID) ?? 0
+              const startTime = sessionStartTimes.get(sessionID)
+              const durationMs = startTime ? Date.now() - startTime : null
+              const filesChangedSet = sessionFilesChanged.get(sessionID)
+              const filesChanged = filesChangedSet ? filesChangedSet.size : null
 
-            const scorecard = generateScorecard({
-              commandsRun: toolCalls,
-              testsPassed: null,
-              testsFailed: null,
-              buildResult: null,
-              typecheckResult: null,
-              filesChanged,
-              toolCalls,
-              delegations,
-              retries,
-              blocks,
-              warnings,
-              durationMs,
-              remainingFindings: null,
-            })
-            appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
-
-            // Clean up session state
-            sessionToolCalls.delete(sessionID)
-            sessionRetries.delete(sessionID)
-            sessionDelegations.delete(sessionID)
-            sessionBlocks.delete(sessionID)
-            sessionWarnings.delete(sessionID)
-            sessionStartTimes.delete(sessionID)
-            sessionFilesChanged.delete(sessionID)
+              const scorecard = generateScorecard({
+                commandsRun: toolCalls,
+                testsPassed: null,
+                testsFailed: null,
+                buildResult: null,
+                typecheckResult: null,
+                filesChanged,
+                toolCalls,
+                delegations,
+                retries,
+                blocks,
+                warnings,
+                durationMs,
+                remainingFindings: null,
+              })
+              appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
+            } finally {
+              // Always clean up session state, even if scorecard generation throws
+              sessionToolCalls.delete(sessionID)
+              sessionRetries.delete(sessionID)
+              sessionDelegations.delete(sessionID)
+              sessionBlocks.delete(sessionID)
+              sessionWarnings.delete(sessionID)
+              sessionStartTimes.delete(sessionID)
+              sessionFilesChanged.delete(sessionID)
+            }
           }
+        } else if (sessionID) {
+          // session.idle or session.error — clean up maps to prevent leaks
+          sessionToolCalls.delete(sessionID)
+          sessionRetries.delete(sessionID)
+          sessionDelegations.delete(sessionID)
+          sessionBlocks.delete(sessionID)
+          sessionWarnings.delete(sessionID)
+          sessionStartTimes.delete(sessionID)
+          sessionFilesChanged.delete(sessionID)
         }
       }
       orchestratorGuard.onEvent(event)

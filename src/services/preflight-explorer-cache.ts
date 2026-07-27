@@ -19,10 +19,6 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>()
 
-function hash(input: string): string {
-  return createHash("sha256").update(input).digest("hex").slice(0, 16)
-}
-
 function getCurrentRevision(dir: string): string {
   try {
     const { spawnSync } = require("child_process")

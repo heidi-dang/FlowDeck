@@ -232,7 +232,7 @@ export function selectRulePaths(
   const detectedLangs = context.languages ?? []
 
   for (const rule of all) {
-    const name = basename(rule.path)
+    const _name = basename(rule.path)
 
     // Always-on: include unconditionally
     if (rule.always_on) {

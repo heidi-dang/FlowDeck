@@ -166,7 +166,19 @@ function nativeSearchFallback(query: string, searchPath: string = "."): string {
   }
 }
 
+/** Read-only git subcommands permitted in the native fallback. */
+const GIT_READONLY_ALLOWLIST = new Set([
+  "status", "log", "diff", "show", "blame", "ls-files",
+  "ls-tree", "rev-parse", "rev-list", "branch", "tag",
+  "describe", "shortlog", "stash",
+])
+
 function nativeGitFallback(args: string[]): string {
+  const subcommand = args[0]
+  if (!subcommand || !GIT_READONLY_ALLOWLIST.has(subcommand)) {
+    return `[FDX Git Fallback] Subcommand "${subcommand ?? ""}" is not in the read-only allowlist. ` +
+      `Allowed: ${[...GIT_READONLY_ALLOWLIST].join(", ")}`
+  }
   try {
     return execFileSync("git", args, { encoding: "utf-8", timeout: 15000 })
   } catch (err: any) {

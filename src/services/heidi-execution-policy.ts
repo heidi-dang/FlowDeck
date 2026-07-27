@@ -205,7 +205,6 @@ function discoverActualTests(targetFiles: string[]): string[] {
       ]
 
       // Check in same directory
-      const siblings = readdirSync(dir)
       for (const pattern of testPatterns) {
         const testPath = join(dir, pattern)
         if (existsSync(testPath)) results.push(testPath)
@@ -248,13 +247,49 @@ function discoverRelatedConfig(targetFiles: string[]): string[] {
     ".eslintrc.js", ".eslintrc.json", ".prettierrc",
     "vitest.config.ts", "vitest.config.js", "jest.config.ts",
   ]
+  const { existsSync: fsExistsSync, statSync } = require("fs") as { existsSync: (p: string) => boolean; statSync: (p: string) => any }
+  const { join: pathJoin, resolve: pathResolve, dirname: pathDirname } = require("path") as {
+    join: (...p: string[]) => string;
+    resolve: (...p: string[]) => string;
+    dirname: (p: string) => string;
+  }
+
+  let projectRoot = pathResolve(process.cwd())
+  for (const file of targetFiles) {
+    if (file) {
+      let current = pathResolve(file)
+      try {
+        if (fsExistsSync(current) && statSync(current).isFile()) {
+          current = pathDirname(current)
+        }
+      } catch {
+        current = pathDirname(current)
+      }
+      let found = false
+      for (let i = 0; i < 15; i++) {
+        if (
+          fsExistsSync(pathJoin(current, ".flowdeck.json")) ||
+          fsExistsSync(pathJoin(current, ".flowdeck.jsonc")) ||
+          fsExistsSync(pathJoin(current, "package.json")) ||
+          fsExistsSync(pathJoin(current, ".git"))
+        ) {
+          projectRoot = current
+          found = true
+          break
+        }
+        const parent = pathDirname(current)
+        if (parent === current) break
+        current = parent
+      }
+      if (found) break
+    }
+  }
+
   const results: string[] = []
   for (const pattern of configPatterns) {
     try {
-      const { existsSync, join } = require("path") as any
-      const { readdirSync } = require("fs") as any
-      const configPath = join(process.cwd(), pattern)
-      if (existsSync(configPath)) results.push(configPath)
+      const configPath = pathJoin(projectRoot, pattern)
+      if (fsExistsSync(configPath)) results.push(configPath)
     } catch { /* skip */ }
   }
   return results

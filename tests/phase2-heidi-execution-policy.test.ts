@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { createAgent, createAgents, getAgentConfigs, AGENT_NAMES } from "@/agents/index"
+import { getAgentConfigs, AGENT_NAMES } from "@/agents/index"
 import { createHeidiAgent, createOrchestratorAgent } from "@/agents/orchestrator"
 import {
   EXECUTION_STRATEGIES,

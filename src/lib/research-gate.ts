@@ -212,7 +212,7 @@ export async function runResearchGate(
   const sp = statePath(dir)
   if (existsSync(sp)) {
     filesExplored.push(sp)
-    const stateContent = readFileSync(sp, "utf-8")
+    const _stateContent = readFileSync(sp, "utf-8")
     findings.push(`STATE.md: phase=${state.phase}, status=${state.status}, plan_confirmed=${state.plan_confirmed}`)
   }
 

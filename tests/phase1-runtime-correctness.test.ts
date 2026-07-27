@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from "fs"
+import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, readdirSync } from "fs"
 import { join, dirname, basename } from "path"
 import { tmpdir } from "os"
 import { validateAgent } from "@/services/agent-validator"

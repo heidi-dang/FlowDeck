@@ -567,9 +567,8 @@ export async function runDoctorChecks(directory) {
       try { rmSync(testDir, { recursive: true, force: true }) } catch {}
 
       const offOk = modeOff && modeOff.action === "allow"
-      const advOk = modeAdv && (modeAdv.action === "warn" || modeAdv.action === "allow") // For heidi using bash, it might be allowed or warned depending on policy, wait, strict blocks.
-      // Strict mode must block or warn — never silently allow
-      const strictOk = modeStrict && (modeStrict.action === "block" || modeStrict.action === "warn")
+      const advOk = modeAdv && modeAdv.action === "warn"   // advisory must warn, never silently allow
+      const strictOk = modeStrict && modeStrict.action === "block"
 
       if (offOk && advOk && strictOk) {
         govModesOk = true

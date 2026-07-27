@@ -29,7 +29,7 @@ export function getCodegraphReadiness(dir: string): CodegraphReadiness {
   const indexed = isCodegraphIndexed(dir)
   const fresh = isCodegraphFresh(dir)
   const changed = hasChangedSinceLastIndex(dir)
-  const meta = readCodegraphMeta(dir)
+  const _meta = readCodegraphMeta(dir)
 
   let status: CodegraphReadiness["status"] = "ready"
   let action: string | null = null
