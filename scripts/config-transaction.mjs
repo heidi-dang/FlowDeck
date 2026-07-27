@@ -24,24 +24,39 @@ import { safeParseConfig, applyJsoncEdits, createBackup, atomicWrite } from "./c
  *   1a. Read and validate config
  *   1b. Capture exact prior state of config AND manifest (bytes + existence)
  *   2.  Create backup (MUST succeed or abort)
- *   3.  Parse existing manifest for semantic merge
- *   4.  Write provisional manifest atomically (fail if can't)
+ *   3.  Parse existing manifest for semantic merge (fail closed on corrupt manifest unless allowCorruptManifest: true)
+ *   4.  Write provisional manifest atomically (unless skipManifest: true)
  *   5.  Apply edits atomically (byte-perfect rollback on failure)
- *   6.  Finalize manifest atomically (byte-perfect rollback on failure)
+ *   6.  Finalize or delete manifest atomically (byte-perfect rollback on failure)
  *
  * @param {object} options
  * @param {string} options.configPath - Path to opencode.json
  * @param {Array<{ path: string[], value: any }>} options.edits - Edits to apply
- * @param {object} options.manifest - Manifest data to write (semantic fields only)
+ * @param {object} [options.manifest] - Manifest data to write (semantic fields only)
  * @param {string} options.manifestPath - Path for manifest file
- * @returns {{ ok: boolean, backupPath?: string, error?: string }}
+ * @param {boolean} [options.allowCorruptManifest=false] - If true, ignore corrupt manifest errors
+ * @param {boolean} [options.skipManifest=false] - If true, do not create or modify manifest
+ * @param {boolean} [options.deleteManifest=false] - If true, delete manifest file as part of transaction
+ * @returns {Promise<{ ok: boolean, backupPath?: string, error?: string }>}
  */
-export async function executeTransaction({ configPath, edits, manifest, manifestPath }) {
+export async function executeTransaction({
+  configPath,
+  edits,
+  manifest,
+  manifestPath,
+  allowCorruptManifest = false,
+  skipManifest = false,
+  deleteManifest = false,
+}) {
   // ── Step 1a: Read and validate config ──────────────────────────────────
   const configExisted = existsSync(configPath);
   let rawContent = null;
   if (configExisted) {
-    rawContent = readFileSync(configPath, "utf-8");
+    try {
+      rawContent = readFileSync(configPath, "utf-8");
+    } catch (readErr) {
+      return { ok: false, error: "Failed to read configuration file: " + readErr.message };
+    }
     const parsed = safeParseConfig(rawContent);
     if (!parsed.ok) {
       return { ok: false, error: "Malformed configuration: " + parsed.error };
@@ -52,7 +67,13 @@ export async function executeTransaction({ configPath, edits, manifest, manifest
   const manifestExisted = existsSync(manifestPath);
   let manifestRawContent = null;
   if (manifestExisted) {
-    manifestRawContent = readFileSync(manifestPath, "utf-8");
+    try {
+      manifestRawContent = readFileSync(manifestPath, "utf-8");
+    } catch (readErr) {
+      if (!allowCorruptManifest) {
+        return { ok: false, error: "Failed to read install manifest: " + readErr.message };
+      }
+    }
   }
 
   // ── Step 2: Create backup (MUST succeed or abort) ─────────────────────
@@ -67,16 +88,21 @@ export async function executeTransaction({ configPath, edits, manifest, manifest
     try {
       existingManifest = JSON.parse(manifestRawContent);
     } catch {
-      // Corrupt manifest — merge into empty object
+      if (!allowCorruptManifest) {
+        return { ok: false, error: "Corrupt install manifest: " + manifestPath };
+      }
     }
   }
 
   // ── Step 4: Write provisional manifest atomically ─────────────────────
-  const provManifest = { ...existingManifest, ...manifest, _provisional: true, _backupPath: backupPath };
-  try {
-    atomicWrite(manifestPath, JSON.stringify(provManifest, null, 2) + "\n");
-  } catch (err) {
-    return { ok: false, error: "Failed to write provisional manifest: " + err.message };
+  let provManifest = null;
+  if (!skipManifest && !deleteManifest && manifest) {
+    provManifest = { ...existingManifest, ...manifest, _provisional: true, _backupPath: backupPath };
+    try {
+      atomicWrite(manifestPath, JSON.stringify(provManifest, null, 2) + "\n");
+    } catch (err) {
+      return { ok: false, error: "Failed to write provisional manifest: " + err.message };
+    }
   }
 
   // ── Step 5: Apply edits atomically (rollback on failure) ──────────────
@@ -93,27 +119,116 @@ export async function executeTransaction({ configPath, edits, manifest, manifest
     return { ok: false, error: "Config write failed — restored backup" + suffix + ": " + err.message };
   }
 
-  // ── Step 6: Finalize manifest atomically ──────────────────────────────
-  try {
-    const finalManifest = {
-      ...provManifest,
-      _provisional: undefined,
-      _backupPath: undefined,
-      backupPath,
-      installedAt: new Date().toISOString(),
-    };
-    atomicWrite(manifestPath, JSON.stringify(finalManifest, null, 2) + "\n");
-  } catch (err) {
-    // Byte-perfect rollback: restore exact prior state for both files
-    const restorationErrors = restorePriorState(configPath, configExisted, rawContent, manifestPath, manifestExisted, manifestRawContent);
+  // ── Step 6: Finalize or delete manifest atomically ──────────────────────
+  if (deleteManifest) {
+    try {
+      if (existsSync(manifestPath)) {
+        unlinkSync(manifestPath);
+      }
+    } catch (err) {
+      const restorationErrors = restorePriorState(configPath, configExisted, rawContent, manifestPath, manifestExisted, manifestRawContent);
+      const suffix = restorationErrors.length > 0 ? " (restoration issues: " + restorationErrors.join("; ") + ")" : "";
+      return { ok: false, error: "Manifest deletion failed — full rollback" + suffix + ": " + err.message };
+    }
+  } else if (!skipManifest && provManifest) {
+    try {
+      const finalManifest = {
+        ...provManifest,
+        _provisional: undefined,
+        _backupPath: undefined,
+        backupPath,
+        installedAt: new Date().toISOString(),
+      };
+      atomicWrite(manifestPath, JSON.stringify(finalManifest, null, 2) + "\n");
+    } catch (err) {
+      // Byte-perfect rollback: restore exact prior state for both files
+      const restorationErrors = restorePriorState(configPath, configExisted, rawContent, manifestPath, manifestExisted, manifestRawContent);
 
-    const suffix = restorationErrors.length > 0
-      ? " (with restoration issues: " + restorationErrors.join("; ") + ")"
-      : "";
-    return { ok: false, error: "Manifest finalization failed — full rollback" + suffix + ": " + err.message };
+      const suffix = restorationErrors.length > 0
+        ? " (with restoration issues: " + restorationErrors.join("; ") + ")"
+        : "";
+      return { ok: false, error: "Manifest finalization failed — full rollback" + suffix + ": " + err.message };
+    }
   }
 
   return { ok: true, backupPath };
+}
+
+/**
+ * Execute an atomic, rollback-capable configuration rollback.
+ *
+ * Restores configPath to backupPath content and updates manifestPath state.
+ * On failure, restores exact pre-rollback byte states for both files.
+ *
+ * @param {object} options
+ * @param {string} options.configPath
+ * @param {string} options.manifestPath
+ * @param {string} options.backupPath
+ * @returns {Promise<{ ok: boolean, error?: string }>}
+ */
+export async function executeRollbackTransaction({ configPath, manifestPath, backupPath }) {
+  const configExisted = existsSync(configPath);
+  let rawContent = null;
+  if (configExisted) {
+    try {
+      rawContent = readFileSync(configPath, "utf-8");
+    } catch (err) {
+      return { ok: false, error: "Failed to read existing config before rollback: " + err.message };
+    }
+  }
+
+  const manifestExisted = existsSync(manifestPath);
+  let manifestRawContent = null;
+  if (manifestExisted) {
+    try {
+      manifestRawContent = readFileSync(manifestPath, "utf-8");
+    } catch { /* ignore */ }
+  }
+
+  if (!existsSync(backupPath)) {
+    return { ok: false, error: "Backup file does not exist: " + backupPath };
+  }
+
+  let backupContent = null;
+  try {
+    backupContent = readFileSync(backupPath, "utf-8");
+  } catch (err) {
+    return { ok: false, error: "Failed to read backup file: " + err.message };
+  }
+
+  // Create pre-rollback backup of current config state
+  if (configExisted) {
+    const preRollbackBackup = createBackup(configPath);
+    if (!preRollbackBackup) {
+      return { ok: false, error: "Failed to create pre-rollback backup" };
+    }
+  }
+
+  // Apply backup content atomically to configPath
+  try {
+    atomicWrite(configPath, backupContent);
+  } catch (err) {
+    const restorationErrors = restorePriorState(configPath, configExisted, rawContent, manifestPath, manifestExisted, manifestRawContent);
+    const suffix = restorationErrors.length > 0 ? " (restoration issues: " + restorationErrors.join("; ") + ")" : "";
+    return { ok: false, error: "Rollback config write failed" + suffix + ": " + err.message };
+  }
+
+  // Update manifest to record rollback timestamp if manifest exists
+  if (manifestExisted && manifestRawContent) {
+    try {
+      const parsed = JSON.parse(manifestRawContent);
+      parsed.rolledBackAt = new Date().toISOString();
+      parsed.rolledBackFromBackup = backupPath;
+      atomicWrite(manifestPath, JSON.stringify(parsed, null, 2) + "\n");
+    } catch (err) {
+      // If manifest update fails, restore prior state
+      const restorationErrors = restorePriorState(configPath, configExisted, rawContent, manifestPath, manifestExisted, manifestRawContent);
+      const suffix = restorationErrors.length > 0 ? " (restoration issues: " + restorationErrors.join("; ") + ")" : "";
+      return { ok: false, error: "Rollback manifest update failed" + suffix + ": " + err.message };
+    }
+  }
+
+  return { ok: true };
 }
 
 /**

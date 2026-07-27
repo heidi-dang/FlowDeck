@@ -21,8 +21,9 @@ import { join, dirname, basename, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { readConfig as readConfigFile, createBackup, atomicWrite } from "../scripts/config-mutator.mjs";
-import { executeTransaction } from "../scripts/config-transaction.mjs";
+import { executeTransaction, executeRollbackTransaction } from "../scripts/config-transaction.mjs";
 import { runDoctorChecks } from "../scripts/doctor-engine.mjs";
+
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, "..");
@@ -323,7 +324,8 @@ async function cmdVerify() {
       console.log(`  ✗ Global config: points to upstream @dv.nghiem/flowdeck`);
       fail++;
     } else {
-      console.log(`  - Global config: FlowDeck not registered`);
+      console.log(`  ✗ Global config: FlowDeck not registered`);
+      fail++;
     }
 
     if (globalCfg.existing.default_agent === "heidi") {
@@ -492,17 +494,18 @@ async function cmdMigrate() {
 
     // ── Step 1: Read and validate config ──────────────────────────────
     const cfg = readConfig(dir);
-    if (!cfg.existing) {
-      console.log(`  ${label}: No configuration found`);
-      continue;
-    }
 
-    // Reject malformed config — never mutate garbage
-    if (cfg.raw && cfg.parseError) {
+    // Reject malformed config BEFORE checking cfg.existing — never mutate garbage
+    if (cfg.parseError) {
       console.log(`  ✗ ${label}: Configuration is malformed: ${cfg.parseError}`);
       console.log(`    File: ${cfg.path}`);
       console.log(`    Fix the syntax error and re-run the migration.`);
       failed++;
+      continue;
+    }
+
+    if (!cfg.existing) {
+      console.log(`  ${label}: No configuration found`);
       continue;
     }
 
@@ -589,6 +592,7 @@ async function cmdRollback() {
   ];
 
   let rolledBack = 0;
+  let failed = 0;
   for (const { dir, label } of configDirs) {
     if (!existsSync(dir)) continue;
 
@@ -609,22 +613,27 @@ async function cmdRollback() {
 
     const latest = backups[0];
     const configFile = join(dir, "opencode.json");
+    const manifestFile = join(dir, ".flowdeck-manifest.json");
 
-    // Create backup of current state before rollback
-    if (existsSync(configFile)) {
-      const preRollbackPath = createBackup(configFile);
-      if (preRollbackPath) {
-        console.log(`  ${label}: Pre-rollback backup: ${basename(preRollbackPath)}`);
-      }
+    const result = await executeRollbackTransaction({
+      configPath: configFile,
+      manifestPath: manifestFile,
+      backupPath: latest.path,
+    });
+
+    if (result.ok) {
+      console.log(`  ${label}: Rolled back using ${latest.name}`);
+      rolledBack++;
+    } else {
+      console.error(`  ${label}: Rollback FAILED: ${result.error}`);
+      failed++;
     }
-
-    const backupContent = readFileSync(latest.path, "utf-8");
-    atomicWrite(configFile, backupContent);
-    console.log(`  ${label}: Rolled back using ${latest.name}`);
-    rolledBack++;
   }
 
-  if (rolledBack > 0) {
+  if (failed > 0) {
+    console.error(`\n✗ Rollback failed for one or more targets.`);
+    process.exit(1);
+  } else if (rolledBack > 0) {
     console.log(`\n✓ Rolled back ${rolledBack} configuration(s). A fresh OpenCode session is required.`);
   } else {
     console.log(`\nNo backups found to roll back.`);
@@ -639,6 +648,12 @@ async function cmdUninstall() {
 
   console.log(`Uninstalling FlowDeck from: ${configDir}\n`);
 
+  if (cfg.parseError) {
+    console.log(`✗ Configuration is malformed: ${cfg.parseError}`);
+    console.log(`  File: ${cfg.path}`);
+    process.exit(1);
+  }
+
   if (!cfg.existing) {
     console.log(`  Config not found at: ${cfg.path}`);
     console.log(`\n✓ Already uninstalled.`);
@@ -650,16 +665,29 @@ async function cmdUninstall() {
 
   // ── READ MANIFEST ───────────────────────────────────────────────────
   let manifest = null;
-  try {
-    if (existsSync(manifestPath)) {
+  let manifestIsCorrupt = false;
+  if (existsSync(manifestPath)) {
+    try {
       manifest = JSON.parse(readFileSync(manifestPath, "utf-8"));
+    } catch {
+      manifestIsCorrupt = true;
     }
-  } catch { /* silently ignore corrupt manifest */ }
+  }
+
+  if (manifestIsCorrupt) {
+    if (!force) {
+      console.log(`  ✗ Install manifest at ${manifestPath} is corrupt.`);
+      console.log(`    Use --force to perform a legacy forced uninstall.`);
+      process.exit(1);
+    } else {
+      console.log(`  ⚠ Proceeding with forced uninstall despite corrupt manifest.`);
+    }
+  }
 
   const edits = [];
   let changed = false;
 
-  if (manifest && manifest.pluginRef) {
+  if (manifest && manifest.pluginRef && !manifestIsCorrupt) {
     // ── MANIFEST EXISTS: respect ownership fields exactly ────────────
     console.log(`  ✓ Found install manifest (schema v${manifest.schemaVersion ?? 1})`);
 
@@ -700,8 +728,10 @@ async function cmdUninstall() {
       console.log(`  ℹ default_agent was not set by this installation — not touching`);
     }
   } else {
-    // ── NO MANIFEST: ownership-safe uninstall ────────────────────────
-    console.log(`  ⚠ No install manifest found.`);
+    // ── NO MANIFEST (OR CORRUPT + --force): ownership-safe uninstall ─
+    if (!manifestIsCorrupt) {
+      console.log(`  ⚠ No install manifest found.`);
+    }
 
     if (!force) {
       console.log(`  ┌─ Ownership protection ──────────────────────────────`);
@@ -712,7 +742,7 @@ async function cmdUninstall() {
       console.log(`  │ Usage: flowdeck uninstall --force`);
       console.log(`  └─────────────────────────────────────────────────────`);
       console.log(`\n⚠ Uninstall aborted — no changes made.`);
-      return;
+      process.exit(1);
     }
 
     // --force: only remove exact plugin ref match; NEVER touch default_agent
@@ -731,50 +761,43 @@ async function cmdUninstall() {
   }
 
   if (changed) {
-    // Build manifest — preserve existing manifest fields and tag as uninstall
-    const uninstallManifest = manifest
-      ? { ...manifest, installationMode: "uninstall" }
-      : {
-          schemaVersion: 2,
-          pluginRef: PKG_NAME,
-          pluginAdded: true,
-          pluginPreviouslyPresent: false,
-          defaultAgentAdded: false,
-          previousDefaultAgent: null,
-          installationMode: "uninstall-force",
-          version: PKG_VERSION,
-        };
-
-    // Execute via transaction service
-    const result = await executeTransaction({
-      configPath,
-      edits,
-      manifest: uninstallManifest,
-      manifestPath,
-    });
+    let result;
+    if (manifest && !manifestIsCorrupt) {
+      // Managed uninstall: update manifest atomically within the transaction
+      const uninstallManifest = {
+        ...manifest,
+        pluginAdded: false,
+        uninstalledAt: new Date().toISOString(),
+        installationMode: "uninstall",
+      };
+      result = await executeTransaction({
+        configPath,
+        edits,
+        manifest: uninstallManifest,
+        manifestPath,
+      });
+    } else {
+      // Forced uninstall without valid manifest: do NOT create a new ownership manifest
+      result = await executeTransaction({
+        configPath,
+        edits,
+        manifestPath,
+        skipManifest: true,
+        allowCorruptManifest: force,
+      });
+    }
 
     if (result.ok) {
-      // Mark manifest as uninstalled so doctor doesn't report it as installed
-      try {
-        const manifestUpdate = {
-          ...uninstallManifest,
-          _provisional: undefined,
-          _backupPath: undefined,
-          pluginAdded: false,
-          uninstalledAt: new Date().toISOString(),
-        };
-        atomicWrite(manifestPath, JSON.stringify(manifestUpdate, null, 2) + "\n");
-      } catch (manifestErr) {
-        console.log(`  ⚠ Could not update manifest after uninstall: ${manifestErr.message}`);
-      }
       console.log(`\n✓ FlowDeck uninstalled. A fresh OpenCode session is required.`);
     } else {
-      console.log(`✗ Uninstall FAILED: ${result.error}`);
+      console.error(`✗ Uninstall FAILED: ${result.error}`);
+      process.exit(1);
     }
   } else {
     console.log(`  ✓ No changes needed.`);
   }
 }
+
 
 async function cmdDryRun() {
   console.log(`DRY RUN — No files modified\n`);

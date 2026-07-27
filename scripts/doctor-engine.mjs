@@ -270,22 +270,28 @@ export async function runDoctorChecks(directory) {
   const manifestPath = join(configDir, ".flowdeck-manifest.json")
   let manifestOk = false, manifestInfo = "not found"
   let manifestMode = null, manifestRef = null, manifestCheckout = null
+  let isUninstalled = false
   const manifestRaw = tryRead(manifestPath)
   if (manifestRaw) {
     try {
       const m = JSON.parse(manifestRaw)
-      manifestRef = m.pluginRef || m.packageName || null
-      manifestMode = m.installationMode || null
-      manifestCheckout = m.checkoutPath || null
-      manifestOk = manifestRef === "@heidi-dang/flowdeck" || manifestRef === "file://" + resolve(directory) || manifestRef === "file://" + directory
-      // If mode is local-repo, verify checkoutPath resolves to an actual directory
-      if (manifestOk && manifestMode === "local-repo" && manifestCheckout) {
-        const resolvedPath = resolve(manifestCheckout)
-        manifestOk = existsSync(resolvedPath)
-        if (!manifestOk) manifestInfo = `checkoutPath "${manifestCheckout}" resolves to "${resolvedPath}" which does not exist`
+      if (m.uninstalledAt || m.pluginAdded === false || m.installationMode === "uninstall") {
+        isUninstalled = true
+        manifestInfo = "uninstalled"
+      } else {
+        manifestRef = m.pluginRef || m.packageName || null
+        manifestMode = m.installationMode || null
+        manifestCheckout = m.checkoutPath || null
+        manifestOk = manifestRef === "@heidi-dang/flowdeck" || manifestRef === "file://" + resolve(directory) || manifestRef === "file://" + directory
+        // If mode is local-repo, verify checkoutPath resolves to an actual directory
+        if (manifestOk && manifestMode === "local-repo" && manifestCheckout) {
+          const resolvedPath = resolve(manifestCheckout)
+          manifestOk = existsSync(resolvedPath)
+          if (!manifestOk) manifestInfo = `checkoutPath "${manifestCheckout}" resolves to "${resolvedPath}" which does not exist`
+        }
+        if (manifestOk) manifestInfo = "valid"
+        else if (manifestInfo === "not found") manifestInfo = `points to "${manifestRef || "unknown"}"`
       }
-      if (manifestOk) manifestInfo = "valid"
-      else if (manifestInfo === "not found") manifestInfo = `points to "${manifestRef || "unknown"}"`
     } catch { manifestInfo = "corrupt" }
   }
   let manifestMsg = manifestOk ? "Install manifest valid (transactional ownership tracked)" : `Install manifest: ${manifestInfo}`
@@ -305,7 +311,7 @@ export async function runDoctorChecks(directory) {
   checks.push({
     id: "install.manifest",
     name: "Install Manifest",
-    status: manifestOk ? "pass" : (manifestInfo === "not found" ? "warn" : "fail"),
+    status: manifestOk ? "pass" : (isUninstalled || manifestInfo === "not found" ? "warn" : "fail"),
     message: manifestMsg,
     remediation: manifestOk ? undefined : "Run 'flowdeck install' to create manifest",
   })

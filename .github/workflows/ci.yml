@@ -25,6 +25,7 @@ jobs:
           cache: "npm"
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
+      - run: npm run lint
       - run: npm run typecheck
 
   test-matrix:
@@ -87,6 +88,10 @@ jobs:
           echo "PASS: install"
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck verify || { echo "FAIL: verify"; exit 1; }
           echo "PASS: verify"
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck doctor || { echo "FAIL: doctor"; exit 1; }
+          echo "PASS: doctor"
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck uninstall || { echo "FAIL: uninstall"; exit 1; }
+          echo "PASS: uninstall"
           ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs || { echo "FAIL: config-mutator.mjs missing"; exit 1; }
           echo "PASS: Runtime files verified"
           rm -f "$GITHUB_WORKSPACE/$PACKAGE"
@@ -217,6 +222,8 @@ jobs:
         run: |
           cargo build --manifest-path crates/fdx/Cargo.toml
           cp target/debug/fdx target/release/fdx 2>/dev/null || true
+      - name: Run FDX version check
+        run: target/debug/fdx --version
       - run: cargo test --manifest-path crates/fdx/Cargo.toml --all
 
   security-scan:

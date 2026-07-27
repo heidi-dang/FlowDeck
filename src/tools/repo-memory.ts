@@ -1,7 +1,8 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs"
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from "fs"
 import { join } from "path"
 import { codebaseDir } from "./codebase-state"
+import { isSpecialistAgent } from "../services/canonical-registry"
 
 const MEMORY_FILE = "MEMORY.json"
 
@@ -38,6 +39,11 @@ function readMemory(directory: string): RepoMemory {
   try {
     return JSON.parse(readFileSync(p, "utf-8"))
   } catch {
+    // Corrupt JSON quarantine
+    try {
+      const qPath = p + `.quarantine.${Date.now()}`
+      renameSync(p, qPath)
+    } catch { /* ignore rename error */ }
     return emptyMemory()
   }
 }
@@ -73,6 +79,12 @@ export const repoMemoryTool: ToolDefinition = tool({
   },
   async execute(args, context): Promise<string> {
     const dir = context.directory ?? process.cwd()
+    const agent = (context as { agent?: string }).agent
+
+    if ((args.action === "write_node" || args.action === "delete_node") && agent && isSpecialistAgent(agent)) {
+      return JSON.stringify({ error: `Specialist agent "${agent}" is not permitted to mutate durable repo memory directly.` })
+    }
+
     const memory = readMemory(dir)
 
     switch (args.action) {
