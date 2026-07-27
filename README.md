@@ -35,21 +35,30 @@ FlowDeck is **not** a standalone AI platform. It requires OpenCode to provide mo
 
 ## Quick Start
 
-```bash
-# Install from npm (recommended)
-npx @heidi-dang/flowdeck install
-
-# Verify the installation
-npx flowdeck verify
-npx flowdeck doctor
-```
-
-Installation takes effect after restarting OpenCode. See [Installation](docs/wiki/Installation.md) for all supported methods.
-
-### Alternative — curl standalone
+### Recommended — Atomic Clean Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash
+```
+
+This performs a complete atomic lifecycle:
+1. **Discovery** — finds all FlowDeck registrations in OpenCode config scopes
+2. **Backup** — byte-for-byte backup of every affected file
+3. **Cleanup** — safely removes old/legacy FlowDeck registrations
+4. **Verify** — confirms the environment is clean before proceeding
+5. **Install** — installs the exact latest npm release
+6. **Static verification** — `flowdeck verify`, `doctor`, `config validate`
+7. **Runtime verification** — runs real OpenCode agent discovery
+8. **Rollback** — automatic if any stage fails
+
+See [Installation](docs/wiki/Installation.md) for all methods.
+
+### Alternative — npm
+
+```bash
+npx @heidi-dang/flowdeck install
+npx flowdeck verify
+npx flowdeck doctor
 ```
 
 ---
@@ -70,6 +79,7 @@ curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh
 | `flowdeck install` | Install plugin in OpenCode configuration |
 | `flowdeck install --project` | Install in project-level `.opencode/` |
 | `flowdeck install --local-repo` | Install from a local Git checkout |
+| `flowdeck clean-install` | Atomic clean reinstall with discovery, backup, rollback, and runtime verification |
 | `flowdeck verify` | Verify package identity and OpenCode registration |
 | `flowdeck doctor` | Run comprehensive diagnostics |
 | `flowdeck config validate` | Validate JSON/JSONC configuration syntax |
