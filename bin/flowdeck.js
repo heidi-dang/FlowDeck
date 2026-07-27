@@ -23,6 +23,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { readConfig as readConfigFile } from "../scripts/config-mutator.mjs";
 import { executeTransaction, executeRollbackTransaction } from "../scripts/config-transaction.mjs";
 import { runDoctorChecks } from "../scripts/doctor-engine.mjs";
+import { runCleanInstall } from "../scripts/clean-install-engine.mjs";
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +50,7 @@ Usage:
   flowdeck install              Install plugin in opencode.json
   flowdeck install --project    Install in project .opencode/
   flowdeck install --local-repo Install from local checkout
+  flowdeck clean-install        Atomic clean reinstall with rollback
   flowdeck update               Update plugin registration
   flowdeck verify               Verify fork identity and registration
   flowdeck doctor               Run comprehensive diagnostics
@@ -57,7 +59,7 @@ Usage:
   flowdeck rollback             Rollback from backup
   flowdeck uninstall            Remove plugin registration
   flowdeck dry-run              Show what would be done
-  flowdeck --help               Show this help
+  flowdeck --help               Show help
 
 Package: ${PKG_NAME}
 Version: ${PKG_VERSION}
@@ -803,6 +805,39 @@ async function cmdUninstall() {
 }
 
 
+async function cmdCleanInstall() {
+  const result = await runCleanInstall({
+    exactVersion: extractArg(args, "--exact-version"),
+    removeLegacy: !args.includes("--no-remove-legacy"),
+    verifyRuntime: !args.includes("--no-verify-runtime"),
+    dryRun: args.includes("--dry-run"),
+    verifyOnly: args.includes("--verify-only"),
+    uninstallOnly: args.includes("--uninstall-only"),
+    project: args.includes("--project") || args.includes("-p"),
+    keepBackup: args.includes("--keep-backup"),
+    localRepo: extractArg(args, "--local-repo"),
+    verbose: args.includes("--verbose") || args.includes("-v"),
+    help: args.includes("--help") || args.includes("-h"),
+  })
+
+  if (result?.ok && !result?.dryRun) {
+    console.log("\n  OPENCODE-FRESH-SESSION-REQUIRED")
+    console.log("  A new OpenCode session is required to load the updated plugin.")
+  }
+
+  if (!result?.ok) {
+    process.exit(1)
+  }
+}
+
+function extractArg(args, name) {
+  const idx = args.indexOf(name)
+  if (idx >= 0 && idx + 1 < args.length) {
+    return args[idx + 1]
+  }
+  return null
+}
+
 async function cmdDryRun() {
   console.log(`DRY RUN — No files modified\n`);
 
@@ -842,6 +877,7 @@ const handlers = {
   "config validate": cmdConfigValidate,
   migrate: cmdMigrate,
   rollback: cmdRollback,
+  "clean-install": cmdCleanInstall,
 };
 
 // Handle "config validate" as a two-word command
