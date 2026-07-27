@@ -1,6 +1,6 @@
 {
   "name": "@heidi-dang/flowdeck",
-  "version": "0.8.0-alpha.5",
+  "version": "0.8.0-alpha.6",
   "description": "FlowDeck — structured planning and execution workflows for OpenCode (Heidi fork)",
   "type": "module",
   "main": "./dist/index.js",

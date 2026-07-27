@@ -504,6 +504,7 @@ function cleanPackageDirectories(transaction, opts) {
   }
 
   for (const loc of locations) {
+    if (!isFilePathFlowDeck(loc)) continue
     if (opts.dryRun) {
       log(`  [DRY RUN] Would remove package: ${loc}`)
       transaction.addPlanStep("dry-run", "remove package", loc)
