@@ -361,7 +361,7 @@ describe("notifications — no stdout writes (TUI safe)", () => {
 
 describe("architectural invariant — no new log-management tool introduced", () => {
   it("existing tool set does not include a new log or tui-layout management tool", async () => {
-    const { default: plugin } = await import("@/index")
+    const { default: flowDeckPlugin } = await import("@/index")
     const mockClient: any = {
       app: { log: vi.fn().mockResolvedValue(undefined) },
       session: {
@@ -379,7 +379,7 @@ describe("architectural invariant — no new log-management tool introduced", ()
       serverUrl: new URL("http://localhost"),
       $: {},
     }
-    const result = await plugin(mockInput, {})
+    const result = await flowDeckPlugin.server(mockInput, {})
 
     const toolNames = Object.keys((result as any).tool ?? {})
 
@@ -396,7 +396,7 @@ describe("architectural invariant — no new log-management tool introduced", ()
   })
 
   it("removed run-pipeline tool stays absent", async () => {
-    const { default: plugin } = await import("@/index")
+    const { default: flowDeckPlugin } = await import("@/index")
     const mockClient: any = {
       app: { log: vi.fn().mockResolvedValue(undefined) },
       session: {
@@ -414,7 +414,7 @@ describe("architectural invariant — no new log-management tool introduced", ()
       serverUrl: new URL("http://localhost"),
       $: {},
     }
-    const result = await plugin(mockInput, {})
+    const result = await flowDeckPlugin.server(mockInput, {})
 
     const toolNames = Object.keys((result as any).tool ?? {})
     expect(toolNames).not.toContain("delegate")

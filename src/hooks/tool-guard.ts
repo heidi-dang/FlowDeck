@@ -505,10 +505,12 @@ const FDX_REDIRECT: Record<string, string> = {
  * FDX Redirect Guard.
  * Blocks native read/search tools when fdx is available.
  * Only fires when FLOWDECK_TOOL_GUARD_ENABLED=on.
+ * Disable for tests with FLOWDECK_DISABLE_FDX_REDIRECT=true.
  */
 export function checkFdxRedirect(toolName: string): BlockReason {
   if (!NATIVE_READ_TOOLS.has(toolName)) return null
   if (!isFdxAvailable()) return null
+  if (process.env.FLOWDECK_DISABLE_FDX_REDIRECT === "true") return null
   return (
     `[FlowDeck] Use fdx tools instead of native ${toolName}.\n` +
     `  Replacement: ${FDX_REDIRECT[toolName]}\n` +

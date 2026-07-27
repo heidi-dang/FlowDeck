@@ -155,10 +155,6 @@ const plugin: Plugin = async ({ directory, client }) => {
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
   return {
-    name: "@heidi-dang/flowdeck",
-    agent: {},
-    mcp: mcps,
-
     config: async (cfg: Record<string, unknown>) => {
       if (!(cfg as { default_agent?: string }).default_agent) {
         (cfg as { default_agent?: string }).default_agent = "heidi"
@@ -561,7 +557,12 @@ export function getSessionMetricsDiagnostics(sessionID: string): {
   }
 }
 
-export default plugin
+const flowDeckPlugin = {
+  id: "@heidi-dang/flowdeck",
+  server: plugin,
+}
+
+export default flowDeckPlugin
 
 // ─── Production diagnostics exports ──────────────────────────────────────────
 // These named exports are consumed by scripts/doctor-engine.mjs when running

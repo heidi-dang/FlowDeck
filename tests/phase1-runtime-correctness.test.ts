@@ -12,6 +12,7 @@ describe("Phase 1 — Critical Runtime Correctness Repairs", () => {
   let tmpDir: string
 
   beforeEach(() => {
+    process.env.FLOWDECK_DISABLE_FDX_REDIRECT = "true"
     tmpDir = mkdtempSync(join(tmpdir(), "phase1-test-"))
   })
 

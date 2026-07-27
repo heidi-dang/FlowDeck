@@ -9,7 +9,7 @@ describe("removed delegation tools", () => {
   })
 
   it("plugin tool registry does not expose a delegate tool", async () => {
-    const { default: plugin } = await import("@/index")
+    const { default: flowDeckPlugin } = await import("@/index")
     const mockClient: any = {
       app: { log: vi.fn().mockResolvedValue(undefined) },
       session: {
@@ -19,7 +19,7 @@ describe("removed delegation tools", () => {
       },
     }
 
-    const result = await plugin({
+    const result = await flowDeckPlugin.server({
       directory: process.cwd(),
       client: mockClient,
       worktree: "",
