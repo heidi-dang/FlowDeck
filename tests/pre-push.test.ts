@@ -8,6 +8,11 @@ import {
   routeFastChecks,
   isEscalationRequired,
   getFullModeSteps,
+  resolveOxlintExecutable,
+  getBunExecutable,
+  resolveTscPath,
+  resolvePushRanges,
+  getDiffCheckTasks,
 } from "../scripts/pre-push.mjs"
 
 describe("Pre-Push Gate & Rust Change Detection Unit Tests (tests/pre-push.test.ts)", () => {
@@ -190,13 +195,15 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
   // ── getChangedFiles ──────────────────────────────────────────────────────────
 
   describe("getChangedFiles", () => {
-    it("returns empty array when stdin and git status are both empty", () => {
+    it("returns empty result with working-tree source when stdin is empty", () => {
       const mockExec = (cmd: string) => {
         if (cmd.includes("git status --porcelain")) return ""
         throw new Error(`Unexpected git command: ${cmd}`)
       }
       const res = getChangedFiles("", ".", mockExec)
-      expect(res).toEqual([])
+      expect(res.files).toEqual([])
+      expect(res.source).toBe("working-tree")
+      expect(res.trustworthy).toBe(true)
     })
 
     it("extracts changed files from existing-branch stdin refs", () => {
@@ -206,8 +213,9 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
       }
       const stdin = "refs/heads/fix refs/heads/fix abc123 refs/heads/fix 000999\n"
       const res = getChangedFiles(stdin, ".", mockExec)
-      expect(res).toContain("src/index.ts")
-      expect(res).toContain("scripts/pre-push.mjs")
+      expect(res.files).toContain("src/index.ts")
+      expect(res.files).toContain("scripts/pre-push.mjs")
+      expect(res.source).toBe("refs")
     })
 
     it("falls back to git status when stdin is empty", () => {
@@ -216,8 +224,9 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
         throw new Error(`Unexpected git command: ${cmd}`)
       }
       const res = getChangedFiles("", ".", mockExec)
-      expect(res).toContain("src/tools/shell.ts")
-      expect(res).toContain("docs/README.md")
+      expect(res.files).toContain("src/tools/shell.ts")
+      expect(res.files).toContain("docs/README.md")
+      expect(res.source).toBe("working-tree")
     })
 
     it("deduplicates files when multiple refs change the same file", () => {
@@ -229,8 +238,16 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
         "refs/heads/a refs/heads/a aaa111 refs/heads/a bbb222\n" +
         "refs/heads/b refs/heads/b ccc333 refs/heads/b ddd444\n"
       const res = getChangedFiles(stdin, ".", mockExec)
-      const unique = [...new Set(res)]
-      expect(unique).toHaveLength(res.length)
+      const unique = [...new Set(res.files)]
+      expect(unique).toHaveLength(res.files.length)
+      expect(res.source).toBe("refs")
+    })
+
+    it("throws on malformed non-empty stdin (fail-closed)", () => {
+      const mockExec = () => { throw new Error("Should not reach git commands") }
+      expect(() => getChangedFiles("refs/heads/main 111 222\n", ".", mockExec)).toThrow(
+        /Malformed pre-push hook input/
+      )
     })
   })
 
@@ -471,6 +488,202 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
       expect(testPaths).toContain("tests/config/")
       // Two separate test paths
       expect(testPaths.length).toBeGreaterThanOrEqual(2)
+    })
+  })
+
+  // ── Executable resolvers ──────────────────────────────────────────────────────
+
+  describe("resolveOxlintExecutable", () => {
+    it("returns a path ending with bin/oxlint", () => {
+      const p = resolveOxlintExecutable()
+      expect(typeof p).toBe("string")
+      expect(p.length).toBeGreaterThan(0)
+      expect(p.endsWith("oxlint") || p.endsWith("oxlint.exe")).toBe(true)
+    })
+  })
+
+  describe("getBunExecutable", () => {
+    it("returns a string executable path", () => {
+      const bin = getBunExecutable()
+      expect(typeof bin).toBe("string")
+      expect(bin.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe("resolveTscPath", () => {
+    it("returns a path ending with tsc", () => {
+      const p = resolveTscPath()
+      expect(typeof p).toBe("string")
+      expect(p.length).toBeGreaterThan(0)
+      expect(p.includes("typescript")).toBe(true)
+    })
+  })
+
+  // ── resolvePushRanges ─────────────────────────────────────────────────────────
+
+  describe("resolvePushRanges", () => {
+    it("returns empty array for empty stdin", () => {
+      expect(resolvePushRanges("")).toEqual([])
+      expect(resolvePushRanges("   ")).toEqual([])
+    })
+
+    it("returns existing-branch ranges from valid ref entries", () => {
+      const mockExec = (cmd: string) => {
+        if (cmd.includes("git diff --name-only")) return "" // not used here
+        throw new Error(`Unexpected: ${cmd}`)
+      }
+      const stdin = "refs/heads/fix abc123 refs/heads/fix 000999\n"
+      const ranges = resolvePushRanges(stdin, ".", mockExec)
+      expect(ranges).toHaveLength(1)
+      expect(ranges[0]).toEqual({ baseSha: "000999", localSha: "abc123" })
+    })
+
+    it("returns new-branch ranges with resolved merge base", () => {
+      const mockExec = (cmd: string) => {
+        if (cmd.includes("rev-parse --abbrev-ref @{upstream}")) return "origin/main"
+        if (cmd.includes("git merge-base")) return "base123"
+        throw new Error(`Unexpected: ${cmd}`)
+      }
+      const zeroSha = "0000000000000000000000000000000000000000"
+      const stdin = `refs/heads/new newSha refs/heads/new ${zeroSha}\n`
+      const ranges = resolvePushRanges(stdin, ".", mockExec)
+      expect(ranges).toHaveLength(1)
+      expect(ranges[0]).toEqual({ baseSha: "base123", localSha: "newSha" })
+    })
+  })
+
+  // ── getDiffCheckTasks ─────────────────────────────────────────────────────────
+
+  describe("getDiffCheckTasks", () => {
+    it("returns working-tree diff task when no ranges provided", () => {
+      const tasks = getDiffCheckTasks([])
+      expect(tasks).toHaveLength(1)
+      expect(tasks[0].executable).toBe("git")
+      expect(tasks[0].args).toEqual(["diff", "--check"])
+    })
+
+    it("returns pushed-range diff tasks for each range", () => {
+      const ranges = [
+        { baseSha: "aaa", localSha: "bbb" },
+        { baseSha: "ccc", localSha: "ddd" },
+      ]
+      const tasks = getDiffCheckTasks(ranges)
+      expect(tasks).toHaveLength(2)
+      expect(tasks[0].executable).toBe("git")
+      expect(tasks[0].args).toEqual(["diff", "--check", "aaa", "bbb"])
+      expect(tasks[1].args).toEqual(["diff", "--check", "ccc", "ddd"])
+    })
+  })
+
+  // ── Process-level argv safety ─────────────────────────────────────────────────
+
+  describe("Process-level argv safety", () => {
+    it("Lint task uses process.execPath with oxlintBin as first arg", () => {
+      const oxlintBin = resolveOxlintExecutable()
+      const lintTargets = ["src/tools/shell.ts", "src/tools/a&b.ts"]
+      const executable = process.execPath
+      const args = [oxlintBin, "--deny-warnings", ...lintTargets]
+      expect(executable).toBe(process.execPath)
+      expect(args[0]).toBe(oxlintBin)
+      // Each filename is a separate argv entry
+      expect(args[2]).toBe("src/tools/shell.ts")
+      expect(args[3]).toBe("src/tools/a&b.ts")
+    })
+
+    it("Typecheck task uses process.execPath with tscPath as first arg", () => {
+      const tscPath = resolveTscPath()
+      const executable = process.execPath
+      const args = [tscPath, "--noEmit", "--project", "tsconfig.prepush.json"]
+      expect(executable).toBe(process.execPath)
+      expect(args[0]).toBe(tscPath)
+    })
+
+    it("Test task uses getBunExecutable with separate args", () => {
+      const bunBin = getBunExecutable()
+      const testPaths = ["tests/pre-push.test.ts"]
+      const args = ["test", ...testPaths]
+      expect(typeof bunBin).toBe("string")
+      expect(args).toEqual(["test", "tests/pre-push.test.ts"])
+    })
+
+    it("filename with spaces remains one argv entry", () => {
+      const lintTargets = ["src/tools/my tool.ts"]
+      const args = ["--deny-warnings", ...lintTargets]
+      expect(args).toHaveLength(2)
+      expect(args[1]).toBe("src/tools/my tool.ts")
+    })
+
+    it("filename with & remains one argv entry", () => {
+      const lintTargets = ["src/tools/a&b.ts"]
+      const args = ["--deny-warnings", ...lintTargets]
+      expect(args[1]).toBe("src/tools/a&b.ts")
+    })
+
+    it("filename with | remains one argv entry", () => {
+      const testPaths = ["src/tools/pipe|test.ts"]
+      expect(testPaths[0]).toBe("src/tools/pipe|test.ts")
+    })
+
+    it("filename with ^ remains one argv entry", () => {
+      const testPaths = ["src/tools/caret^test.ts"]
+      expect(testPaths[0]).toBe("src/tools/caret^test.ts")
+    })
+
+    it("filename with % remains one argv entry", () => {
+      const testPaths = ["src/tools/percent%test.ts"]
+      expect(testPaths[0]).toBe("src/tools/percent%test.ts")
+    })
+
+    it("filename with parentheses remains one argv entry", () => {
+      const testPaths = ["src/tools/file(1).ts"]
+      expect(testPaths[0]).toBe("src/tools/file(1).ts")
+    })
+
+    it("Unicode filename remains one argv entry", () => {
+      const testPaths = ["src/tools/日本語.ts"]
+      expect(testPaths[0]).toBe("src/tools/日本語.ts")
+    })
+
+    it("focused test paths remain separate arguments", () => {
+      const testPaths = ["tests/tools/", "tests/config/"]
+      const args = ["test", ...testPaths]
+      expect(args).toHaveLength(3)
+      expect(args[1]).toBe("tests/tools/")
+      expect(args[2]).toBe("tests/config/")
+    })
+  })
+
+  // ── Fast-mode orchestration integration tests ─────────────────────────────────
+
+  describe("Fast-mode orchestration logic", () => {
+    it("malformed non-empty stdin passes getChangedFiles throw to caller", () => {
+      expect(() => getChangedFiles("refs/heads/main 111 222\n", ".")).toThrow(
+        /Malformed pre-push hook input/
+      )
+    })
+
+    it("working-tree fallback for empty stdin succeeds with empty result", () => {
+      const mockExec = (_cmd: string) => " M src/index.ts\n"
+      const res = getChangedFiles("", ".", mockExec)
+      expect(res.files).toContain("src/index.ts")
+      expect(res.source).toBe("working-tree")
+      expect(res.trustworthy).toBe(true)
+    })
+
+    it("untrustworthy result from git error escalates or blocks", () => {
+      const mockExec = (_cmd: string) => { throw new Error("git error") }
+      const stdin = "refs/heads/fix abc123 refs/heads/fix 000999\n"
+      const res = getChangedFiles(stdin, ".", mockExec)
+      // Should still produce result but untrustworthy
+      expect(res.source).toBe("refs")
+      expect(res.trustworthy).toBe(false)
+    })
+
+    it("isEmpty + trustworthy for clean working tree returns empty ok", () => {
+      const mockExec = (_cmd: string) => ""
+      const res = getChangedFiles("", ".", mockExec)
+      expect(res.files).toEqual([])
+      expect(res.trustworthy).toBe(true)
     })
   })
 })
