@@ -1,7 +1,7 @@
 {
   "name": "@heidi-dang/flowdeck",
   "version": "0.8.0-alpha.9",
-  "description": "FlowDeck \u2014 structured planning and execution workflows for OpenCode (Heidi fork)",
+  "description": "FlowDeck — structured planning and execution workflows for OpenCode (Heidi fork)",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -9,11 +9,13 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
       "default": "./dist/index.js"
     },
     "./server": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
       "default": "./dist/index.js"
     }
   },
@@ -38,7 +40,7 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "bun build src/index.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk && tsc --emitDeclarationOnly --project tsconfig.build.json",
+    "build": "bun build src/index.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk && tsc --emitDeclarationOnly --project tsconfig.build.json && node scripts/generate-cjs-wrapper.mjs",
     "build:fdx": "cargo install --path crates/fdx --quiet",
     "check:fdx": "fdx --version",
     "postinstall": "node postinstall.mjs",
@@ -56,7 +58,9 @@
     "verify:release": "node scripts/release-alignment.mjs",
     "verify:clean-install": "node bin/flowdeck.js clean-install --verify-only",
     "install:clean": "node bin/flowdeck.js clean-install",
-    "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\""
+    "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\"",
+    "verify:packed-package": "node scripts/verify-packed-package.mjs",
+    "verify:opencode-plugin-runtime": "node scripts/verify-opencode-runtime.mjs"
   },
   "keywords": [
     "opencode",
