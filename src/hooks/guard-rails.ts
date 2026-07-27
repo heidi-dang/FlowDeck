@@ -8,22 +8,12 @@ import { loadFlowDeckConfig, resolveDesignFirstConfig } from "../config"
 const CONFIG_FILE = "config.json"
 const STATE_FILE = "STATE.md"
 
-/**
- * Safe Execution Mode — three tiers of AI edit safety.
- * auto:         AI can apply edits without confirmation (default, low-risk changes)
- * guarded:      AI applies with inline patch-trust warnings; requires human ACK for high-risk
- * review-only:  AI proposes diffs but cannot write files; human applies manually
- */
 export type ExecutionMode = "auto" | "guarded" | "review-only"
 
-/**
- * Derive execution mode from config and risk signals.
- * Priority: explicit config.execution_mode → volatility/trust override → plan_confirmed fallback.
- */
 export function resolveExecutionMode(
   configPath: string,
-  trustScore: number | null,  // 0–100, null = unknown
-  volatility?: string         // "stable" | "moderate" | "volatile" | "critical"
+  trustScore: number | null,
+  volatility?: string
 ): ExecutionMode {
   if (existsSync(configPath)) {
     try {
@@ -33,44 +23,433 @@ export function resolveExecutionMode(
       if (config.execution_mode === "auto") return "auto"
     } catch { /* fall through */ }
   }
-  // Auto-switch based on trust score
   if (trustScore !== null) {
     if (trustScore < 30) return "review-only"
     if (trustScore < 60) return "guarded"
   }
-  // Auto-switch based on file volatility
   if (volatility === "critical") return "review-only"
   if (volatility === "volatile") return "guarded"
   return "auto"
 }
 
-// Build/deploy command patterns for bash detection
-const BUILD_DEPLOY_PATTERNS = [
-  "npm build", "npm run build", "bun build", "yarn build",
-  "npm deploy", "yarn deploy", "bun deploy",
-  "npm install", "yarn install", "bun install",
-  "make build", "make deploy",
-  "docker build", "docker push", "docker-compose",
-  "git push", "git deploy",
-  "gradle build", "mvn package", "ant build",
-  "cargo build", "cargo deploy",
-  "python setup.py", "pip install",
-  "rails deploy", "rake deploy",
-]
+// ─── Shell tokeniser and segment splitter ───────────────────────────────
+//
+// Parses shell syntax at the top level only — quotes, heredocs, and
+// parentheses are tracked so that operators inside them are ignored.
+
+/**
+ * Strip heredoc bodies from a shell command.
+ *
+ * Removes everything between `<<DELIM` and a line containing only `DELIM`.
+ * After stripping, all remaining content is the actual command text.
+ */
+export function stripHeredocBodies(cmd: string): string {
+  // Match heredoc: <<'DELIM' or <<DELIM or <<-"DELIM" etc.
+  return cmd.replace(
+    /<<[-]?['"]?(\w+)['"]?[\s\S]*?\n\1\s*(\n|$)/g,
+    (match, _delim) => {
+      // Keep only the `<<DELIM` marker, drop the body and closing delimiter
+      const firstLine = match.split("\n")[0]
+      return firstLine + "\n"
+    }
+  )
+}
+
+/**
+ * Split a shell command into top-level segments at `&&`, `||`, `;`, `|`, or newlines.
+ *
+ * Operators inside quotes, heredocs, or parentheses are NOT treated as separators.
+ * Each returned segment is a single command (may be empty for trailing operators).
+ */
+export function splitTopLevelSegments(cmd: string): string[] {
+  const segments: string[] = []
+  let buf = ""
+  let quote: '"' | "'" | null = null
+  let parenDepth = 0
+  let escaped = false
+
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+
+    if (escaped) {
+      buf += ch
+      escaped = false
+      continue
+    }
+
+    if (ch === "\\") {
+      buf += ch
+      escaped = true
+      continue
+    }
+
+    if (quote) {
+      buf += ch
+      if (ch === quote) quote = null
+      continue
+    }
+
+    if (ch === '"' || ch === "'") {
+      buf += ch
+      quote = ch
+      continue
+    }
+
+    if (ch === "(") { parenDepth++; buf += ch; continue }
+    if (ch === ")") { parenDepth = Math.max(0, parenDepth - 1); buf += ch; continue }
+
+    // Top-level pipe
+    if (ch === "|" && parenDepth === 0) {
+      // Check for |& (not ||)
+      if (cmd[i + 1] === "|") {
+        // || is a control operator, not a pipe
+        segments.push(buf.trim())
+        buf = ""
+        i++ // skip second |
+        continue
+      }
+      // | at top level
+      segments.push(buf.trim())
+      buf = ""
+      continue
+    }
+
+    // Top-level ; or &
+    if ((ch === ";" || ch === "&") && parenDepth === 0) {
+      if (ch === "&" && cmd[i + 1] === "&") {
+        i++ // skip second &
+      }
+      segments.push(buf.trim())
+      buf = ""
+      continue
+    }
+
+    // Top-level newline
+    if ((ch === "\n" || ch === "\r") && parenDepth === 0) {
+      segments.push(buf.trim())
+      buf = ""
+      continue
+    }
+
+    buf += ch
+  }
+
+  // Last segment
+  const last = buf.trim()
+  if (last) segments.push(last)
+
+  return segments.filter(s => s.length > 0)
+}
+
+/**
+ * Tokenise a simplified command string (no heredocs or compound operators)
+ * into whitespace-separated tokens, respecting quotes.
+ */
+function simpleTokenise(cmd: string): string[] {
+  const tokens: string[] = []
+  let buf = ""
+  let quote: '"' | "'" | null = null
+  let escaped = false
+
+  for (const ch of cmd) {
+    if (escaped) { buf += ch; escaped = false; continue }
+    if (ch === "\\") { escaped = true; continue }
+    if (quote) {
+      if (ch === quote) { quote = null; continue }
+      buf += ch
+      continue
+    }
+    if (ch === '"' || ch === "'") { quote = ch; continue }
+    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+      if (buf.length > 0) { tokens.push(buf); buf = "" }
+      continue
+    }
+    buf += ch
+  }
+  if (buf.length > 0) tokens.push(buf)
+  return tokens
+}
+
+// ─── Executable extraction and command classification ───────────────────
+
+export interface ClassifiedCommand {
+  category: "publish" | "deploy" | "build" | "local"
+  executable: string
+  reason: string
+}
+
+/**
+ * Extract the first executable token from a command string.
+ * Strips sudo, env vars, path prefixes, and shell indirection wrappers.
+ */
+export function extractExecutable(command: string): string {
+  let s = command.trim()
+  // Strip leading env vars: FOO=bar VAR=value ...
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(s)) {
+    const nextSpace = s.indexOf(" ", s.indexOf("="))
+    if (nextSpace === -1) return ""
+    s = s.slice(nextSpace + 1).trim()
+  }
+  // Strip sudo, nice, time etc.
+  const wrapperPattern = /^(sudo|nice|time|timeout|nohup|stdbuf|env)\s+/i
+  while (wrapperPattern.test(s)) {
+    s = s.replace(wrapperPattern, "")
+  }
+  const firstWord = s.split(/[\s\t\n]+/)[0] || ""
+  // Strip path prefix: /usr/bin/node → node, ./scripts/deploy.sh → deploy.sh
+  return firstWord.split("/").pop() || ""
+}
+
+/**
+ * Convert a relative/absolute script path to its base name for classification.
+ * e.g., ./scripts/deploy.sh → deploy.sh, /usr/local/bin/custom-deploy → custom-deploy
+ */
+function baseName(path: string): string {
+  return path.split("/").pop() || path
+}
+
+/**
+ * Classify a SINGLE command segment by its first executable token.
+ * This is the core classification logic.
+ */
+function classifySegment(segment: string): ClassifiedCommand {
+  const executable = extractExecutable(segment)
+  if (!executable) {
+    return { category: "local", executable, reason: "empty or unrecognised executable" }
+  }
+
+  const exe = executable.toLowerCase()
+  // Detect script invocations for classification
+  const scriptName = baseName(executable).toLowerCase()
+  const fullLine = segment.trim()
+
+  // ── SHELL INDIRECTION: classify what bash/sh/dash runs ────────────
+  if (["bash", "sh", "dash", "ksh", "zsh"].includes(exe)) {
+    // bash script.sh → classify the script
+    const tokens = simpleTokenise(fullLine)
+    // Find the first non-flag argument (the script)
+    for (let i = 1; i < tokens.length; i++) {
+      const t = tokens[i]
+      if (t === "-c") {
+        // bash -c "inline command" → classify the inline command
+        const inlineStart = fullLine.indexOf(t) + t.length
+        const inlineCmd = fullLine.slice(inlineStart).trim().replace(/^["']|["']$/g, "")
+        if (inlineCmd) return classifySegment(inlineCmd)
+        break
+      }
+      if (t.startsWith("-")) continue
+      // This is a script path
+      return classifySegment(t)
+    }
+    return { category: "local", executable: exe, reason: `${exe} shell` }
+  }
+
+  // ── SCRIPT PATHS: ./deploy.sh, scripts/deploy.sh, path/to/script ──
+  // Also matches bare script names like deploy.sh, publish.sh when they
+  // are the first argument passed to a shell wrapper (bash/sh/dash).
+  if (exe.includes(".") && !exe.includes(" ") && (
+    fullLine.startsWith("./") || fullLine.startsWith("/") || executable.includes("/") ||
+    /\.(sh|py|js|bash|pl|rb)$/i.test(exe)
+  )) {
+    if (/deploy/i.test(scriptName)) {
+      return { category: "deploy", executable: exe, reason: `deploy script: ${baseName(executable)}` }
+    }
+    if (/publish/i.test(scriptName)) {
+      return { category: "publish", executable: exe, reason: `publish script: ${baseName(executable)}` }
+    }
+    if (/build/i.test(scriptName)) {
+      return { category: "build", executable: exe, reason: `build script: ${baseName(executable)}` }
+    }
+  }
+
+  // ── PUBLISH: registry upload — requires /fd-task approval ─────────
+  if (exe === "npm" && /\bnpm\s+(publish|unpublish)\b/i.test(fullLine)) {
+    return { category: "publish", executable: exe, reason: "npm publish" }
+  }
+  if (exe === "bun" && /\bbun\s+(publish|unpublish)\b/i.test(fullLine)) {
+    return { category: "publish", executable: exe, reason: "bun publish" }
+  }
+  if (exe === "cargo" && /\bcargo\s+publish\b/i.test(fullLine)) {
+    return { category: "publish", executable: exe, reason: "cargo publish" }
+  }
+  if (exe === "pnpm" && /\bpnpm\s+(publish|unpublish)\b/i.test(fullLine)) {
+    return { category: "publish", executable: exe, reason: "pnpm publish" }
+  }
+  if (exe === "yarn" && /\byarn\s+(publish|unpublish)\b/i.test(fullLine)) {
+    return { category: "publish", executable: exe, reason: "yarn publish" }
+  }
+  if (exe === "twine" && /\btwine\s+upload\b/i.test(fullLine)) {
+    return { category: "publish", executable: exe, reason: "twine upload" }
+  }
+  if (exe === "gem" && /\bgem\s+push\b/i.test(fullLine)) {
+    return { category: "publish", executable: exe, reason: "gem push" }
+  }
+
+  // ── DEPLOY: production infrastructure — requires /fd-task approval ─
+  if (exe === "docker") {
+    if (/\bdocker\s+(push|deploy|stack)\b/i.test(fullLine)) {
+      return { category: "deploy", executable: exe, reason: "docker push/deploy" }
+    }
+    if (/\bdocker(\s+compose)?\s+up\b/i.test(fullLine)) {
+      return { category: "deploy", executable: exe, reason: "docker compose up" }
+    }
+  }
+  if (exe === "kubectl" && /\bkubectl\s+(apply|set|create|patch|replace|rollout)\b/i.test(fullLine)) {
+    return { category: "deploy", executable: exe, reason: "kubectl mutate" }
+  }
+  if (exe === "helm" && /\bhelm\s+(upgrade|install|rollback)\b/i.test(fullLine)) {
+    return { category: "deploy", executable: exe, reason: "helm upgrade/install" }
+  }
+  if (exe === "terraform" && /\bterraform\s+apply\b/i.test(fullLine)) {
+    return { category: "deploy", executable: exe, reason: "terraform apply" }
+  }
+  if (exe === "tofu" && /\btofu\s+apply\b/i.test(fullLine)) {
+    return { category: "deploy", executable: exe, reason: "tofu apply" }
+  }
+  if (exe === "pulumi" && /\bpulumi\s+up\b/i.test(fullLine)) {
+    return { category: "deploy", executable: exe, reason: "pulumi up" }
+  }
+  if (exe === "gh" && /\bgh\s+release\s+create\b/i.test(fullLine)) {
+    return { category: "deploy", executable: exe, reason: "gh release create" }
+  }
+  if (exe === "vercel" && /\bvercel\s+--prod\b/i.test(fullLine)) {
+    return { category: "deploy", executable: exe, reason: "vercel --prod" }
+  }
+  if ((exe === "serverless" || exe === "sls") && /\bsls?\s+deploy\b/i.test(fullLine)) {
+    return { category: "deploy", executable: exe, reason: "serverless deploy" }
+  }
+  if (exe === "netlify" && /\bnetlify\s+deploy\b/i.test(fullLine)) {
+    return { category: "deploy", executable: exe, reason: "netlify deploy" }
+  }
+  if (exe === "gcloud" && /\bgcloud\s+(app\s+deploy|run\s+deploy|functions\s+deploy)\b/i.test(fullLine)) {
+    return { category: "deploy", executable: exe, reason: "gcloud deploy" }
+  }
+  if (exe === "aws") {
+    if (/\baws\s+(s3\s+sync|lambda\s+update|ecs\s+update|deploy)\b/i.test(fullLine)) {
+      return { category: "deploy", executable: exe, reason: "aws deploy" }
+    }
+  }
+
+  // ── BUILD: compile/package (informational, no approval) ──────────
+  if (exe === "npm" && /\bnpm\s+(run\s+)?build\b/i.test(fullLine)) {
+    return { category: "build", executable: exe, reason: "npm build" }
+  }
+  if (exe === "bun" && /\bbun\s+(run\s+)?build\b/i.test(fullLine)) {
+    return { category: "build", executable: exe, reason: "bun build" }
+  }
+  if (exe === "yarn" && /\byarn\s+(run\s+)?build\b/i.test(fullLine)) {
+    return { category: "build", executable: exe, reason: "yarn build" }
+  }
+  if (exe === "pnpm" && /\bpnpm\s+(run\s+)?build\b/i.test(fullLine)) {
+    return { category: "build", executable: exe, reason: "pnpm build" }
+  }
+  if (exe === "make") {
+    return { category: "build", executable: exe, reason: "make" }
+  }
+  if (exe === "cargo" && /\bcargo\s+build\b/i.test(fullLine)) {
+    return { category: "build", executable: exe, reason: "cargo build" }
+  }
+  if (exe === "gradle" || exe === "gradlew") {
+    return { category: "build", executable: exe, reason: "gradle" }
+  }
+  if (exe === "mvn" && /\bmvn\s+(package|install|compile|verify)\b/i.test(fullLine)) {
+    return { category: "build", executable: exe, reason: "maven build" }
+  }
+
+  // ── Install/run (local operations, no approval) ──────────────────
+  if (exe === "npm" && /\bnpm\s+(install|ci|run)\b/i.test(fullLine) && !/\bnpm\s+publish\b/i.test(fullLine)) {
+    return { category: "local", executable: exe, reason: "npm install/ci/run" }
+  }
+  if (exe === "bun" && /\bbun\s+(install|add|run)\b/i.test(fullLine) && !/\bbun\s+publish\b/i.test(fullLine)) {
+    return { category: "local", executable: exe, reason: "bun install/add/run" }
+  }
+  if (exe === "pip" && /\bpip\s+install\b/i.test(fullLine)) {
+    return { category: "local", executable: exe, reason: "pip install" }
+  }
+  if (exe === "docker" && /\bdocker\s+(build|run|exec)\b/i.test(fullLine)) {
+    return { category: "local", executable: exe, reason: "docker build/run/exec" }
+  }
+  if (exe === "git" && /\bgit\s+push\b/i.test(fullLine)) {
+    return { category: "local", executable: exe, reason: "git push" }
+  }
+
+  // ── EVERYTHING ELSE is local scripting ──────────────────────────
+  return { category: "local", executable: exe, reason: `${exe} is a local operation` }
+}
+
+/**
+ * Classify a complete command (may contain compound operators).
+ *
+ * Pipeline:
+ *   1. Strip heredoc bodies
+ *   2. Split into top-level segments on &&, ||, ;, |, newline
+ *   3. Classify each segment independently
+ *   4. Return the highest-risk category found (publish > deploy > build > local)
+ */
+export function classifyCommand(command: string): ClassifiedCommand & { segments?: ClassifiedCommand[] } {
+  if (!command || !command.trim()) {
+    return { category: "local", executable: "", reason: "empty command" }
+  }
+
+  // Step 1: Strip heredoc bodies to prevent false positives
+  const stripped = stripHeredocBodies(command)
+
+  // Step 2: Split into top-level segments
+  const segments = splitTopLevelSegments(stripped)
+  if (segments.length === 0) {
+    return { category: "local", executable: "", reason: "no executable segments found" }
+  }
+
+  // Step 3: Classify each segment
+  const results: ClassifiedCommand[] = segments.map(s => {
+    // Skip empty or whitespace-only segments
+    if (!s.trim()) return null
+    const trimmed = s.trim()
+    // Skip heredoc closers that may remain
+    if (/^\w+$/.test(trimmed) && trimmed.length < 20) {
+      // could be a heredoc delimiter re-appearing, be conservative
+    }
+    const result = classifySegment(trimmed)
+    // Attach the segment for diagnostics
+    return { ...result, _segment: trimmed.slice(0, 120) }
+  }).filter(Boolean) as ClassifiedCommand[]
+
+  if (results.length === 0) {
+    return { category: "local", executable: "", reason: "no classifiable segments" }
+  }
+
+  // Step 4: Return highest-risk category
+  // Priority: publish > deploy > build > local
+  const firstExe = results[0].executable
+  const firstReason = results[0].reason
+
+  for (const r of results) {
+    if (r.category === "publish") {
+      return { category: "publish", executable: r.executable, reason: r.reason, segments: results }
+    }
+  }
+  for (const r of results) {
+    if (r.category === "deploy") {
+      return { category: "deploy", executable: r.executable, reason: r.reason, segments: results }
+    }
+  }
+  for (const r of results) {
+    if (r.category === "build") {
+      return { category: "build", executable: r.executable, reason: r.reason, segments: results }
+    }
+  }
+
+  return { category: "local", executable: firstExe, reason: firstReason, segments: results }
+}
 
 export type Severity = "warn" | "block" | null
 
+const isEnabled = (): boolean => process.env.FLOWDECK_GUARD_RAILS_ENABLED !== "off"
+
 /**
  * HOOK-03: Guard rails enforcement
- * Blocks write/edit tools when plan is not confirmed (plan_confirmed=false).
- * Allows write/edit tools when plan is confirmed (plan_confirmed=true).
- * Checks .codebase/ existence per proposal spec line 412.
- * Detects bash build/deploy commands per proposal spec line 416.
- * Respects guard_enforcement override in config.json.
- * Default is ON; disable with FLOWDECK_GUARD_RAILS_ENABLED=off.
+ * Uses executable-based classification with compound-command parsing.
  */
-
-const isEnabled = (): boolean => process.env.FLOWDECK_GUARD_RAILS_ENABLED !== "off"
 export async function guardRailsHook(
   ctx: { directory: string },
   input: { tool: string },
@@ -84,27 +463,19 @@ export async function guardRailsHook(
   const configPath = join(planningDirPath, CONFIG_FILE)
   const statePath = join(planningDirPath, STATE_FILE)
 
-  // HOOK-WS-02: Workspace-aware blocking for shared mode
   const workspaceRoot = findWorkspaceRoot(dir)
   if (workspaceRoot && dir !== workspaceRoot) {
     const config = getWorkspaceConfig(dir)
     if (config && config.workspace_mode === "shared" && !existsSync(planningDirPath)) {
-      const msg = `No planning workspace for this sub-repo. Switch to workspace root: cd ${workspaceRoot}`
-      throw new Error(`[flowdeck] BLOCK: ${msg}`)
+      throw new Error(`[flowdeck] BLOCK: No planning workspace for this sub-repo. Switch to workspace root: cd ${workspaceRoot}`)
     }
   }
 
-  // Guard write/edit tools — only applies to FlowDeck-initialized projects
   if (input.tool === "write" || input.tool === "edit") {
-    // No planning dir under ~/.fd-plan/ means FlowDeck is not initialized here — skip silently
     if (!existsSync(planningDirPath)) return
-
-    // Check .codebase/ existence — warn if missing (proposal spec line 412)
     if (!existsSync(codebaseDirectory)) {
       throw new Error(`[flowdeck] WARNING: .codebase/ not found. Run /fd-task — its init step maps the codebase.`)
     }
-
-    // Resolve safe execution mode — switches between auto/guarded/review-only
     const execMode = resolveExecutionMode(configPath, null)
     if (execMode === "review-only") {
       throw new Error(`[flowdeck] BLOCK (review-only mode): propose diff but do not apply. Set execution_mode in ${configPath} to change.`)
@@ -112,35 +483,35 @@ export async function guardRailsHook(
     if (execMode === "guarded") {
       throw new Error(`[flowdeck] GUARDED MODE: edit will proceed but flag for human review.`)
     }
-
     const designGateMessage = getDesignGateMessage(dir)
-    if (designGateMessage) {
-      throw new Error(designGateMessage)
-    }
-
-    // Check guard_enforcement override
+    if (designGateMessage) throw new Error(designGateMessage)
     const effectiveSeverity = getEffectiveSeverity(configPath, statePath)
     if (effectiveSeverity === null) return
-
     if (effectiveSeverity === "warn") {
-      const warning = getWarningMessage(planningDirPath)
-      throw new Error(`[flowdeck] WARNING: ${warning}`)
+      throw new Error(`[flowdeck] WARNING: ${getWarningMessage(planningDirPath)}`)
     }
-
-    const blockMessage = getBlockMessage(planningDirPath)
-    throw new Error(`[flowdeck] BLOCK: ${blockMessage}`)
+    throw new Error(`[flowdeck] BLOCK: ${getBlockMessage(planningDirPath)}`)
   }
 
-  // Guard bash build/deploy commands (proposal spec line 416)
+  // Guard bash build/deploy/publish commands
   if (input.tool === "bash") {
     const cmd = (_output as any)?.args?.command || ""
-    for (const pattern of BUILD_DEPLOY_PATTERNS) {
-      if (cmd.includes(pattern)) {
-        // Check if plan is confirmed before allowing build/deploy
-        if (!getPlanConfirmed(statePath)) {
-          throw new Error(`[flowdeck] WARNING: Build/deploy command detected but plan is not confirmed. Run /fd-task first.`)
-        }
-        break
+    if (!cmd.trim()) return
+
+    const classified = classifyCommand(cmd)
+
+    if (classified.category === "publish" || classified.category === "deploy") {
+      if (!getPlanConfirmed(statePath)) {
+        const diagnostics = classified.segments
+          ?.map(s => `  Segment: ${s.executable} → ${s.category}: ${s.reason}`)
+          .join("\n") ?? ""
+        throw new Error(
+          `[flowdeck] WARNING: Build/deploy command detected but plan is not confirmed. Run /fd-task first.\n` +
+          `  Category: ${classified.category}\n` +
+          `  Executable: ${classified.executable}\n` +
+          `  Reason: ${classified.reason}\n` +
+          diagnostics
+        )
       }
     }
   }
@@ -151,14 +522,13 @@ function getDesignGateMessage(dir: string): string | null {
   if (!designConfig.enabled || !designConfig.requireApprovalBeforeImplementation) return null
   const state = readPlanningState(dir)
   if (state.design_override && state.design_override_reason && state.design_override_reason.trim().length > 0) return null
-
   const designApproved = state.design_stage === "handoff_complete" && state.design_approved
   if (state.requires_design_first || (state.task_type && isUiHeavyTask(state.task_type)) || planSuggestsUiHeavy(dir, state)) {
     if (designApproved) return null
     if (designConfig.enforcement === "advisory") {
-      return "[flowdeck] WARNING: UI-heavy task detected without approved design handoff. Capture the design in architecture.md via /fd-task, then approve it in /fd-review."
+      return "[flowdeck] WARNING: UI-heavy task detected without approved design handoff."
     }
-    return "[flowdeck] BLOCK: UI-heavy task requires approved design handoff. Capture the design in architecture.md via /fd-task and approve it in /fd-review, or set explicit design override in STATE.md."
+    return "[flowdeck] BLOCK: UI-heavy task requires approved design handoff."
   }
   return null
 }
@@ -172,9 +542,6 @@ function planSuggestsUiHeavy(dir: string, state: { topic?: string }): boolean {
   return isUiHeavyTask(planContent)
 }
 
-/**
- * Determine effective severity based on config.json override or STATE.md plan_confirmed.
- */
 export function effectiveSeverity(configPath: string, statePath: string): Severity {
   if (existsSync(configPath)) {
     try {
@@ -198,21 +565,15 @@ export function getPlanConfirmed(statePath: string): boolean {
     const content = readFileSync(statePath, "utf-8")
     const match = content.match(/plan_confirmed:\s*(true|false)/i)
     return match ? match[1].toLowerCase() === "true" : false
-  } catch {
-    return false
-  }
+  } catch { return false }
 }
 
 function getWarningMessage(planningDir: string): string {
-  if (!existsSync(join(planningDir, STATE_FILE))) {
-    return "No STATE.md found. Run /fd-task to initialize the workspace and plan the task."
-  }
-  return "Guard enforcement is set to 'warn'. Plan is not confirmed. Run /fd-task and confirm the plan to enable execution."
+  if (!existsSync(join(planningDir, STATE_FILE))) return "No STATE.md found. Run /fd-task to initialize."
+  return "Guard enforcement is set to 'warn'. Plan is not confirmed."
 }
 
 function getBlockMessage(planningDir: string): string {
-  if (!existsSync(join(planningDir, STATE_FILE))) {
-    return "No STATE.md found. Run /fd-task to initialize the workspace and plan the task."
-  }
+  if (!existsSync(join(planningDir, STATE_FILE))) return "No STATE.md found. Run /fd-task to initialize."
   return "Plan not confirmed. Run /fd-task and confirm the plan to enable execution."
 }
