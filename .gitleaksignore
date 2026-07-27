@@ -1,0 +1,5 @@
+# Tests/secret-redaction.test.ts — intentional test secrets for redaction verification
+ca47cdef5217b557cd12a2f373fa8f831600a66f:tests/secret-redaction.test.ts:npm-access-token:13
+ca47cdef5217b557cd12a2f373fa8f831600a66f:tests/secret-redaction.test.ts:npm-access-token:46
+ca47cdef5217b557cd12a2f373fa8f831600a66f:tests/secret-redaction.test.ts:npm-access-token:58
+ca47cdef5217b557cd12a2f373fa8f831600a66f:tests/secret-redaction.test.ts:npm-access-token:62
