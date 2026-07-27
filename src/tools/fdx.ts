@@ -561,6 +561,12 @@ export const fdxGitTool: ToolDefinition = tool({
     args: tool.schema.array(tool.schema.string()).optional(),
   },
   async execute(args): Promise<string> {
+    // Validate git read-only policy BEFORE any execution path
+    try {
+      validateGitPolicy(args.subcommand, args.args ?? [])
+    } catch (err: any) {
+      return `[FDX Git Policy] ${err.message}`
+    }
     if (!checkFdxAvailability()) {
       return nativeGitFallback([args.subcommand, ...(args.args ?? [])])
     }
