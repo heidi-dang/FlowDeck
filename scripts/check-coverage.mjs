@@ -5,15 +5,55 @@ import { tmpdir } from "os"
 import { fileURLToPath } from "url"
 
 /**
+ * Locate the native bun executable for spawnSync without shell execution.
+ */
+export function getBunExecutable() {
+  if (process.platform !== "win32") return "bun"
+
+  if (process.env.BUN_BIN && existsSync(process.env.BUN_BIN)) {
+    return process.env.BUN_BIN
+  }
+
+  const appData = process.env.APPDATA
+  if (appData) {
+    const npmBunExe = join(appData, "npm", "node_modules", "bun", "bin", "bun.exe")
+    if (existsSync(npmBunExe)) return npmBunExe
+  }
+
+  const userProfile = process.env.USERPROFILE
+  if (userProfile) {
+    const userBunExe = join(userProfile, ".bun", "bin", "bun.exe")
+    if (existsSync(userBunExe)) return userBunExe
+  }
+
+  return "bun.exe"
+}
+
+/**
  * Validate user-supplied threshold environment variable.
  * Must be a finite number between 0 and 100.
+ *
+ * Rules:
+ *   - Environment variable absent (undefined) -> default to 80.0
+ *   - Environment variable empty string ("") -> throw Error
+ *   - Environment variable whitespace-only ("   ") -> throw Error
+ *   - Invalid numeric strings, NaN, Infinity, <0, >100 -> throw Error
  */
 export function validateThreshold(thresholdRaw = process.env.COVERAGE_THRESHOLD) {
-  if (thresholdRaw === undefined || thresholdRaw === null || thresholdRaw === "") {
+  if (thresholdRaw === undefined) {
     return 80.0
   }
 
-  const parsed = Number(thresholdRaw)
+  if (typeof thresholdRaw !== "string" && typeof thresholdRaw !== "number") {
+    throw new Error(`Invalid COVERAGE_THRESHOLD: threshold must be a string or number, received ${typeof thresholdRaw}`)
+  }
+
+  const strVal = String(thresholdRaw)
+  if (strVal.trim().length === 0) {
+    throw new Error(`Invalid COVERAGE_THRESHOLD: "${thresholdRaw}". Explicit empty or whitespace-only threshold is not allowed.`)
+  }
+
+  const parsed = Number(strVal)
   if (!Number.isFinite(parsed) || isNaN(parsed) || parsed < 0 || parsed > 100) {
     throw new Error(`Invalid COVERAGE_THRESHOLD: "${thresholdRaw}". Threshold must be a finite number between 0 and 100.`)
   }
@@ -22,19 +62,17 @@ export function validateThreshold(thresholdRaw = process.env.COVERAGE_THRESHOLD)
 }
 
 /**
- * Check whether a file path qualifies as a repository source file.
- * Includes only files under src/, excluding tests, fixtures, declarations, dist, node_modules.
+ * Check whether a file path qualifies as a repository source file under src/.
+ * Excludes tests, fixtures, declarations, dist, node_modules.
  */
 export function isEligibleSourceFile(filePath) {
   if (!filePath || typeof filePath !== "string") return false
 
   const normalized = filePath.replace(/\\/g, "/")
 
-  // Must be under src/ or /src/
   const isSrc = normalized.startsWith("src/") || normalized.includes("/src/")
   if (!isSrc) return false
 
-  // Exclude node_modules, dist, declarations, fixtures, tests, scratch
   if (normalized.includes("node_modules/")) return false
   if (normalized.includes("/dist/") || normalized.startsWith("dist/")) return false
   if (normalized.endsWith(".d.ts")) return false
@@ -45,10 +83,11 @@ export function isEligibleSourceFile(filePath) {
 }
 
 /**
- * Parse standard lcov.info content and calculate weighted aggregate line coverage.
+ * Parse standard lcov.info content and calculate raw and display line coverage.
+ * Fails closed on incomplete, malformed, or invalid eligible src records.
  */
 export function parseLcov(lcovContent) {
-  if (!lcovContent || typeof lcovContent !== "string" || lcovContent.trim().length === 0) {
+  if (lcovContent === undefined || lcovContent === null || typeof lcovContent !== "string" || lcovContent.trim().length === 0) {
     throw new Error("Coverage report is empty or missing")
   }
 
@@ -60,24 +99,45 @@ export function parseLcov(lcovContent) {
   for (const record of records) {
     const lines = record.split("\n")
     let currentFile = null
-    let lh = null
-    let lf = null
+    const lhValues = []
+    const lfValues = []
 
     for (const line of lines) {
       const trimmed = line.trim()
       if (trimmed.startsWith("SF:")) {
         currentFile = trimmed.slice(3).trim()
       } else if (trimmed.startsWith("LH:")) {
-        lh = parseInt(trimmed.slice(3).trim(), 10)
+        lhValues.push(trimmed.slice(3).trim())
       } else if (trimmed.startsWith("LF:")) {
-        lf = parseInt(trimmed.slice(3).trim(), 10)
+        lfValues.push(trimmed.slice(3).trim())
       }
     }
 
-    if (currentFile && isEligibleSourceFile(currentFile) && lh !== null && lf !== null) {
-      if (isNaN(lh) || isNaN(lf)) {
-        throw new Error(`Malformed coverage record for file: ${currentFile}`)
+    if (currentFile && isEligibleSourceFile(currentFile)) {
+      if (lhValues.length === 0 || lfValues.length === 0) {
+        throw new Error(`Incomplete coverage record for eligible file "${currentFile}": missing LH or LF field`)
       }
+      if (lhValues.length > 1 || lfValues.length > 1) {
+        throw new Error(`Malformed coverage record for eligible file "${currentFile}": duplicate LH or LF fields`)
+      }
+
+      const lhStr = lhValues[0]
+      const lfStr = lfValues[0]
+      const lh = Number(lhStr)
+      const lf = Number(lfStr)
+
+      if (!Number.isInteger(lh) || !Number.isInteger(lf) || isNaN(lh) || isNaN(lf)) {
+        throw new Error(`Invalid numeric coverage values for file "${currentFile}": LH="${lhStr}", LF="${lfStr}"`)
+      }
+
+      if (lh < 0 || lf < 0) {
+        throw new Error(`Negative coverage values for file "${currentFile}": LH=${lh}, LF=${lf}`)
+      }
+
+      if (lh > lf) {
+        throw new Error(`Invalid coverage ratio for file "${currentFile}": LH (${lh}) is greater than LF (${lf})`)
+      }
+
       totalCovered += lh
       totalExecutable += lf
       fileCount++
@@ -88,40 +148,38 @@ export function parseLcov(lcovContent) {
     throw new Error("No eligible src/ source files with executable lines found in coverage report")
   }
 
-  const percentage = Math.round((totalCovered / totalExecutable) * 10000) / 100
+  const rawPercentage = (totalCovered / totalExecutable) * 100
+  const displayPercentage = Math.round(rawPercentage * 100) / 100
 
   return {
     coveredLines: totalCovered,
     totalLines: totalExecutable,
-    percentage,
+    rawPercentage,
+    displayPercentage,
     fileCount,
   }
 }
 
 /**
- * Main coverage execution wrapper.
+ * Main coverage execution wrapper without shell fallback.
  */
 export function runCoverageCheck(thresholdRaw = process.env.COVERAGE_THRESHOLD) {
   const threshold = validateThreshold(thresholdRaw)
   const tempDir = mkdtempSync(join(tmpdir(), "fd-cov-"))
-  const bunCmd = process.platform === "win32" ? "bun.cmd" : "bun"
+  const bunBin = getBunExecutable()
 
   try {
-    let proc = spawnSync(bunCmd, ["test", "--coverage", "--coverage-reporter=lcov", `--coverage-dir=${tempDir}`], {
+    const proc = spawnSync(bunBin, ["test", "--coverage", "--coverage-reporter=lcov", `--coverage-dir=${tempDir}`], {
       shell: false,
       encoding: "utf-8",
       maxBuffer: 50 * 1024 * 1024,
     })
 
-    if (proc.error || proc.status === null) {
-      proc = spawnSync(`bun test --coverage --coverage-reporter=lcov --coverage-dir="${tempDir}"`, {
-        shell: true,
-        encoding: "utf-8",
-        maxBuffer: 50 * 1024 * 1024,
-      })
+    if (proc.error) {
+      throw new Error(`Coverage test process execution error: ${proc.error.message}`)
     }
 
-    if (proc.status !== 0) {
+    if (proc.status === null || proc.status !== 0) {
       const errOutput = (proc.stdout || "") + "\n" + (proc.stderr || "")
       throw new Error(`Coverage test execution failed with exit code ${proc.status}:\n${errOutput.slice(0, 500)}`)
     }
@@ -132,16 +190,17 @@ export function runCoverageCheck(thresholdRaw = process.env.COVERAGE_THRESHOLD) 
     }
 
     const lcovContent = readFileSync(lcovFile, "utf-8")
-    const { coveredLines, totalLines, percentage, fileCount } = parseLcov(lcovContent)
+    const { coveredLines, totalLines, rawPercentage, displayPercentage, fileCount } = parseLcov(lcovContent)
 
-    console.log(`Measured weighted aggregate line coverage: ${percentage}% (${coveredLines}/${totalLines} lines across ${fileCount} source files). Required threshold: ${threshold}%`)
+    console.log(`Measured weighted aggregate line coverage: ${displayPercentage}% (raw: ${rawPercentage}%, ${coveredLines}/${totalLines} lines across ${fileCount} source files). Required threshold: ${threshold}%`)
 
-    if (percentage < threshold) {
-      throw new Error(`Coverage threshold not met: ${percentage}% is below required threshold of ${threshold}%`)
+    // Raw percentage controls pass/fail; display percentage is display-only
+    if (rawPercentage < threshold) {
+      throw new Error(`Coverage threshold not met: ${displayPercentage}% is below required threshold of ${threshold}%`)
     }
 
-    console.log(`\n[SUCCESS] Coverage threshold requirement satisfied (${percentage}% >= ${threshold}%).`)
-    return { status: 0, percentage, coveredLines, totalLines, fileCount }
+    console.log(`\n[SUCCESS] Coverage threshold requirement satisfied (${displayPercentage}% >= ${threshold}%).`)
+    return { status: 0, rawPercentage, displayPercentage, coveredLines, totalLines, fileCount }
   } finally {
     try {
       rmSync(tempDir, { recursive: true, force: true })
