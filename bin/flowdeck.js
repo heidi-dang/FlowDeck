@@ -22,8 +22,8 @@ import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { readConfig as readConfigFile } from "../scripts/config-mutator.mjs";
 import { executeTransaction, executeRollbackTransaction } from "../scripts/config-transaction.mjs";
-import { runDoctorChecks } from "../scripts/doctor-engine.mjs";
 import { runCleanInstall } from "../scripts/clean-install-engine.mjs";
+import { runDoctor as runNewDoctor, formatReport } from "../scripts/doctor-service.mjs";
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -397,53 +397,61 @@ async function cmdVerify() {
 }
 
 async function cmdDoctor() {
-  console.log(`FlowDeck Doctor — Comprehensive Diagnostics\n`);
-  console.log(`Package: ${PKG_NAME}`);
-  console.log(`Version: ${PKG_VERSION}\n`);
+  // Collect doctor args (everything after "doctor")
+  const doctorArgs = args.slice(1);
+  const validFlags = new Set(["--json", "--strict", "--verbose", "--apply-recommended", "--non-interactive", "--profile"]);
+  let prevWasProfile = false;
+  for (const a of doctorArgs) {
+    if (prevWasProfile) { prevWasProfile = false; continue; }
+    if (a === "--profile") { prevWasProfile = true; continue; }
+    if (a.startsWith("--") && !validFlags.has(a)) {
+      process.stderr.write(`Error: Unknown flag: ${a}\nUsage: flowdeck doctor [--json] [--strict] [--verbose] [--apply-recommended] [--profile <name>]\n`);
+      process.exit(2);
+    }
+  }
 
-  // Check installation mode from manifest for display
-  for (const { dir, label } of [
-    { dir: getConfigDir(false), label: "global" },
-    { dir: getConfigDir(true), label: "project" },
-  ]) {
-    const manifestPath = join(dir, ".flowdeck-manifest.json");
-    try {
-      if (existsSync(manifestPath)) {
-        const manifestRaw = readFileSync(manifestPath, "utf-8");
-        const manifest = JSON.parse(manifestRaw);
-        const mode = manifest.installationMode || "unknown";
-        let modeLabel = mode;
-        if (mode === "npm") modeLabel = "npm (global)";
-        else if (mode === "project") modeLabel = "project (local .opencode/)";
-        else if (mode === "local-repo") modeLabel = "local repository checkout";
-        else if (mode === "postinstall") modeLabel = "npm postinstall";
-        else if (mode === "migrate") modeLabel = "migration from upstream";
-        console.log(`  ${label} install mode: ${modeLabel}`);
+  const isJson = doctorArgs.includes("--json");
+  const isStrict = doctorArgs.includes("--strict");
+  const isVerbose = doctorArgs.includes("--verbose");
+  const applyFix = doctorArgs.includes("--apply-recommended");
+  const profileIdx = doctorArgs.indexOf("--profile");
+  const profile = profileIdx >= 0 && profileIdx + 1 < doctorArgs.length ? doctorArgs[profileIdx + 1] : "recommended-dev";
 
-        if (manifest.checkoutPath) {
-          console.log(`  ${label} checkout path: ${manifest.checkoutPath}`);
-        }
-        console.log();
+  try {
+    const report = await runNewDoctor(PKG_ROOT, {
+      strict: isStrict,
+      verbose: isVerbose,
+      applyRecommended: applyFix,
+      profile,
+    });
+
+    if (isJson) {
+      // JSON only to stdout; diagnostics to stderr
+      process.stdout.write(JSON.stringify({ schemaVersion: 1, ...report }, null, 2) + "\n");
+    } else {
+      const text = await formatReport(report, isVerbose);
+      process.stdout.write(text);
+    }
+
+    // Determine exit code
+    const errors = (report.summary && report.summary.errors) || 0;
+
+    if (isStrict) {
+      const criticals = (report.checks || []).filter(c =>
+        c.status === "error" || c.severity === "critical" || c.severity === "high"
+      );
+      if (criticals.length > 0) {
+        process.exit(1);
       }
-    } catch { /* no manifest found — normal for uninstalled */ }
+    } else if (errors > 0) {
+      process.exit(1);
+    }
+
+    process.exit(0);
+  } catch (err) {
+    process.stderr.write(`Doctor error: ${err.message}\n`);
+    process.exit(2);
   }
-
-  const report = await runDoctorChecks(PKG_ROOT);
-
-  console.log("\n── Diagnostics ──\n");
-  for (const check of report.checks) {
-    const icon = check.status === "pass" ? "✓" : check.status === "warn" ? "⚠" : "✗";
-    console.log(` ${icon} ${check.name}: ${check.message}`);
-    if (check.remediation) console.log(`    Remedy: ${check.remediation}`);
-  }
-
-  console.log(`\n── Summary ──`);
-  console.log(`  Passed: ${report.passed}`);
-  console.log(`  Warned: ${report.warned}`);
-  console.log(`  Failed: ${report.failed}`);
-  console.log(`  Status: ${report.failed > 0 ? "UNHEALTHY" : report.warned > 0 ? "DEGRADED" : "HEALTHY"}`);
-
-  if (report.failed > 0) process.exit(1);
 }
 
 async function cmdConfigValidate() {
