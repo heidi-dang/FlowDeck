@@ -3,3 +3,11 @@ ca47cdef5217b557cd12a2f373fa8f831600a66f:tests/secret-redaction.test.ts:npm-acce
 ca47cdef5217b557cd12a2f373fa8f831600a66f:tests/secret-redaction.test.ts:npm-access-token:46
 ca47cdef5217b557cd12a2f373fa8f831600a66f:tests/secret-redaction.test.ts:npm-access-token:58
 ca47cdef5217b557cd12a2f373fa8f831600a66f:tests/secret-redaction.test.ts:npm-access-token:62
+3086747d62200ff89d23465dbac5c4d5da291b08:tests/secret-redaction.test.ts:npm-access-token:13
+3086747d62200ff89d23465dbac5c4d5da291b08:tests/secret-redaction.test.ts:npm-access-token:46
+3086747d62200ff89d23465dbac5c4d5da291b08:tests/secret-redaction.test.ts:npm-access-token:58
+3086747d62200ff89d23465dbac5c4d5da291b08:tests/secret-redaction.test.ts:npm-access-token:62
+3032519004c48c9ad1044c46f06f84702d6fed03:tests/secret-redaction.test.ts:npm-access-token:13
+3032519004c48c9ad1044c46f06f84702d6fed03:tests/secret-redaction.test.ts:npm-access-token:46
+3032519004c48c9ad1044c46f06f84702d6fed03:tests/secret-redaction.test.ts:npm-access-token:58
+3032519004c48c9ad1044c46f06f84702d6fed03:tests/secret-redaction.test.ts:npm-access-token:62
