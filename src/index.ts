@@ -74,6 +74,11 @@ import {
 import { runSupervisorReview, shouldProceed, resolveSupervisorConfig } from "./services/supervisor-binding"
 import { appendAuditEvent } from "./services/audit-log"
 import { isSpecialistAgent, getAllAgentIds } from "./services/canonical-registry"
+import {
+  resolveRuntimeAgentConfig,
+  enforceRuntimeAgent,
+  applyIdentityMarker,
+} from "./services/runtime-agent-policy"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 /** Tracks tool call count per session ID. */
@@ -145,6 +150,7 @@ const plugin: Plugin = async ({ directory, client }) => {
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
   const orchestratorGuard = new OrchestratorGuard({ routes: getAgentRoutes() })
   const loopDetector = new LoopDetector(flowdeckConfig.governance?.loopDetection, appLog)
+  let effectiveDefaultAgent: string = "heidi"
 
   // Resolve budget limits from config (with safe defaults)
   const maxToolCalls = flowdeckConfig.governance?.delegationBudget?.maxToolCalls ?? 200
@@ -159,6 +165,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       if (!(cfg as { default_agent?: string }).default_agent) {
         (cfg as { default_agent?: string }).default_agent = "heidi"
       }
+      effectiveDefaultAgent = (cfg as { default_agent?: string }).default_agent ?? "heidi"
 
       flowdeckConfig = loadFlowDeckConfig(directory)
       const resolvedAgents = getAgentConfigs(resolveAgentModels(flowdeckConfig))
@@ -200,6 +207,38 @@ const plugin: Plugin = async ({ directory, client }) => {
         if (!Array.isArray(cfg.instructions)) cfg.instructions = []
         const seen = new Set(cfg.instructions as string[])
         for (const p of rulePaths) if (!seen.has(p)) (cfg.instructions as string[]).push(p)
+      }
+    },
+
+    "chat.message": async (input: { sessionID: string; agent?: string; variant?: string }, output: { message: any; parts?: any[] }) => {
+      const sessionID = input.sessionID ?? ""
+      const agent = output.message?.agent ?? input.agent ?? "unknown"
+      const variant = input.variant
+      const pkgVersion = "0.8.0-alpha.8"
+      const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
+      const result = enforceRuntimeAgent({
+        sessionID,
+        agent,
+        variant,
+        expectedAgent: runtimeCfg.expectedAgent ?? "heidi",
+        enforcement: runtimeCfg.enforcement,
+        directory: directory,
+        packageVersion: pkgVersion,
+      })
+
+      if (!result.allowed) {
+        throw new Error(result.reason ?? "Agent identity enforcement blocked this request")
+      }
+
+      // Apply identity anti-fabrication marker
+      if (output.message?.system !== undefined) {
+        output.message.system = applyIdentityMarker(
+          output.message.system,
+          agent,
+          runtimeCfg.expectedAgent ?? "heidi",
+        )
+      } else if (output.message) {
+        output.message.system = applyIdentityMarker("", agent, runtimeCfg.expectedAgent ?? "heidi")
       }
     },
 

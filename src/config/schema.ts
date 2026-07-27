@@ -32,6 +32,13 @@ export interface FlowDeckConfig {
   governance?: GovernanceConfig;
   /** Supervisor configuration. */
   supervisor?: SupervisorConfig;
+  /** Runtime agent identity enforcement. */
+  runtimeAgent?: {
+    /** Enforcement mode: strict (block), warn (log+allow), off (no enforcement). */
+    enforcement?: "strict" | "warn" | "off";
+    /** Expected runtime agent. Defaults to effective default_agent or "heidi". */
+    expectedAgent?: string;
+  };
 }
 
 export interface GovernanceConfig {

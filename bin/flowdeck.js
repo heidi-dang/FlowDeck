@@ -821,8 +821,10 @@ async function cmdCleanInstall() {
   })
 
   if (result?.ok && !result?.dryRun) {
-    console.log("\n  OPENCODE-FRESH-SESSION-REQUIRED")
-    console.log("  A new OpenCode session is required to load the updated plugin.")
+    console.log("\n  OPENCODE-FRESH-PROCESS-REQUIRED")
+    console.log("  An existing OpenCode Web process may retain its loaded plugin/config state.")
+    console.log("  Start a fresh OpenCode process to load the updated FlowDeck plugin.")
+    console.log("  Do NOT stop, restart, signal, or replace an existing OpenCode process.")
   }
 
   if (!result?.ok) {

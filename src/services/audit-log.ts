@@ -22,6 +22,8 @@ export type AuditEventKind =
   | "routing.decision"
   | "session.started"
   | "session.completed"
+  | "session.agent_verified"
+  | "session.agent_mismatch"
 
 export interface AuditEvent {
   kind: AuditEventKind
