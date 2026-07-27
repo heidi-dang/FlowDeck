@@ -10,20 +10,13 @@ const STATE_FILE = "STATE.md"
 
 /**
  * Safe Execution Mode — three tiers of AI edit safety.
- * auto:         AI can apply edits without confirmation (default, low-risk changes)
- * guarded:      AI applies with inline patch-trust warnings; requires human ACK for high-risk
- * review-only:  AI proposes diffs but cannot write files; human applies manually
  */
 export type ExecutionMode = "auto" | "guarded" | "review-only"
 
-/**
- * Derive execution mode from config and risk signals.
- * Priority: explicit config.execution_mode → volatility/trust override → plan_confirmed fallback.
- */
 export function resolveExecutionMode(
   configPath: string,
-  trustScore: number | null,  // 0–100, null = unknown
-  volatility?: string         // "stable" | "moderate" | "volatile" | "critical"
+  trustScore: number | null,
+  volatility?: string
 ): ExecutionMode {
   if (existsSync(configPath)) {
     try {
@@ -33,30 +26,188 @@ export function resolveExecutionMode(
       if (config.execution_mode === "auto") return "auto"
     } catch { /* fall through */ }
   }
-  // Auto-switch based on trust score
   if (trustScore !== null) {
     if (trustScore < 30) return "review-only"
     if (trustScore < 60) return "guarded"
   }
-  // Auto-switch based on file volatility
   if (volatility === "critical") return "review-only"
   if (volatility === "volatile") return "guarded"
   return "auto"
 }
 
-// Build/deploy command patterns for bash detection
-const BUILD_DEPLOY_PATTERNS = [
-  "npm build", "npm run build", "bun build", "yarn build",
-  "npm deploy", "yarn deploy", "bun deploy",
-  "npm install", "yarn install", "bun install",
-  "make build", "make deploy",
-  "docker build", "docker push", "docker-compose",
-  "git push", "git deploy",
-  "gradle build", "mvn package", "ant build",
-  "cargo build", "cargo deploy",
-  "python setup.py", "pip install",
-  "rails deploy", "rake deploy",
-]
+// ─── Build/Deploy/Publish command detection ─────────────────────────────
+//
+// Classification is based on the first executable token of the command,
+// NOT substring matching. This prevents false positives from heredocs
+// (e.g., python3 <<'PYEOF' containing "npm publish"), arguments, or file content.
+//
+// Categories:
+//   - publish:   Uploads a package to a registry (requires /fd-task approval)
+//   - deploy:    Pushes to production infrastructure (requires /fd-task approval)
+//   - build:     Compiles/packages artifacts (informational, may skip approval)
+//   - local:     Scripting, file ops, analysis (never requires approval)
+
+export interface ClassifiedCommand {
+  category: "publish" | "deploy" | "build" | "local"
+  executable: string
+  reason: string
+}
+
+/**
+ * Parse the first executable token from a shell command string.
+ * Strips sudo, env vars, and path components to get the raw executable name.
+ */
+export function extractExecutable(command: string): string {
+  let s = command.trim()
+  // Strip leading env vars: FOO=bar VAR=value ...
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(s)) {
+    const nextEq = s.indexOf("=")
+    const nextSpace = s.indexOf(" ", nextEq)
+    if (nextSpace === -1) return ""
+    s = s.slice(nextSpace + 1).trim()
+  }
+  // Strip sudo, nice, time etc.
+  const wrapperPattern = /^(sudo|nice|time|timeout|nohup|stdbuf|env)\s+/i
+  while (wrapperPattern.test(s)) {
+    s = s.replace(wrapperPattern, "")
+  }
+  // Get first word (the executable)
+  const firstWord = s.split(/[\s\t\n]+/)[0] || ""
+  // Strip path prefix: /usr/bin/node → node
+  return firstWord.split("/").pop() || ""
+}
+
+/**
+ * Classify a command by its first executable token.
+ * Returns { category, executable, reason }.
+ */
+export function classifyCommand(command: string): ClassifiedCommand {
+  const executable = extractExecutable(command)
+  if (!executable) {
+    return { category: "local", executable, reason: "empty or unrecognised executable" }
+  }
+
+  const exe = executable.toLowerCase()
+
+  // ── PUBLISH: registry upload — requires approval ───────────────────
+  if (exe === "npm" && /\bnpm\s+(publish|unpublish)\b/i.test(command)) {
+    return { category: "publish", executable: exe, reason: "npm publish" }
+  }
+  if (exe === "bun" && /\bbun\s+(publish|unpublish)\b/i.test(command)) {
+    return { category: "publish", executable: exe, reason: "bun publish" }
+  }
+  if (exe === "cargo" && /\bcargo\s+publish\b/i.test(command)) {
+    return { category: "publish", executable: exe, reason: "cargo publish" }
+  }
+  if (exe === "pnpm" && /\bpnpm\s+(publish|unpublish)\b/i.test(command)) {
+    return { category: "publish", executable: exe, reason: "pnpm publish" }
+  }
+  if (exe === "yarn" && /\byarn\s+(publish|unpublish)\b/i.test(command)) {
+    return { category: "publish", executable: exe, reason: "yarn publish" }
+  }
+  if (exe === "twine" && /\btwine\s+upload\b/i.test(command)) {
+    return { category: "publish", executable: exe, reason: "twine upload" }
+  }
+  if (exe === "gem" && /\bgem\s+push\b/i.test(command)) {
+    return { category: "publish", executable: exe, reason: "gem push" }
+  }
+  if (exe === "publish" || /\b(publish|dist-tag)\b/i.test(command)) {
+    // Generic publish command — only flag when the tool is publish-related
+    if (["npm", "bun", "cargo", "pnpm", "yarn", "twine", "gem", "docker"].includes(exe)) {
+      return { category: "publish", executable: exe, reason: `publish command: ${exe}` }
+    }
+  }
+
+  // ── DEPLOY: production infrastructure — requires approval ──────────
+  if (exe === "docker" && /\bdocker\s+(push|deploy|stack)\b/i.test(command)) {
+    return { category: "deploy", executable: exe, reason: "docker push/deploy" }
+  }
+  if (exe === "kubectl" && /\bkubectl\s+(apply|set|create|patch|replace|rollout)\b/i.test(command)) {
+    return { category: "deploy", executable: exe, reason: "kubectl mutate" }
+  }
+  if (exe === "helm" && /\bhelm\s+(upgrade|install|rollback)\b/i.test(command)) {
+    return { category: "deploy", executable: exe, reason: "helm upgrade/install" }
+  }
+  if (exe === "terraform" && /\bterraform\s+apply\b/i.test(command)) {
+    return { category: "deploy", executable: exe, reason: "terraform apply" }
+  }
+  if (exe === "tofu" && /\btofu\s+apply\b/i.test(command)) {
+    return { category: "deploy", executable: exe, reason: "tofu apply" }
+  }
+  if (exe === "pulumi" && /\bpulumi\s+up\b/i.test(command)) {
+    return { category: "deploy", executable: exe, reason: "pulumi up" }
+  }
+  if (exe === "gh" && /\bgh\s+release\s+create\b/i.test(command)) {
+    return { category: "deploy", executable: exe, reason: "gh release create" }
+  }
+  if (exe === "vercel" && /\bvercel\s+--prod\b/i.test(command)) {
+    return { category: "deploy", executable: exe, reason: "vercel --prod" }
+  }
+  if (exe === "serverless" || exe === "sls") {
+    if (/\b(serverless|sls)\s+deploy\b/i.test(command)) {
+      return { category: "deploy", executable: exe, reason: "serverless deploy" }
+    }
+  }
+  if (exe === "netlify" && /\bnetlify\s+deploy\b/i.test(command)) {
+    return { category: "deploy", executable: exe, reason: "netlify deploy" }
+  }
+  if (exe === "gcloud" && /\bgcloud\s+(app\s+deploy|run\s+deploy|functions\s+deploy)\b/i.test(command)) {
+    return { category: "deploy", executable: exe, reason: "gcloud deploy" }
+  }
+  if (exe === "aws") {
+    if (/\baws\s+(s3\s+sync|lambda\s+update|ecs\s+update|deploy)\b/i.test(command)) {
+      return { category: "deploy", executable: exe, reason: "aws deploy" }
+    }
+  }
+
+  // ── BUILD: compile/package (informational, no approval needed) ────
+  if (exe === "npm" && /\bnpm\s+(run\s+)?build\b/i.test(command)) {
+    return { category: "build", executable: exe, reason: "npm build" }
+  }
+  if (exe === "bun" && /\bbun\s+(run\s+)?build\b/i.test(command)) {
+    return { category: "build", executable: exe, reason: "bun build" }
+  }
+  if (exe === "yarn" && /\byarn\s+(run\s+)?build\b/i.test(command)) {
+    return { category: "build", executable: exe, reason: "yarn build" }
+  }
+  if (exe === "pnpm" && /\bpnpm\s+(run\s+)?build\b/i.test(command)) {
+    return { category: "build", executable: exe, reason: "pnpm build" }
+  }
+  if (exe === "make" && /\bmake\s+/i.test(command)) {
+    return { category: "build", executable: exe, reason: "make" }
+  }
+  if (exe === "cargo" && /\bcargo\s+build\b/i.test(command)) {
+    return { category: "build", executable: exe, reason: "cargo build" }
+  }
+  if (exe === "gradle" || exe === "gradlew") {
+    return { category: "build", executable: exe, reason: "gradle" }
+  }
+  if (exe === "mvn" && /\bmvn\s+(package|install|compile|verify)\b/i.test(command)) {
+    return { category: "build", executable: exe, reason: "maven build" }
+  }
+
+  // ── Install commands (not publish — can run without approval) ─────
+  if (exe === "npm" && /\bnpm\s+(install|ci|run)\b/i.test(command) && !/\bnpm\s+publish\b/i.test(command)) {
+    return { category: "local", executable: exe, reason: "npm install/ci/run" }
+  }
+  if (exe === "bun" && /\bbun\s+(install|add|run)\b/i.test(command) && !/\bbun\s+publish\b/i.test(command)) {
+    return { category: "local", executable: exe, reason: "bun install/add/run" }
+  }
+  if (exe === "pip" && /\bpip\s+install\b/i.test(command)) {
+    return { category: "local", executable: exe, reason: "pip install" }
+  }
+  if (exe === "docker" && /\bdocker\s+(build|run)\b/i.test(command)) {
+    // docker build/run are local operations, not deployment
+    return { category: "local", executable: exe, reason: "docker build/run" }
+  }
+  if (exe === "git" && /\bgit\s+push\b/i.test(command)) {
+    // git push is source control, not deployment
+    return { category: "local", executable: exe, reason: "git push" }
+  }
+
+  // ── EVERYTHING ELSE is local scripting — never requires approval ──
+  return { category: "local", executable: exe, reason: `${exe} is a local operation` }
+}
 
 export type Severity = "warn" | "block" | null
 
@@ -64,13 +215,11 @@ export type Severity = "warn" | "block" | null
  * HOOK-03: Guard rails enforcement
  * Blocks write/edit tools when plan is not confirmed (plan_confirmed=false).
  * Allows write/edit tools when plan is confirmed (plan_confirmed=true).
- * Checks .codebase/ existence per proposal spec line 412.
- * Detects bash build/deploy commands per proposal spec line 416.
+ * Detects bash build/deploy/publish commands using executable-based classification.
  * Respects guard_enforcement override in config.json.
- * Default is ON; disable with FLOWDECK_GUARD_RAILS_ENABLED=off.
  */
-
 const isEnabled = (): boolean => process.env.FLOWDECK_GUARD_RAILS_ENABLED !== "off"
+
 export async function guardRailsHook(
   ctx: { directory: string },
   input: { tool: string },
@@ -96,15 +245,11 @@ export async function guardRailsHook(
 
   // Guard write/edit tools — only applies to FlowDeck-initialized projects
   if (input.tool === "write" || input.tool === "edit") {
-    // No planning dir under ~/.fd-plan/ means FlowDeck is not initialized here — skip silently
     if (!existsSync(planningDirPath)) return
-
-    // Check .codebase/ existence — warn if missing (proposal spec line 412)
     if (!existsSync(codebaseDirectory)) {
       throw new Error(`[flowdeck] WARNING: .codebase/ not found. Run /fd-task — its init step maps the codebase.`)
     }
 
-    // Resolve safe execution mode — switches between auto/guarded/review-only
     const execMode = resolveExecutionMode(configPath, null)
     if (execMode === "review-only") {
       throw new Error(`[flowdeck] BLOCK (review-only mode): propose diff but do not apply. Set execution_mode in ${configPath} to change.`)
@@ -118,7 +263,6 @@ export async function guardRailsHook(
       throw new Error(designGateMessage)
     }
 
-    // Check guard_enforcement override
     const effectiveSeverity = getEffectiveSeverity(configPath, statePath)
     if (effectiveSeverity === null) return
 
@@ -131,16 +275,23 @@ export async function guardRailsHook(
     throw new Error(`[flowdeck] BLOCK: ${blockMessage}`)
   }
 
-  // Guard bash build/deploy commands (proposal spec line 416)
+  // Guard bash build/deploy/publish commands (proposal spec line 416)
   if (input.tool === "bash") {
     const cmd = (_output as any)?.args?.command || ""
-    for (const pattern of BUILD_DEPLOY_PATTERNS) {
-      if (cmd.includes(pattern)) {
-        // Check if plan is confirmed before allowing build/deploy
-        if (!getPlanConfirmed(statePath)) {
-          throw new Error(`[flowdeck] WARNING: Build/deploy command detected but plan is not confirmed. Run /fd-task first.`)
-        }
-        break
+    if (!cmd.trim()) return
+
+    const classified = classifyCommand(cmd)
+
+    // Only publish and deploy commands require /fd-task approval.
+    // Build and local commands pass through without approval.
+    if (classified.category === "publish" || classified.category === "deploy") {
+      if (!getPlanConfirmed(statePath)) {
+        throw new Error(
+          `[flowdeck] WARNING: Build/deploy command detected but plan is not confirmed. Run /fd-task first.\n` +
+          `  Category: ${classified.category}\n` +
+          `  Executable: ${classified.executable}\n` +
+          `  Reason: ${classified.reason}`
+        )
       }
     }
   }
