@@ -102,6 +102,9 @@ export function evaluateDelegationJustification(
   }
 }
 
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import { dirname, basename, extname, join, resolve, isAbsolute } from "node:path"
+
 export interface SurfaceAreaCheckResult {
   dependents: string[]
   existingTests: string[]
@@ -118,18 +121,21 @@ export interface SurfaceAreaCheckResult {
  */
 export function performSurfaceAreaCheck(input: {
   targetFiles: string[]
+  projectRoot?: string
   knownDependents?: string[]
   knownTests?: string[]
   knownConfig?: string[]
   assumptions?: string[]
   errorPaths?: string[]
 }): SurfaceAreaCheckResult {
-  // Perform actual filesystem inspection for real data
-  const dependents = discoverActualDependents(input.targetFiles)
-  const existingTests = discoverActualTests(input.targetFiles)
-  const relatedConfig = discoverRelatedConfig(input.targetFiles)
-  const assumptions = input.assumptions ?? deriveAssumptions(input.targetFiles)
-  const errorPaths = input.errorPaths ?? discoverErrorPaths(input.targetFiles)
+  const root = input.projectRoot ? resolve(input.projectRoot) : process.cwd()
+  const resolvedTargets = input.targetFiles.map(f => isAbsolute(f) ? resolve(f) : resolve(root, f))
+
+  const dependents = discoverActualDependents(resolvedTargets)
+  const existingTests = discoverActualTests(resolvedTargets, root)
+  const relatedConfig = discoverRelatedConfig(resolvedTargets, root)
+  const assumptions = input.assumptions ?? deriveAssumptions(resolvedTargets)
+  const errorPaths = input.errorPaths ?? discoverErrorPaths(resolvedTargets)
 
   return {
     dependents,
@@ -137,25 +143,21 @@ export function performSurfaceAreaCheck(input: {
     relatedConfig,
     assumptions,
     errorPaths,
-    readyForEdit: input.targetFiles.length > 0,
+    readyForEdit: resolvedTargets.length > 0,
   }
 }
 
 /**
  * Discover actual dependent files by looking for imports/references to target files.
- * In a real runtime, this would use codegraph or grep-based dependency analysis.
  */
 function discoverActualDependents(targetFiles: string[]): string[] {
   const results: string[] = []
   for (const file of targetFiles) {
     try {
-      const { existsSync, readFileSync, readdirSync } = require("fs") as any
-      const { dirname, basename, extname, join } = require("path") as any
       if (!existsSync(file)) continue
       const name = basename(file, extname(file))
       const dir = dirname(file)
 
-      // Check sibling files for imports
       const siblings = readdirSync(dir).filter((f: string) => f.endsWith(".ts") || f.endsWith(".tsx"))
       for (const sibling of siblings) {
         if (sibling === basename(file)) continue
@@ -167,7 +169,6 @@ function discoverActualDependents(targetFiles: string[]): string[] {
         } catch { /* skip unreadable */ }
       }
 
-      // Check index files that might re-export
       const indexFiles = ["index.ts", "index.tsx", "index.js"]
       for (const idx of indexFiles) {
         const idxPath = join(dir, idx)
@@ -188,29 +189,24 @@ function discoverActualDependents(targetFiles: string[]): string[] {
 /**
  * Discover actual test files related to target files.
  */
-function discoverActualTests(targetFiles: string[]): string[] {
+function discoverActualTests(targetFiles: string[], projectRoot: string): string[] {
   const results: string[] = []
   for (const file of targetFiles) {
     try {
-      const { existsSync, readdirSync } = require("fs") as any
-      const { dirname, basename, extname, join } = require("path") as any
       const dir = dirname(file)
       const name = basename(file, extname(file))
 
-      // Look for corresponding test files
       const testPatterns = [
         `${name}.test.ts`, `${name}.test.tsx`, `${name}.spec.ts`,
         `${name}.test.js`, `${name}.spec.js`,
         `${name}.test.mjs`, `${name}.spec.mjs`,
       ]
 
-      // Check in same directory
       for (const pattern of testPatterns) {
         const testPath = join(dir, pattern)
         if (existsSync(testPath)) results.push(testPath)
       }
 
-      // Check in __tests__ directory
       const testsDir = join(dir, "__tests__")
       if (existsSync(testsDir)) {
         const testFiles = readdirSync(testsDir)
@@ -221,8 +217,7 @@ function discoverActualTests(targetFiles: string[]): string[] {
         }
       }
 
-      // Check top-level tests directory
-      const rootTests = join(process.cwd(), "tests")
+      const rootTests = join(projectRoot, "tests")
       if (existsSync(rootTests)) {
         const rootFiles = readdirSync(rootTests)
         for (const rf of rootFiles) {
@@ -239,7 +234,7 @@ function discoverActualTests(targetFiles: string[]): string[] {
 /**
  * Discover related configuration files.
  */
-function discoverRelatedConfig(targetFiles: string[]): string[] {
+export function discoverRelatedConfig(targetFiles: string[], explicitProjectRoot?: string): string[] {
   const configPatterns = [
     "package.json", "tsconfig.json", "tsconfig.build.json",
     ".flowdeck.json", ".flowdeck.jsonc", ".gitignore",
@@ -247,49 +242,46 @@ function discoverRelatedConfig(targetFiles: string[]): string[] {
     ".eslintrc.js", ".eslintrc.json", ".prettierrc",
     "vitest.config.ts", "vitest.config.js", "jest.config.ts",
   ]
-  const { existsSync: fsExistsSync, statSync } = require("fs") as { existsSync: (p: string) => boolean; statSync: (p: string) => any }
-  const { join: pathJoin, resolve: pathResolve, dirname: pathDirname } = require("path") as {
-    join: (...p: string[]) => string;
-    resolve: (...p: string[]) => string;
-    dirname: (p: string) => string;
-  }
 
-  let projectRoot = pathResolve(process.cwd())
-  for (const file of targetFiles) {
-    if (file) {
-      let current = pathResolve(file)
-      try {
-        if (fsExistsSync(current) && statSync(current).isFile()) {
-          current = pathDirname(current)
+  let root = explicitProjectRoot ? resolve(explicitProjectRoot) : resolve(process.cwd())
+
+  if (!explicitProjectRoot) {
+    for (const file of targetFiles) {
+      if (file) {
+        let current = resolve(file)
+        try {
+          if (existsSync(current) && statSync(current).isFile()) {
+            current = dirname(current)
+          }
+        } catch {
+          current = dirname(current)
         }
-      } catch {
-        current = pathDirname(current)
-      }
-      let found = false
-      for (let i = 0; i < 15; i++) {
-        if (
-          fsExistsSync(pathJoin(current, ".flowdeck.json")) ||
-          fsExistsSync(pathJoin(current, ".flowdeck.jsonc")) ||
-          fsExistsSync(pathJoin(current, "package.json")) ||
-          fsExistsSync(pathJoin(current, ".git"))
-        ) {
-          projectRoot = current
-          found = true
-          break
+        let found = false
+        for (let i = 0; i < 15; i++) {
+          if (
+            existsSync(join(current, ".flowdeck.json")) ||
+            existsSync(join(current, ".flowdeck.jsonc")) ||
+            existsSync(join(current, "package.json")) ||
+            existsSync(join(current, ".git"))
+          ) {
+            root = current
+            found = true
+            break
+          }
+          const parent = dirname(current)
+          if (parent === current) break
+          current = parent
         }
-        const parent = pathDirname(current)
-        if (parent === current) break
-        current = parent
+        if (found) break
       }
-      if (found) break
     }
   }
 
   const results: string[] = []
   for (const pattern of configPatterns) {
     try {
-      const configPath = pathJoin(projectRoot, pattern)
-      if (fsExistsSync(configPath)) results.push(configPath)
+      const configPath = join(root, pattern)
+      if (existsSync(configPath)) results.push(configPath)
     } catch { /* skip */ }
   }
   return results
@@ -302,15 +294,17 @@ function deriveAssumptions(targetFiles: string[]): string[] {
   const assumptions: string[] = []
   for (const file of targetFiles) {
     if (file.endsWith(".ts") || file.endsWith(".tsx")) {
-      if (!assumptions.includes("TypeScript types are valid")) assumptions.push("TypeScript types are valid")
-      if (!assumptions.includes("Strict null checks pass")) assumptions.push("Strict null checks pass")
+      assumptions.push("TypeScript types pass build step")
     }
-    if (file.endsWith(".test.ts") || file.endsWith(".spec.ts")) {
-      if (!assumptions.includes("Existing tests pass before change")) assumptions.push("Existing tests pass before change")
+    if (file.includes("agent") || file.includes("skill")) {
+      assumptions.push("YAML frontmatter schema valid")
     }
-    if (file.endsWith(".json") || file.endsWith(".jsonc")) {
-      if (!assumptions.includes("JSON/JSONC is valid")) assumptions.push("JSON/JSONC is valid")
+    if (file.includes("config") || file.endsWith(".json")) {
+      assumptions.push("Config schema backwards-compatible")
     }
+  }
+  if (assumptions.length === 0) {
+    assumptions.push("Target files exist and are readable")
   }
   assumptions.push("No side effects on unrelated modules")
   return assumptions
@@ -323,7 +317,6 @@ function discoverErrorPaths(targetFiles: string[]): string[] {
   const errorPaths: string[] = []
   for (const file of targetFiles) {
     try {
-      const { existsSync, readFileSync } = require("fs") as any
       if (!existsSync(file)) continue
       const content = readFileSync(file, "utf-8")
       if (content.includes("throw ") && !errorPaths.includes("Error paths from existing code")) {
