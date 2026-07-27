@@ -20,7 +20,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readd
 import { join, dirname, basename, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readConfig as readConfigFile, createBackup } from "../scripts/config-mutator.mjs";
+import { readConfig as readConfigFile, createBackup, atomicWrite } from "../scripts/config-mutator.mjs";
 import { executeTransaction } from "../scripts/config-transaction.mjs";
 import { runDoctorChecks } from "../scripts/doctor-engine.mjs";
 
@@ -485,6 +485,8 @@ async function cmdMigrate() {
   ];
 
   let migrated = 0;
+  let failed = 0;
+  let noChanges = 0;
   for (const { dir, label } of configDirs) {
     if (!existsSync(dir)) continue;
 
@@ -500,6 +502,7 @@ async function cmdMigrate() {
       console.log(`  ✗ ${label}: Configuration is malformed: ${cfg.parseError}`);
       console.log(`    File: ${cfg.path}`);
       console.log(`    Fix the syntax error and re-run the migration.`);
+      failed++;
       continue;
     }
 
@@ -545,7 +548,8 @@ async function cmdMigrate() {
     }
 
     if (edits.length === 0) {
-      console.log(`  ${label}: No migration needed`);
+      console.log(`  ${label}: no migration required`);
+      noChanges++;
       continue;
     }
 
@@ -558,18 +562,21 @@ async function cmdMigrate() {
     });
 
     if (result.ok) {
-      console.log(`  ✓ ${label}: Migration complete`);
+      console.log(`  ✓ ${label}: migration succeeded`);
       migrated++;
     } else {
-      console.log(`  ✗ ${label}: Migration FAILED: ${result.error}`);
-      // Continue to next config dir
+      console.log(`  ✗ ${label}: migration failed: ${result.error}`);
+      failed++;
     }
   }
 
-  if (migrated > 0) {
-    console.log(`\n✓ Migrated ${migrated} configuration(s).`);
+  if (failed > 0) {
+    console.log(`\n✗ migration failed`);
+    process.exit(1);
+  } else if (migrated > 0) {
+    console.log(`\n✓ migration succeeded`);
   } else {
-    console.log(`\n✓ Already using ${PKG_NAME}.`);
+    console.log(`\n✓ no migration required`);
   }
 }
 
@@ -611,7 +618,8 @@ async function cmdRollback() {
       }
     }
 
-    copyFileSync(latest.path, configFile);
+    const backupContent = readFileSync(latest.path, "utf-8");
+    atomicWrite(configFile, backupContent);
     console.log(`  ${label}: Rolled back using ${latest.name}`);
     rolledBack++;
   }
@@ -746,6 +754,19 @@ async function cmdUninstall() {
     });
 
     if (result.ok) {
+      // Mark manifest as uninstalled so doctor doesn't report it as installed
+      try {
+        const manifestUpdate = {
+          ...uninstallManifest,
+          _provisional: undefined,
+          _backupPath: undefined,
+          pluginAdded: false,
+          uninstalledAt: new Date().toISOString(),
+        };
+        atomicWrite(manifestPath, JSON.stringify(manifestUpdate, null, 2) + "\n");
+      } catch (manifestErr) {
+        console.log(`  ⚠ Could not update manifest after uninstall: ${manifestErr.message}`);
+      }
       console.log(`\n✓ FlowDeck uninstalled. A fresh OpenCode session is required.`);
     } else {
       console.log(`✗ Uninstall FAILED: ${result.error}`);

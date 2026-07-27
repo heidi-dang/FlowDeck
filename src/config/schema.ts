@@ -67,10 +67,9 @@ export interface GovernanceConfig {
     /** Maximum actions in memory per session. Default: 20 */
     historySize?: number;
   };
-  /** Scorecard configuration. */
+  /** Scorecard configuration (planned - not yet implemented). */
   scorecard?: {
     enabled?: boolean;
-    storageMode?: "jsonl" | "none";
   };
   /** Delegation budget configuration. */
   delegationBudget?: {
