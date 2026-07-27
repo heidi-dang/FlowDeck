@@ -30,6 +30,7 @@
     "scripts/clean-install-engine.mjs",
     "scripts/release-alignment.mjs",
     "src/commands",
+    "src/doctor/cli.mjs",
     "src/rules",
     "src/skills",
     "src/doctor",
