@@ -430,7 +430,7 @@ const plugin: Plugin = async ({ directory, client }) => {
 
     event: async ({ event }: { event: any }) => {
       const type: string = event?.type ?? ""
-      const sessionID = event?.properties?.sessionID ?? ""
+      const sessionID = event?.properties?.sessionID ?? event?.properties?.info?.id ?? event?.sessionID ?? ""
       if (type === "session.created" || type === "session.started") {
         await sessionStartHook({ directory }, appLog)
         appendAuditEvent(directory, {
@@ -440,28 +440,24 @@ const plugin: Plugin = async ({ directory, client }) => {
           decision: "start",
           reason: "Session started",
         })
-        // Track session start time for duration calculation
         if (sessionID) {
+          cleanupSessionState(sessionID, loopDetector)
           sessionStartTimes.set(sessionID, Date.now())
         }
-      } else if (type === "session.idle" || type === "session.error" || type === "session.completed") {
-        await sessionEventsHook({ directory }, type === "session.idle" ? "idle" : "error", sessionID)
-        if (sessionID) {
-          loopDetector.clearSession(sessionID)
-          clearWriteCounter(sessionID)
-        }
-        if (type === "session.completed") {
-          appendAuditEvent(directory, {
-            kind: "session.completed",
-            session_id: sessionID,
-            agent: "system",
-            decision: "complete",
-            reason: "Session completed",
-          })
+      } else if (type === "session.completed" || type === "session.error") {
+        try {
+          await sessionEventsHook({ directory }, type === "session.completed" ? "completed" : "error", sessionID)
+          if (type === "session.completed") {
+            appendAuditEvent(directory, {
+              kind: "session.completed",
+              session_id: sessionID,
+              agent: "system",
+              decision: "complete",
+              reason: "Session completed",
+            })
 
-          // Generate scorecard with real session metrics
-          if (sessionID) {
-            try {
+            // Generate scorecard with real session metrics
+            if (sessionID) {
               const toolCalls = sessionToolCalls.get(sessionID) ?? 0
               const retries = sessionRetries.get(sessionID) ?? 0
               const delegations = sessionDelegations.get(sessionID) ?? 0
@@ -487,31 +483,68 @@ const plugin: Plugin = async ({ directory, client }) => {
                 durationMs,
                 remainingFindings: null,
               })
-              appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
-            } finally {
-              // Always clean up session state, even if scorecard generation throws
-              sessionToolCalls.delete(sessionID)
-              sessionRetries.delete(sessionID)
-              sessionDelegations.delete(sessionID)
-              sessionBlocks.delete(sessionID)
-              sessionWarnings.delete(sessionID)
-              sessionStartTimes.delete(sessionID)
-              sessionFilesChanged.delete(sessionID)
+              await appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
             }
+          } else if (type === "session.error") {
+            appendAuditEvent(directory, {
+              kind: "session.completed",
+              session_id: sessionID,
+              agent: "system",
+              decision: "error",
+              reason: "Session errored",
+            })
           }
-        } else if (sessionID) {
-          // session.idle or session.error — clean up maps to prevent leaks
-          sessionToolCalls.delete(sessionID)
-          sessionRetries.delete(sessionID)
-          sessionDelegations.delete(sessionID)
-          sessionBlocks.delete(sessionID)
-          sessionWarnings.delete(sessionID)
-          sessionStartTimes.delete(sessionID)
-          sessionFilesChanged.delete(sessionID)
+        } finally {
+          // Outer finally: guaranteed cleanup even if hook, audit log, scorecard, or appLog throws!
+          if (sessionID) {
+            cleanupSessionState(sessionID, loopDetector)
+          }
         }
+      } else if (type === "session.idle") {
+        // session.idle is nonterminal: preserve accumulated metrics!
+        await sessionEventsHook({ directory }, "idle", sessionID)
       }
       orchestratorGuard.onEvent(event)
     },
+  }
+}
+
+/**
+ * Single authoritative cleanup function for session state.
+ * Clears all session metrics, loop detector state, and write counters.
+ */
+export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void {
+  if (!sessionID) return
+  sessionToolCalls.delete(sessionID)
+  sessionRetries.delete(sessionID)
+  sessionDelegations.delete(sessionID)
+  sessionBlocks.delete(sessionID)
+  sessionWarnings.delete(sessionID)
+  sessionStartTimes.delete(sessionID)
+  sessionFilesChanged.delete(sessionID)
+  if (ld) {
+    try { ld.clearSession(sessionID) } catch {}
+  }
+  try { clearWriteCounter(sessionID) } catch {}
+}
+
+export function getSessionMetricsDiagnostics(sessionID: string): {
+  toolCalls: number
+  retries: number
+  delegations: number
+  blocks: number
+  warnings: number
+  startTime?: number
+  filesChangedCount: number
+} {
+  return {
+    toolCalls: sessionToolCalls.get(sessionID) ?? 0,
+    retries: sessionRetries.get(sessionID) ?? 0,
+    delegations: sessionDelegations.get(sessionID) ?? 0,
+    blocks: sessionBlocks.get(sessionID) ?? 0,
+    warnings: sessionWarnings.get(sessionID) ?? 0,
+    startTime: sessionStartTimes.get(sessionID),
+    filesChangedCount: sessionFilesChanged.get(sessionID)?.size ?? 0,
   }
 }
 
