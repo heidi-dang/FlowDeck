@@ -154,16 +154,21 @@ Boris Cherny (creator of Claude Code) keeps his team's file around 100 lines. Un
 - Package manager: Bun
 - Runtime: OpenCode (bun runtime)
 
+> **Note:** CI uses `npm ci` for reproducible installs; scripts internally invoke `bun` for build/test. Ensure both npm and bun are installed.
+
 ### Commands
 - Install: `./install.sh`
 - Build: `cd . && bun run build`
 - Test (all): `cd . && bun test`
 - Test (single file): `cd . && bun test tests/<file>.test.ts`
+- Test (coverage): `cd . && bun test --coverage`
 - Typecheck: `cd . && bun tsc --noEmit`
+- Pre-push gate: `node scripts/pre-push.mjs`
 - Verify install: `./install.sh --check-config`
 - CLI: `npx @heidi-dang/flowdeck <command>`
 
 Prefer single-file test runs during iteration. Full suite for final verification.
+Run `node scripts/pre-push.mjs` before pushing to catch failures locally.
 
 ### Layout
 - Plugin source: `src/`

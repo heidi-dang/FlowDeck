@@ -26,6 +26,8 @@ export type AuditEventKind =
 export interface AuditEvent {
   kind: AuditEventKind
   timestamp: string
+  correlation_id?: string
+  level?: "debug" | "info" | "warn" | "error"
   session_id?: string
   run_id?: string
   agent?: string
