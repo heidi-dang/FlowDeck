@@ -66,6 +66,23 @@ export function parsePrePushStdin(stdinText) {
   return refEntries
 }
 
+/**
+ * Read pre-push input from stdin unless stdin is a TTY.
+ * In a Git hook, stdin is a pipe carrying pushed refs. In manual mode,
+ * TTY stdin means there is no pipe, so we avoid blocking on readFileSync(fd=0).
+ *
+ * @param {{ isTTY?: boolean, readFn?: (fd: number) => string }} [opts]
+ * @returns {string}
+ */
+export function readPrePushInput({ isTTY = process.stdin.isTTY, readFn = (fd) => readFileSync(fd, "utf-8") } = {}) {
+  if (isTTY) return ""
+  try {
+    return readFn(0)
+  } catch {
+    return ""
+  }
+}
+
 // ── Rust change detection ─────────────────────────────────────────────────────
 
 /**
@@ -295,16 +312,16 @@ const SRC_TEST_MAP = [
 ]
 
 /**
- * Given a list of changed files, return focused test paths and extra commands.
+ * Given a list of changed files, return focused test paths and fast tasks.
  * Pure function — no exec calls.
  *
- * @returns {{ testPaths: string[], extraCmds: string[] }}
+ * @returns {{ testPaths: string[], fastTasks: { name: string, executable: string, args: string[] }[] }}
  */
 export function routeFastChecks(changedFiles) {
-  if (!Array.isArray(changedFiles)) return { testPaths: [], extraCmds: [] }
+  if (!Array.isArray(changedFiles)) return { testPaths: [], fastTasks: [] }
 
   const testPaths = new Set()
-  const extraCmds = []
+  const fastTasks = []
   let needsSkillValidation = false
   let needsDocValidation = false
   let needsRustCheck = false
@@ -318,15 +335,19 @@ export function routeFastChecks(changedFiles) {
     if (file.startsWith("crates/fdx/")) needsRustCheck = true
   }
 
-  if (needsSkillValidation) extraCmds.push("npm run validate:skills")
-  if (needsDocValidation) extraCmds.push("npm run validate:docs")
+  if (needsSkillValidation) {
+    fastTasks.push({ name: "Skill Validation", executable: process.execPath, args: ["scripts/validate-skills.mjs"] })
+  }
+  if (needsDocValidation) {
+    fastTasks.push({ name: "Documentation Validation", executable: process.execPath, args: ["scripts/validate-docs.mjs"] })
+  }
   if (needsRustCheck) {
     const manifest = "crates/fdx/Cargo.toml"
-    extraCmds.push(`cargo fmt --manifest-path ${manifest} --check`)
-    extraCmds.push(`cargo check --manifest-path ${manifest}`)
+    fastTasks.push({ name: "Rust Formatting", executable: "cargo", args: ["fmt", "--manifest-path", manifest, "--check"] })
+    fastTasks.push({ name: "Rust Check", executable: "cargo", args: ["check", "--manifest-path", manifest] })
   }
 
-  return { testPaths: [...testPaths], extraCmds }
+  return { testPaths: [...testPaths], fastTasks }
 }
 
 // ── Full-mode step list (sequential) ─────────────────────────────────────────
@@ -369,12 +390,19 @@ export function getFullModeSteps(rustChanged, hasCargo) {
 
 // ── Parallel runner ───────────────────────────────────────────────────────────
 
-/** Run a shell command, streaming output, resolve with name and exit code. */
-function runProcess(name, cmd) {
+/** Run a process, streaming output, resolve with name and exit code. */
+function runProcess(name, executable, args) {
   return new Promise((resolve) => {
-    const proc = spawn(cmd, { shell: true, cwd: root, stdio: "inherit" })
-    proc.on("close", (code) => resolve({ name, cmd, code: code ?? 1 }))
-    proc.on("error", () => resolve({ name, cmd, code: 1 }))
+    // On Windows, .cmd and .bat files must run via cmd.exe to avoid EINVAL
+    let bin = executable
+    let binArgs = args
+    if (process.platform === "win32" && /\.(cmd|bat)$/i.test(executable)) {
+      bin = process.env.COMSPEC || "cmd.exe"
+      binArgs = ["/d", "/c", executable, ...args]
+    }
+    const proc = spawn(bin, binArgs, { shell: false, cwd: root, stdio: "inherit" })
+    proc.on("close", (code) => resolve({ name, cmd: `${executable} ${args.join(" ")}`, code: code ?? 1 }))
+    proc.on("error", () => resolve({ name, cmd: `${executable} ${args.join(" ")}`, code: 1 }))
   })
 }
 
@@ -411,12 +439,7 @@ if (isMain) {
   const args = process.argv.slice(2)
   const fullMode = args.includes("--full")
 
-  let stdinContent = ""
-  try {
-    stdinContent = readFileSync(0, "utf-8")
-  } catch {
-    // No stdin (manual invocation)
-  }
+  const stdinContent = readPrePushInput()
 
   /** Run the complete sequential full-mode suite. */
   async function runFullMode() {
@@ -468,12 +491,12 @@ if (isMain) {
       return runFullMode()
     }
 
-    const { testPaths, extraCmds } = routeFastChecks(changedFiles)
+    const { testPaths, fastTasks } = routeFastChecks(changedFiles)
     const lintTargets = changedFiles.filter((f) => /\.(ts|js|mjs)$/.test(f))
 
     console.log(`\n── Fast mode: ${changedFiles.length} changed file(s) ──`)
     if (testPaths.length > 0) console.log(`   Tests    : ${testPaths.join(", ")}`)
-    if (extraCmds.length > 0) console.log(`   Extra    : ${extraCmds.join(", ")}`)
+    if (fastTasks.length > 0) console.log(`   Extra    : ${fastTasks.map((t) => t.name).join(", ")}`)
 
     // git diff --check is fast and always runs first (serial)
     try {
@@ -485,20 +508,21 @@ if (isMain) {
 
     // Build concurrent task list
     const tasks = []
+    const npxBin = process.platform === "win32" ? "npx.cmd" : "npx"
 
     if (lintTargets.length > 0) {
-      const lintCmd = `npx oxlint --deny-warnings ${lintTargets.join(" ")}`
-      tasks.push(() => runProcess("Lint", lintCmd))
+      tasks.push(() => runProcess("Lint", npxBin, ["oxlint", "--deny-warnings", ...lintTargets]))
     }
 
-    tasks.push(() => runProcess("Typecheck", "tsc --noEmit --project tsconfig.prepush.json"))
+    tasks.push(() => runProcess("Typecheck", npxBin, ["tsc", "--noEmit", "--project", "tsconfig.prepush.json"]))
 
     if (testPaths.length > 0) {
-      tasks.push(() => runProcess("Test", `bun test ${testPaths.join(" ")}`))
+      const bunBin = process.platform === "win32" ? "bun.cmd" : "bun"
+      tasks.push(() => runProcess("Test", bunBin, ["test", ...testPaths]))
     }
 
-    for (const cmd of extraCmds) {
-      tasks.push(() => runProcess(cmd, cmd))
+    for (const task of fastTasks) {
+      tasks.push(() => runProcess(task.name, task.executable, task.args))
     }
 
     const results = await runConcurrent(tasks, 3)

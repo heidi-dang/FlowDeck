@@ -11,6 +11,8 @@ export type ExecFn = (cmd: string, cwd?: string) => string
 
 export function parsePrePushStdin(stdinText?: string): RefEntry[]
 
+export function readPrePushInput(opts?: { isTTY?: boolean; readFn?: (fd: number) => string }): string
+
 export function detectRustChangesFromRefs(
   refEntries: RefEntry[] | null,
   cwd?: string,
@@ -23,9 +25,15 @@ export function getChangedFiles(stdinText?: string, cwd?: string, execFn?: ExecF
 
 export function isEscalationRequired(changedFiles: string[]): boolean
 
+export interface FastTask {
+  name: string
+  executable: string
+  args: string[]
+}
+
 export interface FastChecks {
   testPaths: string[]
-  extraCmds: string[]
+  fastTasks: FastTask[]
 }
 
 export function routeFastChecks(changedFiles: string[]): FastChecks

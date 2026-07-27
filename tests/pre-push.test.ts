@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest"
 import {
   parsePrePushStdin,
+  readPrePushInput,
   detectRustChangesFromRefs,
   detectRustChanges,
   getChangedFiles,
@@ -284,8 +285,8 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
 
   describe("routeFastChecks", () => {
     it("returns empty results for null/empty input", () => {
-      expect(routeFastChecks(null as any)).toEqual({ testPaths: [], extraCmds: [] })
-      expect(routeFastChecks([])).toEqual({ testPaths: [], extraCmds: [] })
+      expect(routeFastChecks(null as any)).toEqual({ testPaths: [], fastTasks: [] })
+      expect(routeFastChecks([])).toEqual({ testPaths: [], fastTasks: [] })
     })
 
     it("maps src/tools/ changes to tests/tools/", () => {
@@ -331,26 +332,35 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
       expect(testPaths).toContain("tests/config/")
     })
 
-    it("adds npm run validate:skills when src/skills/ files change", () => {
-      const { extraCmds } = routeFastChecks(["src/skills/planner/SKILL.md"])
-      expect(extraCmds).toContain("npm run validate:skills")
+    it("adds skill validation task when src/skills/ files change", () => {
+      const { fastTasks } = routeFastChecks(["src/skills/planner/SKILL.md"])
+      expect(fastTasks.some((t) => t.name === "Skill Validation")).toBe(true)
+      const task = fastTasks.find((t) => t.name === "Skill Validation")!
+      expect(task.executable).toBe(process.execPath)
+      expect(task.args).toEqual(["scripts/validate-skills.mjs"])
     })
 
-    it("adds npm run validate:docs when docs/ files change", () => {
-      const { extraCmds } = routeFastChecks(["docs/api.md"])
-      expect(extraCmds).toContain("npm run validate:docs")
+    it("adds documentation validation task when docs/ files change", () => {
+      const { fastTasks } = routeFastChecks(["docs/api.md"])
+      expect(fastTasks.some((t) => t.name === "Documentation Validation")).toBe(true)
+      const task = fastTasks.find((t) => t.name === "Documentation Validation")!
+      expect(task.executable).toBe(process.execPath)
+      expect(task.args).toEqual(["scripts/validate-docs.mjs"])
     })
 
-    it("adds cargo fmt check and cargo check when crates/fdx/ files change", () => {
-      const { extraCmds } = routeFastChecks(["crates/fdx/src/main.rs"])
-      expect(extraCmds.some((c) => c.includes("cargo fmt"))).toBe(true)
-      expect(extraCmds.some((c) => c.includes("cargo check"))).toBe(true)
+    it("adds cargo fmt and cargo check tasks when crates/fdx/ files change", () => {
+      const { fastTasks } = routeFastChecks(["crates/fdx/src/main.rs"])
+      expect(fastTasks.some((t) => t.name === "Rust Formatting")).toBe(true)
+      expect(fastTasks.some((t) => t.name === "Rust Check")).toBe(true)
+      const fmt = fastTasks.find((t) => t.name === "Rust Formatting")!
+      expect(fmt.executable).toBe("cargo")
+      expect(fmt.args).toEqual(["fmt", "--manifest-path", "crates/fdx/Cargo.toml", "--check"])
     })
 
-    it("produces no test paths or extra cmds for unknown file paths", () => {
-      const { testPaths, extraCmds } = routeFastChecks([".gitignore", "README.md", "LICENSE"])
+    it("produces no test paths or extra tasks for unknown file paths", () => {
+      const { testPaths, fastTasks } = routeFastChecks([".gitignore", "README.md", "LICENSE"])
       expect(testPaths).toHaveLength(0)
-      expect(extraCmds).toHaveLength(0)
+      expect(fastTasks).toHaveLength(0)
     })
   })
 
@@ -382,6 +392,85 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
 
     it("fails closed (throws Error) when Rust changes are detected but Cargo is not installed", () => {
       expect(() => getFullModeSteps(true, false)).toThrow(/Cargo is not installed on PATH. Push blocked/)
+    })
+  })
+
+  // ── readPrePushInput ───────────────────────────────────────────────────────────
+
+  describe("readPrePushInput", () => {
+    it("returns empty string when stdin is a TTY", () => {
+      const result = readPrePushInput({ isTTY: true })
+      expect(result).toBe("")
+    })
+
+    it("returns stdin content when stdin is not a TTY with valid read", () => {
+      const mockRead = () => "refs/heads/main abc123 refs/heads/main def456\n"
+      const result = readPrePushInput({ isTTY: false, readFn: mockRead })
+      expect(result).toBe("refs/heads/main abc123 refs/heads/main def456\n")
+    })
+
+    it("returns empty string when stdin is not a TTY but read throws", () => {
+      const mockRead = () => { throw new Error("read error") }
+      const result = readPrePushInput({ isTTY: false, readFn: mockRead })
+      expect(result).toBe("")
+    })
+
+    it("returns stdin content when isTTY is false and input is empty", () => {
+      const mockRead = () => ""
+      const result = readPrePushInput({ isTTY: false, readFn: mockRead })
+      expect(result).toBe("")
+    })
+  })
+
+  // ── Fast-mode task structure safety ───────────────────────────────────────────
+
+  describe("Fast-mode task structure safety", () => {
+    it("routeFastChecks returns shell-safe task objects with executable and args separated", () => {
+      const { fastTasks } = routeFastChecks(["src/skills/planner/SKILL.md", "docs/api.md"])
+      for (const task of fastTasks) {
+        expect(task).toHaveProperty("name")
+        expect(task).toHaveProperty("executable")
+        expect(task).toHaveProperty("args")
+        expect(Array.isArray(task.args)).toBe(true)
+        expect(typeof task.executable).toBe("string")
+        // No task should contain a cmd string — they use structured executable+args
+        expect((task as any).cmd).toBeUndefined()
+      }
+    })
+
+    it("handles filenames with spaces as a single argument", () => {
+      const files = ["src/tools/my tool.ts", "src/tools/another tool.ts"]
+      const { testPaths } = routeFastChecks(files)
+      // Both files map to tests/tools/
+      expect(testPaths).toContain("tests/tools/")
+      expect(testPaths).toHaveLength(1)
+    })
+
+    it("handles filenames with ampersand as a single argument", () => {
+      const files = ["src/tools/a&b.ts"]
+      const { testPaths } = routeFastChecks(files)
+      expect(testPaths).toContain("tests/tools/")
+    })
+
+    it("handles filenames with parentheses as a single argument", () => {
+      const files = ["src/tools/file(1).ts"]
+      const { testPaths } = routeFastChecks(files)
+      expect(testPaths).toContain("tests/tools/")
+    })
+
+    it("handles Unicode filenames", () => {
+      const files = ["src/tools/日本語.ts"]
+      const { testPaths } = routeFastChecks(files)
+      expect(testPaths).toContain("tests/tools/")
+    })
+
+    it("produces focused test paths as separate entries from SRC_TEST_MAP", () => {
+      const files = ["src/tools/x.ts", "src/config/y.ts"]
+      const { testPaths } = routeFastChecks(files)
+      expect(testPaths).toContain("tests/tools/")
+      expect(testPaths).toContain("tests/config/")
+      // Two separate test paths
+      expect(testPaths.length).toBeGreaterThanOrEqual(2)
     })
   })
 })
