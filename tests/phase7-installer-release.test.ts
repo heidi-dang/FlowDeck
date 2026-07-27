@@ -49,7 +49,7 @@ describe("Phase 7 — Installer, Upgrade, Doctor, and Uninstall", () => {
 
     it("verifies agent count consistency between canonical registry and runtime", async () => {
       const report = await runDoctorChecks(TMP)
-      const agentCheck = report.checks.find(c => c.id === "agents.count" || c.id === "pkg.identity")
+      const _agentCheck = report.checks.find(c => c.id === "agents.count" || c.id === "pkg.identity")
       // The doctor engine runs against TMP, not the source tree, so agent count may vary
       // Just confirm we got a valid report
       expect(report.failed).toBeDefined()
@@ -89,7 +89,7 @@ describe("Phase 7 — Installer, Upgrade, Doctor, and Uninstall", () => {
       try {
         execSync(`bash -n "${installPath}"`, { stdio: "ignore" })
         execSync(`bash -n "${uninstallPath}"`, { stdio: "ignore" })
-      } catch (err: any) {
+      } catch {
         // Skip bash syntax check if bash is not available in environment
       }
     })

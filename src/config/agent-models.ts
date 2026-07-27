@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
-import type { FlowDeckConfig, GovernanceConfig } from "./schema"
+import type { FlowDeckConfig } from "./schema"
 
 export type { FlowDeckConfig } from "./schema"
 

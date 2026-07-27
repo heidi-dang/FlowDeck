@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { LoopDetector, normalizeAction, type LoopDetectorConfig } from "@/services/loop-detector"
+import { LoopDetector, normalizeAction } from "@/services/loop-detector"
 
 describe("LoopDetector", () => {
   let detector: LoopDetector

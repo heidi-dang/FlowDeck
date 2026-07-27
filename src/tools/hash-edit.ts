@@ -15,7 +15,7 @@ export const hashEditTool: ToolDefinition = tool({
     let content: string
     try {
       content = readFileSync(fullPath, "utf-8")
-    } catch (e) {
+    } catch {
       return `Error: Could not read file ${args.filePath}`
     }
 

@@ -212,13 +212,6 @@ function classifyObservation(
   return { observation: "new_information", outputHash, outputPreview }
 }
 
-function formatNormalizedPreview(toolName: string, normalizedKey: string): string {
-  const prefix = `${toolName.toLowerCase()}:"`
-  const idx = normalizedKey.indexOf(":")
-  const body = idx >= 0 ? normalizedKey.slice(idx + 1) : normalizedKey
-  return `${prefix}${body}"`
-}
-
 function redactForDisplay(toolName: string, normalizedKey: string): string {
   const tool = toolName.toLowerCase()
   if (tool === "bash" || tool === "shell") {

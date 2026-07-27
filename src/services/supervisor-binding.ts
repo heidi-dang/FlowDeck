@@ -16,7 +16,6 @@
  */
 
 import { AGENT_NAMES } from "../agents/index"
-import { formatRecommendedQuestion } from "../lib/recommended-question"
 import { getContract } from "./agent-contract-registry"
 import { loadFlowDeckConfig } from "../config"
 

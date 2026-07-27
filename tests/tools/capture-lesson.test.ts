@@ -30,7 +30,7 @@ afterEach(() => {
 
 describe("capture-lesson tool", () => {
   it("appends an entry to .flowdeck/lessons.md", async () => {
-    const result = await captureLessonTool.execute(
+    const _result = await captureLessonTool.execute(
       {
         context: "typecheck loop",
         mistake: "Ignored tsconfig skipLibCheck side effect.",

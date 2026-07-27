@@ -1,7 +1,7 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
-import { execFileSync, execSync } from "node:child_process"
+import { execFileSync } from "node:child_process"
 import { resolve as pathResolve, sep } from "path"
-import { existsSync, statSync, readdirSync, realpathSync } from "fs"
+import { existsSync, readdirSync, realpathSync } from "fs"
 import { basename } from "path"
 
 /** Timeout for each `git` call. */

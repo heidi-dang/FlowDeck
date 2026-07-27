@@ -140,8 +140,11 @@ export function validateAgent(
   if (!hasBlock && !hasWarn) {
     // Only info-level violations — don't change execution
     action = "allow"
+  } else if (mode === "strict") {
+    // In strict mode, any contract violation is blocked
+    action = "block"
   } else if (hasBlock) {
-    action = mode === "strict" ? "block" : "warn"
+    action = "warn"
   } else {
     action = "warn"
   }

@@ -28,7 +28,7 @@
 
 import { existsSync, readFileSync, writeFileSync, copyFileSync, renameSync, unlinkSync, readdirSync } from "node:fs"
 import { dirname, join, basename } from "node:path"
-import { modify, parse, applyEdits, parseTree, findNodeAtLocation, printParseErrorCode, type ParseError } from "jsonc-parser"
+import { modify, parse, applyEdits, printParseErrorCode, type ParseError } from "jsonc-parser"
 
 // ─── Default retention ─────────────────────────────────────────────────────
 const DEFAULT_MAX_BACKUPS = 5
@@ -242,7 +242,7 @@ export function safeUpdateConfigJsonc(
   }
 }
 
-// ─── Legacy safeUpdateConfig (for backward compat, uses JSONC-aware editing) ──
+// ─── Legacy safeUpdateConfig (for backward compat, uses atomic write) ─────────
 
 export function safeUpdateConfig<T = Record<string, unknown>>(
   filePath: string,
@@ -270,14 +270,35 @@ export function safeUpdateConfig<T = Record<string, unknown>>(
     }
   }
 
-  // Parse, apply updater, then serialize back as JSON (loses comments)
+  // Parse, apply updater, serialize, then persist atomically
   const currentObj = rawContent === "{}" ? {} as T : (safeParseJson<T>(rawContent).data ?? {} as T)
   const updatedObj = updater({ ...currentObj })
 
-  return {
-    ok: true,
-    data: updatedObj,
-    backupPath: backupPath || undefined,
+  let serialized: string
+  try {
+    serialized = JSON.stringify(updatedObj, null, 2)
+  } catch (err) {
+    return {
+      ok: false,
+      error: `Failed to serialize updated configuration: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+
+  // Atomic write: temp file → rename
+  const dir = dirname(filePath)
+  const tmpPath = join(dir, `.tmp_${Math.random().toString(36).slice(2)}_${Date.now()}`)
+  try {
+    writeFileSync(tmpPath, serialized, "utf-8")
+    renameSync(tmpPath, filePath)
+    return { ok: true, data: updatedObj, backupPath: backupPath || undefined }
+  } catch (err) {
+    if (existsSync(tmpPath)) {
+      try { unlinkSync(tmpPath) } catch { /* ignore cleanup */ }
+    }
+    return {
+      ok: false,
+      error: `Atomic write failed for ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+    }
   }
 }
 

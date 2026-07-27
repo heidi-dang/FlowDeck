@@ -11,7 +11,7 @@
 
 import type { AgentConfig } from '@opencode-ai/sdk/v2';
 
-import type { AgentDefinition, AgentFactory } from './types';
+import type { AgentDefinition } from './types';
 import type { AgentRoute } from './routing';
 export { resolvePrompt } from './types';
 export type { AgentDefinition, AgentFactory } from './types';
@@ -38,11 +38,7 @@ import { createArchitectAgent } from './architect';
 import {
   getAllAgentIds,
   getPrimaryAgentIds,
-  getSubagentIds,
   getCanonicalAgent,
-  getAgentCount,
-  isSpecialistAgent,
-  canAgentDelegate,
 } from '../services/canonical-registry';
 
 /** All agent names registered by FlowDeck, derived from canonical registry. */
@@ -55,11 +51,11 @@ function isPrimaryAgent(name: string): boolean {
   return getPrimaryAgentIds().includes(name);
 }
 
-function isHiddenAgent(name: string): boolean {
+function isHiddenAgent(_name: string): boolean {
   return false; // No hidden agents in canonical registry
 }
 
-function isAllModeAgent(name: string): boolean {
+function isAllModeAgent(_name: string): boolean {
   return false; // No "all" mode agents currently
 }
 
