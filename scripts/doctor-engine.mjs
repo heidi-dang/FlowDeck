@@ -486,6 +486,24 @@ export async function runDoctorChecks(directory) {
     remediation: !registryOk ? "Ensure AGENT_NAMES and createAgent are exported from dist/index.js" : undefined,
   })
 
+  // ── 18.5. Runtime agent enforcement ────────────────────────────────────
+  const runtimeAgentCfg = await importRuntimeAgentConfig(directory)
+  if (runtimeAgentCfg) {
+    checks.push({
+      id: "runtime.agent.enforcement",
+      name: "Runtime Agent Enforcement",
+      status: "pass",
+      message: `enforcement=${runtimeAgentCfg.enforcement}, expectedAgent=${runtimeAgentCfg.expectedAgent}`,
+    })
+  } else {
+    checks.push({
+      id: "runtime.agent.enforcement",
+      name: "Runtime Agent Enforcement",
+      status: "warn",
+      message: "runtimeAgent config not found — using defaults (strict/heidi)",
+    })
+  }
+
   // ── 19. CLI commands availability ──────────────────────────────────────
   const cliPath = join(directory, "bin", "flowdeck.js")
   const cliContent = tryRead(cliPath)
@@ -752,4 +770,40 @@ function resolveConfigDir() {
   if (xdg) return join(xdg, "opencode")
   const home = process.env.HOME || homedir()
   return join(home, ".config", "opencode")
+}
+
+
+async function importRuntimeAgentConfig(directory) {
+  try {
+    const { existsSync, readFileSync } = await import("node:fs")
+    const { join } = await import("node:path")
+
+    // Check flowdeck.json first, then .flowdeck.jsonc
+    for (const name of [".flowdeck.jsonc", ".flowdeck.json", "flowdeck.json"]) {
+      const fp = join(directory, name)
+      if (existsSync(fp)) {
+        const raw = readFileSync(fp, "utf-8")
+        const cfg = JSON.parse(raw)
+        if (cfg.runtimeAgent) {
+          return cfg.runtimeAgent
+        }
+      }
+    }
+
+    // Check opencode.json for runtimeAgent
+    const opencodeDir = process.env.OPENCODE_CONFIG_DIR ||
+      (process.env.XDG_CONFIG_HOME
+        ? join(process.env.XDG_CONFIG_HOME, "opencode")
+        : join(homedir, ".config", "opencode"))
+    const opencodePath = join(opencodeDir, "opencode.json")
+    if (existsSync(opencodePath)) {
+      const raw = readFileSync(opencodePath, "utf-8")
+      const cfg = JSON.parse(raw)
+      if (cfg.runtimeAgent) return cfg.runtimeAgent
+    }
+
+    return null
+  } catch {
+    return null
+  }
 }

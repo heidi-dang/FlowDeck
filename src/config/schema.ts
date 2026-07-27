@@ -45,6 +45,13 @@ export interface FlowDeckConfig {
   supervisor?: SupervisorConfig;
   /** Better Harness integration configuration. */
   betterHarness?: BetterHarnessConfig;
+  /** Runtime agent identity enforcement. */
+  runtimeAgent?: {
+    /** Enforcement mode: strict (block), warn (log+allow), off (no enforcement). */
+    enforcement?: "strict" | "warn" | "off";
+    /** Expected runtime agent. Defaults to effective default_agent or "heidi". */
+    expectedAgent?: string;
+  };
 }
 
 export interface GovernanceConfig {
