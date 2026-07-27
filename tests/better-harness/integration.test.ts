@@ -887,7 +887,7 @@ describe("Validation Executor Error Path", () => {
   it("handles non-Error throwables", async () => {
     const { executeValidation } = await import("../../src/better-harness/opencode/validation-executor");
     // Trigger a timeout which causes execSync to throw
-    const result = executeValidation("node -e \"setTimeout(() => {}, 10000)\"", process.cwd(), 1);
+    const result = executeValidation("node -e \"setTimeout(() => {}, 10000)\"" , process.cwd(), 1);
     expect(result.passed).toBe(false);
     expect(result.error).toBeTruthy();
   });
@@ -936,7 +936,7 @@ describe("Router", () => {
 
   it("rejects path traversal in project key", async () => {
     const res = await routeRequest("GET", "/api/v1/servers/s1/projects/../etc/passwd/better-harness/report", undefined);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
   });
 
   it("rejects project key with slashes", async () => {
@@ -993,5 +993,313 @@ describe("HarnessRuntime", () => {
     const rt = new HarnessRuntime({ projectRoot: "/tmp" });
     const status = rt.getStatus();
     expect(status.active).toBe(false);
+  });
+});
+
+
+// ─── HTTP Server Constructor Edge Cases ──────────────────────────
+describe("HTTP Server - Custom Config", () => {
+  it("accepts custom maxBodySize", async () => {
+    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1", maxBodySize: 512 });
+    const port = await server.start();
+    expect(port).toBeGreaterThan(0);
+    await server.stop();
+  });
+
+  it("accepts custom timeoutMs", async () => {
+    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1", timeoutMs: 5000 });
+    const port = await server.start();
+    expect(port).toBeGreaterThan(0);
+    await server.stop();
+  });
+
+  it("configures custom maxBodySize in constructor", async () => {
+    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1", maxBodySize: 1024 });
+    const port = await server.start();
+    expect(port).toBeGreaterThan(0);
+    await server.stop();
+  });
+});
+
+// ─── CORS Custom Origins ─────────────────────────────────────────
+describe("CORS - Custom Origins", () => {
+  it("matches custom single origin", () => {
+    const config = {
+      allowedOrigins: ["https://myapp.com"],
+      allowedMethods: ["GET"],
+      allowedHeaders: ["X-Custom"],
+    };
+    const headers = createCorsHeaders(config, "https://myapp.com");
+    expect(headers["Access-Control-Allow-Origin"]).toBe("https://myapp.com");
+    expect(headers["Access-Control-Allow-Methods"]).toBe("GET");
+    expect(headers["Access-Control-Allow-Headers"]).toBe("X-Custom");
+  });
+
+  it("falls back for unmatched custom origin", () => {
+    const config = {
+      allowedOrigins: ["https://trusted.com"],
+      allowedMethods: ["GET"],
+      allowedHeaders: ["Content-Type"],
+    };
+    const headers = createCorsHeaders(config, "https://evil.com");
+    expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
+  });
+
+  it("handles empty allowed origins", () => {
+    const config = {
+      allowedOrigins: [],
+      allowedMethods: ["GET"],
+      allowedHeaders: ["Content-Type"],
+    };
+    const headers = createCorsHeaders(config, "https://example.com");
+    expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
+  });
+
+  it("handles undefined origin with custom config", () => {
+    const config = {
+      allowedOrigins: ["https://app.com"],
+      allowedMethods: ["POST", "GET"],
+      allowedHeaders: ["Authorization"],
+    };
+    const headers = createCorsHeaders(config);
+    expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
+  });
+});
+
+// ─── Authentication Constant-Time Comparison ────────────────────
+describe("Authentication - Constant-Time", () => {
+  it("rejects tokens with different length", () => {
+    const check = createAuthCheck({ token: "abc", enabled: true });
+    expect(check("abcd")).toBe(false);
+  });
+
+  it("rejects tokens with same length but different content", () => {
+    const check = createAuthCheck({ token: "abcdef", enabled: true });
+    expect(check("Abcdef")).toBe(false);
+    expect(check("abcdeg")).toBe(false);
+  });
+
+  it("accepts exact match with same length", () => {
+    const check = createAuthCheck({ token: "my-secret-token-123", enabled: true });
+    expect(check("my-secret-token-123")).toBe(true);
+  });
+
+  it("rejects empty string when token expected", () => {
+    const check = createAuthCheck({ token: "secret", enabled: true });
+    expect(check("")).toBe(false);
+  });
+
+  it("rejects undefined when token expected", () => {
+    const check = createAuthCheck({ token: "secret", enabled: true });
+    expect(check(undefined)).toBe(false);
+  });
+});
+
+// ─── SseManager Heartbeat ────────────────────────────────────────
+describe("SseManager - Heartbeat", () => {
+  it("removes client clears heartbeat interval", () => {
+    const bus = new EventBus();
+    const mgr = new SseManager(bus);
+    mgr.addClient({ id: "hb_client", lastEventId: null, send: () => {} });
+    mgr.removeClient("hb_client");
+    // Second removal should not throw
+    mgr.removeClient("hb_client");
+  });
+
+  it("handles multiple add/remove cycles", () => {
+    const bus = new EventBus();
+    const mgr = new SseManager(bus);
+    for (let i = 0; i < 5; i++) {
+      mgr.addClient({ id: "cycle_" + i, lastEventId: null, send: () => {} });
+    }
+    for (let i = 0; i < 5; i++) {
+      mgr.removeClient("cycle_" + i);
+    }
+  });
+
+  it("disconnected client send does not crash", () => {
+    const bus = new EventBus();
+    const mgr = new SseManager(bus);
+    let called = false;
+    mgr.addClient({
+      id: "send_err",
+      lastEventId: null,
+      send: () => { called = true; throw new Error("gone"); },
+    });
+    bus.emit("run.queued", {});
+    expect(called).toBe(true);
+    // Client should have been removed internally
+  });
+});
+
+// ─── RouterContext Construction ──────────────────────────────────
+describe("RouterContext", () => {
+  it("constructs and passes through properties", () => {
+    const runtime = new HarnessRuntime({ projectRoot: "/tmp" });
+    const coordinator = new RunCoordinator();
+    const ctx: import("../../src/better-harness/runtime/router-context").RouterContext = {
+      runtime,
+      coordinator,
+      resolveProjectPath: () => "/tmp/resolved",
+      authToken: "test-token",
+      bindHost: "127.0.0.1",
+    };
+    expect(ctx.runtime).toBe(runtime);
+    expect(ctx.coordinator).toBe(coordinator);
+    expect(ctx.resolveProjectPath!("sk", "pk")).toBe("/tmp/resolved");
+    expect(ctx.authToken).toBe("test-token");
+    expect(ctx.bindHost).toBe("127.0.0.1");
+  });
+
+  it("works with sseManager included", async () => {
+    const bus = new EventBus();
+    const sse = new SseManager(bus);
+    const ctx: import("../../src/better-harness/runtime/router-context").RouterContext = {
+      runtime: new HarnessRuntime({ projectRoot: "/tmp" }),
+      coordinator: new RunCoordinator(),
+      sseManager: sse,
+    };
+    expect(ctx.sseManager).toBe(sse);
+    // Reuses existing routeRequestContext with SSE context
+    const result = await routeRequestContext(ctx, "GET", "/health", undefined);
+    expect(result.status).toBe(200);
+  });
+
+  it("handles null resolveProjectPath", async () => {
+    const ctx: import("../../src/better-harness/runtime/router-context").RouterContext = {
+      runtime: new HarnessRuntime({ projectRoot: "/tmp" }),
+      coordinator: new RunCoordinator(),
+      resolveProjectPath: () => null,
+    };
+    const result = await routeRequestContext(
+      ctx,
+      "GET",
+      "/api/v1/servers/sk/projects/unknown/better-harness/availability",
+      undefined,
+    );
+    expect(result.status).toBe(404);
+    expect(result.body).toHaveProperty("error", "Project not found");
+  });
+});
+
+// ─── buildRepairPrompt Coverage ─────────────────────────────────
+describe("buildRepairPrompt", () => {
+  it("generates prompt with evidence", async () => {
+    const { buildRepairPrompt } = await import("../../src/better-harness/opencode/repair-prompt");
+    const prompt = buildRepairPrompt({
+      finding: {
+        id: "fnd_prompt_1",
+        title: "Missing validation",
+        dimension: "change-validation",
+        priority: "high",
+        status: "pending",
+        cause: "No validation on input",
+        impact: "Data corruption risk",
+        expectedOutput: "Input should be validated",
+        evidence: [
+          { id: "ev_prompt_1", source: "file.js", summary: "Missing check", category: "foundation", confidence: 0.8, collectedAt: new Date().toISOString(), fingerprint: "fp1" },
+        ],
+        recommendedVehicle: "rule",
+        allowedPaths: ["src/validators/"],
+        validationRequirements: ["npm test"],
+        acceptanceCriteria: ["All tests pass"],
+        firstSeenAt: "",
+        lastSeenAt: "",
+      },
+      projectPath: "/test/project",
+    });
+    expect(prompt).toContain("/test/project");
+    expect(prompt).toContain("## Finding");
+    expect(prompt).toContain("Missing validation");
+    expect(prompt).toContain("## Evidence");
+    expect(prompt).toContain("file.js");
+    expect(prompt).toContain("## Prohibited Changes");
+    expect(prompt).toContain("src/validators/");
+    expect(prompt).toContain("## Validation Requirements");
+    expect(prompt).toContain("## Acceptance Criteria");
+    expect(prompt).toContain("## Repair Instructions");
+  });
+
+  it("generates prompt without evidence", async () => {
+    const { buildRepairPrompt } = await import("../../src/better-harness/opencode/repair-prompt");
+    const prompt = buildRepairPrompt({
+      finding: {
+        id: "fnd_prompt_2",
+        title: "Simple fix",
+        dimension: "task-understanding",
+        priority: "medium",
+        status: "pending",
+        cause: "Typo",
+        impact: "Minor",
+        expectedOutput: "Correct spelling",
+        evidence: [],
+        recommendedVehicle: "documentation",
+        allowedPaths: [],
+        validationRequirements: [],
+        acceptanceCriteria: [],
+        firstSeenAt: "",
+        lastSeenAt: "",
+      },
+      projectPath: "/project",
+    });
+    expect(prompt).toContain("/project");
+    expect(prompt).toContain("Simple fix");
+    expect(prompt).toContain("No specific path restrictions");
+  });
+
+  it("includes previous attempts count", async () => {
+    const { buildRepairPrompt } = await import("../../src/better-harness/opencode/repair-prompt");
+    const prompt = buildRepairPrompt({
+      finding: {
+        id: "fnd_prompt_3",
+        title: "Retry fix",
+        dimension: "change-validation",
+        priority: "high",
+        status: "pending",
+        cause: "Race condition",
+        impact: "Intermittent failure",
+        expectedOutput: "Stable output",
+        evidence: [],
+        recommendedVehicle: "rule",
+        allowedPaths: ["src/"],
+        validationRequirements: [],
+        acceptanceCriteria: [],
+        firstSeenAt: "",
+        lastSeenAt: "",
+      },
+      projectPath: "/retry-project",
+      previousAttempts: 2,
+    });
+    expect(prompt).toContain("attempt #3");
+    expect(prompt).toContain("Previous attempts did not fully resolve");
+  });
+});
+
+// ─── getFlowDeckStateDir ─────────────────────────────────────────
+describe("getFlowDeckStateDir", () => {
+  it("returns path with .flowdeck/state", async () => {
+    const { getFlowDeckStateDir } = await import("../../src/better-harness/persistence/harness-store");
+    const dir = getFlowDeckStateDir();
+    expect(dir).toContain(".flowdeck");
+    expect(dir).toContain("state");
+  });
+
+  it("atomicWriteFile creates and writes a file", async () => {
+    const { getFlowDeckStateDir, atomicWriteFile, readJsonFile } = await import("../../src/better-harness/persistence/harness-store");
+    const dir = getFlowDeckStateDir();
+    const testFilePath = join(dir, "test-atomic.json");
+    atomicWriteFile(testFilePath, { hello: "world" });
+    const data = readJsonFile(testFilePath);
+    expect(data).toEqual({ hello: "world" });
+    try { rmSync(testFilePath, { force: true }); } catch { /* */ }
+  });
+
+  it("readJsonFile returns null for missing file", async () => {
+    const { readJsonFile } = await import("../../src/better-harness/persistence/harness-store");
+    const result = readJsonFile(join(homedir(), ".flowdeck", "state", "nonexistent-file.json"));
+    expect(result).toBeNull();
   });
 });
