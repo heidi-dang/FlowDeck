@@ -183,33 +183,54 @@ function isFlowDeckIdentity(ref, verbose = false) {
 
   // file:// reference: resolve and check package.json
   if (ref.startsWith("file://")) {
-    return isFilePathFlowDeck(ref.slice(7), verbose)
+    return isFilePathFlowDeck(ref, verbose)
   }
 
   // Absolute or relative path — check package.json
-  if (ref.startsWith("/") || ref.startsWith(".") || ref.startsWith("~")) {
+  if (ref.startsWith("/") || ref.startsWith(".") || ref.startsWith("~") || /^[A-Za-z]:\\/.test(ref)) {
     return isFilePathFlowDeck(ref, verbose)
   }
 
   return false
 }
 
-function isFilePathFlowDeck(filePath, verbose = false) {
-  const resolved = resolve(filePath.replace(/^~/, homedir()))
+function isFilePathFlowDeck(ref, verbose = false) {
+  let resolved
+  if (ref.startsWith("file://")) {
+    try {
+      resolved = fileURLToPath(ref)
+    } catch {
+      // On Windows, fileURLToPath rejects Unix paths like file:///home/user/flowdeck.
+      // Fall back to extracting path component after file:// and percent-decoding
+      resolved = ref.startsWith("file:///") ? decodeURIComponent(ref.slice(7)) : decodeURIComponent(ref.slice(5))
+    }
+  } else {
+    resolved = resolve(ref.replace(/^~/, homedir()))
+  }
+
   const pkgPath = join(resolved, "package.json")
-  if (!existsSync(pkgPath)) {
-    if (verbose) log(`  [debug] No package.json at ${resolved}`)
-    return false
+
+  // Path exists: check package.json identity (authoritative)
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
+      const name = pkg.name || ""
+      if (SUPPORTED_IDENTITIES.has(name)) return true
+      if (verbose) log(`  [debug] package "${name}" at ${resolved} is not FlowDeck`)
+      return false
+    } catch {
+      return false
+    }
   }
-  try {
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
-    const name = pkg.name || ""
-    if (SUPPORTED_IDENTITIES.has(name)) return true
-    if (verbose) log(`  [debug] package "${name}" at ${resolved} is not FlowDeck`)
-    return false
-  } catch {
-    return false
-  }
+
+  // Path does NOT exist -- stale checkout fallback.
+  // When the normalized final path component is exactly "flowdeck"
+  // (case-insensitive), treat it as a stale FlowDeck checkout reference.
+  const parts = resolved.split("/").filter(Boolean)
+  const basename = parts.length > 0 ? parts[parts.length - 1] : ""
+  const isStale = basename.toLowerCase() === "flowdeck"
+  if (isStale && verbose) log(`  [debug] Stale FlowDeck checkout reference: ${ref} -> ${resolved}`)
+  return isStale
 }
 
 function findFlowDeckPluginEntries(configData, verbose = false) {
@@ -429,6 +450,17 @@ function removeFlowDeckFromScope(scope, transaction, opts) {
     const indicesToRemove = new Set(flowdeckEntries.map(e => e.index))
     const filtered = plugins.filter((_, i) => !indicesToRemove.has(i))
     edits.push({ path: ["plugin"], value: filtered })
+
+    // Log stale entries distinctly
+    for (const entry of flowdeckEntries) {
+      const isFileRef = entry.ref.startsWith("file://") || entry.ref.startsWith("/") || entry.ref.startsWith(".")
+      if (isFileRef) {
+        const filePath = entry.ref.startsWith("file://") ? fileURLToPath(entry.ref) : resolve(entry.ref.replace(/^~/, homedir()))
+        if (!existsSync(filePath)) {
+          log("  - Removed stale FlowDeck checkout reference: " + entry.ref)
+        }
+      }
+    }
   }
 
   // Handle default_agent according to ownership
@@ -868,9 +900,9 @@ async function runCleanInstall(userOpts = {}) {
       cleanPackageDirectories(transaction, opts)
     }
 
-    // Stage 5: Verify clean state
+    // Stage 5: Verify clean state (fresh re-read after removal)
     stage(5, totalStages, "Verify clean state")
-    const cleanState = verifyCleanState(scopes)
+    const cleanState = verifyCleanState(discoverConfigScopes())
     if (!cleanState.clean && !opts.verifyOnly && !opts.dryRun) {
       transaction.fail("Verify clean state", `Found ${cleanState.flowdeckPluginEntries} FlowDeck entries remaining`)
       throw new Error(`Clean state verification failed: ${cleanState.flowdeckPluginEntries} entries remain`)

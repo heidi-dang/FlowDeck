@@ -10,9 +10,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync } from "fs"
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync, mkdirSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
+import { fileURLToPath } from "url"
 
 // Replicate the detection logic from clean-install-engine.mjs for testing
 const FLOWDECK_PACKAGE = "@heidi-dang/flowdeck"
@@ -33,25 +34,36 @@ function isFlowDeckIdentity(ref: string, _verbose = false): boolean {
     return isFilePathFlowDeck(ref.slice(7))
   }
 
-  if (ref.startsWith("/") || ref.startsWith(".") || ref.startsWith("~")) {
+  if (ref.startsWith("/") || ref.startsWith(".") || ref.startsWith("~") || /^[A-Za-z]:\\/.test(ref)) {
     return isFilePathFlowDeck(ref)
   }
 
   return false
 }
 
-function isFilePathFlowDeck(filePath: string): boolean {
-  if (!filePath) return false
-  const resolved = filePath.startsWith("/") ? filePath : join(process.cwd(), filePath)
-  const pkgPath = join(resolved, "package.json")
-  try {
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
-    const name = pkg.name || ""
-    if (SUPPORTED_IDENTITIES.has(name)) return true
-    return false
-  } catch {
-    return false
+function isFilePathFlowDeck(ref: string): boolean {
+  if (!ref) return false
+  let resolved: string
+  if (ref.startsWith("file://")) {
+    try { resolved = fileURLToPath(ref) } catch { resolved = ref.startsWith("file:///") ? decodeURIComponent(ref.slice(7)) : decodeURIComponent(ref.slice(5)) }
+  } else {
+    resolved = ref.startsWith("~")
+      ? join(process.env.HOME || "/tmp", ref.slice(1))
+      : ref
   }
+
+  const pkgPath = join(resolved, "package.json")
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
+      return SUPPORTED_IDENTITIES.has(pkg.name || "")
+    } catch { return false }
+  }
+
+  // Stale checkout fallback
+  const parts = resolved.split("/").filter(Boolean)
+  const basename = parts.length > 0 ? parts[parts.length - 1] : ""
+  return basename.toLowerCase() === "flowdeck"
 }
 
 describe("FlowDeck identity detection", () => {
