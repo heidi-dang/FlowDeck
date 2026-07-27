@@ -1,8 +1,5 @@
 use crate::reader::code::{
-    cache::AstCache,
-    languages::detect_language,
-    parser::parse_source,
-    prototype::PrototypeReader,
+    cache::AstCache, languages::detect_language, parser::parse_source, prototype::PrototypeReader,
     Symbol,
 };
 use ignore::WalkBuilder;

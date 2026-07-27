@@ -40,7 +40,11 @@ pub fn print_ls_results(writer: &mut dyn Write, result: &LsResult) -> io::Result
     }
 
     if result.truncated {
-        writeln!(writer, "  [{} hidden entries — use --all to show]", result.hidden_count)?;
+        writeln!(
+            writer,
+            "  [{} hidden entries — use --all to show]",
+            result.hidden_count
+        )?;
     }
 
     Ok(())
@@ -59,7 +63,10 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-pub fn print_tree_results(writer: &mut dyn Write, result: &crate::reader::tree::TreeResult) -> io::Result<()> {
+pub fn print_tree_results(
+    writer: &mut dyn Write,
+    result: &crate::reader::tree::TreeResult,
+) -> io::Result<()> {
     print_tree_node(writer, &result.root_node, "", true)?;
     if result.truncated {
         writeln!(writer, "[truncated — tree exceeds 200 nodes]")?;

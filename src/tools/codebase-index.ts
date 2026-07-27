@@ -79,7 +79,7 @@ function parseCodebaseIndexContent(content: string): CodebaseIndex {
     const key = kvMatch[1].trim()
     const value = kvMatch[2].trim()
     if (key === "changedFiles") {
-      result.changedFiles = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean)
+      result.changedFiles = value.replace(/[[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean)
     } else if (key === "summaryVersion") {
       result.summaryVersion = parseInt(value, 10) || 0
     } else if (key === "freshnessStatus") {

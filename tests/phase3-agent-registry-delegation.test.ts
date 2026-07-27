@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { existsSync, mkdirSync, writeFileSync, rmSync } from "fs"
+import { existsSync, mkdirSync, rmSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
-import { AGENT_NAMES, createAgent, createAgents, getAgentConfigs } from "@/agents/index"
-import { loadFlowDeckConfig, resolveAgentModels, DEFAULT_CONFIG } from "@/config/agent-models"
+import { AGENT_NAMES, createAgent, createAgents } from "@/agents/index"
+import { resolveAgentModels, DEFAULT_CONFIG } from "@/config/agent-models"
 import { getAllContracts, getContract, listAgentsWithContracts } from "@/services/agent-contract-registry"
 import { toolGuardHook } from "@/hooks/tool-guard"
 

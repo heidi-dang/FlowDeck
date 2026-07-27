@@ -23,8 +23,8 @@ If you want to override the default set and load only specific rules, add them t
 ```json
 {
   "instructions": [
-    "node_modules/@dv.nghiem/flowdeck/src/rules/common/coding-style.md",
-    "node_modules/@dv.nghiem/flowdeck/src/rules/typescript/patterns.md"
+    "node_modules/@heidi-dang/flowdeck/src/rules/common/coding-style.md",
+    "node_modules/@heidi-dang/flowdeck/src/rules/typescript/patterns.md"
   ]
 }
 ```

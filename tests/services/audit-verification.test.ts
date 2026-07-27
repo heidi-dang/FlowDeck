@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, mkdirSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import { verifyAfterWrite, verificationLogPath } from "../../src/services/verification-layer"
+import { verifyAfterWrite } from "../../src/services/verification-layer"
 import { appendAuditEvent, auditLogPath } from "../../src/services/audit-log"
 
 describe("audit-log and verification-layer", () => {

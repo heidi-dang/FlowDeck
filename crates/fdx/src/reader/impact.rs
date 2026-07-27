@@ -1,8 +1,5 @@
 use crate::reader::code::{
-    cache::AstCache,
-    languages::detect_language,
-    parser::parse_source,
-    prototype::PrototypeReader,
+    cache::AstCache, languages::detect_language, parser::parse_source, prototype::PrototypeReader,
     Symbol,
 };
 use ignore::WalkBuilder;
@@ -78,7 +75,9 @@ pub fn analyze_impact(
                         }
                         seen.insert(dep_path.clone());
                         if let Ok(source) = std::fs::read_to_string(&dep_path) {
-                            if let Ok(_next) = find_outbound_deps(&dep_path, &source, root, &file_index, cache) {
+                            if let Ok(_next) =
+                                find_outbound_deps(&dep_path, &source, root, &file_index, cache)
+                            {
                                 // We don't add second-level deps to outbound to keep it clean;
                                 // just resolve prototypes for the first level
                             }
@@ -161,7 +160,11 @@ fn find_outbound_deps(
         let (resolved, path_str, prototypes) = if let Some(ref resolved_path) = imp.resolved_path {
             if resolved_path.exists() {
                 let protos = extract_prototypes_from_file(resolved_path, cache)?;
-                (true, Some(resolved_path.to_string_lossy().to_string()), protos)
+                (
+                    true,
+                    Some(resolved_path.to_string_lossy().to_string()),
+                    protos,
+                )
             } else {
                 (false, None, Vec::new())
             }
@@ -188,7 +191,9 @@ fn find_inbound_deps(
     file_index: &HashMap<PathBuf, String>,
 ) -> anyhow::Result<Vec<ImpactDep>> {
     let mut deps = Vec::new();
-    let target_canonical = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+    let target_canonical = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
 
     for (file_path, source) in file_index {
         if file_path == &target_canonical {
@@ -201,7 +206,8 @@ fn find_inbound_deps(
 
         for imp in imports {
             if let Some(ref resolved) = imp.resolved_path {
-                let resolved_canonical = resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
+                let resolved_canonical =
+                    resolved.canonicalize().unwrap_or_else(|_| resolved.clone());
                 if resolved_canonical == target_canonical {
                     used_symbols.push(imp.name.clone());
                     used_lines.push(imp.line_number);
@@ -213,7 +219,11 @@ fn find_inbound_deps(
             deps.push(ImpactDep {
                 path: Some(file_path.to_string_lossy().to_string()),
                 resolved: true,
-                name: target.file_stem().unwrap_or_default().to_string_lossy().to_string(),
+                name: target
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string(),
                 symbols_used: used_symbols,
                 at_lines: used_lines,
                 prototypes: Vec::new(),
@@ -268,8 +278,15 @@ fn extract_rust_imports(path: &Path, source: &str) -> anyhow::Result<Vec<ImportR
             // e.g. mod fee;
             if let Some(rest) = trimmed.strip_prefix("mod ") {
                 let mod_name = rest.trim_end_matches(';').trim();
-                let mod_path = path.parent().unwrap_or(Path::new(".")).join(format!("{}.rs", mod_name));
-                let mod_dir_path = path.parent().unwrap_or(Path::new(".")).join(mod_name).join("mod.rs");
+                let mod_path = path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(format!("{}.rs", mod_name));
+                let mod_dir_path = path
+                    .parent()
+                    .unwrap_or(Path::new("."))
+                    .join(mod_name)
+                    .join("mod.rs");
 
                 let resolved = if mod_path.exists() {
                     Some(mod_path)
@@ -438,7 +455,11 @@ fn extract_java_imports(_path: &Path, source: &str) -> anyhow::Result<Vec<Import
         let trimmed = line.trim();
 
         if trimmed.starts_with("import ") {
-            let class_path = trimmed.strip_prefix("import ").unwrap_or("").trim_end_matches(';').trim();
+            let class_path = trimmed
+                .strip_prefix("import ")
+                .unwrap_or("")
+                .trim_end_matches(';')
+                .trim();
             // Map com.example.Fee -> src/main/java/com/example/Fee.java
             let parts: Vec<&str> = class_path.split('.').collect();
             if parts.len() >= 2 {
@@ -525,8 +546,7 @@ fn collect_code_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
 
 fn extract_prototypes_from_file(path: &Path, cache: &AstCache) -> anyhow::Result<Vec<Symbol>> {
     let source = std::fs::read_to_string(path)?;
-    let provider = detect_language(path)
-        .ok_or_else(|| anyhow::anyhow!("Unsupported language"))?;
+    let provider = detect_language(path).ok_or_else(|| anyhow::anyhow!("Unsupported language"))?;
 
     let tree = {
         let metadata = std::fs::metadata(path)?;

@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
-import type { FlowDeckConfig, GovernanceConfig } from "./schema"
+import type { FlowDeckConfig } from "./schema"
 
 export type { FlowDeckConfig } from "./schema"
 
@@ -133,8 +133,9 @@ export function loadFlowDeckConfig(directory?: string): FlowDeckConfig {
       const raw = readFileSync(configPath, "utf-8")
       const stripped = configPath.endsWith(".jsonc") ? stripJsonComments(raw) : raw
       return sanitizeConfig(JSON.parse(stripped))
-    } catch {
-      // Malformed config — try next candidate or return default.
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      console.warn(`[flowdeck] Malformed config at ${configPath}: ${msg}. Trying next candidate.`)
     }
   }
 

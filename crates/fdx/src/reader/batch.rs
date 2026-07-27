@@ -1,8 +1,5 @@
-use crate::reader::code::{
-    cache::AstCache,
-    CodeResult,
-};
-use crate::reader::{read_file, ReadMode, ReaderOptions, ReadResult};
+use crate::reader::code::{cache::AstCache, CodeResult};
+use crate::reader::{read_file, ReadMode, ReadResult, ReaderOptions};
 use std::path::PathBuf;
 
 /// Result of processing a single file in a batch.

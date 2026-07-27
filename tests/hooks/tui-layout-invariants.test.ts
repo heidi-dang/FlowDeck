@@ -12,7 +12,7 @@
  * Tests also confirm no new tool was introduced to work around the issue.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, vi, afterEach } from "vitest"
 import { mkdirSync, writeFileSync, rmSync } from "fs"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"
@@ -23,7 +23,7 @@ import { tmpdir } from "os"
 function captureStdout(): { lines: string[]; restore: () => void } {
   const lines: string[] = []
   const original = process.stdout.write.bind(process.stdout)
-  process.stdout.write = (chunk: any, ...args: any[]): boolean => {
+  process.stdout.write = (chunk: any, ..._args: any[]): boolean => {
     lines.push(String(chunk))
     return true
   }
@@ -33,7 +33,7 @@ function captureStdout(): { lines: string[]; restore: () => void } {
 function captureStderr(): { lines: string[]; restore: () => void } {
   const lines: string[] = []
   const original = process.stderr.write.bind(process.stderr)
-  process.stderr.write = (chunk: any, ...args: any[]): boolean => {
+  process.stderr.write = (chunk: any, ..._args: any[]): boolean => {
     lines.push(String(chunk))
     return true
   }

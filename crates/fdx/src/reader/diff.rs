@@ -1,8 +1,5 @@
 use crate::reader::code::{
-    cache::AstCache,
-    languages::detect_language,
-    parser::parse_source,
-    prototype::PrototypeReader,
+    cache::AstCache, languages::detect_language, parser::parse_source, prototype::PrototypeReader,
 };
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -104,7 +101,10 @@ impl std::fmt::Display for FileStatus {
 }
 
 /// Generate a symbol-aware diff against a git ref.
-pub fn diff_against(options: &DiffOptions, cache: &AstCache) -> anyhow::Result<Vec<DiffFileResult>> {
+pub fn diff_against(
+    options: &DiffOptions,
+    cache: &AstCache,
+) -> anyhow::Result<Vec<DiffFileResult>> {
     // Verify git is available and we're in a repo
     let git_check = Command::new("git")
         .arg("rev-parse")
@@ -118,7 +118,9 @@ pub fn diff_against(options: &DiffOptions, cache: &AstCache) -> anyhow::Result<V
 
     // Build git diff command
     let mut cmd = Command::new("git");
-    cmd.arg("diff").arg("--unified=3").current_dir(&options.root);
+    cmd.arg("diff")
+        .arg("--unified=3")
+        .current_dir(&options.root);
 
     if options.staged {
         cmd.arg("--cached");
@@ -148,7 +150,8 @@ pub fn diff_against(options: &DiffOptions, cache: &AstCache) -> anyhow::Result<V
 
     // Parse unified diff
     let mut patch = unidiff::PatchSet::new();
-    patch.parse(&diff_text)
+    patch
+        .parse(&diff_text)
         .map_err(|e| anyhow::anyhow!("Failed to parse diff: {}", e))?;
 
     let mut results = Vec::new();
@@ -185,12 +188,7 @@ pub fn diff_against(options: &DiffOptions, cache: &AstCache) -> anyhow::Result<V
         let provider = detect_language(&file_path);
 
         let (symbol_changes, file_level_changes) = if let Some(ref prov) = provider {
-            match analyze_file_changes(&file_path,
-                patched_file,
-                prov,
-                cache,
-                options.no_cache,
-            ) {
+            match analyze_file_changes(&file_path, patched_file, prov, cache, options.no_cache) {
                 Ok((sc, flc)) => (sc, flc),
                 Err(_) => {
                     // Parse error — report as plain file change
@@ -263,8 +261,10 @@ fn analyze_file_changes(
     }
 
     // Map changed lines to symbols
-    let mut symbol_change_map: std::collections::HashMap<String, (ChangeType, usize, usize, usize, usize)> =
-        std::collections::HashMap::new();
+    let mut symbol_change_map: std::collections::HashMap<
+        String,
+        (ChangeType, usize, usize, usize, usize),
+    > = std::collections::HashMap::new();
     // name -> (change_type, line_start, line_end, lines_added, lines_removed)
 
     let mut file_level_raw: Vec<(usize, String, ChangeType)> = Vec::new();
@@ -351,8 +351,16 @@ fn analyze_file_changes(
         let mut current_start = file_level_raw[0].0;
         let mut current_end = file_level_raw[0].0;
         let mut current_raw: Vec<String> = vec![file_level_raw[0].1.clone()];
-        let mut current_added = if file_level_raw[0].2 == ChangeType::Added { 1 } else { 0 };
-        let mut current_removed = if file_level_raw[0].2 == ChangeType::Deleted { 1 } else { 0 };
+        let mut current_added = if file_level_raw[0].2 == ChangeType::Added {
+            1
+        } else {
+            0
+        };
+        let mut current_removed = if file_level_raw[0].2 == ChangeType::Deleted {
+            1
+        } else {
+            0
+        };
 
         for item in file_level_raw.iter().skip(1) {
             let (line_no, raw, change_type) = item;
@@ -378,8 +386,16 @@ fn analyze_file_changes(
                 current_start = *line_no;
                 current_end = *line_no;
                 current_raw = vec![raw.clone()];
-                current_added = if *change_type == ChangeType::Added { 1 } else { 0 };
-                current_removed = if *change_type == ChangeType::Deleted { 1 } else { 0 };
+                current_added = if *change_type == ChangeType::Added {
+                    1
+                } else {
+                    0
+                };
+                current_removed = if *change_type == ChangeType::Deleted {
+                    1
+                } else {
+                    0
+                };
             }
         }
 

@@ -17,8 +17,8 @@ import {
 } from "@/agents/index"
 
 describe("AGENT_NAMES", () => {
-  it("includes 'orchestrator' as the first agent", () => {
-    expect(AGENT_NAMES[0]).toBe("orchestrator")
+  it("includes 'heidi' as the first agent", () => {
+    expect(AGENT_NAMES[0]).toBe("heidi")
   })
 
   it("contains exactly the trimmed roster — no more, no less", () => {

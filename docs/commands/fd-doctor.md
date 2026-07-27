@@ -12,7 +12,7 @@ The command runs a series of diagnostic checks and reports status for each:
 
 1. **OpenCode CLI** — runs `opencode --version`. Reports the version if found, warns if not found.
 
-2. **FlowDeck plugin registration** — reads `~/.config/opencode/opencode.json` (or `$OPENCODE_CONFIG_DIR/opencode.json`). Checks that `@dv.nghiem/flowdeck` is present in the `plugins` array.
+2. **FlowDeck plugin registration** — reads `~/.config/opencode/opencode.json` (or `$OPENCODE_CONFIG_DIR/opencode.json`). Checks that `@heidi-dang/flowdeck` is present in the `plugins` array.
 
 3. **Workspace state** — checks whether `.planning/STATE.md` exists in the current directory. Warns (non-fatal) if missing.
 

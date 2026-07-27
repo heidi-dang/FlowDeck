@@ -3,52 +3,52 @@ name: Publish to npm
 on:
   push:
     tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
-      - "[0-9]+.[0-9]+.[0-9]+-alpha.[0-9]+"
-      - "[0-9]+.[0-9]+.[0-9]+-beta.[0-9]+"
-      - "[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+"
+      - "v*"
 
 jobs:
   publish:
-    name: Build & Publish
+    name: Publish @heidi-dang/flowdeck
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write
+      id-token: write # For npm provenance
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "22.x"
+          registry-url: "https://registry.npmjs.org"
           cache: "npm"
           cache-dependency-path: package-lock.json
-          registry-url: "https://registry.npmjs.org/"
-      
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
 
-      - name: Install dependencies
-        
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install Dependencies
         run: npm ci
 
       - name: Typecheck
-        
         run: npm run typecheck
 
-      - name: Test
-        
-        run: npm run test
+      - name: Run Tests
+        run: npm test
 
-      - name: Build
-        
+      - name: Build Package
         run: npm run build
 
-      - name: Publish
-        
+      - name: Validate Package
+        run: |
+          echo "Validating package identity..."
+          node -e "
+            const pkg = JSON.parse(require('fs').readFileSync('package.json','utf-8'));
+            if (pkg.name !== '@heidi-dang/flowdeck') {
+              console.error('Package name is ' + pkg.name + ' — expected @heidi-dang/flowdeck');
+              process.exit(1);
+            }
+            console.log('Package identity verified: @heidi-dang/flowdeck v' + pkg.version);
+          "
+
+      - name: Publish to npm
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

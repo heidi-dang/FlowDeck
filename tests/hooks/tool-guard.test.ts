@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { toolGuardHook, clearWriteCounter, getWriteCount, clearToolGuardDecisions, getRecentToolGuardDecisions } from "@/hooks/tool-guard"
+import { toolGuardHook, clearWriteCounter, getWriteCount } from "@/hooks/tool-guard"
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "fs"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"

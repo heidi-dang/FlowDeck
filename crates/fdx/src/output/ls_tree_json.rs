@@ -41,7 +41,11 @@ struct TreeNodeJson {
 fn tree_node_to_json(node: &crate::reader::tree::TreeNode) -> TreeNodeJson {
     TreeNodeJson {
         name: node.name.clone(),
-        node_type: if node.is_dir { "dir".to_string() } else { "file".to_string() },
+        node_type: if node.is_dir {
+            "dir".to_string()
+        } else {
+            "file".to_string()
+        },
         file_count: node.file_count,
         children: node.children.iter().map(tree_node_to_json).collect(),
     }

@@ -372,7 +372,7 @@ export function refreshCodegraphIndex(dir: string, agent: string): IndexResult {
     })
 
     return { success: true, full: false, log, changedFiles }
-  } catch (err) {
+  } catch {
     // Exception during sync — fall back to full rebuild
     return initCodegraphIndex(dir, agent)
   }

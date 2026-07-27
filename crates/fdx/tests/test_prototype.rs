@@ -1,6 +1,4 @@
-use fdx::reader::code::{
-    parser::parse_source, prototype::PrototypeReader,
-};
+use fdx::reader::code::{parser::parse_source, prototype::PrototypeReader};
 
 #[test]
 fn test_prototype_rust() {
@@ -16,12 +14,17 @@ pub struct Bar {
 "#;
     let tree = parse_source(source, tree_sitter_rust::LANGUAGE.into()).unwrap();
     let reader = PrototypeReader::new();
-    let symbols = reader.extract_prototypes(std::path::Path::new("test.rs"), source, &tree).unwrap();
+    let symbols = reader
+        .extract_prototypes(std::path::Path::new("test.rs"), source, &tree)
+        .unwrap();
 
     assert_eq!(symbols.len(), 2);
     assert_eq!(symbols[0].kind, "function");
     assert_eq!(symbols[0].name, "foo");
-    assert_eq!(symbols[0].doc_comment, Some("Doc comment for foo".to_string()));
+    assert_eq!(
+        symbols[0].doc_comment,
+        Some("Doc comment for foo".to_string())
+    );
     assert_eq!(symbols[1].kind, "class");
     assert_eq!(symbols[1].name, "Bar");
 }

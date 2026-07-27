@@ -2,9 +2,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn fdx_bin() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("../../target/release/fdx");
-    path
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let debug = manifest.join("../../target/debug/fdx");
+    if debug.exists() {
+        return debug;
+    }
+    manifest.join("../../target/release/fdx")
 }
 
 #[test]
@@ -32,7 +35,14 @@ fn test_test_unsupported_runner() {
         .output()
         .expect("fdx test failed");
 
-    assert!(!output.status.success(), "should fail for unsupported runner");
+    assert!(
+        !output.status.success(),
+        "should fail for unsupported runner"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("unsupported"), "should show unsupported error: {}", stderr);
+    assert!(
+        stderr.contains("unsupported"),
+        "should show unsupported error: {}",
+        stderr
+    );
 }

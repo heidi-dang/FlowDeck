@@ -1,6 +1,17 @@
+/**
+ * Agent Index — Derived from canonical registry.
+ *
+ * AGENT_NAMES, agent modes, routing, and delegation policy are
+ * ALL derived from src/services/canonical-registry.ts, which is
+ * the single source of truth.
+ *
+ * Agent factory functions remain here but are keyed by IDs from
+ * the canonical registry.
+ */
+
 import type { AgentConfig } from '@opencode-ai/sdk/v2';
 
-import type { AgentDefinition, AgentFactory } from './types';
+import type { AgentDefinition } from './types';
 import type { AgentRoute } from './routing';
 export { resolvePrompt } from './types';
 export type { AgentDefinition, AgentFactory } from './types';
@@ -22,123 +33,100 @@ import { createMapperAgent } from './mapper';
 import { createDebugSpecialistAgent } from './debug';
 import { createArchitectAgent } from './architect';
 
-/** All agent names registered by FlowDeck. */
-export const AGENT_NAMES: readonly string[] = [
-  'orchestrator',
-  'heidi',
-  'planner',
-  'architect',
-  'researcher',
-  'mapper',
-  'backend-coder',
-  'frontend-coder',
-  'devops',
-  'tester',
-  'reviewer',
-  'security-auditor',
-  'debug-specialist',
-] as const;
+// ─── Derive from canonical registry ────────────────────────────────────────
 
-// Agent mode classification
+import {
+  getAllAgentIds,
+  getPrimaryAgentIds,
+  getCanonicalAgent,
+} from '../services/canonical-registry';
+
+/** All agent names registered by FlowDeck, derived from canonical registry. */
+export const AGENT_NAMES: readonly string[] = getAllAgentIds() as readonly string[];
+
+/** Agent mode classification. */
 export type AgentMode = 'primary' | 'subagent' | 'all';
 
-// Define which agents are primary (UI-selected) vs subagent (internal/delegated)
-const PRIMARY_AGENTS = new Set(['heidi', 'orchestrator']);
-const ALL_MODES_AGENTS = new Set<string>();
-const HIDDEN_AGENTS = new Set<string>();
-
 function isPrimaryAgent(name: string): boolean {
-  return PRIMARY_AGENTS.has(name);
+  return getPrimaryAgentIds().includes(name);
 }
 
-function isHiddenAgent(name: string): boolean {
-  return HIDDEN_AGENTS.has(name);
+function isHiddenAgent(_name: string): boolean {
+  return false; // No hidden agents in canonical registry
 }
 
-function isAllModeAgent(name: string): boolean {
-  return ALL_MODES_AGENTS.has(name);
+function isAllModeAgent(_name: string): boolean {
+  return false; // No "all" mode agents currently
 }
+
+// ─── Factory map keyed by canonical IDs ────────────────────────────────────
+
+type AgentFactoryFn = (
+  model?: string,
+  customPrompt?: string,
+  customAppendPrompt?: string,
+  disabledAgents?: Set<string>,
+) => AgentDefinition;
+
+const AGENT_FACTORIES: Record<string, AgentFactoryFn> = {
+  'heidi': (model, customPrompt, customAppendPrompt, disabledAgents) =>
+    createHeidiAgent(model, customPrompt, customAppendPrompt, disabledAgents),
+  'orchestrator': (model, customPrompt, customAppendPrompt, disabledAgents) =>
+    createOrchestratorAgent(model, customPrompt, customAppendPrompt, disabledAgents),
+  'planner': (model, customPrompt, customAppendPrompt) =>
+    createPlannerAgent(model, customPrompt, customAppendPrompt),
+  'architect': (model, customPrompt, customAppendPrompt) =>
+    createArchitectAgent(model, customPrompt, customAppendPrompt),
+  'researcher': (model, customPrompt, customAppendPrompt) =>
+    createResearcherAgent(model, customPrompt, customAppendPrompt),
+  'mapper': (model, customPrompt, customAppendPrompt) =>
+    createMapperAgent(model, customPrompt, customAppendPrompt),
+  'backend-coder': (model, customPrompt, customAppendPrompt) =>
+    createBackendCoderAgent(model, customPrompt, customAppendPrompt),
+  'frontend-coder': (model, customPrompt, customAppendPrompt) =>
+    createFrontendCoderAgent(model, customPrompt, customAppendPrompt),
+  'devops': (model, customPrompt, customAppendPrompt) =>
+    createDevopsAgent(model, customPrompt, customAppendPrompt),
+  'tester': (model, customPrompt, customAppendPrompt) =>
+    createTesterAgent(model, customPrompt, customAppendPrompt),
+  'reviewer': (model, customPrompt, customAppendPrompt) =>
+    createReviewerAgent(model, customPrompt, customAppendPrompt),
+  'security-auditor': (model, customPrompt, customAppendPrompt) =>
+    createSecurityAuditorAgent(model, customPrompt, customAppendPrompt),
+  'debug-specialist': (model, customPrompt, customAppendPrompt) =>
+    createDebugSpecialistAgent(model, customPrompt, customAppendPrompt),
+};
 
 /**
  * Create a single agent by name with optional model and custom prompts.
- * When model is undefined, the agent inherits the model currently selected by the user.
+ * Agent name must be present in the canonical registry.
+ * When model is undefined, the agent inherits the UI-selected model.
  */
 export function createAgent(
   name: string,
   model?: string,
   customPrompt?: string,
   customAppendPrompt?: string,
-  _disabledAgents?: Set<string>,
+  disabledAgents?: Set<string>,
 ): AgentDefinition | undefined {
-  switch (name) {
-    case 'heidi':
-      return createHeidiAgent(
-        model,
-        customPrompt,
-        customAppendPrompt,
-        undefined,
-      );
-    case 'orchestrator':
-      return createOrchestratorAgent(
-        model,
-        customPrompt,
-        customAppendPrompt,
-        undefined,
-      );
-    case 'planner':
-      return createPlannerAgent(model, customPrompt, customAppendPrompt);
-    case 'architect':
-      return createArchitectAgent(model, customPrompt, customAppendPrompt);
-    case 'researcher':
-      return createResearcherAgent(model, customPrompt, customAppendPrompt);
-    case 'mapper':
-      return createMapperAgent(model, customPrompt, customAppendPrompt);
-    case 'backend-coder':
-      return createBackendCoderAgent(model, customPrompt, customAppendPrompt);
-    case 'frontend-coder':
-      return createFrontendCoderAgent(model, customPrompt, customAppendPrompt);
-    case 'devops':
-      return createDevopsAgent(model, customPrompt, customAppendPrompt);
-    case 'tester':
-      return createTesterAgent(model, customPrompt, customAppendPrompt);
-    case 'reviewer':
-      return createReviewerAgent(model, customPrompt, customAppendPrompt);
-    case 'security-auditor':
-      return createSecurityAuditorAgent(
-        model,
-        customPrompt,
-        customAppendPrompt,
-      );
-    case 'debug-specialist':
-      return createDebugSpecialistAgent(
-        model,
-        customPrompt,
-        customAppendPrompt,
-      );
-    default:
-      return undefined;
-  }
+  const factory = AGENT_FACTORIES[name];
+  if (!factory) return undefined;
+  return factory(model, customPrompt, customAppendPrompt, disabledAgents);
 }
 
 /**
  * Create all agent definitions with optional per-agent model overrides.
- * When a model is not provided for an agent, it will inherit the user's currently selected model.
+ * When a model is not provided for an agent, it inherits the UI-selected model.
  */
 export function createAgents(
   agentModels?: Record<string, string | undefined>,
-  _options?: GetAgentConfigsOptions,
 ): AgentDefinition[] {
-  const agents: AgentDefinition[] = [];
-
-  for (const name of AGENT_NAMES) {
-    const model = agentModels?.[name];
-    const agent = createAgent(name, model);
-    if (agent) {
-      agents.push(agent);
-    }
-  }
-
-  return agents;
+  return AGENT_NAMES
+    .map(name => {
+      const model = agentModels?.[name];
+      return createAgent(name, model);
+    })
+    .filter((a): a is AgentDefinition => a !== undefined);
 }
 
 export interface GetAgentConfigsOptions {
@@ -147,7 +135,7 @@ export interface GetAgentConfigsOptions {
 
 /**
  * Get agent configurations formatted for the OpenCode SDK.
- * Pass agentModels to apply per-agent model overrides from flowdeck.json.
+ * Modes are derived from canonical registry (primary vs subagent).
  */
 export function getAgentConfigs(
   agentModels?: Record<string, string | undefined>,
@@ -164,13 +152,11 @@ export function getAgentConfigs(
       mode = 'all';
     }
 
-    const hidden = isHiddenAgent(agent.name);
-
     configs[agent.name] = {
       ...agent.config,
       description: agent.description,
       mode,
-      hidden,
+      hidden: isHiddenAgent(agent.name),
     };
   }
 
@@ -178,30 +164,41 @@ export function getAgentConfigs(
 }
 
 /**
- * Build the canonical list of routing options from the compiled agent
- * registry. This is the single source of truth for "which agents exist
- * and what do they do" in default configuration. The orchestrator guard
- * receives this list and renders it into its block message.
- *
- * - Excludes `orchestrator` and `heidi` (the guard message must not route to the
- *   coordinator itself).
- * - Skips agents whose `description` is empty (defensive; the registry
- *   currently always provides one).
- * - Returns routes sorted by name for deterministic output.
+ * Build routing list from canonical registry.
+ * Excludes primary agents (heidi, orchestrator) from routes.
  */
 export function getAgentRoutes(): AgentRoute[] {
-  const out: AgentRoute[] = []
+  const out: AgentRoute[] = [];
+  const primaryIds = new Set(getPrimaryAgentIds());
+
   for (const name of AGENT_NAMES) {
-    if (name === "orchestrator" || name === "heidi") continue
-    const agent = createAgent(name)
-    if (!agent) continue
-    const desc = agent.description ?? ""
-    if (!desc) continue
-    out.push({ name, description: desc })
+    if (primaryIds.has(name)) continue;
+    const canonical = getCanonicalAgent(name);
+    if (!canonical) continue;
+    out.push({ name, description: canonical.description });
   }
-  out.sort((a, b) => a.name.localeCompare(b.name))
-  return out
+
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
 }
+
+// Check for registry consistency: every canonical agent must have a factory
+function validateRegistryConsistency(): void {
+  const canonicalIds = new Set(getAllAgentIds());
+  const factoryIds = new Set(Object.keys(AGENT_FACTORIES));
+  for (const id of canonicalIds) {
+    if (!factoryIds.has(id)) {
+      console.warn(`[flowdeck] Agent "${id}" exists in canonical registry but has no factory`);
+    }
+  }
+  for (const id of factoryIds) {
+    if (!canonicalIds.has(id)) {
+      console.warn(`[flowdeck] Agent "${id}" has a factory but is not in canonical registry`);
+    }
+  }
+}
+
+validateRegistryConsistency();
 
 // Export all agent factories for direct access
 export {

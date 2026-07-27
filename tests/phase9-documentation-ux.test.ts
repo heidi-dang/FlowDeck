@@ -12,7 +12,7 @@ describe("Phase 9 — Documentation and User Experience", () => {
       expect(existsSync(readmePath)).toBe(true)
 
       const content = readFileSync(readmePath, "utf-8")
-      expect(content).toContain("13 registered agents")
+      expect(content).toContain("13 agents")
       expect(content).toContain("61 skills")
       expect(content).toContain("8 slash commands")
       expect(content).toContain("https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash")
@@ -25,7 +25,7 @@ describe("Phase 9 — Documentation and User Experience", () => {
       const content = readFileSync(docsIndexPath, "utf-8")
       expect(content).toContain("13 registered agents")
       expect(content).toContain("61 skills")
-      expect(content).toContain("8 slash commands")
+      expect(content).toContain("8 commands")
       expect(content).toContain("Heidi Primary Execution Policy")
     })
 

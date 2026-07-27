@@ -50,7 +50,8 @@ pub fn ls_paths(path: &Path, options: &LsOptions) -> Result<LsResult> {
     let mut hidden_count = 0;
 
     for entry in std::fs::read_dir(path)
-        .with_context(|| format!("cannot access '{}': No such file or directory", path_str))? {
+        .with_context(|| format!("cannot access '{}': No such file or directory", path_str))?
+    {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().into_owned();
 
@@ -67,7 +68,10 @@ pub fn ls_paths(path: &Path, options: &LsOptions) -> Result<LsResult> {
 
         let metadata = entry.metadata().ok();
         let is_dir = metadata.as_ref().map(|m| m.is_dir()).unwrap_or(false);
-        let size_bytes = metadata.as_ref().map(|m| if m.is_dir() { 0 } else { m.len() }).unwrap_or(0);
+        let size_bytes = metadata
+            .as_ref()
+            .map(|m| if m.is_dir() { 0 } else { m.len() })
+            .unwrap_or(0);
         let modified = metadata
             .as_ref()
             .and_then(|m| m.modified().ok())
@@ -84,12 +88,10 @@ pub fn ls_paths(path: &Path, options: &LsOptions) -> Result<LsResult> {
     }
 
     // Sort: directories first, then alphabetically
-    entries.sort_by(|a, b| {
-        match (a.is_dir, b.is_dir) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => a.name.cmp(&b.name),
-        }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.cmp(&b.name),
     });
 
     // Hard cap: 50 entries

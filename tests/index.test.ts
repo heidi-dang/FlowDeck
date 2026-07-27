@@ -79,7 +79,7 @@ describe("plugin entry", () => {
     const client = createMockClient()
     const instance = await loadPlugin(client)
 
-    expect(instance.name).toBe("@dv.nghiem/flowdeck")
+    expect(instance.name).toBe("@heidi-dang/flowdeck")
     expect(instance.agent).toBeDefined()
     expect(instance.mcp).toBeDefined()
     expect(instance.tool).toBeDefined()
@@ -239,7 +239,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
     expect(content).toContain('"event":"error"')
   })
 
-  it("session.idle clears the per-session write counter", async () => {
+  it("session.idle preserves per-session write counter while session.completed clears it", async () => {
     const { recordWrite, getWriteCount, clearWriteCounter } = await import("@/hooks/tool-guard")
     const client = createMockClient()
     const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
@@ -250,7 +250,9 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
     expect(getWriteCount(sessionID)).toBe(2)
 
     await instance.event?.({ event: { type: "session.idle", properties: { sessionID } } })
+    expect(getWriteCount(sessionID)).toBe(2)
 
+    await instance.event?.({ event: { type: "session.completed", properties: { sessionID } } })
     expect(getWriteCount(sessionID)).toBe(0)
     clearWriteCounter(sessionID)
   })

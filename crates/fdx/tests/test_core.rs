@@ -1,7 +1,5 @@
 use fdx::output::OutputFormat;
-use fdx::reader::code::
-    languages::detect_language 
-;
+use fdx::reader::code::languages::detect_language;
 use fdx::reader::text::read_text;
 use fdx::reader::ReadMode;
 
@@ -20,13 +18,19 @@ fn test_output_format_parsing() {
 
 #[test]
 fn test_read_mode_parsing() {
-    assert!(matches!("auto".parse::<ReadMode>().unwrap(), ReadMode::Auto));
+    assert!(matches!(
+        "auto".parse::<ReadMode>().unwrap(),
+        ReadMode::Auto
+    ));
     assert!(matches!("raw".parse::<ReadMode>().unwrap(), ReadMode::Raw));
     assert!(matches!(
         "prototype".parse::<ReadMode>().unwrap(),
         ReadMode::Prototype
     ));
-    assert!(matches!("deep".parse::<ReadMode>().unwrap(), ReadMode::Deep));
+    assert!(matches!(
+        "deep".parse::<ReadMode>().unwrap(),
+        ReadMode::Deep
+    ));
     assert!("unknown".parse::<ReadMode>().is_err());
 }
 

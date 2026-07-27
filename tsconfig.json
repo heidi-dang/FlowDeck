@@ -5,6 +5,7 @@
     "lib": ["ESNext"],
     "moduleResolution": "Bundler",
     "strict": true,
+    "allowJs": true,
     "noEmit": false,
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
@@ -19,6 +20,6 @@
     "skipLibCheck": true,
     "types": ["bun-types"]
   },
-  "include": ["src/**/*", "tests/**/*"],
+  "include": ["src/**/*", "tests/**/*", "scripts/**/*"],
   "exclude": ["node_modules", "dist"]
 }

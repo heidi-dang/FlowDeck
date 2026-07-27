@@ -1,6 +1,4 @@
-use fdx::reader::code::{
-    deep::DeepReader, parser::parse_source, CodeReader,
-};
+use fdx::reader::code::{deep::DeepReader, parser::parse_source, CodeReader};
 
 #[test]
 fn test_deep_mode_with_symbol() {
@@ -55,11 +53,7 @@ pub fn calculate_fee(amount: f64, rate: f64) -> Fee {
     assert_eq!(result.symbols.len(), 2);
     // All symbols should have bodies
     for sym in &result.symbols {
-        assert!(
-            sym.body.is_some(),
-            "Symbol {} should have a body",
-            sym.name
-        );
+        assert!(sym.body.is_some(), "Symbol {} should have a body", sym.name);
     }
 }
 

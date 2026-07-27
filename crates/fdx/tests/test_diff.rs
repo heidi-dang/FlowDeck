@@ -12,7 +12,11 @@ fn setup_git_repo(temp_dir: &str) {
         .current_dir(temp_dir)
         .output()
         .expect("git init failed");
-    assert!(output.status.success(), "git init failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Configure git user
     std::process::Command::new("git")
@@ -85,7 +89,10 @@ pub fn new_function() -> i32 {
     assert_eq!(results[0].path, "test.rs");
 
     // Should have the new function as a symbol change
-    let has_new_function = results[0].symbol_changes.iter().any(|sc| sc.name == "new_function");
+    let has_new_function = results[0]
+        .symbol_changes
+        .iter()
+        .any(|sc| sc.name == "new_function");
     assert!(has_new_function, "Expected new_function in symbol changes");
 
     let _ = std::fs::remove_dir_all(temp_dir);
@@ -130,7 +137,11 @@ fn test_diff_not_git_repo() {
     let result = diff_against(&options, &cache);
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
-    assert!(err_msg.contains("not a git repository"), "Expected git repo error, got: {}", err_msg);
+    assert!(
+        err_msg.contains("not a git repository"),
+        "Expected git repo error, got: {}",
+        err_msg
+    );
 
     let _ = std::fs::remove_dir_all(temp_dir);
 }

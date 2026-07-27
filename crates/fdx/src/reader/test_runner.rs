@@ -52,7 +52,12 @@ fn run_vitest(args: &[String]) -> Result<CommandOutput> {
 
 fn run_go_test(args: &[String]) -> Result<CommandOutput> {
     let extra: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    run("go", &std::iter::once("test").chain(extra.iter().copied()).collect::<Vec<_>>())
+    run(
+        "go",
+        &std::iter::once("test")
+            .chain(extra.iter().copied())
+            .collect::<Vec<_>>(),
+    )
 }
 
 fn run_rspec(args: &[String]) -> Result<CommandOutput> {
@@ -64,7 +69,12 @@ fn run_rspec(args: &[String]) -> Result<CommandOutput> {
 
 fn run_rails_test(args: &[String]) -> Result<CommandOutput> {
     let extra: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-    run("rails", &std::iter::once("test").chain(extra.iter().copied()).collect::<Vec<_>>())
+    run(
+        "rails",
+        &std::iter::once("test")
+            .chain(extra.iter().copied())
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// Compress test output to show failures only.
@@ -204,8 +214,7 @@ fn count_cargo_tests(output: &str) -> usize {
             let parts: Vec<&str> = line.split_whitespace().collect();
             for (i, part) in parts.iter().enumerate() {
                 if *part == "passed;" || *part == "passed." {
-                    return parts.get(i.saturating_sub(1))
-                        .and_then(|s| s.parse().ok());
+                    return parts.get(i.saturating_sub(1)).and_then(|s| s.parse().ok());
                 }
             }
             None
@@ -359,10 +368,7 @@ fn compress_rspec_output(original: &CommandOutput, _combined: &str) -> Result<Co
     if let Ok(json) = serde_json::from_str::<serde_json::Value>(&original.stdout) {
         if let Some(examples) = json.get("examples").and_then(|v| v.as_array()) {
             for ex in examples {
-                if ex.get("status")
-                    .and_then(|s| s.as_str())
-                    == Some("failed")
-                {
+                if ex.get("status").and_then(|s| s.as_str()) == Some("failed") {
                     let desc = ex
                         .get("description")
                         .and_then(|d| d.as_str())
@@ -376,14 +382,8 @@ fn compress_rspec_output(original: &CommandOutput, _combined: &str) -> Result<Co
                         .get("file_path")
                         .and_then(|f| f.as_str())
                         .unwrap_or("unknown");
-                    let line = ex
-                        .get("line_number")
-                        .and_then(|l| l.as_u64())
-                        .unwrap_or(0);
-                    failures.push(format!(
-                        "FAIL  {}\n  {}:{}\n  {}\n",
-                        desc, file, line, msg
-                    ));
+                    let line = ex.get("line_number").and_then(|l| l.as_u64()).unwrap_or(0);
+                    failures.push(format!("FAIL  {}\n  {}:{}\n  {}\n", desc, file, line, msg));
                 }
             }
         }

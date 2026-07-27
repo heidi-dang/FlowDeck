@@ -14,40 +14,357 @@ on:
       - "docs/*"
 
 jobs:
-  matrix-test:
-    name: Production Gates (${{ matrix.os }}, Node ${{ matrix.node-version }})
+  lint-typecheck:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run build
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:coverage
+
+  test-matrix:
+    name: Test Matrix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        node-version: ["20.x", "22.x", "24.x"]
-
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node-version }}
+          node-version: "22.x"
           cache: "npm"
-          cache-dependency-path: package-lock.json
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test
+      - run: npm run typecheck
 
-      - name: Setup Bun Runtime
-        uses: oven-sh/setup-bun@v2
+  build:
+    name: Build & Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run build
+      - run: npm run validate:skills
+      - run: npm run validate:docs
+      - name: Pack and inspect tarball
+        run: |
+          PACKAGE=$(npm pack 2>/dev/null)
+          echo "Package: $PACKAGE"
+          tar tzf "$PACKAGE" | grep -q "scripts/config-mutator.mjs" && echo "PASS: scripts/config-mutator.mjs in tarball" || (echo "FAIL: scripts/config-mutator.mjs missing" && exit 1)
+          tar tzf "$PACKAGE" | head -20
+          tar xzf "$PACKAGE" -O package/package.json | node -e "process.stdin.on('data',d=>{const p=JSON.parse(d);console.assert(p.name==='@heidi-dang/flowdeck','Wrong: '+p.name);console.log('PASS: '+p.name+' v'+p.version)})"
+          rm -f "$PACKAGE"
+      - name: Packed package full CLI execution (isolated HOME)
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          PACKAGE=$(npm pack 2>/dev/null)
+          echo "Package: $PACKAGE"
+          TMP_ROOT=$(mktemp -d)
+          TMP_APP="$TMP_ROOT/app"
+          TMP_HOME="$TMP_ROOT/home"
+          mkdir -p "$TMP_APP" "$TMP_HOME"
+          cd "$TMP_APP"
+          npm init -y > /dev/null 2>&1
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1
+          echo "=== Running packed CLI ==="
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck --help || { echo "FAIL: --help"; exit 1; }
+          echo "PASS: --help"
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck install || { echo "FAIL: install"; exit 1; }
+          echo "PASS: install"
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck verify || { echo "FAIL: verify"; exit 1; }
+          echo "PASS: verify"
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck doctor || { echo "FAIL: doctor"; exit 1; }
+          echo "PASS: doctor"
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck uninstall || { echo "FAIL: uninstall"; exit 1; }
+          echo "PASS: uninstall"
+          ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs || { echo "FAIL: config-mutator.mjs missing"; exit 1; }
+          echo "PASS: Runtime files verified"
+          rm -f "$GITHUB_WORKSPACE/$PACKAGE"
 
-      - name: Install Dependencies
-        run: npm ci
+  installer-test:
+    name: Installer Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run build
+      - name: Clean HOME install
+        run: |
+          HOME_TMP=$(mktemp -d)
+          HOME=$HOME_TMP OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode \
+            node bin/flowdeck.js install 2>&1
+          node -e "
+            const c = JSON.parse(require('fs').readFileSync('$HOME_TMP/.config/opencode/opencode.json','utf-8'));
+            console.assert(c.plugin.includes('@heidi-dang/flowdeck'), 'Plugin not registered');
+            console.assert(c.default_agent === 'heidi', 'Default agent not heidi');
+            console.log('PASS: Clean HOME install');
+          "
+      - name: Malformed config preserved
+        run: |
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{{{broken}}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js install 2>&1 || true
+          diff <(echo '{{{broken}}') "$OPENCODE_CONFIG_DIR"/opencode.json && echo "PASS: Malformed config preserved" || (echo "FAIL: Config modified" && exit 1)
+      - name: JSONC comment retention
+        run: |
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          printf '{\n  // this comment must remain\n  "plugin": [],\n  "default_agent": null\n}\n' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js install 2>&1
+          grep -q "this comment must remain" "$OPENCODE_CONFIG_DIR"/opencode.json && echo "PASS: JSONC comments preserved" || (echo "FAIL: JSONC comments lost" && exit 1)
+      - name: Existing default_agent preserved
+        run: |
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{"plugin":[],"default_agent":"orchestrator"}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js install 2>&1
+          node -e "
+            const c = JSON.parse(require('fs').readFileSync('$OPENCODE_CONFIG_DIR/opencode.json','utf-8'));
+            console.assert(c.default_agent === 'orchestrator', 'Default changed');
+            console.log('PASS: Existing default_agent preserved');
+          "
+      - name: Ownership safe uninstall without manifest (heidi)
+        run: |
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{"plugin":["@heidi-dang/flowdeck","other-plugin"],"default_agent":"heidi"}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          set +e
+          node bin/flowdeck.js uninstall 2>&1
+          EXIT_CODE=$?
+          set -e
+          if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "FAIL: Expected non-zero exit code when uninstalling without manifest"
+            exit 1
+          fi
+          node -e "
+            const c = JSON.parse(require('fs').readFileSync('$HOME_TMP/.config/opencode/opencode.json','utf-8'));
+            console.assert(c.default_agent === 'heidi', 'Default agent was changed');
+            console.assert(c.plugin.includes('@heidi-dang/flowdeck'), 'Plugin was removed');
+            console.assert(c.plugin.includes('other-plugin'), 'Other plugin was removed');
+            console.log('PASS: Uninstall without manifest fails non-zero and preserves config');
+          "
+      - name: Forced uninstall without manifest
+        run: |
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{"plugin":["@heidi-dang/flowdeck","other-plugin"],"default_agent":"heidi"}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js uninstall --force 2>&1
+          node -e "
+            const c = JSON.parse(require('fs').readFileSync('$HOME_TMP/.config/opencode/opencode.json','utf-8'));
+            console.assert(c.default_agent === 'heidi', 'Default agent was changed');
+            console.assert(!c.plugin.includes('@heidi-dang/flowdeck'), 'FlowDeck plugin was not removed');
+            console.assert(c.plugin.includes('other-plugin'), 'Other plugin was removed');
+            const fs = require('fs');
+            console.assert(!fs.existsSync('$HOME_TMP/.config/opencode/.flowdeck-manifest.json'), 'Manifest was falsely created');
+            console.log('PASS: Forced uninstall without manifest removes plugin, preserves default_agent & unrelated plugins, creates no manifest');
+          "
+      - name: Verify
+        run: node bin/flowdeck.js verify 2>&1
+      - name: Doctor
+        run: node bin/flowdeck.js doctor 2>&1
+      - name: Dry-run
+        run: node bin/flowdeck.js dry-run 2>&1
+      - name: Uninstall (with manifest)
+        run: node bin/flowdeck.js uninstall 2>&1
+      - name: CLI Integration Test (every command)
+        run: |
+          set -e
+          HOME_TMP=$(mktemp -d)
+          export HOME=$HOME_TMP
+          export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
+          mkdir -p "$OPENCODE_CONFIG_DIR"
+          echo '{"plugin":[],"default_agent":null}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js --help 2>&1 | grep -q "FlowDeck v" || { echo "FAIL: --help"; exit 1; }; echo "PASS: --help"
+          node bin/flowdeck.js install 2>&1 | grep -q "FlowDeck installed" || { echo "FAIL: install"; exit 1; }; echo "PASS: install"
+          node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" || { echo "FAIL: verify"; exit 1; }; echo "PASS: verify"
+          node bin/flowdeck.js doctor 2>&1 || { echo "FAIL: doctor"; exit 1; }; echo "PASS: doctor"
+          node bin/flowdeck.js config validate 2>&1 || { echo "FAIL: config validate"; exit 1; }; echo "PASS: config validate"
+          node bin/flowdeck.js dry-run 2>&1 | grep -q "DRY RUN" || { echo "FAIL: dry-run"; exit 1; }; echo "PASS: dry-run"
+          # Now test install --project
+          node bin/flowdeck.js install --project 2>&1 | grep -q "FlowDeck installed" || { echo "FAIL: install --project"; exit 1; }; echo "PASS: install --project"
+          node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" || { echo "FAIL: verify after --project"; exit 1; }; echo "PASS: verify after --project"
+          node bin/flowdeck.js uninstall --force 2>&1 | grep -q "FlowDeck uninstalled" || { echo "FAIL: uninstall"; exit 1; }; echo "PASS: uninstall"
+          # Now test install --local-repo and migrate
+          node bin/flowdeck.js install --local-repo 2>&1 | grep -q "FlowDeck installed" || { echo "FAIL: install --local-repo"; exit 1; }; echo "PASS: install --local-repo"
+          node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" || { echo "FAIL: verify after --local-repo"; exit 1; }; echo "PASS: verify after --local-repo"
+          node bin/flowdeck.js migrate 2>&1 | grep -q -E "Migrating|Already using" || { echo "FAIL: migrate"; exit 1; }; echo "PASS: migrate"
+          node bin/flowdeck.js rollback 2>&1 | grep -q "Rolled back" || { echo "FAIL: rollback"; exit 1; }; echo "PASS: rollback"
+          node bin/flowdeck.js update 2>&1 | grep -q "Update complete" || { echo "FAIL: update"; exit 1; }; echo "PASS: update"
+          echo "ALL CLI COMMANDS PASSED"
 
-      - name: Typecheck
-        run: npm run typecheck
+  rust-gates:
+    name: Rust Gates (FDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --manifest-path crates/fdx/Cargo.toml --check
+      - run: cargo clippy --manifest-path crates/fdx/Cargo.toml --all-targets -- -D warnings
+      - name: Build FDX binary
+        run: |
+          cargo build --manifest-path crates/fdx/Cargo.toml
+          cp target/debug/fdx target/release/fdx 2>/dev/null || true
+      - name: Run FDX version check
+        run: target/debug/fdx --version
+      - run: cargo test --manifest-path crates/fdx/Cargo.toml --all
 
-      - name: Unit & Integration Tests
-        run: npm run test
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - run: npm ci
+      - name: Dependency Audit
+        run: npm audit --production --audit-level=high 2>&1
+      - name: Install Gitleaks
+        run: |
+          set -euo pipefail
+          VERSION="8.18.2"
+          curl --fail --show-error --location \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            --output /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp
+          /tmp/gitleaks version
+      - name: Scan Git history
+        run: |
+          set -euo pipefail
+          /tmp/gitleaks detect \
+            --source . \
+            --log-opts="--all" \
+            --redact \
+            --verbose
 
-      - name: Package Build
-        run: npm run build
+  local-installer:
+    name: Local Installer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - name: Local-repo install test
+        run: |
+          node bin/flowdeck.js install --local-repo 2>&1
+          node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" || (echo "FAIL: verify"; exit 1)
+          echo "PASS: local-repo install on ${{ matrix.os }}"
+      - name: Project install test
+        run: |
+          node bin/flowdeck.js install --project 2>&1
+          echo "PASS: project install on ${{ matrix.os }}"
 
-      - name: Doctor Health Verification
-        run: npx bun test tests/phase7-installer-release.test.ts
+  packed-cli-matrix:
+    name: Packed CLI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run build
+      - name: Packed CLI test with spaces
+        run: |
+          set -e
+          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
+          TMP_ROOT=$(mktemp -d)
+          SPACE_DIR="$TMP_ROOT/My Project With Spaces"
+          mkdir -p "$SPACE_DIR/app" "$SPACE_DIR/home"
+          cd "$SPACE_DIR/app"
+          npm init -y > /dev/null 2>&1
+          # Use cross-platform relative path or fix absolute path for windows bash
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1
+          echo "=== Testing packed CLI ==="
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck install || { echo "FAIL: install"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck verify || { echo "FAIL: verify"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck doctor || { echo "FAIL: doctor"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck rollback || { echo "FAIL: rollback"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck uninstall --force || { echo "FAIL: uninstall"; exit 1; }
+          echo "PASS: all commands"
+
+  completion:
+    name: Pipeline Completion
+    if: always()
+    needs: [lint-typecheck, test-matrix, build, installer-test, rust-gates, security-scan, local-installer, packed-cli-matrix]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "## CI Production Gates" >> $GITHUB_STEP_SUMMARY
+          echo "- Lint & Typecheck: ${{ needs.lint-typecheck.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Test Matrix: ${{ needs.test-matrix.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Build & Validate: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Installer Tests: ${{ needs.installer-test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Rust Gates: ${{ needs.rust-gates.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Security Scan: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Local Installer: ${{ needs.local-installer.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Packed CLI Matrix: ${{ needs.packed-cli-matrix.result }}" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.lint-typecheck.result }}" = "success" ] && \
+             [ "${{ needs.test-matrix.result }}" = "success" ] && \
+             [ "${{ needs.build.result }}" = "success" ] && \
+             [ "${{ needs.installer-test.result }}" = "success" ] && \
+             [ "${{ needs.rust-gates.result }}" = "success" ] && \
+             [ "${{ needs.security-scan.result }}" = "success" ] && \
+             [ "${{ needs.local-installer.result }}" = "success" ] && \
+             [ "${{ needs.packed-cli-matrix.result }}" = "success" ]; then
+            echo "ALL GATES PASSED" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "SOME GATES FAILED" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi

@@ -41,11 +41,7 @@ pub fn calculate_tax(base: f64) -> f64 {
 
     let cache = AstCache::new();
     let options = OutlineOptions::default();
-    let results = outline_paths(&[PathBuf::from(temp_dir)],
-        &options,
-        &cache,
-    )
-    .unwrap();
+    let results = outline_paths(&[PathBuf::from(temp_dir)], &options, &cache).unwrap();
 
     assert_eq!(results.len(), 2);
 
@@ -77,11 +73,7 @@ pub enum Baz {}
         kind_filter: Some(vec!["function".to_string()]),
         ..OutlineOptions::default()
     };
-    let results = outline_paths(&[PathBuf::from(temp_dir)],
-        &options,
-        &cache,
-    )
-    .unwrap();
+    let results = outline_paths(&[PathBuf::from(temp_dir)], &options, &cache).unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].symbols.len(), 1);
@@ -116,12 +108,7 @@ pub fn long() {
         min_lines: 3,
         ..OutlineOptions::default()
     };
-    let results = outline_paths(
-        &[PathBuf::from(temp_dir)],
-        &options,
-        &cache,
-    )
-    .unwrap();
+    let results = outline_paths(&[PathBuf::from(temp_dir)], &options, &cache).unwrap();
 
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].symbols.len(), 1);
@@ -138,12 +125,7 @@ fn test_outline_empty_dir() {
 
     let cache = AstCache::new();
     let options = OutlineOptions::default();
-    let results = outline_paths(
-        &[PathBuf::from(temp_dir)],
-        &options,
-        &cache,
-    )
-    .unwrap();
+    let results = outline_paths(&[PathBuf::from(temp_dir)], &options, &cache).unwrap();
 
     assert!(results.is_empty());
 

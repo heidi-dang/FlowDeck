@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest"
-import { createAgent, createAgents, getAgentConfigs, AGENT_NAMES } from "@/agents/index"
+import { getAgentConfigs, AGENT_NAMES } from "@/agents/index"
 import { createHeidiAgent, createOrchestratorAgent } from "@/agents/orchestrator"
 import {
   EXECUTION_STRATEGIES,
@@ -108,19 +108,22 @@ describe("Phase 2 — Heidi Primary Execution Policy", () => {
       ])
     })
 
-    it("performs before-edit surface-area check", () => {
+    it("performs before-edit surface-area check with real filesystem discovery", () => {
+      // The function now performs actual filesystem discovery for dependents,
+      // tests, and config — knownDependents/knownTests/knownConfig are no longer
+      // used as fallbacks. Pass a real existing file to get meaningful results.
       const res = performSurfaceAreaCheck({
         targetFiles: ["src/index.ts"],
-        knownDependents: ["src/app.ts"],
-        knownTests: ["tests/app.test.ts"],
-        knownConfig: ["tsconfig.json"],
         assumptions: ["Node >= 24"],
         errorPaths: ["EACCES"],
       })
 
       expect(res.readyForEdit).toBe(true)
-      expect(res.dependents).toContain("src/app.ts")
-      expect(res.existingTests).toContain("tests/app.test.ts")
+      expect(Array.isArray(res.dependents)).toBe(true)
+      expect(Array.isArray(res.existingTests)).toBe(true)
+      expect(Array.isArray(res.relatedConfig)).toBe(true)
+      expect(res.assumptions).toContain("Node >= 24")
+      expect(res.errorPaths).toContain("EACCES")
     })
   })
 

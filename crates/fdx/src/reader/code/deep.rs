@@ -1,13 +1,19 @@
 use crate::reader::code::{
-    find_symbols_in_tree, node_text, extract_doc_comment, extract_signature,
+    extract_doc_comment, extract_signature, find_symbols_in_tree,
     languages::{detect_language, get_language_provider},
-    CodeReader, CodeResult, Dependency, Symbol,
+    node_text, CodeReader, CodeResult, Dependency, Symbol,
 };
 use std::collections::HashSet;
 use std::path::Path;
 use tree_sitter::{Node, Tree};
 
 pub struct DeepReader;
+
+impl Default for DeepReader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl DeepReader {
     pub fn new() -> Self {
@@ -54,12 +60,7 @@ impl DeepReader {
     }
 
     /// Build a Symbol with full body included.
-    fn build_symbol_with_body(
-        node: Node,
-        source: &str,
-        kind: String,
-        name: String,
-    ) -> Symbol {
+    fn build_symbol_with_body(node: Node, source: &str, kind: String, name: String) -> Symbol {
         let signature = extract_signature(node, source);
         let doc_comment = extract_doc_comment(node, source);
         let line_start = node.start_position().row + 1;
@@ -125,8 +126,14 @@ impl CodeReader for DeepReader {
 
         let symbols = if let Some(target_name) = symbol_name {
             // Find specific symbol
-            if let Some((node, kind, name)) = all_symbols.iter().find(|(_, _, n)| n == target_name) {
-                vec![Self::build_symbol_with_body(*node, source, kind.clone(), name.clone())]
+            if let Some((node, kind, name)) = all_symbols.iter().find(|(_, _, n)| n == target_name)
+            {
+                vec![Self::build_symbol_with_body(
+                    *node,
+                    source,
+                    kind.clone(),
+                    name.clone(),
+                )]
             } else {
                 return Err(anyhow::anyhow!(
                     "Symbol '{}' not found in {}",

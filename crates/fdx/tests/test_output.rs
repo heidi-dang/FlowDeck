@@ -52,16 +52,7 @@ fn test_text_output_format() {
     ];
 
     let mut buf = Vec::new();
-    text::print_text_output(
-        &mut buf,
-        "test.rs",
-        "rust",
-        "prototype",
-        10,
-        &symbols,
-        None,
-    )
-    .unwrap();
+    text::print_text_output(&mut buf, "test.rs", "rust", "prototype", 10, &symbols, None).unwrap();
 
     let output = String::from_utf8(buf).unwrap();
     assert!(output.contains("[fn] fn foo()"));

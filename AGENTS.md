@@ -154,23 +154,37 @@ Boris Cherny (creator of Claude Code) keeps his team's file around 100 lines. Un
 - Package manager: Bun
 - Runtime: OpenCode (bun runtime)
 
+> **Note:** CI uses `npm ci` for reproducible installs; scripts internally invoke `bun` for build/test. Ensure both npm and bun are installed.
+
 ### Commands
 - Install: `./install.sh`
-- Build: `cd plugin && bun run build`
-- Test (all): `cd plugin && bun test`
-- Test (single file): `cd plugin && bun test tests/commands/<file>.test.ts`
-- Typecheck: `cd plugin && bun tsc --noEmit`
+- Build: `cd . && bun run build`
+- Test (all): `cd . && bun test`
+- Test (single file): `cd . && bun test tests/<file>.test.ts`
+- Test (coverage): `cd . && bun test --coverage`
+- Typecheck: `cd . && bun tsc --noEmit`
+- Pre-push gate: `node scripts/pre-push.mjs`
 - Verify install: `./install.sh --check-config`
+- CLI: `npx @heidi-dang/flowdeck <command>`
 
 Prefer single-file test runs during iteration. Full suite for final verification.
+Run `node scripts/pre-push.mjs` before pushing to catch failures locally.
 
 ### Layout
-- Plugin source: `plugin/src/`
-- Plugin tests: `plugin/tests/`
-- Agents: `agents/`
-- Workflows: `workflows/`
-- Skills: `.opencode/skills/`
-- Do not modify: `plugin/node_modules/`, `plugin/dist/`, `plugin/bun.lock`
+- Plugin source: `src/`
+- Plugin tests: `tests/`
+- Agents: `src/agents/`
+- Commands: `src/commands/`
+- Skills: `src/skills/<name>/SKILL.md`
+- Services: `src/services/`
+- Hooks: `src/hooks/`
+- Tools: `src/tools/`
+- MCP configs: `src/mcp/`
+- Config: `src/config/`
+- Rules: `src/rules/`
+- Rust native: `crates/fdx/`
+- Documentation: `docs/`
+- Do not modify: `dist/`, `node_modules/`, `bun.lock`, `Cargo.lock`
 
 ### Conventions specific to this repo
 - Naming: camelCase for TS, kebab-case for filenames and agent/skill names

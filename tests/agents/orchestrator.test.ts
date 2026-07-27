@@ -20,22 +20,23 @@ import { getAgentRoutes, AGENT_NAMES } from "@/agents/index"
 describe("orchestrator prompt: core router rule", () => {
   const prompt = buildOrchestratorPrompt()
 
-  it("declares the coordinate-and-delegate role", () => {
+  it("declares the Heidi primary execution coordinator role", () => {
     expect(prompt).toContain(
-      "You coordinate the pipeline and delegate work to specialist agents",
+      "You are Heidi, the FlowDeck primary execution coordinator.",
     )
   })
 
   it("names the write-permission boundary explicitly", () => {
     expect(prompt).toContain("## Write Permission Rules")
     expect(prompt).toContain("You MAY write directly (no delegation)")
-    expect(prompt).toContain("You MUST delegate to subagents")
+    expect(prompt).toContain("You SHOULD delegate when:")
   })
 
-  it("allows direct writes only under ~/.fd-plan/", () => {
-    expect(prompt).toMatch(/Any file under `~\/\.fd-plan\/`/)
+  it("allows direct writes to source files and planning artifacts", () => {
+    expect(prompt).toMatch(/Source code files/)
+    expect(prompt).toMatch(/Planning artifacts under `~\/\.fd-plan\/`/)
     expect(prompt).toContain(
-      'Self-check before any write: "Is this a planning artifact under ~/.fd-plan/?"',
+      'Self-check before any write: "Am I the right person for this task?"',
     )
   })
 
@@ -373,10 +374,9 @@ describe("createOrchestratorAgent", () => {
     expect(agent.name).toBe("orchestrator")
   })
 
-  it("description mentions routing, not execution", () => {
+  it("description identifies orchestrator as Heidi compatibility alias", () => {
     const agent = createOrchestratorAgent()
-    expect(agent.description).toContain("Routes all work")
-    expect(agent.description).toContain("Does not execute tasks directly")
+    expect(agent.description).toContain("Compatibility alias for Heidi coordinator")
   })
 
   it("uses temperature 0.1", () => {
@@ -387,7 +387,7 @@ describe("createOrchestratorAgent", () => {
   it("includes the core pipeline sections", () => {
     const agent = createOrchestratorAgent()
     expect(agent.config.prompt).toContain(
-      "You coordinate the pipeline and delegate work to specialist agents",
+      "You are Heidi, the FlowDeck primary execution coordinator.",
     )
     expect(agent.config.prompt).toMatch(/##\s*Pipeline/i)
     expect(agent.config.prompt).toMatch(/##\s*Write Permission Rules/i)

@@ -3,9 +3,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn fdx_bin() -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.push("../../target/release/fdx");
-    path
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let debug = manifest.join("../../target/debug/fdx");
+    if debug.exists() {
+        return debug;
+    }
+    manifest.join("../../target/release/fdx")
 }
 
 #[test]
@@ -17,7 +20,11 @@ fn test_ls_current_dir() {
         .expect("fdx ls failed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("dirs/"), "should list directories: {}", stdout);
+    assert!(
+        stdout.contains("dirs/"),
+        "should list directories: {}",
+        stdout
+    );
     assert!(stdout.contains("files"), "should list files: {}", stdout);
     assert!(output.status.success(), "fdx ls should succeed");
 }
@@ -62,7 +69,10 @@ fn test_ls_hidden_files() {
         .expect("fdx ls failed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains(".hidden"), "should show hidden file with --all");
+    assert!(
+        stdout.contains(".hidden"),
+        "should show hidden file with --all"
+    );
 }
 
 #[test]

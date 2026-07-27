@@ -84,10 +84,7 @@ pub fn grep_files(
             };
 
             let context_after: Vec<String> = if end < lines.len() {
-                lines[end..end + 1]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
+                lines[end..end + 1].iter().map(|s| s.to_string()).collect()
             } else {
                 Vec::new()
             };
@@ -127,7 +124,9 @@ fn build_regex(pattern: &str, fixed_strings: bool, case_sensitive: bool) -> anyh
     let mut builder = regex::RegexBuilder::new(&escaped);
     builder.case_insensitive(!case_sensitive);
 
-    builder.build().map_err(|e| anyhow::anyhow!("Invalid regex: {}", e))
+    builder
+        .build()
+        .map_err(|e| anyhow::anyhow!("Invalid regex: {}", e))
 }
 
 fn collect_text_files(paths: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {

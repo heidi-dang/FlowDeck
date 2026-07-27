@@ -1,7 +1,6 @@
 import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "fs"
 import { basename, join } from "path"
 import { statePath, parseState, planningDir, checkpointPath } from "../tools/planning-state-lib"
-import { clearWriteCounter } from "./tool-guard"
 
 const LOG_DIR = ".opencode"
 const LOG_FILE = "flowdeck.log"
@@ -13,8 +12,8 @@ const LOG_FILE = "flowdeck.log"
  */
 export async function sessionEventsHook(
   ctx: { directory: string },
-  eventType: "idle" | "error",
-  sessionID: string,
+  eventType: "idle" | "error" | "completed",
+  _sessionID: string,
 ): Promise<void> {
   const logDir = join(ctx.directory, LOG_DIR)
   const logPath = join(logDir, LOG_FILE)
@@ -27,8 +26,6 @@ export async function sessionEventsHook(
       throw new Error(`[flowdeck] ERROR: Could not create log directory: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
-
-  clearWriteCounter(sessionID)
 
   if (eventType === "idle") {
     saveCheckpoint(ctx.directory)

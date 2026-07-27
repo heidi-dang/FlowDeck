@@ -5,7 +5,7 @@ import type { FlowDeckConfig } from './agent-models';
 
 export interface ResolvedDesignFirstConfig {
   enabled: boolean;
-  enforcement: "strict" | "advisory";
+  enforcement: "strict" | "advisory" | "off";
   requireApprovalBeforeImplementation: boolean;
   modelOverrides: Record<string, string>;
   defaultSkillsByTaskType: Record<string, string[]>;

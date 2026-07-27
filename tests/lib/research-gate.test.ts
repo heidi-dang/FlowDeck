@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from "vitest"
-import { readFileSync, writeFileSync, mkdirSync } from "fs"
+import { writeFileSync, mkdirSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 import { isResearchFresh, persistResearchEvidence, loadResearchEvidence, runResearchGate, researchGateStatus, buildResearchDiagnostics, type ResearchEvidence, type ResearchScope } from "@/lib/research-gate"
-import { timestamp, readPlanningState, planningDir } from "@/tools/planning-state-lib"
+import { timestamp, planningDir } from "@/tools/planning-state-lib"
 
 const TEST_DIR = join(tmpdir(), "flowdeck-research-gate-test", Date.now().toString())
 

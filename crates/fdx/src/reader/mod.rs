@@ -14,28 +14,19 @@ pub mod tree;
 
 use crate::output::OutputFormat;
 use crate::reader::code::{
-    cache::AstCache,
-    deep::DeepReader,
-    languages::detect_language,
-    parser::parse_source,
-    prototype::PrototypeReader,
-    CodeReader, CodeResult
+    cache::AstCache, deep::DeepReader, languages::detect_language, parser::parse_source,
+    prototype::PrototypeReader, CodeReader, CodeResult,
 };
 use crate::reader::text::{read_text, TextResult};
 use std::path::Path;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReadMode {
+    #[default]
     Auto,
     Raw,
     Prototype,
     Deep,
-}
-
-impl Default for ReadMode {
-    fn default() -> Self {
-        ReadMode::Auto
-    }
 }
 
 impl std::str::FromStr for ReadMode {
@@ -95,7 +86,11 @@ pub enum ReadResult {
     Text(TextResult),
 }
 
-pub fn read_file(path: &Path, options: &ReaderOptions, cache: &AstCache) -> anyhow::Result<ReadResult> {
+pub fn read_file(
+    path: &Path,
+    options: &ReaderOptions,
+    cache: &AstCache,
+) -> anyhow::Result<ReadResult> {
     let is_code_file = detect_language(path).is_some();
 
     let effective_mode = match options.mode {

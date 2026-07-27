@@ -47,7 +47,7 @@ const plugin: Plugin = async (input, _options) => {
   let activeRun: RunTrace | undefined;
 
   return {
-    name: "@dv.nghiem/flowdeck",
+    name: "@heidi-dang/flowdeck",
     agent: getAgentConfigs(agentModels),
     mcp: createFlowDeckMcps(),
 

@@ -1,0 +1,6 @@
+# Intentionally empty — all src/ and tests/ files are linted.
+# Build outputs and external directories are excluded via oxlint defaults
+# or listed below.
+
+# External workspace directories (not part of the codebase)
+.qoder/

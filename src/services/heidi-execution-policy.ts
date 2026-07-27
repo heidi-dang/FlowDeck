@@ -102,6 +102,9 @@ export function evaluateDelegationJustification(
   }
 }
 
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
+import { dirname, basename, extname, join, resolve, isAbsolute } from "node:path"
+
 export interface SurfaceAreaCheckResult {
   dependents: string[]
   existingTests: string[]
@@ -114,20 +117,25 @@ export interface SurfaceAreaCheckResult {
 /**
  * Perform before-edit surface-area check.
  * Inspects callers/dependents, tests, config, and error paths before making changes.
+ * Uses real filesystem inspection to provide meaningful data.
  */
 export function performSurfaceAreaCheck(input: {
   targetFiles: string[]
+  projectRoot?: string
   knownDependents?: string[]
   knownTests?: string[]
   knownConfig?: string[]
   assumptions?: string[]
   errorPaths?: string[]
 }): SurfaceAreaCheckResult {
-  const dependents = input.knownDependents ?? []
-  const existingTests = input.knownTests ?? []
-  const relatedConfig = input.knownConfig ?? []
-  const assumptions = input.assumptions ?? []
-  const errorPaths = input.errorPaths ?? []
+  const root = input.projectRoot ? resolve(input.projectRoot) : process.cwd()
+  const resolvedTargets = input.targetFiles.map(f => isAbsolute(f) ? resolve(f) : resolve(root, f))
+
+  const dependents = discoverActualDependents(resolvedTargets)
+  const existingTests = discoverActualTests(resolvedTargets, root)
+  const relatedConfig = discoverRelatedConfig(resolvedTargets, root)
+  const assumptions = input.assumptions ?? deriveAssumptions(resolvedTargets)
+  const errorPaths = input.errorPaths ?? discoverErrorPaths(resolvedTargets)
 
   return {
     dependents,
@@ -135,8 +143,193 @@ export function performSurfaceAreaCheck(input: {
     relatedConfig,
     assumptions,
     errorPaths,
-    readyForEdit: input.targetFiles.length > 0,
+    readyForEdit: resolvedTargets.length > 0,
   }
+}
+
+/**
+ * Discover actual dependent files by looking for imports/references to target files.
+ */
+function discoverActualDependents(targetFiles: string[]): string[] {
+  const results: string[] = []
+  for (const file of targetFiles) {
+    try {
+      if (!existsSync(file)) continue
+      const name = basename(file, extname(file))
+      const dir = dirname(file)
+
+      const siblings = readdirSync(dir).filter((f: string) => f.endsWith(".ts") || f.endsWith(".tsx"))
+      for (const sibling of siblings) {
+        if (sibling === basename(file)) continue
+        try {
+          const content = readFileSync(join(dir, sibling), "utf-8")
+          if (content.includes(`./${name}`) || content.includes(`"${name}"`) || content.includes(`'${name}'`)) {
+            results.push(join(dir, sibling))
+          }
+        } catch { /* skip unreadable */ }
+      }
+
+      const indexFiles = ["index.ts", "index.tsx", "index.js"]
+      for (const idx of indexFiles) {
+        const idxPath = join(dir, idx)
+        if (idxPath !== file && existsSync(idxPath)) {
+          try {
+            const content = readFileSync(idxPath, "utf-8")
+            if (content.includes(`./${name}`) || content.includes(`"${name}"`)) {
+              results.push(idxPath)
+            }
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* silent fallback */ }
+  }
+  return results
+}
+
+/**
+ * Discover actual test files related to target files.
+ */
+function discoverActualTests(targetFiles: string[], projectRoot: string): string[] {
+  const results: string[] = []
+  for (const file of targetFiles) {
+    try {
+      const dir = dirname(file)
+      const name = basename(file, extname(file))
+
+      const testPatterns = [
+        `${name}.test.ts`, `${name}.test.tsx`, `${name}.spec.ts`,
+        `${name}.test.js`, `${name}.spec.js`,
+        `${name}.test.mjs`, `${name}.spec.mjs`,
+      ]
+
+      for (const pattern of testPatterns) {
+        const testPath = join(dir, pattern)
+        if (existsSync(testPath)) results.push(testPath)
+      }
+
+      const testsDir = join(dir, "__tests__")
+      if (existsSync(testsDir)) {
+        const testFiles = readdirSync(testsDir)
+        for (const tf of testFiles) {
+          if (tf.includes(name) && (tf.endsWith(".test.ts") || tf.endsWith(".spec.ts") || tf.endsWith(".test.js"))) {
+            results.push(join(testsDir, tf))
+          }
+        }
+      }
+
+      const rootTests = join(projectRoot, "tests")
+      if (existsSync(rootTests)) {
+        const rootFiles = readdirSync(rootTests)
+        for (const rf of rootFiles) {
+          if (rf.includes(name) && (rf.endsWith(".test.ts") || rf.endsWith(".spec.ts"))) {
+            results.push(join(rootTests, rf))
+          }
+        }
+      }
+    } catch { /* silent fallback */ }
+  }
+  return results
+}
+
+/**
+ * Discover related configuration files.
+ */
+export function discoverRelatedConfig(targetFiles: string[], explicitProjectRoot?: string): string[] {
+  const configPatterns = [
+    "package.json", "tsconfig.json", "tsconfig.build.json",
+    ".flowdeck.json", ".flowdeck.jsonc", ".gitignore",
+    "Cargo.toml", "Cargo.lock", "mkdocs.yml",
+    ".eslintrc.js", ".eslintrc.json", ".prettierrc",
+    "vitest.config.ts", "vitest.config.js", "jest.config.ts",
+  ]
+
+  let root = explicitProjectRoot ? resolve(explicitProjectRoot) : resolve(process.cwd())
+
+  if (!explicitProjectRoot) {
+    for (const file of targetFiles) {
+      if (file) {
+        let current = resolve(file)
+        try {
+          if (existsSync(current) && statSync(current).isFile()) {
+            current = dirname(current)
+          }
+        } catch {
+          current = dirname(current)
+        }
+        let found = false
+        for (let i = 0; i < 15; i++) {
+          if (
+            existsSync(join(current, ".flowdeck.json")) ||
+            existsSync(join(current, ".flowdeck.jsonc")) ||
+            existsSync(join(current, "package.json")) ||
+            existsSync(join(current, ".git"))
+          ) {
+            root = current
+            found = true
+            break
+          }
+          const parent = dirname(current)
+          if (parent === current) break
+          current = parent
+        }
+        if (found) break
+      }
+    }
+  }
+
+  const results: string[] = []
+  for (const pattern of configPatterns) {
+    try {
+      const configPath = join(root, pattern)
+      if (existsSync(configPath)) results.push(configPath)
+    } catch { /* skip */ }
+  }
+  return results
+}
+
+/**
+ * Derive assumptions from file types being modified.
+ */
+function deriveAssumptions(targetFiles: string[]): string[] {
+  const assumptions: string[] = []
+  for (const file of targetFiles) {
+    if (file.endsWith(".ts") || file.endsWith(".tsx")) {
+      assumptions.push("TypeScript types pass build step")
+    }
+    if (file.includes("agent") || file.includes("skill")) {
+      assumptions.push("YAML frontmatter schema valid")
+    }
+    if (file.includes("config") || file.endsWith(".json")) {
+      assumptions.push("Config schema backwards-compatible")
+    }
+  }
+  if (assumptions.length === 0) {
+    assumptions.push("Target files exist and are readable")
+  }
+  assumptions.push("No side effects on unrelated modules")
+  return assumptions
+}
+
+/**
+ * Discover error paths by checking for error handling patterns in similar files.
+ */
+function discoverErrorPaths(targetFiles: string[]): string[] {
+  const errorPaths: string[] = []
+  for (const file of targetFiles) {
+    try {
+      if (!existsSync(file)) continue
+      const content = readFileSync(file, "utf-8")
+      if (content.includes("throw ") && !errorPaths.includes("Error paths from existing code")) {
+        errorPaths.push("Error paths from existing code")
+      }
+      if (content.includes("catch") && !errorPaths.includes("Exception handling exists")) {
+        errorPaths.push("Exception handling exists")
+      }
+      if (content.includes("undefined") || content.includes("null"))
+        if (!errorPaths.includes("Null/undefined checks needed")) errorPaths.push("Null/undefined checks needed")
+    } catch { /* skip */ }
+  }
+  return errorPaths
 }
 
 export interface FailureRecoveryState {

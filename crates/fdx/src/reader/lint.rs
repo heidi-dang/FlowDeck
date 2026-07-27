@@ -96,15 +96,26 @@ fn compress_ruff_output(output: &CommandOutput) -> Result<CommandOutput> {
         });
     }
 
-    let findings: Vec<serde_json::Value> =
-        serde_json::from_str(&output.stdout).unwrap_or_default();
+    let findings: Vec<serde_json::Value> = serde_json::from_str(&output.stdout).unwrap_or_default();
 
     let mut result = format_findings("ruff", &findings, |f| {
-        let file = f.get("filename").and_then(|v| v.as_str()).unwrap_or("unknown");
-        let line = f.get("location").and_then(|l| l.get("row")).and_then(|v| v.as_u64()).unwrap_or(0);
+        let file = f
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let line = f
+            .get("location")
+            .and_then(|l| l.get("row"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let code = f.get("code").and_then(|v| v.as_str()).unwrap_or("unknown");
         let msg = f.get("message").and_then(|v| v.as_str()).unwrap_or("");
-        (file.to_string(), line as usize, code.to_string(), msg.to_string())
+        (
+            file.to_string(),
+            line as usize,
+            code.to_string(),
+            msg.to_string(),
+        )
     });
 
     if result.is_empty() {
@@ -211,7 +222,12 @@ fn compress_tsc_output(output: &CommandOutput) -> Result<CommandOutput> {
                 let code = &rest[..code_end];
                 let msg = &rest[code_end.min(rest.len())..].trim_start_matches(": ");
 
-                findings.push((file.to_string(), line_num, code.to_string(), msg.to_string()));
+                findings.push((
+                    file.to_string(),
+                    line_num,
+                    code.to_string(),
+                    msg.to_string(),
+                ));
             }
         }
     }
@@ -239,16 +255,21 @@ fn compress_eslint_output(output: &CommandOutput) -> Result<CommandOutput> {
         });
     }
 
-    let files: Vec<serde_json::Value> =
-        serde_json::from_str(&output.stdout).unwrap_or_default();
+    let files: Vec<serde_json::Value> = serde_json::from_str(&output.stdout).unwrap_or_default();
 
     let mut all_findings = Vec::new();
     for file in files {
-        let path = file.get("filePath").and_then(|v| v.as_str()).unwrap_or("unknown");
+        let path = file
+            .get("filePath")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
         if let Some(messages) = file.get("messages").and_then(|v| v.as_array()) {
             for msg in messages {
                 let line = msg.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-                let code = msg.get("ruleId").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let code = msg
+                    .get("ruleId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 let message = msg.get("message").and_then(|v| v.as_str()).unwrap_or("");
                 all_findings.push((
                     path.to_string(),
@@ -298,10 +319,7 @@ fn compress_golangci_output(output: &CommandOutput) -> Result<CommandOutput> {
                 .get("FromLinter")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown");
-            let msg = issue
-                .get("Text")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let msg = issue.get("Text").and_then(|v| v.as_str()).unwrap_or("");
             all_findings.push((
                 file.to_string(),
                 line as usize,
@@ -330,7 +348,10 @@ fn compress_rubocop_output(output: &CommandOutput) -> Result<CommandOutput> {
 
     if let Some(files) = data.get("files").and_then(|v| v.as_array()) {
         for file in files {
-            let path = file.get("path").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let path = file
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             if let Some(offenses) = file.get("offenses").and_then(|v| v.as_array()) {
                 for offense in offenses {
                     let line = offense
@@ -370,11 +391,7 @@ fn compress_rubocop_output(output: &CommandOutput) -> Result<CommandOutput> {
     })
 }
 
-fn format_findings<F>(
-    _linter: &str,
-    findings: &[serde_json::Value],
-    extractor: F,
-) -> String
+fn format_findings<F>(_linter: &str, findings: &[serde_json::Value], extractor: F) -> String
 where
     F: Fn(&serde_json::Value) -> (String, usize, String, String),
 {
@@ -385,10 +402,7 @@ where
     format_findings_vec(_linter, &extracted)
 }
 
-fn format_findings_vec(
-    _linter: &str,
-    findings: &[(String, usize, String, String)],
-) -> String {
+fn format_findings_vec(_linter: &str, findings: &[(String, usize, String, String)]) -> String {
     if findings.is_empty() {
         return String::new();
     }
@@ -418,7 +432,10 @@ fn format_findings_vec(
         total_count += 1;
     }
 
-    result.push_str(&format!("\n{} issues across {} files\n", total_count, file_count));
+    result.push_str(&format!(
+        "\n{} issues across {} files\n",
+        total_count, file_count
+    ));
 
     if truncated {
         result.push_str(&format!(

@@ -28,17 +28,15 @@ pub fn run(program: &str, args: &[&str]) -> Result<CommandOutput> {
 /// Returns an error if the program is not found in PATH.
 pub fn run_with_env(program: &str, args: &[&str], env: &[(&str, &str)]) -> Result<CommandOutput> {
     let mut cmd = Command::new(program);
-    cmd.args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
 
     for (key, value) in env {
         cmd.env(key, value);
     }
 
-    let output = cmd.output().with_context(|| {
-        format!("{} not found — install it or check your PATH", program)
-    })?;
+    let output = cmd
+        .output()
+        .with_context(|| format!("{} not found — install it or check your PATH", program))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
