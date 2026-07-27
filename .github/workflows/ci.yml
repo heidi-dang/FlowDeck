@@ -25,6 +25,7 @@ jobs:
           cache: "npm"
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
+      - run: npm run build
       - run: npm run lint
       - run: npm run typecheck
 
@@ -43,7 +44,8 @@ jobs:
           cache: "npm"
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
-      - run: npm test
+      - run: npm run build
+      - run: npm run test
       - run: npm run typecheck
 
   build:
@@ -106,6 +108,7 @@ jobs:
           node-version: "22.x"
       - uses: oven-sh/setup-bun@v2
       - run: npm ci
+      - run: npm run build
       - name: Clean HOME install
         run: |
           HOME_TMP=$(mktemp -d)
@@ -328,8 +331,9 @@ jobs:
           # Use cross-platform relative path or fix absolute path for windows bash
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1
           echo "=== Testing packed CLI ==="
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck init || { echo "FAIL: init"; exit 1; }
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck list || { echo "FAIL: list"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck install || { echo "FAIL: install"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck verify || { echo "FAIL: verify"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck doctor || { echo "FAIL: doctor"; exit 1; }
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck rollback || { echo "FAIL: rollback"; exit 1; }
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck uninstall --force || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: all commands"
