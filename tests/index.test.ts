@@ -406,4 +406,79 @@ describe("plugin entry: before-hook pipeline negative paths", () => {
     }
     expect(threw).toBeNull()
   })
+
+  it("composed negative 1: tool guard block + audit log record + recovery attempt failure", async () => {
+    const { auditLogPath } = await import("@/services/audit-log")
+    process.env.FLOWDECK_TOOL_GUARD_ENABLED = "on"
+    const client = createMockClient()
+    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+
+    const toolInput: any = { tool: "write_file", sessionID: "comp-1", agent: "heidi", args: { filePath: "src/x.ts" } }
+    let caught: Error | null = null
+    try {
+      await instance["tool.execute.before"]?.(toolInput, { args: { filePath: "src/x.ts" } })
+    } catch (err) {
+      caught = err as Error
+    }
+    expect(caught).not.toBeNull()
+    expect(caught!.message).toMatch(/blocked in phase 1/)
+
+    const auditFile = auditLogPath(dir)
+    expect(existsSync(auditFile)).toBe(true)
+
+    delete process.env.FLOWDECK_TOOL_GUARD_ENABLED
+  })
+
+  it("composed negative 2: governance strict block + audit log record + recovery layer skip", async () => {
+    const { auditLogPath } = await import("@/services/audit-log")
+    writeFileSync(join(dir, ".flowdeck.json"), JSON.stringify({
+      governance: { validator: { mode: "strict" } },
+    }))
+
+    const client = createMockClient()
+    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+
+    const toolInput: any = { tool: "write_file", sessionID: "comp-2", agent: "mapper", args: { filePath: "src/x.ts" } }
+    let caught: Error | null = null
+    try {
+      await instance["tool.execute.before"]?.(toolInput, { args: { filePath: "src/x.ts" } })
+    } catch (err) {
+      caught = err as Error
+    }
+    expect(caught).not.toBeNull()
+
+    const auditFile = auditLogPath(dir)
+    expect(existsSync(auditFile)).toBe(true)
+    const auditContent = readFileSync(auditFile, "utf-8")
+    expect(auditContent).toContain("block")
+  })
+
+  it("composed negative 3: FDX invalid args + fallback execution + audit log error record", async () => {
+    const { fdxGitTool } = await import("@/tools/fdx")
+    const res = await fdxGitTool.execute({ subcommand: "reset", args: ["--hard"] }, { directory: dir } as any)
+
+    expect(res).toContain("is not permitted under read-only policy")
+  })
+
+  it("composed negative 4: session error event + audit log write + scorecard state cleanup", async () => {
+    const { auditLogPath } = await import("@/services/audit-log")
+    const { getSessionMetricsDiagnostics } = await import("@/index")
+    const client = createMockClient()
+    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+
+    const sessionID = `comp-sess-err-${Date.now()}`
+    await instance.event?.({ event: { type: "session.started", properties: { info: { id: sessionID } } } })
+
+    const before = getSessionMetricsDiagnostics(sessionID)
+    expect(before.startTime).toBeDefined()
+
+    await instance.event?.({ event: { type: "session.error", properties: { info: { id: sessionID } } } })
+
+    const after = getSessionMetricsDiagnostics(sessionID)
+    expect(after.startTime).toBeUndefined()
+    expect(after.toolCalls).toBe(0)
+
+    const auditFile = auditLogPath(dir)
+    expect(existsSync(auditFile)).toBe(true)
+  })
 })

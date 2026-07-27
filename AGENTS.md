@@ -193,7 +193,8 @@ Prefer single-file test runs during iteration. Full suite for final verification
 - Rules: `src/rules/`
 - Rust native: `crates/fdx/`
 - Documentation: `docs/`
-- Do not modify: `dist/`, `node_modules/`, `package-lock.json`, `Cargo.lock`
+- Do not modify manually: `dist/`, `node_modules/`, `Cargo.lock`.
+- Do not hand-edit `package-lock.json`. Update it only through `npm install`, `npm uninstall`, or another documented npm dependency command when `package.json` dependencies change.
 
 ### Conventions specific to this repo
 - Naming: camelCase for TS, kebab-case for filenames and agent/skill names
