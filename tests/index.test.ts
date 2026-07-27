@@ -294,3 +294,114 @@ describe("plugin entry: toolGuardHook wiring (bug 3b)", () => {
     expect(caught!.message).toMatch(/blocked in phase 1/)
   })
 })
+
+/**
+ * Negative-path integration tests for the composed before-hook pipeline.
+ * Exercises: budget-exceeded denial, orchestrator-guard block,
+ * governance strict-mode block, and delegation-depth-exceeded recovery.
+ */
+describe("plugin entry: before-hook pipeline negative paths", () => {
+  let dir: string
+
+  beforeEach(() => {
+    dir = makeTempDir()
+    writeState(dir)
+  })
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(planningDir(dir), { recursive: true, force: true })
+  })
+
+  it("budget-exceeded: throws in strict mode when tool call count exceeds maxToolCalls", async () => {
+    writeFileSync(join(dir, ".flowdeck.json"), JSON.stringify({
+      governance: { validator: { mode: "strict" }, delegationBudget: { maxToolCalls: 2 } },
+    }))
+
+    const client = createMockClient()
+    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+
+    const sessionID = `budget-${Date.now()}`
+    const makeInput = () => ({ tool: "read", sessionID, agent: "heidi", args: { filePath: "x.ts" } })
+
+    // Calls within budget succeed
+    await instance["tool.execute.before"]?.(makeInput(), { args: { filePath: "x.ts" } })
+    await instance["tool.execute.before"]?.(makeInput(), { args: { filePath: "x.ts" } })
+
+    // Third call exceeds maxToolCalls=2
+    let caught: Error | null = null
+    try {
+      await instance["tool.execute.before"]?.(makeInput(), { args: { filePath: "x.ts" } })
+    } catch (err) {
+      caught = err as Error
+    }
+    expect(caught).not.toBeNull()
+    expect(caught!.message).toMatch(/Tool call budget exceeded/)
+  })
+
+  it("orchestrator-guard: blocks orchestrator from using write tools directly", async () => {
+    const client = createMockClient()
+    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+
+    // Establish primary session so the guard activates
+    await instance.event?.({ event: { type: "session.created", properties: { info: { id: "orch-primary" } } } })
+
+    const toolInput: any = { tool: "write", sessionID: "orch-primary", agent: "orchestrator", args: { filePath: "src/x.ts" } }
+    let caught: Error | null = null
+    try {
+      await instance["tool.execute.before"]?.(toolInput, { args: { filePath: "src/x.ts" } })
+    } catch (err) {
+      caught = err as Error
+    }
+    expect(caught).not.toBeNull()
+    expect(caught!.message).toContain("[Orchestrator Guard]")
+    expect(caught!.message).toContain("cannot use `write` directly")
+  })
+
+  it("governance strict-mode: blocks mapper agent from using write_file", async () => {
+    writeFileSync(join(dir, ".flowdeck.json"), JSON.stringify({
+      governance: { validator: { mode: "strict" } },
+    }))
+
+    const client = createMockClient()
+    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+
+    const toolInput: any = { tool: "write_file", sessionID: `gov-${Date.now()}`, agent: "mapper", args: { filePath: "src/x.ts" } }
+    let caught: Error | null = null
+    try {
+      await instance["tool.execute.before"]?.(toolInput, { args: { filePath: "src/x.ts" } })
+    } catch (err) {
+      caught = err as Error
+    }
+    expect(caught).not.toBeNull()
+    expect(caught!.message).toMatch(/blocked by governance policy|not in allowedTools/)
+  })
+
+  it("delegation-depth-exceeded: blocks depth > maxDepth then recovers at depth 0", async () => {
+    const client = createMockClient()
+    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+
+    const sessionID = `depth-${Date.now()}`
+
+    // depth=2 exceeds default maxDepth=1
+    const blockedInput: any = { tool: "task", sessionID, agent: "heidi", args: { depth: 2, agent: "coder" } }
+    let caught: Error | null = null
+    try {
+      await instance["tool.execute.before"]?.(blockedInput, { args: { depth: 2, agent: "coder" } })
+    } catch (err) {
+      caught = err as Error
+    }
+    expect(caught).not.toBeNull()
+    expect(caught!.message).toMatch(/Maximum delegation depth of 1 exceeded/)
+
+    // depth=0 is within budget — should succeed (recovery)
+    const okInput: any = { tool: "task", sessionID, agent: "heidi", args: { depth: 0, agent: "coder" } }
+    let threw: unknown = null
+    try {
+      await instance["tool.execute.before"]?.(okInput, { args: { depth: 0, agent: "coder" } })
+    } catch (err) {
+      threw = err
+    }
+    expect(threw).toBeNull()
+  })
+})
