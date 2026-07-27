@@ -1,6 +1,7 @@
 import { RunCoordinator } from "./run-coordinator";
 import { EventBus, type HarnessEventType } from "./event-bus";
-import { cancelRun } from "./run-cancellation";
+import { cancelRun as cancelRunAction } from "./run-cancellation";
+import type { StoredRun } from "../persistence/run-store";
 
 export interface HarnessRuntimeConfig {
   projectRoot: string;
@@ -16,6 +17,10 @@ export class HarnessRuntime {
     this.coordinator = new RunCoordinator();
   }
 
+  getCoordinator(): RunCoordinator {
+    return this.coordinator;
+  }
+
   getEventBus(): EventBus {
     return this.coordinator.getEventBus();
   }
@@ -24,8 +29,8 @@ export class HarnessRuntime {
     return this.coordinator.getEventBus().subscribe(type, handler);
   }
 
-  async run(): Promise<{ runId: string; status: string }> {
-    const result = await this.coordinator.startRun({
+  async enqueueRun(_request: { mode: string; sourceRevision?: string; collectors?: string[] }): Promise<{ runId: string; status: string }> {
+    const result = await this.coordinator.enqueueRun({
       projectRoot: this.config.projectRoot,
       timeoutMs: this.config.timeoutMs,
     });
@@ -35,10 +40,22 @@ export class HarnessRuntime {
     };
   }
 
+  getRun(runId: string): StoredRun | null {
+    return this.coordinator.getRun(runId);
+  }
+
+  cancelRun(runId: string): boolean {
+    return this.coordinator.cancelRun(runId);
+  }
+
+  async run(): Promise<{ runId: string; status: string }> {
+    return this.enqueueRun({ mode: "full" });
+  }
+
   cancel(): boolean {
     const active = this.coordinator.getActiveRun();
     if (!active) return false;
-    return cancelRun(active.runId);
+    return cancelRunAction(active.runId);
   }
 
   getStatus(): { active: boolean; runId?: string; status?: string; stage?: string } {

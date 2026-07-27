@@ -6,6 +6,8 @@ import type { EventBus, HarnessEvent, HarnessEventType } from "../runtime/event-
 export interface SseClient {
   id: string;
   lastEventId: string | null;
+  projectKey?: string;
+  runId?: string;
   send: (event: HarnessEvent) => void;
 }
 
@@ -25,7 +27,7 @@ export class SseManager {
   private eventLogPath: string | null = null;
   private heartbeats: Map<string, ReturnType<typeof setInterval>> = new Map();
 
-  constructor(eventBus: EventBus, eventLogDir?: string) {
+  constructor(eventBus: EventBus, eventLogDir?: string, private projectFilter?: string) {
     if (eventLogDir) {
       this.eventLogPath = join(eventLogDir, "sse-events.jsonl");
       const dir = dirname(this.eventLogPath);
@@ -101,7 +103,7 @@ export class SseManager {
     }
   }
 
-  handleSseRequest(req: IncomingMessage, res: ServerResponse): void {
+  handleSseRequest(req: IncomingMessage, res: ServerResponse, serverKey?: string, projectKey?: string, runId?: string): void {
     const clientId = `sse_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const lastEventId = req.headers["last-event-id"] as string | undefined;
 
@@ -120,18 +122,31 @@ export class SseManager {
     const client: SseClient = {
       id: clientId,
       lastEventId: lastEventId ?? null,
+      projectKey,
+      runId,
       send: (event: HarnessEvent) => {
         try {
+          // Filter by project/run if configured
+          if (projectKey || runId) {
+            const eventData = event.data || {};
+            if (projectKey && (eventData as Record<string, unknown>).projectKey !== projectKey) {
+              return;
+            }
+            if (runId && (eventData as Record<string, unknown>).runId !== runId) {
+              return;
+            }
+          }
           const sseId = this.nextSequence();
           // Store sequence id on event for replay
           (event as unknown as Record<string, unknown>)._sseId = sseId;
-          const sseType = event.type.replace(/\./g, "-");
-          const eventData = {
+          // Don't replace dots with hyphens per spec requirement
+          const sseType = event.type;
+          const eventPayload = {
             type: event.type,
             timestamp: event.timestamp,
             data: event.data,
           };
-          res.write("id: " + sseId + "\nevent: " + sseType + "\ndata: " + JSON.stringify(eventData) + "\n\n");
+          res.write("id: " + sseId + "\nevent: " + sseType + "\ndata: " + JSON.stringify(eventPayload) + "\n\n");
           this.persistEvent(sseId, event);
         } catch { /* client disconnected */ }
       },

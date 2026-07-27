@@ -19,6 +19,7 @@ import { saveFindingIndex } from "../persistence/finding-store";
 import { readSessionRecords } from "../opencode/session-reader";
 import { analyzeSessions } from "../opencode/session-analyzer";
 import type { HarnessRunStatus } from "../contracts/common";
+import { cancelRun as cancelRunAction } from "./run-cancellation";
 
 export interface RunConfig {
   projectRoot: string;
@@ -45,7 +46,7 @@ export class RunCoordinator {
     return this.activeRun !== null && (this.activeRun.status === "queued" || this.activeRun.status === "running");
   }
 
-  async startRun(config: RunConfig): Promise<RunState> {
+  async enqueueRun(config: RunConfig): Promise<RunState> {
     if (this.isActive()) {
       throw new Error("A run is already in progress for this coordinator");
     }
@@ -66,7 +67,6 @@ export class RunCoordinator {
     const _projectIdentity = getProjectIdentity(projectRoot);
     const snapshot = captureWorkspaceSnapshot(projectRoot);
 
-    // Save initial run record
     const runRecord: StoredRun = {
       runId,
       projectId: snapshot.projectId,
@@ -77,133 +77,161 @@ export class RunCoordinator {
     };
     saveRun(snapshot.projectId, runRecord);
 
-    const _startTime = Date.now();
+    setImmediate(async () => {
+      try {
+        await this.runWithTimeout(timeoutMs, runId, async () => {
+          this.activeRun!.status = "running";
+          this.activeRun!.stage = "collecting";
+          this.eventBus.emit("run.started", { runId });
+          this.eventBus.emit("collector.started", { runId });
 
-    try {
-      // Run the full pipeline, with timeout enforcement
-      await this.runWithTimeout(timeoutMs, runId, async () => {
-        // Phase 1: Collect evidence
-        this.activeRun!.status = "running";
-        this.activeRun!.stage = "collecting";
-        this.eventBus.emit("run.started", { runId });
-        this.eventBus.emit("collector.started", { runId });
+          if (isRunCancelled(runId)) {
+            this.internalCancelRun(runId, snapshot.projectId);
+            return;
+          }
 
-        const { evidence, collectorResults: _collectorResults } = await runAllCollectors(projectRoot);
+          const { evidence, collectorResults: _collectorResults } = await runAllCollectors(projectRoot);
 
-        this.activeRun!.progressPercent = 30;
-        this.eventBus.emit("collector.completed", { runId, evidenceCount: evidence.length });
+          this.activeRun!.progressPercent = 30;
+          this.eventBus.emit("collector.completed", { runId, evidenceCount: evidence.length });
 
-        // Check cancellation
-        if (isRunCancelled(runId)) {
-          this.cancelRun(runId, snapshot.projectId);
-          return;
-        }
+          if (isRunCancelled(runId)) {
+            this.internalCancelRun(runId, snapshot.projectId);
+            return;
+          }
 
-        // Phase 2: Analyze
-        this.activeRun!.stage = "analyzing";
-        this.eventBus.emit("analysis.started", { runId });
+          this.activeRun!.stage = "analyzing";
+          this.eventBus.emit("analysis.started", { runId });
 
-        const dimensionResults = [
-          analyzeTaskUnderstanding(evidence),
-          analyzeControlledExecution(evidence),
-          analyzeChangeValidation(evidence),
-          analyzeReliableDelivery(evidence, projectRoot),
-          analyzeLearningCapture(evidence),
-        ];
+          const dimensionResults = [
+            analyzeTaskUnderstanding(evidence),
+            analyzeControlledExecution(evidence),
+            analyzeChangeValidation(evidence),
+            analyzeReliableDelivery(evidence, projectRoot),
+            analyzeLearningCapture(evidence),
+          ];
 
-        this.activeRun!.progressPercent = 55;
+          this.activeRun!.progressPercent = 55;
 
-        // Synthesize findings
-        const findings = synthesizeFindings(dimensionResults.map((r) => ({
-          dimension: r.dimension,
-          findings: r.findings,
-        })));
+          const findings = synthesizeFindings(dimensionResults.map((r) => ({
+            dimension: r.dimension,
+            findings: r.findings,
+          })));
 
-        // Score dimensions
-        const dimensionScores = dimensionResults.map((dr) =>
-          scoreDimension({
-            dimension: dr.dimension,
+          const dimensionScores = dimensionResults.map((dr) =>
+            scoreDimension({
+              dimension: dr.dimension,
+              findings,
+              evidenceCoverage: evidence.length > 0 ? Math.min(100, Math.round((evidence.length / 20) * 100)) : 0,
+            }),
+          );
+
+          this.activeRun!.progressPercent = 75;
+          this.eventBus.emit("finding.created", { runId, findingCount: findings.length });
+
+          this.activeRun!.stage = "scoring";
+          const { overallScore, evidenceCoverage } = calculateOverallScore(dimensionScores);
+
+          const sessionRecords = readSessionRecords(projectRoot);
+          const sessionAnalysis = analyzeSessions(sessionRecords);
+
+          const now = new Date().toISOString();
+          const report: HarnessReport = {
+            schemaVersion: 1,
+            engineVersion: "1.0.0",
+            scoringVersion: SCORING_VERSION,
+            generatedAt: now,
+            sourceRevision: snapshot.revision || undefined,
+            project: {
+              name: snapshot.projectId,
+              directory: projectRoot,
+            },
+            overallScore,
+            evidenceCoverage,
+            dimensions: dimensionScores,
             findings,
-            evidenceCoverage: evidence.length > 0 ? Math.min(100, Math.round((evidence.length / 20) * 100)) : 0,
-          }),
-        );
+            sessions: {
+              analyzed: sessionAnalysis.totalSessions,
+              longSessions: sessionAnalysis.longSessions,
+              failedSessions: sessionAnalysis.failedSessions,
+              repeatedFailures: sessionAnalysis.repeatedFailures,
+              compactions: sessionAnalysis.compactions,
+              permissionInterruptions: sessionAnalysis.permissionInterruptions,
+            },
+            assets: {
+              agents: evidence.filter((e) => e.source.includes("agents")).length,
+              skills: evidence.filter((e) => e.source.includes("skills")).length,
+              commands: evidence.filter((e) => e.source.includes("commands")).length,
+              rules: evidence.filter((e) => e.source.includes("rules")).length,
+              hooks: evidence.filter((e) => e.source.includes("hooks")).length,
+              scripts: evidence.filter((e) => e.source.includes("scripts")).length,
+              workflows: evidence.filter((e) => e.source.includes("workflows")).length,
+              tests: evidence.filter((e) => e.summary.includes("Test script")).length,
+              lessons: evidence.filter((e) => e.summary.includes("lessons") || e.summary.includes("Lessons")).length,
+              memoryNodes: 0,
+            },
+          };
 
-        this.activeRun!.progressPercent = 75;
-        this.eventBus.emit("finding.created", { runId, findingCount: findings.length });
+          saveReport(snapshot.projectId, report);
+          saveFindingIndex(snapshot.projectId, findings);
 
-        // Phase 3: Score
-        this.activeRun!.stage = "scoring";
-        const { overallScore, evidenceCoverage } = calculateOverallScore(dimensionScores);
+          this.activeRun!.progressPercent = 100;
+          this.activeRun!.status = "completed";
+          this.activeRun!.stage = "completed";
+          this.eventBus.emit("report.completed", { runId, report });
 
-        // Read session data
-        const sessionRecords = readSessionRecords(projectRoot);
-        const sessionAnalysis = analyzeSessions(sessionRecords);
+          const completedRecord: StoredRun = {
+            ...runRecord,
+            status: "completed",
+            completedAt: new Date().toISOString(),
+            progressPercent: 100,
+          };
+          saveRun(snapshot.projectId, completedRecord);
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.failRun(runId, snapshot.projectId, msg);
+      } finally {
+        clearCancellation(runId);
+      }
+    });
 
-        // Build report
-        const now = new Date().toISOString();
-        const report: HarnessReport = {
-          schemaVersion: 1,
-          engineVersion: "1.0.0",
-          scoringVersion: SCORING_VERSION,
-          generatedAt: now,
-          sourceRevision: snapshot.revision || undefined,
-          project: {
-            name: snapshot.projectId,
-            directory: projectRoot,
-          },
-          overallScore,
-          evidenceCoverage,
-          dimensions: dimensionScores,
-          findings,
-          sessions: {
-            analyzed: sessionAnalysis.totalSessions,
-            longSessions: sessionAnalysis.longSessions,
-            failedSessions: sessionAnalysis.failedSessions,
-            repeatedFailures: sessionAnalysis.repeatedFailures,
-            compactions: sessionAnalysis.compactions,
-            permissionInterruptions: sessionAnalysis.permissionInterruptions,
-          },
-          assets: {
-            agents: evidence.filter((e) => e.source.includes("agents")).length,
-            skills: evidence.filter((e) => e.source.includes("skills")).length,
-            commands: evidence.filter((e) => e.source.includes("commands")).length,
-            rules: evidence.filter((e) => e.source.includes("rules")).length,
-            hooks: evidence.filter((e) => e.source.includes("hooks")).length,
-            scripts: evidence.filter((e) => e.source.includes("scripts")).length,
-            workflows: evidence.filter((e) => e.source.includes("workflows")).length,
-            tests: evidence.filter((e) => e.summary.includes("Test script")).length,
-            lessons: evidence.filter((e) => e.summary.includes("lessons") || e.summary.includes("Lessons")).length,
-            memoryNodes: 0,
-          },
-        };
+    return { ...this.activeRun! };
+  }
 
-        saveReport(snapshot.projectId, report);
+  getRun(runId: string): StoredRun | null {
+    try {
+      const { homedir } = require("os");
+      const { join } = require("path");
+      const { existsSync, readdirSync } = require("fs");
+      const stateDir = join(homedir(), ".flowdeck", "state");
+      if (!existsSync(stateDir)) return null;
+      const projectDirs = readdirSync(stateDir);
+      for (const projectId of projectDirs) {
+        const runPath = join(stateDir, projectId, "better-harness", "runs", runId + ".json");
+        if (existsSync(runPath)) {
+          const { readFileSync } = require("fs");
+          return JSON.parse(readFileSync(runPath, "utf-8")) as StoredRun;
+        }
+      }
+    } catch { /* best-effort */ }
+    return null;
+  }
 
-        // Save finding history
-        saveFindingIndex(snapshot.projectId, findings);
+  cancelRun(runId: string): boolean {
+    const alreadyCancelled = !cancelRunAction(runId);
+    if (alreadyCancelled) return false;
 
-        // Complete run
-        this.activeRun!.progressPercent = 100;
-        this.activeRun!.status = "completed";
-        this.activeRun!.stage = "completed";
-        this.eventBus.emit("report.completed", { runId, report });
-
-        const completedRecord: StoredRun = {
-          ...runRecord,
-          status: "completed",
-          completedAt: new Date().toISOString(),
-          progressPercent: 100,
-        };
-        saveRun(snapshot.projectId, completedRecord);
-      });
-
-      return { ...this.activeRun! };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return this.failRun(runId, snapshot.projectId, msg);
-    } finally {
-      clearCancellation(runId);
+    if (this.activeRun && this.activeRun.runId === runId) {
+      this.activeRun.status = "cancelled";
+      this.activeRun.stage = "cancelled";
+      this.eventBus.emit("run.cancelled", { runId, errorMessage: "Run cancelled" });
     }
+    return true;
+  }
+
+  getActiveRun(): RunState | null {
+    return this.activeRun;
   }
 
   private async runWithTimeout(timeoutMs: number, runId: string, fn: () => Promise<void>): Promise<void> {
@@ -215,7 +243,7 @@ export class RunCoordinator {
     await Promise.race([fn(), timeoutPromise]);
   }
 
-  private cancelRun(runId: string, projectId: string): void {
+  private internalCancelRun(runId: string, projectId: string): void {
     const status: RunState = {
       runId,
       status: "cancelled",
@@ -262,7 +290,6 @@ export class RunCoordinator {
   }
 
   recoverActiveRuns(): void {
-    // Check persisted runs on startup and mark any that are in a non-terminal state
     try {
       const { homedir } = require("os");
       const { join } = require("path");
@@ -283,15 +310,11 @@ export class RunCoordinator {
               run.status = "failed";
               run.completedAt = new Date().toISOString();
               run.errorMessage = "Recovered: process terminated unexpectedly";
-              saveRun(projectId, run);
+              saveRun(run.projectId, run);
             }
           } catch { /* skip corrupt run files */ }
         }
       }
     } catch { /* best-effort recovery */ }
-  }
-
-  getActiveRun(): RunState | null {
-    return this.activeRun;
   }
 }

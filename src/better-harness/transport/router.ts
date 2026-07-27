@@ -1,14 +1,29 @@
 import { z } from "zod/v4";
 import { createRepairSession } from "../opencode/repair-session";
 import { loadRun, listRuns } from "../persistence/run-store";
-import { listReports } from "../persistence/report-store";
+import { loadReport, listReports } from "../persistence/report-store";
 import { loadFindingIndex } from "../persistence/finding-store";
 import { saveIgnoredFinding } from "../persistence/ignored-finding-store";
-import { StartRunRequestSchema, BatchPlanFixRequestSchema, BatchIgnoreRequestSchema, BatchVerifyRequestSchema } from "../contracts/requests";
-import type { SseManager } from "./sse";
+import {
+  StartRunRequestSchema,
+  BatchPlanFixRequestSchema,
+  BatchIgnoreRequestSchema,
+  BatchVerifyRequestSchema,
+  BatchVerifyResponseSchema,
+  BatchPlanFixResponseSchema,
+  BatchIgnoreResponseSchema,
+  StartRunResponseSchema,
+  CancelRunResponseSchema,
+  AvailabilityResponseSchema,
+} from "../contracts/requests";
+import { HarnessReportSchema } from "../contracts/report";
+import type { HarnessReport } from "../contracts/report";
+import { verifyFinding } from "../verification/finding-verifier";
+import { saveFindingIndex } from "../persistence/finding-store";
+import { HarnessRunProgressSchema } from "../contracts/progress";
+import type { RouterContext } from "../runtime/router-context";
 
 const ProjectKeySchema = z.string().min(1).max(256).regex(/^[a-zA-Z0-9_\-.@/]+$/);
-
 const PATH_TRAVERSAL_RE = /\.\.|\//;
 
 export interface RouteHandler {
@@ -24,9 +39,7 @@ interface RouteMatch {
 function matchRoute(pattern: string, urlPath: string): RouteMatch | null {
   const patternParts = pattern.split("/").filter(Boolean);
   const urlParts = urlPath.split("/").filter(Boolean);
-
   if (patternParts.length !== urlParts.length) return null;
-
   const params: Record<string, string> = {};
   for (let i = 0; i < patternParts.length; i++) {
     if (patternParts[i].startsWith(":")) {
@@ -39,7 +52,7 @@ function matchRoute(pattern: string, urlPath: string): RouteMatch | null {
   return { params };
 }
 
-export function validateProjectKey(key: string, resolveProjectPath: ((serverKey: string, projectKey: string) => string | null) | undefined, serverKey: string): { valid: true; path: string } | { valid: false; status: number; body: unknown } {
+function validateProjectKey(key: string, resolveProjectPath: ((serverKey: string, projectKey: string) => string | null) | undefined, serverKey: string): { valid: true; path: string } | { valid: false; status: number; body: unknown } {
   const parsed = ProjectKeySchema.safeParse(key);
   if (!parsed.success) {
     return { valid: false, status: 400, body: { error: "Invalid project key", details: parsed.error } };
@@ -75,12 +88,25 @@ function created(body: unknown): RouteResponse {
   return { status: 201, body };
 }
 
+function badRequest(error: string): RouteResponse {
+  return { status: 400, body: { error } };
+}
+
 export async function routeRequest(
   method: string,
   urlPath: string,
   body: unknown,
-  resolveProjectPath?: (serverKey: string, projectKey: string) => string | null,
-  sseManager?: SseManager,
+  _resolveProjectPath?: (serverKey: string, projectKey: string) => string | null,
+  _sseManager?: unknown,
+): Promise<RouteResponse> {
+  return routeRequestContext({} as RouterContext, method, urlPath, body);
+}
+
+export async function routeRequestContext(
+  ctx: RouterContext,
+  method: string,
+  urlPath: string,
+  body: unknown,
 ): Promise<RouteResponse> {
   try {
     // Health
@@ -93,9 +119,10 @@ export async function routeRequest(
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/availability", urlPath);
       if (m && method === "GET") {
         const { serverKey, projectKey } = m.params;
-        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
-        return ok({ available: true, serverKey, projectKey });
+        const result = AvailabilityResponseSchema.parse({ available: true });
+        return ok(result);
       }
     }
 
@@ -104,10 +131,16 @@ export async function routeRequest(
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/report", urlPath);
       if (m && method === "GET") {
         const { serverKey, projectKey } = m.params;
-        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
-        const index = loadFindingIndex(check.path);
-        return ok({ project: { name: projectKey }, findings: index?.findings ?? [], updatedAt: index?.updatedAt ?? null });
+        const reports = listReports(check.path);
+        if (reports.length === 0) return { status: 404, body: { error: "No report found" } };
+        // Load the latest report
+        const latestReportId = reports[reports.length - 1];
+        const report = loadReport(check.path, latestReportId);
+        if (!report) return { status: 404, body: { error: "Report not found" } };
+        const validated = HarnessReportSchema.parse(report);
+        return ok(validated);
       }
     }
 
@@ -116,11 +149,15 @@ export async function routeRequest(
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/history", urlPath);
       if (m && method === "GET") {
         const { serverKey, projectKey } = m.params;
-        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
-        const runIds = listRuns(check.path);
-        const reports = listReports(check.path);
-        return ok({ runs: runIds, reports });
+        const reportIds = listReports(check.path);
+        const reports: HarnessReport[] = [];
+        for (const id of reportIds) {
+          const report = loadReport(check.path, id);
+          if (report) reports.push(report);
+        }
+        return ok(reports);
       }
     }
 
@@ -129,62 +166,123 @@ export async function routeRequest(
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/current", urlPath);
       if (m && method === "GET") {
         const { serverKey, projectKey } = m.params;
-        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
-        const runIds = listRuns(check.path);
-        if (runIds.length === 0) return ok(null);
-        const lastRun = loadRun(check.path, runIds[runIds.length - 1]);
-        return ok(lastRun);
+        const activeRun = ctx.coordinator.getActiveRun();
+        if (!activeRun) {
+          // Fall back to persisted runs
+          const runIds = listRuns(check.path);
+          if (runIds.length === 0) return ok(null);
+          const lastRun = loadRun(check.path, runIds[runIds.length - 1]);
+          if (!lastRun) return ok(null);
+          const progress = HarnessRunProgressSchema.parse({
+            runId: lastRun.runId,
+            status: lastRun.status,
+            stage: lastRun.stage ?? "unknown",
+            progressPercent: lastRun.progressPercent ?? 0,
+            startedAt: lastRun.startedAt,
+          });
+          return ok(progress);
+        }
+        const progress = HarnessRunProgressSchema.parse({
+          runId: activeRun.runId,
+          status: activeRun.status,
+          stage: activeRun.stage,
+          progressPercent: activeRun.progressPercent,
+        });
+        return ok(progress);
       }
     }
 
-    // --- Start run ---
+    // --- Start run (calls REAL runtime) ---
     {
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs", urlPath);
       if (m && method === "POST") {
         const { serverKey, projectKey } = m.params;
-        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
         const parsed = StartRunRequestSchema.safeParse(body);
         if (!parsed.success) {
-          return { status: 400, body: { error: "Invalid request body", details: parsed.error } };
+          return badRequest("Invalid request body");
         }
-        return created({ accepted: true, runId: "run_" + Date.now() });
+        try {
+          const result = await ctx.runtime.enqueueRun({
+            mode: parsed.data.mode,
+            sourceRevision: parsed.data.sourceRevision,
+            collectors: parsed.data.collectors,
+          });
+          const resp = StartRunResponseSchema.parse({ accepted: true, runId: result.runId });
+          return created(resp);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          const resp = StartRunResponseSchema.parse({ accepted: false, error: msg });
+          return { status: 500, body: resp };
+        }
       }
     }
 
-    // --- Cancel run ---
+    // --- Cancel run (calls REAL runtime) ---
     {
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/:runId/cancel", urlPath);
       if (m && method === "POST") {
         const { serverKey, projectKey, runId } = m.params;
-        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
-        return ok({ accepted: true, runId });
+        const accepted = ctx.runtime.cancelRun(runId);
+        const resp = CancelRunResponseSchema.parse({ accepted });
+        return ok(resp);
       }
     }
 
-    // --- Plan fix (batch) ---
+    // --- Get specific run ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/:runId", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey, runId } = m.params;
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const run = loadRun(check.path, runId);
+        if (!run) return { status: 404, body: { error: "Run not found" } };
+        return ok(run);
+      }
+    }
+
+    // --- Plan fix (batch) with REAL OpenCode sessions ---
     {
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/findings/plan-fix", urlPath);
       if (m && method === "POST") {
         const { serverKey, projectKey } = m.params;
-        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
         const parsed = BatchPlanFixRequestSchema.safeParse(body);
         if (!parsed.success) {
-          return { status: 400, body: { error: "Invalid request body", details: parsed.error } };
+          return badRequest("Invalid request body");
         }
         const findings = loadFindingIndex(check.path);
-        const results = parsed.data.findingIds.map((fid: string) => {
+        const results = [];
+        for (const fid of parsed.data.findingIds) {
           const finding = findings?.findings.find((f) => f.id === fid);
           if (!finding) {
-            return { findingId: fid, accepted: false, error: "Finding not found" };
+            results.push({ findingId: fid, accepted: false, error: "Finding not found" });
+            continue;
           }
-          const session = createRepairSession({ finding, projectPath: check.path });
-          return { findingId: fid, accepted: true, repairSessionId: session.repairSessionId };
-        });
-        return ok({ accepted: true, results });
+          try {
+            const session = await createRepairSession(
+              { finding, projectPath: check.path },
+              ctx.opencodeClient,
+            );
+            if (session.repairSessionId) {
+              results.push({ findingId: fid, accepted: true, repairSessionId: session.repairSessionId });
+            } else {
+              results.push({ findingId: fid, accepted: false, error: session.error ?? "Failed to create session" });
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            results.push({ findingId: fid, accepted: false, error: msg });
+          }
+        }
+        const resp = BatchPlanFixResponseSchema.parse({ accepted: results.some((r) => r.accepted), results });
+        return ok(resp);
       }
     }
 
@@ -193,11 +291,11 @@ export async function routeRequest(
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/findings/ignore", urlPath);
       if (m && method === "POST") {
         const { serverKey, projectKey } = m.params;
-        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
         const parsed = BatchIgnoreRequestSchema.safeParse(body);
         if (!parsed.success) {
-          return { status: 400, body: { error: "Invalid request body", details: parsed.error } };
+          return badRequest("Invalid request body");
         }
         const results = parsed.data.findingIds.map((fid: string) => {
           try {
@@ -207,37 +305,83 @@ export async function routeRequest(
             return { findingId: fid, accepted: false, error: "Failed to ignore finding" };
           }
         });
-        return ok({ accepted: true, results });
+        const resp = BatchIgnoreResponseSchema.parse({ accepted: true, results });
+        return ok(resp);
       }
     }
 
-    // --- Verify findings (batch) ---
+    // --- Verify findings (REAL verification) ---
     {
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/findings/verify", urlPath);
       if (m && method === "POST") {
         const { serverKey, projectKey } = m.params;
-        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
         const parsed = BatchVerifyRequestSchema.safeParse(body);
         if (!parsed.success) {
-          return { status: 400, body: { error: "Invalid request body", details: parsed.error } };
+          return badRequest("Invalid request body");
         }
-        const results = parsed.data.findingIds.map((fid: string) => ({
-          findingId: fid,
-          accepted: true,
-        }));
-        return ok({ accepted: true, results });
+        const findingIndex = loadFindingIndex(check.path);
+        const results = [];
+        for (const fid of parsed.data.findingIds) {
+          const finding = findingIndex?.findings.find((f) => f.id === fid);
+          if (!finding) {
+            results.push({ findingId: fid, accepted: false, error: "Finding not found" });
+            continue;
+          }
+          try {
+            // Run real verification checks
+            const { execSync } = require("child_process");
+            let changedFiles: Array<{ filePath: string; status: "added" | "modified" | "deleted" }> = [];
+            try {
+              const diffOutput = execSync("git diff --name-status", { cwd: check.path, encoding: "utf-8", timeout: 10_000 });
+              changedFiles = diffOutput.split("\n").filter(Boolean).map((line: string) => {
+                const parts = line.split("\t");
+                const statusMap: Record<string, "added" | "modified" | "deleted"> = {
+                  A: "added", M: "modified", D: "deleted",
+                };
+                return { filePath: parts[1] ?? parts[0], status: statusMap[parts[0]] ?? "modified" };
+              });
+            } catch { /* no git diff available */ }
+
+            const verification = verifyFinding(finding, changedFiles, check.path);
+
+            // Update finding status in index
+            if (findingIndex) {
+              const updatedFindings = findingIndex.findings.map((f) => {
+                if (f.id === fid) {
+                  return { ...f, status: verification.status === "fixed" ? ("fixed" as const) : ("pending" as const) };
+                }
+                return f;
+              });
+              saveFindingIndex(check.path, updatedFindings);
+            }
+
+            results.push({
+              findingId: fid,
+              accepted: true,
+              status: verification.status,
+              diffAllowed: verification.diffResult.allowed,
+              requirementsPassed: verification.requirementResults.every((r) => r.passed),
+            });
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            results.push({ findingId: fid, accepted: false, error: msg });
+          }
+        }
+        const resp = BatchVerifyResponseSchema.parse({ accepted: results.some((r) => r.accepted), results });
+        return ok(resp);
       }
     }
 
-    // --- SSE events stream ---
+    // --- SSE events stream (handled by http-server directly) ---
     {
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/:runId/events", urlPath);
       if (m && method === "GET") {
-        if (!sseManager) {
+        if (!ctx.sseManager) {
           return { status: 501, body: { error: "SSE not available" } };
         }
-        return { status: 101, body: { sse: true, sseManager } };
+        return { status: 101, body: { sse: true } };
       }
     }
 
@@ -246,9 +390,12 @@ export async function routeRequest(
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/repair-sessions/:sessionId", urlPath);
       if (m && method === "GET") {
         const { serverKey, projectKey, sessionId } = m.params;
-        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
-        return ok({ repairSessionId: sessionId, status: "pending" });
+        const { loadRepairSession } = require("../persistence/repair-session-store");
+        const session = loadRepairSession(check.path, sessionId);
+        if (!session) return { status: 404, body: { error: "Repair session not found" } };
+        return ok(session);
       }
     }
 

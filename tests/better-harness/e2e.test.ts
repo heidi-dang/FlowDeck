@@ -149,8 +149,10 @@ describe("E2E: Full Lifecycle", () => {
     const { evidence } = await runAllCollectors(TEST_ROOT);
     const findings = analyzeChangeValidation(evidence).findings;
     if (findings.length > 0) {
-      const result = createRepairSession({ finding: findings[0] as HarnessFinding, projectPath: TEST_ROOT });
-      expect(result.repairSessionId).toMatch(/^repair_/);
+      const result = await createRepairSession({ finding: findings[0] as HarnessFinding, projectPath: TEST_ROOT });
+      // Without an OpenCode client, the session creation returns an error
+      expect(result.repairSessionId).toBe("");
+      expect(result.error).toBeTruthy();
       expect(result.prompt).toContain("## Finding");
     }
   });

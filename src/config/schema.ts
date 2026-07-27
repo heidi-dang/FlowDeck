@@ -16,6 +16,10 @@ export interface BetterHarnessConfig {
   port?: number;
   bindHost?: string;
   eventLogDir?: string;
+  authToken?: string;
+  authEnabled?: boolean;
+  maxBodySize?: number;
+  corsOrigins?: string[];
 }
 
 export interface FlowDeckConfig {
@@ -105,3 +109,4 @@ export interface SupervisorConfig {
   /** Confidence threshold (0-1) for approve decision. Default: 0.7 */
   confidenceThreshold?: number;
 }
+

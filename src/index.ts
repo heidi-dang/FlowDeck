@@ -63,9 +63,10 @@ import { repoMemoryTool } from "./tools/repo-memory"
 import { debugLogsTool } from "./tools/debug-logs"
 import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
 import { HarnessHttpServer } from "./better-harness/transport/http-server"
-import { RunCoordinator } from "./better-harness/runtime/run-coordinator"
 import { SseManager } from "./better-harness/transport/sse"
+import { ProjectRegistry } from "./better-harness/runtime/project-registry"
 import type { BetterHarnessConfig } from "./config/schema"
+import type { RouterContext } from "./better-harness/runtime/router-context"
 
 // ─── Governance integration ────────────────────────────────────────────────
 import {
@@ -81,24 +82,16 @@ import { appendAuditEvent } from "./services/audit-log"
 import { isSpecialistAgent, getAllAgentIds } from "./services/canonical-registry"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
-/** Tracks tool call count per session ID. */
 const sessionToolCalls = new Map<string, number>()
-/** Tracks retry count per session ID. */
 const sessionRetries = new Map<string, number>()
-/** Tracks delegation (task tool use) count per session ID. */
 const sessionDelegations = new Map<string, number>()
-/** Tracks total blocks per session. */
 const sessionBlocks = new Map<string, number>()
-/** Tracks total warnings per session. */
 const sessionWarnings = new Map<string, number>()
-/** Tracks session start timestamps. */
 const sessionStartTimes = new Map<string, number>()
-/** Tracks files changed per session. */
 const sessionFilesChanged = new Map<string, Set<string>>()
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
-/** Select FlowDeck rule paths for cfg.instructions injection. */
 function lazyLoadRulePaths(projectRoot: string): { paths: string[]; diagnostics: string } {
   const rulesDir = join(__dir, "..", "src", "rules")
   if (!existsSync(rulesDir)) return { paths: [], diagnostics: "[LazyRuleLoader] rules directory not found" }
@@ -108,7 +101,6 @@ function lazyLoadRulePaths(projectRoot: string): { paths: string[]; diagnostics:
   return { paths, diagnostics: buildSelectionDiagnostics(selection, { languages: detected, projectRoot }) }
 }
 
-/** Load FlowDeck slash commands from src/commands/*.md. */
 function loadCommands(): Record<string, { description?: string; template: string }> {
   const dir = join(__dir, "..", "src", "commands")
   if (!existsSync(dir)) return {}
@@ -129,7 +121,7 @@ function loadCommands(): Record<string, { description?: string; template: string
 const specialistAgentSet = new Set(getAllAgentIds().filter(id => isSpecialistAgent(id)))
 
 const plugin: Plugin = async ({ directory, client }) => {
-  // ─── Structured logging with levels and correlation ─────────────────────
+  // ─── Structured logging ──────────────────────────────────────────────
   let logSequence = 0
   type LogLevel = "debug" | "info" | "warn" | "error"
   const appLog = (msg: string, level: LogLevel = "info", sessionID?: string): Promise<void> => {
@@ -144,14 +136,12 @@ const plugin: Plugin = async ({ directory, client }) => {
     }).then(() => undefined).catch(() => {})
   }
 
-  // Set active project directory for FDX native fallback functions
   setActiveProjectDir(directory)
 
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
   const orchestratorGuard = new OrchestratorGuard({ routes: getAgentRoutes() })
   const loopDetector = new LoopDetector(flowdeckConfig.governance?.loopDetection, appLog)
 
-  // Resolve budget limits from config (with safe defaults)
   const maxToolCalls = flowdeckConfig.governance?.delegationBudget?.maxToolCalls ?? 200
   const maxRetries = flowdeckConfig.governance?.delegationBudget?.maxSameStepRetries ?? 3
   const maxDelegations = flowdeckConfig.governance?.delegationBudget?.maxDelegations ?? 20
@@ -159,40 +149,77 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
-  // --- Better Harness integration -------------------------------------------
-  let _betterHarnessRuntime: HarnessRuntime | null = null
+  // --- Better Harness integration using shared graph ------------------------
+  let betterHarnessRuntime: HarnessRuntime | null = null
   let betterHarnessServer: HarnessHttpServer | null = null
   let betterHarnessSseManager: SseManager | null = null
+  let _betterHarnessCleanup: (() => void) | null = null
 
+  const projectRegistry = new ProjectRegistry()
   const bhConfig: BetterHarnessConfig | undefined = flowdeckConfig.betterHarness
   if (bhConfig?.enabled) {
-    _betterHarnessRuntime = new HarnessRuntime({
+    // Create runtime (it creates its own coordinator internally)
+    betterHarnessRuntime = new HarnessRuntime({
       projectRoot: directory,
       timeoutMs: 120_000,
     })
 
-    const coordinator = new RunCoordinator()
+    // Register project in registry
+    projectRegistry.register({
+      serverKey: "default",
+      projectKey: basename(directory),
+      canonicalProjectRoot: directory,
+    })
+
+    const coordinator = betterHarnessRuntime.getCoordinator()
     const eventBus = coordinator.getEventBus()
 
     const eventLogDir = bhConfig.eventLogDir
     betterHarnessSseManager = new SseManager(eventBus, eventLogDir)
 
+    // Build auth config
+    const authToken = bhConfig.authToken ?? null
+    const authEnabled = bhConfig.authEnabled ?? false
+
+    // Build router context with all dependencies
+    const routerContext: RouterContext = {
+      runtime: betterHarnessRuntime,
+      coordinator,
+      resolveProjectPath: (serverKey: string, projectKey: string) => {
+        return projectRegistry.resolve(serverKey, projectKey)
+      },
+      sseManager: betterHarnessSseManager,
+      authToken: authToken ?? undefined,
+      bindHost: bhConfig.bindHost ?? "127.0.0.1",
+      opencodeClient: client,
+    }
+
     betterHarnessServer = new HarnessHttpServer({
       enabled: true,
       port: bhConfig.port ?? 0,
-      bindHost: bhConfig.bindHost ?? '127.0.0.1',
+      bindHost: bhConfig.bindHost ?? "127.0.0.1",
+      auth: {
+        token: authToken ?? undefined,
+        enabled: authEnabled,
+      },
+      maxBodySize: bhConfig.maxBodySize ?? 1024 * 1024,
     })
-    if (betterHarnessSseManager) {
-      betterHarnessServer.setSseManager(betterHarnessSseManager)
-    }
+    betterHarnessServer.setSseManager(betterHarnessSseManager)
+    betterHarnessServer.setRouterContext(routerContext)
 
     betterHarnessServer.start().then((port) => {
-      appLog('[better-harness] HTTP server started on port ' + port)
+      appLog("[better-harness] HTTP server started on port " + port)
     }).catch((err: Error) => {
-      appLog('[better-harness] Failed to start HTTP server: ' + err.message, 'error')
+      appLog("[better-harness] Failed to start HTTP server: " + err.message, "error")
     })
 
     coordinator.recoverActiveRuns()
+
+    // Set up cleanup
+    _betterHarnessCleanup = () => {
+      betterHarnessServer?.stop().catch(() => {})
+      projectRegistry.unregister(basename(directory))
+    }
   }
 
   return {
@@ -299,7 +326,6 @@ const plugin: Plugin = async ({ directory, client }) => {
           if (govMode === "strict") {
             throw new Error(msg)
           }
-          // advisory: warn and continue
           appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
         }
       }
@@ -312,7 +338,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         agent,
       )
 
-      // ── 2. Governance tool check (off/advisory/strict) ────────────────
+      // ── 2. Governance tool check ────────────────────────────────
       const governanceResult = evaluateGovernanceToolCheck({
         directory,
         sessionID,
@@ -331,7 +357,6 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       // ── 3. Delegation depth check & budget ───────────────────────────
       if (toolName === "task") {
-        // Read depth from session state or tool args
         const currentDepth = (toolInput.args?.depth as number) ?? 0
         const targetAgent = (toolInput.args?.agent as string) ?? "unknown"
         const depthResult = validateDelegationDepth(agent, targetAgent, currentDepth, specialistAgentSet, maxDepth)
@@ -348,7 +373,6 @@ const plugin: Plugin = async ({ directory, client }) => {
           throw new Error(depthResult.reason ?? "Delegation blocked")
         }
 
-        // Track delegation count per session
         if (sessionID) {
           const delCount = (sessionDelegations.get(sessionID) ?? 0) + 1
           sessionDelegations.set(sessionID, delCount)
@@ -364,7 +388,6 @@ const plugin: Plugin = async ({ directory, client }) => {
             if (govMode === "strict") {
               throw new Error(msg)
             }
-            // advisory: warn and continue
             appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
           }
         }
@@ -420,7 +443,6 @@ const plugin: Plugin = async ({ directory, client }) => {
       const agent = toolInput.agent ?? "unknown"
       appLog(`[tool] done tool=${toolName} session=${sessionID}`)
 
-      // ── 0. Track files changed for scorecard ─────────────────────────
       if (sessionID && toolName && toolInput.args?.file && !toolInput.error) {
         if (!sessionFilesChanged.has(sessionID)) {
           sessionFilesChanged.set(sessionID, new Set())
@@ -428,10 +450,8 @@ const plugin: Plugin = async ({ directory, client }) => {
         sessionFilesChanged.get(sessionID)!.add(String(toolInput.args.file))
       }
 
-      // ── 1. Post-write verification lifecycle ──────────────────────────
       executePostWriteHook(directory, sessionID, agent, toolName, toolInput.args ?? {})
 
-      // ── 2. Governance verified post-write ─────────────────────────────
       executeVerifiedPostWrite(directory, {
         sessionID,
         agent,
@@ -439,7 +459,6 @@ const plugin: Plugin = async ({ directory, client }) => {
         filePath: toolInput.args?.file as string | undefined,
       })
 
-      // ── 3. Record in loop detector ────────────────────────────────────
       loopDetector.recordAfter(
         toolName,
         toolInput.args ?? {},
@@ -448,7 +467,6 @@ const plugin: Plugin = async ({ directory, client }) => {
         "success"
       )
 
-      // ── 4. Recovery tracking & retry budget ──────────────────────────
       if (toolInput.error) {
         recordRecoveryAudit({
           directory,
@@ -459,7 +477,6 @@ const plugin: Plugin = async ({ directory, client }) => {
           message: `Tool ${toolName} failed: ${String(toolInput.error).slice(0, 200)}`,
         })
 
-        // Track retries per session and enforce retry budget
         if (sessionID) {
           const retryCount = (sessionRetries.get(sessionID) ?? 0) + 1
           sessionRetries.set(sessionID, retryCount)
@@ -475,7 +492,6 @@ const plugin: Plugin = async ({ directory, client }) => {
             if (govMode === "strict") {
               throw new Error(msg)
             }
-            // advisory: warn and continue
             appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
           }
         }
@@ -510,7 +526,6 @@ const plugin: Plugin = async ({ directory, client }) => {
               reason: "Session completed",
             })
 
-            // Generate scorecard with real session metrics
             if (sessionID) {
               const toolCalls = sessionToolCalls.get(sessionID) ?? 0
               const retries = sessionRetries.get(sessionID) ?? 0
@@ -549,13 +564,11 @@ const plugin: Plugin = async ({ directory, client }) => {
             })
           }
         } finally {
-          // Outer finally: guaranteed cleanup even if hook, audit log, scorecard, or appLog throws!
           if (sessionID) {
             cleanupSessionState(sessionID, loopDetector)
           }
         }
       } else if (type === "session.idle") {
-        // session.idle is nonterminal: preserve accumulated metrics!
         await sessionEventsHook({ directory }, "idle", sessionID)
       }
       orchestratorGuard.onEvent(event)
@@ -563,10 +576,6 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
 }
 
-/**
- * Single authoritative cleanup function for session state.
- * Clears all session metrics, loop detector state, and write counters.
- */
 export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void {
   if (!sessionID) return
   sessionToolCalls.delete(sessionID)
@@ -604,13 +613,6 @@ export function getSessionMetricsDiagnostics(sessionID: string): {
 
 export default plugin
 
-// ─── Production diagnostics exports ──────────────────────────────────────────
-// These named exports are consumed by scripts/doctor-engine.mjs when running
-// as a packed npm package (no src/ directory available). Doctor imports them
-// via `import("../dist/index.js")` and verifies each probe executes correctly.
-// Removing or renaming any export here will cause the corresponding Doctor
-// check to FAIL (not silently pass).
 export { AGENT_NAMES, createAgent } from "./agents/index"
 export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
 export { acquireLock, releaseLock } from "./services/async-lock"
-

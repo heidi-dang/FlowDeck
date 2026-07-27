@@ -1,5 +1,6 @@
 import type { HarnessFinding } from "../contracts/report";
 import { buildRepairPrompt } from "./repair-prompt";
+import { saveRepairSession } from "../persistence/repair-session-store";
 
 export interface RepairSessionRequest {
   finding: HarnessFinding;
@@ -9,16 +10,13 @@ export interface RepairSessionRequest {
 export interface RepairSessionResponse {
   repairSessionId: string;
   prompt: string;
+  error?: string;
 }
 
-export interface OpenCodeClientLike {
-  createSession: (config: { prompt: string; restrictedPaths: string[] }) => Promise<string>;
-}
-
-export function createRepairSession(
+export async function createRepairSession(
   request: RepairSessionRequest,
-  opencodeClient?: OpenCodeClientLike,
-): RepairSessionResponse {
+  opencodeClient?: unknown,
+): Promise<RepairSessionResponse> {
   const { finding, projectPath } = request;
 
   const prompt = buildRepairPrompt({
@@ -26,25 +24,40 @@ export function createRepairSession(
     projectPath,
   });
 
-  const repairSessionId = "repair_" + finding.id + "_" + Date.now();
-
-  // Use opencode client if available
-  if (opencodeClient && opencodeClient.createSession) {
-    // The async creation is fire-and-forget; the ID is returned immediately
-    opencodeClient.createSession({
-      prompt,
-      restrictedPaths: finding.allowedPaths,
-    }).then((_sessionId) => {
-      // session created successfully
-    }).catch(() => {
-      // fallback to synthetic ID
-    });
+  // Try OpenCode client if available to create a real session
+  if (opencodeClient && typeof opencodeClient === "object") {
+    const client = opencodeClient as Record<string, unknown>;
+    const sessionNs = client.session as Record<string, unknown> | undefined;
+    if (sessionNs && typeof sessionNs.create === "function") {
+      try {
+        const result = await (sessionNs.create as (opts: Record<string, unknown>) => unknown)({
+          body: { title: `Repair: ${finding.title}` },
+          query: { directory: projectPath },
+        });
+        if (result && typeof result === "object") {
+          const session = (result as Record<string, unknown>).data as Record<string, unknown> | undefined;
+          const sessionId = session?.id as string | undefined;
+          if (sessionId) {
+            const repairSessionId = "rs_" + sessionId;
+            // Persist the session
+            saveRepairSession(projectPath, {
+              repairSessionId,
+              findingId: finding.id,
+              prompt,
+              status: "created",
+              createdAt: new Date().toISOString(),
+            });
+            return { repairSessionId, prompt };
+          }
+        }
+      } catch {
+        return { repairSessionId: "", prompt, error: "Failed to create OpenCode session" };
+      }
+    }
   }
 
-  return {
-    repairSessionId,
-    prompt,
-  };
+  // No OpenCode client available, return failure (no synthetic fallback)
+  return { repairSessionId: "", prompt, error: "No OpenCode client available for session creation" };
 }
 
 export function generateRestrictedRepairPrompt(

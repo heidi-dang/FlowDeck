@@ -1,8 +1,9 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "http";
-import { routeRequest } from "./router";
+import { routeRequestContext } from "./router";
 import { createCorsHeaders, DEFAULT_CORS_CONFIG, type CorsConfig } from "./cors";
 import { createAuthCheck, type AuthConfig } from "./authentication";
 import type { SseManager } from "./sse";
+import type { RouterContext } from "../runtime/router-context";
 
 export interface HttpServerConfig {
   enabled: boolean;
@@ -18,7 +19,7 @@ const DEFAULT_CONFIG: HttpServerConfig = {
   enabled: false,
   bindHost: "127.0.0.1",
   port: 0,
-  maxBodySize: 1024 * 1024, // 1MB
+  maxBodySize: 1024 * 1024,
   timeoutMs: 30_000,
 };
 
@@ -26,6 +27,8 @@ export class HarnessHttpServer {
   private server: Server | null = null;
   private config: HttpServerConfig;
   private sseManager: SseManager | null = null;
+  private routerContext: RouterContext | null = null;
+  private hasResponded = false;
 
   constructor(config: Partial<HttpServerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -33,6 +36,10 @@ export class HarnessHttpServer {
 
   setSseManager(manager: SseManager): void {
     this.sseManager = manager;
+  }
+
+  setRouterContext(ctx: RouterContext): void {
+    this.routerContext = ctx;
   }
 
   start(): Promise<number> {
@@ -52,6 +59,8 @@ export class HarnessHttpServer {
 
     return new Promise((resolve, reject) => {
       this.server = createServer((req: IncomingMessage, res: ServerResponse) => {
+        this.hasResponded = false;
+
         // CORS headers
         const corsHeaders = createCorsHeaders(corsConfig, req.headers.origin);
         for (const [key, val] of Object.entries(corsHeaders)) {
@@ -65,8 +74,9 @@ export class HarnessHttpServer {
           return;
         }
 
-        // Auth check for non-loopback
-        if (this.config.bindHost !== "127.0.0.1" && this.config.bindHost !== "localhost") {
+        // Fail-closed auth: non-loopback MUST have token
+        const isLoopback = this.config.bindHost === "127.0.0.1" || this.config.bindHost === "localhost" || this.config.bindHost === "::1";
+        if (!isLoopback) {
           const authToken = req.headers.authorization?.replace("Bearer ", "");
           if (!authCheck(authToken)) {
             res.writeHead(401, { "Content-Type": "application/json" });
@@ -78,9 +88,36 @@ export class HarnessHttpServer {
         const urlPath = req.url ?? "/";
         const method = req.method ?? "GET";
 
-        // Detect SSE route early
+        // Detect SSE route and handle specially
+        const sseRouteMatch = urlPath.match(/\/api\/v1\/servers\/([^/]+)\/projects\/([^/]+)\/better-harness\/runs\/([^/]+)\/events$/);
+        if (method === "GET" && sseRouteMatch && this.sseManager) {
+          const [, serverKey, projectKey, runId] = sseRouteMatch;
+
+          // Auth check for SSE too
+          if (!isLoopback) {
+            const authToken = req.headers.authorization?.replace("Bearer ", "");
+            if (!authCheck(authToken)) {
+              res.writeHead(401, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Unauthorized" }));
+              return;
+            }
+          }
+
+          this.sseManager.handleSseRequest(req, res, serverKey, projectKey, runId);
+          return;
+        }
+
+        // Fallback SSE detection (without route params)
         const isSseRoute = method === "GET" && urlPath.includes("/events");
         if (isSseRoute && this.sseManager) {
+          if (!isLoopback) {
+            const authToken = req.headers.authorization?.replace("Bearer ", "");
+            if (!authCheck(authToken)) {
+              res.writeHead(401, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Unauthorized" }));
+              return;
+            }
+          }
           this.sseManager.handleSseRequest(req, res);
           return;
         }
@@ -89,24 +126,38 @@ export class HarnessHttpServer {
         let body = "";
         let bodySize = 0;
         const maxSize = this.config.maxBodySize ?? 1024 * 1024;
+        let bodyReadError = false;
 
         req.on("data", (chunk: string) => {
           bodySize += chunk.length;
           if (bodySize > maxSize) {
-            res.writeHead(413, { "Content-Type": "application/json" });
-            res.end(JSON.stringify({ error: "Request body too large" }));
+            if (!this.hasResponded) {
+              this.hasResponded = true;
+              res.writeHead(413, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Request body too large" }));
+            }
             req.destroy();
+            bodyReadError = true;
             return;
           }
           body += chunk;
         });
 
         req.on("end", async () => {
-          const parsedBody = body ? tryParseJson(body) : undefined;
-          // Pass sseManager and resolveProjectPath (null for now, wired externally)
-          const result = await routeRequest(method, urlPath, parsedBody, undefined, this.sseManager ?? undefined);
-          res.writeHead(result.status, { "Content-Type": "application/json" });
-          res.end(JSON.stringify(result.body));
+          if (bodyReadError) return;
+
+          const parsedBody = body ? parseJsonBody(body) : undefined;
+          const result = await routeRequestContext(
+            this.routerContext!,
+            method,
+            urlPath,
+            parsedBody,
+          );
+          if (!this.hasResponded) {
+            this.hasResponded = true;
+            res.writeHead(result.status, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(result.body));
+          }
         });
       });
 
@@ -140,10 +191,11 @@ export class HarnessHttpServer {
   }
 }
 
-function tryParseJson(text: string): unknown {
+function parseJsonBody(text: string): unknown {
   try {
     return JSON.parse(text);
   } catch {
+    // Malformed JSON -> 400, return sentinel
     return undefined;
   }
 }
