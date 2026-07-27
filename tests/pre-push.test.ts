@@ -249,6 +249,46 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
         /Malformed pre-push hook input/
       )
     })
+
+    it("marks untrustworthy when new-branch ref cannot resolve merge base (fail-closed)", () => {
+      // Simulate new branch with no upstream and origin/main merge-base failure
+      const mockExec = (cmd: string) => {
+        if (cmd.includes("rev-parse --abbrev-ref @{upstream}")) throw new Error("no upstream")
+        if (cmd.includes("git merge-base")) throw new Error("no merge-base")
+        throw new Error(`Unexpected: ${cmd}`)
+      }
+      const zeroSha = "0000000000000000000000000000000000000000"
+      const stdin = `refs/heads/new newSha refs/heads/new ${zeroSha}\n`
+      const res = getChangedFiles(stdin, ".", mockExec)
+      // Files is empty because diff couldn't be run, but trustworthy is false
+      // because an unresolved ref sets gitError = true
+      expect(res.files).toEqual([])
+      expect(res.source).toBe("refs")
+      expect(res.trustworthy).toBe(false)
+    })
+
+    it("marks untrustworthy when one ref in multi-ref push is unresolved", () => {
+      let callCount = 0
+      const mockExec = (cmd: string) => {
+        callCount++
+        // First call: new branch ref that fails
+        if (callCount <= 2 && cmd.includes("rev-parse --abbrev-ref @{upstream}")) throw new Error("no upstream")
+        if (callCount <= 3 && cmd.includes("git merge-base")) throw new Error("no base")
+        // Second call: existing branch that works
+        if (cmd.includes("git diff --name-only")) return "src/index.ts\n"
+        throw new Error(`Unexpected: ${cmd}`)
+      }
+      const zeroSha = "0000000000000000000000000000000000000000"
+      const stdin =
+        `refs/heads/new newSha refs/heads/new ${zeroSha}\n` +
+        "refs/heads/fix abc123 refs/heads/fix 000999\n"
+      const res = getChangedFiles(stdin, ".", mockExec)
+      // Files should contain the resolved ref's changes, but trustworthy is false
+      // because the new branch ref was unresolved
+      expect(res.files).toContain("src/index.ts")
+      expect(res.source).toBe("refs")
+      expect(res.trustworthy).toBe(false)
+    })
   })
 
   // ── isEscalationRequired ──────────────────────────────────────────────────────
@@ -426,10 +466,11 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
       expect(result).toBe("refs/heads/main abc123 refs/heads/main def456\n")
     })
 
-    it("returns empty string when stdin is not a TTY but read throws", () => {
+    it("throws when stdin is not a TTY and read fails (fail-closed)", () => {
       const mockRead = () => { throw new Error("read error") }
-      const result = readPrePushInput({ isTTY: false, readFn: mockRead })
-      expect(result).toBe("")
+      expect(() => readPrePushInput({ isTTY: false, readFn: mockRead })).toThrow(
+        /Failed to read stdin in non-TTY mode/
+      )
     })
 
     it("returns stdin content when isTTY is false and input is empty", () => {
@@ -549,6 +590,19 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
       const ranges = resolvePushRanges(stdin, ".", mockExec)
       expect(ranges).toHaveLength(1)
       expect(ranges[0]).toEqual({ baseSha: "base123", localSha: "newSha" })
+    })
+
+    it("throws on new-branch ref when merge base cannot be resolved (fail-closed)", () => {
+      const mockExec = (cmd: string) => {
+        if (cmd.includes("rev-parse --abbrev-ref @{upstream}")) throw new Error("no upstream")
+        if (cmd.includes("git merge-base")) throw new Error("no merge-base")
+        throw new Error(`Unexpected: ${cmd}`)
+      }
+      const zeroSha = "0000000000000000000000000000000000000000"
+      const stdin = `refs/heads/new newSha refs/heads/new ${zeroSha}\n`
+      expect(() => resolvePushRanges(stdin, ".", mockExec)).toThrow(
+        /Cannot resolve merge base/
+      )
     })
   })
 

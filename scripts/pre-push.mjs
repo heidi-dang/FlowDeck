@@ -119,7 +119,10 @@ export function readPrePushInput({ isTTY = process.stdin.isTTY, readFn = (fd) =>
   try {
     return readFn(0)
   } catch {
-    return ""
+    // Non-TTY stdin read failure → fail closed (Git hook expected input)
+    throw new Error(
+      "Failed to read stdin in non-TTY mode. If this is a Git hook, check pipe connectivity."
+    )
   }
 }
 
@@ -307,6 +310,8 @@ export function getChangedFiles(stdinText = "", cwd = root, execFn = defaultExec
           if (baseSha) {
             const diff = execFn(`git diff --name-only "${baseSha}" "${localSha}"`, cwd)
             diff.split("\n").map((f) => f.trim()).filter(Boolean).forEach((f) => files.add(f))
+          } else {
+            gitError = true // Unresolved ref — cannot verify what's being pushed
           }
         } else {
           const diff = execFn(`git diff --name-only "${remoteSha}" "${localSha}"`, cwd)
@@ -487,8 +492,11 @@ export function resolvePushRanges(stdinText = "", cwd = root, execFn = defaultEx
 
       if (baseSha) {
         ranges.push({ baseSha, localSha })
+      } else {
+        throw new Error(
+          `Cannot resolve merge base for new branch ref ${entry.localRef} (${entry.localSha}). Push blocked.`
+        )
       }
-      // If no base can be resolved, the range is omitted — caller must handle
     } else {
       ranges.push({ baseSha: remoteSha, localSha })
     }
