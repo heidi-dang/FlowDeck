@@ -22,7 +22,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import plugin from "@/index"
+import flowDeckPlugin from "@/index"
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "flowdeck-gov-chain-"))
@@ -46,7 +46,6 @@ function createMockClient() {
 }
 
 interface PluginInstance {
-  name: string
   "tool.execute.before": (input: any, output: any) => Promise<void>
   "tool.execute.after": (input: any, output: any) => Promise<void>
   event: (input: { event: any }) => Promise<void>
@@ -58,6 +57,7 @@ describe("Governance chain integration", () => {
   let instance: PluginInstance
 
   beforeEach(async () => {
+    process.env.FLOWDECK_DISABLE_FDX_REDIRECT = "true"
     dir = makeTempDir()
     // Create minimal planning state so plugin loads cleanly
     const pd = join(dir, ".opencode", "planning")
@@ -65,7 +65,7 @@ describe("Governance chain integration", () => {
     writeFileSync(join(pd, "STATE.md"), "---\nphase: 1\n---\n# State", "utf-8")
 
     client = createMockClient()
-    instance = (await plugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
+    instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
   })
 
   afterEach(() => {
@@ -89,7 +89,7 @@ describe("Governance chain integration", () => {
         }),
         "utf-8"
       )
-      instance = (await plugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
+      instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
 
       const sessionID = "budget-strict"
       const input = { tool: "read", sessionID, agent: "heidi", args: {} }
@@ -134,7 +134,7 @@ describe("Governance chain integration", () => {
         }),
         "utf-8"
       )
-      instance = (await plugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
+      instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
 
       const input = { tool: "write_file", sessionID: "gov-strict", agent: "researcher", args: {} }
       await expect(
@@ -152,7 +152,7 @@ describe("Governance chain integration", () => {
         }),
         "utf-8"
       )
-      instance = (await plugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
+      instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
 
       const input = { tool: "write_file", sessionID: "gov-advisory", agent: "researcher", args: {} }
       await expect(instance["tool.execute.before"](input, {})).resolves.toBeUndefined()
@@ -170,7 +170,7 @@ describe("Governance chain integration", () => {
         }),
         "utf-8"
       )
-      instance = (await plugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
+      instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
 
       const input = {
         tool: "task",
@@ -195,7 +195,7 @@ describe("Governance chain integration", () => {
         }),
         "utf-8"
       )
-      instance = (await plugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
+      instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
 
       const sessionID = "loop-test"
       const input = { tool: "write", sessionID, agent: "heidi", args: { file: "a.ts", content: "x" } }

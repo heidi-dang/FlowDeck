@@ -223,10 +223,6 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
 
   return {
-    name: "@heidi-dang/flowdeck",
-    agent: {},
-    mcp: mcps,
-
     config: async (cfg: Record<string, unknown>) => {
       if (!(cfg as { default_agent?: string }).default_agent) {
         (cfg as { default_agent?: string }).default_agent = "heidi"
@@ -611,7 +607,12 @@ export function getSessionMetricsDiagnostics(sessionID: string): {
   }
 }
 
-export default plugin
+const flowDeckPlugin = {
+  id: "@heidi-dang/flowdeck",
+  server: plugin,
+}
+
+export default flowDeckPlugin
 
 export { AGENT_NAMES, createAgent } from "./agents/index"
 export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"

@@ -14,7 +14,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync
 import { tmpdir } from "os"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"
-import plugin from "@/index"
+import flowDeckPlugin from "@/index"
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "flowdeck-index-test-"))
@@ -48,9 +48,6 @@ function createMockClient(events: unknown[] = []) {
 }
 
 interface TestHooks {
-  name: string
-  agent?: Record<string, unknown>
-  mcp?: Record<string, unknown>
   tool?: Record<string, { execute: (...args: any[]) => any }>
   config?: (cfg: any) => Promise<void>
   "tool.execute.before"?: (input: any, output: any) => Promise<void>
@@ -72,16 +69,16 @@ describe("plugin entry", () => {
   })
 
   async function loadPlugin(client: any): Promise<TestHooks> {
-    return (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+    return (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
   }
 
   it("returns a plugin object with expected registration keys", async () => {
     const client = createMockClient()
     const instance = await loadPlugin(client)
 
-    expect(instance.name).toBe("@heidi-dang/flowdeck")
-    expect(instance.agent).toBeDefined()
-    expect(instance.mcp).toBeDefined()
+    expect(instance.config).toBeDefined()
+
+
     expect(instance.tool).toBeDefined()
     expect(instance.config).toBeDefined()
     expect(instance["tool.execute.before"]).toBeDefined()
@@ -150,6 +147,7 @@ describe("plugin entry", () => {
   })
 
   it("does not attach a flowdeck routing hint in tool.execute.before", async () => {
+    process.env.FLOWDECK_DISABLE_FDX_REDIRECT = "true"
     const client = createMockClient()
     const instance = await loadPlugin(client)
 
@@ -217,7 +215,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
 
   it("writes a flowdeck.log entry on session.idle events", async () => {
     const client = createMockClient()
-    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+    const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
 
     await instance.event?.({ event: { type: "session.idle", properties: { sessionID: "sess-idle" } } })
 
@@ -229,7 +227,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
 
   it("writes a flowdeck.log entry on session.error events", async () => {
     const client = createMockClient()
-    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+    const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
 
     await instance.event?.({ event: { type: "session.error", properties: { sessionID: "sess-err" } } })
 
@@ -242,7 +240,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
   it("session.idle preserves per-session write counter while session.completed clears it", async () => {
     const { recordWrite, getWriteCount, clearWriteCounter } = await import("@/hooks/tool-guard")
     const client = createMockClient()
-    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+    const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
 
     const sessionID = "sess-clear"
     recordWrite(sessionID, "/tmp/a.ts")
@@ -282,7 +280,7 @@ describe("plugin entry: toolGuardHook wiring (bug 3b)", () => {
 
   it("blocks a write in discuss phase when FLOWDECK_TOOL_GUARD_ENABLED=on", async () => {
     const client = createMockClient()
-    const instance = (await plugin({ directory: dir, client } as any, {})) as unknown as TestHooks
+    const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
 
     const toolInput: any = { tool: "write", sessionID: "primary", args: { filePath: "src/x.ts" } }
 

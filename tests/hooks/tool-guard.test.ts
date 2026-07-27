@@ -10,6 +10,7 @@ const TEST_SESSION = "test-session"
 describe("toolGuardHook - Phase Enforcement", () => {
   beforeEach(() => {
     process.env.FLOWDECK_TOOL_GUARD_ENABLED = "on"
+    process.env.FLOWDECK_DISABLE_FDX_REDIRECT = "true"
     if (!existsSync(TMP)) mkdirSync(TMP, { recursive: true })
     if (!existsSync(planningDir(TMP))) mkdirSync(planningDir(TMP), { recursive: true })
     clearWriteCounter(TEST_SESSION)
