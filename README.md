@@ -1,86 +1,233 @@
 # FlowDeck — Heidi fork
 
-> Structured planning and execution workflows for OpenCode
+> Structured planning and execution workflows for [OpenCode](https://opencode.ai)
 
-FlowDeck adds multi-agent workflow orchestration to OpenCode. Coordinates 13 agents through an adaptive lifecycle — intake, route, context, execute, verify, complete — with persistent state, configurable governance, and tool-selection policies.
+**FlowDeck** is an OpenCode plugin that adds governed multi-agent orchestration, skill-based workflows, tool-selection policies, audit logging, and lifecycle management to OpenCode sessions. It does not replace OpenCode's model access, session management, or core tool execution — it extends them with a structured orchestration and governance layer.
 
-**Package**: `@heidi-dang/flowdeck`
+**Package**: [`@heidi-dang/flowdeck`](https://www.npmjs.com/package/@heidi-dang/flowdeck)
+
+| Status | |
+|---|---|
+| **Development** | Alpha (v0.8.0-alpha.1) |
+| **License** | [MIT](LICENSE) |
+| **OpenCode** | >= 1.4.0 |
+| **Node.js** | >= 18.0.0 |
+| **OS** | Linux, macOS, Windows |
+| **CI** | [![CI](https://github.com/heidi-dang/FlowDeck/actions/workflows/ci.yml/badge.svg)](https://github.com/heidi-dang/FlowDeck/actions/workflows/ci.yml) |
 
 ---
 
-## Quick Install
+## Overview
 
-### From npm (published package)
+FlowDeck integrates with OpenCode as a plugin and provides:
+
+- **Heidi master orchestration** — a primary agent (`heidi`) that executes tasks directly by default and delegates to specialists only when specific conditions are met.
+- **13 specialized agents** — each with a defined role, model inheritance, and tool permissions.
+- **61 validated skills** — reusable workflow patterns stored in `src/skills/<name>/SKILL.md`.
+- **Tool governance** — permission guards, loop detection, token budgets, and audit logging.
+- **Validation gates** — fast pre-push checks for changed files and a full production verification suite.
+- **Session lifecycle** — start/end hooks, checkpoint, recovery, and session events.
+- **Installation ownership tracking** — safe install, upgrade, rollback, and uninstall without damaging pre-existing configuration.
+
+FlowDeck is **not** a standalone AI platform. It requires OpenCode to provide model access, session infrastructure, and core tool execution.
+
+---
+
+## Quick Start
 
 ```bash
+# Install from npm (recommended)
 npx @heidi-dang/flowdeck install
+
+# Verify the installation
+npx flowdeck verify
+npx flowdeck doctor
 ```
 
-### From local repository
+Installation takes effect after restarting OpenCode. See [Installation](docs/wiki/Installation.md) for all supported methods.
 
-```bash
-git clone https://github.com/heidi-dang/FlowDeck.git
-cd FlowDeck
-bash install.sh --local-repo
-```
-
-### From curl (standalone script)
+### Alternative — curl standalone
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash
 ```
 
-See [docs/getting-started/installation.md](docs/getting-started/installation.md) for prerequisites and verification.
-
 ---
 
 ## Features
 
-- **13 agents** — `heidi` (default primary), `orchestrator`, `planner`, `architect`, `backend-coder`, `frontend-coder`, `devops`, `tester`, `reviewer`, `researcher`, `security-auditor`, `mapper`, `debug-specialist`
-- **61 skills** — validated workflow patterns in `src/skills/<name>/SKILL.md`
+- **13 specialized agents** — Heidi (default primary), orchestrator, planner, architect, and more
+- **61 validated skills** — reusable workflow patterns in `src/skills/<name>/SKILL.md`
 - **8 slash commands** — `/fd-task`, `/fd-execute`, `/fd-verify`, `/fd-review`, `/fd-checkpoint`, `/fd-resume`, `/fd-status`, `/fd-done`
-- **Heidi direct execution** — execute tasks directly by default, delegate to specialists only when justified
-- **Delegation depth 1** — specialists cannot delegate; Heidi cannot delegate to itself
-- **Persistent state** — resume across sessions via `~/.fd-plan/<project-id>/`
-- **FDX CLI with native fallbacks** — all 15 FDX tools have TypeScript fallbacks
-- **Governance layer** — validator, supervisor, loop detector, audit log, verification, tool guard, guard rails
-- **Governance modes** — `off`, `advisory`, `strict` for all subsystems
-- **Model inheritance** — all agents inherit the UI-selected model by default (optional overrides supported)
+- **Tool governance** — permission guards, loop detection, token budgets, and audit logging
 
 ---
 
 ## CLI Commands
 
 | Command | Description |
-|---------|-------------|
-| `flowdeck install` | Install plugin in opencode.json |
-| `flowdeck install --project` | Install in project .opencode/ |
-| `flowdeck install --local-repo` | Install from local checkout |
-| `flowdeck verify` | Verify fork identity and registration |
+|---|---|
+| `flowdeck install` | Install plugin in OpenCode configuration |
+| `flowdeck install --project` | Install in project-level `.opencode/` |
+| `flowdeck install --local-repo` | Install from a local Git checkout |
+| `flowdeck verify` | Verify package identity and OpenCode registration |
 | `flowdeck doctor` | Run comprehensive diagnostics |
-| `flowdeck config validate` | Validate JSON/JSONC configuration |
-| `flowdeck migrate` | Migrate from upstream to fork identity |
-| `flowdeck update` | Update plugin registration |
-| `flowdeck rollback` | Rollback from backup |
-| `flowdeck uninstall` | Remove plugin registration |
-| `flowdeck dry-run` | Show what would be done |
+| `flowdeck config validate` | Validate JSON/JSONC configuration syntax |
+| `flowdeck migrate` | Migrate configuration from upstream (`@dv.nghiem/flowdeck`) |
+| `flowdeck update` | Update plugin registration reference |
+| `flowdeck rollback` | Roll back configuration from a backup |
+| `flowdeck uninstall` | Remove FlowDeck plugin registration safely |
+| `flowdeck dry-run` | Show what would be done without modifying files |
+| `flowdeck --help` | Show detailed help |
 
 ---
 
-## Model Selection
+## Architecture
 
-FlowDeck does not hardcode any model. Every agent inherits the user's active OpenCode session model by default.
-
-To assign a specific model to a specific agent, add it to `.flowdeck.json`:
-
-```json
-{
-  "agentModels": {
-    "planner": { "model": "anthropic/claude-opus-4" },
-    "tester":  { "model": "openai/gpt-4o-mini" }
-  }
-}
 ```
+OpenCode (model access, session, core tools)
+  |
+  +-- FlowDeck Plugin (src/index.ts)
+        |
+        +-- Configuration (src/config/)
+        |     +-- Schema validation
+        |     +-- Agent model overrides
+        |     +-- Governance settings
+        |
+        +-- Agent Registry (src/agents/)
+        |     +-- Heidi (default primary agent)
+        |     +-- 12 specialized agents
+        |     +-- Routing rules
+        |
+        +-- Hooks (src/hooks/)
+        |     +-- Orchestrator guard (tool permission)
+        |     +-- Tool guard (execution control)
+        |     +-- Guard rails (safety boundaries)
+        |     +-- Session start/end lifecycle
+        |     +-- Session events
+        |
+        +-- Services (src/services/)
+        |     +-- Governance wiring (validator, supervisor, audit)
+        |     +-- Loop detector
+        |     +-- Token budget enforcement
+        |     +-- Recovery layer
+        |     +-- Verification layer
+        |     +-- Canonical agent registry
+        |
+        +-- Tools (src/tools/)
+        |     +-- 15 FDX tools (with TypeScript fallbacks)
+        |     +-- Doctor diagnostics
+        |     +-- Codebase state and graphing
+        |     +-- Rule loading
+        |
+        +-- Skills (src/skills/)
+        |     +-- 61 validated workflow patterns
+        |
+        +-- MCP (src/mcp/)
+        |     +-- Model Context Protocol server configurations
+        |
+        +-- FDX Native (crates/fdx/)
+              +-- Rust-powered CLI for repository analysis
+```
+
+### Boundary Summary
+
+| Layer | Responsibility |
+|---|---|
+| **OpenCode core** | Model access, sessions, core tool execution, UI |
+| **FlowDeck plugin** | Agent orchestration, governance, hooks, skills |
+| **FDX (Rust)** | High-performance repository analysis (optional) |
+| **Web UI** | Not bundled — external integration point |
+
+---
+
+## Configuration
+
+FlowDeck reads its configuration from `opencode.json` (or `opencode.jsonc`) in the OpenCode config directory:
+
+- **Linux/macOS**: `~/.config/opencode/opencode.json`
+- **Windows**: `%APPDATA%/opencode/opencode.json`
+- **Project-level**: `.opencode/opencode.json` in the project directory
+- **Override**: `OPENCODE_CONFIG_DIR` environment variable
+
+The `install` command adds FlowDeck to the `plugin` array and sets `default_agent` to `heidi` when no default agent exists. See [Configuration](docs/wiki/Configuration.md) for details.
+
+---
+
+## Verification
+
+```bash
+# Level 1 — CLI resolves
+flowdeck --version
+
+# Level 2 — Package identity and plugin registration
+flowdeck verify
+
+# Level 3 — Full diagnostics
+flowdeck doctor
+
+# Level 4 — OpenCode smoke test (requires restart)
+opencode run "inspect this project" --agent heidi
+```
+
+See [Verification](docs/wiki/Verification.md) for the complete 7-level verification procedure.
+
+---
+
+## Development
+
+```bash
+npm ci
+npm run build
+npm run lint
+npm run typecheck
+npm test
+npm run test:coverage
+npm run validate:skills
+npm run validate:docs
+npm run verify:fast     # Fast checks for changed files
+npm run verify:full     # Full production verification
+```
+
+See [Development](docs/wiki/Development.md) for detailed contribution guidelines.
+
+---
+
+## Roadmap
+
+### Current (v0.8.0-alpha.1)
+- Heidi master orchestration with delegation depth 1
+- 13 specialized agents and 61 validated skills
+- Fast and full pre-push verification gates
+- Tool governance with loop detection, token budgets, audit logging
+- Installation ownership tracking and safe uninstall
+- FDX native tools with TypeScript fallbacks
+
+### Planned
+- **Better Harness** — repository analysis, evidence-based scoring, remediation planning, and verification for AI-produced code changes
+- Web UI reporting for governance and audit data
+- Expanded skill library
+
+---
+
+## Contributing
+
+1. Branch from `main` and prefix your branch (e.g., `feat/`, `fix/`, `docs/`).
+2. Run focused tests during development: `npm test -- tests/<file>.test.ts`.
+3. Run `npm run verify:full` before opening a PR.
+4. Do not edit `dist/` — it is generated by `npm run build`.
+5. Report security vulnerabilities privately via the [issue tracker](https://github.com/heidi-dang/FlowDeck/issues).
+
+See [Contributing](docs/wiki/Development.md) for full guidelines.
+
+---
+
+## Security
+
+- FlowDeck governance operates within OpenCode's permission model — it is not an operating-system sandbox.
+- Users remain responsible for provider credentials and tool permissions.
+- Configuration examples in this documentation do not contain real secrets.
+- Report security vulnerabilities through GitHub Issues (private disclosure preferred).
 
 ---
 

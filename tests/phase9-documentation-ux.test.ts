@@ -12,10 +12,10 @@ describe("Phase 9 — Documentation and User Experience", () => {
       expect(existsSync(readmePath)).toBe(true)
 
       const content = readFileSync(readmePath, "utf-8")
-      expect(content).toContain("13 agents")
-      expect(content).toContain("61 skills")
+      expect(content).toContain("13 specialized agents")
+      expect(content).toContain("61 validated skills")
       expect(content).toContain("8 slash commands")
-      expect(content).toContain("https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash")
+      expect(content).toContain("heidi-dang/flowdeck/main/install.sh")
     })
 
     it("docs/index.md reflects current runtime truth matrix", () => {
