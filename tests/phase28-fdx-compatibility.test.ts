@@ -34,8 +34,8 @@ describe("Phase 28 — FDX Version Compatibility Gates", () => {
 
   it("fails explicitly on malformed output", () => {
     const res = testFdxVersionCompatibility(process.cwd(), pkgRaw, "invalid output string");
-    expect(res.status).toBe("warn");
-    expect(res.message).toBe("FDX binary not found — fallback active");
+    expect(res.status).toBe("fail");
+    expect(res.message).toContain("malformed output");
   });
 
   it("reports fallback explicitly when binary is missing", () => {

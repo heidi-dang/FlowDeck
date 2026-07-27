@@ -27,3 +27,11 @@ export interface RollbackOptions {
 
 export function executeTransaction(options: TransactionOptions): Promise<TransactionResult>;
 export function executeRollbackTransaction(options: RollbackOptions): Promise<TransactionResult>;
+
+export const fsAdapter: {
+  readFileSync: (path: string, options?: any) => string;
+  existsSync: (path: string) => boolean;
+  unlinkSync: (path: string) => void;
+  createBackup: (path: string) => string | null;
+  atomicWrite: (path: string, content: string) => void;
+};

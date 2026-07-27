@@ -16,11 +16,11 @@
 //   flowdeck dry-run              Show what would be done
 //   flowdeck --help               Show help
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync } from "node:fs";
-import { join, dirname, basename, resolve } from "node:path";
+import { readFileSync, existsSync, mkdirSync, readdirSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { readConfig as readConfigFile, createBackup, atomicWrite } from "../scripts/config-mutator.mjs";
+import { readConfig as readConfigFile } from "../scripts/config-mutator.mjs";
 import { executeTransaction, executeRollbackTransaction } from "../scripts/config-transaction.mjs";
 import { runDoctorChecks } from "../scripts/doctor-engine.mjs";
 
@@ -239,11 +239,15 @@ async function cmdUpdate() {
     const cfg = readConfig(dir);
     if (cfg.existing && Array.isArray(cfg.existing.plugin)) {
       const hasUpstream = cfg.existing.plugin.some(p => String(p).includes("dv.nghiem"));
-      const hasFork = cfg.existing.plugin.some(p => p === PKG_NAME);
-      if (hasUpstream && !hasFork) {
+      const hasOutdated = cfg.existing.plugin.some(p => String(p).startsWith(PKG_NAME + "@"));
+      if (hasUpstream || hasOutdated) {
         edits.push({
           path: ["plugin"],
-          value: cfg.existing.plugin.map(p => String(p).includes("dv.nghiem") ? PKG_NAME : p),
+          value: cfg.existing.plugin.map(p => {
+            if (String(p).includes("dv.nghiem")) return PKG_NAME;
+            if (String(p).startsWith(PKG_NAME + "@")) return PKG_NAME;
+            return p;
+          }),
         });
         needsUpdate = true;
       }

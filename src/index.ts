@@ -64,7 +64,6 @@ import { repoMemoryTool } from "./tools/repo-memory"
 // ─── Governance integration ────────────────────────────────────────────────
 import {
   evaluateGovernanceToolCheck,
-  recordRoutingAudit,
   recordRecoveryAudit,
   executeVerifiedPostWrite,
   generateScorecard,
@@ -506,3 +505,13 @@ const plugin: Plugin = async ({ directory, client }) => {
 }
 
 export default plugin
+
+// ─── Production diagnostics exports ──────────────────────────────────────────
+// These named exports are consumed by scripts/doctor-engine.mjs when running
+// as a packed npm package (no src/ directory available). Doctor imports them
+// via `import("../dist/index.js")` and verifies each probe executes correctly.
+// Removing or renaming any export here will cause the corresponding Doctor
+// check to FAIL (not silently pass).
+export { AGENT_NAMES, createAgent } from "./agents/index"
+export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
+export { acquireLock, releaseLock } from "./services/async-lock"

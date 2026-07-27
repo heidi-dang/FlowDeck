@@ -314,7 +314,7 @@ function _detectProjectLanguagesImpl(projectRoot: string): string[] {
     try {
       const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"))
       const hasTsConfig = existsSync(join(projectRoot, "tsconfig.json"))
-      const deps = { ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) }
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies }
       if (hasTsConfig || "typescript" in deps || "@types/node" in deps) {
         langs.push("typescript")
       } else {

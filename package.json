@@ -37,7 +37,7 @@
     "prepublishOnly": "bun run clean && bun run build",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint",
+    "lint": "oxlint --deny-warnings",
     "validate:skills": "node scripts/validate-skills.mjs",
     "validate:docs": "node scripts/validate-docs.mjs",
     "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\""

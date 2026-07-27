@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
+import { safeParseConfig } from "../scripts/config-mutator.mjs";
+
 const CLI_PATH = join(process.cwd(), "bin", "flowdeck.js");
 
 function runCli(args: string[], env: Record<string, string>, cwd?: string): { code: number; stdout: string; stderr: string } {
@@ -118,26 +120,95 @@ describe("Phase 28 — CLI Behavioural & Ownership Integration Gates", () => {
     expect(readFileSync(configFile, "utf-8")).toBe("{ malformed json {{{");
   });
 
-  it("flowdeck rollback restores from backup created during transaction", () => {
-    // Write initial config first so a backup is created when install runs
-    writeFileSync(configFile, '{\n  "plugin": ["old-plugin"]\n}\n', "utf-8");
+  it("flowdeck rollback restores from backup created during transaction with byte-perfect comparison", () => {
+    // Write initial config with specific spacing and comments to verify byte-perfect comparison
+    const originalConfig = '{\n  // initial comment\n  "plugin": ["old-plugin"],\n  "default_agent": null\n}\n';
+    writeFileSync(configFile, originalConfig, "utf-8");
     runCli(["install"], env);
 
-    // Get list of backup files created
+    // Ensure manifest is created
+    expect(existsSync(manifestFile)).toBe(true);
+
+    // Get list of backup files created and verify pre-rollback backup contents
     const files = readdirSync(configDir);
     const backupFile = files.find(f => f.includes(".bak"));
     expect(backupFile).toBeDefined();
 
+    const backupContent = readFileSync(join(configDir, backupFile!), "utf-8");
+    expect(backupContent).toBe(originalConfig); // Pre-rollback backup verification
+
     const res = runCli(["rollback"], env);
     expect(res.code).toBe(0);
     expect(res.stdout).toContain("Rolled back");
+
+    // Exact config bytes restored
+    expect(readFileSync(configFile, "utf-8")).toBe(originalConfig); // Rollback byte comparison
+
+    // Manifest is NOT removed, but marked as rolled back
+    expect(existsSync(manifestFile)).toBe(true);
+    const manifest = JSON.parse(readFileSync(manifestFile, "utf-8"));
+    expect(manifest.rolledBackAt).toBeDefined();
+    expect(manifest.rolledBackFromBackup).toBe(join(configDir, backupFile!));
   });
 
-  it("flowdeck update re-runs installation check and completes successfully", () => {
-    runCli(["install"], env);
+  it("flowdeck install failure during config write rolls back both config and manifest", () => {
+    const originalConfig = '{\n  // important comment\n  "plugin": ["existing-plugin"]\n}\n';
+    writeFileSync(configFile, originalConfig, "utf-8");
+    expect(existsSync(manifestFile)).toBe(false);
+
+    // Run install, forcing failure at config_write stage
+    const res = runCli(["install"], { ...env, FLOWDECK_FAIL_AT_STAGE: "config_write" });
+    expect(res.code).not.toBe(0);
+    expect(res.stderr + res.stdout).toContain("Config write failed");
+
+    // Config must remain byte-for-byte identical
+    expect(readFileSync(configFile, "utf-8")).toBe(originalConfig);
+    // Manifest must remain absent
+    expect(existsSync(manifestFile)).toBe(false);
+  });
+
+  it("flowdeck install failure during manifest finalization rolls back both config and manifest", () => {
+    const originalConfig = '{\n  // important comment\n  "plugin": ["existing-plugin"]\n}\n';
+    writeFileSync(configFile, originalConfig, "utf-8");
+    expect(existsSync(manifestFile)).toBe(false);
+
+    // Run install, forcing failure at manifest_finalize stage
+    const res = runCli(["install"], { ...env, FLOWDECK_FAIL_AT_STAGE: "manifest_finalize" });
+    expect(res.code).not.toBe(0);
+    expect(res.stderr + res.stdout).toContain("Manifest finalization failed");
+
+    // Config must remain byte-for-byte identical
+    expect(readFileSync(configFile, "utf-8")).toBe(originalConfig);
+    // Manifest must remain absent
+    expect(existsSync(manifestFile)).toBe(false);
+  });
+
+  it("flowdeck update re-runs installation check, preserves comments, and completes successfully", () => {
+    // Write outdated ref with comments
+    const outdatedConfig = '{\n  // outdated comment\n  "plugin": ["@heidi-dang/flowdeck@0.1.0"],\n  "default_agent": "orchestrator"\n}\n';
+    writeFileSync(configFile, outdatedConfig, "utf-8");
+
+    // Create old manifest
+    const oldManifest = { pluginRef: "@heidi-dang/flowdeck@0.1.0", pluginAdded: true, defaultAgentAdded: true };
+    writeFileSync(manifestFile, JSON.stringify(oldManifest), "utf-8");
+
     const res = runCli(["update"], env);
     expect(res.code).toBe(0);
     expect(res.stdout).toContain("Update complete");
+
+    const updatedConfigContent = readFileSync(configFile, "utf-8");
+    expect(updatedConfigContent).toContain("// outdated comment"); // Preserves comments
+
+    const parseResult = safeParseConfig(updatedConfigContent);
+    expect(parseResult.ok).toBe(true);
+    const updatedConfig = parseResult.data;
+    expect(updatedConfig.plugin).toContain("@heidi-dang/flowdeck"); // updated to current
+    expect(updatedConfig.plugin).not.toContain("@heidi-dang/flowdeck@0.1.0");
+    // default agent ownership unchanged
+    expect(updatedConfig.default_agent).toBe("orchestrator");
+
+    const newManifest = JSON.parse(readFileSync(manifestFile, "utf-8"));
+    expect(newManifest.pluginRef).toBe("@heidi-dang/flowdeck");
   });
 
   it("flowdeck uninstall --force without manifest removes only exact plugin ref and creates NO manifest", () => {
@@ -179,8 +250,21 @@ describe("Phase 28 — CLI Behavioural & Ownership Integration Gates", () => {
   it("flowdeck doctor executes diagnostic checks", () => {
     runCli(["install"], env);
     const res = runCli(["doctor"], env);
+
+    // Assert exit code
+    if (res.code !== 0) console.log(res.stdout, res.stderr);
+    expect(res.code).toBe(0); // If doctor fails any check, maybe it's not 0? Or maybe it always exits 0. Wait, doctor should exit 1 if fails. But here it should pass or at least finish.
+
     expect(res.stdout).toContain("FlowDeck Doctor");
     expect(res.stdout).toContain("Diagnostics");
+
+    // Assert check counts
+    const checks = res.stdout.match(/(✓|⚠|✗)\s/g) || [];
+    expect(checks.length).toBeGreaterThan(0);
+
+    // Assert summary is present
+    expect(res.stdout).toContain("Summary");
+    expect(res.stdout).toMatch(/Passed:\s+\d+/);
   });
 
   it("flowdeck config validate checks syntax of config", () => {

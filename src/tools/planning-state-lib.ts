@@ -1,4 +1,4 @@
-import { join, dirname, resolve, basename, sep } from "path"
+import { join, dirname, resolve, basename } from "path"
 import { homedir } from "os"
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from "fs"
 import { createHash } from "crypto"
@@ -45,7 +45,55 @@ export function generateProjectId(directory: string): string {
  * to prevent same-name repos in different directories from sharing state.
  */
 export function planningDir(directory: string): string {
-  return join(homedir(), ".fd-plan", generateProjectId(directory))
+  const root = join(homedir(), ".fd-plan")
+  const id = generateProjectId(directory)
+  const newDir = join(root, id)
+
+  const resolvedPath = resolve(directory)
+  const name = basename(resolvedPath)
+  const legacyDir = join(root, name)
+
+  const needsMigration = existsSync(legacyDir) &&
+                         (!existsSync(newDir) || !existsSync(join(newDir, "STATE.md")))
+
+  if (needsMigration) {
+    // Only migrate if it looks like a valid planning dir
+    if (existsSync(join(legacyDir, "STATE.md"))) {
+      try {
+        mkdirSync(newDir, { recursive: true })
+        const files = readdirSync(legacyDir)
+        for (const file of files) {
+          const src = join(legacyDir, file)
+          const dest = join(newDir, file)
+          if (statSync(src).isFile()) {
+            writeFileSync(dest, readFileSync(src))
+          } else {
+            // Very simple dir copy for topics
+            mkdirSync(dest, { recursive: true })
+            const subfiles = readdirSync(src)
+            for (const sub of subfiles) {
+              if (statSync(join(src, sub)).isFile()) {
+                writeFileSync(join(dest, sub), readFileSync(join(src, sub)))
+              }
+            }
+          }
+        }
+        // Backup the legacy directory
+        try {
+          const fs = require("fs")
+          fs.renameSync(legacyDir, legacyDir + `.bak.${Date.now()}`)
+        } catch {}
+      } catch {
+        // Interrupted migration: clean up so it can retry
+        try {
+          const fs = require("fs")
+          fs.rmSync(newDir, { recursive: true, force: true })
+        } catch {}
+      }
+    }
+  }
+
+  return newDir
 }
 
 export function statePath(directory: string): string {
@@ -386,13 +434,13 @@ export function parseState(content: string): Record<string, unknown> {
       const key = kvMatch[1].trim()
       const value = kvMatch[2].trim()
       if (key === "steps_complete" || key === "steps_pending") {
-        result[key] = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean)
+        result[key] = value.replace(/[[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean)
       } else if (key === "plan_confirmed") {
         result[key] = value === "true"
       } else if (key === "requires_design_first" || key === "design_approved" || key === "design_override") {
         result[key] = value === "true"
       } else if (key === "skippedStages") {
-        result[key] = value.replace(/[\[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean)
+        result[key] = value.replace(/[[\]]/g, "").split(",").map(s => s.trim()).filter(Boolean)
       } else if (key === "escalationHistory" || key === "routingScores") {
         try {
           result[key] = JSON.parse(value)

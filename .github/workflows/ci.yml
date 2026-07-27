@@ -298,10 +298,46 @@ jobs:
           node bin/flowdeck.js install --project 2>&1
           echo "PASS: project install on ${{ matrix.os }}"
 
+  packed-cli-matrix:
+    name: Packed CLI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - uses: oven-sh/setup-bun@v2
+      - run: npm ci
+      - run: npm run build
+      - name: Packed CLI test with spaces
+        run: |
+          set -e
+          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
+          TMP_ROOT=$(mktemp -d)
+          SPACE_DIR="$TMP_ROOT/My Project With Spaces"
+          mkdir -p "$SPACE_DIR/app" "$SPACE_DIR/home"
+          cd "$SPACE_DIR/app"
+          npm init -y > /dev/null 2>&1
+          # Use cross-platform relative path or fix absolute path for windows bash
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1
+          echo "=== Testing packed CLI ==="
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck init || { echo "FAIL: init"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck list || { echo "FAIL: list"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck rollback || { echo "FAIL: rollback"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck uninstall --force || { echo "FAIL: uninstall"; exit 1; }
+          echo "PASS: all commands"
+
   completion:
     name: Pipeline Completion
     if: always()
-    needs: [lint-typecheck, test-matrix, build, installer-test, rust-gates, security-scan, local-installer]
+    needs: [lint-typecheck, test-matrix, build, installer-test, rust-gates, security-scan, local-installer, packed-cli-matrix]
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -313,13 +349,15 @@ jobs:
           echo "- Rust Gates: ${{ needs.rust-gates.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Security Scan: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Local Installer: ${{ needs.local-installer.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Packed CLI Matrix: ${{ needs.packed-cli-matrix.result }}" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.lint-typecheck.result }}" = "success" ] && \
              [ "${{ needs.test-matrix.result }}" = "success" ] && \
              [ "${{ needs.build.result }}" = "success" ] && \
              [ "${{ needs.installer-test.result }}" = "success" ] && \
              [ "${{ needs.rust-gates.result }}" = "success" ] && \
              [ "${{ needs.security-scan.result }}" = "success" ] && \
-             [ "${{ needs.local-installer.result }}" = "success" ]; then
+             [ "${{ needs.local-installer.result }}" = "success" ] && \
+             [ "${{ needs.packed-cli-matrix.result }}" = "success" ]; then
             echo "ALL GATES PASSED" >> $GITHUB_STEP_SUMMARY
           else
             echo "SOME GATES FAILED" >> $GITHUB_STEP_SUMMARY

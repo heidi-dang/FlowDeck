@@ -1,9 +1,32 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+
+// Mock the 'os' module to control homedir dynamically
+vi.mock("os", () => {
+  return {
+    homedir: () => (globalThis as any).__mockHomedir || require("node:os").homedir(),
+  };
+});
+
+// Mock the 'fs' module to inject read errors for interrupted migration recovery testing
+vi.mock("fs", () => {
+  const original = require("node:fs");
+  return {
+    ...original,
+    readFileSync: (path: any, options: any) => {
+      if (typeof path === "string" && path.includes("legacy-home-err")) {
+        throw new Error("Injected disk read failure");
+      }
+      return original.readFileSync(path, options);
+    },
+  };
+});
+
 import { generateProjectId, planningDir } from "../src/tools/planning-state-lib";
 import { repoMemoryTool } from "../src/tools/repo-memory";
+import { appendJsonlWithRotation, readJsonlQuarantine } from "../src/tools/jsonl-log";
 
 describe("Phase 28 — State and Memory Production Gates", () => {
   let tmpRoot: string;
@@ -11,9 +34,11 @@ describe("Phase 28 — State and Memory Production Gates", () => {
   beforeEach(() => {
     tmpRoot = join(tmpdir(), `fd-state-test-${Math.random().toString(36).slice(2)}`);
     mkdirSync(tmpRoot, { recursive: true });
+    (globalThis as any).__mockHomedir = undefined;
   });
 
   afterEach(() => {
+    (globalThis as any).__mockHomedir = undefined;
     try {
       rmSync(tmpRoot, { recursive: true, force: true });
     } catch { /* ignore */ }
@@ -134,5 +159,108 @@ describe("Phase 28 — State and Memory Production Gates", () => {
     const strDelete = typeof resDelete === "string" ? resDelete : (resDelete as any).output;
     const parsedDelete = JSON.parse(strDelete);
     expect(parsedDelete.success).toBe(true);
+  });
+
+  // ── Legacy state migration and recovery tests ────────────────────────────
+
+  it("migrates legacy basename state to project ID state with backup", () => {
+    // Set up legacy planning dir at homedir()/.fd-plan/my-repo
+    const mockHome = join(tmpRoot, "legacy-home");
+    const legacyPath = join(mockHome, ".fd-plan", "my-repo");
+    mkdirSync(legacyPath, { recursive: true });
+    writeFileSync(join(legacyPath, "STATE.md"), "Legacy State Content");
+    writeFileSync(join(legacyPath, "plan.md"), "Legacy Plan Content");
+
+    (globalThis as any).__mockHomedir = mockHome;
+
+    const repoPath = join(tmpRoot, "repos", "my-repo");
+    mkdirSync(repoPath, { recursive: true });
+
+    // Call planningDir which triggers migration
+    const resolvedNewDir = planningDir(repoPath);
+
+    // Verify it migrated files
+    expect(existsSync(join(resolvedNewDir, "STATE.md"))).toBe(true);
+    expect(readFileSync(join(resolvedNewDir, "STATE.md"), "utf-8")).toBe("Legacy State Content");
+    expect(readFileSync(join(resolvedNewDir, "plan.md"), "utf-8")).toBe("Legacy Plan Content");
+
+    // Legacy path should be backed up/renamed to .bak.<timestamp>
+    const files = readdirSync(join(mockHome, ".fd-plan"));
+    const bakDir = files.find(f => f.startsWith("my-repo.bak."));
+    expect(bakDir).toBeDefined();
+  });
+
+  it("cleans up new directory if migration is interrupted", () => {
+    const mockHome = join(tmpRoot, "legacy-home-err");
+    const legacyPath = join(mockHome, ".fd-plan", "my-repo");
+    mkdirSync(legacyPath, { recursive: true });
+    writeFileSync(join(legacyPath, "STATE.md"), "Legacy State Content");
+
+    (globalThis as any).__mockHomedir = mockHome;
+
+    const repoPath = join(tmpRoot, "repos", "my-repo");
+    mkdirSync(repoPath, { recursive: true });
+
+    const newDir = planningDir(repoPath);
+
+    // The new directory should be cleaned up (deleted) because of the injected read failure
+    expect(existsSync(newDir)).toBe(false);
+  });
+
+  // ── JSONL Log production-readiness tests ──────────────────────────────────
+
+  it("enforces record-size limits in JSONL logging", async () => {
+    const logFile = join(tmpRoot, "test.jsonl");
+    const hugeRecord = { data: "a".repeat(1024 * 1024 + 10) }; // > 1MB
+    const res = await appendJsonlWithRotation(logFile, hugeRecord);
+    expect(res.success).toBe(false);
+    expect(res.error).toBe("Record size limit exceeded");
+  });
+
+  it("enforces file-size limits, rotation, and retention of at most 5 rotated files", async () => {
+    const logFile = join(tmpRoot, "rotate-test.jsonl");
+    const record = { data: "a".repeat(600 * 1024) }; // ~600KB record
+
+    // Write 1st record: file size becomes ~600KB
+    let res = await appendJsonlWithRotation(logFile, record);
+    expect(res.success).toBe(true);
+    expect(statSync(logFile).size).toBeGreaterThan(600 * 1024);
+
+    // Write 2nd record: size + line.length > 1MB -> rotates!
+    res = await appendJsonlWithRotation(logFile, record);
+    expect(res.success).toBe(true);
+
+    // There should be a rotated file
+    const files = readdirSync(tmpRoot);
+    const rotated = files.filter(f => f.startsWith("rotate-test.jsonl."));
+    expect(rotated.length).toBe(1);
+
+    // Verify retention: write multiple records to trigger more rotations
+    for (let i = 0; i < 6; i++) {
+      // Minimal sleep to guarantee unique timestamps in rotated filenames
+      await new Promise(r => setTimeout(r, 5));
+      await appendJsonlWithRotation(logFile, record);
+    }
+
+    const rotatedAfter = readdirSync(tmpRoot).filter(f => f.startsWith("rotate-test.jsonl."));
+    // It should retain at most 5 rotated files
+    expect(rotatedAfter.length).toBeLessThanOrEqual(5);
+  });
+
+  it("quarantines corrupt JSONL lines and preserves valid lines", () => {
+    const logFile = join(tmpRoot, "quarantine-test.jsonl");
+    writeFileSync(logFile, '{"a":1}\n{invalid json}\n{"b":2}\n', "utf-8");
+
+    const res = readJsonlQuarantine(logFile);
+    expect(res.records).toEqual([{ a: 1 }, { b: 2 }]);
+
+    // Valid lines should stay in the original file
+    expect(readFileSync(logFile, "utf-8")).toBe('{"a":1}\n{"b":2}\n');
+
+    // Corrupt lines should be quarantined
+    const files = readdirSync(tmpRoot);
+    const quarantine = files.find(f => f.startsWith("quarantine-test.jsonl.quarantine."));
+    expect(quarantine).toBeDefined();
+    expect(readFileSync(join(tmpRoot, quarantine!), "utf-8")).toBe('{invalid json}\n');
   });
 });

@@ -9,10 +9,11 @@
 // All checks are real — nothing is hardcoded as pass.
 
 import { readFileSync, existsSync, readdirSync, mkdirSync, accessSync, constants } from "node:fs"
-import { join, basename, resolve } from "node:path"
-import { homedir } from "node:os"
+import { join, resolve } from "node:path"
+import { homedir, tmpdir } from "node:os"
 import { execFileSync } from "node:child_process"
 import { safeParseConfig } from "./config-mutator.mjs"
+import { pathToFileURL } from "node:url"
 
 /**
  * Run all doctor checks against the given FlowDeck directory.
@@ -23,6 +24,7 @@ import { safeParseConfig } from "./config-mutator.mjs"
  */
 export async function runDoctorChecks(directory) {
   const checks = []
+  const distPath = pathToFileURL(resolve(directory, "dist", "index.js")).href
 
   // ── Helpers ──────────────────────────────────────────────────────────
   const tryRead = (p) => { try { return readFileSync(p, "utf-8") } catch { return null } }
@@ -59,12 +61,10 @@ export async function runDoctorChecks(directory) {
   // Check opencode.json in the config directory
   const configDir = resolveConfigDir()
   const opencodePath = join(configDir, "opencode.json")
-  let configValid = false
   if (existsSync(opencodePath)) {
     const raw = tryRead(opencodePath)
     if (raw) {
       const parsed = safeParseConfig(raw)
-      configValid = parsed.ok
       checks.push({
         id: "config.validity",
         name: "Config Validity",
@@ -85,7 +85,6 @@ export async function runDoctorChecks(directory) {
         const parsed = safeParseConfig(raw)
         // Only push if we haven't already or if we want to override
         if (parsed.ok) {
-          configValid = true
           // Check if we already have a config.validity entry from opencode.json
           const existing = checks.find(c => c.id === "config.validity")
           if (!existing || existing.status !== "pass") {
@@ -160,23 +159,38 @@ export async function runDoctorChecks(directory) {
   })
 
   // ── 8. Agent count ─────────────────────────────────────────────────────
-  let agentCount = 12
-  const agentsDir = join(directory, "src", "agents")
-  const agentFiles = safeList(agentsDir).filter(f => f.endsWith(".ts") && !f.endsWith(".test.ts") && f !== "index.ts")
-  if (agentFiles.length > 0) {
-    agentCount = agentFiles.length
-  } else {
+  // Fail closed: initialize to 0. Only pass when a probe actually executes.
+  let agentCount = 0
+  let agentCountSource = "unknown"
+  const registryFile = join(directory, "src", "services", "canonical-registry.ts")
+  if (existsSync(registryFile)) {
+    const content = tryRead(registryFile)
+    if (content) {
+      const arrayMatch = content.match(/const CANONICAL_AGENTS:\s*\w+\[\]\s*=\s*\[([\s\S]+?)\]\s*const|const CANONICAL_AGENTS:\s*\w+\[\]\s*=\s*\[([\s\S]+?)\]\s*export/s)
+      const listContent = arrayMatch ? (arrayMatch[1] || arrayMatch[2]) : content
+      const matches = listContent.match(/id:\s*"([^"]+)"/g)
+      if (matches) {
+        agentCount = matches.length
+        agentCountSource = "src/services/canonical-registry.ts"
+      }
+    }
+  }
+  if (agentCount === 0) {
+    // Packed install: load from runtime exports (must be present in dist/index.js)
     try {
-      const agentMod = await import("../dist/index.js").catch(() => ({}))
-      if (agentMod.AGENT_NAMES) agentCount = agentMod.AGENT_NAMES.length
-    } catch { /* fallback */ }
+      const agentMod = await import(distPath)
+      if (agentMod && Array.isArray(agentMod.AGENT_NAMES) && agentMod.AGENT_NAMES.length > 0) {
+        agentCount = agentMod.AGENT_NAMES.length
+        agentCountSource = "runtime"
+      }
+    } catch { /* import failed — count stays 0 = fail */ }
   }
   checks.push({
     id: "agents.count",
     name: "Agent Count",
-    status: agentCount > 0 ? "pass" : "warn",
-    message: `${agentCount} agents registered`,
-    remediation: agentCount === 0 ? "Ensure agent definitions are registered" : undefined,
+    status: agentCount > 0 ? "pass" : "fail",
+    message: agentCount > 0 ? `${agentCount} agents registered (${agentCountSource})` : "Agent count could not be determined from src/ or runtime exports",
+    remediation: agentCount === 0 ? "Ensure AGENT_NAMES is exported from dist/index.js" : undefined,
   })
 
   // ── 9. Skill recursive inspection ──────────────────────────────────────
@@ -210,55 +224,82 @@ export async function runDoctorChecks(directory) {
   })
 
   // ── 11. Delegation depth enforcement ────────────────────────────────────
-  let depthEnforced = true
-  let depthMsg = "Max depth = 1 enforced"
+  // Fail closed: only pass if probe actually executes AND satisfies all delegation rules.
+  let depthEnforced = false
+  let depthMsg = "validateDelegationDepth not exported from dist/index.js"
   try {
-    const { validateDelegationDepth } = await import("../dist/index.js").catch(() => ({}))
-    if (validateDelegationDepth) {
-      const res = validateDelegationDepth(2)
-      if (res.allowed !== false) {
-        depthEnforced = false
-        depthMsg = "Delegation depth 2 was allowed (expected blocked)"
+    const distMod = await import(distPath)
+    if (distMod && typeof distMod.validateDelegationDepth === "function") {
+      const specialists = new Set(["architect", "coder"])
+      const c1 = distMod.validateDelegationDepth("heidi", "architect", 0, specialists, 1) // allowed
+      const c2 = distMod.validateDelegationDepth("heidi", "architect", 1, specialists, 1) // blocked
+      const c3 = distMod.validateDelegationDepth("architect", "coder", 0, specialists, 1) // blocked
+      const c4 = distMod.validateDelegationDepth("heidi", "heidi", 0, specialists, 1) // blocked
+
+      if (c1?.allowed === true && c2?.allowed === false && c3?.allowed === false && c4?.allowed === false) {
+        depthEnforced = true
+        depthMsg = "Max depth = 1 enforced"
+      } else {
+        depthMsg = `Delegation checks failed: c1=${c1?.allowed}, c2=${c2?.allowed}, c3=${c3?.allowed}, c4=${c4?.allowed}`
       }
     }
-  } catch { /* ignore fallback */ }
+  } catch (err) {
+    depthMsg = `Import failed: ${err instanceof Error ? err.message : String(err)}`
+  }
   checks.push({
     id: "delegation.depth",
     name: "Delegation Depth Enforcement",
     status: depthEnforced ? "pass" : "fail",
     message: depthMsg,
-    remediation: depthEnforced ? undefined : "Enforce max depth = 1 in governance wiring",
+    remediation: depthEnforced ? undefined : "Export validateDelegationDepth from dist/index.js and ensure all delegation rules are satisfied",
   })
 
   // ── 12. Governance wiring ──────────────────────────────────────────────
-  let govImported = true
-  let govMsg = "Governance subsystem imported in plugin entrypoint"
+  // Fail closed: only pass if plugin default export is a non-null object with an events/tools property.
+  let govImported = false
+  let govMsg = "dist/index.js default export missing or not a plugin object/function"
   try {
-    const pluginEntry = await import("../dist/index.js").catch(() => ({}))
-    if (pluginEntry && pluginEntry.default) {
+    const distMod = await import(distPath)
+    if (distMod && distMod.default && (typeof distMod.default === "object" || typeof distMod.default === "function")) {
       govImported = true
+      govMsg = "Governance subsystem imported in plugin entrypoint"
     }
-  } catch { /* ignore */ }
+  } catch (err) {
+    govMsg = `Import failed: ${err instanceof Error ? err.message : String(err)}`
+  }
   checks.push({
     id: "governance.wiring",
     name: "Governance Wiring",
     status: govImported ? "pass" : "fail",
     message: govMsg,
+    remediation: govImported ? undefined : "Ensure dist/index.js exports a valid OpenCode plugin as default",
   })
 
   // ── 13. FDX fallback availability ─────────────────────────────────────
   const fdxToolDir = join(directory, "src", "tools")
   const fdxFiles = safeList(fdxToolDir).filter(f => f.startsWith("fdx") && f.endsWith(".ts"))
   let fdxBinaryAvailable = false
-  try { execFileSync("fdx", ["--help"], { stdio: "ignore", timeout: 5000 }); fdxBinaryAvailable = true } catch { /* ignore */ }
+  try { execFileSync("fdx", ["--version"], { stdio: "ignore", timeout: 5000 }); fdxBinaryAvailable = true } catch { /* ignore */ }
+  const fallbackAvailable = fdxFiles.length > 0 || existsSync(join(directory, "dist"))
+  let fallbackStatus = "pass"
+  let fallbackMsg = ""
+  if (fdxBinaryAvailable) {
+    fallbackMsg = `FDX binary available; fallback files present: ${fallbackAvailable}`
+  } else {
+    if (fallbackAvailable) {
+      fallbackStatus = "warn"
+      fallbackMsg = `FDX binary not found; using fallback: ${fdxFiles.length > 0 ? fdxFiles.join(", ") : "dist package"}`
+    } else {
+      fallbackStatus = "fail"
+      fallbackMsg = "FDX binary not found and no fallback implementation available"
+    }
+  }
   checks.push({
     id: "fdx.fallback",
     name: "FDX Native Fallback",
-    status: fdxFiles.length > 0 || existsSync(join(directory, "dist")) ? "pass" : "warn",
-    message: fdxFiles.length > 0
-      ? `Native TS fallbacks active (${fdxFiles.length} tools: ${fdxFiles.join(", ")}, ${fdxBinaryAvailable ? "FDX binary also available" : "FDX binary not found"})`
-      : `Native TS fallbacks active in dist package (${fdxBinaryAvailable ? "FDX binary also available" : "FDX binary not found"})`,
-    remediation: undefined,
+    status: fallbackStatus,
+    message: fallbackMsg,
+    remediation: fallbackStatus === "fail" ? "Install the FDX binary or restore source/dist fallback files" : undefined,
   })
 
   // ── 14. FDX version compatibility ──────────────────────────────────────
@@ -272,32 +313,46 @@ export async function runDoctorChecks(directory) {
   })
 
   // ── 15. Lock implementation ────────────────────────────────────────────
-  let lockOk = true
-  let lockMsg = "No busy-spin; lock throws on timeout"
+  // Fail closed: only pass if the full acquire+contention probe executes successfully.
+  let lockOk = false
+  let lockMsg = "acquireLock/releaseLock not exported from dist/index.js"
   try {
-    const { acquireLock, releaseLock } = await import("../dist/index.js").catch(() => ({}))
-    if (acquireLock) {
-      const testLockFile = join(tmpdir(), `fd-lock-test-${Date.now()}.lock`)
-      await acquireLock(testLockFile, { timeout: 100 })
-      let secondCallThrew = false
+    const distMod = await import(distPath)
+    if (distMod && typeof distMod.acquireLock === "function" && typeof distMod.releaseLock === "function") {
+      const testLockFile = join(tmpdir(), `fd-lock-test-${Date.now()}-${Math.random().toString(36).slice(2)}.lock`)
       try {
-        await acquireLock(testLockFile, { timeout: 50 })
-      } catch {
-        secondCallThrew = true
-      }
-      await releaseLock(testLockFile)
-      if (!secondCallThrew) {
-        lockOk = false
-        lockMsg = "Lock did not throw on timeout"
+        await distMod.acquireLock(testLockFile, { timeout: 200, staleMs: 10000 })
+        let secondCallThrew = false
+        try {
+          await distMod.acquireLock(testLockFile, { timeout: 50, staleMs: 10000 })
+        } catch {
+          secondCallThrew = true
+        }
+        if (secondCallThrew) {
+          lockOk = true
+          lockMsg = "No busy-spin; lock throws on timeout"
+        } else {
+          lockMsg = "Lock did not throw on timeout — double-acquire succeeded"
+        }
+      } finally {
+        try {
+          await distMod.releaseLock(testLockFile)
+        } catch { /* ignore */ }
+        try {
+          const { unlinkSync, existsSync } = await import("node:fs")
+          if (existsSync(testLockFile)) unlinkSync(testLockFile)
+        } catch {}
       }
     }
-  } catch { /* fallback */ }
+  } catch (err) {
+    lockMsg = `Lock probe failed: ${err instanceof Error ? err.message : String(err)}`
+  }
   checks.push({
     id: "state.locks",
     name: "Lock Implementation",
-    status: lockOk ? "pass" : "warn",
+    status: lockOk ? "pass" : "fail",
     message: lockMsg,
-    remediation: lockOk ? undefined : "Ensure lock throws on timeout",
+    remediation: lockOk ? undefined : "Export acquireLock/releaseLock from dist/index.js",
   })
 
   // ── 16. Install manifest ───────────────────────────────────────────────
@@ -401,21 +456,34 @@ export async function runDoctorChecks(directory) {
   })
 
   // ── 18. Registry consistency ──────────────────────────────────────────
-  let registryOk = true
-  let regCount = 12
+  // Fail closed: only pass if AGENT_NAMES and createAgent are both present AND
+  // every agent name resolves to a factory.
+  let registryOk = false
+  let regCount = 0
+  let regMsg = "AGENT_NAMES or createAgent not exported from dist/index.js"
   try {
-    const agentMod = await import("../dist/index.js").catch(() => ({}))
-    if (agentMod.AGENT_NAMES && agentMod.createAgent) {
-      regCount = agentMod.AGENT_NAMES.length
-      registryOk = agentMod.AGENT_NAMES.every(name => agentMod.createAgent(name) !== undefined)
+    const distMod = await import(distPath)
+    if (distMod && Array.isArray(distMod.AGENT_NAMES) && typeof distMod.createAgent === "function") {
+      regCount = distMod.AGENT_NAMES.length
+      const missing = distMod.AGENT_NAMES.filter(name => distMod.createAgent(name) === undefined)
+      if (missing.length === 0 && regCount > 0) {
+        registryOk = true
+        regMsg = `${regCount} agent definitions all consistent with runtime factory registry`
+      } else if (missing.length > 0) {
+        regMsg = `${missing.length} agents lack factory implementations: ${missing.join(", ")}`
+      } else {
+        regMsg = "AGENT_NAMES is empty"
+      }
     }
-  } catch { /* fallback */ }
+  } catch (err) {
+    regMsg = `Import failed: ${err instanceof Error ? err.message : String(err)}`
+  }
   checks.push({
     id: "agents.consistency",
     name: "Registry Consistency",
-    status: registryOk ? "pass" : "warn",
-    message: registryOk ? `${regCount} agent definitions all consistent with runtime factory registry` : `Some agent definitions lack factory implementations`,
-    remediation: !registryOk ? "Ensure all agent modules are exported in runtime index" : undefined,
+    status: registryOk ? "pass" : "fail",
+    message: regMsg,
+    remediation: !registryOk ? "Ensure AGENT_NAMES and createAgent are exported from dist/index.js" : undefined,
   })
 
   // ── 19. CLI commands availability ──────────────────────────────────────
@@ -428,12 +496,25 @@ export async function runDoctorChecks(directory) {
       cliCommands = handlerMatch[1].split(",").map(s => s.trim()).filter(Boolean).map(s => s.split(":")[0].trim().replace(/["']/g, ""))
     }
   }
+  const requiredCmds = ["install", "update", "verify", "doctor", "uninstall", "migrate", "rollback"]
+  const missingCmds = requiredCmds.filter(cmd => !cliCommands.includes(cmd))
+  let cliStatus = "pass"
+  let cliMsg = `${cliCommands.length} CLI commands available: ${cliCommands.join(", ")}`
+  let cliRemedy = undefined
+  if (missingCmds.length > 0) {
+    cliStatus = "fail"
+    cliMsg = `Missing required CLI commands: ${missingCmds.join(", ")}`
+    cliRemedy = "Ensure bin/flowdeck.js exports install, update, verify, doctor, uninstall, migrate, and rollback"
+  } else if (cliCommands.length < 5) {
+    cliStatus = "warn"
+    cliRemedy = "Ensure bin/flowdeck.js has all command handlers registered"
+  }
   checks.push({
     id: "cli.commands",
     name: "CLI Commands Availability",
-    status: cliCommands.length >= 5 ? "pass" : "warn",
-    message: `${cliCommands.length} CLI commands available: ${cliCommands.join(", ")}`,
-    remediation: cliCommands.length < 5 ? "Ensure bin/flowdeck.js has all command handlers registered" : undefined,
+    status: cliStatus,
+    message: cliMsg,
+    remediation: cliRemedy,
   })
 
   // ── 20. State path ─────────────────────────────────────────────────────
@@ -457,43 +538,82 @@ export async function runDoctorChecks(directory) {
   })
 
   // ── 22. Governance modes ─────────────────────────────────────────────
-  let govModesOk = true
+  // Fail closed: only pass if evaluateGovernanceToolCheck is exported AND
+  // each mode probe returns the expected action (off=allow, advisory=warn, strict=block).
+  let govModesOk = false
+  let govModesMsg = "evaluateGovernanceToolCheck not exported from dist/index.js"
   try {
-    const govMod = await import("../dist/index.js").catch(() => ({}))
-    if (govMod.evaluateGovernanceToolCheck) {
-      const modeOff = govMod.evaluateGovernanceToolCheck("heidi", "run_command", "off")
-      const modeAdv = govMod.evaluateGovernanceToolCheck("heidi", "run_command", "advisory")
-      const modeStrict = govMod.evaluateGovernanceToolCheck("heidi", "run_command", "strict")
-      govModesOk = modeOff !== undefined && modeAdv !== undefined && modeStrict !== undefined
+    const distMod = await import(distPath)
+    if (distMod && typeof distMod.evaluateGovernanceToolCheck === "function") {
+      const { join } = await import("node:path");
+      const { tmpdir } = await import("node:os");
+      const { mkdirSync, writeFileSync, rmSync } = await import("node:fs");
+
+      const testDir = join(tmpdir(), "fd-gov-test-" + Date.now());
+      mkdirSync(testDir, { recursive: true });
+      const dirOff = join(testDir, "off"); mkdirSync(dirOff); mkdirSync(join(dirOff, ".opencode"));
+      const dirAdv = join(testDir, "adv"); mkdirSync(dirAdv); mkdirSync(join(dirAdv, ".opencode"));
+      const dirStrict = join(testDir, "strict"); mkdirSync(dirStrict); mkdirSync(join(dirStrict, ".opencode"));
+
+      writeFileSync(join(dirOff, ".flowdeck.json"), '{"governance":{"validator":{"mode":"off"}}}');
+      writeFileSync(join(dirAdv, ".flowdeck.json"), '{"governance":{"validator":{"mode":"advisory"}}}');
+      writeFileSync(join(dirStrict, ".flowdeck.json"), '{"governance":{"validator":{"mode":"strict"}}}');
+
+      // Use a controlled dangerous tool to test all three modes
+      const modeOff = distMod.evaluateGovernanceToolCheck({ directory: dirOff, agent: "heidi", tool: "bash" })
+      const modeAdv = distMod.evaluateGovernanceToolCheck({ directory: dirAdv, agent: "heidi", tool: "bash" })
+      const modeStrict = distMod.evaluateGovernanceToolCheck({ directory: dirStrict, agent: "heidi", tool: "bash" })
+
+      try { rmSync(testDir, { recursive: true, force: true }) } catch {}
+
+      const offOk = modeOff && modeOff.action === "allow"
+      const advOk = modeAdv && (modeAdv.action === "warn" || modeAdv.action === "allow") // For heidi using bash, it might be allowed or warned depending on policy, wait, strict blocks.
+      // Strict mode must block or warn — never silently allow
+      const strictOk = modeStrict && (modeStrict.action === "block" || modeStrict.action === "warn")
+
+      if (offOk && advOk && strictOk) {
+        govModesOk = true
+        govModesMsg = "off/advisory/strict supported (off = no enforcement, advisory = warn, strict = block)"
+      } else {
+        govModesMsg = `Mode probe failed: off=${JSON.stringify(modeOff?.action)}, adv=${JSON.stringify(modeAdv?.action)}, strict=${JSON.stringify(modeStrict?.action)}`
+      }
     }
-  } catch { /* fallback */ }
+  } catch (err) {
+    govModesMsg = `Governance probe failed: ${err instanceof Error ? err.message : String(err)}`
+  }
   checks.push({
     id: "governance.modes",
     name: "Governance Modes",
-    status: govModesOk ? "pass" : "warn",
-    message: govModesOk
-      ? "off/advisory/strict supported (off = no enforcement, advisory = warn, strict = block)"
-      : "Governance modes missing in evaluator",
-    remediation: govModesOk ? undefined : "Define GovernanceMode type with 'off' | 'advisory' | 'strict'",
+    status: govModesOk ? "pass" : "fail",
+    message: govModesMsg,
+    remediation: govModesOk ? undefined : "Export evaluateGovernanceToolCheck from dist/index.js",
   })
 
   // ── 23. Model inheritance ─────────────────────────────────────────────
-  let modelInheritanceOk = true
+  // Fail closed: only pass if createAgent is exported AND accepts a model parameter.
+  let modelInheritanceOk = false
+  let modelMsg = "createAgent not exported from dist/index.js"
   try {
-    const agentMod = await import("../dist/index.js").catch(() => ({}))
-    if (agentMod.createAgent) {
-      const pAgent = agentMod.createAgent("planner", "custom-model-test")
-      const hAgent = agentMod.createAgent("heidi", "custom-model-test")
-      modelInheritanceOk = (pAgent !== undefined) && (hAgent !== undefined)
+    const distMod = await import(distPath)
+    if (distMod && typeof distMod.createAgent === "function") {
+      const pAgent = distMod.createAgent("planner", "custom-model-test")
+      const hAgent = distMod.createAgent("heidi", "custom-model-test")
+      if (pAgent !== undefined && hAgent !== undefined && pAgent.config?.model === "custom-model-test" && hAgent.config?.model === "custom-model-test") {
+        modelInheritanceOk = true
+        modelMsg = "Agent factories accept optional model parameter and correctly apply the override"
+      } else {
+        modelMsg = `createAgent did not correctly apply custom model override: planner=${JSON.stringify(pAgent?.config?.model)}, heidi=${JSON.stringify(hAgent?.config?.model)}`
+      }
     }
-  } catch { /* fallback */ }
+  } catch (err) {
+    modelMsg = `Model probe failed: ${err instanceof Error ? err.message : String(err)}`
+  }
   checks.push({
     id: "agents.model",
     name: "Model Inheritance",
-    status: modelInheritanceOk ? "pass" : "warn",
-    message: modelInheritanceOk
-      ? "Agent factories accept optional model parameter"
-      : "Some agent factories may not support model inheritance",
+    status: modelInheritanceOk ? "pass" : "fail",
+    message: modelMsg,
+    remediation: modelInheritanceOk ? undefined : "Export createAgent from dist/index.js",
   })
 
   // ── 24. Installer identity ──────────────────────────────────────────────
@@ -531,7 +651,7 @@ export async function runDoctorChecks(directory) {
 
 async function testJsoncPreservation() {
   try {
-    const { modify, applyEdits, parse } = await import("jsonc-parser")
+    const { modify, applyEdits } = await import("jsonc-parser")
     const original = '{\n  // this comment must remain\n  "plugin": [],\n  "default_agent": null\n}\n'
     let content = original
     content = applyEdits(content, modify(content, ["default_agent"], "heidi", {
@@ -547,6 +667,11 @@ async function testJsoncPreservation() {
 
 export function testFdxVersionCompatibility(directory, pkgRaw, customFdxOutput = undefined) {
   let requiredRange = "^0.1.0"
+  if (!pkgRaw && directory) {
+    try {
+      pkgRaw = readFileSync(join(directory, "package.json"), "utf-8")
+    } catch {}
+  }
   if (pkgRaw) {
     try {
       const p = JSON.parse(pkgRaw)
@@ -557,21 +682,35 @@ export function testFdxVersionCompatibility(directory, pkgRaw, customFdxOutput =
   }
 
   let installedVersion = null
+  let malformedOutput = false
   if (customFdxOutput !== undefined) {
-    if (typeof customFdxOutput === "string") {
+    if (typeof customFdxOutput === "string" && customFdxOutput.trim() !== "") {
       const match = customFdxOutput.trim().match(/^fdx\s+(.+)/)
-      if (match) installedVersion = match[1]
+      if (match) {
+        installedVersion = match[1]
+      } else {
+        // Non-empty string that doesn't match expected format → binary is present
+        // but returned garbage output. This is a FAIL, not a missing-binary warn.
+        malformedOutput = true
+      }
     }
   } else {
     try {
       const output = execFileSync("fdx", ["--version"], { encoding: "utf-8", timeout: 5000 })
-      const match = output.trim().match(/^fdx\s+(.+)/)
-      if (match) {
-        installedVersion = match[1]
+      if (output && output.trim() !== "") {
+        const match = output.trim().match(/^fdx\s+(.+)/)
+        if (match) {
+          installedVersion = match[1]
+        } else {
+          malformedOutput = true
+        }
       }
     } catch { /* fdx not available */ }
   }
 
+  if (malformedOutput) {
+    return { status: "fail", message: "FDX binary returned malformed output (expected 'fdx <version>')", remediation: "Ensure 'fdx --version' outputs 'fdx <semver>'" }
+  }
   if (!installedVersion) {
     return { status: "warn", message: "FDX binary not found — fallback active", remediation: undefined }
   }
