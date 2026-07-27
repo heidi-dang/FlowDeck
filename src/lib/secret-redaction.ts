@@ -50,7 +50,9 @@ export function redactSecrets(input: string): string {
 export function containsSecrets(input: string): boolean {
   if (!input || typeof input !== "string") return false
   for (const [pattern] of SECRET_PATTERNS) {
-    if (pattern.test(input)) return true
+    // Create a fresh copy to avoid regex state carryover from the g flag
+    const fresh = new RegExp(pattern.source, pattern.flags)
+    if (fresh.test(input)) return true
   }
   return false
 }
