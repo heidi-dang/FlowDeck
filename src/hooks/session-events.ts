@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, existsSync } from "fs"
+import { appendFileSync, mkdirSync, existsSync, readFileSync, writeFileSync } from "fs"
 import { basename, join } from "path"
 import { statePath, parseState, planningDir, checkpointPath } from "../tools/planning-state-lib"
 
