@@ -76,8 +76,9 @@ import { appendAuditEvent } from "./services/audit-log"
 import { isSpecialistAgent, getAllAgentIds } from "./services/canonical-registry"
 import {
   resolveRuntimeAgentConfig,
-  enforceRuntimeAgent,
-  applyIdentityMarker,
+  evaluateRuntimeAgentPolicy,
+  appendRuntimeIdentityMarker,
+  type RuntimeAgentContext,
 } from "./services/runtime-agent-policy"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
@@ -212,33 +213,53 @@ const plugin: Plugin = async ({ directory, client }) => {
 
     "chat.message": async (input: { sessionID: string; agent?: string; variant?: string }, output: { message: any; parts?: any[] }) => {
       const sessionID = input.sessionID ?? ""
-      const agent = output.message?.agent ?? input.agent ?? "unknown"
-      const variant = input.variant
-      const pkgVersion = "0.8.0-alpha.8"
+      const rawAgent = output.message?.agent ?? input.agent ?? "unknown"
+
+      // Build authoritative session context.
+      // The plugin client is available for session metadata queries.
+      // For child-session detection, we check the OpenCode client session API
+      // when available; fall back to safe defaults.
+      let isTopLevel = true
+      let isUserMessage = false
+      try {
+        if (typeof (client as any)?.session?.get === "function") {
+          const sessionInfo = await (client as any).session.get(sessionID)
+          if (sessionInfo?.data) {
+            // parentID === null or undefined means top-level session
+            isTopLevel = sessionInfo.data.parentID == null
+          }
+        }
+      } catch {
+        // If session metadata is unavailable, fail closed for suspected top-level
+        isTopLevel = true
+      }
+
+      // Classify user message: role === "user" and not synthetic
+      if (output.message?.role === "user") {
+        isUserMessage = output.message?.synthetic !== true
+      }
+
       const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
-      const result = enforceRuntimeAgent({
+      const context: RuntimeAgentContext = {
+        isTopLevel,
+        isUserMessage,
+        agent: rawAgent,
         sessionID,
-        agent,
-        variant,
-        expectedAgent: runtimeCfg.expectedAgent ?? "heidi",
-        enforcement: runtimeCfg.enforcement,
-        directory: directory,
-        packageVersion: pkgVersion,
-      })
+        packageVersion: "0.8.0-alpha.8",
+      }
+
+      const result = evaluateRuntimeAgentPolicy(context, runtimeCfg, directory)
 
       if (!result.allowed) {
         throw new Error(result.reason ?? "Agent identity enforcement blocked this request")
       }
 
       // Apply identity anti-fabrication marker
-      if (output.message?.system !== undefined) {
-        output.message.system = applyIdentityMarker(
+      if (result.identityMarker && output.message) {
+        output.message.system = appendRuntimeIdentityMarker(
           output.message.system,
-          agent,
-          runtimeCfg.expectedAgent ?? "heidi",
+          result.identityMarker,
         )
-      } else if (output.message) {
-        output.message.system = applyIdentityMarker("", agent, runtimeCfg.expectedAgent ?? "heidi")
       }
     },
 

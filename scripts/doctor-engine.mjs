@@ -490,19 +490,43 @@ export async function runDoctorChecks(directory) {
   const runtimeAgentCfg = await importRuntimeAgentConfig(directory)
   if (runtimeAgentCfg) {
     checks.push({
-      id: "runtime.agent.enforcement",
-      name: "Runtime Agent Enforcement",
+      id: "runtime.agent.config",
+      name: "Runtime Agent Configuration",
       status: "pass",
       message: `enforcement=${runtimeAgentCfg.enforcement}, expectedAgent=${runtimeAgentCfg.expectedAgent}`,
     })
   } else {
     checks.push({
-      id: "runtime.agent.enforcement",
-      name: "Runtime Agent Enforcement",
+      id: "runtime.agent.config",
+      name: "Runtime Agent Configuration",
       status: "warn",
-      message: "runtimeAgent config not found — using defaults (strict/heidi)",
+      message: "runtimeAgent config not found (defaults: strict/heidi)",
     })
   }
+
+  // Expected agent check
+  checks.push({
+    id: "runtime.agent.expected",
+    name: "Runtime Agent Expected",
+    status: "pass",
+    message: `expected agent: ${runtimeAgentCfg?.expectedAgent || "heidi"}`,
+  })
+
+  // Last observed runtime agent — requires a real observation
+  checks.push({
+    id: "runtime.agent.last_observed",
+    name: "Runtime Agent Last Observed",
+    status: "warn",
+    message: "not yet verified — no top-level user message has been observed yet",
+  })
+
+  // Runtime identity match — cannot pass without observation
+  checks.push({
+    id: "runtime.agent.identity_match",
+    name: "Runtime Identity Match",
+    status: "warn",
+    message: "not yet verified — requires real session observation",
+  })
 
   // ── 19. CLI commands availability ──────────────────────────────────────
   const cliPath = join(directory, "bin", "flowdeck.js")
@@ -794,7 +818,7 @@ async function importRuntimeAgentConfig(directory) {
     const opencodeDir = process.env.OPENCODE_CONFIG_DIR ||
       (process.env.XDG_CONFIG_HOME
         ? join(process.env.XDG_CONFIG_HOME, "opencode")
-        : join(homedir, ".config", "opencode"))
+        : join(homedir(), ".config", "opencode"))
     const opencodePath = join(opencodeDir, "opencode.json")
     if (existsSync(opencodePath)) {
       const raw = readFileSync(opencodePath, "utf-8")

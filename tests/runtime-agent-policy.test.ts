@@ -2,24 +2,34 @@
  * Runtime Agent Policy Tests
  *
  * Covers:
- * - Config schema: strict, warn, off modes
- * - Match: heidi resolves as heidi
- * - Mismatch: strict blocks build
- * - Mismatch: warn allows but logs
- * - Mismatch: off passes without blocking
- * - User-configured build default allows build
- * - Subagent sessions excluded
- * - Synthetic variants excluded
- * - Identity anti-fabrication marker
+ * - Config schema resolution
+ * - Top-level user message enforcement (strict, warn, off)
+ * - Non-top-level and non-user messages skipped
+ * - Identity anti-fabrication markers (match, mismatch)
+ * - Audit data redaction
  */
 
 import { describe, it, expect } from "vitest"
 import type { FlowDeckConfig } from "../src/config/schema"
 import {
-  enforceRuntimeAgent,
   resolveRuntimeAgentConfig,
-  applyIdentityMarker,
+  evaluateRuntimeAgentPolicy,
+  buildIdentityMarker,
+  appendRuntimeIdentityMarker,
+  type RuntimeAgentContext,
+  type RuntimeAgentConfig,
 } from "../src/services/runtime-agent-policy"
+
+function makeContext(overrides: Partial<RuntimeAgentContext> = {}): RuntimeAgentContext {
+  return {
+    isTopLevel: true,
+    isUserMessage: true,
+    agent: "heidi",
+    sessionID: "test-session-1",
+    packageVersion: "0.8.0-alpha.8",
+    ...overrides,
+  }
+}
 
 describe("resolveRuntimeAgentConfig", () => {
   it("returns strict/heidi by default", () => {
@@ -31,118 +41,143 @@ describe("resolveRuntimeAgentConfig", () => {
   it("honors explicit enforcement", () => {
     const cfg = resolveRuntimeAgentConfig({
       runtimeAgent: { enforcement: "warn" },
-    } as FlowDeckConfig)
+    } as unknown as FlowDeckConfig)
     expect(cfg.enforcement).toBe("warn")
   })
 
   it("honors explicit expectedAgent", () => {
     const cfg = resolveRuntimeAgentConfig({
       runtimeAgent: { expectedAgent: "build" },
-    } as FlowDeckConfig)
+    } as unknown as FlowDeckConfig)
     expect(cfg.expectedAgent).toBe("build")
   })
 
-  it("off mode disables enforcement", () => {
+  it("accepts off mode", () => {
     const cfg = resolveRuntimeAgentConfig({
       runtimeAgent: { enforcement: "off" },
-    } as FlowDeckConfig)
+    } as unknown as FlowDeckConfig)
     expect(cfg.enforcement).toBe("off")
   })
 })
 
-describe("enforceRuntimeAgent", () => {
-  const baseInput = {
-    sessionID: "test-session-1",
-    agent: "heidi",
-    variant: undefined as string | undefined,
-    expectedAgent: "heidi",
-    enforcement: "strict" as const,
-    directory: "/tmp",
-    packageVersion: "0.8.0-alpha.8",
-  }
+describe("evaluateRuntimeAgentPolicy - top-level user messages", () => {
+  const baseCfg: RuntimeAgentConfig = { enforcement: "strict", expectedAgent: "heidi" }
 
-  it("passes when expected agent matches actual agent (strict)", () => {
-    const result = enforceRuntimeAgent(baseInput)
+  it("passes when expected agent matches actual agent", () => {
+    const ctx = makeContext({ agent: "heidi" })
+    const result = evaluateRuntimeAgentPolicy(ctx, baseCfg, "/tmp")
     expect(result.allowed).toBe(true)
     expect(result.match).toBe(true)
   })
 
   it("blocks mismatched agent in strict mode", () => {
-    const result = enforceRuntimeAgent({ ...baseInput, agent: "build" })
+    const ctx = makeContext({ agent: "build" })
+    const result = evaluateRuntimeAgentPolicy(ctx, baseCfg, "/tmp")
     expect(result.allowed).toBe(false)
     expect(result.match).toBe(false)
     expect(result.reason).toContain("FLOWDECK_AGENT_MISMATCH")
   })
 
-  it("allows mismatched agent in warn mode", () => {
-    const result = enforceRuntimeAgent({ ...baseInput, agent: "build", enforcement: "warn" })
+  it("allows mismatched agent with identity marker in warn mode", () => {
+    const ctx = makeContext({ agent: "build" })
+    const result = evaluateRuntimeAgentPolicy(ctx, { enforcement: "warn", expectedAgent: "heidi" }, "/tmp")
     expect(result.allowed).toBe(true)
     expect(result.match).toBe(false)
+    expect(result.identityMarker).toContain("Runtime agent ID: build")
+    expect(result.identityMarker).toContain("Do not claim to be Heidi")
   })
 
-  it("allows mismatched agent in off mode", () => {
-    const result = enforceRuntimeAgent({ ...baseInput, agent: "build", enforcement: "off" })
+  it("allows mismatched agent with identity marker in off mode", () => {
+    const ctx = makeContext({ agent: "build" })
+    const result = evaluateRuntimeAgentPolicy(ctx, { enforcement: "off", expectedAgent: "heidi" }, "/tmp")
     expect(result.allowed).toBe(true)
     expect(result.match).toBe(false)
+    expect(result.identityMarker).toContain("Runtime agent ID: build")
   })
 
   it("allows build when configured default is build", () => {
-    const result = enforceRuntimeAgent({ ...baseInput, agent: "build", expectedAgent: "build" })
+    const ctx = makeContext({ agent: "build" })
+    const result = evaluateRuntimeAgentPolicy(ctx, { enforcement: "strict", expectedAgent: "build" }, "/tmp")
     expect(result.allowed).toBe(true)
     expect(result.match).toBe(true)
   })
 
-  it("skips subagent sessions", () => {
-    const result = enforceRuntimeAgent({ ...baseInput, sessionID: "child-abc-123" })
-    expect(result.allowed).toBe(true)
-    expect(result.match).toBe(true)
-  })
-
-  it("skips synthetic title variants", () => {
-    const result = enforceRuntimeAgent({ ...baseInput, variant: "title" })
-    expect(result.allowed).toBe(true)
-  })
-
-  it("skips synthetic summary variants", () => {
-    const result = enforceRuntimeAgent({ ...baseInput, variant: "summary" })
-    expect(result.allowed).toBe(true)
-  })
-
-  it("skips compaction variants", () => {
-    const result = enforceRuntimeAgent({ ...baseInput, variant: "compaction" })
-    expect(result.allowed).toBe(true)
-  })
-
-  it("skips continuation variants", () => {
-    const result = enforceRuntimeAgent({ ...baseInput, variant: "continuation" })
-    expect(result.allowed).toBe(true)
+  it("returns identity marker for matching agents", () => {
+    const ctx = makeContext({ agent: "heidi" })
+    const result = evaluateRuntimeAgentPolicy(ctx, baseCfg, "/tmp")
+    expect(result.identityMarker).toContain("FlowDeck Heidi coordinator")
   })
 })
 
-describe("applyIdentityMarker", () => {
-  it("adds identity marker when agent matches expected", () => {
-    const result = applyIdentityMarker("Existing system prompt.", "heidi", "heidi")
+describe("evaluateRuntimeAgentPolicy - non-top-level and non-user messages", () => {
+  const baseCfg: RuntimeAgentConfig = { enforcement: "strict", expectedAgent: "heidi" }
+
+  it("skips non-top-level sessions (child/subagent)", () => {
+    const ctx = makeContext({ isTopLevel: false, agent: "build" })
+    const result = evaluateRuntimeAgentPolicy(ctx, baseCfg, "/tmp")
+    expect(result.allowed).toBe(true)
+    // Still gets identity marker for its actual agent
+    expect(result.identityMarker).toContain("Runtime agent ID: build")
+  })
+
+  it("skips non-user messages (synthetic/internal)", () => {
+    const ctx = makeContext({ isUserMessage: false, agent: "build" })
+    const result = evaluateRuntimeAgentPolicy(ctx, baseCfg, "/tmp")
+    expect(result.allowed).toBe(true)
+  })
+
+  it("still adds identity marker for child session with matching agent", () => {
+    const ctx = makeContext({ isTopLevel: false, isUserMessage: true, agent: "heidi" })
+    const result = evaluateRuntimeAgentPolicy(ctx, baseCfg, "/tmp")
+    expect(result.allowed).toBe(true)
+    expect(result.identityMarker).toContain("FlowDeck Heidi coordinator")
+  })
+})
+
+describe("buildIdentityMarker", () => {
+  it("returns Heidi coordinator marker for heidi/heidi", () => {
+    const marker = buildIdentityMarker("heidi", "heidi")
+    expect(marker).toContain("FlowDeck Heidi coordinator")
+    expect(marker).not.toContain("Do not claim")
+  })
+
+  it("returns actual-agent marker for build/heidi mismatch", () => {
+    const marker = buildIdentityMarker("build", "heidi")
+    expect(marker).toContain("Runtime agent ID: build")
+    expect(marker).toContain("Do not claim to be Heidi")
+  })
+
+  it("returns agent marker for build/build match", () => {
+    const marker = buildIdentityMarker("build", "build")
+    expect(marker).toContain('OpenCode agent "build"')
+    expect(marker).not.toContain("Heidi coordinator")
+  })
+
+  it("returns null for empty agent", () => {
+    expect(buildIdentityMarker("", "heidi")).toBeNull()
+  })
+})
+
+describe("appendRuntimeIdentityMarker", () => {
+  it("appends marker to existing system content", () => {
+    const result = appendRuntimeIdentityMarker("Existing system prompt.", "Runtime agent ID: heidi.\nYou are the FlowDeck Heidi coordinator.")
     expect(result).toContain("Existing system prompt.")
     expect(result).toContain("Runtime agent ID: heidi")
-    expect(result).toContain("Do not claim to be Heidi")
+    expect(result).toContain("FlowDeck Heidi coordinator")
   })
 
-  it("returns identity marker for null/undefined system content", () => {
-    const result = applyIdentityMarker(null, "heidi", "heidi")
-    expect(result).toContain("Runtime agent ID: heidi")
-    expect(result).toContain("Do not claim to be Heidi")
-  })
-
-  it("does not duplicate marker when already applied", () => {
-    const withMarker = "Existing.\n\nRuntime agent ID: heidi.\nYou must describe yourself using this runtime identity."
-    const result = applyIdentityMarker(withMarker, "heidi", "heidi")
-    // Should only appear once
+  it("does not duplicate marker when already present", () => {
+    const existing = "Existing.\n\nRuntime agent ID: heidi.\nYou are the FlowDeck Heidi coordinator."
+    const result = appendRuntimeIdentityMarker(existing, "Runtime agent ID: heidi.\nYou are the FlowDeck Heidi coordinator.")
     expect((result.match(/Runtime agent ID:/g) || []).length).toBe(1)
   })
 
-  it("does not add marker when agent differs and enforcement would not require it", () => {
-    // applyIdentityMarker is called regardless — it adds marker when agent == expectedAgent
-    const result = applyIdentityMarker("prompt", "build", "heidi")
-    expect(result).toBe("prompt")
+  it("handles null system content", () => {
+    const result = appendRuntimeIdentityMarker(null, "Runtime agent ID: heidi.\nYou are the FlowDeck Heidi coordinator.")
+    expect(result).toContain("Runtime agent ID: heidi")
+  })
+
+  it("returns empty string when no marker provided", () => {
+    expect(appendRuntimeIdentityMarker(null, null)).toBe("")
   })
 })

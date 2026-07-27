@@ -57,3 +57,30 @@ export function appendAuditEvent(dir: string, event: Omit<AuditEvent, "timestamp
     // Audit logging is best-effort; never break the caller.
   }
 }
+
+/**
+ * Redact sensitive fields from an audit event before persistence.
+ * Prevents accidental exposure of credentials in structured logs.
+ */
+export function redactAuditData<T extends Record<string, unknown>>(event: T): T {
+  const result = { ...event }
+  const stringified = JSON.stringify(result)
+
+  // Known secret patterns to redact
+  const patterns: Array<[RegExp, string]> = [
+    [/npm_[a-zA-Z0-9]{36,}/g, "[REDACTED_NPM_TOKEN]"],
+    [/gh[psuf]_[a-zA-Z0-9]{36,}/g, "[REDACTED_GITHUB_TOKEN]"],
+    [/(ghp_|gho_|ghu_|ghs_)[a-zA-Z0-9]{36,}/g, "[REDACTED_GITHUB_TOKEN]"],
+  ]
+
+  let cleaned = stringified
+  for (const [pattern, replacement] of patterns) {
+    cleaned = cleaned.replace(pattern, replacement)
+  }
+
+  try {
+    return JSON.parse(cleaned)
+  } catch {
+    return result
+  }
+}
