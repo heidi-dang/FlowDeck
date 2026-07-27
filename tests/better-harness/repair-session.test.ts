@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import os from "os";
 import { createRepairSession } from "../../src/better-harness/opencode/repair-session";
 import { buildRepairPrompt } from "../../src/better-harness/opencode/repair-prompt";
 import { executeValidation } from "../../src/better-harness/opencode/validation-executor";
@@ -22,8 +23,7 @@ describe("Repair Session", () => {
       firstSeenAt: "",
       lastSeenAt: "",
     };
-    const result = await createRepairSession({ finding, projectPath: "/tmp/test" });
-    // Without an OpenCode client, session creation returns an error
+    const result = await createRepairSession({ finding, projectPath: os.tmpdir() });
     expect(result.repairSessionId).toBe("");
     expect(result.error).toBeTruthy();
     expect(result.prompt).toContain("Missing config");
@@ -50,7 +50,7 @@ describe("Repair Prompt", () => {
       firstSeenAt: "",
       lastSeenAt: "",
     };
-    const prompt = buildRepairPrompt({ finding, projectPath: "/tmp" });
+    const prompt = buildRepairPrompt({ finding, projectPath: os.tmpdir() });
     expect(prompt).toContain("## Finding");
     expect(prompt).toContain("## Expected Output");
     expect(prompt).toContain("## Evidence");
@@ -75,27 +75,27 @@ describe("Repair Prompt", () => {
       firstSeenAt: "",
       lastSeenAt: "",
     };
-    const prompt = buildRepairPrompt({ finding, projectPath: "/tmp", previousAttempts: 2 });
+    const prompt = buildRepairPrompt({ finding, projectPath: os.tmpdir(), previousAttempts: 2 });
     expect(prompt).toContain("attempt #3");
   });
 });
 
 describe("Validation Executor", () => {
   it("rejects shell injection patterns", () => {
-    const result = executeValidation("ls; rm -rf /", "/tmp");
+    const result = executeValidation("ls; rm -rf /", os.tmpdir());
     expect(result.passed).toBe(false);
     expect(result.error).toContain("shell injection");
   });
 
   it("rejects path traversal", () => {
-    const result = executeValidation("echo ..", "/tmp");
+    const result = executeValidation("echo ..", os.tmpdir());
     expect(result.passed).toBe(false);
     expect(result.error).toContain("shell injection");
   });
 
   it("returns validation result for simple commands", () => {
-    const result = executeValidation("echo hello", "/tmp");
+    const result = executeValidation("node --version", os.tmpdir());
     expect(result.exitCode).toBe(0);
-    expect(result.stdout).toContain("hello");
+    expect(result.stdout).toContain("v");
   });
 });
