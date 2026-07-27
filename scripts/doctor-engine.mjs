@@ -226,16 +226,16 @@ export async function runDoctorChecks(directory) {
   })
 
   // ── 13. FDX fallback availability ─────────────────────────────────────
-  const fdxToolDir = join(directory, "src", "tools", "fdx")
-  const fdxFiles = safeList(fdxToolDir).filter(f => f.endsWith(".ts") && f !== "index.ts")
+  const fdxToolDir = join(directory, "src", "tools")
+  const fdxFiles = safeList(fdxToolDir).filter(f => f.startsWith("fdx") && f.endsWith(".ts"))
   let fdxBinaryAvailable = false
   try { execFileSync("fdx", ["--help"], { stdio: "ignore", timeout: 5000 }); fdxBinaryAvailable = true } catch { /* ignore */ }
   checks.push({
     id: "fdx.fallback",
     name: "FDX Native Fallback",
     status: fdxFiles.length > 0 ? "pass" : "warn",
-    message: fdxFiles.length > 0 ? `Native TS fallbacks active (${fdxFiles.length} tools, ${fdxBinaryAvailable ? "FDX binary also available" : "FDX binary not found"})` : "No native FDX fallback tools found",
-    remediation: fdxFiles.length === 0 ? "Ensure src/tools/fdx/ has native TS fallback implementations" : undefined,
+    message: fdxFiles.length > 0 ? `Native TS fallbacks active (${fdxFiles.length} tools: ${fdxFiles.join(", ")}, ${fdxBinaryAvailable ? "FDX binary also available" : "FDX binary not found"})` : "No native FDX fallback tools found",
+    remediation: fdxFiles.length === 0 ? "Ensure src/tools/ has fdx*.ts native TS fallback implementations" : undefined,
   })
 
   // ── 14. FDX version compatibility ──────────────────────────────────────
@@ -249,7 +249,7 @@ export async function runDoctorChecks(directory) {
   })
 
   // ── 15. Lock implementation ────────────────────────────────────────────
-  const lockPath = join(directory, "src", "tools", "planning-state-lib.ts")
+  const lockPath = join(directory, "src", "services", "async-lock.ts")
   const lockContent = tryRead(lockPath)
   let lockOk = false, lockMsg = "not found"
   if (lockContent) {
@@ -439,15 +439,27 @@ export async function runDoctorChecks(directory) {
   // ── 23. Model inheritance ─────────────────────────────────────────────
   const modelAgentFiles = ["orchestrator.ts", "planner.ts", "coder.ts"]
   let modelInheritanceOk = true
+  const missingModel = []
   for (const af of modelAgentFiles) {
     const content = tryRead(join(agentsDir, af))
-    if (content && !content.includes("model?")) modelInheritanceOk = false
+    const hasModel = content && (
+      content.includes("model?") ||
+      content.includes("model: string | undefined") ||
+      content.includes("model: string | null") ||
+      content.includes("model?: string")
+    )
+    if (!hasModel) {
+      modelInheritanceOk = false
+      missingModel.push(af)
+    }
   }
   checks.push({
     id: "agents.model",
     name: "Model Inheritance",
     status: modelInheritanceOk ? "pass" : "warn",
-    message: modelInheritanceOk ? "Agent factories accept optional model parameter" : "Some agent factories may not support model inheritance",
+    message: modelInheritanceOk
+      ? "Agent factories accept optional model parameter"
+      : `Some agent factories may not support model inheritance: ${missingModel.join(", ")}`,
   })
 
   // ── 24. Installer identity ──────────────────────────────────────────────
