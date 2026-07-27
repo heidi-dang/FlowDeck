@@ -29,13 +29,53 @@
 import { execSync, spawn } from "node:child_process"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
+import { existsSync } from "node:fs"
 import { readFileSync } from "node:fs"
+import { createRequire } from "node:module"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
+const require = createRequire(import.meta.url)
 export const root = join(__dirname, "..")
 
 function defaultExec(cmd, cwd = root) {
   return execSync(cmd, { cwd, encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] })
+}
+
+/**
+ * Resolve the native Oxlint executable path.
+ * Runs via process.execPath since it is a Node.js script.
+ */
+export function resolveOxlintExecutable() {
+  const oxlintPkg = require.resolve("oxlint/package.json")
+  return join(dirname(oxlintPkg), "bin", "oxlint")
+}
+
+/**
+ * Resolve the Bun executable path.
+ * On Unix, "bun" is a native binary. On Windows, find bun.exe
+ * inside the npm global installation directory.
+ */
+export function getBunExecutable() {
+  if (process.platform !== "win32") return "bun"
+  const candidates = [
+    join(process.env.APPDATA || "", "npm", "node_modules", "bun", "bin", "bun.exe"),
+    join(process.env.LOCALAPPDATA || "", "bun", "bin", "bun.exe"),
+  ]
+  for (const candidate of candidates) {
+    try {
+      if (existsSync(candidate)) return candidate
+    } catch {
+      // continue
+    }
+  }
+  return "bun.exe"
+}
+
+/**
+ * Resolve the TypeScript compiler tsc path.
+ */
+export function resolveTscPath() {
+  return require.resolve("typescript/bin/tsc")
 }
 
 // ── Stdin / ref parsing ───────────────────────────────────────────────────────
@@ -204,58 +244,83 @@ export function detectRustChanges(stdinText = "", cwd = root, execFn = defaultEx
 // ── Changed-file collection ───────────────────────────────────────────────────
 
 /**
- * Return the deduplicated list of files being pushed.
- * Uses stdin ref entries when available; falls back to git status --porcelain.
- * execFn is injected for testing.
+ * Result of a changed-file-resolution attempt.
+ *
+ * @property files – the list of changed file paths.
+ * @property source – "refs" when derived from pushed refs, "working-tree" for fallback.
+ * @property trustworthy – true when the result is a reliable description of what
+ *   will be pushed. Malformed or unverifiable hook input is untrustworthy.
+ */
+export class ChangedFilesResult {
+  constructor(files, source, trustworthy) {
+    this.files = files
+    this.source = source
+    this.trustworthy = trustworthy
+  }
+}
+
+/**
+ * Resolve the set of changed files from pre-push hook stdin or working tree.
+ *
+ * Behaviour per input:
+ *   - No stdin / TTY / empty → working-tree fallback, trustworthy=true.
+ *   - Valid ref entries        → git diff per ref, trustworthy=true.
+ *   - Malformed non-empty      → throws so the caller fails closed.
+ *   - Git comparison error     → trustworthy=false.
+ *
+ * @returns {ChangedFilesResult}
  */
 export function getChangedFiles(stdinText = "", cwd = root, execFn = defaultExec) {
   const files = new Set()
 
-  // Try stdin refs first (most precise: exactly what is being pushed)
-  if (stdinText && stdinText.trim().length > 0) {
+  // Non-empty stdin → must be well-formed ref entries
+  if (stdinText && typeof stdinText === "string" && stdinText.trim().length > 0) {
+    let refEntries
     try {
-      const refEntries = parsePrePushStdin(stdinText)
-      for (const { localSha, remoteSha } of refEntries) {
-        const isNew = !remoteSha || /^0+$/.test(remoteSha)
+      refEntries = parsePrePushStdin(stdinText)
+    } catch (err) {
+      // Malformed non-empty stdin → fail closed, do NOT fall back
+      throw new Error(
+        `Malformed pre-push hook input. stdin is non-empty but not valid ref data: ${err.message}`
+      )
+    }
+
+    let gitError = false
+    for (const { localSha, remoteSha } of refEntries) {
+      const isNew = !remoteSha || /^0+$/.test(remoteSha)
+      try {
         if (isNew) {
           let baseSha = null
           try {
             const upstream = execFn("git rev-parse --abbrev-ref @{upstream}", cwd).trim()
             if (upstream) baseSha = execFn(`git merge-base "${upstream}" "${localSha}"`, cwd).trim()
           } catch {
-            // ignore; try origin/main next
+            // try origin/main next
           }
           if (!baseSha) {
             try {
               baseSha = execFn(`git merge-base "origin/main" "${localSha}"`, cwd).trim()
             } catch {
-              // ignore
+              // no base resolved
             }
           }
           if (baseSha) {
             const diff = execFn(`git diff --name-only "${baseSha}" "${localSha}"`, cwd)
-            diff
-              .split("\n")
-              .map((f) => f.trim())
-              .filter(Boolean)
-              .forEach((f) => files.add(f))
+            diff.split("\n").map((f) => f.trim()).filter(Boolean).forEach((f) => files.add(f))
           }
         } else {
           const diff = execFn(`git diff --name-only "${remoteSha}" "${localSha}"`, cwd)
-          diff
-            .split("\n")
-            .map((f) => f.trim())
-            .filter(Boolean)
-            .forEach((f) => files.add(f))
+          diff.split("\n").map((f) => f.trim()).filter(Boolean).forEach((f) => files.add(f))
         }
+      } catch {
+        gitError = true
       }
-      if (files.size > 0) return [...files]
-    } catch {
-      // Malformed stdin or git failure → fall through to git status
     }
+
+    return new ChangedFilesResult([...files], "refs", !gitError && files.size > 0)
   }
 
-  // Fallback: git status for working-tree changes (manual invocation)
+  // No stdin → working-tree fallback (manual invocation)
   try {
     const status = execFn("git status --porcelain", cwd)
     status.split("\n").forEach((line) => {
@@ -266,7 +331,7 @@ export function getChangedFiles(stdinText = "", cwd = root, execFn = defaultExec
     // ignore; return empty
   }
 
-  return [...files]
+  return new ChangedFilesResult([...files], "working-tree", true)
 }
 
 // ── Escalation check (pure) ───────────────────────────────────────────────────
@@ -388,19 +453,74 @@ export function getFullModeSteps(rustChanged, hasCargo) {
   return steps
 }
 
+// ── Push-range resolution ──────────────────────────────────────────────────────
+
+/**
+ * Resolve diff ranges for validation from pre-push stdin ref entries.
+ * Returns an array of { baseSha, localSha } pairs for each pushed ref.
+ * Throws on malformed stdin. Returns empty for TTY / empty input.
+ */
+export function resolvePushRanges(stdinText = "", cwd = root, execFn = defaultExec) {
+  if (!stdinText || typeof stdinText !== "string" || stdinText.trim().length === 0) {
+    return []
+  }
+
+  const refEntries = parsePrePushStdin(stdinText)
+  const ranges = []
+
+  for (const entry of refEntries) {
+    const { localSha, remoteSha } = entry
+    const isNew = !remoteSha || /^0+$/.test(remoteSha)
+
+    if (isNew) {
+      let baseSha = null
+      try {
+        const upstream = execFn("git rev-parse --abbrev-ref @{upstream}", cwd).trim()
+        if (upstream) baseSha = execFn(`git merge-base "${upstream}" "${localSha}"`, cwd).trim()
+      } catch { /* try origin/main */ }
+
+      if (!baseSha) {
+        try {
+          baseSha = execFn(`git merge-base "origin/main" "${localSha}"`, cwd).trim()
+        } catch { /* no base */ }
+      }
+
+      if (baseSha) {
+        ranges.push({ baseSha, localSha })
+      }
+      // If no base can be resolved, the range is omitted — caller must handle
+    } else {
+      ranges.push({ baseSha: remoteSha, localSha })
+    }
+  }
+
+  return ranges
+}
+
+/**
+ * Build git diff --check tasks for every resolved push range.
+ * Each task uses argv-safe { executable, args }.
+ * Returns empty array when no ranges are available (manual execution).
+ */
+export function getDiffCheckTasks(ranges) {
+  if (!Array.isArray(ranges) || ranges.length === 0) {
+    // No ranges available → fall back to working-tree check
+    return [{ name: "Git Diff Check", executable: "git", args: ["diff", "--check"] }]
+  }
+
+  return ranges.map((r, i) => ({
+    name: `Git Diff Check (ref ${i + 1})`,
+    executable: "git",
+    args: ["diff", "--check", r.baseSha, r.localSha],
+  }))
+}
+
 // ── Parallel runner ───────────────────────────────────────────────────────────
 
 /** Run a process, streaming output, resolve with name and exit code. */
 function runProcess(name, executable, args) {
   return new Promise((resolve) => {
-    // On Windows, .cmd and .bat files must run via cmd.exe to avoid EINVAL
-    let bin = executable
-    let binArgs = args
-    if (process.platform === "win32" && /\.(cmd|bat)$/i.test(executable)) {
-      bin = process.env.COMSPEC || "cmd.exe"
-      binArgs = ["/d", "/c", executable, ...args]
-    }
-    const proc = spawn(bin, binArgs, { shell: false, cwd: root, stdio: "inherit" })
+    const proc = spawn(executable, args, { shell: false, cwd: root, stdio: "inherit" })
     proc.on("close", (code) => resolve({ name, cmd: `${executable} ${args.join(" ")}`, code: code ?? 1 }))
     proc.on("error", () => resolve({ name, cmd: `${executable} ${args.join(" ")}`, code: 1 }))
   })
@@ -479,45 +599,64 @@ if (isMain) {
 
   /** Run focused fast checks for changed files only, concurrently. */
   async function runFastMode() {
-    const changedFiles = getChangedFiles(stdinContent, root)
+    let changedResult
+    try {
+      changedResult = getChangedFiles(stdinContent, root)
+    } catch (err) {
+      console.error(`\n✗ ${err.message}`)
+      process.exit(1)
+    }
 
-    if (changedFiles.length === 0) {
+    if (changedResult.files.length === 0) {
+      if (changedResult.source === "refs" && !changedResult.trustworthy) {
+        console.error("\n✗ Pre-push hook input is unverifiable. Push blocked.")
+        process.exit(1)
+      }
       console.log("\n✓ No changed files detected. Nothing to verify.")
       process.exit(0)
     }
 
-    if (isEscalationRequired(changedFiles)) {
+    if (!changedResult.trustworthy) {
+      console.error("\n✗ Changed-file comparison is unreliable. Escalating to full mode.")
+      return runFullMode()
+    }
+
+    if (isEscalationRequired(changedResult.files)) {
       console.log("\n⚠ Foundational files changed — escalating to full mode.")
       return runFullMode()
     }
 
-    const { testPaths, fastTasks } = routeFastChecks(changedFiles)
-    const lintTargets = changedFiles.filter((f) => /\.(ts|js|mjs)$/.test(f))
+    const { testPaths, fastTasks } = routeFastChecks(changedResult.files)
+    const lintTargets = changedResult.files.filter((f) => /\.(ts|js|mjs)$/.test(f))
 
-    console.log(`\n── Fast mode: ${changedFiles.length} changed file(s) ──`)
+    console.log(`\n── Fast mode: ${changedResult.files.length} changed file(s) ──`)
     if (testPaths.length > 0) console.log(`   Tests    : ${testPaths.join(", ")}`)
     if (fastTasks.length > 0) console.log(`   Extra    : ${fastTasks.map((t) => t.name).join(", ")}`)
 
-    // git diff --check is fast and always runs first (serial)
-    try {
-      execSync("git diff --check", { cwd: root, stdio: "inherit" })
-    } catch {
-      console.error("\n✗ git diff --check failed (trailing whitespace / merge markers). Push blocked.")
-      process.exit(1)
+    // Pushed-range git diff --check (argv-safe)
+    const ranges = resolvePushRanges(stdinContent, root)
+    const diffTasks = getDiffCheckTasks(ranges)
+    for (const dt of diffTasks) {
+      const result = await runProcess(dt.name, dt.executable, dt.args)
+      if (result.code !== 0) {
+        console.error(`\n✗ ${dt.name} failed (trailing whitespace / merge markers). Push blocked.`)
+        process.exit(1)
+      }
     }
 
     // Build concurrent task list
     const tasks = []
-    const npxBin = process.platform === "win32" ? "npx.cmd" : "npx"
+    const oxlintBin = resolveOxlintExecutable()
+    const tscPath = resolveTscPath()
+    const bunBin = getBunExecutable()
 
     if (lintTargets.length > 0) {
-      tasks.push(() => runProcess("Lint", npxBin, ["oxlint", "--deny-warnings", ...lintTargets]))
+      tasks.push(() => runProcess("Lint", process.execPath, [oxlintBin, "--deny-warnings", ...lintTargets]))
     }
 
-    tasks.push(() => runProcess("Typecheck", npxBin, ["tsc", "--noEmit", "--project", "tsconfig.prepush.json"]))
+    tasks.push(() => runProcess("Typecheck", process.execPath, [tscPath, "--noEmit", "--project", "tsconfig.prepush.json"]))
 
     if (testPaths.length > 0) {
-      const bunBin = process.platform === "win32" ? "bun.cmd" : "bun"
       tasks.push(() => runProcess("Test", bunBin, ["test", ...testPaths]))
     }
 
