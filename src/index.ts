@@ -60,6 +60,7 @@ import { hashEditTool } from "./tools/hash-edit"
 import { loadRulesTool, listRulesTool } from "./tools/load-rules"
 import { planningStateTool } from "./tools/planning-state"
 import { repoMemoryTool } from "./tools/repo-memory"
+import { debugLogsTool } from "./tools/debug-logs"
 
 // ─── Governance integration ────────────────────────────────────────────────
 import {
@@ -123,9 +124,20 @@ function loadCommands(): Record<string, { description?: string; template: string
 const specialistAgentSet = new Set(getAllAgentIds().filter(id => isSpecialistAgent(id)))
 
 const plugin: Plugin = async ({ directory, client }) => {
-  const appLog = (msg: string): Promise<void> =>
-    client.app.log({ body: { service: "flowdeck", level: "info", message: msg } })
-      .then(() => undefined).catch(() => {})
+  // ─── Structured logging with levels and correlation ─────────────────────
+  let logSequence = 0
+  type LogLevel = "debug" | "info" | "warn" | "error"
+  const appLog = (msg: string, level: LogLevel = "info", sessionID?: string): Promise<void> => {
+    const correlationId = sessionID ? `${sessionID}:${++logSequence}` : `anon:${++logSequence}`
+    return client.app.log({
+      body: {
+        service: "flowdeck",
+        level,
+        message: msg,
+        extra: { correlationId, timestamp: new Date().toISOString() },
+      },
+    }).then(() => undefined).catch(() => {})
+  }
 
   // Set active project directory for FDX native fallback functions
   setActiveProjectDir(directory)
@@ -222,6 +234,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       "fdx-tree": fdxTreeTool,
       "fdx-test": fdxTestTool,
       "fdx-lint": fdxLintTool,
+      "debug-audit": debugLogsTool,
     },
 
     "tool.execute.before": async (toolInput: any, toolOutput: any) => {
@@ -246,7 +259,7 @@ const plugin: Plugin = async ({ directory, client }) => {
             throw new Error(msg)
           }
           // advisory: warn and continue
-          appLog(`[ADVISORY] ${msg}`)
+          appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
         }
       }
 
@@ -311,7 +324,7 @@ const plugin: Plugin = async ({ directory, client }) => {
               throw new Error(msg)
             }
             // advisory: warn and continue
-            appLog(`[ADVISORY] ${msg}`)
+            appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
           }
         }
       }
@@ -357,7 +370,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         sessionID,
       )
       if (loop.action === "block") throw new Error(loop.escalationMessage)
-      if (loop.action === "warn") appLog(loop.message)
+      if (loop.action === "warn") appLog(loop.message, "warn", sessionID)
     },
 
     "tool.execute.after": async (toolInput: any) => {
@@ -422,7 +435,7 @@ const plugin: Plugin = async ({ directory, client }) => {
               throw new Error(msg)
             }
             // advisory: warn and continue
-            appLog(`[ADVISORY] ${msg}`)
+            appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
           }
         }
       }
