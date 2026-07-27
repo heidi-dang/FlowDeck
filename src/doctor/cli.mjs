@@ -323,6 +323,53 @@ function buildHumanReport(report, verbose) {
 
 // ─── Main ──────────────────────────────────────────────────────────────
 
+export async function runDoctorCli(rawArgs) {
+  // Strip optional "doctor" prefix if present
+  const args = rawArgs[0] === "doctor" ? rawArgs.slice(1) : rawArgs;
+  const parsed = parseArgs(args);
+  
+  if (parsed.error) {
+    process.stderr.write(`Error: ${parsed.error}
+`);
+    if (parsed.usage) {
+      process.stderr.write(`${parsed.usage}
+`);
+    }
+    process.exitCode = parsed.exitCode;
+    return;
+  }
+  
+  const { options } = parsed;
+  
+  try {
+    let report = await runDoctorEngine(options);
+    report = redactSecrets(report);
+    
+    if (options.json) {
+      const jsonOutput = JSON.stringify({ schemaVersion: 1, ...report }, null, 2);
+      process.stdout.write(jsonOutput + "\n");
+    } else {
+      const textOutput = buildHumanReport(report, options.verbose);
+      process.stdout.write(textOutput);
+    }
+    
+    const errors = (report.summary && report.summary.errors) || 0;
+    if (options.strict) {
+      const criticals = (report.checks || []).filter(c =>
+        c.status === "error" || c.severity === "critical" || c.severity === "high"
+      );
+      process.exitCode = criticals.length > 0 ? 1 : 0;
+    } else if (errors > 0) {
+      process.exitCode = 1;
+    } else {
+      process.exitCode = 0;
+    }
+  } catch (err) {
+    process.stderr.write(`Doctor engine error: ${err.message}\n`);
+    process.exitCode = 2;
+  }
+}
+
 async function main() {
   const parsed = parseArgs(process.argv.slice(2))
 
