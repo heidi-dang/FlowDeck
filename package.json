@@ -36,7 +36,7 @@
     "postinstall": "node postinstall.mjs",
     "prepublishOnly": "bun run clean && bun run build",
     "test": "bun test",
-    "test:coverage": "bun test --coverage",
+    "test:coverage": "node scripts/check-coverage.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings",
     "validate:skills": "node scripts/validate-skills.mjs",
