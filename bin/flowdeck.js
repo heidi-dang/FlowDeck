@@ -22,7 +22,7 @@ import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { readConfig as readConfigFile } from "../scripts/config-mutator.mjs";
 import { executeTransaction, executeRollbackTransaction } from "../scripts/config-transaction.mjs";
-import { runDoctorChecks } from "../scripts/doctor-engine.mjs";
+import { runDoctorCli } from "../src/doctor/cli.mjs";
 import { runCleanInstall } from "../scripts/clean-install-engine.mjs";
 
 
@@ -397,53 +397,10 @@ async function cmdVerify() {
 }
 
 async function cmdDoctor() {
-  console.log(`FlowDeck Doctor — Comprehensive Diagnostics\n`);
-  console.log(`Package: ${PKG_NAME}`);
-  console.log(`Version: ${PKG_VERSION}\n`);
-
-  // Check installation mode from manifest for display
-  for (const { dir, label } of [
-    { dir: getConfigDir(false), label: "global" },
-    { dir: getConfigDir(true), label: "project" },
-  ]) {
-    const manifestPath = join(dir, ".flowdeck-manifest.json");
-    try {
-      if (existsSync(manifestPath)) {
-        const manifestRaw = readFileSync(manifestPath, "utf-8");
-        const manifest = JSON.parse(manifestRaw);
-        const mode = manifest.installationMode || "unknown";
-        let modeLabel = mode;
-        if (mode === "npm") modeLabel = "npm (global)";
-        else if (mode === "project") modeLabel = "project (local .opencode/)";
-        else if (mode === "local-repo") modeLabel = "local repository checkout";
-        else if (mode === "postinstall") modeLabel = "npm postinstall";
-        else if (mode === "migrate") modeLabel = "migration from upstream";
-        console.log(`  ${label} install mode: ${modeLabel}`);
-
-        if (manifest.checkoutPath) {
-          console.log(`  ${label} checkout path: ${manifest.checkoutPath}`);
-        }
-        console.log();
-      }
-    } catch { /* no manifest found — normal for uninstalled */ }
-  }
-
-  const report = await runDoctorChecks(PKG_ROOT);
-
-  console.log("\n── Diagnostics ──\n");
-  for (const check of report.checks) {
-    const icon = check.status === "pass" ? "✓" : check.status === "warn" ? "⚠" : "✗";
-    console.log(` ${icon} ${check.name}: ${check.message}`);
-    if (check.remediation) console.log(`    Remedy: ${check.remediation}`);
-  }
-
-  console.log(`\n── Summary ──`);
-  console.log(`  Passed: ${report.passed}`);
-  console.log(`  Warned: ${report.warned}`);
-  console.log(`  Failed: ${report.failed}`);
-  console.log(`  Status: ${report.failed > 0 ? "UNHEALTHY" : report.warned > 0 ? "DEGRADED" : "HEALTHY"}`);
-
-  if (report.failed > 0) process.exit(1);
+  // Pass doctor-specific args to the CLI handler
+  // args contains the full process.argv after "flowdeck"
+  // e.g. ["doctor", "--json", "--strict"] → pass ["doctor", "--json", "--strict"]
+  await runDoctorCli(args);
 }
 
 async function cmdConfigValidate() {
