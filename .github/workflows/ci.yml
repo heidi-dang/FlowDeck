@@ -148,31 +148,44 @@ jobs:
             console.assert(c.default_agent === 'orchestrator', 'Default changed');
             console.log('PASS: Existing default_agent preserved');
           "
-      - name: Ownership safe uninstall (heidi)
+      - name: Ownership safe uninstall without manifest (heidi)
         run: |
           HOME_TMP=$(mktemp -d)
           export HOME=$HOME_TMP
           export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
           mkdir -p "$OPENCODE_CONFIG_DIR"
-          echo '{"plugin":["@heidi-dang/flowdeck"],"default_agent":"heidi"}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          echo '{"plugin":["@heidi-dang/flowdeck","other-plugin"],"default_agent":"heidi"}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          set +e
           node bin/flowdeck.js uninstall 2>&1
+          EXIT_CODE=$?
+          set -e
+          if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "FAIL: Expected non-zero exit code when uninstalling without manifest"
+            exit 1
+          fi
           node -e "
-            const c = JSON.parse(require('fs').readFileSync('$OPENCODE_CONFIG_DIR/opencode.json','utf-8'));
-            console.assert(c.default_agent === 'heidi', 'Default agent was removed without manifest');
-            console.log('PASS: heidi default_agent survives uninstall');
+            const c = JSON.parse(require('fs').readFileSync('$HOME_TMP/.config/opencode/opencode.json','utf-8'));
+            console.assert(c.default_agent === 'heidi', 'Default agent was changed');
+            console.assert(c.plugin.includes('@heidi-dang/flowdeck'), 'Plugin was removed');
+            console.assert(c.plugin.includes('other-plugin'), 'Other plugin was removed');
+            console.log('PASS: Uninstall without manifest fails non-zero and preserves config');
           "
-      - name: Ownership safe uninstall (orchestrator)
+      - name: Forced uninstall without manifest
         run: |
           HOME_TMP=$(mktemp -d)
           export HOME=$HOME_TMP
           export OPENCODE_CONFIG_DIR=$HOME_TMP/.config/opencode
           mkdir -p "$OPENCODE_CONFIG_DIR"
-          echo '{"plugin":["@heidi-dang/flowdeck"],"default_agent":"orchestrator"}' > "$OPENCODE_CONFIG_DIR"/opencode.json
-          node bin/flowdeck.js uninstall 2>&1
+          echo '{"plugin":["@heidi-dang/flowdeck","other-plugin"],"default_agent":"heidi"}' > "$OPENCODE_CONFIG_DIR"/opencode.json
+          node bin/flowdeck.js uninstall --force 2>&1
           node -e "
-            const c = JSON.parse(require('fs').readFileSync('$OPENCODE_CONFIG_DIR/opencode.json','utf-8'));
-            console.assert(c.default_agent === 'orchestrator', 'Default agent was removed without manifest');
-            console.log('PASS: orchestrator default_agent survives uninstall');
+            const c = JSON.parse(require('fs').readFileSync('$HOME_TMP/.config/opencode/opencode.json','utf-8'));
+            console.assert(c.default_agent === 'heidi', 'Default agent was changed');
+            console.assert(!c.plugin.includes('@heidi-dang/flowdeck'), 'FlowDeck plugin was not removed');
+            console.assert(c.plugin.includes('other-plugin'), 'Other plugin was removed');
+            const fs = require('fs');
+            console.assert(!fs.existsSync('$HOME_TMP/.config/opencode/.flowdeck-manifest.json'), 'Manifest was falsely created');
+            console.log('PASS: Forced uninstall without manifest removes plugin, preserves default_agent & unrelated plugins, creates no manifest');
           "
       - name: Verify
         run: node bin/flowdeck.js verify 2>&1

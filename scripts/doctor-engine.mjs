@@ -511,24 +511,32 @@ async function testJsoncPreservation() {
   }
 }
 
-function testFdxVersionCompatibility(directory, pkgRaw) {
-  if (!pkgRaw) return { status: "pass", message: "No package.json found", remediation: undefined }
+export function testFdxVersionCompatibility(directory, pkgRaw, customFdxOutput = undefined) {
+  let requiredRange = "^0.1.0"
+  if (pkgRaw) {
+    try {
+      const p = JSON.parse(pkgRaw)
+      if (p.flowdeckFdxCompatibility?.required) {
+        requiredRange = p.flowdeckFdxCompatibility.required
+      }
+    } catch { /* ignore */ }
+  }
 
-  let pkg
-  try { pkg = JSON.parse(pkgRaw) } catch { return { status: "pass", message: "Malformed package.json", remediation: undefined } }
-
-  const compatDecl = pkg.flowdeckFdxCompatibility
-  const requiredRange = compatDecl?.required ?? "^0.1.0"
-
-  // Try to get installed FDX version via `fdx --version`
   let installedVersion = null
-  try {
-    const output = execFileSync("fdx", ["--version"], { encoding: "utf-8", timeout: 5000 })
-    const match = output.trim().match(/^fdx\s+(.+)/)
-    if (match) {
-      installedVersion = match[1]
+  if (customFdxOutput !== undefined) {
+    if (typeof customFdxOutput === "string") {
+      const match = customFdxOutput.trim().match(/^fdx\s+(.+)/)
+      if (match) installedVersion = match[1]
     }
-  } catch { /* fdx not available */ }
+  } else {
+    try {
+      const output = execFileSync("fdx", ["--version"], { encoding: "utf-8", timeout: 5000 })
+      const match = output.trim().match(/^fdx\s+(.+)/)
+      if (match) {
+        installedVersion = match[1]
+      }
+    } catch { /* fdx not available */ }
+  }
 
   if (!installedVersion) {
     return { status: "warn", message: "FDX binary not found — fallback active", remediation: undefined }

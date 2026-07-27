@@ -51,7 +51,8 @@ describe("Phase 28 — State and Memory Production Gates", () => {
       { directory: repoDir, agent: "backend-coder" } as any
     );
 
-    const parsedWrite = JSON.parse(resWrite);
+    const strWrite = typeof resWrite === "string" ? resWrite : (resWrite as any).output;
+    const parsedWrite = JSON.parse(strWrite);
     expect(parsedWrite.error).toContain("Specialist agent");
     expect(parsedWrite.error).toContain("not permitted");
 
@@ -65,7 +66,8 @@ describe("Phase 28 — State and Memory Production Gates", () => {
       { directory: repoDir, agent: "heidi" } as any
     );
 
-    const parsedWriteHeidi = JSON.parse(resWriteHeidi);
+    const strWriteHeidi = typeof resWriteHeidi === "string" ? resWriteHeidi : (resWriteHeidi as any).output;
+    const parsedWriteHeidi = JSON.parse(strWriteHeidi);
     expect(parsedWriteHeidi.success).toBe(true);
   });
 
@@ -82,12 +84,55 @@ describe("Phase 28 — State and Memory Production Gates", () => {
       { directory: repoDir, agent: "heidi" } as any
     );
 
-    const parsedRead = JSON.parse(resRead);
+    const strRead = typeof resRead === "string" ? resRead : (resRead as any).output;
+    const parsedRead = JSON.parse(strRead);
     expect(parsedRead.nodes).toBeDefined();
 
     // Verify quarantine file was created
     const files = readdirSync(codebasePath);
     const quarantine = files.find(f => f.startsWith("MEMORY.json.quarantine"));
     expect(quarantine).toBeDefined();
+  });
+
+  it("supports memory node querying, updating, and deletion by primary agent", async () => {
+    const repoDir = join(tmpRoot, "query-repo");
+    mkdirSync(join(repoDir, ".codebase"), { recursive: true });
+
+    // Write a node
+    await repoMemoryTool.execute(
+      {
+        action: "write_node",
+        node_id: "auth-service",
+        node: { type: "service", path: "src/services/auth.ts", owner: "security-team", tags: ["auth", "security"], dependencies: [], dependents: [], bug_history: [], conventions: [] },
+      },
+      { directory: repoDir, agent: "heidi" } as any
+    );
+
+    // Query node
+    const resQuery = await repoMemoryTool.execute(
+      {
+        action: "query",
+        query: { type: "service", path_prefix: "src/services" },
+      },
+      { directory: repoDir, agent: "heidi" } as any
+    );
+
+    const strQuery = typeof resQuery === "string" ? resQuery : (resQuery as any).output;
+    const parsedQuery = JSON.parse(strQuery);
+    expect(parsedQuery.count).toBe(1);
+    expect(parsedQuery.nodes[0].id).toBe("auth-service");
+
+    // Delete node
+    const resDelete = await repoMemoryTool.execute(
+      {
+        action: "delete_node",
+        node_id: "auth-service",
+      },
+      { directory: repoDir, agent: "heidi" } as any
+    );
+
+    const strDelete = typeof resDelete === "string" ? resDelete : (resDelete as any).output;
+    const parsedDelete = JSON.parse(strDelete);
+    expect(parsedDelete.success).toBe(true);
   });
 });

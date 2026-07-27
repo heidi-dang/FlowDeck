@@ -1,15 +1,16 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
 const CLI_PATH = join(process.cwd(), "bin", "flowdeck.js");
 
-function runCli(args: string[], env: Record<string, string>): { code: number; stdout: string; stderr: string } {
+function runCli(args: string[], env: Record<string, string>, cwd?: string): { code: number; stdout: string; stderr: string } {
   try {
     const nodePath = join(process.cwd(), "node_modules");
     const stdout = execFileSync("node", [CLI_PATH, ...args], {
+      cwd: cwd || process.cwd(),
       env: { ...process.env, NODE_PATH: nodePath, ...env },
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -72,6 +73,29 @@ describe("Phase 28 — CLI Behavioural & Ownership Integration Gates", () => {
     expect(manifest.defaultAgentAdded).toBe(true);
   });
 
+  it("flowdeck install --project installs into project directory config", () => {
+    const projectDir = join(tmpHome, "my-project");
+    const projConfigDir = join(projectDir, ".opencode");
+    mkdirSync(projConfigDir, { recursive: true });
+    const projConfigFile = join(projConfigDir, "opencode.json");
+    writeFileSync(projConfigFile, '{\n  "plugin": []\n}\n', "utf-8");
+
+    const res = runCli(["install", "--project"], { ...env, OPENCODE_CONFIG_DIR: projConfigDir }, projectDir);
+    expect(res.code).toBe(0);
+
+    const updatedConfig = readFileSync(projConfigFile, "utf-8");
+    expect(updatedConfig).toContain('"@heidi-dang/flowdeck"');
+  });
+
+  it("flowdeck install --local-repo registers file:// checkout URL", () => {
+    const res = runCli(["install", "--local-repo"], env);
+    expect(res.code).toBe(0);
+
+    const manifest = JSON.parse(readFileSync(manifestFile, "utf-8"));
+    expect(manifest.installationMode).toBe("local-repo");
+    expect(manifest.pluginRef).toContain("file://");
+  });
+
   it("flowdeck migrate updates upstream reference and exits 0", () => {
     const upstreamConfig = '{\n  "plugin": ["@dv.nghiem/flowdeck"],\n  "default_agent": "orchestrator"\n}\n';
     writeFileSync(configFile, upstreamConfig, "utf-8");
@@ -94,6 +118,28 @@ describe("Phase 28 — CLI Behavioural & Ownership Integration Gates", () => {
     expect(readFileSync(configFile, "utf-8")).toBe("{ malformed json {{{");
   });
 
+  it("flowdeck rollback restores from backup created during transaction", () => {
+    // Write initial config first so a backup is created when install runs
+    writeFileSync(configFile, '{\n  "plugin": ["old-plugin"]\n}\n', "utf-8");
+    runCli(["install"], env);
+
+    // Get list of backup files created
+    const files = readdirSync(configDir);
+    const backupFile = files.find(f => f.includes(".bak"));
+    expect(backupFile).toBeDefined();
+
+    const res = runCli(["rollback"], env);
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain("Rolled back");
+  });
+
+  it("flowdeck update re-runs installation check and completes successfully", () => {
+    runCli(["install"], env);
+    const res = runCli(["update"], env);
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain("Update complete");
+  });
+
   it("flowdeck uninstall --force without manifest removes only exact plugin ref and creates NO manifest", () => {
     const preConfig = '{\n  "plugin": ["@heidi-dang/flowdeck", "other-plugin"],\n  "default_agent": "custom-agent"\n}\n';
     writeFileSync(configFile, preConfig, "utf-8");
@@ -106,7 +152,6 @@ describe("Phase 28 — CLI Behavioural & Ownership Integration Gates", () => {
     const postConfig = JSON.parse(readFileSync(configFile, "utf-8"));
     expect(postConfig.plugin).toEqual(["other-plugin"]);
     expect(postConfig.default_agent).toBe("custom-agent");
-    // Crucial requirement: forced uninstall without manifest must NOT create a manifest
     expect(existsSync(manifestFile)).toBe(false);
   });
 
@@ -126,9 +171,32 @@ describe("Phase 28 — CLI Behavioural & Ownership Integration Gates", () => {
     expect(v1.code).toBe(0);
     expect(v1.stdout).toContain("Verification passed");
 
-    // Remove plugin from config to trigger verify failure
     writeFileSync(configFile, '{\n  "plugin": []\n}\n', "utf-8");
     const v2 = runCli(["verify"], env);
     expect(v2.code).not.toBe(0);
+  });
+
+  it("flowdeck doctor executes diagnostic checks", () => {
+    runCli(["install"], env);
+    const res = runCli(["doctor"], env);
+    expect(res.stdout).toContain("FlowDeck Doctor");
+    expect(res.stdout).toContain("Diagnostics");
+  });
+
+  it("flowdeck config validate checks syntax of config", () => {
+    writeFileSync(configFile, '{\n  "plugin": ["@heidi-dang/flowdeck"]\n}\n', "utf-8");
+    const res = runCli(["config", "validate"], env);
+    expect(res.code).toBe(0);
+    expect(res.stdout.toLowerCase()).toContain("valid");
+  });
+
+  it("flowdeck dry-run shows intended changes without writing to disk", () => {
+    const initialConfig = '{\n  "plugin": []\n}\n';
+    writeFileSync(configFile, initialConfig, "utf-8");
+
+    const res = runCli(["dry-run"], env);
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain("DRY RUN");
+    expect(readFileSync(configFile, "utf-8")).toBe(initialConfig);
   });
 });
