@@ -1,80 +1,164 @@
 import { spawnSync } from "child_process"
+import { readFileSync, existsSync, rmSync, mkdtempSync } from "fs"
+import { join } from "path"
+import { tmpdir } from "os"
+import { fileURLToPath } from "url"
 
 /**
- * Enforce minimum line coverage threshold for FlowDeck.
- * Default threshold: 80% line coverage for source files (src/).
+ * Validate user-supplied threshold environment variable.
+ * Must be a finite number between 0 and 100.
  */
-const thresholdEnv = process.env.COVERAGE_THRESHOLD
-const MIN_LINE_COVERAGE = thresholdEnv ? parseFloat(thresholdEnv) : 80.0
+export function validateThreshold(thresholdRaw = process.env.COVERAGE_THRESHOLD) {
+  if (thresholdRaw === undefined || thresholdRaw === null || thresholdRaw === "") {
+    return 80.0
+  }
 
-console.log(`Running coverage check (Minimum line coverage threshold: ${MIN_LINE_COVERAGE}%)...`)
+  const parsed = Number(thresholdRaw)
+  if (!Number.isFinite(parsed) || isNaN(parsed) || parsed < 0 || parsed > 100) {
+    throw new Error(`Invalid COVERAGE_THRESHOLD: "${thresholdRaw}". Threshold must be a finite number between 0 and 100.`)
+  }
 
-const result = spawnSync("bun test --coverage", {
-  shell: true,
-  encoding: "utf-8",
-  env: { ...process.env },
-  maxBuffer: 100 * 1024 * 1024,
-})
+  return parsed
+}
 
-const output = (result.stdout || "") + "\n" + (result.stderr || "")
+/**
+ * Check whether a file path qualifies as a repository source file.
+ * Includes only files under src/, excluding tests, fixtures, declarations, dist, node_modules.
+ */
+export function isEligibleSourceFile(filePath) {
+  if (!filePath || typeof filePath !== "string") return false
 
-const lines = output.split("\n")
-let totalLineSum = 0
-let lineCount = 0
+  const normalized = filePath.replace(/\\/g, "/")
 
-// Calculate average line coverage across src/ files in coverage table
-for (const line of lines) {
-  // Format:  src\tools\fdx.ts | 81.58 | 65.49 | 189-192...
-  if (line.includes("src\\") || line.includes("src/")) {
-    const parts = line.split("|").map((p) => p.trim())
-    if (parts.length >= 3) {
-      const lineCovStr = parts[2]
-      const linesPct = parseFloat(lineCovStr)
-      if (!isNaN(linesPct)) {
-        totalLineSum += linesPct
-        lineCount++
+  // Must be under src/ or /src/
+  const isSrc = normalized.startsWith("src/") || normalized.includes("/src/")
+  if (!isSrc) return false
+
+  // Exclude node_modules, dist, declarations, fixtures, tests, scratch
+  if (normalized.includes("node_modules/")) return false
+  if (normalized.includes("/dist/") || normalized.startsWith("dist/")) return false
+  if (normalized.endsWith(".d.ts")) return false
+  if (normalized.includes("/tests/") || normalized.includes("/fixtures/") || normalized.includes("/__tests__/")) return false
+  if (normalized.endsWith(".test.ts") || normalized.endsWith(".test.js") || normalized.endsWith(".spec.ts") || normalized.endsWith(".spec.js")) return false
+
+  return true
+}
+
+/**
+ * Parse standard lcov.info content and calculate weighted aggregate line coverage.
+ */
+export function parseLcov(lcovContent) {
+  if (!lcovContent || typeof lcovContent !== "string" || lcovContent.trim().length === 0) {
+    throw new Error("Coverage report is empty or missing")
+  }
+
+  const records = lcovContent.split("end_of_record")
+  let totalCovered = 0
+  let totalExecutable = 0
+  let fileCount = 0
+
+  for (const record of records) {
+    const lines = record.split("\n")
+    let currentFile = null
+    let lh = null
+    let lf = null
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (trimmed.startsWith("SF:")) {
+        currentFile = trimmed.slice(3).trim()
+      } else if (trimmed.startsWith("LH:")) {
+        lh = parseInt(trimmed.slice(3).trim(), 10)
+      } else if (trimmed.startsWith("LF:")) {
+        lf = parseInt(trimmed.slice(3).trim(), 10)
       }
+    }
+
+    if (currentFile && isEligibleSourceFile(currentFile) && lh !== null && lf !== null) {
+      if (isNaN(lh) || isNaN(lf)) {
+        throw new Error(`Malformed coverage record for file: ${currentFile}`)
+      }
+      totalCovered += lh
+      totalExecutable += lf
+      fileCount++
+    }
+  }
+
+  if (fileCount === 0 || totalExecutable === 0) {
+    throw new Error("No eligible src/ source files with executable lines found in coverage report")
+  }
+
+  const percentage = Math.round((totalCovered / totalExecutable) * 10000) / 100
+
+  return {
+    coveredLines: totalCovered,
+    totalLines: totalExecutable,
+    percentage,
+    fileCount,
+  }
+}
+
+/**
+ * Main coverage execution wrapper.
+ */
+export function runCoverageCheck(thresholdRaw = process.env.COVERAGE_THRESHOLD) {
+  const threshold = validateThreshold(thresholdRaw)
+  const tempDir = mkdtempSync(join(tmpdir(), "fd-cov-"))
+  const bunCmd = process.platform === "win32" ? "bun.cmd" : "bun"
+
+  try {
+    let proc = spawnSync(bunCmd, ["test", "--coverage", "--coverage-reporter=lcov", `--coverage-dir=${tempDir}`], {
+      shell: false,
+      encoding: "utf-8",
+      maxBuffer: 50 * 1024 * 1024,
+    })
+
+    if (proc.error || proc.status === null) {
+      proc = spawnSync(`bun test --coverage --coverage-reporter=lcov --coverage-dir="${tempDir}"`, {
+        shell: true,
+        encoding: "utf-8",
+        maxBuffer: 50 * 1024 * 1024,
+      })
+    }
+
+    if (proc.status !== 0) {
+      const errOutput = (proc.stdout || "") + "\n" + (proc.stderr || "")
+      throw new Error(`Coverage test execution failed with exit code ${proc.status}:\n${errOutput.slice(0, 500)}`)
+    }
+
+    const lcovFile = join(tempDir, "lcov.info")
+    if (!existsSync(lcovFile)) {
+      throw new Error(`Coverage report file lcov.info was not created at ${lcovFile}`)
+    }
+
+    const lcovContent = readFileSync(lcovFile, "utf-8")
+    const { coveredLines, totalLines, percentage, fileCount } = parseLcov(lcovContent)
+
+    console.log(`Measured weighted aggregate line coverage: ${percentage}% (${coveredLines}/${totalLines} lines across ${fileCount} source files). Required threshold: ${threshold}%`)
+
+    if (percentage < threshold) {
+      throw new Error(`Coverage threshold not met: ${percentage}% is below required threshold of ${threshold}%`)
+    }
+
+    console.log(`\n[SUCCESS] Coverage threshold requirement satisfied (${percentage}% >= ${threshold}%).`)
+    return { status: 0, percentage, coveredLines, totalLines, fileCount }
+  } finally {
+    try {
+      rmSync(tempDir, { recursive: true, force: true })
+    } catch {
+      // Best-effort cleanup of temporary directory
     }
   }
 }
 
-let totalLinesPct = null
-if (lineCount > 0) {
-  totalLinesPct = Math.round((totalLineSum / lineCount) * 100) / 100
-} else {
-  // Fallback to all reported files
-  for (const line of lines) {
-    const match = line.match(/\|\s*([\d.]+)\s*\|\s*([\d.]+)\s*\|/)
-    if (match) {
-      const linesPct = parseFloat(match[2])
-      if (!isNaN(linesPct)) {
-        totalLineSum += linesPct
-        lineCount++
-      }
-    }
-  }
-  if (lineCount > 0) {
-    totalLinesPct = Math.round((totalLineSum / lineCount) * 100) / 100
+// Execute CLI entry point when run directly
+const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]
+if (isMain) {
+  try {
+    runCoverageCheck()
+    process.exit(0)
+  } catch (err) {
+    console.error(`\n[ERROR] ${err.message}`)
+    process.exit(1)
   }
 }
-
-if (result.status !== 0) {
-  console.log(output)
-  console.error(`Coverage test execution failed with exit code ${result.status}`)
-  process.exit(result.status || 1)
-}
-
-if (totalLinesPct === null) {
-  console.warn("Warning: Could not parse line coverage percentage from output. Test run passed.")
-  process.exit(0)
-}
-
-console.log(`Measured average source line coverage: ${totalLinesPct}% (Threshold: ${MIN_LINE_COVERAGE}%)`)
-
-if (totalLinesPct < MIN_LINE_COVERAGE) {
-  console.error(`\n[ERROR] Coverage threshold not met: ${totalLinesPct}% is below required threshold of ${MIN_LINE_COVERAGE}%`)
-  process.exit(1)
-}
-
-console.log(`\n[SUCCESS] Coverage threshold requirement satisfied (${totalLinesPct}% >= ${MIN_LINE_COVERAGE}%).`)
-process.exit(0)
