@@ -11,6 +11,17 @@ export type { AgentModelConfig } from './agent-models';
 
 export type GovernanceMode = "off" | "advisory" | "strict";
 
+export interface BetterHarnessConfig {
+  enabled?: boolean;
+  port?: number;
+  bindHost?: string;
+  eventLogDir?: string;
+  authToken?: string;
+  authEnabled?: boolean;
+  maxBodySize?: number;
+  corsOrigins?: string[];
+}
+
 export interface FlowDeckConfig {
   /** Per-agent model overrides. When unset, agent inherits UI-selected model. */
   agentModels?: Record<string, AgentModelConfig>;
@@ -32,6 +43,8 @@ export interface FlowDeckConfig {
   governance?: GovernanceConfig;
   /** Supervisor configuration. */
   supervisor?: SupervisorConfig;
+  /** Better Harness integration configuration. */
+  betterHarness?: BetterHarnessConfig;
   /** Runtime agent identity enforcement. */
   runtimeAgent?: {
     /** Enforcement mode: strict (block), warn (log+allow), off (no enforcement). */
@@ -103,3 +116,4 @@ export interface SupervisorConfig {
   /** Confidence threshold (0-1) for approve decision. Default: 0.7 */
   confidenceThreshold?: number;
 }
+
