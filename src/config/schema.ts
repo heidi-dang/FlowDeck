@@ -11,6 +11,13 @@ export type { AgentModelConfig } from './agent-models';
 
 export type GovernanceMode = "off" | "advisory" | "strict";
 
+export interface BetterHarnessConfig {
+  enabled?: boolean;
+  port?: number;
+  bindHost?: string;
+  eventLogDir?: string;
+}
+
 export interface FlowDeckConfig {
   /** Per-agent model overrides. When unset, agent inherits UI-selected model. */
   agentModels?: Record<string, AgentModelConfig>;
@@ -32,6 +39,8 @@ export interface FlowDeckConfig {
   governance?: GovernanceConfig;
   /** Supervisor configuration. */
   supervisor?: SupervisorConfig;
+  /** Better Harness integration configuration. */
+  betterHarness?: BetterHarnessConfig;
 }
 
 export interface GovernanceConfig {

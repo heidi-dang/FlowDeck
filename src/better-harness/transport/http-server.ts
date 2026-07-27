@@ -2,6 +2,7 @@ import { createServer, type Server, type IncomingMessage, type ServerResponse } 
 import { routeRequest } from "./router";
 import { createCorsHeaders, DEFAULT_CORS_CONFIG, type CorsConfig } from "./cors";
 import { createAuthCheck, type AuthConfig } from "./authentication";
+import type { SseManager } from "./sse";
 
 export interface HttpServerConfig {
   enabled: boolean;
@@ -24,9 +25,14 @@ const DEFAULT_CONFIG: HttpServerConfig = {
 export class HarnessHttpServer {
   private server: Server | null = null;
   private config: HttpServerConfig;
+  private sseManager: SseManager | null = null;
 
   constructor(config: Partial<HttpServerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+
+  setSseManager(manager: SseManager): void {
+    this.sseManager = manager;
   }
 
   start(): Promise<number> {
@@ -69,7 +75,17 @@ export class HarnessHttpServer {
           }
         }
 
-        // Read body
+        const urlPath = req.url ?? "/";
+        const method = req.method ?? "GET";
+
+        // Detect SSE route early
+        const isSseRoute = method === "GET" && urlPath.includes("/events");
+        if (isSseRoute && this.sseManager) {
+          this.sseManager.handleSseRequest(req, res);
+          return;
+        }
+
+        // Read body (for non-GET requests)
         let body = "";
         let bodySize = 0;
         const maxSize = this.config.maxBodySize ?? 1024 * 1024;
@@ -87,7 +103,8 @@ export class HarnessHttpServer {
 
         req.on("end", async () => {
           const parsedBody = body ? tryParseJson(body) : undefined;
-          const result = await routeRequest(req.method ?? "GET", req.url ?? "/", parsedBody);
+          // Pass sseManager and resolveProjectPath (null for now, wired externally)
+          const result = await routeRequest(method, urlPath, parsedBody, undefined, this.sseManager ?? undefined);
           res.writeHead(result.status, { "Content-Type": "application/json" });
           res.end(JSON.stringify(result.body));
         });

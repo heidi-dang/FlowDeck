@@ -85,9 +85,11 @@ const VALID_CONFIG_KEYS: (keyof FlowDeckConfig)[] = [
   "agentModels",
   "agents",
   "maxDelegationDepth",
+  "supervisor",
+  "betterHarness",
   "designFirst",
   "governance",
-  "maxWritesPerAgent",
+  "maxWritesPerAgent"
 ]
 
 function sanitizeConfig(parsed: unknown): FlowDeckConfig {

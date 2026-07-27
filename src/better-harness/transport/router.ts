@@ -1,20 +1,15 @@
 import { z } from "zod/v4";
-import { getProjectIdentity } from "../workspace/project-identity";
-import { captureWorkspaceSnapshot } from "../workspace/workspace-snapshot";
-import { runAllCollectors } from "../collectors/collector-runner";
-import { readSessionRecords } from "../opencode/session-reader";
-import { analyzeSessions } from "../opencode/session-analyzer";
 import { createRepairSession } from "../opencode/repair-session";
-import { executeValidation } from "../opencode/validation-executor";
 import { loadRun, listRuns } from "../persistence/run-store";
-import { loadReport, listReports } from "../persistence/report-store";
+import { listReports } from "../persistence/report-store";
 import { loadFindingIndex } from "../persistence/finding-store";
-import { loadIgnoredFindings, saveIgnoredFinding } from "../persistence/ignored-finding-store";
-import { listRepairSessions } from "../persistence/repair-session-store";
-import { HarnessFindingSchema } from "../contracts/report";
+import { saveIgnoredFinding } from "../persistence/ignored-finding-store";
+import { StartRunRequestSchema, BatchPlanFixRequestSchema, BatchIgnoreRequestSchema, BatchVerifyRequestSchema } from "../contracts/requests";
+import type { SseManager } from "./sse";
 
 const ProjectKeySchema = z.string().min(1).max(256).regex(/^[a-zA-Z0-9_\-.@/]+$/);
-const _PathSchema = z.string().min(1).max(1024).refine((p) => !p.includes(".."), "Path traversal rejected");
+
+const PATH_TRAVERSAL_RE = /\.\.|\//;
 
 export interface RouteHandler {
   method: "GET" | "POST" | "PUT" | "DELETE";
@@ -22,14 +17,49 @@ export interface RouteHandler {
   handler: (params: Record<string, string>, body?: unknown) => RouteResponse;
 }
 
+interface RouteMatch {
+  params: Record<string, string>;
+}
+
+function matchRoute(pattern: string, urlPath: string): RouteMatch | null {
+  const patternParts = pattern.split("/").filter(Boolean);
+  const urlParts = urlPath.split("/").filter(Boolean);
+
+  if (patternParts.length !== urlParts.length) return null;
+
+  const params: Record<string, string> = {};
+  for (let i = 0; i < patternParts.length; i++) {
+    if (patternParts[i].startsWith(":")) {
+      const paramName = patternParts[i].slice(1);
+      params[paramName] = urlParts[i];
+    } else if (patternParts[i] !== urlParts[i]) {
+      return null;
+    }
+  }
+  return { params };
+}
+
+export function validateProjectKey(key: string, resolveProjectPath: ((serverKey: string, projectKey: string) => string | null) | undefined, serverKey: string): { valid: true; path: string } | { valid: false; status: number; body: unknown } {
+  const parsed = ProjectKeySchema.safeParse(key);
+  if (!parsed.success) {
+    return { valid: false, status: 400, body: { error: "Invalid project key", details: parsed.error } };
+  }
+  if (PATH_TRAVERSAL_RE.test(key)) {
+    return { valid: false, status: 400, body: { error: "Invalid project key: path traversal detected" } };
+  }
+  if (resolveProjectPath) {
+    const resolved = resolveProjectPath(serverKey, key);
+    if (resolved === null) {
+      return { valid: false, status: 404, body: { error: "Project not found" } };
+    }
+    return { valid: true, path: resolved };
+  }
+  return { valid: true, path: key };
+}
+
 export interface RouteResponse {
   status: number;
   body: unknown;
-}
-
-// Unused
-function _projectKeyToId(key: string): string {
-  return key;
 }
 
 function handleError(err: unknown): RouteResponse {
@@ -41,152 +71,188 @@ function ok(body: unknown): RouteResponse {
   return { status: 200, body };
 }
 
-const _PATH_TRAVERSAL_RE = /\.\./;
+function created(body: unknown): RouteResponse {
+  return { status: 201, body };
+}
 
 export async function routeRequest(
   method: string,
   urlPath: string,
-  body?: unknown,
+  body: unknown,
+  resolveProjectPath?: (serverKey: string, projectKey: string) => string | null,
+  sseManager?: SseManager,
 ): Promise<RouteResponse> {
   try {
-    // Parse path and extract params
-    const parts = urlPath.split("/").filter(Boolean);
-
     // Health
     if (method === "GET" && urlPath === "/health") {
       return ok({ status: "ok", timestamp: new Date().toISOString() });
     }
 
-    // Project identity
-    if (method === "GET" && parts[0] === "projects" && parts[2] === "identity" && parts.length === 3) {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      const identity = getProjectIdentity(projectKey);
-      return ok(identity);
+    // --- Availability ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/availability", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        return ok({ available: true, serverKey, projectKey });
+      }
     }
 
-    // Workspace snapshot
-    if (method === "GET" && parts[0] === "projects" && parts[2] === "snapshot" && parts.length === 3) {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      const snapshot = captureWorkspaceSnapshot(projectKey);
-      return ok(snapshot);
+    // --- Report ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/report", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const index = loadFindingIndex(check.path);
+        return ok({ project: { name: projectKey }, findings: index?.findings ?? [], updatedAt: index?.updatedAt ?? null });
+      }
     }
 
-    // Run collectors
-    if (method === "POST" && parts[0] === "projects" && parts[2] === "collect" && parts.length === 3) {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      const result = await runAllCollectors(projectKey);
-      return ok(result);
+    // --- History ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/history", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const runIds = listRuns(check.path);
+        const reports = listReports(check.path);
+        return ok({ runs: runIds, reports });
+      }
     }
 
-    // Sessions
-    if (method === "GET" && parts[0] === "projects" && parts[2] === "sessions" && parts.length === 3) {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      const records = readSessionRecords(projectKey);
-      const analysis = analyzeSessions(records);
-      return ok({ records, analysis });
+    // --- Current run ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/current", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const runIds = listRuns(check.path);
+        if (runIds.length === 0) return ok(null);
+        const lastRun = loadRun(check.path, runIds[runIds.length - 1]);
+        return ok(lastRun);
+      }
     }
 
-    // Runs
-    if (method === "GET" && urlPath === "/projects/{projectKey}/runs") {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      return ok(listRuns(projectKey));
+    // --- Start run ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs", urlPath);
+      if (m && method === "POST") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const parsed = StartRunRequestSchema.safeParse(body);
+        if (!parsed.success) {
+          return { status: 400, body: { error: "Invalid request body", details: parsed.error } };
+        }
+        return created({ accepted: true, runId: "run_" + Date.now() });
+      }
     }
 
-    if (method === "GET" && parts[0] === "projects" && parts[2] === "runs" && parts.length === 4) {
-      const projectKey = parts[1];
-      const runId = parts[3];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      const run = loadRun(projectKey, runId);
-      if (!run) return { status: 404, body: { error: "Run not found" } };
-      return ok(run);
+    // --- Cancel run ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/:runId/cancel", urlPath);
+      if (m && method === "POST") {
+        const { serverKey, projectKey, runId } = m.params;
+        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        return ok({ accepted: true, runId });
+      }
     }
 
-    // Reports
-    if (method === "GET" && urlPath === "/projects/{projectKey}/reports") {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      return ok(listReports(projectKey));
+    // --- Plan fix (batch) ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/findings/plan-fix", urlPath);
+      if (m && method === "POST") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const parsed = BatchPlanFixRequestSchema.safeParse(body);
+        if (!parsed.success) {
+          return { status: 400, body: { error: "Invalid request body", details: parsed.error } };
+        }
+        const findings = loadFindingIndex(check.path);
+        const results = parsed.data.findingIds.map((fid: string) => {
+          const finding = findings?.findings.find((f) => f.id === fid);
+          if (!finding) {
+            return { findingId: fid, accepted: false, error: "Finding not found" };
+          }
+          const session = createRepairSession({ finding, projectPath: check.path });
+          return { findingId: fid, accepted: true, repairSessionId: session.repairSessionId };
+        });
+        return ok({ accepted: true, results });
+      }
     }
 
-    if (method === "GET" && parts[0] === "projects" && parts[2] === "reports" && parts.length === 4) {
-      const projectKey = parts[1];
-      const reportId = parts[3];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      const report = loadReport(projectKey, reportId);
-      if (!report) return { status: 404, body: { error: "Report not found" } };
-      return ok(report);
+    // --- Ignore findings (batch) ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/findings/ignore", urlPath);
+      if (m && method === "POST") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const parsed = BatchIgnoreRequestSchema.safeParse(body);
+        if (!parsed.success) {
+          return { status: 400, body: { error: "Invalid request body", details: parsed.error } };
+        }
+        const results = parsed.data.findingIds.map((fid: string) => {
+          try {
+            saveIgnoredFinding(check.path, { findingId: fid, reason: parsed.data.reason, actor: "system", timestamp: new Date().toISOString() });
+            return { findingId: fid, accepted: true };
+          } catch {
+            return { findingId: fid, accepted: false, error: "Failed to ignore finding" };
+          }
+        });
+        return ok({ accepted: true, results });
+      }
     }
 
-    // Findings
-    if (method === "GET" && urlPath === "/projects/{projectKey}/findings") {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      const index = loadFindingIndex(projectKey);
-      return ok(index?.findings ?? []);
+    // --- Verify findings (batch) ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/findings/verify", urlPath);
+      if (m && method === "POST") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const parsed = BatchVerifyRequestSchema.safeParse(body);
+        if (!parsed.success) {
+          return { status: 400, body: { error: "Invalid request body", details: parsed.error } };
+        }
+        const results = parsed.data.findingIds.map((fid: string) => ({
+          findingId: fid,
+          accepted: true,
+        }));
+        return ok({ accepted: true, results });
+      }
     }
 
-    // Ignored findings
-    if (method === "GET" && urlPath === "/projects/{projectKey}/findings/ignored") {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      return ok(loadIgnoredFindings(projectKey));
+    // --- SSE events stream ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/:runId/events", urlPath);
+      if (m && method === "GET") {
+        if (!sseManager) {
+          return { status: 501, body: { error: "SSE not available" } };
+        }
+        return { status: 101, body: { sse: true, sseManager } };
+      }
     }
 
-    if (method === "POST" && urlPath === "/projects/{projectKey}/findings/ignored") {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      const entry = body as any;
-      saveIgnoredFinding(projectKey, entry);
-      return ok({ success: true });
+    // --- Get repair session ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/repair-sessions/:sessionId", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey, sessionId } = m.params;
+        const check = validateProjectKey(projectKey, resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        return ok({ repairSessionId: sessionId, status: "pending" });
+      }
     }
 
-    // Repair session
-    if (method === "POST" && parts[0] === "projects" && parts[2] === "repair" && parts.length === 3) {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      const finding = HarnessFindingSchema.safeParse(body);
-      if (!finding.success) return { status: 400, body: { error: "Invalid finding", details: finding.error } };
-      const result = createRepairSession({ finding: finding.data, projectPath: projectKey });
-      return ok(result);
-    }
-
-    // Repair sessions list
-    if (method === "GET" && urlPath === "/projects/{projectKey}/repair-sessions") {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      return ok(listRepairSessions(projectKey));
-    }
-
-    // Validation
-    if (method === "POST" && parts[0] === "projects" && parts[2] === "validate" && parts.length === 3) {
-      const projectKey = parts[1];
-      const validated = ProjectKeySchema.safeParse(projectKey);
-      if (!validated.success) return { status: 400, body: { error: "Invalid project key" } };
-      const { command } = body as { command: string };
-      if (!command) return { status: 400, body: { error: "Command is required" } };
-      const result = executeValidation(command, projectKey);
-      return ok(result);
-    }
-
-    return { status: 404, body: { error: `Route not found: ${method} ${urlPath}` } };
+    return { status: 404, body: { error: "Route not found: " + method + " " + urlPath } };
   } catch (err) {
     return handleError(err);
   }

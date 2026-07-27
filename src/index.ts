@@ -61,6 +61,11 @@ import { loadRulesTool, listRulesTool } from "./tools/load-rules"
 import { planningStateTool } from "./tools/planning-state"
 import { repoMemoryTool } from "./tools/repo-memory"
 import { debugLogsTool } from "./tools/debug-logs"
+import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
+import { HarnessHttpServer } from "./better-harness/transport/http-server"
+import { RunCoordinator } from "./better-harness/runtime/run-coordinator"
+import { SseManager } from "./better-harness/transport/sse"
+import type { BetterHarnessConfig } from "./config/schema"
 
 // ─── Governance integration ────────────────────────────────────────────────
 import {
@@ -153,6 +158,42 @@ const plugin: Plugin = async ({ directory, client }) => {
   const maxDepth = flowdeckConfig.governance?.delegationBudget?.maxDepth ?? 1
 
   const { mcps } = buildFlowDeckMcpsWithMeta()
+
+  // --- Better Harness integration -------------------------------------------
+  let _betterHarnessRuntime: HarnessRuntime | null = null
+  let betterHarnessServer: HarnessHttpServer | null = null
+  let betterHarnessSseManager: SseManager | null = null
+
+  const bhConfig: BetterHarnessConfig | undefined = flowdeckConfig.betterHarness
+  if (bhConfig?.enabled) {
+    _betterHarnessRuntime = new HarnessRuntime({
+      projectRoot: directory,
+      timeoutMs: 120_000,
+    })
+
+    const coordinator = new RunCoordinator()
+    const eventBus = coordinator.getEventBus()
+
+    const eventLogDir = bhConfig.eventLogDir
+    betterHarnessSseManager = new SseManager(eventBus, eventLogDir)
+
+    betterHarnessServer = new HarnessHttpServer({
+      enabled: true,
+      port: bhConfig.port ?? 0,
+      bindHost: bhConfig.bindHost ?? '127.0.0.1',
+    })
+    if (betterHarnessSseManager) {
+      betterHarnessServer.setSseManager(betterHarnessSseManager)
+    }
+
+    betterHarnessServer.start().then((port) => {
+      appLog('[better-harness] HTTP server started on port ' + port)
+    }).catch((err: Error) => {
+      appLog('[better-harness] Failed to start HTTP server: ' + err.message, 'error')
+    })
+
+    coordinator.recoverActiveRuns()
+  }
 
   return {
     name: "@heidi-dang/flowdeck",
@@ -572,3 +613,4 @@ export default plugin
 export { AGENT_NAMES, createAgent } from "./agents/index"
 export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
 export { acquireLock, releaseLock } from "./services/async-lock"
+
