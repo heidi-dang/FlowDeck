@@ -1,6 +1,28 @@
 # Verification
 
-FlowDeck provides a 7-level verification procedure to confirm correct installation and runtime behavior.
+FlowDeck provides an 8-level verification procedure to confirm correct installation and runtime behavior.
+
+## Level 0 — Clean-Install Verification
+
+When using the atomic clean installer, verification is built in:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heidi-dang/FlowDeck/main/install.sh | bash
+```
+
+The installer automatically runs:
+1. Clean-state verification (no FlowDeck remnants before install)
+2. Static verification (`flowdeck verify`, `doctor`, `config validate`)
+3. OpenCode runtime agent discovery (`opencode agent list`)
+4. Optional provider-backed smoke test
+
+You can also run verification independently:
+
+```bash
+curl ... | bash -s -- --verify-only
+# or
+flowdeck clean-install --verify-only
+```
 
 ## Level 1 — CLI Verification
 
@@ -39,86 +61,81 @@ This checks:
 flowdeck doctor
 ```
 
-This runs the full diagnostic engine and reports:
-
-- Package identity
-- Plugin version
-- Repository identity
-- Config validity
-- Plugin registration
-- Default agent status
-- Agent count (expected: 13)
-- Skill validation (expected: 61)
-- FDX compatibility
-- Installer identity
-- Config ownership manifest
+This runs 25+ diagnostic checks covering package identity, configuration validity, installation manifest, agent registry, skills, commands, delegation depth, governance wiring, FDX availability, lock implementation, and more.
 
 **Expected exit code**: 0
 
-**Expected output**: `Status: HEALTHY`
+**Expected output**: "Status: HEALTHY"
 
-## Level 4 — Filesystem Verification
-
-Confirm that expected files exist in the installation:
+## Level 4 — Configuration Validation
 
 ```bash
-# Package directory (npm installation)
-ls node_modules/@heidi-dang/flowdeck/dist/index.js
-
-# Or local checkout (local-repo installation)
-ls /path/to/FlowDeck/dist/index.js
-
-# Installation manifest
-ls ~/.config/opencode/.flowdeck-manifest.json
-```
-
-## Level 5 — OpenCode Configuration Verification
-
-```bash
-# Validate configuration syntax
 flowdeck config validate
-
-# Manually inspect
-cat ~/.config/opencode/opencode.json
 ```
 
-Confirm:
-- `"@heidi-dang/flowdeck"` (or `"file://..."`) appears in the `plugin` array exactly once.
-- Other plugin entries remain unchanged.
-- Comments are preserved (for JSONC files).
-- `default_agent` is `"heidi"` (or your preferred agent).
+**Expected exit code**: 0
+
+**Expected output**: "Valid JSON/JSONC configuration"
+
+## Level 5 — Clean-State Verification
+
+Verify no stale FlowDeck registrations remain:
+
+```bash
+flowdeck clean-install --verify-only
+```
+
+Produces a machine-readable clean-state report:
+
+```
+Clean-state verification:
+  Configs checked: 2
+  FlowDeck plugin entries: 0
+  Legacy plugin entries: 0
+  Verified FlowDeck paths: 0
+  Parse errors: 0
+  Clean: YES
+```
 
 ## Level 6 — OpenCode Runtime Verification
 
-Restart OpenCode and verify the plugin loads:
-
-1. Start or restart OpenCode.
-2. Confirm no plugin-loading errors appear.
-3. Verify the `heidi` agent is available: `opencode --agent heidi`
-4. Run a read-only test: in a non-critical directory, start OpenCode and ask: *"Inspect this project without modifying files. Report the repository language, package manager and available test command."*
-
-**Expected result**: OpenCode responds with project analysis, demonstrating that the FlowDeck plugin orchestrated the task.
-
-## Level 7 — Uninstall and Reinstall Verification
-
-In an isolated test environment:
-
-1. `flowdeck install` — install
-2. `flowdeck verify` — verify
-3. `flowdeck doctor` — full diagnostics
-4. Start OpenCode and run a read-only task — runtime verification
-5. `flowdeck uninstall` — uninstall
-6. Confirm only FlowDeck-owned entries were removed from config
-7. `flowdeck install` — reinstall
-8. `flowdeck verify` — verify again
-
-This proves the full lifecycle works without data loss.
-
-## Automated Verification Script
+The most authoritative check — confirms the real OpenCode process loads FlowDeck correctly:
 
 ```bash
-npm run verify:installation:offline    # Structural checks (no credentials)
-npm run verify:installation            # Full checks (may require provider)
+opencode --print-logs --log-level DEBUG agent list
 ```
 
-See [OpenCode Integration Test](OpenCode-integration-test.md) for detailed runtime verification.
+**Required results:**
+- Heidi is returned as a registered agent
+- Heidi mode is `primary`
+- Heidi is NOT hidden
+- No `"Plugin export is not a function"` error
+- No `"failed to load plugin"` error
+- Orchestrator is returned as a primary agent
+
+## Level 7 — Provider-Backed Smoke Test (optional)
+
+When provider credentials are configured, run a read-only task:
+
+```bash
+opencode run --no-write --prompt "Return exactly: FLOWDECK_RUNTIME_OK"
+```
+
+**Expected output**: Contains `FLOWDECK_RUNTIME_OK`
+
+This test is **skipped** when no credentials are available — absence of credentials is not a failure.
+
+## Complete Verification Script
+
+The packaged `verify:installation` script runs the full verification suite:
+
+```bash
+# Offline (no provider credentials needed)
+node scripts/verify-opencode-integration.mjs --offline
+
+# Full (includes optional OpenCode runtime checks)
+node scripts/verify-opencode-integration.mjs
+
+# Release alignment
+node scripts/release-alignment.mjs
+```
