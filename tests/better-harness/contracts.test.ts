@@ -9,6 +9,23 @@ import {
   HarnessDimensionScoreSchema, HarnessReportSchema,
 } from "../../src/better-harness/contracts/report";
 import { HarnessRunProgressSchema } from "../../src/better-harness/contracts/progress";
+import {
+  SSE_CONTRACT_VERSION,
+  SSEEnvelopeSchema,
+  SSEConnectedPayloadSchema,
+  SSEHeartbeatPayloadSchema,
+  SSERunQueuedPayloadSchema,
+  SSERunStartedPayloadSchema,
+  SSECollectorStartedPayloadSchema,
+  SSECollectorCompletedPayloadSchema,
+  SSEAnalysisStartedPayloadSchema,
+  SSEFindingCreatedPayloadSchema,
+  SSERunProgressPayloadSchema,
+  SSEReportCompletedPayloadSchema,
+  SSERunFailedPayloadSchema,
+  SSERunCancelledPayloadSchema,
+  getPayloadValidator,
+} from "../../src/better-harness/contracts/sse-events";
 
 const validEvidence = {
   id: "ev_abc123",
@@ -225,5 +242,172 @@ describe("Progress Schema", () => {
       status: "invalid",
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// ─── SSE Event Contract ─────────────────────────────────────────────
+
+describe("SSE Event Contract", () => {
+  // Envelope
+  it("validates canonical SSE envelope", () => {
+    const result = SSEEnvelopeSchema.safeParse({
+      type: "run.started",
+      timestamp: "2025-01-01T00:00:00.000Z",
+      data: { runId: "run_1" },
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects envelope with missing type", () => {
+    const result = SSEEnvelopeSchema.safeParse({ timestamp: "2025-01-01T00:00:00.000Z" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects envelope with invalid type", () => {
+    const result = SSEEnvelopeSchema.safeParse({
+      type: "invalid_event",
+      timestamp: "2025-01-01T00:00:00.000Z",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects envelope with non-ISO timestamp", () => {
+    const result = SSEEnvelopeSchema.safeParse({
+      type: "run.started",
+      timestamp: "not-a-date",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects envelope with extra fields (strict)", () => {
+    const result = SSEEnvelopeSchema.safeParse({
+      type: "run.started",
+      timestamp: "2025-01-01T00:00:00.000Z",
+      extraField: "should not be here",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // Connected
+  it("validates connected payload", () => {
+    const result = SSEConnectedPayloadSchema.safeParse({ clientId: "sse_abc123" });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects connected payload without clientId", () => {
+    const result = SSEConnectedPayloadSchema.safeParse({});
+    expect(result.success).toBe(false);
+  });
+
+  // Heartbeat
+  it("validates heartbeat payload", () => {
+    const result = SSEHeartbeatPayloadSchema.safeParse({ time: "2025-01-01T00:00:00.000Z" });
+    expect(result.success).toBe(true);
+  });
+
+  // Collector started
+  it("validates collector.started payload", () => {
+    const result = SSECollectorStartedPayloadSchema.safeParse({ runId: "run_1" });
+    expect(result.success).toBe(true);
+  });
+
+  // Collector completed
+  it("validates collector.completed payload", () => {
+    const result = SSECollectorCompletedPayloadSchema.safeParse({ runId: "run_1", evidenceCount: 42 });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects collector.completed without evidenceCount", () => {
+    const result = SSECollectorCompletedPayloadSchema.safeParse({ runId: "run_1" });
+    expect(result.success).toBe(false);
+  });
+
+  // Finding created
+  it("validates finding.created payload", () => {
+    const result = SSEFindingCreatedPayloadSchema.safeParse({ runId: "run_1", findingCount: 5 });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects finding.created without findingCount", () => {
+    const result = SSEFindingCreatedPayloadSchema.safeParse({ runId: "run_1" });
+    expect(result.success).toBe(false);
+  });
+
+  // Run progress
+  it("validates run.progress payload", () => {
+    const result = SSERunProgressPayloadSchema.safeParse({
+      runId: "run_1",
+      status: "running",
+      stage: "collecting",
+      progressPercent: 50,
+      updatedAt: "2025-01-01T00:00:00.000Z",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects run.progress without required fields", () => {
+    const result = SSERunProgressPayloadSchema.safeParse({ runId: "run_1" });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts run.progress with errorMessage", () => {
+    const result = SSERunProgressPayloadSchema.safeParse({
+      runId: "run_1",
+      status: "failed",
+      stage: "collecting",
+      progressPercent: 30,
+      updatedAt: "2025-01-01T00:00:00.000Z",
+      errorMessage: "Something went wrong",
+    });
+    expect(result.success).toBe(true);
+  });
+
+  // Report completed
+  it("validates report.completed payload", () => {
+    const result = SSEReportCompletedPayloadSchema.safeParse({ runId: "run_1" });
+    expect(result.success).toBe(true);
+  });
+
+  // Run cancelled
+  it("validates run.cancelled payload", () => {
+    const result = SSERunCancelledPayloadSchema.safeParse({ runId: "run_1" });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts run.cancelled with errorMessage", () => {
+    const result = SSERunCancelledPayloadSchema.safeParse({ runId: "run_1", errorMessage: "Cancelled by user" });
+    expect(result.success).toBe(true);
+  });
+
+  // Run failed
+  it("validates run.failed payload", () => {
+    const result = SSERunFailedPayloadSchema.safeParse({ runId: "run_1", errorMessage: "Timeout" });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects run.failed without errorMessage", () => {
+    const result = SSERunFailedPayloadSchema.safeParse({ runId: "run_1" });
+    expect(result.success).toBe(false);
+  });
+
+  // Payload validator dispatch
+  it("getPayloadValidator returns correct schema for each type", () => {
+    expect(getPayloadValidator("connected")).toBe(SSEConnectedPayloadSchema);
+    expect(getPayloadValidator("heartbeat")).toBe(SSEHeartbeatPayloadSchema);
+    expect(getPayloadValidator("run.queued")).toBe(SSERunQueuedPayloadSchema);
+    expect(getPayloadValidator("run.started")).toBe(SSERunStartedPayloadSchema);
+    expect(getPayloadValidator("collector.started")).toBe(SSECollectorStartedPayloadSchema);
+    expect(getPayloadValidator("collector.completed")).toBe(SSECollectorCompletedPayloadSchema);
+    expect(getPayloadValidator("analysis.started")).toBe(SSEAnalysisStartedPayloadSchema);
+    expect(getPayloadValidator("finding.created")).toBe(SSEFindingCreatedPayloadSchema);
+    expect(getPayloadValidator("run.progress")).toBe(SSERunProgressPayloadSchema);
+    expect(getPayloadValidator("report.completed")).toBe(SSEReportCompletedPayloadSchema);
+    expect(getPayloadValidator("run.failed")).toBe(SSERunFailedPayloadSchema);
+    expect(getPayloadValidator("run.cancelled")).toBe(SSERunCancelledPayloadSchema);
+  });
+
+  // Contract version
+  it("SSE_CONTRACT_VERSION is defined", () => {
+    expect(SSE_CONTRACT_VERSION).toBe("1.0.0");
   });
 });

@@ -8,6 +8,40 @@ export { HarnessEvidenceSchema, HarnessFindingSchema, HarnessDimensionScoreSchem
 export type { HarnessEvidence, HarnessFinding, HarnessDimensionScore, HarnessReport } from "./contracts/report";
 export { HarnessRunProgressSchema } from "./contracts/progress";
 export type { HarnessRunProgress } from "./contracts/progress";
+export {
+  SSE_CONTRACT_VERSION,
+  SSESupportedEventEnum,
+  SSEEnvelopeSchema,
+  SSEConnectedPayloadSchema,
+  SSEHeartbeatPayloadSchema,
+  SSERunQueuedPayloadSchema,
+  SSERunStartedPayloadSchema,
+  SSECollectorStartedPayloadSchema,
+  SSECollectorCompletedPayloadSchema,
+  SSEAnalysisStartedPayloadSchema,
+  SSEFindingCreatedPayloadSchema,
+  SSERunProgressPayloadSchema,
+  SSEReportCompletedPayloadSchema,
+  SSERunCancelledPayloadSchema,
+  SSERunFailedPayloadSchema,
+  getPayloadValidator,
+} from "./contracts/sse-events";
+export type {
+  SSESupportedEvent,
+  SSEEnvelope,
+  SSEConnectedPayload,
+  SSEHeartbeatPayload,
+  SSERunQueuedPayload,
+  SSERunStartedPayload,
+  SSECollectorStartedPayload,
+  SSECollectorCompletedPayload,
+  SSEAnalysisStartedPayload,
+  SSEFindingCreatedPayload,
+  SSERunProgressPayload,
+  SSEReportCompletedPayload,
+  SSERunCancelledPayload,
+  SSERunFailedPayload,
+} from "./contracts/sse-events";
 
 // Workspace
 export { captureWorkspaceSnapshot } from "./workspace/workspace-snapshot";

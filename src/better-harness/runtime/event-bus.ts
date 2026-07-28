@@ -1,4 +1,6 @@
 export type HarnessEventType =
+  | "connected"
+  | "heartbeat"
   | "run.queued"
   | "run.started"
   | "collector.started"

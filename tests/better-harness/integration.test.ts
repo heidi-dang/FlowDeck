@@ -968,8 +968,8 @@ describe("SseManager", () => {
     const bus = new EventBus();
     const mgr = new SseManager(bus, undefined);
     const received: string[][] = [[], []];
-    mgr.addClient({ id: "c1", lastEventId: null, send: (e) => { received[0].push(e.type); } });
-    mgr.addClient({ id: "c2", lastEventId: null, send: (e) => { received[1].push(e.type); } });
+    mgr.addClient({ id: "c1", lastEventId: null, send: (e, _seq) => { received[0].push(e.type); } });
+    mgr.addClient({ id: "c2", lastEventId: null, send: (e, _seq) => { received[1].push(e.type); } });
     bus.emit("run.started", { runId: "r1" });
     expect(received[0]).toContain("run.started");
     expect(received[1]).toContain("run.started");
@@ -982,7 +982,7 @@ describe("SseManager", () => {
     const mgr = new SseManager(bus, undefined);
     bus.emit("run.started", { runId: "r1" });
     const received: string[] = [];
-    mgr.addClient({ id: "c_replay", lastEventId: "999", send: (e) => { received.push(e.type); } });
+    mgr.addClient({ id: "c_replay", lastEventId: "999", send: (e, _seq) => { received.push(e.type); } });
     mgr.removeClient("c_replay");
     // No events should match an ID beyond history
   });
@@ -1104,7 +1104,7 @@ describe("SseManager - Heartbeat", () => {
   it("removes client clears heartbeat interval", () => {
     const bus = new EventBus();
     const mgr = new SseManager(bus);
-    mgr.addClient({ id: "hb_client", lastEventId: null, send: () => {} });
+    mgr.addClient({ id: "hb_client", lastEventId: null, send: (_e, _seq) => {} });
     mgr.removeClient("hb_client");
     // Second removal should not throw
     mgr.removeClient("hb_client");
@@ -1114,7 +1114,7 @@ describe("SseManager - Heartbeat", () => {
     const bus = new EventBus();
     const mgr = new SseManager(bus);
     for (let i = 0; i < 5; i++) {
-      mgr.addClient({ id: "cycle_" + i, lastEventId: null, send: () => {} });
+      mgr.addClient({ id: "cycle_" + i, lastEventId: null, send: (_e, _seq) => {} });
     }
     for (let i = 0; i < 5; i++) {
       mgr.removeClient("cycle_" + i);
@@ -1128,7 +1128,7 @@ describe("SseManager - Heartbeat", () => {
     mgr.addClient({
       id: "send_err",
       lastEventId: null,
-      send: () => { called = true; throw new Error("gone"); },
+      send: (_e, _seq) => { called = true; throw new Error("gone"); },
     });
     bus.emit("run.queued", {});
     expect(called).toBe(true);

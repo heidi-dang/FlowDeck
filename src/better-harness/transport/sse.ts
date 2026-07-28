@@ -3,14 +3,6 @@ import { join, dirname } from "path";
 import type { IncomingMessage, ServerResponse } from "http";
 import type { EventBus, HarnessEvent, HarnessEventType } from "../runtime/event-bus";
 
-export interface SseClient {
-  id: string;
-  lastEventId: string | null;
-  projectKey?: string;
-  runId?: string;
-  send: (event: HarnessEvent) => void;
-}
-
 interface StoredSseEvent {
   id: number;
   type: string;
@@ -18,16 +10,25 @@ interface StoredSseEvent {
   data: string;
 }
 
+export interface SseClient {
+  id: string;
+  lastEventId: string | null;
+  serverKey?: string;
+  projectKey?: string;
+  runId?: string;
+  send: (event: HarnessEvent, sequenceId: number) => void;
+}
+
 export class SseManager {
   private clients = new Map<string, SseClient>();
-  private eventHistory: HarnessEvent[] = [];
-  private maxHistorySize = 100;
   private sequenceCounter = 0;
   private heartbeatIntervalMs = 15_000;
   private eventLogPath: string | null = null;
   private heartbeats: Map<string, ReturnType<typeof setInterval>> = new Map();
+  private eventBus: EventBus;
 
   constructor(eventBus: EventBus, eventLogDir?: string, private projectFilter?: string) {
+    this.eventBus = eventBus;
     if (eventLogDir) {
       this.eventLogPath = join(eventLogDir, "sse-events.jsonl");
       const dir = dirname(this.eventLogPath);
@@ -44,33 +45,48 @@ export class SseManager {
 
     for (const type of types) {
       eventBus.subscribe(type, (event) => {
-        this.eventHistory.push(event);
-        if (this.eventHistory.length > this.maxHistorySize) {
-          this.eventHistory.shift();
-        }
-        this.broadcast(event);
+        this.broadcastEvent(event);
       });
     }
   }
 
-  addClient(client: SseClient): void {
-    // Replay missed events from history by sequence matching
-    if (client.lastEventId) {
-      const lastSeq = parseInt(client.lastEventId, 10);
-      if (!isNaN(lastSeq)) {
-        const replayFrom = this.eventHistory.findIndex((e) => {
-          const storedId = (e as unknown as Record<string, unknown>)._sseId;
-          return typeof storedId === "number" && storedId > lastSeq;
-        });
-        if (replayFrom >= 0) {
-          for (let i = replayFrom; i < this.eventHistory.length; i++) {
-            client.send(this.eventHistory[i]);
-          }
-        }
+  /**
+   * Assign one monotonic sequence ID to a runtime event, persist it once,
+   * then broadcast the same sequence ID and canonical envelope to all matching clients.
+   */
+  private broadcastEvent(event: HarnessEvent): void {
+    const sequenceId = this.nextSequence();
+    // Persist once with the assigned ID
+    this.persistEvent(sequenceId, event);
+    // Broadcast same ID to all clients
+    for (const client of this.clients.values()) {
+      try {
+        this.filterAndSend(client, event, sequenceId);
+      } catch { /* client disconnected */ }
+    }
+  }
+
+  /**
+   * Build the canonical envelope and send to a single client.
+   * Respects projectKey and runId filters on the client.
+   */
+  private filterAndSend(client: SseClient, event: HarnessEvent, sequenceId: number): void {
+    // Filter by server/project/run if configured on the client
+    if (client.projectKey || client.runId) {
+      const eventData = event.data || {};
+      if (client.projectKey && (eventData as Record<string, unknown>).projectKey !== client.projectKey) {
+        return;
+      }
+      if (client.runId && (eventData as Record<string, unknown>).runId !== client.runId) {
+        return;
       }
     }
 
-    // Replay from file-based event log if available
+    client.send(event, sequenceId);
+  }
+
+  addClient(client: SseClient): void {
+    // Replay from file-based event log (single source of truth)
     if (client.lastEventId && this.eventLogPath && existsSync(this.eventLogPath)) {
       const lastSeq = parseInt(client.lastEventId, 10);
       if (!isNaN(lastSeq)) {
@@ -78,13 +94,15 @@ export class SseManager {
           const lines = readFileSync(this.eventLogPath, "utf-8").split("\n").filter(Boolean);
           for (const line of lines) {
             const stored: StoredSseEvent = JSON.parse(line);
+            // Last-Event-ID is exclusive — only replay events with ID > lastSeq
             if (stored.id > lastSeq) {
-              const event: HarnessEvent = {
+              // Reconstruct HarnessEvent for sending
+              const replayEvent: HarnessEvent = {
                 type: stored.type as HarnessEventType,
                 timestamp: stored.timestamp,
                 data: stored.data ? JSON.parse(stored.data) : undefined,
               };
-              client.send(event);
+              this.filterAndSend(client, replayEvent, stored.id);
             }
           }
         } catch { /* best-effort replay from file */ }
@@ -103,7 +121,13 @@ export class SseManager {
     }
   }
 
-  handleSseRequest(req: IncomingMessage, res: ServerResponse, serverKey?: string, projectKey?: string, runId?: string): void {
+  handleSseRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    serverKey?: string,
+    projectKey?: string,
+    runId?: string,
+  ): void {
     const clientId = `sse_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const lastEventId = req.headers["last-event-id"] as string | undefined;
 
@@ -115,49 +139,59 @@ export class SseManager {
       "X-Accel-Buffering": "no",
     });
 
-    // Send initial connection event
-    res.write("id: " + this.nextSequence() + "\nevent: connected\ndata: {\"clientId\":\"" + clientId + "\"}\n\n");
+    // Send initial connected event with canonical envelope
+    const connectedSeq = this.nextSequence();
+    const connectedTimestamp = new Date().toISOString();
+    const connectedEnvelope = JSON.stringify({
+      type: "connected",
+      timestamp: connectedTimestamp,
+      data: { clientId },
+    });
+    res.write(`id: ${connectedSeq}\nevent: connected\ndata: ${connectedEnvelope}\n\n`);
+    this.persistEvent(connectedSeq, {
+      type: "connected",
+      timestamp: connectedTimestamp,
+      data: { clientId },
+    });
 
     // Create a client bound to this response
     const client: SseClient = {
       id: clientId,
       lastEventId: lastEventId ?? null,
+      serverKey,
       projectKey,
       runId,
-      send: (event: HarnessEvent) => {
+      send: (event: HarnessEvent, sequenceId: number) => {
         try {
-          // Filter by project/run if configured
-          if (projectKey || runId) {
-            const eventData = event.data || {};
-            if (projectKey && (eventData as Record<string, unknown>).projectKey !== projectKey) {
-              return;
-            }
-            if (runId && (eventData as Record<string, unknown>).runId !== runId) {
-              return;
-            }
-          }
-          const sseId = this.nextSequence();
-          // Store sequence id on event for replay
-          (event as unknown as Record<string, unknown>)._sseId = sseId;
-          // Don't replace dots with hyphens per spec requirement
-          const sseType = event.type;
-          const eventPayload = {
+          // Build canonical envelope
+          const envelope = {
             type: event.type,
             timestamp: event.timestamp,
             data: event.data,
           };
-          res.write("id: " + sseId + "\nevent: " + sseType + "\ndata: " + JSON.stringify(eventPayload) + "\n\n");
-          this.persistEvent(sseId, event);
+          res.write(`id: ${sequenceId}\nevent: ${event.type}\ndata: ${JSON.stringify(envelope)}\n\n`);
         } catch { /* client disconnected */ }
       },
     };
 
     this.addClient(client);
 
-    // Start heartbeats
+    // Start heartbeats with canonical envelope
     const hb = setInterval(() => {
       try {
-        res.write("id: " + this.nextSequence() + "\nevent: heartbeat\ndata: {\"time\":\"" + new Date().toISOString() + "\"}\n\n");
+        const hbSeq = this.nextSequence();
+        const hbTimestamp = new Date().toISOString();
+        const hbEnvelope = JSON.stringify({
+          type: "heartbeat",
+          timestamp: hbTimestamp,
+          data: { time: hbTimestamp },
+        });
+        res.write(`id: ${hbSeq}\nevent: heartbeat\ndata: ${hbEnvelope}\n\n`);
+        this.persistEvent(hbSeq, {
+          type: "heartbeat",
+          timestamp: hbTimestamp,
+          data: { time: hbTimestamp },
+        });
       } catch {
         this.handleClientDisconnect(clientId);
       }
@@ -189,13 +223,5 @@ export class SseManager {
       };
       writeFileSync(this.eventLogPath, JSON.stringify(stored) + "\n", { flag: "a" });
     } catch { /* best-effort persist */ }
-  }
-
-  private broadcast(event: HarnessEvent): void {
-    for (const client of this.clients.values()) {
-      try {
-        client.send(event);
-      } catch { /* client disconnected */ }
-    }
   }
 }
