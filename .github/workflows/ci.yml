@@ -301,7 +301,7 @@ jobs:
       - name: Run native parity with fallback disabled
         env:
           FDX_DISABLE_FALLBACK: "1"
-          # FDX_BINARY_PATH inherited from $GITHUB_ENV
+
         run: node scripts/verify-fdx-parity.mjs
       - name: Emit execution proof
         run: |
