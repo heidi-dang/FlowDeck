@@ -14,7 +14,7 @@ describe("Better Harness HTTP Lifecycle", () => {
   let meta: StandaloneServerMeta;
 
   beforeAll(async () => {
-    meta = await launchStandaloneServer();
+    meta = await launchStandaloneServer(undefined, undefined, { heartbeatIntervalMs: 25 });
   }, 30_000);
 
   afterAll(async () => {
@@ -135,12 +135,12 @@ describe("Better Harness HTTP Lifecycle", () => {
       }
 
       if (connected && heartbeat) break;
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 5));
     }
     reader.releaseLock();
 
     expect(connected).toBe(true);
-    // Heartbeat may or may not have arrived in the first 10 seconds
+    expect(heartbeat).toBe(true);
   }, LIFECYCLE_TIMEOUT);
 
   // ─── Exact-run GET ──────────────────────────────────────────────

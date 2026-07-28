@@ -155,7 +155,7 @@ export function getAgentConfigs(
     }
 
     const canDelegate = !isSpecialistAgent(agent.name);
-    let permissionConfig: Record<string, unknown> | undefined = undefined;
+    let permissionConfig: NonNullable<AgentConfig["permission"]>;
 
     if (canDelegate) {
       // Primary agents can delegate to all registered subagents
@@ -174,7 +174,7 @@ export function getAgentConfigs(
       description: agent.description,
       mode,
       hidden: isHiddenAgent(agent.name),
-      permission: permissionConfig as any,
+      permission: permissionConfig,
     };
   }
 

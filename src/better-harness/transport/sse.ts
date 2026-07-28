@@ -19,16 +19,35 @@ export interface SseClient {
   send: (event: HarnessEvent, sequenceId: number) => void;
 }
 
+export interface SseTimingOptions {
+  heartbeatIntervalMs?: number;
+  setIntervalFn?: typeof setInterval;
+  clearIntervalFn?: typeof clearInterval;
+  now?: () => Date;
+}
+
 export class SseManager {
   private clients = new Map<string, SseClient>();
   private sequenceCounter = 0;
-  private heartbeatIntervalMs = 15_000;
+  private heartbeatIntervalMs: number;
   private eventLogPath: string | null = null;
   private heartbeats: Map<string, ReturnType<typeof setInterval>> = new Map();
   private eventBus: EventBus;
+  private setIntervalFn: typeof setInterval;
+  private clearIntervalFn: typeof clearInterval;
+  private now: () => Date;
 
-  constructor(eventBus: EventBus, eventLogDir?: string, private projectFilter?: string) {
+  constructor(
+    eventBus: EventBus,
+    eventLogDir?: string,
+    private projectFilter?: string,
+    timing: SseTimingOptions = {},
+  ) {
     this.eventBus = eventBus;
+    this.heartbeatIntervalMs = timing.heartbeatIntervalMs ?? 15_000;
+    this.setIntervalFn = timing.setIntervalFn ?? setInterval;
+    this.clearIntervalFn = timing.clearIntervalFn ?? clearInterval;
+    this.now = timing.now ?? (() => new Date());
     if (eventLogDir) {
       this.eventLogPath = join(eventLogDir, "sse-events.jsonl");
       const dir = dirname(this.eventLogPath);
@@ -116,7 +135,7 @@ export class SseManager {
     this.clients.delete(clientId);
     const hb = this.heartbeats.get(clientId);
     if (hb) {
-      clearInterval(hb);
+      this.clearIntervalFn(hb);
       this.heartbeats.delete(clientId);
     }
   }
@@ -141,7 +160,7 @@ export class SseManager {
 
     // Send initial connected event with canonical envelope
     const connectedSeq = this.nextSequence();
-    const connectedTimestamp = new Date().toISOString();
+    const connectedTimestamp = this.now().toISOString();
     const connectedEnvelope = JSON.stringify({
       type: "connected",
       timestamp: connectedTimestamp,
@@ -177,10 +196,10 @@ export class SseManager {
     this.addClient(client);
 
     // Start heartbeats with canonical envelope
-    const hb = setInterval(() => {
+    const hb = this.setIntervalFn(() => {
       try {
         const hbSeq = this.nextSequence();
-        const hbTimestamp = new Date().toISOString();
+        const hbTimestamp = this.now().toISOString();
         const hbEnvelope = JSON.stringify({
           type: "heartbeat",
           timestamp: hbTimestamp,

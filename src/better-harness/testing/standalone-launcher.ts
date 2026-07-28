@@ -36,6 +36,10 @@ export interface StandaloneServerMeta {
   shutdown: () => Promise<void>;
 }
 
+export interface StandaloneServerOptions {
+  heartbeatIntervalMs?: number;
+}
+
 /**
  * Launch a standalone FlowDeck Better Harness HTTP server for integration testing.
  * Uses an OS-assigned ephemeral port and temporary directories.
@@ -45,6 +49,7 @@ export interface StandaloneServerMeta {
 export async function launchStandaloneServer(
   serverKey?: string,
   projectKey?: string,
+  options: StandaloneServerOptions = {},
 ): Promise<StandaloneServerMeta> {
   const actualServerKey = serverKey ?? "test-server-" + randomBytes(4).toString("hex");
   const actualProjectKey = projectKey ?? "test-project-" + randomBytes(4).toString("hex");
@@ -77,7 +82,12 @@ export async function launchStandaloneServer(
     canonicalProjectRoot: realpathSync(projectDir),
   });
 
-  const sseManager = new SseManager(eventBus, eventLogDir);
+  const sseManager = new SseManager(
+    eventBus,
+    eventLogDir,
+    undefined,
+    { heartbeatIntervalMs: options.heartbeatIntervalMs },
+  );
 
   const routerContext: RouterContext = {
     runtime,
