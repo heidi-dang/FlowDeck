@@ -12,7 +12,7 @@
  * Tests also confirm no new tool was introduced to work around the issue.
  */
 
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from "vitest"
 import { mkdirSync, writeFileSync, rmSync } from "fs"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"
@@ -83,6 +83,18 @@ afterEach(() => {
 // ── config/loader ─────────────────────────────────────────────────────────
 
 describe("config loader — no stdout during config parse failure", () => {
+  const origConfigDir = process.env.OPENCODE_CONFIG_DIR
+
+  beforeAll(() => {
+    // Isolate from any global config on the machine
+    process.env.OPENCODE_CONFIG_DIR = join(TEST_BASE, "global-isolation")
+    mkdirSync(join(TEST_BASE, "global-isolation"), { recursive: true })
+  })
+
+  afterAll(() => {
+    process.env.OPENCODE_CONFIG_DIR = origConfigDir
+  })
+
   it("does not write to stdout when config JSON is malformed", async () => {
     const dir = createTestDir("config-malformed")
     const ocDir = join(dir, ".opencode")
@@ -361,6 +373,8 @@ describe("notifications — no stdout writes (TUI safe)", () => {
 
 describe("architectural invariant — no new log-management tool introduced", () => {
   it("existing tool set does not include a new log or tui-layout management tool", async () => {
+    const toolDir = join(tmpdir(), "no-new-tool-test")
+    mkdirSync(toolDir, { recursive: true })
     const { default: flowDeckPlugin } = await import("@/index")
     const mockClient: any = {
       app: { log: vi.fn().mockResolvedValue(undefined) },
@@ -371,7 +385,7 @@ describe("architectural invariant — no new log-management tool introduced", ()
       },
     }
     const mockInput: any = {
-      directory: join(tmpdir(), "no-new-tool-test"),
+      directory: toolDir,
       client: mockClient,
       worktree: "",
       project: {},
@@ -396,6 +410,8 @@ describe("architectural invariant — no new log-management tool introduced", ()
   })
 
   it("removed run-pipeline tool stays absent", async () => {
+    const toolDir = join(tmpdir(), "tool-present-test")
+    mkdirSync(toolDir, { recursive: true })
     const { default: flowDeckPlugin } = await import("@/index")
     const mockClient: any = {
       app: { log: vi.fn().mockResolvedValue(undefined) },
@@ -406,7 +422,7 @@ describe("architectural invariant — no new log-management tool introduced", ()
       },
     }
     const mockInput: any = {
-      directory: join(tmpdir(), "tool-present-test"),
+      directory: toolDir,
       client: mockClient,
       worktree: "",
       project: {},

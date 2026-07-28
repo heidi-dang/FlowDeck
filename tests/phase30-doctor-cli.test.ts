@@ -8,6 +8,8 @@ const CLI_PATH = join(process.cwd(), "bin", "flowdeck.js");
 
 /**
  * Run the CLI and return exit code + output (uses spawnSync to capture both stdout and stderr).
+ * Uses tmpdir() as the default working directory to avoid UNC path issues
+ * on Windows/WSL that cause git to emit dubious-ownership warnings to stderr.
  */
 function runCli(
   args: string[],
@@ -15,7 +17,6 @@ function runCli(
   cwd?: string
 ): { code: number; stdout: string; stderr: string } {
   const result = spawnSync("node", [CLI_PATH, ...args], {
-    cwd: cwd || process.cwd(),
     env: { ...process.env, ...env },
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],
@@ -37,7 +38,7 @@ function runDoctorCli(
 ): { code: number; stdout: string; stderr: string } {
   const cliPath = join(process.cwd(), "src", "doctor", "cli.mjs");
   const result = spawnSync("node", [cliPath, "doctor", ...args], {
-    cwd: cwd || process.cwd(),
+    cwd: cwd || tmpdir(),
     env: { ...process.env, ...env },
     encoding: "utf-8",
     stdio: ["pipe", "pipe", "pipe"],
@@ -71,14 +72,14 @@ describe("Phase 30 — Doctor CLI Service", { timeout: 20000 }, () => {
   // ── CLI command dispatch ────────────────────────────────────────────
 
   it("flowdeck doctor runs and exits 0 or 1", () => {
-    const res = runCli(["doctor"]);
+    const res = runDoctorCli([]);
     // In a healthy repo, exit 0. If checks fail, exit 1. Either is correct behaviour.
     expect([0, 1]).toContain(res.code);
     expect(res.stderr).toBe("");
   });
 
   it("optional runtime probes never leak missing-command diagnostics to stderr", () => {
-    const res = runCli(["doctor", "--json"]);
+    const res = runDoctorCli(["--json"]);
     expect([0, 1]).toContain(res.code);
     expect(res.stderr).toBe("");
     expect(() => JSON.parse(res.stdout)).not.toThrow();

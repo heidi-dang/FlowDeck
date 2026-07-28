@@ -38,7 +38,7 @@ export async function runRepositoryChecks(directory: string): Promise<CheckResul
   // Git branch
   if (hasGit) {
     try {
-      const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: directory, encoding: "utf-8", timeout: 5000 }).trim()
+      const branch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: directory, encoding: "utf-8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim()
       checks.push({
         id: "repo.branch",
         title: "Current Branch",

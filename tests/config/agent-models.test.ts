@@ -28,9 +28,17 @@ function makeTempDir(): string {
 
 describe("loadFlowDeckConfig", () => {
   let dir: string
+  const origConfigDir = process.env.OPENCODE_CONFIG_DIR
 
-  beforeEach(() => { dir = makeTempDir() })
-  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+  beforeEach(() => {
+    dir = makeTempDir()
+    // Isolate from any global config on the machine
+    process.env.OPENCODE_CONFIG_DIR = dir
+  })
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true })
+    process.env.OPENCODE_CONFIG_DIR = origConfigDir
+  })
 
   it("loads .flowdeck.jsonc with line and block comments", () => {
     writeFileSync(

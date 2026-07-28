@@ -16,7 +16,7 @@ function tryExec(cmd: string, args: string[] = []): string | null {
       timeout: 2000,
       shell: false,
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim()
   } catch { return null }
 }

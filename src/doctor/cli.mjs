@@ -158,6 +158,8 @@ function runViaBunInline(options) {
       const errMsg = stderr ? stderr.trim().split("\n").pop() : e.message
       throw new Error(errMsg)
     }
+  } finally {
+    // No-op: cleanup if needed
   }
 }
 
