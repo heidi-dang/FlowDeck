@@ -142,8 +142,8 @@ pub fn diff_against(
         anyhow::bail!("git diff failed (invalid base ref): {}", stderr);
     }
 
-
     let diff_text = String::from_utf8_lossy(&output.stdout);
+
 
     if diff_text.trim().is_empty() {
         return Ok(Vec::new());
