@@ -18,9 +18,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 
 import { HarnessRuntime } from "../runtime/harness-runtime";
-import { RunCoordinator } from "../runtime/run-coordinator";
 import { ProjectRegistry } from "../runtime/project-registry";
-import { EventBus } from "../runtime/event-bus";
 import { SseManager } from "../transport/sse";
 import { RouterContext } from "../runtime/router-context";
 import { HarnessHttpServer } from "../transport/http-server";

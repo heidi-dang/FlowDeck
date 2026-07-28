@@ -7,7 +7,6 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { launchStandaloneServer, type StandaloneServerMeta } from "../../src/better-harness/testing/standalone-launcher";
-import { SSEEnvelopeSchema } from "../../src/better-harness/contracts/sse-events";
 
 const LIFECYCLE_TIMEOUT = 30_000;
 
@@ -41,7 +40,7 @@ describe("Better Harness HTTP Lifecycle", () => {
   it("health endpoint returns ok", async () => {
     const res = await fetch(`${meta.baseUrl}/health`);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body: any = await res.json();
     expect(body.status).toBe("ok");
   });
 
@@ -57,7 +56,7 @@ describe("Better Harness HTTP Lifecycle", () => {
   it("returns available for registered project", async () => {
     const res = await fetch(`${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/availability`);
     expect(res.status).toBe(200);
-    const body = await res.json();
+    const body: any = await res.json();
     expect(body.available).toBe(true);
   });
 
@@ -73,7 +72,7 @@ describe("Better Harness HTTP Lifecycle", () => {
       },
     );
     expect(res.status).toBe(201);
-    const body = await res.json();
+    const body: any = await res.json();
     expect(body.accepted).toBe(true);
     expect(body.runId).toBeDefined();
     expect(typeof body.runId).toBe("string");
@@ -90,7 +89,7 @@ describe("Better Harness HTTP Lifecycle", () => {
         body: JSON.stringify({ mode: "full" }),
       },
     );
-    const { runId } = await runRes.json();
+    const { runId }: any = await runRes.json();
     expect(runId).toBeDefined();
 
     // Connect to SSE and read first frames
@@ -155,7 +154,7 @@ describe("Better Harness HTTP Lifecycle", () => {
         body: JSON.stringify({ mode: "full" }),
       },
     );
-    const { runId } = await runRes.json();
+    const { runId }: any = await runRes.json();
     expect(runId).toBeDefined();
 
     // Poll until persisted
@@ -165,7 +164,7 @@ describe("Better Harness HTTP Lifecycle", () => {
         `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs/${runId}`,
       );
       if (getRes.status === 200) {
-        const run = await getRes.json();
+        const run: any = await getRes.json();
         expect(run.runId).toBe(runId);
         return;
       }
@@ -188,14 +187,14 @@ describe("Better Harness HTTP Lifecycle", () => {
         body: JSON.stringify({ mode: "full" }),
       },
     );
-    const { runId } = await runRes.json();
+    const { runId }: any = await runRes.json();
 
     const cancelRes = await fetch(
       `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs/${runId}/cancel`,
       { method: "POST" },
     );
     expect(cancelRes.status).toBe(200);
-    const body = await cancelRes.json();
+    const body: any = await cancelRes.json();
     expect(body.accepted).toBe(true);
   }, LIFECYCLE_TIMEOUT);
 
@@ -208,7 +207,7 @@ describe("Better Harness HTTP Lifecycle", () => {
         body: JSON.stringify({ mode: "full" }),
       },
     );
-    const { runId } = await runRes.json();
+    const { runId }: any = await runRes.json();
 
     // First cancel
     const cancel1 = await fetch(
@@ -216,7 +215,7 @@ describe("Better Harness HTTP Lifecycle", () => {
       { method: "POST" },
     );
     expect(cancel1.status).toBe(200);
-    expect((await cancel1.json()).accepted).toBe(true);
+    expect((await cancel1.json() as any).accepted).toBe(true);
 
     // Second cancel should return accepted:false
     const cancel2 = await fetch(
@@ -224,7 +223,7 @@ describe("Better Harness HTTP Lifecycle", () => {
       { method: "POST" },
     );
     expect(cancel2.status).toBe(200);
-    const body2 = await cancel2.json();
+    const body2: any = await cancel2.json();
     expect(body2.accepted).toBe(false);
   }, LIFECYCLE_TIMEOUT);
 

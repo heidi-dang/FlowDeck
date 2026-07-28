@@ -2,12 +2,6 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
 import type { IncomingMessage, ServerResponse } from "http";
 import type { EventBus, HarnessEvent, HarnessEventType } from "../runtime/event-bus";
-import {
-  SSEEnvelopeSchema,
-  SSESupportedEventEnum,
-  getPayloadValidator,
-  type SSESupportedEvent,
-} from "../contracts/sse-events";
 
 interface StoredSseEvent {
   id: number;
