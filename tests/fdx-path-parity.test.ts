@@ -105,11 +105,12 @@ describe("Exact TypeScript vs Native Rust Project ID Parity", () => {
 
         // Invoke native Rust fdx context command with HOME overridden to isolated tmp directory
         const env = { ...process.env, HOME: tmpRoot, USERPROFILE: tmpRoot, FDX_DISABLE_FALLBACK: "1" }
-        execFileSync(bin, ["context", "--topic", "parity-test", "--action", "read"], {
+        execFileSync(bin, ["context", "--topic", "parity-test", "--action", "append", "--content", "test"], {
           cwd: dir,
           env,
           encoding: "utf-8",
         })
+
 
         // Check the directory created under ~/.fd-plan/
         const planRoot = join(tmpRoot, ".fd-plan")
