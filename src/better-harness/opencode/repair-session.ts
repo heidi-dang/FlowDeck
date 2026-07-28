@@ -30,8 +30,9 @@ export async function createRepairSession(
     const sessionNs = client.session as Record<string, unknown> | undefined;
     if (sessionNs && typeof sessionNs.create === "function") {
       try {
+        // Create the session with the repair prompt as the initial message
         const result = await (sessionNs.create as (opts: Record<string, unknown>) => unknown)({
-          body: { title: `Repair: ${finding.title}` },
+          body: { title: `Repair: ${finding.title}`, message: prompt },
           query: { directory: projectPath },
         });
         if (result && typeof result === "object") {
@@ -39,6 +40,21 @@ export async function createRepairSession(
           const sessionId = session?.id as string | undefined;
           if (sessionId) {
             const repairSessionId = "rs_" + sessionId;
+
+            // If the session supports an explicit send message API, submit
+            // the prompt as a structured message after creation.
+            if (typeof (sessionNs as Record<string, unknown>).send === "function") {
+              try {
+                await (sessionNs.send as (opts: Record<string, unknown>) => unknown)({
+                  sessionId,
+                  body: { message: prompt, role: "system" },
+                });
+              } catch {
+                // Non-fatal — session was created even if the secondary
+                // message submission fails.
+              }
+            }
+
             // Persist the session
             saveRepairSession(projectPath, {
               repairSessionId,

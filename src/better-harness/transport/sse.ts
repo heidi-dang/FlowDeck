@@ -42,6 +42,12 @@ export class SseManager {
       const dir = dirname(this.eventLogPath);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
+      } else {
+        // Recover the maximum persisted sequence ID so that new events
+        // never reuse an ID from a previous process lifetime.  Without
+        // this recovery, a browser holding Last-Event-ID from the earlier
+        // session would silently discard newly emitted events.
+        this.recoverSequenceCounter();
       }
     }
 
@@ -56,6 +62,28 @@ export class SseManager {
         this.broadcastEvent(event);
       });
     }
+  }
+
+  /**
+   * Scan the existing event log for the maximum persisted sequence ID and
+   * initialise sequenceCounter above it, guaranteeing that new events never
+   * collide with IDs from a previous process lifetime.
+   */
+  private recoverSequenceCounter(): void {
+    if (!this.eventLogPath || !existsSync(this.eventLogPath)) return;
+    try {
+      const lines = readFileSync(this.eventLogPath, "utf-8").split("\n").filter(Boolean);
+      let maxId = 0;
+      for (const line of lines) {
+        try {
+          const stored: StoredSseEvent = JSON.parse(line);
+          if (stored.id > maxId) maxId = stored.id;
+        } catch { /* skip corrupt lines */ }
+      }
+      if (maxId > 0) {
+        this.sequenceCounter = maxId;
+      }
+    } catch { /* best-effort recovery */ }
   }
 
   /**
@@ -156,21 +184,12 @@ export class SseManager {
       "X-Accel-Buffering": "no",
     });
 
-    // Send initial connected event with canonical envelope.
-    // Connected events are NOT persisted — they are transient connection
-    // metadata, not durable run lifecycle events.  Persisting them would
-    // cause duplicate delivery on every reconnect (sent once directly,
-    // then replayed from the event log).
-    const connectedSeq = this.nextSequence();
-    const connectedTimestamp = new Date().toISOString();
-    const connectedEnvelope = JSON.stringify({
-      type: "connected",
-      timestamp: connectedTimestamp,
-      data: { clientId },
-    });
-    res.write(`id: ${connectedSeq}\nevent: connected\ndata: ${connectedEnvelope}\n\n`);
-
-    // Create a client bound to this response
+    // Create a client bound to this response BEFORE sending the connected
+    // frame, so that addClient() replays durable events first.  Replay must
+    // precede connected because the UI uses the first received id to
+    // initialise its deduplication watermark (lastValidEventId).  If
+    // connected carried an id the UI would discard all replayed events with
+    // lower IDs.
     const client: SseClient = {
       id: clientId,
       lastEventId: lastEventId ?? null,
@@ -190,22 +209,32 @@ export class SseManager {
       },
     };
 
+    // 1. Replay durable events (if any) so the UI processes them before
+    //    the connected frame and never discards them due to an id watermark.
     this.addClient(client);
 
-    // Start heartbeats with canonical envelope.
-    // Heartbeats are NOT persisted — they are keep-alive signals, not
-    // durable run lifecycle events.  Persisting them would cause
-    // duplicate or excessive replay volume.
+    // 2. Send connected frame.  It omits the SSE `id: ` field on purpose:
+    //    the UI's deduplication logic uses the first received id as its
+    //    watermark.  If connected supplied an id, all replayed events with
+    //    lower ids would be silently discarded.
+    const connectedTimestamp = new Date().toISOString();
+    const connectedEnvelope = JSON.stringify({
+      type: "connected",
+      timestamp: connectedTimestamp,
+      data: { clientId },
+    });
+    res.write(`event: connected\ndata: ${connectedEnvelope}\n\n`);
+
+    // 3. Start heartbeats — also without an `id:` field.
     const hb = setInterval(() => {
       try {
-        const hbSeq = this.nextSequence();
         const hbTimestamp = new Date().toISOString();
         const hbEnvelope = JSON.stringify({
           type: "heartbeat",
           timestamp: hbTimestamp,
           data: { time: hbTimestamp },
         });
-        res.write(`id: ${hbSeq}\nevent: heartbeat\ndata: ${hbEnvelope}\n\n`);
+        res.write(`event: heartbeat\ndata: ${hbEnvelope}\n\n`);
       } catch {
         this.handleClientDisconnect(clientId);
       }
