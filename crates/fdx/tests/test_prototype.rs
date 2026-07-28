@@ -80,8 +80,8 @@ class Calculator {
     assert_eq!(symbols[2].name, "multiply");
 }
 
-
 #[test]
+
 fn test_prototype_typescript() {
     let source = r#"
 interface Point {
