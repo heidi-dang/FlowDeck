@@ -161,8 +161,8 @@ impl CodeReader for DeepReader {
         };
 
         let dependencies = if with_deps && !symbols.is_empty() {
-
             // Collect references from the target symbol's body
+
             let target_sym = &symbols[0];
 
             if let Some(node) = target_node_for_deps {

@@ -1053,8 +1053,8 @@ fn main() {
 
 fn parse_mode(mode: &str) -> ReadMode {
     match mode.parse::<ReadMode>() {
-
         Ok(m) => m,
+
         Err(e) => {
             eprintln!("Error: {}", e);
             process::exit(1);

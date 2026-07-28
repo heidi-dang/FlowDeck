@@ -365,8 +365,8 @@ fn analyze_file_changes(
                 let is_deleted_sym = !target_symbols.iter().any(|t| t.scoped_identity() == key);
                 let change_type = if is_deleted_sym {
                     ChangeType::Deleted
-
                 } else {
+
                     ChangeType::BodyChanged
                 };
 
