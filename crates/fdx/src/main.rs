@@ -980,8 +980,7 @@ fn main() {
                 .unwrap_or_default();
             let project_slug = fdx::paths::project_slug_from_directory(cwd);
             if !legacy_name.is_empty() {
-                let _ =
-                    fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name);
+                let _ = fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name);
             }
             let result = match action.as_str() {
                 "append" => fdx::commands::context::append(
@@ -1026,9 +1025,9 @@ fn main() {
                 .unwrap_or_default();
             let project_slug = fdx::paths::project_slug_from_directory(cwd);
             if !legacy_name.is_empty() {
-                let _ =
-                    fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name);
+                let _ = fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name);
             }
+
             let result = match action.as_str() {
                 "record" => fdx::commands::decisions::record(
                     &home,

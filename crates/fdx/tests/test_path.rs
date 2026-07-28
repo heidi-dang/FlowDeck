@@ -33,7 +33,11 @@ fn load_path_fixtures() -> Vec<PathFixture> {
 fn test_path_fixture_loads() {
     let fixtures = load_path_fixtures();
     assert!(!fixtures.is_empty(), "Should load at least one fixture");
-    assert!(fixtures.len() >= 12, "Should have at least 12 fixture entries");
+    assert!(
+        fixtures.len() >= 12,
+        "Should have at least 12 fixture entries"
+    );
+
 }
 
 #[test]
