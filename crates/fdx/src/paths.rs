@@ -55,20 +55,22 @@ use sha2::{Digest, Sha256};
 
 /// Normalize path deterministically for project ID generation.
 /// Mirrors `src/tools/planning-state-lib.ts:normalizePathForId`.
+/// Normalize path deterministically for project ID generation.
+/// Mirrors `src/tools/planning-state-lib.ts:normalizePathForId`.
 pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
-    let s = directory.to_string_lossy().replace('\\', "/");
-    let cleaned = if s.len() >= 2 && s.as_bytes()[1] == b':' {
-        PathBuf::from(&s[2..])
-    } else {
-        directory.to_path_buf()
-    };
+    let mut s = directory.to_string_lossy().replace('\\', "/");
+    if s.len() >= 2 && s.as_bytes()[1] == b':' {
+        let drive = (s.as_bytes()[0] as char).to_ascii_uppercase();
+        s = format!("{}{}", drive, &s[1..]);
+    }
 
-    let abs = if cleaned.is_absolute() {
-        cleaned
+    let path_buf = PathBuf::from(&s);
+    let abs = if path_buf.is_absolute() || (s.len() >= 2 && s.as_bytes()[1] == b':') {
+        path_buf
     } else {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
-            .join(cleaned)
+            .join(path_buf)
     };
 
     let resolved = if abs.exists() {
@@ -77,12 +79,23 @@ pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
         normalize_components(&abs)
     };
 
-    let path_str = resolved.to_string_lossy();
-    if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
-        PathBuf::from(stripped)
-    } else {
-        resolved
+    let mut path_str = resolved.to_string_lossy().replace('\\', "/");
+    if path_str.starts_with("//?/") {
+        path_str = path_str[4..].to_string();
+    } else if path_str.starts_with(r"\\?\") {
+        path_str = path_str[4..].to_string();
     }
+
+    if path_str.len() >= 2 && path_str.as_bytes()[1] == b':' {
+        let drive = (path_str.as_bytes()[0] as char).to_ascii_uppercase();
+        path_str = format!("{}{}", drive, &path_str[1..]);
+    }
+
+    if path_str.len() > 3 && path_str.ends_with('/') {
+        path_str.pop();
+    }
+
+    PathBuf::from(path_str)
 }
 
 fn normalize_components(path: &Path) -> PathBuf {
@@ -113,7 +126,7 @@ fn normalize_components(path: &Path) -> PathBuf {
 /// Mirrors `src/tools/planning-state-lib.ts:generateProjectId`.
 pub fn generate_project_id(directory: &Path) -> String {
     let norm = normalize_path_for_id(directory);
-    let path_str = norm.to_string_lossy();
+    let path_str = norm.to_string_lossy().replace('\\', "/");
     let name = norm.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     let mut hasher = Sha256::new();
@@ -128,6 +141,22 @@ pub fn planning_dir(home: &Path, project_slug: &str) -> PathBuf {
     home.join(".fd-plan").join(project_slug)
 }
 
+fn count_dir_entries(dir: &Path) -> std::io::Result<usize> {
+    let mut count = 0;
+    if !dir.exists() {
+        return Ok(0);
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        count += 1;
+        if ty.is_dir() {
+            count += count_dir_entries(&entry.path())?;
+        }
+    }
+    Ok(count)
+}
+
 /// Migrate legacy planning state from `~/.fd-plan/<legacy_name>/` to `~/.fd-plan/<project_slug>/`.
 /// Returns a migration result indicating success, no-op, or failure reason.
 pub fn migrate_legacy_planning_dir(
@@ -139,19 +168,12 @@ pub fn migrate_legacy_planning_dir(
     let new_dir = root.join(project_slug);
     let legacy_dir = root.join(legacy_name);
 
-    // Nothing to migrate
+    // 1. Nothing to migrate if legacy_dir does not exist
     if !legacy_dir.exists() || !legacy_dir.is_dir() {
+        if new_dir.exists() && new_dir.join("STATE.md").exists() {
+            return Ok(MigrationResult::AlreadyMigrated);
+        }
         return Ok(MigrationResult::NoOp);
-    }
-
-    // Already migrated
-    if new_dir.exists() && new_dir.join("STATE.md").exists() {
-        return Ok(MigrationResult::AlreadyMigrated);
-    }
-
-    // Legacy dir must have STATE.md to be valid
-    if !legacy_dir.join("STATE.md").exists() {
-        return Err(MigrationError::MissingState(legacy_name.to_string()));
     }
 
     let now_ms = std::time::SystemTime::now()
@@ -159,35 +181,93 @@ pub fn migrate_legacy_planning_dir(
         .unwrap_or_default()
         .as_millis();
 
+    // 2. If new_dir exists and is complete, and legacy_dir is present:
+    // Move legacy_dir to backup so second execution is idempotent!
+    if new_dir.exists() && new_dir.join("STATE.md").exists() {
+        let backup_dir = root.join(format!("{}.bak.{}", legacy_name, now_ms));
+        std::fs::rename(&legacy_dir, &backup_dir).map_err(|e| {
+            MigrationError::RenameFailed(legacy_dir.clone(), backup_dir, e.to_string())
+        })?;
+        return Ok(MigrationResult::AlreadyMigrated);
+    }
+
+    // 3. Legacy dir must have STATE.md to be valid
+    if !legacy_dir.join("STATE.md").exists() {
+        return Err(MigrationError::MissingState(legacy_name.to_string()));
+    }
+
+    // 4. Create sibling temporary directory
     let tmp_dir = root.join(format!("{}.tmp.{}", project_slug, now_ms));
 
-    let res = (|| -> std::io::Result<usize> {
-        std::fs::create_dir_all(&tmp_dir)?;
-        let count = copy_dir_recursive_count(&legacy_dir, &tmp_dir)?;
+    let perform_migration = || -> Result<usize, MigrationError> {
+        std::fs::create_dir_all(&tmp_dir).map_err(|e| {
+            MigrationError::CreateFailed(tmp_dir.clone(), e.to_string())
+        })?;
 
-        if !new_dir.exists() {
-            std::fs::rename(&tmp_dir, &new_dir)?;
-        } else {
-            let _ = copy_dir_recursive_count(&tmp_dir, &new_dir);
-            let _ = std::fs::remove_dir_all(&tmp_dir);
+        let count = copy_dir_recursive_count(&legacy_dir, &tmp_dir).map_err(|e| {
+            MigrationError::CopyFailed(legacy_dir.clone(), tmp_dir.clone(), e.to_string())
+        })?;
+
+        // Validate required file in tmp_dir
+        if !tmp_dir.join("STATE.md").exists() {
+            return Err(MigrationError::ValidationFailed(
+                tmp_dir.clone(),
+                "STATE.md missing after copy".to_string(),
+            ));
         }
 
-        let backup_dir = root.join(format!("{}.bak.{}", legacy_name, now_ms));
-        let _ = std::fs::rename(&legacy_dir, &backup_dir);
-        Ok(count)
-    })();
+        // Validate entry counts match
+        let legacy_entries = count_dir_entries(&legacy_dir).map_err(|e| {
+            MigrationError::ReadFailed(legacy_dir.clone(), e.to_string())
+        })?;
+        let tmp_entries = count_dir_entries(&tmp_dir).map_err(|e| {
+            MigrationError::ReadFailed(tmp_dir.clone(), e.to_string())
+        })?;
 
-    match res {
+        if legacy_entries != tmp_entries {
+            return Err(MigrationError::ValidationFailed(
+                tmp_dir.clone(),
+                format!("Entry count mismatch: expected {}, got {}", legacy_entries, tmp_entries),
+            ));
+        }
+
+        // If new_dir exists but is incomplete, move it to a recovery backup first
+        if new_dir.exists() {
+            let recovery_dir = root.join(format!("{}.bak.incomplete.{}", project_slug, now_ms));
+            std::fs::rename(&new_dir, &recovery_dir).map_err(|e| {
+                MigrationError::RenameFailed(new_dir.clone(), recovery_dir, e.to_string())
+            })?;
+        }
+
+        // Atomically rename completed temporary directory into place
+        std::fs::rename(&tmp_dir, &new_dir).map_err(|e| {
+            MigrationError::RenameFailed(tmp_dir.clone(), new_dir.clone(), e.to_string())
+        })?;
+
+        // Validate new_dir exists and is complete
+        if !new_dir.join("STATE.md").exists() {
+            return Err(MigrationError::ValidationFailed(
+                new_dir.clone(),
+                "STATE.md missing in destination".to_string(),
+            ));
+        }
+
+        // Rename legacy directory to timestamped backup only AFTER destination validation
+        let backup_dir = root.join(format!("{}.bak.{}", legacy_name, now_ms));
+        std::fs::rename(&legacy_dir, &backup_dir).map_err(|e| {
+            MigrationError::RenameFailed(legacy_dir.clone(), backup_dir, e.to_string())
+        })?;
+
+        Ok(count)
+    };
+
+    match perform_migration() {
         Ok(count) => Ok(MigrationResult::Migrated { entries: count }),
-        Err(e) => {
+        Err(err) => {
             if tmp_dir.exists() {
                 let _ = std::fs::remove_dir_all(&tmp_dir);
             }
-            Err(MigrationError::CopyFailed(
-                legacy_dir,
-                new_dir,
-                e.to_string(),
-            ))
+            Err(err)
         }
     }
 }
@@ -212,7 +292,6 @@ fn copy_dir_recursive_count(src: &Path, dst: &Path) -> std::io::Result<usize> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-
 pub enum MigrationResult {
     NoOp,
     AlreadyMigrated,
@@ -225,6 +304,8 @@ pub enum MigrationError {
     CreateFailed(PathBuf, String),
     ReadFailed(PathBuf, String),
     CopyFailed(PathBuf, PathBuf, String),
+    ValidationFailed(PathBuf, String),
+    RenameFailed(PathBuf, PathBuf, String),
 }
 
 impl std::fmt::Display for MigrationError {
@@ -243,6 +324,18 @@ impl std::fmt::Display for MigrationError {
                 write!(
                     f,
                     "Failed to copy {} to {}: {}",
+                    src.display(),
+                    dst.display(),
+                    msg
+                )
+            }
+            MigrationError::ValidationFailed(p, msg) => {
+                write!(f, "Validation failed for {}: {}", p.display(), msg)
+            }
+            MigrationError::RenameFailed(src, dst, msg) => {
+                write!(
+                    f,
+                    "Failed to rename {} to {}: {}",
                     src.display(),
                     dst.display(),
                     msg

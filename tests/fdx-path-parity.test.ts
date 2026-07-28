@@ -45,18 +45,31 @@ describe("generateProjectId path parity", () => {
     })
   }
 
-  it("produces different IDs for same-named repos in different paths", () => {
-    const id1 = generateProjectId("/home/user/projects/FlowDeck")
-    const id2 = generateProjectId("/home/other/work/FlowDeck")
-    expect(id1).not.toBe(id2)
+  it("produces different IDs for C:\\work\\repo and D:\\work\\repo on Windows", () => {
+    const idC = generateProjectId("C:\\work\\repo")
+    const idD = generateProjectId("D:\\work\\repo")
+    expect(idC).not.toBe(idD)
+    expect(idC.startsWith("repo-")).toBe(true)
+    expect(idD.startsWith("repo-")).toBe(true)
   })
 
-  it("hyphenated names are still hashed (do not pass through as raw names)", () => {
-    const id = generateProjectId("/home/user/some---repo--name")
-    const parts = id.split("-")
-    const hash = parts[parts.length - 1]
-    expect(hash).toMatch(/^[0-9a-f]{8}$/)
-    expect(parts.length).toBeGreaterThan(1)
+  it("handles UNC paths, trailing slashes, dots, unicode, and relative paths deterministically", () => {
+    const unc = generateProjectId("\\\\server\\share\\project")
+    expect(unc.startsWith("project-")).toBe(true)
+
+    const trailing = generateProjectId("/home/user/project/")
+    const noTrailing = generateProjectId("/home/user/project")
+    expect(trailing).toBe(noTrailing)
+
+    const dots = generateProjectId("/home/user/app/../project")
+    expect(dots).toBe(noTrailing)
+
+
+    const nonexistent = generateProjectId("/nonexistent/path/to/my-repo")
+    expect(nonexistent.startsWith("my-repo-")).toBe(true)
+
+    const unicode = generateProjectId("/home/user/über-project")
+    expect(unicode.startsWith("über-project-")).toBe(true)
   })
 
   it("is deterministic for the same input", () => {

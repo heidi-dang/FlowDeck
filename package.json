@@ -38,8 +38,10 @@
     "docs",
     "postinstall.mjs",
     "install.sh",
-    "uninstall.sh",
-    "crates/fdx"
+    "crates/fdx",
+    "!crates/fdx/target/**",
+    "!**/*.tmp.*",
+    "!**/*.bak.*"
   ],
   "scripts": {
     "clean": "rm -rf dist",

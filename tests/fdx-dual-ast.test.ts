@@ -47,24 +47,34 @@ describe("Real FDX Dual-AST Diff Integration", () => {
       execFileSync("git", ["add", "."], { cwd: repoDir })
       execFileSync("git", ["commit", "-m", "sig-change"], { cwd: repoDir })
 
-      const sigDiff = execFileSync(bin, ["diff", "HEAD~1", "--format", "json"], {
+      const sigDiffRaw = execFileSync(bin, ["diff", "HEAD~1", "--format", "json"], {
         cwd: repoDir,
         env: { ...process.env, FDX_DISABLE_FALLBACK: "1" },
         encoding: "utf-8",
       })
-      expect(sigDiff).toContain("calculate")
+      const sigDiff = JSON.parse(sigDiffRaw)
+      expect(sigDiff.files.length).toBe(1)
+      expect(sigDiff.files[0].path).toBe("service.ts")
+      expect(sigDiff.files[0].status).toBe("modified")
+      expect(sigDiff.files[0].symbol_changes[0].name).toBe("calculate")
+      expect(sigDiff.files[0].symbol_changes[0].kind).toBe("function")
+      expect(sigDiff.files[0].symbol_changes[0].change_type).toBe("signature_changed")
+      expect(sigDiff.files[0].symbol_changes[0].line_start).toBe(1)
 
       // Body-only change
       writeFileSync(file, `export function calculate(a: number, b: number): number {\n  return a * b + 10;\n}\n`)
       execFileSync("git", ["add", "."], { cwd: repoDir })
       execFileSync("git", ["commit", "-m", "body-change"], { cwd: repoDir })
 
-      const bodyDiff = execFileSync(bin, ["diff", "HEAD~1", "--format", "json"], {
+      const bodyDiffRaw = execFileSync(bin, ["diff", "HEAD~1", "--format", "json"], {
         cwd: repoDir,
         env: { ...process.env, FDX_DISABLE_FALLBACK: "1" },
         encoding: "utf-8",
       })
-      expect(bodyDiff).toContain("calculate")
+      const bodyDiff = JSON.parse(bodyDiffRaw)
+      expect(bodyDiff.files[0].symbol_changes[0].name).toBe("calculate")
+      expect(bodyDiff.files[0].symbol_changes[0].change_type).toBe("body_changed")
+      expect(bodyDiff.files[0].symbol_changes[0].lines_added).toBeGreaterThan(0)
     } finally {
       cleanup()
     }
@@ -83,12 +93,20 @@ describe("Real FDX Dual-AST Diff Integration", () => {
       execFileSync("git", ["add", "."], { cwd: repoDir })
       execFileSync("git", ["commit", "-m", "replace-service"], { cwd: repoDir })
 
-      const diffOutput = execFileSync(bin, ["diff", "HEAD~1"], {
+      const diffOutputRaw = execFileSync(bin, ["diff", "HEAD~1", "--format", "json"], {
         cwd: repoDir,
         env: { ...process.env, FDX_DISABLE_FALLBACK: "1" },
         encoding: "utf-8",
       })
-      expect(diffOutput.length).toBeGreaterThan(0)
+      const diffOutput = JSON.parse(diffOutputRaw)
+      expect(diffOutput.files[0].path).toBe("service.ts")
+      const deletedSym = diffOutput.files[0].symbol_changes.find((s: any) => s.name === "OldService")
+      const addedSym = diffOutput.files[0].symbol_changes.find((s: any) => s.name === "NewService")
+      expect(deletedSym).toBeDefined()
+      expect(deletedSym.change_type).toBe("deleted")
+      expect(deletedSym.line_start).toBe(1) // Uses base-AST range
+      expect(addedSym).toBeDefined()
+      expect(addedSym.change_type).toBe("added")
     } finally {
       cleanup()
     }
@@ -113,12 +131,16 @@ describe("Real FDX Dual-AST Diff Integration", () => {
       execFileSync("git", ["add", "."], { cwd: repoDir })
       execFileSync("git", ["commit", "-m", "update-product-save"], { cwd: repoDir })
 
-      const diffOutput = execFileSync(bin, ["diff", "HEAD~1", "--format", "json"], {
+      const diffOutputRaw = execFileSync(bin, ["diff", "HEAD~1", "--format", "json"], {
         cwd: repoDir,
         env: { ...process.env, FDX_DISABLE_FALLBACK: "1" },
         encoding: "utf-8",
       })
-      expect(diffOutput).toContain("ProductService")
+      const diffOutput = JSON.parse(diffOutputRaw)
+      expect(diffOutput.files[0].symbol_changes.length).toBe(1)
+      expect(diffOutput.files[0].symbol_changes[0].name).toBe("save")
+      expect(diffOutput.files[0].symbol_changes[0].kind).toBe("method")
+      expect(diffOutput.files[0].symbol_changes[0].change_type).toBe("body_changed")
     } finally {
       cleanup()
     }
@@ -140,12 +162,15 @@ describe("Real FDX Dual-AST Diff Integration", () => {
       execFileSync("git", ["add", "."], { cwd: repoDir })
       execFileSync("git", ["commit", "-m", "update-user-card"], { cwd: repoDir })
 
-      const diffOutput = execFileSync(bin, ["diff", "HEAD~1"], {
+      const diffOutputRaw = execFileSync(bin, ["diff", "HEAD~1", "--format", "json"], {
         cwd: repoDir,
         env: { ...process.env, FDX_DISABLE_FALLBACK: "1" },
         encoding: "utf-8",
       })
-      expect(diffOutput).toContain("UserCard")
+      const diffOutput = JSON.parse(diffOutputRaw)
+      expect(diffOutput.files[0].path).toBe("UserCard.tsx")
+      expect(diffOutput.files[0].symbol_changes[0].name).toBe("UserCard")
+      expect(diffOutput.files[0].symbol_changes[0].change_type).toBe("signature_changed")
     } finally {
       cleanup()
     }
@@ -163,12 +188,16 @@ describe("Real FDX Dual-AST Diff Integration", () => {
       writeFileSync(file, `export function run() { return 2; }\n`)
       execFileSync("git", ["add", "."], { cwd: repoDir })
 
-      const diffOutput = execFileSync(bin, ["diff", "--staged"], {
+      const diffOutputRaw = execFileSync(bin, ["diff", "--staged", "--format", "json"], {
         cwd: repoDir,
         env: { ...process.env, FDX_DISABLE_FALLBACK: "1" },
         encoding: "utf-8",
       })
-      expect(diffOutput).toContain("run")
+      const diffOutput = JSON.parse(diffOutputRaw)
+      expect(diffOutput.staged).toBe(true)
+      expect(diffOutput.files[0].path).toBe("staged.ts")
+      expect(diffOutput.files[0].symbol_changes[0].name).toBe("run")
+      expect(diffOutput.files[0].symbol_changes[0].change_type).toBe("body_changed")
     } finally {
       cleanup()
     }
@@ -186,12 +215,13 @@ describe("Real FDX Dual-AST Diff Integration", () => {
       execFileSync("git", ["mv", "oldName.ts", "newName.ts"], { cwd: repoDir })
       execFileSync("git", ["commit", "-m", "rename"], { cwd: repoDir })
 
-      const diffOutput = execFileSync(bin, ["diff", "HEAD~1"], {
+      const diffOutputRaw = execFileSync(bin, ["diff", "HEAD~1", "--format", "json"], {
         cwd: repoDir,
         env: { ...process.env, FDX_DISABLE_FALLBACK: "1" },
         encoding: "utf-8",
       })
-      expect(diffOutput.length).toBeGreaterThan(0)
+      const diffOutput = JSON.parse(diffOutputRaw)
+      expect(diffOutput.files.length).toBeGreaterThan(0)
     } finally {
       cleanup()
     }

@@ -108,3 +108,13 @@ fn test_relative_path() {
     let result = generate_project_id(Path::new("relative/path/to/repo"));
     assert!(result.starts_with("repo-"));
 }
+
+#[test]
+fn test_windows_drive_letters_differ() {
+    let id1 = generate_project_id(Path::new("C:\\work\\repo"));
+    let id2 = generate_project_id(Path::new("D:\\work\\repo"));
+    assert_ne!(
+        id1, id2,
+        "C:\\work\\repo and D:\\work\\repo must produce different project IDs"
+    );
+}

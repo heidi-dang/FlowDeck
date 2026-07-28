@@ -980,7 +980,10 @@ fn main() {
                 .unwrap_or_default();
             let project_slug = fdx::paths::project_slug_from_directory(cwd);
             if !legacy_name.is_empty() {
-                let _ = fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name);
+                if let Err(e) = fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name) {
+                    eprintln!("Error: Legacy planning migration failed: {}", e);
+                    process::exit(1);
+                }
             }
             let result = match action.as_str() {
                 "append" => fdx::commands::context::append(
@@ -1025,7 +1028,10 @@ fn main() {
                 .unwrap_or_default();
             let project_slug = fdx::paths::project_slug_from_directory(cwd);
             if !legacy_name.is_empty() {
-                let _ = fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name);
+                if let Err(e) = fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name) {
+                    eprintln!("Error: Legacy planning migration failed: {}", e);
+                    process::exit(1);
+                }
             }
 
             let result = match action.as_str() {

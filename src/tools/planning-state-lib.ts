@@ -28,22 +28,28 @@ export { codebaseDir } from "./codebase-state"
 export function normalizePathForId(directory: string): string {
   let dir = directory.replace(/\\/g, "/")
   if (/^[a-zA-Z]:/.test(dir)) {
-    const driveMatch = dir.match(/^([a-zA-Z]:)(.*)$/)
-    if (driveMatch) {
-      dir = driveMatch[2] || "/"
-    }
+    dir = dir[0].toUpperCase() + dir.slice(1)
   }
-  let resolved = resolve(dir)
+  let resolved = resolve(dir).replace(/\\/g, "/")
   if (existsSync(resolved)) {
     try {
-      resolved = realpathSync(resolved)
+      resolved = realpathSync(resolved).replace(/\\/g, "/")
     } catch {}
   }
-  if (resolved.startsWith("\\\\?\\")) {
+  if (resolved.startsWith("//?/")) {
     resolved = resolved.slice(4)
+  } else if (resolved.startsWith("\\\\?\\")) {
+    resolved = resolved.slice(4)
+  }
+  if (/^[a-zA-Z]:/.test(resolved)) {
+    resolved = resolved[0].toUpperCase() + resolved.slice(1)
+  }
+  if (resolved.length > 3 && resolved.endsWith("/")) {
+    resolved = resolved.slice(0, -1)
   }
   return resolved
 }
+
 
 
 /**
