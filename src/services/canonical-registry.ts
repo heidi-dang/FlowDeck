@@ -53,7 +53,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     mode: "primary",
     allowedTaskTypes: ["coordination", "orchestration", "direct-execution", "delegation", "phase-management", "implementation", "editing", "testing", "configuration"],
     allowedTools: [
-      "read", "write", "edit", "patch", "bash",
+      "read", "read_file", "write", "write_file", "edit", "edit_file", "patch", "patch_file", "apply_patch", "create_file", "hash-edit", "str-replace", "str_replace", "bash",
       "glob", "grep", "search",
       "planning-state", "codebase-state", "repo-memory",
       "codegraph", "load-rules", "list-rules",
@@ -98,13 +98,14 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     mode: "primary",
     allowedTaskTypes: ["coordination", "orchestration", "direct-execution", "delegation", "phase-management"],
     allowedTools: [
-      "read", "write", "edit", "bash",
+      "read", "read_file", "write", "write_file", "edit", "edit_file", "patch", "patch_file", "apply_patch", "create_file", "hash-edit", "str-replace", "str_replace", "bash",
       "glob", "grep", "search",
       "planning-state", "codebase-state", "repo-memory",
       "codegraph", "load-rules", "list-rules",
       "task", "capture-lesson", "review-lessons",
       "fdx-read", "fdx-search", "fdx-grep", "fdx-outline", "fdx-batch",
       "fdx-impact", "fdx-diff", "fdx-git", "fdx-ls", "fdx-tree",
+      "fdx-test", "fdx-lint",
     ],
     forbiddenActions: [
       "restart_opencode", "reboot_system", "logout_user",

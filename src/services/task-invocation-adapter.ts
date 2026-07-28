@@ -24,11 +24,20 @@ export interface NormalizedTaskInvocation {
   /** Which args field the target was resolved from, for audit logging */
   resolvedFrom: "subagent_type" | "agent" | "none"
   prompt: string | undefined
+  promptLength?: number
+  promptSnippet?: string
   description: string | undefined
 }
 
 function stringValue(v: unknown): string | undefined {
   return typeof v === "string" && v.trim() !== "" ? v.trim() : undefined
+}
+
+function truncateSnippet(str: string | undefined, maxLen = 150): string | undefined {
+  if (!str) return undefined
+  const singleLine = str.replace(/\s+/g, " ").trim()
+  if (singleLine.length <= maxLen) return singleLine
+  return singleLine.slice(0, maxLen) + "..."
 }
 
 /**
@@ -68,13 +77,18 @@ export function normalizeTaskInvocation(
     resolvedFrom = "none"
   }
 
+  const rawPrompt = stringValue(args.prompt)
+  const rawDescription = stringValue(args.description)
+
   return {
     sessionID,
     callID,
     callerAgent,
     targetAgent,
     resolvedFrom,
-    prompt: stringValue(args.prompt),
-    description: stringValue(args.description),
+    prompt: rawPrompt,
+    promptLength: rawPrompt ? rawPrompt.length : undefined,
+    promptSnippet: truncateSnippet(rawPrompt),
+    description: rawDescription,
   }
 }

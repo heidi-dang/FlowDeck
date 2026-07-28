@@ -95,6 +95,11 @@ const sessionBlocks = new Map<string, number>()
 const sessionWarnings = new Map<string, number>()
 const sessionStartTimes = new Map<string, number>()
 const sessionFilesChanged = new Map<string, Set<string>>()
+const sessionCallerAgents = new Map<string, string>()
+const sessionTaskCalls = new Map<
+  string,
+  { callerAgent: string; targetAgent: string; startedAt: number; resolvedFrom: string }
+>()
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
@@ -282,6 +287,9 @@ const plugin: Plugin = async ({ directory, client }) => {
     "chat.message": async (input: { sessionID: string; agent?: string; variant?: string }, output: { message: any; parts?: any[] }) => {
       const sessionID = input.sessionID ?? ""
       const agent = output.message?.agent ?? input.agent ?? "unknown"
+      if (sessionID && agent && agent !== "unknown") {
+        sessionCallerAgents.set(sessionID, agent)
+      }
       const variant = input.variant
       const pkgVersion = "0.8.0-alpha.8"
       const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
@@ -344,7 +352,9 @@ const plugin: Plugin = async ({ directory, client }) => {
     "tool.execute.before": async (toolInput: any, toolOutput: any) => {
       const toolName = toolInput.tool ?? toolInput.name ?? "unknown"
       const sessionID = toolInput.sessionID ?? ""
-      const agent = toolInput.agent ?? "unknown"
+      const callID = toolInput.callID ?? ""
+      const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
+      const agent = sessionCallerAgents.get(sessionID) ?? toolInput.agent ?? "heidi"
 
       // ── 0. Tool call budget tracking ─────────────────────────────────
       if (sessionID) {
@@ -370,7 +380,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       orchestratorGuard.check(
         sessionID,
         toolName,
-        toolOutput?.args ?? toolInput?.args,
+        rawArgs,
         agent,
       )
 
@@ -380,7 +390,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         sessionID,
         agent,
         tool: toolName,
-        args: toolInput.args,
+        args: rawArgs,
       })
 
       if (governanceResult.action === "block") {
@@ -394,87 +404,96 @@ const plugin: Plugin = async ({ directory, client }) => {
       // ── 3. Delegation depth check & budget ───────────────────────────
       if (toolName === "task") {
         const invocation = normalizeTaskInvocation(
-          { sessionID, callID: toolInput.callID, agent },
-          toolInput.args ?? {},
+          { sessionID, callID, agent },
+          rawArgs,
         )
-        const currentDepth = (toolInput.args?.depth as number) ?? 0
         const targetAgent = invocation.targetAgent
 
-        // When no target agent is provided, default to direct execution
-        // (the task/command pattern — not delegation)
-        if (!targetAgent || targetAgent.trim() === "") {
-          // Allow through — this is a plain task tool call (direct execution or
-          // command dispatch), not a delegation. The task tool handles this.
-          return
-        }
+        // Only run delegation validation if a delegation target is present.
+        // Do NOT return early if missing — let governance hooks (4, 5, 6, 7) run!
+        if (targetAgent && targetAgent.trim() !== "") {
+          const isSpecialistCaller = isSpecialistAgent(invocation.callerAgent)
+          const isChildSession = sessionID.startsWith("sub-") || sessionID.startsWith("child-") || sessionID.includes("-child-")
+          const currentDepth = isSpecialistCaller || isChildSession ? 1 : 0
 
-        const depthResult = validateDelegationDepth(
-          invocation.callerAgent,
-          targetAgent,
-          currentDepth,
-          specialistAgentSet,
-          maxDepth,
-        )
-        if (!depthResult.allowed) {
-          const errorCode = depthResult.errorCode ?? "DELEGATION_BLOCKED"
-          const isTerminal = errorCode === "SELF_DELEGATION_BLOCKED" || errorCode === "MISSING_TARGET_AGENT"
+          const depthResult = validateDelegationDepth(
+            invocation.callerAgent,
+            targetAgent,
+            currentDepth,
+            specialistAgentSet,
+            maxDepth,
+          )
+          if (!depthResult.allowed) {
+            const errorCode = depthResult.errorCode ?? "DELEGATION_BLOCKED"
+            const isTerminal = errorCode === "SELF_DELEGATION_BLOCKED" || errorCode === "MISSING_TARGET_AGENT"
+
+            appendAuditEvent(directory, {
+              kind: "delegation.blocked",
+              session_id: sessionID,
+              agent: invocation.callerAgent,
+              tool: toolName,
+              decision: "block",
+              reason: depthResult.reason ?? "Delegation blocked",
+              details: {
+                callID,
+                targetAgent,
+                errorCode,
+                resolvedFrom: invocation.resolvedFrom,
+              },
+            })
+
+            recordRecoveryAudit({
+              directory,
+              sessionID,
+              agent: invocation.callerAgent,
+              errorKey: errorCode,
+              action: isTerminal ? "circuit_breaker_block" : "targeted_diagnosis",
+              message: depthResult.reason ?? "Delegation not allowed",
+            })
+            if (sessionID && !isTerminal) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
+            throw new Error(`${errorCode}: ${depthResult.reason ?? "Delegation blocked"}`)
+          }
+
+          const taskKey = `${sessionID}:${callID || "task"}`
+          sessionTaskCalls.set(taskKey, {
+            callerAgent: invocation.callerAgent,
+            targetAgent,
+            startedAt: Date.now(),
+            resolvedFrom: invocation.resolvedFrom,
+          })
 
           appendAuditEvent(directory, {
-            kind: "delegation.blocked",
+            kind: "delegation.started",
             session_id: sessionID,
             agent: invocation.callerAgent,
             tool: toolName,
-            decision: "block",
-            reason: depthResult.reason ?? "Delegation blocked",
+            decision: "allow",
             details: {
+              callID,
               targetAgent,
-              errorCode,
               resolvedFrom: invocation.resolvedFrom,
+              promptLength: invocation.promptLength,
+              promptSnippet: invocation.promptSnippet,
             },
           })
 
-          recordRecoveryAudit({
-            directory,
-            sessionID,
-            agent: invocation.callerAgent,
-            errorKey: errorCode,
-            action: isTerminal ? "circuit_breaker_block" : "targeted_diagnosis",
-            message: depthResult.reason ?? "Delegation not allowed",
-          })
-          if (sessionID && !isTerminal) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
-          throw new Error(`${errorCode}: ${depthResult.reason ?? "Delegation blocked"}`)
-        }
-
-        appendAuditEvent(directory, {
-          kind: "delegation.started",
-          session_id: sessionID,
-          agent: invocation.callerAgent,
-          tool: toolName,
-          decision: "allow",
-          details: {
-            targetAgent,
-            resolvedFrom: invocation.resolvedFrom,
-            prompt: invocation.prompt,
-            description: invocation.description,
-          },
-        })
-
-        if (sessionID) {
-          const delCount = (sessionDelegations.get(sessionID) ?? 0) + 1
-          sessionDelegations.set(sessionID, delCount)
-          if (delCount > maxDelegations) {
-            const msg = `Delegation budget exceeded: ${delCount} > ${maxDelegations} for session ${sessionID}`
-            const govMode = resolveGovernanceMode(directory)
-            recordRecoveryAudit({
-              directory, sessionID, agent: invocation.callerAgent,
-              errorKey: "delegation_budget_exceeded",
-              action: govMode === "strict" ? "circuit_breaker_block" : "targeted_diagnosis",
-              message: msg,
-            })
-            if (govMode === "strict") {
-              throw new Error(msg)
+          if (sessionID) {
+            const delCount = (sessionDelegations.get(sessionID) ?? 0) + 1
+            sessionDelegations.set(sessionID, delCount)
+            if (delCount > maxDelegations) {
+              const msg = `Delegation budget exceeded: ${delCount} > ${maxDelegations} for session ${sessionID}`
+              const govMode = resolveGovernanceMode(directory)
+              recordRecoveryAudit({
+                directory, sessionID, agent: invocation.callerAgent,
+                errorKey: "delegation_budget_exceeded",
+                action: govMode === "strict" ? "circuit_breaker_block" : "targeted_diagnosis",
+                message: msg,
+              })
+              if (govMode === "strict") {
+                throw new Error(msg)
+              }
+              appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
             }
-            appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
           }
         }
       }
@@ -483,8 +502,8 @@ const plugin: Plugin = async ({ directory, client }) => {
       const supConfig = resolveSupervisorConfig(directory)
       if (supConfig.enabled) {
         const decision = runSupervisorReview(directory, toolName, {
-          currentPhase: toolInput.args?.phase as string | undefined,
-          isTrivial: toolInput.args?.trivial === true,
+          currentPhase: rawArgs?.phase as string | undefined,
+          isTrivial: rawArgs?.trivial === true,
         })
         if (!shouldProceed(decision, supConfig.mode, supConfig.canBlock)) {
           appendAuditEvent(directory, {
@@ -516,69 +535,83 @@ const plugin: Plugin = async ({ directory, client }) => {
       // ── 7. Loop detection ────────────────────────────────────────────
       const loop = loopDetector.checkBefore(
         toolName,
-        toolOutput?.args ?? toolInput?.args ?? {},
+        rawArgs,
         sessionID,
       )
       if (loop.action === "block") throw new Error(loop.escalationMessage)
       if (loop.action === "warn") appLog(loop.message, "warn", sessionID)
     },
 
-    "tool.execute.after": async (toolInput: any) => {
+    "tool.execute.after": async (toolInput: any, toolOutput: any) => {
       const toolName = toolInput.tool ?? toolInput.name ?? "unknown"
       const sessionID = toolInput.sessionID ?? ""
-      const agent = toolInput.agent ?? "unknown"
+      const callID = toolInput.callID ?? ""
+      const agent = sessionCallerAgents.get(sessionID) ?? toolInput.agent ?? "unknown"
+      const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
       appLog(`[tool] done tool=${toolName} session=${sessionID}`)
 
-      if (sessionID && toolName && toolInput.args?.file && !toolInput.error) {
+      if (sessionID && toolName && rawArgs.file && !toolInput.error && !toolOutput?.error) {
         if (!sessionFilesChanged.has(sessionID)) {
           sessionFilesChanged.set(sessionID, new Set())
         }
-        sessionFilesChanged.get(sessionID)!.add(String(toolInput.args.file))
+        sessionFilesChanged.get(sessionID)!.add(String(rawArgs.file))
       }
 
-      executePostWriteHook(directory, sessionID, agent, toolName, toolInput.args ?? {})
+      executePostWriteHook(directory, sessionID, agent, toolName, rawArgs)
 
       executeVerifiedPostWrite(directory, {
         sessionID,
         agent,
         tool: toolName,
-        filePath: toolInput.args?.file as string | undefined,
+        filePath: rawArgs.file as string | undefined,
       })
 
       loopDetector.recordAfter(
         toolName,
-        toolInput.args ?? {},
-        toolInput.output ?? "[unavailable]",
+        rawArgs,
+        toolInput.output ?? toolOutput?.output ?? toolOutput?.result ?? "[unavailable]",
         sessionID,
         "success"
       )
 
       if (toolName === "task") {
-        const invocation = normalizeTaskInvocation(
-          { sessionID, agent },
-          toolInput.args ?? {},
-        )
-        if (invocation.targetAgent) {
-          if (toolInput.error) {
+        const taskKey = `${sessionID}:${callID || "task"}`
+        const taskCall = sessionTaskCalls.get(taskKey)
+        const hasError = !!toolInput.error || !!toolOutput?.error || toolOutput === undefined || toolOutput === null
+
+        if (taskCall) {
+          const durationMs = Date.now() - taskCall.startedAt
+          if (hasError) {
             appendAuditEvent(directory, {
               kind: "delegation.failed",
               session_id: sessionID,
-              agent,
+              agent: taskCall.callerAgent,
               tool: toolName,
               decision: "block",
-              reason: String(toolInput.error),
-              details: { targetAgent: invocation.targetAgent },
+              reason: String(toolInput.error ?? toolOutput?.error ?? "No result returned"),
+              details: {
+                callID,
+                targetAgent: taskCall.targetAgent,
+                durationMs,
+                resolvedFrom: taskCall.resolvedFrom,
+              },
             })
           } else {
             appendAuditEvent(directory, {
               kind: "delegation.completed",
               session_id: sessionID,
-              agent,
+              agent: taskCall.callerAgent,
               tool: toolName,
               decision: "allow",
-              details: { targetAgent: invocation.targetAgent },
+              details: {
+                callID,
+                targetAgent: taskCall.targetAgent,
+                durationMs,
+                resolvedFrom: taskCall.resolvedFrom,
+              },
             })
           }
+          sessionTaskCalls.delete(taskKey)
         }
       }
 
@@ -708,6 +741,7 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionWarnings.delete(sessionID)
   sessionStartTimes.delete(sessionID)
   sessionFilesChanged.delete(sessionID)
+  sessionCallerAgents.delete(sessionID)
   if (ld) {
     try { ld.clearSession(sessionID) } catch {}
   }

@@ -51,12 +51,15 @@ export function auditLogPath(dir: string): string {
  * Append a structured audit event. Never throws — failures are silently
  * ignored so audit logging cannot break the runtime.
  */
+import { redactSecrets } from "../lib/secret-redaction"
+
 export function appendAuditEvent(dir: string, event: Omit<AuditEvent, "timestamp">): void {
   try {
     const cd = codebaseDir(dir)
     if (!existsSync(cd)) mkdirSync(cd, { recursive: true })
     const full: AuditEvent = { ...event, timestamp: new Date().toISOString() }
-    appendFileSync(auditLogPath(dir), JSON.stringify(full) + "\n", "utf-8")
+    const line = redactSecrets(JSON.stringify(full))
+    appendFileSync(auditLogPath(dir), line + "\n", "utf-8")
   } catch {
     // Audit logging is best-effort; never break the caller.
   }
