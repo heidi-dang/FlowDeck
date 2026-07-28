@@ -399,7 +399,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       const isSubagent = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
 
       const variant = input.variant
-      const pkgVersion = "0.8.0-alpha.8"
+      const pkgVersion = "0.8.0-alpha.12"
       const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
       const result = enforceRuntimeAgent({
         sessionID,
