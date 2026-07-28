@@ -14,6 +14,43 @@ const CONTAINER_KINDS: &[&str] = &[
     "interface_declaration",
 ];
 
+fn unwrap_export<'a>(node: Node<'a>) -> Node<'a> {
+    if node.kind() == "export_statement" || node.kind() == "export_default_declaration" {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            match child.kind() {
+                "function_declaration"
+                | "class_declaration"
+                | "interface_declaration"
+                | "lexical_declaration"
+                | "type_alias_declaration"
+                | "enum_declaration" => return child,
+                _ => {}
+            }
+        }
+    }
+    node
+}
+
+fn collect_container_members<'a>(node: Node<'a>) -> Vec<Node<'a>> {
+    let mut members = Vec::new();
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "class_body" | "interface_body" | "enum_body" | "declaration_list" => {
+                let mut body_cursor = child.walk();
+                for member in child.children(&mut body_cursor) {
+                    members.push(member);
+                }
+            }
+            _ => {
+                members.push(child);
+            }
+        }
+    }
+    members
+}
+
 /// Find symbols in an AST, computing parent scope for each symbol.
 /// Returns (node, kind, name, parent_scope).
 pub fn find_symbols_in_tree<'a>(
@@ -25,7 +62,8 @@ pub fn find_symbols_in_tree<'a>(
     let mut results = Vec::new();
     let mut cursor = root.walk();
 
-    for child in root.children(&mut cursor) {
+    for raw_child in root.children(&mut cursor) {
+        let child = unwrap_export(raw_child);
         let kind = child.kind();
         if CONTAINER_KINDS.contains(&kind) {
             // Container: extract its name, then extract child symbols
@@ -42,8 +80,7 @@ pub fn find_symbols_in_tree<'a>(
                     ));
                 }
                 // Extract child symbols with parent scope
-                let mut child_cursor = child.walk();
-                for grandchild in child.children(&mut child_cursor) {
+                for grandchild in collect_container_members(child) {
                     let gkind = grandchild.kind();
                     if symbol_types.contains(&gkind) {
                         if let Some(gname) = extract_symbol_name(grandchild, source) {
@@ -67,6 +104,7 @@ pub fn find_symbols_in_tree<'a>(
 
     results
 }
+
 
 /// Extract the name of a symbol node.
 pub fn extract_symbol_name(node: Node, source: &str) -> Option<String> {
