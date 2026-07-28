@@ -112,19 +112,22 @@ export function formatReport(report: DoctorReport, verbose: boolean = false): st
 
   // Header
   lines.push(`\n${"=".repeat(60)}`)
-  lines.push(`  FlowDeck Environment Doctor`)
+  lines.push(`  FlowDeck Doctor`)
   lines.push(`  Version: ${report.version}`)
   lines.push(`  Profile: ${report.profile}`)
   lines.push(`  Timestamp: ${report.timestamp}`)
   lines.push(`${"=".repeat(60)}\n`)
 
-  // Summary
+  // Summary / Diagnostics
   const total = report.summary.total
   const passed = report.summary.passed
   const warnings = report.summary.warnings
   const errors = report.summary.errors
-  lines.push(`  Checks: ${total} total | ${passed} passed | ${warnings} warnings | ${errors} errors | ${report.summary.info} info | ${report.summary.skipped} skipped`)
+  lines.push(`  Summary: ${total} checks | ${passed} Passed | ${warnings} warnings | ${errors} errors | ${report.summary.info} info | ${report.summary.skipped} skipped`)
   lines.push("")
+
+  // Diagnostics
+  lines.push(`  Diagnostics:`)
 
   // Scores
   lines.push(`  Scores:`)

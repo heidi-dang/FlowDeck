@@ -23,7 +23,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { readConfig as readConfigFile } from "../scripts/config-mutator.mjs";
 import { executeTransaction, executeRollbackTransaction } from "../scripts/config-transaction.mjs";
 import { runCleanInstall } from "../scripts/clean-install-engine.mjs";
-import { runDoctor as runNewDoctor, formatReport } from "../scripts/doctor-service.mjs";
+import { runDoctor as runNewDoctor, formatReport, KNOWN_PROFILES as _KNOWN_PROFILES } from "../scripts/doctor-service.mjs";
+
+const DOCTOR_KNOWN_PROFILES = _KNOWN_PROFILES ?? new Set(["minimal", "recommended-dev", "full-dev", "ci", "release"]);
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -399,15 +401,32 @@ async function cmdVerify() {
 async function cmdDoctor() {
   // Collect doctor args (everything after "doctor")
   const doctorArgs = args.slice(1);
-  const validFlags = new Set(["--json", "--strict", "--verbose", "--apply-recommended", "--non-interactive", "--profile"]);
+  const validFlags = new Set(["--json", "--strict", "--verbose", "--apply-recommended", "--non-interactive", "--profile", "--help", "-h"]);
   let prevWasProfile = false;
   for (const a of doctorArgs) {
     if (prevWasProfile) { prevWasProfile = false; continue; }
     if (a === "--profile") { prevWasProfile = true; continue; }
     if (a.startsWith("--") && !validFlags.has(a)) {
-      process.stderr.write(`Error: Unknown flag: ${a}\nUsage: flowdeck doctor [--json] [--strict] [--verbose] [--apply-recommended] [--profile <name>]\n`);
+      process.stderr.write(`Error: Unknown flag: ${a}\nUsage: flowdeck doctor [--json] [--strict] [--verbose] [--apply-recommended] [--profile <name>] [--help]\n`);
       process.exit(2);
     }
+  }
+
+  if (doctorArgs.includes("--help") || doctorArgs.includes("-h")) {
+    process.stderr.write(`FlowDeck Doctor — Environment Health Checker
+
+Usage: flowdeck doctor [--json] [--strict] [--verbose] [--apply-recommended] [--profile <name>] [--non-interactive] [--help]
+
+Options:
+  --json               Output machine-readable JSON to stdout
+  --strict             Treat warnings as failures
+  --verbose            Include detailed check output
+  --apply-recommended  Apply safe auto-fixes
+  --profile <name>     Check profile (default: recommended-dev)
+  --non-interactive    Disable interactive prompts
+  --help               Show this help message
+`);
+    process.exit(0);
   }
 
   const isJson = doctorArgs.includes("--json");
@@ -417,13 +436,32 @@ async function cmdDoctor() {
   const profileIdx = doctorArgs.indexOf("--profile");
   const profile = profileIdx >= 0 && profileIdx + 1 < doctorArgs.length ? doctorArgs[profileIdx + 1] : "recommended-dev";
 
+  if (!DOCTOR_KNOWN_PROFILES.has(profile)) {
+    process.stderr.write(`Error: Unknown profile "${profile}". Valid profiles: ${[...DOCTOR_KNOWN_PROFILES].join(", ")}\n`);
+    process.exit(2);
+  }
+
   try {
-    const report = await runNewDoctor(PKG_ROOT, {
+    const rawReport = await runNewDoctor(PKG_ROOT, {
       strict: isStrict,
       verbose: isVerbose,
       applyRecommended: applyFix,
       profile,
     });
+
+    // Normalize: add top-level contract fields
+    const s = rawReport.summary || {};
+    const errors = s.errors ?? 0;
+    const warnings = s.warnings ?? 0;
+    const report = {
+      ...rawReport,
+      packageName: PKG_NAME,
+      packageVersion: PKG_VERSION,
+      passed: s.passed ?? 0,
+      warned: warnings,
+      failed: errors,
+      status: errors > 0 ? "unhealthy" : warnings > 0 ? "degraded" : "healthy",
+    };
 
     if (isJson) {
       // JSON only to stdout; diagnostics to stderr
@@ -434,8 +472,6 @@ async function cmdDoctor() {
     }
 
     // Determine exit code
-    const errors = (report.summary && report.summary.errors) || 0;
-
     if (isStrict) {
       const criticals = (report.checks || []).filter(c =>
         c.status === "error" || c.severity === "critical" || c.severity === "high"

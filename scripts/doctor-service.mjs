@@ -34,6 +34,15 @@ function bunBin() {
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(__dirname, "..")
 
+// Known valid profile names (must match src/doctor/profiles/profiles.ts)
+const KNOWN_PROFILES = new Set([
+  "minimal",
+  "recommended-dev",
+  "full-dev",
+  "ci",
+  "release",
+])
+
 // ─── Engine Resolution ─────────────────────────────────────────────────
 
 function resolveDistPath() {
@@ -131,6 +140,7 @@ export const SCHEMA_VERSION = 1
 export const EXIT_HEALTHY = 0
 export const EXIT_FAILURE = 1
 export const EXIT_ERROR = 2
+export { KNOWN_PROFILES }
 
 /**
  * Run the doctor engine and return a report.
@@ -186,15 +196,72 @@ export async function formatJSON(report) {
 }
 
 /**
+ * Normalize a raw engine report into the stable service contract shape.
+ * Adds top-level fields required by tests and the CLI JSON contract.
+ */
+function normalizeReport(report, pkgName, pkgVersion) {
+  const s = report.summary || {}
+  const errors = s.errors ?? 0
+  const warnings = s.warnings ?? 0
+  const passed = s.passed ?? 0
+  const failed = errors
+  const status = errors > 0 ? "unhealthy" : warnings > 0 ? "degraded" : "healthy"
+  return {
+    ...report,
+    packageName: pkgName,
+    packageVersion: pkgVersion,
+    passed,
+    warned: warnings,
+    failed,
+    status,
+  }
+}
+
+let _pkgName = "@heidi-dang/flowdeck"
+let _pkgVersion = "0.0.0"
+try {
+  const { readFileSync: _rfs } = await import("node:fs")
+  const _pkg = JSON.parse(_rfs(join(PKG_ROOT, "package.json"), "utf-8"))
+  _pkgName = _pkg.name || _pkgName
+  _pkgVersion = _pkg.version || _pkgVersion
+} catch { /* ignore */ }
+
+/**
  * Backward-compatible wrapper: runDoctorService(directory, options)
  * Returns { report, exitCode, stdout, stderr } matching the main branch contract.
  * Used by src/doctor/cli.mjs and tests.
  */
 export async function runDoctorService(directory = PKG_ROOT, options = {}) {
+  // Validate profile before calling the engine
+  const profile = options.profile || "recommended-dev"
+  if (profile !== "recommended-dev" && !KNOWN_PROFILES.has(profile)) {
+    return {
+      report: null,
+      exitCode: 2,
+      stdout: "",
+      stderr: `Unknown profile: "${profile}". Valid profiles: ${[...KNOWN_PROFILES].join(", ")}\n`,
+    }
+  }
+
+  // Validate that the directory looks like a package root (has package.json)
   try {
-    const report = await runDoctor(directory, options)
+    const { existsSync: _exists } = await import("node:fs")
+    if (!_exists(join(directory, "package.json"))) {
+      return {
+        report: null,
+        exitCode: 2,
+        stdout: "",
+        stderr: `Doctor engine error: No package.json found in directory: ${directory}\n`,
+      }
+    }
+  } catch { /* ignore fs import errors */ }
+
+  try {
+    const rawReport = await runDoctor(directory, options)
+    const report = normalizeReport(rawReport, _pkgName, _pkgVersion)
     const errors = (report.summary && report.summary.errors) || 0
-    const exitCode = errors > 0 ? 1 : 0
+    const warnings = (report.summary && report.summary.warnings) || 0
+    const exitCode = options.strict ? (errors > 0 || warnings > 0 ? 1 : 0) : (errors > 0 ? 1 : 0)
     const text = buildFallbackReport(report, !!options.verbose)
     const stdout = options.json
       ? JSON.stringify({ schemaVersion: 1, ...report }, null, 2) + "\n"
@@ -215,7 +282,7 @@ export async function runDoctorService(directory = PKG_ROOT, options = {}) {
 function buildFallbackReport(report, verbose) {
   const lines = []
   lines.push("\n" + "=".repeat(60))
-  lines.push("  FlowDeck Environment Doctor")
+  lines.push("  FlowDeck Doctor")
   lines.push(`  Version: ${report.version || "unknown"}`)
   lines.push(`  Profile: ${report.profile || "recommended-dev"}`)
   lines.push(`  Timestamp: ${report.timestamp || new Date().toISOString()}`)

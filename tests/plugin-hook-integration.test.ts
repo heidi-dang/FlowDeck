@@ -125,41 +125,61 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
     expect(completedEvent.details.durationMs).toBeGreaterThanOrEqual(0)
   })
 
-  it("emits delegation.failed when after-hook receives null/error result", async () => {
+  it("emits delegation.failed when child session fires session.error (real OpenCode failure path)", async () => {
     const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
-    const sessionID = "ses_parent_3"
+    const parentSessionID = "ses_parent_3"
+    const childSessionID = "ses_child_3"
     const callID = "call-task-103"
 
+    // 1. Parent session created with heidi as caller
     await pluginInstance["event"]({
       event: {
         type: "session.created",
         properties: {
-          info: { id: sessionID, agent: "heidi" },
+          info: { id: parentSessionID, agent: "heidi" },
         },
       },
     })
 
     await pluginInstance["chat.message"](
-      { sessionID, agent: "heidi" },
+      { sessionID: parentSessionID, agent: "heidi" },
       { message: { agent: "heidi", system: "" } as any },
     )
 
-    const toolInput = { tool: "task", sessionID, callID, args: {} }
+    // 2. Heidi delegates to backend-coder via task tool
+    const toolInput = { tool: "task", sessionID: parentSessionID, callID, args: {} }
     const toolOutputBefore = { args: { subagent_type: "backend-coder", prompt: "Failing task" } }
-
     await pluginInstance["tool.execute.before"](toolInput, toolOutputBefore)
 
-    // Simulate task failure (toolInput error or null toolOutput)
-    const failedInput = { tool: "task", sessionID, callID, args: {}, error: "Subagent process crashed" }
-    await pluginInstance["tool.execute.after"](failedInput, null)
+    // 3. Child session is created by OpenCode (parentID links it to parent)
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: {
+          info: { id: childSessionID, parentID: parentSessionID, agent: "backend-coder" },
+        },
+      },
+    })
+
+    // 4. Child session fails — OpenCode fires session.error on the child, NOT tool.execute.after
+    await pluginInstance["event"]({
+      event: {
+        type: "session.error",
+        properties: {
+          info: { id: childSessionID, parentID: parentSessionID },
+          error: "Subagent process crashed",
+        },
+      },
+    })
 
     const lines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
     const failedEvent = lines.map(l => JSON.parse(l)).find(e => e.kind === "delegation.failed")
 
     expect(failedEvent).toBeDefined()
     expect(failedEvent.agent).toBe("heidi")
-    expect(failedEvent.details.callID).toBe(callID)
+    expect(failedEvent.session_id).toBe(parentSessionID)
     expect(failedEvent.details.targetAgent).toBe("backend-coder")
+    expect(failedEvent.details.childSessionID).toBe(childSessionID)
     expect(failedEvent.reason).toContain("Subagent process crashed")
   })
 

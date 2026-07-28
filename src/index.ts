@@ -794,6 +794,40 @@ const plugin: Plugin = async ({ directory, client }) => {
               await appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
             }
           } else if (type === "session.error") {
+            const errorMessage = event?.properties?.error ?? event?.error ?? "Session errored"
+
+            // ── Child session failure → delegation.failed ──────────────
+            // When OpenCode's Task execution fails, tool.execute.after is NOT called.
+            // The real failure path is session.error on the child session.
+            // Detect child sessions by parentID and emit delegation.failed on the parent.
+            const childMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
+            if (childMeta?.parentID) {
+              const parentSessionID = childMeta.parentID
+              const now = Date.now()
+              for (const [taskKey, taskCall] of sessionTaskCalls.entries()) {
+                if (taskKey.startsWith(`${parentSessionID}:`)) {
+                  const callIDFromKey = taskKey.slice(parentSessionID.length + 1)
+                  const durationMs = now - taskCall.startedAt
+                  appendAuditEvent(directory, {
+                    kind: "delegation.failed",
+                    session_id: parentSessionID,
+                    agent: taskCall.callerAgent,
+                    tool: "task",
+                    decision: "block",
+                    reason: String(errorMessage),
+                    details: {
+                      callID: callIDFromKey !== "task" ? callIDFromKey : undefined,
+                      targetAgent: taskCall.targetAgent,
+                      childSessionID: sessionID,
+                      durationMs,
+                      resolvedFrom: taskCall.resolvedFrom,
+                    },
+                  })
+                  sessionTaskCalls.delete(taskKey)
+                }
+              }
+            }
+
             appendAuditEvent(directory, {
               kind: "session.completed",
               session_id: sessionID,
