@@ -12,6 +12,8 @@
 - [Verification](Verification.md)
   - [OpenCode Integration Test](OpenCode-integration-test.md)
 - [CLI Reference](CLI-reference.md)
+- Releases
+  - [v0.8.0-alpha.12](Release-v0.8.0-alpha.12.md)
 - [Architecture](Architecture.md)
 - [Upgrade](Upgrade.md)
 - [Uninstall](Uninstall.md)

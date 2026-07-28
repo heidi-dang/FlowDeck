@@ -22,6 +22,12 @@ Welcome to the FlowDeck documentation. FlowDeck is an OpenCode plugin that provi
 | [Installation — macOS](Installation-macOS.md) | macOS-specific guidance |
 | [Installation — Linux](Installation-Linux.md) | Linux-specific guidance |
 
+## Release Notes
+
+| Page | Description |
+|---|---|
+| [v0.8.0-alpha.12](Release-v0.8.0-alpha.12.md) | CI auto-repair, TS fallbacks, Rust refactors, governance hardening |
+
 ## Reference
 
 | Page | Description |
