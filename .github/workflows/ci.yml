@@ -270,8 +270,12 @@ jobs:
         run: cargo build --manifest-path crates/fdx/Cargo.toml
       - name: Verify FDX binary path
         run: |
-          BINARY="crates/fdx/target/debug/fdx"
+          BINARY="target/debug/fdx"
+          if [ ! -f "$BINARY" ]; then
+            BINARY="crates/fdx/target/debug/fdx"
+          fi
           test -f "$BINARY" || { echo "Binary not found"; exit 1; }
+
           "$BINARY" --version
           echo "FDX_BINARY_PATH=$(pwd)/$BINARY" >> $GITHUB_ENV
       - name: Run shared fixture tests
