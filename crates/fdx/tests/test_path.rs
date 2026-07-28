@@ -39,8 +39,8 @@ fn test_path_fixture_loads() {
     );
 }
 
-
 #[test]
+
 fn test_path_fixture_entries() {
     let fixtures = load_path_fixtures();
     for fx in &fixtures {

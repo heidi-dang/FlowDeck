@@ -34,7 +34,12 @@ pub fn find_symbols_in_tree<'a>(
                 let parent_scope = format!("{}:{}", mapped_kind, name);
                 // Add the container itself as a symbol
                 if symbol_types.contains(&kind) {
-                    results.push((child, mapped_kind.clone(), name.clone(), "module:top".to_string()));
+                    results.push((
+                        child,
+                        mapped_kind.clone(),
+                        name.clone(),
+                        "module:top".to_string(),
+                    ));
                 }
                 // Extract child symbols with parent scope
                 let mut child_cursor = child.walk();

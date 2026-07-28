@@ -320,9 +320,7 @@ fn analyze_file_changes(
                 matched = true;
                 let key = sym.scoped_identity();
                 let is_sig = line_no == sym.line_start;
-                let is_new_sym = !base_symbols
-                    .iter()
-                    .any(|b| b.scoped_identity() == key);
+                let is_new_sym = !base_symbols.iter().any(|b| b.scoped_identity() == key);
 
                 let change_type = if is_new_sym {
                     ChangeType::Added
@@ -364,11 +362,10 @@ fn analyze_file_changes(
             if line_no >= sym.line_start && line_no <= sym.line_end {
                 matched = true;
                 let key = sym.scoped_identity();
-                let is_deleted_sym = !target_symbols
-                    .iter()
-                    .any(|t| t.scoped_identity() == key);
+                let is_deleted_sym = !target_symbols.iter().any(|t| t.scoped_identity() == key);
                 let change_type = if is_deleted_sym {
                     ChangeType::Deleted
+
                 } else {
                     ChangeType::BodyChanged
                 };
