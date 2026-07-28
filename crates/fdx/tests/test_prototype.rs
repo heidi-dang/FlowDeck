@@ -71,11 +71,14 @@ class Calculator {
         .extract_prototypes(std::path::Path::new("test.js"), source, &tree)
         .unwrap();
 
-    assert_eq!(symbols.len(), 2);
+    assert_eq!(symbols.len(), 3);
     assert_eq!(symbols[0].kind, "function");
     assert_eq!(symbols[0].name, "add");
     assert_eq!(symbols[1].kind, "class");
     assert_eq!(symbols[1].name, "Calculator");
+    assert_eq!(symbols[2].kind, "method");
+    assert_eq!(symbols[2].name, "multiply");
+
 }
 
 #[test]
