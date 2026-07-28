@@ -1,5 +1,5 @@
-import { existsSync, readdirSync } from "fs";
-import { join } from "path";
+import { existsSync, mkdirSync, readdirSync } from "fs";
+import { join, dirname } from "path";
 import { atomicWriteFile, readJsonFile, getProjectStoreDir } from "./harness-store";
 import { HarnessReportSchema, type HarnessReport } from "../contracts/report";
 
@@ -9,6 +9,12 @@ export function saveReport(projectId: string, report: HarnessReport): void {
     throw new Error(`Report validation failed: ${parsed.error.message}`);
   }
   const filePath = join(getProjectStoreDir(projectId), "reports", `${report.generatedAt}.json`);
+  // Ensure the reports directory exists before writing (belt-and-suspenders
+  // alongside the dir creation inside atomicWriteFile).
+  const dir = dirname(filePath);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
   atomicWriteFile(filePath, report);
 }
 
