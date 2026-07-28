@@ -336,15 +336,17 @@ fn analyze_file_changes(
                     ChangeType::BodyChanged
                 };
 
-                let entry = symbol_change_map.entry(key).or_insert_with(|| SymbolChangeEntry {
-                    change_type,
-                    kind: sym.kind.clone(),
-                    name: sym.name.clone(),
-                    line_start: sym.line_start,
-                    line_end: sym.line_end,
-                    lines_added: 0,
-                    lines_removed: 0,
-                });
+                let entry = symbol_change_map
+                    .entry(key)
+                    .or_insert_with(|| SymbolChangeEntry {
+                        change_type,
+                        kind: sym.kind.clone(),
+                        name: sym.name.clone(),
+                        line_start: sym.line_start,
+                        line_end: sym.line_end,
+                        lines_added: 0,
+                        lines_removed: 0,
+                    });
                 entry.lines_added += 1;
                 break;
             }
@@ -373,15 +375,17 @@ fn analyze_file_changes(
                     ChangeType::BodyChanged
                 };
 
-                let entry = symbol_change_map.entry(key).or_insert_with(|| SymbolChangeEntry {
-                    change_type,
-                    kind: sym.kind.clone(),
-                    name: sym.name.clone(),
-                    line_start: sym.line_start,
-                    line_end: sym.line_end,
-                    lines_added: 0,
-                    lines_removed: 0,
-                });
+                let entry = symbol_change_map
+                    .entry(key)
+                    .or_insert_with(|| SymbolChangeEntry {
+                        change_type,
+                        kind: sym.kind.clone(),
+                        name: sym.name.clone(),
+                        line_start: sym.line_start,
+                        line_end: sym.line_end,
+                        lines_added: 0,
+                        lines_removed: 0,
+                    });
                 entry.lines_removed += 1;
                 break;
             }
