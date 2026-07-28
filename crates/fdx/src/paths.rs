@@ -255,7 +255,6 @@ impl std::fmt::Display for MigrationError {
 #[allow(dead_code)]
 fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
     if !dst.exists() {
-
         std::fs::create_dir_all(dst)?;
     }
 
