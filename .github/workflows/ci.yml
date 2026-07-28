@@ -249,7 +249,8 @@ jobs:
   test-fdx-parity:
     name: FDX Native Parity
     runs-on: ubuntu-latest
-    needs: [test, build, rust-gates]
+    needs: [test-matrix, build, rust-gates]
+
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
