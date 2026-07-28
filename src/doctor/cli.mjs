@@ -44,7 +44,7 @@ function resolveBunBinary() {
       stdio: "ignore",
     })
     BUN_BIN = "bun"
-  } catch {
+  } catch (_bunCheckErr) {
     BUN_BIN = false
   }
   return BUN_BIN

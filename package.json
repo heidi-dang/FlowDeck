@@ -18,7 +18,8 @@
     }
   },
   "bin": {
-    "flowdeck": "./bin/flowdeck.js"
+    "flowdeck": "./bin/flowdeck.js",
+    "flowdeck-better-harness": "./bin/better-harness.js"
   },
   "files": [
     "dist",
@@ -41,7 +42,7 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "bun build src/index.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk && tsc --emitDeclarationOnly --project tsconfig.build.json",
+    "build": "bun build src/index.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk && tsc --emitDeclarationOnly --project tsconfig.build.json && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm",
     "build:fdx": "cargo install --path crates/fdx --quiet",
     "check:fdx": "fdx --version",
     "postinstall": "node postinstall.mjs",
@@ -59,6 +60,7 @@
     "verify:release": "node scripts/release-alignment.mjs",
     "verify:clean-install": "node bin/flowdeck.js clean-install --verify-only",
     "install:clean": "node bin/flowdeck.js clean-install",
+    "better-harness:serve": "node bin/better-harness.js",
     "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\""
   },
   "keywords": [

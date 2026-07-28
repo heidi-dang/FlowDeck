@@ -127,6 +127,11 @@ function runViaBun(directory, options = {}) {
 
 // ─── Public API ────────────────────────────────────────────────────────
 
+export const SCHEMA_VERSION = 1
+export const EXIT_HEALTHY = 0
+export const EXIT_FAILURE = 1
+export const EXIT_ERROR = 2
+
 /**
  * Run the doctor engine and return a report.
  * @param {string} [directory] - Package root directory
@@ -181,6 +186,26 @@ export async function formatJSON(report) {
 }
 
 // ─── Fallback Report Builder ───────────────────────────────────────────
+
+export async function runDoctorService(directory = PKG_ROOT, options = {}) {
+  try {
+    const report = await runDoctor(directory, options)
+    const errors = (report.summary && report.summary.errors) || 0
+    const exitCode = errors > 0 ? 1 : 0
+    const text = buildFallbackReport(report, !!options.verbose)
+    const stdout = options.json
+      ? JSON.stringify({ schemaVersion: 1, ...report }, null, 2) + "\n"
+      : text
+    return { report, exitCode, stdout, stderr: "" }
+  } catch (err) {
+    return {
+      report: null,
+      exitCode: 2,
+      stdout: "",
+      stderr: "Doctor engine error: " + err.message + "\n",
+    }
+  }
+}
 
 function buildFallbackReport(report, verbose) {
   const lines = []
