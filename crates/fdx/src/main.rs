@@ -980,7 +980,9 @@ fn main() {
                 .unwrap_or_default();
             let project_slug = fdx::paths::project_slug_from_directory(cwd);
             if !legacy_name.is_empty() {
-                if let Err(e) = fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name) {
+                if let Err(e) =
+                    fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name)
+                {
                     eprintln!("Error: Legacy planning migration failed: {}", e);
                     process::exit(1);
                 }
@@ -1028,7 +1030,9 @@ fn main() {
                 .unwrap_or_default();
             let project_slug = fdx::paths::project_slug_from_directory(cwd);
             if !legacy_name.is_empty() {
-                if let Err(e) = fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name) {
+                if let Err(e) =
+                    fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name)
+                {
                     eprintln!("Error: Legacy planning migration failed: {}", e);
                     process::exit(1);
                 }

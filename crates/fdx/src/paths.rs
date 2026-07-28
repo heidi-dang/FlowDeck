@@ -217,17 +217,18 @@ pub fn migrate_legacy_planning_dir(
         }
 
         // Validate entry counts match
-        let legacy_entries = count_dir_entries(&legacy_dir).map_err(|e| {
-            MigrationError::ReadFailed(legacy_dir.clone(), e.to_string())
-        })?;
-        let tmp_entries = count_dir_entries(&tmp_dir).map_err(|e| {
-            MigrationError::ReadFailed(tmp_dir.clone(), e.to_string())
-        })?;
+        let legacy_entries = count_dir_entries(&legacy_dir)
+            .map_err(|e| MigrationError::ReadFailed(legacy_dir.clone(), e.to_string()))?;
+        let tmp_entries = count_dir_entries(&tmp_dir)
+            .map_err(|e| MigrationError::ReadFailed(tmp_dir.clone(), e.to_string()))?;
 
         if legacy_entries != tmp_entries {
             return Err(MigrationError::ValidationFailed(
                 tmp_dir.clone(),
-                format!("Entry count mismatch: expected {}, got {}", legacy_entries, tmp_entries),
+                format!(
+                    "Entry count mismatch: expected {}, got {}",
+                    legacy_entries, tmp_entries
+                ),
             ));
         }
 
