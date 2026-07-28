@@ -19,9 +19,11 @@ import { join, resolve } from "node:path"
 
 const ROOT = resolve(import.meta.dirname, "..")
 const MANIFEST_PATH = join(ROOT, "crates", "fdx", "Cargo.toml")
-const BUILD_TARGET = join(ROOT, "crates", "fdx", "target", "debug")
 const BINARY_NAME = process.platform === "win32" ? "fdx.exe" : "fdx"
-const BINARY_PATH = join(BUILD_TARGET, BINARY_NAME)
+const WORKSPACE_BINARY = join(ROOT, "target", "debug", BINARY_NAME)
+const CRATE_BINARY = join(ROOT, "crates", "fdx", "target", "debug", BINARY_NAME)
+const BINARY_PATH = existsSync(WORKSPACE_BINARY) ? WORKSPACE_BINARY : CRATE_BINARY
+
 
 let exitCode = 0
 function check(label, ok, detail = "") {
