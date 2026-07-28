@@ -15,6 +15,9 @@ export const DEFAULT_CONFIG: FlowDeckConfig = {
   agentModels: {},
   maxDelegationDepth: 1,
   maxWritesPerAgent: 15,
+  betterHarness: {
+    enabled: true,
+  },
 }
 
 function getGlobalConfigDir(): string {
@@ -177,5 +180,35 @@ export function parseModelSpec(modelSpec?: string): { providerID: string; modelI
   return {
     providerID: modelSpec.slice(0, separatorIndex),
     modelID: modelSpec.slice(separatorIndex + 1),
+  }
+}
+
+export interface ResolvedBetterHarnessConfig {
+  enabled: boolean
+  authEnabled: boolean
+  maxBodySize: number
+  bindHost: string
+  port: number
+  eventLogDir?: string
+  authToken?: string
+  corsOrigins: string[]
+}
+
+/**
+ * Resolve Better Harness configuration from the full FlowDeck config.
+ * Missing/partial → enabled: true. Explicit false → disabled.
+ */
+export function resolveBetterHarnessConfig(config: FlowDeckConfig): ResolvedBetterHarnessConfig {
+  const raw = config.betterHarness
+  const enabled = raw === undefined ? true : raw.enabled !== false
+  return {
+    enabled,
+    authEnabled: raw?.authEnabled ?? false,
+    maxBodySize: raw?.maxBodySize ?? 1024 * 1024,
+    bindHost: raw?.bindHost ?? "127.0.0.1",
+    port: raw?.port ?? 0,
+    eventLogDir: raw?.eventLogDir,
+    authToken: raw?.authToken,
+    corsOrigins: raw?.corsOrigins ?? [],
   }
 }
