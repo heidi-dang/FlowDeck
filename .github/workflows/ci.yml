@@ -196,7 +196,7 @@ jobs:
       - name: Verify
         run: node bin/flowdeck.js verify 2>&1
       - name: Doctor
-        run: node bin/flowdeck.js doctor 2>&1
+        run: node scripts/ci-doctor-smoke.mjs
       - name: Dry-run
         run: node bin/flowdeck.js dry-run 2>&1
       - name: Uninstall (with manifest)
@@ -212,7 +212,7 @@ jobs:
           node bin/flowdeck.js --help 2>&1 | grep -q "FlowDeck v" || { echo "FAIL: --help"; exit 1; }; echo "PASS: --help"
           node bin/flowdeck.js install 2>&1 | grep -q "FlowDeck installed" || { echo "FAIL: install"; exit 1; }; echo "PASS: install"
           node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" || { echo "FAIL: verify"; exit 1; }; echo "PASS: verify"
-          node bin/flowdeck.js doctor 2>&1 || { echo "FAIL: doctor"; exit 1; }; echo "PASS: doctor"
+          node scripts/ci-doctor-smoke.mjs; echo "PASS: doctor"
           node bin/flowdeck.js config validate 2>&1 || { echo "FAIL: config validate"; exit 1; }; echo "PASS: config validate"
           node bin/flowdeck.js dry-run 2>&1 | grep -q "DRY RUN" || { echo "FAIL: dry-run"; exit 1; }; echo "PASS: dry-run"
           # Now test install --project
