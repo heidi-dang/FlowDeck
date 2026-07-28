@@ -45,7 +45,8 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "bun build src/index.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && tsc --emitDeclarationOnly --project tsconfig.build.json && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm",
+    "build": "node scripts/build-entry.mjs",
+    "build:internal": "node scripts/build.mjs",
     "build:fdx": "cargo install --path crates/fdx --quiet",
     "check:fdx": "fdx --version",
     "postinstall": "node postinstall.mjs",
