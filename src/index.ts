@@ -28,6 +28,7 @@ import { LoopDetector } from "./services/loop-detector"
 import { getAgentConfigs, getAgentRoutes } from "./agents/index"
 import { loadFlowDeckConfig, resolveAgentModels, resolveBetterHarnessConfig, type FlowDeckConfig } from "./config/index"
 import { canonicalize, getServerKey, opaqueProjectId, startBh, stopBhByKey, getDiscovery } from "./better-harness/runtime/runtime-registry"
+import { createBetterHarnessResources } from "./better-harness/runtime/startup-transaction"
 import { guardRailsHook } from "./hooks/guard-rails"
 import { OrchestratorGuard } from "./hooks/orchestrator-guard-hook"
 import { sessionStartHook } from "./hooks/session-start"
@@ -280,42 +281,28 @@ const plugin: Plugin = async ({ directory, client }) => {
   let _bhCanonicalRoot: string | undefined;
   const bhConfig = resolveBetterHarnessConfig(flowdeckConfig)
   if (bhConfig.enabled) {
+    // Use a cancellation token shared between startBh and the factory
+    const cancellationFlag = { value: false };
     startBh(directory, async () => {
-      const canonicalRoot = canonicalize(directory)
-      _bhCanonicalRoot = canonicalRoot
-      const serverKey = getServerKey()
-      const projectKey = opaqueProjectId(canonicalRoot)
-      const projectRegistry = new ProjectRegistry()
-      projectRegistry.register({ serverKey, projectKey, canonicalProjectRoot: canonicalRoot })
+      const checkCancelled = () => cancellationFlag.value;
+      const resources = await createBetterHarnessResources(
+        directory, bhConfig, client, checkCancelled,
+        (msg: string, level?: string) => { appLog(msg, level as any); },
+      );
+      _bhCanonicalRoot = resources.canonicalRoot;
 
-      const runtime = new HarnessRuntime({ projectRoot: canonicalRoot, timeoutMs: 120_000 })
-      const coordinator = runtime.getCoordinator()
-      const eventBus = coordinator.getEventBus()
-      const sseManager = new SseManager(eventBus, bhConfig.eventLogDir)
-
-      const routerContext: RouterContext = {
-        runtime, coordinator,
-        resolveProjectPath: (sk: string, pk: string) => projectRegistry.resolve(sk, pk),
-        sseManager, authToken: bhConfig.authToken, authEnabled: bhConfig.authEnabled,
-        bindHost: bhConfig.bindHost, opencodeClient: client,
-      }
-      const server = new HarnessHttpServer({
-        enabled: true, port: bhConfig.port, bindHost: bhConfig.bindHost,
-        cors: { allowedOrigins: bhConfig.corsOrigins },
-        auth: { token: bhConfig.authToken, enabled: bhConfig.authEnabled },
-        maxBodySize: bhConfig.maxBodySize,
-      })
-      server.setSseManager(sseManager)
-      server.setRouterContext(routerContext)
-
-      const port = await server.start()
-      appLog("[better-harness] HTTP server started on port " + port)
-      coordinator.recoverActiveRuns()
+      // Build the cleanup function used by both cancellation and stop
+      const cleanupFn = async () => {
+        const errors = await resources.cleanup();
+        for (const err of errors) appLog("[better-harness] Cleanup: " + err, "warn");
+      };
 
       return {
-        serverKey, projectKey, canonicalRoot,
+        serverKey: resources.serverKey,
+        projectKey: resources.projectKey,
+        canonicalRoot: resources.canonicalRoot,
         state: "running" as const,
-        stop: async () => { try { await server.stop(); } catch {}; projectRegistry.unregister(projectKey); },
+        stop: cleanupFn,
         startedAt: new Date().toISOString(),
       }
     }).catch((err: Error) => {
