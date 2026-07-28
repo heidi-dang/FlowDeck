@@ -10,7 +10,6 @@
 
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 import { PrMonitorService } from "../services/pr-monitor/pr-monitor-service"
-import type { PrMonitorToolResponse } from "../services/pr-monitor/types"
 
 // Singleton service instance
 let service: PrMonitorService | null = null

@@ -12,8 +12,7 @@ export class FailureCollector {
     repo: string,
     prNumber: number,
     headSha: string,
-    job: JobResponse,
-    pr: PrResponse,
+    job: JobResponse, _pr?: PrResponse,
   ): Promise<CiFailureReport> {
     const jobName = job.name
     const conclusion = job.conclusion ?? "failure"

@@ -13,14 +13,11 @@ import { RepairOrchestrator } from "./repair-orchestrator"
 import { RepairStateStore, createDefaultStateStore } from "./repair-state-store"
 import { RepairLock } from "./repair-lock"
 import type {
-  CiFailureReport,
   MonitorStatus,
   PrMonitorConfig,
   PrMonitorMode,
   PrMonitorToolResponse,
-  RepairRun,
 } from "./types"
-import { buildRepairKey } from "./types"
 import { DEFAULT_PR_MONITOR_CONFIG } from "./types"
 
 export class PrMonitorService {

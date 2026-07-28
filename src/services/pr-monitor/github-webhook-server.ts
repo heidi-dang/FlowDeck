@@ -9,7 +9,6 @@ import { createHmac, timingSafeEqual } from "crypto"
 import type { IncomingMessage, ServerResponse } from "http"
 import { createServer } from "http"
 import type { GitHubWebhookPayload } from "./types"
-import { buildDedupKey } from "./types"
 
 const WEBHOOK_SECRET_ENV = "GITHUB_WEBHOOK_SECRET"
 

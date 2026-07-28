@@ -66,7 +66,8 @@ fn classify(job_name: &str, log: &str) -> String {
     if combined.contains("lint") || combined.contains("oxlint") || combined.contains("eslint") {
         return "lint".to_string();
     }
-    if combined.contains("typecheck") || combined.contains("tsc") || combined.contains("typescript") {
+    if combined.contains("typecheck") || combined.contains("tsc") || combined.contains("typescript")
+    {
         return "typecheck".to_string();
     }
     if combined.contains("build") && (combined.contains("error") || combined.contains("failed")) {
@@ -84,7 +85,8 @@ fn classify(job_name: &str, log: &str) -> String {
     if combined.contains("rust") || combined.contains("cargo") || combined.contains("clippy") {
         return "platform".to_string();
     }
-    if combined.contains("timeout") || combined.contains("network") || combined.contains("time out") {
+    if combined.contains("timeout") || combined.contains("network") || combined.contains("time out")
+    {
         return "infrastructure".to_string();
     }
 

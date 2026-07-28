@@ -21,7 +21,7 @@ export class RepairComment {
     }
   }
 
-  private async findExistingComment(repo: string, prNumber: number): Promise<string | null> {
+  private async findExistingComment(_repo: string, _prNumber: number): Promise<string | null> {
     // Simple approach: always post a new comment.
     // The marker allows consumers to find the latest one.
     return null

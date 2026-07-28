@@ -3,7 +3,6 @@
  * Uses the installed `gh` CLI or falls back to raw fetch.
  */
 
-import { execFileSync } from "child_process"
 
 export class GitHubClient {
   token: string

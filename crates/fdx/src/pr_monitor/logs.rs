@@ -17,8 +17,12 @@ pub fn extract_error_excerpt(log: &str, max_chars: usize) -> String {
             continue;
         }
 
-        if line.contains("error") || line.contains("Error") || line.contains("FAILED")
-            || line.contains("failure") || line.contains("panicked") || line.contains("exit code")
+        if line.contains("error")
+            || line.contains("Error")
+            || line.contains("FAILED")
+            || line.contains("failure")
+            || line.contains("panicked")
+            || line.contains("exit code")
         {
             in_error = true;
             if excerpt.len() + line.len() + 1 > max_chars {
@@ -54,7 +58,10 @@ mod tests {
 
     #[test]
     fn test_extract_exit_code() {
-        assert_eq!(extract_exit_code("Process completed with exit code 1."), Some(1));
+        assert_eq!(
+            extract_exit_code("Process completed with exit code 1."),
+            Some(1)
+        );
         assert_eq!(extract_exit_code("exit code 101"), Some(101));
         assert_eq!(extract_exit_code("no error here"), None);
     }

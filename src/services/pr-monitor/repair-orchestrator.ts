@@ -3,7 +3,6 @@
  */
 
 import { execFileSync } from "child_process"
-import { existsSync, writeFileSync } from "fs"
 import { join } from "path"
 import { mkdtempSync } from "fs"
 import { tmpdir } from "os"
@@ -75,7 +74,7 @@ export class RepairOrchestrator {
 
       // Collect logs
       run.state = "LOGS_COLLECTED"
-      const report = await this.collector.collect(repo, prNumber, headSha, job, pr)
+      const report = await this.collector.collect(repo, prNumber, headSha, job)
       run.failure_report = report
       this.store.updateState(repairKey, "LOGS_COLLECTED")
 
@@ -136,7 +135,7 @@ export class RepairOrchestrator {
     state: RepairTerminal,
     repo: string,
     prNumber: number,
-    headSha: string,
+    _headSha: string,
   ): Promise<void> {
     this.store.updateState(repairKey, state)
     const run = this.store.get(repairKey)
@@ -159,9 +158,9 @@ export class RepairOrchestrator {
     pr: PrResponse,
   ): Promise<boolean> {
     // Fetch the diff
-    let diff = ""
+    let _diff = ""
     try {
-      diff = await this.client.getPrDiff(repo, prNumber)
+      _diff = await this.client.getPrDiff(repo, prNumber)
     } catch { return false }
 
     // Create worktree
