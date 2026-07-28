@@ -20,6 +20,7 @@ import { readSessionRecords } from "../opencode/session-reader";
 import { analyzeSessions } from "../opencode/session-analyzer";
 import type { HarnessRunStatus } from "../contracts/common";
 import { cancelRun as cancelRunAction } from "./run-cancellation";
+import { getFlowDeckStateDir, getProjectStoreDir } from "../persistence/harness-store";
 
 export interface RunConfig {
   projectRoot: string;
@@ -232,14 +233,13 @@ export class RunCoordinator {
 
   getRun(runId: string): StoredRun | null {
     try {
-      const { homedir } = require("os");
+      const { readdirSync, existsSync } = require("fs");
       const { join } = require("path");
-      const { existsSync, readdirSync } = require("fs");
-      const stateDir = join(homedir(), ".flowdeck", "state");
+      const stateDir = getFlowDeckStateDir();
       if (!existsSync(stateDir)) return null;
       const projectDirs = readdirSync(stateDir);
       for (const projectId of projectDirs) {
-        const runPath = join(stateDir, projectId, "better-harness", "runs", runId + ".json");
+        const runPath = join(getProjectStoreDir(projectId), "runs", runId + ".json");
         if (existsSync(runPath)) {
           const { readFileSync } = require("fs");
           return JSON.parse(readFileSync(runPath, "utf-8")) as StoredRun;
@@ -297,15 +297,14 @@ export class RunCoordinator {
 
   recoverActiveRuns(): void {
     try {
-      const { homedir } = require("os");
-      const { join } = require("path");
       const { existsSync, readdirSync } = require("fs");
-      const stateDir = join(homedir(), ".flowdeck", "state");
+      const { join } = require("path");
+      const stateDir = getFlowDeckStateDir();
       if (!existsSync(stateDir)) return;
 
       const projectDirs = readdirSync(stateDir);
       for (const projectId of projectDirs) {
-        const runsDir = join(stateDir, projectId, "better-harness", "runs");
+        const runsDir = join(getProjectStoreDir(projectId), "runs");
         if (!existsSync(runsDir)) continue;
         const runFiles = readdirSync(runsDir).filter((f: string) => f.endsWith(".json"));
         for (const runFile of runFiles) {
