@@ -1,4 +1,5 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "http";
+import { isIP } from "net";
 import { routeRequestContext } from "./router";
 import { createCorsHeaders, DEFAULT_CORS_CONFIG, type CorsConfig } from "./cors";
 import { createAuthCheck, type AuthConfig } from "./authentication";
@@ -45,6 +46,9 @@ export class HarnessHttpServer {
   start(): Promise<number> {
     if (!this.config.enabled) {
       return Promise.resolve(0);
+    }
+    if (/^[\d.]+$/.test(this.config.bindHost) && isIP(this.config.bindHost) === 0) {
+      return Promise.reject(new Error(`Invalid bind host: ${this.config.bindHost}`));
     }
 
     const corsConfig: CorsConfig = {

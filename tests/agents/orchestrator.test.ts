@@ -40,10 +40,15 @@ describe("orchestrator prompt: core router rule", () => {
     )
   })
 
-  it("requires delegation for source, config, and test files", () => {
-    expect(prompt).toMatch(/Source code files/)
-    expect(prompt).toMatch(/Project config files/)
-    expect(prompt).toContain("Test files")
+  it("uses direct execution by default and limits delegation to three deterministic reasons", () => {
+    const policy = prompt.split("3. **Delegation Depth**")[0] ?? ""
+    expect(policy).toContain("Direct Execution First")
+    expect(policy).toContain("User explicitly requests")
+    expect(policy).toContain("independently on non-overlapping")
+    expect(policy).toContain("specialist domain expertise")
+    expect(policy).not.toContain("Direct repository discovery failed")
+    expect(policy).not.toContain("Change spans multiple technical domains")
+    expect(policy).not.toContain("read-only audit")
   })
 })
 
@@ -68,8 +73,9 @@ describe("orchestrator prompt: pipeline", () => {
     expect(prompt).toMatch(/log reason for skipping fd-review and fd-verify/)
   })
 
-  it("pipeline says to call task tool immediately after routing", () => {
-    expect(prompt).toMatch(/Call `task` tool immediately/)
+  it("only calls the task tool after a justified delegation decision", () => {
+    expect(prompt).toContain("If delegation is justified")
+    expect(prompt).not.toContain("You MUST call\n" + "the `task` tool immediately")
   })
 })
 
@@ -89,8 +95,9 @@ describe("orchestrator prompt: pre-flight", () => {
     expect(body).not.toContain(".codebase/")
   })
 
-  it("delegates codebase mapping to @mapper", () => {
-    expect(prompt).toContain("Delegate codebase mapping to @mapper")
+  it("maps the codebase directly unless mapping is independent parallel work", () => {
+    expect(prompt).toContain("Map the codebase directly")
+    expect(prompt).not.toContain("Delegate codebase mapping to @mapper")
   })
 
   it("loads context via load-rules and repo-memory", () => {
@@ -98,11 +105,12 @@ describe("orchestrator prompt: pre-flight", () => {
   })
 })
 
-describe("orchestrator prompt: stage → agent mapping", () => {
+describe("orchestrator prompt: optional stage specialists", () => {
   const prompt = buildOrchestratorPrompt()
 
-  it("includes the stage → agent mapping table", () => {
-    expect(prompt).toMatch(/##\s*Stage → Agent Mapping/i)
+  it("marks the stage table as optional rather than mandatory routing", () => {
+    expect(prompt).toMatch(/##\s*Optional Stage Specialists/i)
+    expect(prompt).toContain("does not make delegation mandatory")
   })
 
   it("maps fd-task to researcher, architect, and planner", () => {
@@ -214,12 +222,12 @@ describe("orchestrator prompt: allowed vs forbidden tools", () => {
     expect(prompt).toContain("`task`")
   })
 
-  it("allows read-only shell inspection", () => {
-    expect(prompt).toMatch(/Shell read-only via bash: `ls`, `cat`, `find`, `git status`, `git log` — allowed/)
+  it("allows shell commands needed for guarded direct execution", () => {
+    expect(prompt).toContain("Shell commands needed for direct execution are allowed subject to runtime guards")
   })
 
-  it("forbids mutating bash", () => {
-    expect(prompt).toContain("Mutating bash: NOT allowed (delegate to subagents)")
+  it("does not force delegation merely because a shell command mutates state", () => {
+    expect(prompt).not.toContain("Mutating bash: NOT allowed (delegate to subagents)")
   })
 })
 
@@ -242,15 +250,15 @@ describe("orchestrator prompt: handoff protocol", () => {
 
   it("instructs the orchestrator to call the task tool for handoff", () => {
     expect(prompt).toMatch(/`task` tool/)
-    expect(prompt).toMatch(/Call `task` tool immediately/)
+    expect(prompt).toContain("For justified delegation")
   })
 
   it("tells the orchestrator to mention the selected worker directly", () => {
-    expect(prompt).toMatch(/Mention the selected worker directly/)
+    expect(prompt).toMatch(/mention the selected worker/i)
   })
 
   it("tells the orchestrator not to stop after the routing summary", () => {
-    expect(prompt).toMatch(/Do not report "blocked"/)
+    expect(prompt).toMatch(/Never report the routing decision as your final output/)
     expect(prompt).toMatch(/continue supervising after it/)
   })
 
@@ -391,7 +399,7 @@ describe("createOrchestratorAgent", () => {
     )
     expect(agent.config.prompt).toMatch(/##\s*Pipeline/i)
     expect(agent.config.prompt).toMatch(/##\s*Write Permission Rules/i)
-    expect(agent.config.prompt).toMatch(/##\s*Stage → Agent Mapping/i)
+    expect(agent.config.prompt).toMatch(/##\s*Optional Stage Specialists/i)
     expect(agent.config.prompt).toMatch(/##\s*Failure Handling/i)
   })
 

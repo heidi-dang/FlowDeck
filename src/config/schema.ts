@@ -107,6 +107,8 @@ export interface GovernanceConfig {
     enabled?: boolean;
     requireVerificationBeforeComplete?: boolean;
   };
+  /** @deprecated Use top-level `supervisor`. Read only for migration compatibility. */
+  supervisor?: SupervisorConfig;
 }
 
 export interface SupervisorConfig {
@@ -117,5 +119,6 @@ export interface SupervisorConfig {
   canBlock?: boolean;
   /** Confidence threshold (0-1) for approve decision. Default: 0.7 */
   confidenceThreshold?: number;
+  /** Run a second supervisor review after execution. */
+  postExecutionReview?: boolean;
 }
-

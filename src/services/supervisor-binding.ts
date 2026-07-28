@@ -162,10 +162,11 @@ export interface ResolvedSupervisorConfig {
 export function resolveSupervisorConfig(directory: string): ResolvedSupervisorConfig {
   try {
     const config = loadFlowDeckConfig(directory)
-    const sup = (config as any)?.governance?.supervisor ?? {}
+    const legacy = config.governance?.supervisor ?? {}
+    const sup = { ...legacy, ...config.supervisor }
     return {
-      enabled: sup.enabled ?? false,
-      mode: sup.mode ?? "advisory",
+      enabled: sup.mode === "off" ? false : (sup.enabled ?? false),
+      mode: sup.mode === "strict" ? "strict" : "advisory",
       reviewedTargets: sup.reviewedTargets ?? [],
       canBlock: sup.canBlock ?? true,
       confidenceThreshold: sup.confidenceThreshold ?? 0.7,

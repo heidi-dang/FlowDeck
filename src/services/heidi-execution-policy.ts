@@ -54,11 +54,11 @@ export interface DelegationContext {
   independentOwnership?: boolean
   /** Requires specialized domain expertise (e.g. security-auditor, devops) */
   specialistDomainRequired?: boolean
-  /** Task is a read-only audit or security review */
+  /** @deprecated Does not independently justify delegation. */
   auditOrSecurityReview?: boolean
-  /** Direct repository discovery/inspection failed */
+  /** @deprecated Does not independently justify delegation. */
   directDiscoveryFailed?: boolean
-  /** Change spans multiple technical domains requiring coordinated ownership */
+  /** @deprecated Does not independently justify delegation. */
   multiDomainSpanning?: boolean
 }
 
@@ -86,16 +86,6 @@ export function evaluateDelegationJustification(
   if (ctx.specialistDomainRequired) {
     reasons.push("Task requires specialist domain expertise")
   }
-  if (ctx.auditOrSecurityReview) {
-    reasons.push("Read-only audit or security review requested")
-  }
-  if (ctx.directDiscoveryFailed) {
-    reasons.push("Direct repository discovery failed")
-  }
-  if (ctx.multiDomainSpanning) {
-    reasons.push("Change spans multiple technical domains requiring coordinated ownership")
-  }
-
   return {
     justified: reasons.length > 0,
     reasons,

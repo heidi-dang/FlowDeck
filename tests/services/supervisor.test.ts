@@ -12,6 +12,9 @@
  */
 
 import { describe, it, expect } from "vitest"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import {
   runSupervisorReview,
   shouldProceed,
@@ -311,6 +314,60 @@ describe("resolveSupervisorConfig", () => {
     expect(cfg.confidenceThreshold).toBe(0.7)
     expect(cfg.postExecutionReview).toBe(false)
     expect(Array.isArray(cfg.reviewedTargets)).toBe(true)
+  })
+
+  it("reads the schema-defined top-level supervisor config", () => {
+    const dir = mkdtempSync(join(tmpdir(), "flowdeck-supervisor-top-"))
+    try {
+      writeFileSync(join(dir, ".flowdeck.json"), JSON.stringify({
+        supervisor: {
+          enabled: true,
+          mode: "strict",
+          reviewedTargets: ["fd-execute"],
+          canBlock: false,
+          confidenceThreshold: 0.9,
+          postExecutionReview: true,
+        },
+      }))
+      expect(resolveSupervisorConfig(dir)).toEqual({
+        enabled: true,
+        mode: "strict",
+        reviewedTargets: ["fd-execute"],
+        canBlock: false,
+        confidenceThreshold: 0.9,
+        postExecutionReview: true,
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("supports legacy governance.supervisor and lets top-level values take precedence", () => {
+    const dir = mkdtempSync(join(tmpdir(), "flowdeck-supervisor-legacy-"))
+    try {
+      writeFileSync(join(dir, ".flowdeck.json"), JSON.stringify({
+        governance: {
+          supervisor: {
+            enabled: true,
+            mode: "strict",
+            reviewedTargets: ["fd-review"],
+            confidenceThreshold: 0.8,
+          },
+        },
+        supervisor: {
+          mode: "advisory",
+          reviewedTargets: ["fd-verify"],
+        },
+      }))
+      expect(resolveSupervisorConfig(dir)).toMatchObject({
+        enabled: true,
+        mode: "advisory",
+        reviewedTargets: ["fd-verify"],
+        confidenceThreshold: 0.8,
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

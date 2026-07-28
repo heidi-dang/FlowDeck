@@ -62,7 +62,7 @@ import { planningStateTool } from "./tools/planning-state"
 import { repoMemoryTool } from "./tools/repo-memory"
 import { debugLogsTool } from "./tools/debug-logs"
 import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
-import { HarnessHttpServer } from "./better-harness/transport/http-server"
+import { HarnessHttpServer, type HttpServerConfig } from "./better-harness/transport/http-server"
 import { SseManager } from "./better-harness/transport/sse"
 import { ProjectRegistry } from "./better-harness/runtime/project-registry"
 import type { BetterHarnessConfig } from "./config/schema"
@@ -118,6 +118,35 @@ const sessionTaskCalls = new Map<
 const childSessionToTask = new Map<string, ChildTaskCorrelation>()
 
 const __dir = dirname(fileURLToPath(import.meta.url))
+
+export function resolveRuntimePackageVersion(): string {
+  try {
+    const metadata = JSON.parse(readFileSync(join(__dir, "..", "package.json"), "utf-8")) as {
+      version?: unknown
+    }
+    return typeof metadata.version === "string" ? metadata.version : "unknown"
+  } catch {
+    return "unknown"
+  }
+}
+
+export function resolveBetterHarnessHttpConfig(
+  config: BetterHarnessConfig,
+): Partial<HttpServerConfig> {
+  return {
+    enabled: true,
+    port: config.port ?? 0,
+    bindHost: config.bindHost ?? "127.0.0.1",
+    auth: {
+      token: config.authToken,
+      enabled: config.authEnabled ?? false,
+    },
+    maxBodySize: config.maxBodySize ?? 1024 * 1024,
+    ...(config.corsOrigins
+      ? { cors: { allowedOrigins: config.corsOrigins } }
+      : {}),
+  }
+}
 
 function lazyLoadRulePaths(projectRoot: string): { paths: string[]; diagnostics: string } {
   const rulesDir = join(__dir, "..", "src", "rules")
@@ -207,7 +236,6 @@ const plugin: Plugin = async ({ directory, client }) => {
 
     // Build auth config
     const authToken = bhConfig.authToken ?? null
-    const authEnabled = bhConfig.authEnabled ?? false
 
     // Build router context with all dependencies
     const routerContext: RouterContext = {
@@ -222,16 +250,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       opencodeClient: client,
     }
 
-    betterHarnessServer = new HarnessHttpServer({
-      enabled: true,
-      port: bhConfig.port ?? 0,
-      bindHost: bhConfig.bindHost ?? "127.0.0.1",
-      auth: {
-        token: authToken ?? undefined,
-        enabled: authEnabled,
-      },
-      maxBodySize: bhConfig.maxBodySize ?? 1024 * 1024,
-    })
+    betterHarnessServer = new HarnessHttpServer(resolveBetterHarnessHttpConfig(bhConfig))
     betterHarnessServer.setSseManager(betterHarnessSseManager)
     betterHarnessServer.setRouterContext(routerContext)
 
@@ -317,7 +336,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       const isSubagent = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
 
       const variant = input.variant
-      const pkgVersion = "0.8.0-alpha.8"
+      const pkgVersion = resolveRuntimePackageVersion()
       const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
       const result = enforceRuntimeAgent({
         sessionID,

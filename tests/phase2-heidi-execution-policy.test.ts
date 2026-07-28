@@ -80,19 +80,14 @@ describe("Phase 2 — Heidi Primary Execution Policy", () => {
       expect(res.justified).toBe(true)
     })
 
-    it("allows delegation for audit/security review", () => {
-      const res = evaluateDelegationJustification({ auditOrSecurityReview: true })
-      expect(res.justified).toBe(true)
-    })
-
-    it("allows delegation when direct discovery failed", () => {
-      const res = evaluateDelegationJustification({ directDiscoveryFailed: true })
-      expect(res.justified).toBe(true)
-    })
-
-    it("allows delegation when change spans multiple domains", () => {
-      const res = evaluateDelegationJustification({ multiDomainSpanning: true })
-      expect(res.justified).toBe(true)
+    it("does not treat legacy heuristic hints as delegation justification", () => {
+      const res = evaluateDelegationJustification({
+        auditOrSecurityReview: true,
+        directDiscoveryFailed: true,
+        multiDomainSpanning: true,
+      })
+      expect(res.justified).toBe(false)
+      expect(res.reasons).toHaveLength(0)
     })
   })
 

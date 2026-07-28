@@ -14,7 +14,11 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync
 import { tmpdir } from "os"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"
-import flowDeckPlugin from "@/index"
+import flowDeckPlugin, {
+  resolveBetterHarnessHttpConfig,
+  resolveRuntimePackageVersion,
+} from "@/index"
+import packageMetadata from "../package.json"
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "flowdeck-index-test-"))
@@ -71,6 +75,22 @@ describe("plugin entry", () => {
   async function loadPlugin(client: any): Promise<TestHooks> {
     return (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
   }
+
+  it("maps configured Better Harness CORS origins into the HTTP server config", () => {
+    expect(resolveBetterHarnessHttpConfig({
+      enabled: true,
+      corsOrigins: ["https://console.example", "http://localhost:4400"],
+    })).toMatchObject({
+      cors: {
+        allowedOrigins: ["https://console.example", "http://localhost:4400"],
+      },
+    })
+  })
+
+  it("derives the runtime package version from package metadata", () => {
+    expect(resolveRuntimePackageVersion()).toBe(packageMetadata.version)
+    expect(resolveRuntimePackageVersion()).not.toBe("0.8.0-alpha.8")
+  })
 
   it("returns a plugin object with expected registration keys", async () => {
     const client = createMockClient()

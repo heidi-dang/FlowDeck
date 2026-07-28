@@ -77,6 +77,13 @@ describe("Phase 30 — Doctor CLI Service", { timeout: 20000 }, () => {
     expect(res.stderr).toBe("");
   });
 
+  it("optional runtime probes never leak missing-command diagnostics to stderr", () => {
+    const res = runCli(["doctor", "--json"]);
+    expect([0, 1]).toContain(res.code);
+    expect(res.stderr).toBe("");
+    expect(() => JSON.parse(res.stdout)).not.toThrow();
+  });
+
   // ── Text output ─────────────────────────────────────────────────────
 
   it("doctor text output contains expected sections", () => {

@@ -7,10 +7,16 @@ import type { CheckResult } from "../types"
 
 function tryExec(cmd: string, args: string[] = []): string | null {
   try {
-    return execFileSync(cmd, args, {
+    const executable =
+      process.platform === "win32" && (cmd === "npm" || cmd === "bun")
+        ? `${cmd}.cmd`
+        : cmd
+    return execFileSync(executable, args, {
       encoding: "utf-8",
       timeout: 2000,
-      shell: process.platform === "win32",
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
     }).trim()
   } catch { return null }
 }
