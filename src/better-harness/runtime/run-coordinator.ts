@@ -33,6 +33,8 @@ export interface RunState {
   progressPercent: number;
   stage: string;
   errorMessage?: string;
+  startedAt?: string;
+  completedAt?: string;
 }
 
 export class RunCoordinator {
@@ -58,17 +60,20 @@ export class RunCoordinator {
     // Apply updates
     Object.assign(this.activeRun, updates);
 
-    // Persist first
+    // Persist first — include all fields set externally (errorMessage,
+    // completedAt, startedAt) so they survive to disk.
     const now = new Date().toISOString();
-    const runRecord = {
+    const runRecord: Record<string, unknown> = {
       runId: this.activeRun.runId,
       projectId,
       status: this.activeRun.status,
-      startedAt: now,
+      startedAt: this.activeRun.startedAt ?? now,
       stage: this.activeRun.stage,
       progressPercent: this.activeRun.progressPercent,
     };
-    saveRun(projectId, runRecord);
+    if (this.activeRun.errorMessage) runRecord.errorMessage = this.activeRun.errorMessage;
+    if (this.activeRun.completedAt) runRecord.completedAt = this.activeRun.completedAt;
+    saveRun(projectId, runRecord as unknown as import("../persistence/run-store").StoredRun);
 
     // Then emit
     this.eventBus.emit("run.progress", {
@@ -95,6 +100,7 @@ export class RunCoordinator {
       status: "queued",
       progressPercent: 0,
       stage: "initializing",
+      startedAt: new Date().toISOString(),
     };
 
     this.eventBus.emit("run.queued", { runId });
@@ -209,7 +215,7 @@ export class RunCoordinator {
           saveReport(snapshot.projectId, report);
           saveFindingIndex(snapshot.projectId, findings);
 
-          this.emitProgress(runId, snapshot.projectId, { status: "completed", stage: "completed", progressPercent: 100 });
+          this.emitProgress(runId, snapshot.projectId, { status: "completed", stage: "completed", progressPercent: 100, completedAt: new Date().toISOString() });
           this.eventBus.emit("report.completed", { runId, report });
 
           const completedRecord: StoredRun = {
@@ -275,21 +281,25 @@ export class RunCoordinator {
   }
 
   private internalCancelRun(runId: string, projectId: string): void {
+    const completedAt = new Date().toISOString();
     this.emitProgress(runId, projectId, {
       status: "cancelled",
       stage: this.activeRun?.stage ?? "unknown",
       progressPercent: this.activeRun?.progressPercent ?? 0,
       errorMessage: "Run cancelled",
+      completedAt,
     });
     this.eventBus.emit("run.cancelled", { runId, errorMessage: "Run cancelled" });
   }
 
   private failRun(runId: string, projectId: string, errorMessage: string): RunState {
+    const completedAt = new Date().toISOString();
     this.emitProgress(runId, projectId, {
       status: "failed",
       stage: this.activeRun?.stage ?? "unknown",
       progressPercent: this.activeRun?.progressPercent ?? 0,
       errorMessage,
+      completedAt,
     });
     this.eventBus.emit("run.failed", { runId, errorMessage });
     return this.activeRun!;
