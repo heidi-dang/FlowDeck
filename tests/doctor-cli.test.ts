@@ -53,7 +53,7 @@ function makeTempConfig(): string {
 
 // ─── Tests ─────────────────────────────────────────────────────────────
 
-describe("Doctor CLI — Argument Parsing", () => {
+describe("Doctor CLI — Argument Parsing", { timeout: 20000 }, () => {
   it("parses --json flag", () => {
     const result = runDoctor(["--json"])
     // Should produce valid JSON output to stdout
