@@ -151,7 +151,7 @@ describe("E2E: Full Lifecycle", () => {
     if (findings.length > 0) {
       const result = await createRepairSession({ finding: findings[0] as HarnessFinding, projectPath: TEST_ROOT });
       // Without an OpenCode client, the session creation returns an error
-      expect(result.repairSessionId).toBe("");
+      expect(result.opencodeSessionId).toBe("");
       expect(result.error).toBeTruthy();
       expect(result.prompt).toContain("## Finding");
     }

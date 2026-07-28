@@ -26,6 +26,11 @@ export const BatchPlanFixItemSchema = z.object({
   findingId: z.string().min(1),
   accepted: z.boolean(),
   repairSessionId: z.string().optional(),
+  /** Real OpenCode session ID. Identical to repairSessionId when the
+   *  underlying system returns the session ID directly (no prefix). */
+  opencodeSessionId: z.string().optional(),
+  /** Public-facing repair operation identifier (opaque, stable). */
+  repairOperationId: z.string().optional(),
   error: z.string().optional(),
 }).strict();
 

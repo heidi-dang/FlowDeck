@@ -271,8 +271,14 @@ export async function routeRequestContext(
               { finding, projectPath: check.path },
               ctx.opencodeClient,
             );
-            if (session.repairSessionId) {
-              results.push({ findingId: fid, accepted: true, repairSessionId: session.repairSessionId });
+            if (session.opencodeSessionId) {
+              results.push({
+                findingId: fid,
+                accepted: true,
+                repairSessionId: session.opencodeSessionId,
+                opencodeSessionId: session.opencodeSessionId,
+                repairOperationId: session.repairOperationId || session.opencodeSessionId,
+              });
             } else {
               results.push({ findingId: fid, accepted: false, error: session.error ?? "Failed to create session" });
             }

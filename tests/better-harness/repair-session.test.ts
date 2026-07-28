@@ -24,7 +24,7 @@ describe("Repair Session", () => {
       lastSeenAt: "",
     };
     const result = await createRepairSession({ finding, projectPath: os.tmpdir() });
-    expect(result.repairSessionId).toBe("");
+    expect(result.opencodeSessionId).toBe("");
     expect(result.error).toBeTruthy();
     expect(result.prompt).toContain("Missing config");
     expect(result.prompt).toContain("src/rules/");
