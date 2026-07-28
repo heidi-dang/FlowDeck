@@ -292,11 +292,12 @@ jobs:
       - name: Emit execution proof
         run: |
           echo "=== Native FDX Execution Proof ==="
-          echo "Binary: crates/fdx/target/debug/fdx"
-          crates/fdx/target/debug/fdx search --help
+          echo "Binary: $FDX_BINARY_PATH"
+          "$FDX_BINARY_PATH" search --help
           echo "FDX_DISABLE_FALLBACK=1"
           echo "Shared fixture: tests/fixtures/path-scheme.json"
           echo "All parity tests completed."
+
 
 
   security-scan:
