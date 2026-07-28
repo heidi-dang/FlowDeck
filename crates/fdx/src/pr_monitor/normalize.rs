@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 //! Normalize a raw CI failure into a structured CiFailureReport.
 
 use crate::pr_monitor::logs::{extract_error_excerpt, extract_exit_code};

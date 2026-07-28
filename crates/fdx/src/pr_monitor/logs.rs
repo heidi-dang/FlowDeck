@@ -3,7 +3,7 @@
 /// Extract the first relevant error block from a CI log.
 pub fn extract_error_excerpt(log: &str, max_chars: usize) -> String {
     let mut excerpt = String::new();
-    let mut in_error = false;
+    let mut _in_error = false;
     let mut context_lines = 0;
 
     for line in log.lines() {
@@ -24,7 +24,7 @@ pub fn extract_error_excerpt(log: &str, max_chars: usize) -> String {
             || line.contains("panicked")
             || line.contains("exit code")
         {
-            in_error = true;
+            _in_error = true;
             if excerpt.len() + line.len() + 1 > max_chars {
                 break;
             }
