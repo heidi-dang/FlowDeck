@@ -188,13 +188,11 @@ describe("named diagnostic exports", () => {
   })
 })
 
-describe("legacy regression guard", () => {
-  it("default export is NOT a function (proves modern contract, not legacy)", () => {
-    // Legacy plugins export a function as default.
-    // Modern plugins export { id, server } as default.
-    // This test proves we won't trigger OpenCode's legacy scanner.
-    expect(typeof flowDeckPlugin).not.toBe("function")
-    expect(typeof flowDeckPlugin).toBe("object")
+describe("modern plugin contract", () => {
+  it("default export is the plugin function (modern contract)", () => {
+    // Modern OpenCode PluginModule contract: the default export is
+    // the plugin function directly — not an { id, server } wrapper.
+    expect(typeof flowDeckPlugin).toBe("function")
   })
 
   it("named exports do NOT include non-function values that would crash legacy scanner", () => {

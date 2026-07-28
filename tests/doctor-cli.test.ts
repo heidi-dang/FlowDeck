@@ -59,7 +59,8 @@ describe("Doctor CLI — Argument Parsing", () => {
   testSlow("parses --json flag", () => {
     const result = runDoctor(["--json"])
     // Should produce valid JSON output to stdout
-    expect(result.code).toBe(0)
+    // Code may be 0 (healthy) or 1 (unhealthy checks) depending on environment
+    expect([0, 1]).toContain(result.code)
     expect(result.stdout).toBeTruthy()
     const parsed = JSON.parse(result.stdout)
     expect(parsed).toBeDefined()
@@ -113,7 +114,7 @@ describe("Doctor CLI — Argument Parsing", () => {
 describe("Doctor CLI — JSON Output", () => {
   it("produces valid JSON when --json is specified", () => {
     const result = runDoctor(["--json"])
-    expect(result.code).toBe(0)
+    expect([0, 1]).toContain(result.code)
     expect(() => JSON.parse(result.stdout)).not.toThrow()
   })
 
