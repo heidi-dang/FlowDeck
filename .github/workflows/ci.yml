@@ -295,8 +295,12 @@ jobs:
       - name: Run shared fixture tests
         run: bun test tests/fdx-path-parity.test.ts
       - name: Run dual-AST tests
+        env:
+          FDX_BINARY_PATH: ${{ env.FDX_BINARY_PATH }}
         run: bun test tests/fdx-dual-ast.test.ts
       - name: Run git-policy tests
+        env:
+          FDX_BINARY_PATH: ${{ env.FDX_BINARY_PATH }}
         run: bun test tests/fdx-git-policy.test.ts
       - name: Run native parity with fallback disabled
         env:
