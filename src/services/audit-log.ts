@@ -24,6 +24,10 @@ export type AuditEventKind =
   | "session.completed"
   | "session.agent_verified"
   | "session.agent_mismatch"
+  | "delegation.started"
+  | "delegation.completed"
+  | "delegation.failed"
+  | "delegation.blocked"
 
 export interface AuditEvent {
   kind: AuditEventKind

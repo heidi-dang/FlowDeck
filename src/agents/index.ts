@@ -38,7 +38,9 @@ import { createArchitectAgent } from './architect';
 import {
   getAllAgentIds,
   getPrimaryAgentIds,
+  getSubagentIds,
   getCanonicalAgent,
+  isSpecialistAgent,
 } from '../services/canonical-registry';
 
 /** All agent names registered by FlowDeck, derived from canonical registry. */
@@ -152,11 +154,27 @@ export function getAgentConfigs(
       mode = 'all';
     }
 
+    const canDelegate = !isSpecialistAgent(agent.name);
+    let permissionConfig: Record<string, unknown> | undefined = undefined;
+
+    if (canDelegate) {
+      // Primary agents can delegate to all registered subagents
+      const taskRules: Record<string, "allow" | "deny"> = { "*": "deny" };
+      for (const subId of getSubagentIds()) {
+        taskRules[subId] = "allow";
+      }
+      permissionConfig = { task: taskRules };
+    } else {
+      // Specialist subagents cannot launch sub-tasks
+      permissionConfig = { task: "deny" };
+    }
+
     configs[agent.name] = {
       ...agent.config,
       description: agent.description,
       mode,
       hidden: isHiddenAgent(agent.name),
+      permission: permissionConfig as any,
     };
   }
 

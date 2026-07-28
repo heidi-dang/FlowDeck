@@ -48,20 +48,20 @@ describe("Phase 3 — Agent Registry, Model Inheritance, and Delegation Enforcem
   })
 
   describe("2. Delegation Depth Enforcement (Depth = 1)", () => {
-    it("allows primary agents (heidi / orchestrator) to invoke task tool", async () => {
+    it("allows primary agents (heidi / orchestrator) to invoke task tool with subagent_type schema", async () => {
       process.env.FLOWDECK_TOOL_GUARD_ENABLED = "on"
       const ctx = { directory: TMP, agent: "heidi" }
-      const input = { tool: "task", sessionID: "s1" }
-      const output = { args: { agent: "backend-coder", prompt: "Build feature" } }
+      const input = { tool: "task", sessionID: "s1-sub" }
+      const output = { args: { subagent_type: "backend-coder", prompt: "Build feature" } }
 
       await expect(toolGuardHook(ctx, input, output)).resolves.toBeUndefined()
     })
 
-    it("blocks subagents from spawning nested subagents via task tool", async () => {
+    it("blocks subagents from spawning nested subagents via task tool with subagent_type schema", async () => {
       process.env.FLOWDECK_TOOL_GUARD_ENABLED = "on"
       const ctx = { directory: TMP, agent: "backend-coder" }
-      const input = { tool: "task", sessionID: "s2" }
-      const output = { args: { agent: "tester", prompt: "Write test" } }
+      const input = { tool: "task", sessionID: "s2-sub" }
+      const output = { args: { subagent_type: "tester", prompt: "Write test" } }
 
       await expect(toolGuardHook(ctx, input, output)).rejects.toThrow(/Delegation depth limit reached/)
     })

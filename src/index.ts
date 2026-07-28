@@ -85,6 +85,7 @@ import {
   enforceRuntimeAgent,
   applyIdentityMarker,
 } from "./services/runtime-agent-policy"
+import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -392,8 +393,12 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       // ── 3. Delegation depth check & budget ───────────────────────────
       if (toolName === "task") {
+        const invocation = normalizeTaskInvocation(
+          { sessionID, callID: toolInput.callID, agent },
+          toolInput.args ?? {},
+        )
         const currentDepth = (toolInput.args?.depth as number) ?? 0
-        const targetAgent = (toolInput.args?.agent as string) ?? ""
+        const targetAgent = invocation.targetAgent
 
         // When no target agent is provided, default to direct execution
         // (the task/command pattern — not delegation)
@@ -403,15 +408,35 @@ const plugin: Plugin = async ({ directory, client }) => {
           return
         }
 
-        const depthResult = validateDelegationDepth(agent, targetAgent, currentDepth, specialistAgentSet, maxDepth)
+        const depthResult = validateDelegationDepth(
+          invocation.callerAgent,
+          targetAgent,
+          currentDepth,
+          specialistAgentSet,
+          maxDepth,
+        )
         if (!depthResult.allowed) {
           const errorCode = depthResult.errorCode ?? "DELEGATION_BLOCKED"
           const isTerminal = errorCode === "SELF_DELEGATION_BLOCKED" || errorCode === "MISSING_TARGET_AGENT"
 
+          appendAuditEvent(directory, {
+            kind: "delegation.blocked",
+            session_id: sessionID,
+            agent: invocation.callerAgent,
+            tool: toolName,
+            decision: "block",
+            reason: depthResult.reason ?? "Delegation blocked",
+            details: {
+              targetAgent,
+              errorCode,
+              resolvedFrom: invocation.resolvedFrom,
+            },
+          })
+
           recordRecoveryAudit({
             directory,
             sessionID,
-            agent,
+            agent: invocation.callerAgent,
             errorKey: errorCode,
             action: isTerminal ? "circuit_breaker_block" : "targeted_diagnosis",
             message: depthResult.reason ?? "Delegation not allowed",
@@ -420,6 +445,20 @@ const plugin: Plugin = async ({ directory, client }) => {
           throw new Error(`${errorCode}: ${depthResult.reason ?? "Delegation blocked"}`)
         }
 
+        appendAuditEvent(directory, {
+          kind: "delegation.started",
+          session_id: sessionID,
+          agent: invocation.callerAgent,
+          tool: toolName,
+          decision: "allow",
+          details: {
+            targetAgent,
+            resolvedFrom: invocation.resolvedFrom,
+            prompt: invocation.prompt,
+            description: invocation.description,
+          },
+        })
+
         if (sessionID) {
           const delCount = (sessionDelegations.get(sessionID) ?? 0) + 1
           sessionDelegations.set(sessionID, delCount)
@@ -427,7 +466,7 @@ const plugin: Plugin = async ({ directory, client }) => {
             const msg = `Delegation budget exceeded: ${delCount} > ${maxDelegations} for session ${sessionID}`
             const govMode = resolveGovernanceMode(directory)
             recordRecoveryAudit({
-              directory, sessionID, agent,
+              directory, sessionID, agent: invocation.callerAgent,
               errorKey: "delegation_budget_exceeded",
               action: govMode === "strict" ? "circuit_breaker_block" : "targeted_diagnosis",
               message: msg,
@@ -513,6 +552,35 @@ const plugin: Plugin = async ({ directory, client }) => {
         sessionID,
         "success"
       )
+
+      if (toolName === "task") {
+        const invocation = normalizeTaskInvocation(
+          { sessionID, agent },
+          toolInput.args ?? {},
+        )
+        if (invocation.targetAgent) {
+          if (toolInput.error) {
+            appendAuditEvent(directory, {
+              kind: "delegation.failed",
+              session_id: sessionID,
+              agent,
+              tool: toolName,
+              decision: "block",
+              reason: String(toolInput.error),
+              details: { targetAgent: invocation.targetAgent },
+            })
+          } else {
+            appendAuditEvent(directory, {
+              kind: "delegation.completed",
+              session_id: sessionID,
+              agent,
+              tool: toolName,
+              decision: "allow",
+              details: { targetAgent: invocation.targetAgent },
+            })
+          }
+        }
+      }
 
       if (toolInput.error) {
         const errorMsg = String(toolInput.error)
@@ -676,3 +744,4 @@ export default flowDeckPlugin
 export { AGENT_NAMES, createAgent } from "./agents/index"
 export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
 export { acquireLock, releaseLock } from "./services/async-lock"
+export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"

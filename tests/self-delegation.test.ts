@@ -15,12 +15,9 @@
 
 import { describe, it, expect } from "vitest"
 import { validateDelegationDepth } from "../src/services/governance-wiring"
+import { getSubagentIds } from "../src/services/canonical-registry"
 
-const SPECIALIST_AGENTS = new Set([
-  "coder", "reviewer", "debugger", "tester", "researcher",
-  "mapper", "planner", "architect", "security-auditor",
-  "frontend", "backend", "auditor",
-])
+const SPECIALIST_AGENTS = new Set(getSubagentIds())
 
 describe("validateDelegationDepth - self-delegation", () => {
   it("blocks self-delegation by exact canonical ID match", () => {
@@ -44,7 +41,7 @@ describe("validateDelegationDepth - self-delegation", () => {
 
   it("blocks self-delegation for specialists too", () => {
     // Specialists are already blocked earlier, but still verify
-    const result = validateDelegationDepth("coder", "coder", 0, SPECIALIST_AGENTS)
+    const result = validateDelegationDepth("backend-coder", "backend-coder", 0, SPECIALIST_AGENTS)
     expect(result.allowed).toBe(false)
   })
 })
@@ -77,7 +74,7 @@ describe("validateDelegationDepth - missing/unknown target", () => {
 
 describe("validateDelegationDepth - valid delegation", () => {
   it("allows delegation to a valid specialist", () => {
-    const result = validateDelegationDepth("heidi", "coder", 0, SPECIALIST_AGENTS, 1)
+    const result = validateDelegationDepth("heidi", "backend-coder", 0, SPECIALIST_AGENTS, 1)
     expect(result.allowed).toBe(true)
   })
 
@@ -89,7 +86,7 @@ describe("validateDelegationDepth - valid delegation", () => {
 
 describe("validateDelegationDepth - depth limit", () => {
   it("blocks delegation when depth limit reached", () => {
-    const result = validateDelegationDepth("heidi", "coder", 1, SPECIALIST_AGENTS, 1)
+    const result = validateDelegationDepth("heidi", "backend-coder", 1, SPECIALIST_AGENTS, 1)
     expect(result.allowed).toBe(false)
     expect(result.errorCode).toBe("DEPTH_LIMIT_EXCEEDED")
   })
@@ -97,7 +94,7 @@ describe("validateDelegationDepth - depth limit", () => {
 
 describe("validateDelegationDepth - specialist agents", () => {
   it("blocks delegation from a specialist", () => {
-    const result = validateDelegationDepth("coder", "reviewer", 0, SPECIALIST_AGENTS)
+    const result = validateDelegationDepth("backend-coder", "reviewer", 0, SPECIALIST_AGENTS)
     expect(result.allowed).toBe(false)
     expect(result.errorCode).toBe("SPECIALIST_CANNOT_DELEGATE")
   })
