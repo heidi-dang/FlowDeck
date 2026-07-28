@@ -1001,6 +1001,15 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
       orchestratorGuard.onEvent(event)
     },
+
+    dispose: async () => {
+      // Called by OpenCode when the plugin is shut down.
+      // Clean up Better Harness resources for the current project.
+      try {
+        const { stopBh, canonicalize } = await import("./better-harness/runtime/runtime-registry");
+        await stopBh(canonicalize(directory));
+      } catch { /* BH may not be running */ }
+    },
   }
 }
 

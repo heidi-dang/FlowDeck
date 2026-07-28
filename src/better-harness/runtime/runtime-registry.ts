@@ -132,9 +132,9 @@ export function startBh(
 }
 
 /** Stop BH. Idempotent. */
-export async function stopBh(canonicalRoot: string): Promise<void> {
+export async function stopBh(rawRoot: string): Promise<void> {
   if (cancelFlag) cancelFlag();
-
+  const canonicalRoot = canonicalize(rawRoot);
   const entry = entries.get(canonicalRoot);
   if (!entry) return;
 
