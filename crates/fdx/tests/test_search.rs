@@ -35,11 +35,18 @@ pub fn calculate_tax(base: f64) -> f64 {
     .unwrap();
 
     let cache = AstCache::new();
-    let matches =
-        search::search_symbols("calculate", &[PathBuf::from(temp_dir)], None, true, &cache)
-            .unwrap();
+    let matches = search::search_symbols(
+        "calculate",
+        &[PathBuf::from(temp_dir)],
+        None,
+        50,
+        true,
+        &cache,
+    )
+    .unwrap();
 
     assert_eq!(matches.len(), 2);
+
     let names: Vec<&str> = matches.iter().map(|m| m.symbol.name.as_str()).collect();
     assert!(names.contains(&"calculate_fee"));
     assert!(names.contains(&"calculate_tax"));
@@ -61,6 +68,7 @@ fn test_search_no_matches() {
         "nonexistent",
         &[PathBuf::from(temp_dir)],
         None,
+        50,
         true,
         &cache,
     )

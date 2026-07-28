@@ -11,10 +11,12 @@ pub enum BatchItem {
 }
 
 /// Read multiple files in one call.
+#[allow(clippy::too_many_arguments)]
 pub fn batch_read(
     patterns: &[String],
     mode: ReadMode,
     symbol: Option<&str>,
+    limit_per_file: Option<usize>,
     format: crate::output::OutputFormat,
     no_cache: bool,
     max_files: usize,
@@ -38,7 +40,7 @@ pub fn batch_read(
         let options = ReaderOptions {
             mode,
             symbol: symbol.map(|s| s.to_string()),
-            limit: None,
+            limit: limit_per_file,
             offset: 1,
             with_deps: true,
             format: format.clone(),

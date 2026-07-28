@@ -59,12 +59,12 @@ fn test_git_branch() {
 
 #[test]
 fn test_git_pass_through() {
-    // Test that unknown subcommands pass through
+    // Test that allowed subcommands pass through
     let output = Command::new(fdx_bin())
-        .args(["git", "config", "--list"])
+        .args(["git", "rev-parse", "--is-inside-work-tree"])
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .output()
-        .expect("fdx git config failed");
+        .expect("fdx git rev-parse failed");
 
-    assert!(output.status.success(), "git config should succeed");
+    assert!(output.status.success(), "git rev-parse should succeed");
 }

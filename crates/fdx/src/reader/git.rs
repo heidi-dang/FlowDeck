@@ -1,23 +1,159 @@
 use crate::runner::{run, CommandOutput};
 use anyhow::Result;
 
+pub const GIT_READONLY_SUBCOMMANDS: &[&str] = &[
+    "status",
+    "log",
+    "diff",
+    "show",
+    "blame",
+    "ls-files",
+    "ls-tree",
+    "rev-parse",
+    "rev-list",
+    "describe",
+    "shortlog",
+    "branch",
+    "tag",
+    "stash",
+];
+
+/// Arguments that spawn external programs or mutate state — always rejected.
+const REJECTED_ARG_PREFIXES: &[&str] = &[
+    "--output",
+    "--ext-diff",
+    "--textconv",
+    "--exec-path",
+    "--paginate",
+    "--no-pager",
+    "--pager",
+    "-c",
+];
+
+pub fn validate_git_policy(subcommand: &str, args: &[&str]) -> Result<()> {
+    let sub = subcommand.trim();
+    if sub.is_empty() || !GIT_READONLY_SUBCOMMANDS.contains(&sub) {
+        anyhow::bail!(
+            "[FDX Git Policy] Subcommand \"{}\" is not permitted under read-only policy. Allowed: {}",
+            sub,
+            GIT_READONLY_SUBCOMMANDS.join(", ")
+        );
+    }
+
+    // Reject any argument that could trigger mutations or external execution
+    for arg in args {
+        let trimmed = arg.trim();
+        for prefix in REJECTED_ARG_PREFIXES {
+            if trimmed == *prefix || trimmed.starts_with(&format!("{}=", prefix)) {
+                anyhow::bail!(
+                    "[FDX Git Policy] Argument \"{}\" is prohibited under read-only policy.",
+                    trimmed
+                );
+            }
+        }
+        // Reject pager/editor config overrides passed as git -c key=value
+        if trimmed.starts_with("-c ") || trimmed.starts_with("-c=") {
+            let val = trimmed.trim_start_matches("-c ").trim_start_matches("-c=");
+            if val.contains("pager")
+                || val.contains("editor")
+                || val.contains("interactive")
+                || val.contains("alias")
+                || val.contains("diff.external")
+            {
+                anyhow::bail!(
+                    "[FDX Git Policy] Config override \"{}\" could spawn external commands.",
+                    trimmed
+                );
+            }
+        }
+    }
+
+    if sub == "branch" {
+        for arg in args {
+            let a = *arg;
+            if a.starts_with("-d")
+                || a.starts_with("-D")
+                || a.starts_with("-m")
+                || a.starts_with("-M")
+                || a.starts_with("-c")
+                || a.starts_with("-C")
+                || a.starts_with("--delete")
+                || a.starts_with("--move")
+                || a.starts_with("--copy")
+                || a.starts_with("--edit-description")
+            {
+                anyhow::bail!("[FDX Git Policy] Mutating branch flag \"{}\" is prohibited under read-only policy.", arg);
+            }
+        }
+        let has_list_flag = args.iter().any(|a| {
+            matches!(
+                *a,
+                "--list" | "-l" | "--show-current" | "-a" | "-r" | "--all" | "--remotes"
+            ) || a.starts_with("--format")
+        });
+        let positional: Vec<&&str> = args.iter().filter(|a| !a.starts_with('-')).collect();
+        if !positional.is_empty() && !has_list_flag {
+            anyhow::bail!(
+                "[FDX Git Policy] Prohibited branch modification attempt with argument \"{}\".",
+                positional[0]
+            );
+        }
+    }
+
+    if sub == "tag" {
+        for arg in args {
+            let a = *arg;
+            if a.starts_with("-d")
+                || a.starts_with("-D")
+                || a.starts_with("-a")
+                || a.starts_with("-s")
+                || a.starts_with("-f")
+                || a.starts_with("--delete")
+                || a.starts_with("--annotate")
+                || a.starts_with("--sign")
+                || a.starts_with("--force")
+            {
+                anyhow::bail!("[FDX Git Policy] Mutating tag flag \"{}\" is prohibited under read-only policy.", arg);
+            }
+        }
+        let has_list_flag = args
+            .iter()
+            .any(|a| matches!(*a, "-l" | "--list") || a.starts_with("--format"));
+        let positional: Vec<&&str> = args.iter().filter(|a| !a.starts_with('-')).collect();
+        if !positional.is_empty() && !has_list_flag {
+            anyhow::bail!(
+                "[FDX Git Policy] Prohibited tag modification attempt with argument \"{}\".",
+                positional[0]
+            );
+        }
+    }
+
+    if sub == "stash" {
+        let stash_sub = args.first().copied().unwrap_or("").trim();
+
+        if stash_sub != "list" && stash_sub != "show" {
+            anyhow::bail!(
+                "[FDX Git Policy] Stash operation \"{}\" is prohibited. Only \"stash list\" and \"stash show\" are allowed under read-only policy.",
+                if stash_sub.is_empty() { "default (push)" } else { stash_sub }
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// Run a git subcommand with token-optimized output.
 ///
-/// Supported subcommands: status, log, diff, add, commit, push, pull, branch, show.
-/// All other subcommands pass through to real git unchanged.
+/// Only read-only git subcommands are permitted.
 pub fn run_git(subcommand: &str, args: &[&str]) -> Result<CommandOutput> {
+    validate_git_policy(subcommand, args)?;
     match subcommand {
         "status" => git_status(args),
         "log" => git_log(args),
         "diff" => git_diff(args),
-        "add" => git_add(args),
-        "commit" => git_commit(args),
-        "push" => git_push(args),
-        "pull" => git_pull(args),
         "branch" => git_branch(args),
         "show" => git_show(args),
         _ => {
-            // Pass through to real git
             let mut full_args = vec![subcommand];
             full_args.extend_from_slice(args);
             run("git", &full_args)
@@ -27,6 +163,7 @@ pub fn run_git(subcommand: &str, args: &[&str]) -> Result<CommandOutput> {
 
 fn git_status(args: &[&str]) -> Result<CommandOutput> {
     let mut cmd_args = vec!["status", "--porcelain=v1"];
+
     cmd_args.extend_from_slice(args);
     let output = run("git", &cmd_args)?;
 
@@ -211,132 +348,6 @@ fn filter_diff_output(stdout: &str) -> String {
     }
 
     result
-}
-
-fn git_add(args: &[&str]) -> Result<CommandOutput> {
-    let mut cmd_args = vec!["add"];
-    cmd_args.extend_from_slice(args);
-    let output = run("git", &cmd_args)?;
-
-    if output.success {
-        Ok(CommandOutput {
-            stdout: "ok\n".to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        })
-    } else {
-        Ok(output)
-    }
-}
-
-fn git_commit(args: &[&str]) -> Result<CommandOutput> {
-    let mut cmd_args = vec!["commit"];
-    cmd_args.extend_from_slice(args);
-    let output = run("git", &cmd_args)?;
-
-    if output.success {
-        // Extract short sha from output like "[main abc1234] message"
-        let sha = output
-            .stdout
-            .lines()
-            .next()
-            .and_then(|line| {
-                let start = line.find('[')?;
-                let end = line.find(']')?;
-                let inner = &line[start + 1..end];
-                inner.split_whitespace().nth(1).map(|s| s.to_string())
-            })
-            .unwrap_or_default();
-
-        Ok(CommandOutput {
-            stdout: format!("ok {}\n", sha),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        })
-    } else {
-        Ok(output)
-    }
-}
-
-fn git_push(args: &[&str]) -> Result<CommandOutput> {
-    let mut cmd_args = vec!["push"];
-    cmd_args.extend_from_slice(args);
-    let output = run("git", &cmd_args)?;
-
-    if output.success {
-        // Extract branch from output
-        let branch = output
-            .stdout
-            .lines()
-            .next()
-            .and_then(|line| {
-                if line.contains("->") {
-                    line.split("->").nth(1).map(|s| s.trim().to_string())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| "unknown".to_string());
-
-        Ok(CommandOutput {
-            stdout: format!("ok {}\n", branch),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        })
-    } else {
-        Ok(output)
-    }
-}
-
-fn git_pull(args: &[&str]) -> Result<CommandOutput> {
-    let mut cmd_args = vec!["pull"];
-    cmd_args.extend_from_slice(args);
-    let output = run("git", &cmd_args)?;
-
-    if output.stdout.contains("Already up to date") || output.stdout.contains("Already up-to-date")
-    {
-        return Ok(CommandOutput {
-            stdout: "ok up-to-date\n".to_string(),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        });
-    }
-
-    if output.success {
-        // Parse summary line like " 3 files changed, 10 insertions(+), 2 deletions(-)"
-        let summary = output
-            .stdout
-            .lines()
-            .find(|line| line.contains("files changed") || line.contains("file changed"))
-            .unwrap_or("");
-
-        let files = summary.split_whitespace().next().unwrap_or("0").to_string();
-        let added = summary
-            .split("insertion")
-            .next()
-            .and_then(|s| s.split_whitespace().last())
-            .unwrap_or("0")
-            .to_string();
-        let removed = summary
-            .split("deletion")
-            .next()
-            .and_then(|s| s.split_whitespace().last())
-            .unwrap_or("0")
-            .to_string();
-
-        Ok(CommandOutput {
-            stdout: format!("ok {} files +{} -{}\n", files, added, removed),
-            stderr: String::new(),
-            exit_code: 0,
-            success: true,
-        })
-    } else {
-        Ok(output)
-    }
 }
 
 fn git_branch(args: &[&str]) -> Result<CommandOutput> {

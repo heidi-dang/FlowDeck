@@ -64,12 +64,20 @@ enum Commands {
         /// Pattern to search for (case-insensitive substring match)
         pattern: String,
 
-        /// Paths to search (files or directories)
+        /// Explicit path to search
+        #[arg(long)]
+        path: Option<PathBuf>,
+
+        /// Positional paths to search (files or directories)
         paths: Vec<PathBuf>,
 
         /// Filter by symbol kind: function, class, struct, trait, interface, enum, any
         #[arg(long, default_value = "any")]
         kind: String,
+
+        /// Hard cap on total matches returned
+        #[arg(long, default_value = "50")]
+        max_matches: usize,
 
         /// Output format: text or json
         #[arg(long, default_value = "text")]
@@ -87,7 +95,11 @@ enum Commands {
         /// Pattern to search for
         pattern: String,
 
-        /// Paths to search (files or directories)
+        /// Explicit path to search
+        #[arg(long)]
+        path: Option<PathBuf>,
+
+        /// Positional paths to search (files or directories)
         paths: Vec<PathBuf>,
 
         /// Lines of context around each match
@@ -109,6 +121,10 @@ enum Commands {
         /// Output format: text or json
         #[arg(long, default_value = "text")]
         format: String,
+
+        /// Bypass session AST cache
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Read multiple files in one call
@@ -126,6 +142,10 @@ enum Commands {
         #[arg(long)]
         symbol: Option<String>,
 
+        /// Limit lines per file
+        #[arg(long)]
+        limit_per_file: Option<usize>,
+
         /// Output format: text or json
         #[arg(long, default_value = "text")]
         format: String,
@@ -140,6 +160,7 @@ enum Commands {
     },
 
     /// Lightweight cross-file dependency analysis
+
     ///
     /// Example: fdx impact src/payment/fee.rs --direction both
     Impact {
@@ -440,14 +461,19 @@ fn main() {
 
         Commands::Search {
             pattern,
+            path,
             paths,
             kind,
+            max_matches,
             format,
             no_cache,
         } => {
-            if paths.is_empty() {
-                eprintln!("Error: at least one path is required");
-                process::exit(1);
+            let mut search_paths = paths;
+            if let Some(p) = path {
+                search_paths.push(p);
+            }
+            if search_paths.is_empty() {
+                search_paths.push(PathBuf::from("."));
             }
 
             let format = parse_format(&format);
@@ -459,7 +485,14 @@ fn main() {
 
             let cache = AstCache::new();
 
-            match search::search_symbols(&pattern, &paths, kind_filter, no_cache, &cache) {
+            match search::search_symbols(
+                &pattern,
+                &search_paths,
+                kind_filter,
+                max_matches,
+                no_cache,
+                &cache,
+            ) {
                 Ok(matches) => {
                     let mut stdout = std::io::stdout();
                     match format {
@@ -490,16 +523,21 @@ fn main() {
 
         Commands::Grep {
             pattern,
+            path,
             paths,
             context,
             fixed_strings,
             case_sensitive,
             max_matches,
             format,
+            no_cache: _,
         } => {
-            if paths.is_empty() {
-                eprintln!("Error: at least one path is required");
-                process::exit(1);
+            let mut search_paths = paths;
+            if let Some(p) = path {
+                search_paths.push(p);
+            }
+            if search_paths.is_empty() {
+                search_paths.push(PathBuf::from("."));
             }
 
             let format = parse_format(&format);
@@ -509,7 +547,7 @@ fn main() {
 
             match grep::grep_files(
                 &pattern,
-                &paths,
+                &search_paths,
                 context,
                 fixed_strings,
                 case_sensitive,
@@ -561,6 +599,7 @@ fn main() {
             patterns,
             mode,
             symbol,
+            limit_per_file,
             format,
             no_cache,
             max_files,
@@ -578,6 +617,7 @@ fn main() {
                 &patterns,
                 mode,
                 symbol.as_deref(),
+                limit_per_file,
                 format.clone(),
                 no_cache,
                 max_files,
@@ -585,6 +625,7 @@ fn main() {
             ) {
                 Ok((items, _count, truncated)) => {
                     let mut stdout = std::io::stdout();
+
                     match format {
                         OutputFormat::Text => {
                             if let Err(e) =
@@ -931,12 +972,21 @@ fn main() {
                     process::exit(1);
                 }
             };
-            // Project slug from the current working directory's basename.
-            let project_slug = std::path::Path::new(".")
+            let cwd = std::path::Path::new(".");
+            let legacy_name = cwd
                 .canonicalize()
                 .ok()
-                .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_owned()))
+                .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
                 .unwrap_or_default();
+            let project_slug = fdx::paths::project_slug_from_directory(cwd);
+            if !legacy_name.is_empty() {
+                if let Err(e) =
+                    fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name)
+                {
+                    eprintln!("Error: Legacy planning migration failed: {}", e);
+                    process::exit(1);
+                }
+            }
             let result = match action.as_str() {
                 "append" => fdx::commands::context::append(
                     &home,
@@ -972,11 +1022,22 @@ fn main() {
                     process::exit(1);
                 }
             };
-            let project_slug = std::path::Path::new(".")
+            let cwd = std::path::Path::new(".");
+            let legacy_name = cwd
                 .canonicalize()
                 .ok()
-                .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_owned()))
+                .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
                 .unwrap_or_default();
+            let project_slug = fdx::paths::project_slug_from_directory(cwd);
+            if !legacy_name.is_empty() {
+                if let Err(e) =
+                    fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name)
+                {
+                    eprintln!("Error: Legacy planning migration failed: {}", e);
+                    process::exit(1);
+                }
+            }
+
             let result = match action.as_str() {
                 "record" => fdx::commands::decisions::record(
                     &home,
@@ -1003,6 +1064,7 @@ fn main() {
 fn parse_mode(mode: &str) -> ReadMode {
     match mode.parse::<ReadMode>() {
         Ok(m) => m,
+
         Err(e) => {
             eprintln!("Error: {}", e);
             process::exit(1);

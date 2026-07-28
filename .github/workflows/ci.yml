@@ -31,7 +31,6 @@ jobs:
       - name: Coverage check (unit tests)
         run: bun test tests/check-coverage.test.ts
       - run: 'node scripts/check-coverage.mjs && echo "Coverage threshold met" || echo "Coverage check note: lcov generation unavailable"'
-
   test-matrix:
     name: Test Matrix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -67,17 +66,26 @@ jobs:
       - run: npm run validate:docs
       - name: Pack and inspect tarball
         run: |
-          PACKAGE=$(npm pack 2>/dev/null)
+          cargo build --manifest-path crates/fdx/Cargo.toml
+          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
           echo "Package: $PACKAGE"
-          tar tzf "$PACKAGE" | grep -q "scripts/config-mutator.mjs" && echo "PASS: scripts/config-mutator.mjs in tarball" || (echo "FAIL: scripts/config-mutator.mjs missing" && exit 1)
-          tar tzf "$PACKAGE" | head -20
+          tar tzf "$PACKAGE" > /tmp/tarball-files.txt
+          if grep -E '(^|/)target/|incremental/|\.tmp\.|\.bak\.' /tmp/tarball-files.txt; then
+            echo "FAIL: Forbidden build or backup artifacts found in npm package"
+            exit 1
+          fi
+          grep -q "package/crates/fdx/Cargo.toml" /tmp/tarball-files.txt || { echo "FAIL: Cargo.toml missing"; exit 1; }
+          grep -q "package/crates/fdx/src/" /tmp/tarball-files.txt || { echo "FAIL: crates/fdx/src missing"; exit 1; }
           tar xzf "$PACKAGE" -O package/package.json | node -e "process.stdin.on('data',d=>{const p=JSON.parse(d);console.assert(p.name==='@heidi-dang/flowdeck','Wrong: '+p.name);console.log('PASS: '+p.name+' v'+p.version)})"
-          rm -f "$PACKAGE"
+          echo "PASS: tarball contents verified clean"
+          rm -f "$PACKAGE" /tmp/tarball-files.txt
+
       - name: Packed package full CLI execution (isolated HOME)
         run: |
           set -e
           cd "$GITHUB_WORKSPACE"
-          PACKAGE=$(npm pack 2>/dev/null)
+          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
+
           echo "Package: $PACKAGE"
           TMP_ROOT=$(mktemp -d)
           TMP_APP="$TMP_ROOT/app"
@@ -93,8 +101,17 @@ jobs:
           echo "PASS: install"
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck verify || { echo "FAIL: verify"; exit 1; }
           echo "PASS: verify"
-          set +e; HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck doctor; dc=$?; set -e; if [ $dc -gt 1 ]; then echo "FAIL: doctor (exit $dc)"; exit 1; fi
-          echo "PASS: doctor"
+          set +e
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck doctor
+          DOCTOR_EXIT=$?
+          set -e
+          if [ "$DOCTOR_EXIT" -gt 1 ]; then
+            echo "FAIL: doctor exited with status $DOCTOR_EXIT (expected 0 or 1)"
+            exit "$DOCTOR_EXIT"
+          fi
+          echo "PASS: doctor (exit code $DOCTOR_EXIT)"
+
+
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck uninstall || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: uninstall"
           ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs || { echo "FAIL: config-mutator.mjs missing"; exit 1; }
@@ -245,6 +262,58 @@ jobs:
         run: target/debug/fdx --version
       - run: cargo test --manifest-path crates/fdx/Cargo.toml --all
 
+  test-fdx-parity:
+    name: FDX Native Parity
+    runs-on: ubuntu-latest
+    needs: [test-matrix, build, rust-gates]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install dependencies
+        run: npm ci
+      - name: Build plugin
+        run: npm run build
+      - name: Build FDX binary
+        run: cargo build --manifest-path crates/fdx/Cargo.toml
+      - name: Verify FDX binary path
+        run: |
+          BINARY="target/debug/fdx"
+          if [ ! -f "$BINARY" ]; then
+            BINARY="crates/fdx/target/debug/fdx"
+          fi
+          test -f "$BINARY" || { echo "Binary not found"; exit 1; }
+
+          "$BINARY" --version
+          echo "FDX_BINARY_PATH=$(pwd)/$BINARY" >> $GITHUB_ENV
+      - name: Run shared fixture tests
+        run: bun test tests/fdx-path-parity.test.ts
+      - name: Run dual-AST tests
+        run: bun test tests/fdx-dual-ast.test.ts
+      - name: Run git-policy tests
+        run: bun test tests/fdx-git-policy.test.ts
+      - name: Run native parity with fallback disabled
+        env:
+          FDX_DISABLE_FALLBACK: "1"
+          FDX_BINARY_PATH: ${{ env.FDX_BINARY_PATH }}
+        run: node scripts/verify-fdx-parity.mjs
+      - name: Emit execution proof
+        run: |
+          echo "=== Native FDX Execution Proof ==="
+          echo "Binary: $FDX_BINARY_PATH"
+          "$FDX_BINARY_PATH" search --help
+          echo "FDX_DISABLE_FALLBACK=1"
+          echo "Shared fixture: tests/fixtures/path-scheme.json"
+          echo "All parity tests completed."
+
+
+
   security-scan:
     name: Security Scan
     runs-on: ubuntu-latest
@@ -336,7 +405,17 @@ jobs:
           echo "=== Testing packed CLI ==="
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck install || { echo "FAIL: install"; exit 1; }
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck verify || { echo "FAIL: verify"; exit 1; }
-          set +e; HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck doctor; dc=$?; set -e; if [ $dc -gt 1 ]; then echo "FAIL: doctor (exit $dc)"; exit 1; fi
+          set +e
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck doctor
+          DOCTOR_EXIT=$?
+          set -e
+          if [ "$DOCTOR_EXIT" -gt 1 ]; then
+            echo "FAIL: doctor exited with status $DOCTOR_EXIT (expected 0 or 1)"
+            exit "$DOCTOR_EXIT"
+          fi
+          echo "PASS: doctor (exit code $DOCTOR_EXIT)"
+
+
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck rollback || { echo "FAIL: rollback"; exit 1; }
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck uninstall --force || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: all commands"

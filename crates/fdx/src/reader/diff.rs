@@ -139,7 +139,7 @@ pub fn diff_against(
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("git diff failed: {}", stderr);
+        anyhow::bail!("git diff failed (invalid base ref): {}", stderr);
     }
 
     let diff_text = String::from_utf8_lossy(&output.stdout);
@@ -188,7 +188,15 @@ pub fn diff_against(
         let provider = detect_language(&file_path);
 
         let (symbol_changes, file_level_changes) = if let Some(ref prov) = provider {
-            match analyze_file_changes(&file_path, patched_file, prov, cache, options.no_cache) {
+            match analyze_file_changes(
+                &file_path,
+                patched_file,
+                prov,
+                cache,
+                options.no_cache,
+                &options.commit,
+                &options.root,
+            ) {
                 Ok((sc, flc)) => (sc, flc),
                 Err(_) => {
                     // Parse error — report as plain file change
@@ -197,6 +205,7 @@ pub fn diff_against(
             }
         } else {
             // Non-code file — no symbol resolution
+
             (Vec::new(), Vec::new())
         };
 
@@ -214,13 +223,15 @@ pub fn diff_against(
     Ok(results)
 }
 
-/// Analyze changes for a single file, resolving to symbols.
+/// Analyze changes for a single file, resolving to symbols via dual-AST parsing.
 fn analyze_file_changes(
     file_path: &Path,
     patched_file: &unidiff::PatchedFile,
     provider: &crate::reader::code::languages::LanguageProvider,
     cache: &AstCache,
     no_cache: bool,
+    commit: &str,
+    root: &Path,
 ) -> anyhow::Result<(Vec<SymbolChange>, Vec<FileLevelChange>)> {
     let source = std::fs::read_to_string(file_path)?;
 
@@ -241,109 +252,170 @@ fn analyze_file_changes(
     };
 
     let reader = PrototypeReader::new();
-    let symbols = reader.extract_prototypes(file_path, &source, &tree)?;
+    let target_symbols = reader.extract_prototypes(file_path, &source, &tree)?;
 
-    // Collect all changed line ranges from the diff
-    let mut changed_lines: Vec<(usize, ChangeType)> = Vec::new(); // (target_line_number, change_type)
+    // Attempt to fetch base ref source via git show
+    let rel_path = file_path.strip_prefix(root).unwrap_or(file_path);
+    let git_show = Command::new("git")
+        .arg("show")
+        .arg(format!(
+            "{}:{}",
+            commit,
+            rel_path.to_string_lossy().replace('\\', "/")
+        ))
+        .current_dir(root)
+        .output();
+
+    let base_source = match git_show {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+        _ => String::new(),
+    };
+
+    let base_symbols = if !base_source.is_empty() {
+        if let Ok(base_tree) = parse_source(&base_source, (provider.grammar)()) {
+            reader
+                .extract_prototypes(file_path, &base_source, &base_tree)
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    // Separate added and removed lines
+
+    let mut added_lines = Vec::new();
+    let mut removed_lines = Vec::new();
 
     for hunk in patched_file.hunks() {
         for line in hunk.lines() {
             if line.is_added() {
                 if let Some(target_line) = line.target_line_no {
-                    changed_lines.push((target_line, ChangeType::Added));
+                    added_lines.push(target_line);
                 }
             } else if line.is_removed() {
                 if let Some(source_line) = line.source_line_no {
-                    changed_lines.push((source_line, ChangeType::Deleted));
+                    removed_lines.push(source_line);
                 }
             }
         }
     }
 
-    // Map changed lines to symbols
+    // Map changed lines using qualified scoped identity (parent_scope/kind:name)
+    #[allow(clippy::type_complexity)]
     let mut symbol_change_map: std::collections::HashMap<
         String,
-        (ChangeType, usize, usize, usize, usize),
+        (ChangeType, String, String, usize, usize, usize, usize),
     > = std::collections::HashMap::new();
-    // name -> (change_type, line_start, line_end, lines_added, lines_removed)
 
     let mut file_level_raw: Vec<(usize, String, ChangeType)> = Vec::new();
 
-    for (line_no, change_type) in changed_lines {
-        let mut matched_symbol = false;
+    // Process added lines against target_symbols
 
-        for sym in &symbols {
+    for line_no in added_lines {
+        let mut matched = false;
+        for sym in &target_symbols {
             if line_no >= sym.line_start && line_no <= sym.line_end {
-                matched_symbol = true;
+                matched = true;
+                let key = sym.scoped_identity();
+                let is_sig = line_no == sym.line_start;
+                let is_new_sym = !base_symbols.iter().any(|b| b.scoped_identity() == key);
 
-                // Determine if signature or body changed
-                // Signature is the first line of the symbol
-                let is_signature_line = line_no == sym.line_start;
-
-                let entry = symbol_change_map
-                    .entry(sym.name.clone())
-                    .or_insert_with(|| {
-                        (
-                            if is_signature_line {
-                                ChangeType::SignatureChanged
-                            } else {
-                                ChangeType::BodyChanged
-                            },
-                            sym.line_start,
-                            sym.line_end,
-                            0,
-                            0,
-                        )
-                    });
-
-                // Upgrade body_changed to signature_changed if needed
-                if is_signature_line && entry.0 == ChangeType::BodyChanged {
-                    entry.0 = ChangeType::SignatureChanged;
-                }
-
-                if change_type == ChangeType::Added {
-                    entry.3 += 1;
+                let change_type = if is_new_sym {
+                    ChangeType::Added
+                } else if is_sig {
+                    ChangeType::SignatureChanged
                 } else {
-                    entry.4 += 1;
-                }
+                    ChangeType::BodyChanged
+                };
 
-                break; // A line belongs to one symbol
+                let entry = symbol_change_map.entry(key).or_insert_with(|| {
+                    (
+                        change_type,
+                        sym.kind.clone(),
+                        sym.name.clone(),
+                        sym.line_start,
+                        sym.line_end,
+                        0,
+                        0,
+                    )
+                });
+                entry.5 += 1;
+                break;
             }
         }
-
-        if !matched_symbol {
-            // File-level change
-            let raw = if change_type == ChangeType::Added {
-                format!("+ {}", source.lines().nth(line_no - 1).unwrap_or(""))
-            } else {
-                format!("- {}", source.lines().nth(line_no - 1).unwrap_or(""))
-            };
-            file_level_raw.push((line_no, raw, change_type));
+        if !matched {
+            let raw = format!(
+                "+ {}",
+                source.lines().nth(line_no.saturating_sub(1)).unwrap_or("")
+            );
+            file_level_raw.push((line_no, raw, ChangeType::Added));
         }
     }
 
-    // Build symbol changes
+    // Process removed lines against base_symbols
+
+    for line_no in removed_lines {
+        let mut matched = false;
+        for sym in &base_symbols {
+            if line_no >= sym.line_start && line_no <= sym.line_end {
+                matched = true;
+                let key = sym.scoped_identity();
+                let is_deleted_sym = !target_symbols.iter().any(|t| t.scoped_identity() == key);
+                let change_type = if is_deleted_sym {
+                    ChangeType::Deleted
+                } else {
+                    ChangeType::BodyChanged
+                };
+
+                let entry = symbol_change_map.entry(key).or_insert_with(|| {
+                    (
+                        change_type,
+                        sym.kind.clone(),
+                        sym.name.clone(),
+                        sym.line_start,
+                        sym.line_end,
+                        0,
+                        0,
+                    )
+                });
+                entry.6 += 1;
+                break;
+            }
+        }
+        if !matched {
+            let raw = format!(
+                "- {}",
+                base_source
+                    .lines()
+                    .nth(line_no.saturating_sub(1))
+                    .unwrap_or("")
+            );
+            file_level_raw.push((line_no, raw, ChangeType::Deleted));
+        }
+    }
+
     let mut symbol_changes: Vec<SymbolChange> = Vec::new();
-    for sym in &symbols {
-        if let Some((change_type, line_start, line_end, lines_added, lines_removed)) =
-            symbol_change_map.get(&sym.name)
-        {
-            symbol_changes.push(SymbolChange {
-                kind: sym.kind.clone(),
-                name: sym.name.clone(),
-                change_type: change_type.clone(),
-                line_start: *line_start,
-                line_end: *line_end,
-                lines_added: *lines_added,
-                lines_removed: *lines_removed,
-            });
-        }
+
+    for (_, (change_type, kind, name, line_start, line_end, lines_added, lines_removed)) in
+        symbol_change_map
+    {
+        symbol_changes.push(SymbolChange {
+            kind,
+            name,
+            change_type,
+            line_start,
+            line_end,
+            lines_added,
+            lines_removed,
+        });
     }
 
-    // Preserve source order
     symbol_changes.sort_by_key(|sc| sc.line_start);
 
     // Build file-level changes — group contiguous lines
+
     let mut file_level_changes = Vec::new();
     if !file_level_raw.is_empty() {
         file_level_raw.sort_by_key(|(line, _, _)| *line);

@@ -16,6 +16,7 @@ fn test_json_output_format() {
             line_start: 1,
             line_end: 3,
             body: None,
+            parent_scope: "module:top".to_string(),
         }],
         dependencies: vec![],
         parse_error: None,
@@ -39,6 +40,7 @@ fn test_text_output_format() {
             line_start: 1,
             line_end: 3,
             body: None,
+            parent_scope: "module:top".to_string(),
         },
         Symbol {
             kind: "struct".to_string(),
@@ -48,6 +50,7 @@ fn test_text_output_format() {
             line_start: 5,
             line_end: 7,
             body: None,
+            parent_scope: "module:top".to_string(),
         },
     ];
 

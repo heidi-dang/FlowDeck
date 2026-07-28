@@ -1,0 +1,64 @@
+[
+  {
+    "label": "same basename different parent",
+    "input": "/home/user/projects/FlowDeck",
+    "expected_id_prefix": "FlowDeck-"
+  },
+  {
+    "label": "same basename different parent 2",
+    "input": "/home/other/work/FlowDeck",
+    "expected_id_prefix": "FlowDeck-",
+    "different_from": "/home/user/projects/FlowDeck"
+  },
+  {
+    "label": "hyphenated name",
+    "input": "/home/user/my-project-repo",
+    "expected_id_prefix": "my-project-repo-"
+  },
+  {
+    "label": "name with multiple hyphens",
+    "input": "/home/user/some---repo--name",
+    "expected_id_prefix": "some---repo--name-"
+  },
+  {
+    "label": "name ending in eight hex chars",
+    "input": "/home/user/FlowDeck-1a77820c",
+    "expected_id_prefix": "FlowDeck-1a77820c-"
+  },
+  {
+    "label": "name with spaces",
+    "input": "/home/user/my project folder",
+    "expected_id_prefix": "my project folder-"
+  },
+  {
+    "label": "unicode name",
+    "input": "/home/user/\u00fcber-project",
+    "expected_id_prefix": "\u00fcber-project-"
+  },
+  {
+    "label": "relative path",
+    "input": "relative/path/to/project",
+    "expected_id_prefix": "project-"
+  },
+  {
+    "label": "canonical path",
+    "input": "/opt/projects/flowdeck-plugin",
+    "expected_id_prefix": "flowdeck-plugin-"
+  },
+  {
+    "label": "windows drive letter path",
+    "input": "C:\\Users\\me\\projects\\FlowDeck",
+    "expected_id_prefix": "FlowDeck-"
+  },
+  {
+    "label": "windows separators",
+    "input": "D:\\work\\my-repo",
+    "expected_id_prefix": "my-repo-"
+  },
+  {
+    "label": "symlink path",
+    "input": "/home/user/symlinked-project",
+    "expected_id_prefix": "symlinked-project-",
+    "note": "When canonicalized, this resolves to the target if it's a symlink"
+  }
+]

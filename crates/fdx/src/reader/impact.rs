@@ -61,30 +61,13 @@ pub fn analyze_impact(
         let mut outbound = Vec::new();
         let mut inbound = Vec::new();
 
+        if depth > 1 {
+            anyhow::bail!("Impact analysis depth > 1 is not supported until full multi-level dependency graph traversal is implemented; specify --depth 1");
+        }
+
         if direction == ImpactDirection::Out || direction == ImpactDirection::Both {
             let direct = find_outbound_deps(target, &target_source, root, &file_index, cache)?;
             outbound.extend(direct);
-
-            if depth >= 2 {
-                let mut seen = HashSet::new();
-                for dep in &outbound {
-                    if let Some(ref path_str) = dep.path {
-                        let dep_path = PathBuf::from(path_str);
-                        if seen.contains(&dep_path) {
-                            continue;
-                        }
-                        seen.insert(dep_path.clone());
-                        if let Ok(source) = std::fs::read_to_string(&dep_path) {
-                            if let Ok(_next) =
-                                find_outbound_deps(&dep_path, &source, root, &file_index, cache)
-                            {
-                                // We don't add second-level deps to outbound to keep it clean;
-                                // just resolve prototypes for the first level
-                            }
-                        }
-                    }
-                }
-            }
         }
 
         if direction == ImpactDirection::In || direction == ImpactDirection::Both {
@@ -92,6 +75,7 @@ pub fn analyze_impact(
 
             if depth >= 2 {
                 let mut seen = HashSet::new();
+
                 for dep in &inbound {
                     if let Some(ref path_str) = dep.path {
                         let dep_path = PathBuf::from(path_str);
@@ -349,22 +333,30 @@ fn extract_js_imports(path: &Path, source: &str) -> anyhow::Result<Vec<ImportRef
 
         // import ... from './path'
         if trimmed.starts_with("import ") && trimmed.contains(" from ") {
-            if let Some(start) = trimmed.rfind('"') {
-                if let Some(end) = trimmed[..start].rfind('"') {
-                    let import_path = &trimmed[end + 1..start];
-                    let resolved = resolve_relative_path(path, import_path);
-                    imports.push(ImportRef {
-                        name: import_path.to_string(),
-                        resolved_path: resolved,
-                        line_number,
-                    });
+            let quote = if trimmed.contains('"') {
+                Some('"')
+            } else if trimmed.contains('\'') {
+                Some('\'')
+            } else {
+                None
+            };
+            if let Some(q) = quote {
+                if let Some(start) = trimmed.rfind(q) {
+                    if let Some(end) = trimmed[..start].rfind(q) {
+                        let import_path = &trimmed[end + 1..start];
+                        let resolved = resolve_relative_path(path, import_path);
+                        imports.push(ImportRef {
+                            name: import_path.to_string(),
+                            resolved_path: resolved,
+                            line_number,
+                        });
+                    }
                 }
             }
-        }
-        // require('./path')
-        else if trimmed.contains("require(") {
+        } else if trimmed.contains("require(") {
             if let Some(start) = trimmed.find("require(") {
                 let after = &trimmed[start + 8..];
+
                 if let Some(end) = after.find(')') {
                     let inner = &after[..end];
                     let clean = inner.trim().trim_matches('"').trim_matches('\'');

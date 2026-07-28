@@ -1,6 +1,6 @@
 import { join, dirname, resolve, basename } from "path"
 import { homedir } from "os"
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from "fs"
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, realpathSync, rmSync, renameSync } from "fs"
 import { createHash } from "crypto"
 import { withLock } from "../services/async-lock"
 
@@ -22,19 +22,62 @@ export { codebaseDir } from "./codebase-state"
 // ─── Collision-safe project identity ──────────────────────────────────────
 
 /**
- * Generate a stable project identifier from canonical repository root and
- * git remote identity when available.
+ * Normalize path deterministically for project ID generation.
+ * Resolves real path if exists, strips UNC prefix, resolves relative components.
+ */
+export function normalizePathForId(directory: string): string {
+  let dir = directory.replace(/\\/g, "/")
+  if (/^[a-zA-Z]:/.test(dir)) {
+    dir = dir[0].toUpperCase() + dir.slice(1)
+  }
+  let resolved = resolve(dir).replace(/\\/g, "/")
+  if (existsSync(resolved)) {
+    try {
+      resolved = realpathSync(resolved).replace(/\\/g, "/")
+    } catch {}
+  }
+  if (resolved.startsWith("//?/")) {
+    resolved = resolved.slice(4)
+  } else if (resolved.startsWith("\\\\?\\")) {
+    resolved = resolved.slice(4)
+  }
+  if (/^[a-zA-Z]:/.test(resolved)) {
+    resolved = resolved[0].toUpperCase() + resolved.slice(1)
+  }
+  if (resolved.length > 3 && resolved.endsWith("/")) {
+    resolved = resolved.slice(0, -1)
+  }
+  return resolved
+}
+
+
+
+/**
+ * Generate a stable project identifier from canonical repository root.
  *
  * Format: `<basename>-<short-hash>` where short-hash is the first 8 chars
- * of a SHA-256 hash of the resolved directory path.
- * This prevents collisions between same-named repos in different directories.
+ * of a SHA-256 hash of the normalized directory path.
  */
 export function generateProjectId(directory: string): string {
-  const resolvedPath = resolve(directory)
-  const name = basename(resolvedPath)
-  // Create a hash of the full resolved path to disambiguate
-  const hash = createHash("sha256").update(resolvedPath).digest("hex").slice(0, 8)
+  const normPath = normalizePathForId(directory)
+  const name = basename(normPath) || normPath
+  const hash = createHash("sha256").update(normPath).digest("hex").slice(0, 8)
   return `${name}-${hash}`
+}
+
+function copyDirRecursiveSync(src: string, dest: string): void {
+  if (!existsSync(dest)) mkdirSync(dest, { recursive: true })
+  const entries = readdirSync(src)
+  for (const entry of entries) {
+    const srcPath = join(src, entry)
+    const destPath = join(dest, entry)
+    const st = statSync(srcPath)
+    if (st.isDirectory()) {
+      copyDirRecursiveSync(srcPath, destPath)
+    } else {
+      writeFileSync(destPath, readFileSync(srcPath))
+    }
+  }
 }
 
 /**
@@ -49,52 +92,42 @@ export function planningDir(directory: string): string {
   const id = generateProjectId(directory)
   const newDir = join(root, id)
 
-  const resolvedPath = resolve(directory)
+  const resolvedPath = normalizePathForId(directory)
   const name = basename(resolvedPath)
   const legacyDir = join(root, name)
 
   const needsMigration = existsSync(legacyDir) &&
+                         existsSync(join(legacyDir, "STATE.md")) &&
                          (!existsSync(newDir) || !existsSync(join(newDir, "STATE.md")))
 
   if (needsMigration) {
-    // Only migrate if it looks like a valid planning dir
-    if (existsSync(join(legacyDir, "STATE.md"))) {
-      try {
-        mkdirSync(newDir, { recursive: true })
-        const files = readdirSync(legacyDir)
-        for (const file of files) {
-          const src = join(legacyDir, file)
-          const dest = join(newDir, file)
-          if (statSync(src).isFile()) {
-            writeFileSync(dest, readFileSync(src))
-          } else {
-            // Very simple dir copy for topics
-            mkdirSync(dest, { recursive: true })
-            const subfiles = readdirSync(src)
-            for (const sub of subfiles) {
-              if (statSync(join(src, sub)).isFile()) {
-                writeFileSync(join(dest, sub), readFileSync(join(src, sub)))
-              }
-            }
-          }
-        }
-        // Backup the legacy directory
-        try {
-          const fs = require("fs")
-          fs.renameSync(legacyDir, legacyDir + `.bak.${Date.now()}`)
-        } catch {}
-      } catch {
-        // Interrupted migration: clean up so it can retry
-        try {
-          const fs = require("fs")
-          fs.rmSync(newDir, { recursive: true, force: true })
-        } catch {}
+    const ts = Date.now()
+    const tmpDir = join(root, `${id}.tmp.${ts}`)
+    try {
+      mkdirSync(tmpDir, { recursive: true })
+      copyDirRecursiveSync(legacyDir, tmpDir)
+
+      if (!existsSync(newDir)) {
+        renameSync(tmpDir, newDir)
+      } else {
+        copyDirRecursiveSync(tmpDir, newDir)
+        rmSync(tmpDir, { recursive: true, force: true })
       }
+
+      const backupDir = join(root, `${name}.bak.${ts}`)
+      try {
+        renameSync(legacyDir, backupDir)
+      } catch {}
+    } catch {
+      try {
+        if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true })
+      } catch {}
     }
   }
 
   return newDir
 }
+
 
 export function statePath(directory: string): string {
   return join(planningDir(directory), STATE_FILE)

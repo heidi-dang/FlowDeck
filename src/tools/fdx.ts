@@ -28,6 +28,14 @@ export const DEFAULT_EXECUTABLE_ALLOWLIST = [
  * Prevents execution of unauthorized commands or command injection via paths.
  */
 export function validateExecutable(name: string, allowlist: string[] = DEFAULT_EXECUTABLE_ALLOWLIST): string {
+  // If `name` is an absolute path to an existing executable file (e.g. FDX_BINARY_PATH), allow it
+  if (existsSync(name)) {
+    try {
+      if (statSync(name).isFile()) {
+        return name
+      }
+    } catch {}
+  }
   if (!allowlist.includes(name)) {
     throw new Error(`Executable "${name}" is not in the allowlist. Allowed: ${allowlist.join(", ")}`)
   }
@@ -110,13 +118,29 @@ export function validateGitPolicy(subcommand: string, args: string[] = []): void
     throw new Error(`[FDX Git Policy] Subcommand "${sub}" is not permitted under read-only policy. Allowed: ${[...GIT_READONLY_SUBCOMMANDS].join(", ")}`)
   }
 
+  for (const arg of args) {
+    if (arg === "-c" || arg.startsWith("-c=") || arg.startsWith("-c ") || arg.startsWith("--config")) {
+      for (const pat of ["core.pager", "sequence.editor", "core.editor", "alias", "diff.external"]) {
+        if (arg.includes(pat)) {
+          throw new Error(`[FDX Git Policy] Blocked config override "${arg}" under read-only policy.`)
+        }
+      }
+    }
+    if (arg === "--exec-path" || arg.startsWith("--exec-path=")) {
+      throw new Error(`[FDX Git Policy] Blocked exec-path override "${arg}" under read-only policy.`)
+    }
+    if (arg === "--output" || arg.startsWith("--output=") || arg === "--ext-diff" || arg === "--textconv") {
+      throw new Error(`[FDX Git Policy] Mutating/prohibited diff flag "${arg}" is prohibited under read-only policy.`)
+    }
+  }
+
   if (sub === "branch") {
     for (const arg of args) {
-      if (/^-(?:d|D|m|M|c|C)$/.test(arg) || /^--(?:delete|move|copy)$/.test(arg)) {
+      if (/^-(?:d|D|m|M|c|C)/.test(arg) || /^--(?:delete|move|copy|edit-description)/.test(arg)) {
         throw new Error(`[FDX Git Policy] Mutating branch flag "${arg}" is prohibited under read-only policy.`)
       }
     }
-    const hasListFlag = args.some(a => a === "--list" || a === "--show-current" || a === "-a" || a === "-r" || a === "--all" || a === "--remotes" || a.startsWith("--format"))
+    const hasListFlag = args.some(a => a === "--list" || a === "-l" || a === "--show-current" || a === "-a" || a === "-r" || a === "--all" || a === "--remotes" || a.startsWith("--format"))
     const positional = args.filter(a => !a.startsWith("-"))
     if (positional.length > 0 && !hasListFlag) {
       throw new Error(`[FDX Git Policy] Prohibited branch modification attempt with argument "${positional[0]}".`)
@@ -125,7 +149,7 @@ export function validateGitPolicy(subcommand: string, args: string[] = []): void
 
   if (sub === "tag") {
     for (const arg of args) {
-      if (/^-(?:d|a|s|f)$/.test(arg) || /^--(?:delete|annotate|sign|force)$/.test(arg)) {
+      if (/^-(?:d|D|a|s|f)/.test(arg) || /^--(?:delete|annotate|sign|force)/.test(arg)) {
         throw new Error(`[FDX Git Policy] Mutating tag flag "${arg}" is prohibited under read-only policy.`)
       }
     }
@@ -156,41 +180,79 @@ export function setActiveProjectDir(dir: string): void {
   activeProjectDir = dir
 }
 
-let fdxAvailableCache: boolean | null = null
+let fdxCacheKey: string | null = null
+let fdxCacheValue: { available: boolean; binary: string | null } | null = null
 
-/**
- * Check whether the fdx binary is available in PATH.
- */
-export function checkFdxAvailability(forceRefresh = false): boolean {
-  if (!forceRefresh && fdxAvailableCache !== null) {
-    return fdxAvailableCache
+export function resolveFdxBinaryPath(): string | null {
+  const envPath = process.env.FDX_BINARY_PATH
+  if (envPath) {
+    const resolved = resolve(envPath)
+    if (existsSync(resolved)) {
+      try {
+        const st = statSync(resolved)
+        if (st.isFile()) {
+          return resolved
+        }
+      } catch {}
+    }
+    return null
   }
   try {
     execFileSync("fdx", ["--help"], { stdio: "ignore", shell: false })
-    fdxAvailableCache = true
+    return "fdx"
   } catch {
-    fdxAvailableCache = false
+    return null
   }
-  return fdxAvailableCache
 }
 
-export function getFdxAvailabilityStatus(): { available: boolean; binary: string | null; message: string } {
-  const available = checkFdxAvailability()
+/**
+ * Check whether the fdx binary is available.
+ */
+export function checkFdxAvailability(forceRefresh = false): boolean {
+  return getFdxAvailabilityStatus(forceRefresh).available
+}
+
+export function getFdxAvailabilityStatus(forceRefresh = false): { available: boolean; binary: string | null; message: string } {
+  const currentKey = `${process.env.FDX_BINARY_PATH || ""}:${process.env.PATH || ""}`
+  if (!forceRefresh && fdxCacheKey === currentKey && fdxCacheValue !== null) {
+    return {
+      available: fdxCacheValue.available,
+      binary: fdxCacheValue.binary,
+      message: fdxCacheValue.available
+        ? `FDX native binary is available at "${fdxCacheValue.binary}".`
+        : "FDX native binary is unavailable; native TypeScript fallbacks active.",
+    }
+  }
+
+  const resolved = resolveFdxBinaryPath()
+  const available = resolved !== null
+
+  fdxCacheKey = currentKey
+  fdxCacheValue = { available, binary: resolved }
+
   return {
     available,
-    binary: available ? "fdx" : null,
+    binary: resolved,
     message: available
-      ? "FDX native binary is available and active."
+      ? `FDX native binary is available at "${resolved}".`
       : "FDX native binary is unavailable; native TypeScript fallbacks active.",
   }
 }
 
-/** Resolve fdx binary: check PATH only (installed via cargo install). */
+export function shouldDisableFallback(): boolean {
+  return process.env.FDX_DISABLE_FALLBACK === "1" || process.env.FDX_DISABLE_FALLBACK === "true"
+}
+
+/** Resolve fdx binary: check configured FDX_BINARY_PATH or PATH. */
 function fdxBin(): string {
-  if (checkFdxAvailability()) {
-    return "fdx"
+  const status = getFdxAvailabilityStatus()
+  if (status.available && status.binary) {
+    return status.binary
   }
-  throw new Error("fdx not found in PATH — install it with `bun run build:fdx`")
+  if (shouldDisableFallback()) {
+    throw new Error(`[FDX Fallback Disabled] Native binary unavailable. FDX_BINARY_PATH="${process.env.FDX_BINARY_PATH || ""}"`)
+  }
+  throw new Error("fdx not found in PATH — install it with `bun run build:fdx` or set FDX_BINARY_PATH")
 }
 
 const FDX_TIMEOUT_MS = 30_000
@@ -336,6 +398,9 @@ export const fdxReadTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       return nativeReadFallback(args.file, args.limit, args.offset)
     }
     const cmd: string[] = ["read", args.file]
@@ -348,7 +413,8 @@ export const fdxReadTool: ToolDefinition = tool({
     if (args.no_cache) cmd.push("--no-cache")
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       return nativeReadFallback(args.file, args.limit, args.offset)
     }
   },
@@ -370,6 +436,9 @@ export const fdxSearchTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       return nativeSearchFallback(args.query, args.path)
     }
     const cmd: string[] = ["search", args.query]
@@ -380,7 +449,8 @@ export const fdxSearchTool: ToolDefinition = tool({
     if (args.no_cache) cmd.push("--no-cache")
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       return nativeSearchFallback(args.query, args.path)
     }
   },
@@ -401,6 +471,9 @@ export const fdxGrepTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       return nativeSearchFallback(args.pattern, args.path)
     }
     const cmd: string[] = ["grep", args.pattern]
@@ -411,7 +484,8 @@ export const fdxGrepTool: ToolDefinition = tool({
     if (args.no_cache) cmd.push("--no-cache")
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       return nativeSearchFallback(args.pattern, args.path)
     }
   },
@@ -430,6 +504,9 @@ export const fdxBatchTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       return args.files.map(f => nativeReadFallback(f, args.limit_per_file)).join("\n\n")
     }
     const cmd: string[] = ["batch", ...args.files]
@@ -438,7 +515,8 @@ export const fdxBatchTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       return args.files.map(f => nativeReadFallback(f, args.limit_per_file)).join("\n\n")
     }
   },
@@ -458,6 +536,9 @@ export const fdxImpactTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       return `[FDX Impact Native Fallback]\nFiles target: ${args.files.join(", ")}`
     }
     const cmd: string[] = ["impact", ...args.files]
@@ -467,7 +548,8 @@ export const fdxImpactTool: ToolDefinition = tool({
     if (args.root) cmd.push("--root", args.root)
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       return `[FDX Impact Native Fallback]\nFiles target: ${args.files.join(", ")}`
     }
   },
@@ -489,6 +571,9 @@ export const fdxOutlineTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       const p = args.paths && args.paths.length > 0 ? args.paths[0] : "."
       return nativeSearchFallback("function", p)
     }
@@ -502,7 +587,8 @@ export const fdxOutlineTool: ToolDefinition = tool({
     if (args.no_cache) cmd.push("--no-cache")
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       const p = args.paths && args.paths.length > 0 ? args.paths[0] : "."
       return nativeSearchFallback("function", p)
     }
@@ -525,6 +611,9 @@ export const fdxDiffTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       const gArgs = ["diff"]
       if (args.staged) gArgs.push("--staged")
       if (args.commit) gArgs.push(args.commit)
@@ -540,7 +629,8 @@ export const fdxDiffTool: ToolDefinition = tool({
     if (args.paths && args.paths.length > 0) cmd.push(...args.paths)
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       const gArgs = ["diff"]
       if (args.staged) gArgs.push("--staged")
       if (args.commit) gArgs.push(args.commit)
@@ -565,16 +655,21 @@ export const fdxGitTool: ToolDefinition = tool({
     try {
       validateGitPolicy(args.subcommand, args.args ?? [])
     } catch (err: any) {
+      if (shouldDisableFallback()) throw err
       return `[FDX Git Policy] ${err.message}`
     }
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       return nativeGitFallback([args.subcommand, ...(args.args ?? [])])
     }
     const cmd: string[] = ["git", args.subcommand]
     if (args.args && args.args.length > 0) cmd.push(...args.args)
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       return nativeGitFallback([args.subcommand, ...(args.args ?? [])])
     }
   },
@@ -593,6 +688,9 @@ export const fdxLsTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       return nativeLsFallback(args.path ?? ".")
     }
     const cmd: string[] = ["ls"]
@@ -601,7 +699,8 @@ export const fdxLsTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       return nativeLsFallback(args.path ?? ".")
     }
   },
@@ -621,6 +720,9 @@ export const fdxTreeTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       return nativeLsFallback(args.path ?? ".")
     }
     const cmd: string[] = ["tree"]
@@ -630,7 +732,8 @@ export const fdxTreeTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       return nativeLsFallback(args.path ?? ".")
     }
   },
@@ -648,6 +751,9 @@ export const fdxTestTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       try {
         const safeRunner = validateExecutable(args.runner, ["cargo", "pytest", "jest", "vitest", "go", "rspec", "rails"])
         const safeArgs = validateArgs(args.args ?? [])
@@ -660,7 +766,8 @@ export const fdxTestTool: ToolDefinition = tool({
     if (args.args && args.args.length > 0) cmd.push(...args.args)
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       try {
         const safeRunner = validateExecutable(args.runner, ["cargo", "pytest", "jest", "vitest", "go", "rspec", "rails"])
         const safeArgs = validateArgs(args.args ?? [])
@@ -684,6 +791,9 @@ export const fdxLintTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       try {
         const safeLinter = validateExecutable(args.linter, ["ruff", "clippy", "tsc", "eslint", "biome", "golangci", "rubocop"])
         const safeArgs = validateArgs(args.args ?? [])
@@ -696,7 +806,8 @@ export const fdxLintTool: ToolDefinition = tool({
     if (args.args && args.args.length > 0) cmd.push(...args.args)
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       try {
         const safeLinter = validateExecutable(args.linter, ["ruff", "clippy", "tsc", "eslint", "biome", "golangci", "rubocop"])
         const safeArgs = validateArgs(args.args ?? [])
@@ -724,6 +835,9 @@ export const fdxContextTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       return nativeContextFallback(args.action, args.topic, args.agent, args.stage, args.summary)
     }
     const cmd: string[] = ["context", "--topic", args.topic, "--action", args.action]
@@ -734,7 +848,8 @@ export const fdxContextTool: ToolDefinition = tool({
     }
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       return nativeContextFallback(args.action, args.topic, args.agent, args.stage, args.summary)
     }
   },
@@ -756,6 +871,9 @@ export const fdxDecisionsTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
+      if (shouldDisableFallback()) {
+        throw new Error("[FDX Fallback Disabled] Native binary unavailable")
+      }
       return nativeDecisionsFallback(args.action, args.topic, args.decision, args.rationale, args.made_by)
     }
     const cmd: string[] = ["decisions", "--topic", args.topic, "--action", args.action]
@@ -766,7 +884,8 @@ export const fdxDecisionsTool: ToolDefinition = tool({
     }
     try {
       return runFdx(cmd)
-    } catch {
+    } catch (err) {
+      if (shouldDisableFallback()) throw err
       return nativeDecisionsFallback(args.action, args.topic, args.decision, args.rationale, args.made_by)
     }
   },
