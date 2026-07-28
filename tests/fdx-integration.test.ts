@@ -23,13 +23,13 @@ function readSrc(path: string): string {
 
 describe("fdx.ts — lazy binary resolution", () => {
   it("does NOT call fdxBin() at module level", () => {
-    const content = readSrc("tools/fdx.ts")
+    const content = readSrc("tools/fdx-shared.ts")
     // The bug: const FDX_BINARY = fdxBin() at module load time
     expect(content).not.toMatch(/const\s+FDX_BINARY\s*=\s*fdxBin\(\)/)
   })
 
   it("calls fdxBin() inside runFdx() for lazy resolution", () => {
-    const content = readSrc("tools/fdx.ts")
+    const content = readSrc("tools/fdx-shared.ts")
     // runFdx should resolve the binary lazily
     expect(content).toMatch(/function\s+runFdx\s*\(/)
     // fdxBin should be called within runFdx body — extract body by finding the function
@@ -50,7 +50,7 @@ describe("fdx.ts — lazy binary resolution", () => {
   })
 
   it("has no module-level const FDX_BINARY declaration", () => {
-    const content = readSrc("tools/fdx.ts")
+    const content = readSrc("tools/fdx-shared.ts")
     const lines = content.split("\n")
     for (const line of lines) {
       // Allow comments mentioning it, but not actual declarations
