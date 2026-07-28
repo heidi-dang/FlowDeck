@@ -68,8 +68,6 @@ import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
 import { HarnessHttpServer } from "./better-harness/transport/http-server"
 import { SseManager } from "./better-harness/transport/sse"
 import { ProjectRegistry } from "./better-harness/runtime/project-registry"
-import type { BetterHarnessConfig } from "./config/schema"
-import type { RouterContext } from "./better-harness/runtime/router-context"
 
 // ─── Governance integration ────────────────────────────────────────────────
 import {
@@ -281,20 +279,16 @@ const plugin: Plugin = async ({ directory, client }) => {
   let _bhCanonicalRoot: string | undefined;
   const bhConfig = resolveBetterHarnessConfig(flowdeckConfig)
   if (bhConfig.enabled) {
-    // Use a cancellation token shared between startBh and the factory
-    const cancellationFlag = { value: false };
-    startBh(directory, async () => {
-      const checkCancelled = () => cancellationFlag.value;
+    startBh(directory, async (startupCtx) => {
       const resources = await createBetterHarnessResources(
-        directory, bhConfig, client, checkCancelled,
-        (msg: string, level?: string) => { appLog(msg, level as any); },
+        directory, bhConfig, client, () => startupCtx.isCancellationRequested(),
+        (msg: string) => { appLog(msg); },
       );
       _bhCanonicalRoot = resources.canonicalRoot;
 
-      // Build the cleanup function used by both cancellation and stop
       const cleanupFn = async () => {
-        const errors = await resources.cleanup();
-        for (const err of errors) appLog("[better-harness] Cleanup: " + err, "warn");
+        const report = await resources.cleanup();
+        for (const e of report.errors) appLog("[better-harness] Cleanup: " + e.message, "warn");
       };
 
       return {
@@ -303,7 +297,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         canonicalRoot: resources.canonicalRoot,
         state: "running" as const,
         stop: cleanupFn,
-        startedAt: new Date().toISOString(),
+        startedAt: resources.startedAt,
       }
     }).catch((err: Error) => {
       appLog("[better-harness] Failed to start: " + err.message, "error")

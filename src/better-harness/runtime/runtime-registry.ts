@@ -63,6 +63,14 @@ function assertTransition(from: BhState, to: BhState): void {
 
 // ── Entry with per-project cancellation ─────────────────────────────────
 
+/** Context passed to the startup factory. */
+export interface BhStartupContext {
+  canonicalRoot: string;
+  serverKey: string;
+  projectKey: string;
+  isCancellationRequested: () => boolean;
+}
+
 /** Result contract for a startup factory function. */
 export interface BhFactoryResult {
   serverKey: string;
@@ -87,7 +95,7 @@ const pending = new Map<string, Promise<void>>();
 /** Start BH — returns the shared promise. Per-project cancellation. */
 export function startBh(
   rawRoot: string,
-  factory: () => Promise<BhFactoryResult>,
+  factory: (ctx: BhStartupContext) => Promise<BhFactoryResult>,
 ): Promise<void> {
   const canonicalRoot = canonicalize(rawRoot);
   const existing = entries.get(canonicalRoot);
@@ -103,9 +111,16 @@ export function startBh(
   };
   entries.set(canonicalRoot, entry);
 
+  const startupContext: BhStartupContext = {
+    canonicalRoot,
+    serverKey: entry.serverKey,
+    projectKey: entry.projectKey,
+    isCancellationRequested: () => entry.cancellationRequested,
+  };
+
   const promise = (async () => {
     try {
-      const result = await factory();
+      const result = await factory(startupContext);
       if (entry.cancellationRequested) {
         await result.stop();
         entries.delete(canonicalRoot);

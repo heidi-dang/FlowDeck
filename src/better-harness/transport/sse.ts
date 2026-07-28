@@ -166,6 +166,18 @@ export class SseManager {
     }
   }
 
+  /** Close all active SSE clients. */
+  closeAll(): void {
+    for (const [id] of this.clients) this.removeClient(id);
+  }
+
+  /** Dispose the SSE manager: close clients, stop heartbeats, clear state. Idempotent. */
+  dispose(): void {
+    this.closeAll();
+    this.heartbeats.clear();
+    this.clients.clear();
+  }
+
   handleSseRequest(
     req: IncomingMessage,
     res: ServerResponse,
