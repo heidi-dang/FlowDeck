@@ -366,9 +366,9 @@ fn analyze_file_changes(
                 let change_type = if is_deleted_sym {
                     ChangeType::Deleted
                 } else {
-
                     ChangeType::BodyChanged
                 };
+
 
                 let entry = symbol_change_map.entry(key).or_insert_with(|| {
                     (
