@@ -21,16 +21,30 @@ fn test_successful_migration_with_nested_directories() {
 
     let new_dir = root.join(project_slug);
     assert!(new_dir.exists(), "New dir must exist");
-    assert!(new_dir.join("STATE.md").exists(), "STATE.md must exist in new dir");
-    assert!(new_dir.join("topic-a").join("context.md").exists(), "Nested context.md must exist");
+    assert!(
+        new_dir.join("STATE.md").exists(),
+        "STATE.md must exist in new dir"
+    );
+    assert!(
+        new_dir.join("topic-a").join("context.md").exists(),
+        "Nested context.md must exist"
+    );
 
     // Verify backup was created
     let backups: Vec<_> = fs::read_dir(&root)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with("my-legacy-proj.bak."))
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("my-legacy-proj.bak.")
+        })
         .collect();
-    assert_eq!(backups.len(), 1, "Exactly one backup directory should be created");
+    assert_eq!(
+        backups.len(),
+        1,
+        "Exactly one backup directory should be created"
+    );
 }
 
 #[test]
@@ -47,7 +61,10 @@ fn test_missing_state_file_returns_error() {
     assert!(res.is_err(), "Missing STATE.md should return error");
 
     let new_dir = root.join(project_slug);
-    assert!(!new_dir.exists(), "No partial destination should exist after failure");
+    assert!(
+        !new_dir.exists(),
+        "No partial destination should exist after failure"
+    );
 }
 
 #[test]
@@ -65,9 +82,15 @@ fn test_existing_incomplete_destination_recovery() {
     fs::write(new_dir.join("partial.tmp"), "incomplete").unwrap(); // Missing STATE.md
 
     let res = migrate_legacy_planning_dir(home, project_slug, "inc-proj");
-    assert!(res.is_ok(), "Migration should recover from incomplete destination");
+    assert!(
+        res.is_ok(),
+        "Migration should recover from incomplete destination"
+    );
 
-    assert!(new_dir.join("STATE.md").exists(), "Destination should now be complete");
+    assert!(
+        new_dir.join("STATE.md").exists(),
+        "Destination should now be complete"
+    );
 
     // Verify incomplete backup was created
     let inc_backups: Vec<_> = fs::read_dir(&root)
@@ -75,7 +98,11 @@ fn test_existing_incomplete_destination_recovery() {
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name().to_string_lossy().contains(".bak.incomplete."))
         .collect();
-    assert_eq!(inc_backups.len(), 1, "Incomplete destination should be moved to recovery backup");
+    assert_eq!(
+        inc_backups.len(),
+        1,
+        "Incomplete destination should be moved to recovery backup"
+    );
 }
 
 #[test]
