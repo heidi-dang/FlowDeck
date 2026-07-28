@@ -37,8 +37,8 @@ fn test_path_fixture_loads() {
         fixtures.len() >= 12,
         "Should have at least 12 fixture entries"
     );
-
 }
+
 
 #[test]
 fn test_path_fixture_entries() {

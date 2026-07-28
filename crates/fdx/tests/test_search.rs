@@ -45,8 +45,8 @@ pub fn calculate_tax(base: f64) -> f64 {
     )
     .unwrap();
 
-
     assert_eq!(matches.len(), 2);
+
     let names: Vec<&str> = matches.iter().map(|m| m.symbol.name.as_str()).collect();
     assert!(names.contains(&"calculate_fee"));
     assert!(names.contains(&"calculate_tax"));
