@@ -55,6 +55,8 @@ export interface FlowDeckConfig {
 }
 
 export interface GovernanceConfig {
+  /** Global governance mode shorthand — sets all subsystems unless overridden. */
+  mode?: GovernanceMode;
   /** Agent contract validator mode. */
   validator?: {
     mode?: GovernanceMode;

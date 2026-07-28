@@ -30,7 +30,7 @@ import { verifyAfterWrite, type VerificationEvent } from "./verification-layer"
 
 export function resolveGovernanceMode(directory: string): GovernanceMode {
   const config = loadFlowDeckConfig(directory)
-  const mode = config.governance?.validator?.mode
+  const mode = config.governance?.mode ?? config.governance?.validator?.mode
   if (mode === "off" || mode === "advisory" || mode === "strict") {
     return mode
   }

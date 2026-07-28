@@ -423,4 +423,9 @@ async function main() {
   }
 }
 
-main()
+// Only run main() when this file is the direct entry point.
+// Importing the module for its exports (e.g., runDoctorCli) must not trigger execution.
+const { pathToFileURL: _ptfu } = await import("node:url")
+if (import.meta.url === _ptfu(process.argv[1]).href) {
+  main()
+}

@@ -95,6 +95,14 @@ const sessionBlocks = new Map<string, number>()
 const sessionWarnings = new Map<string, number>()
 const sessionStartTimes = new Map<string, number>()
 const sessionFilesChanged = new Map<string, Set<string>>()
+interface RuntimeSessionMetadata {
+  sessionID: string
+  parentID?: string
+  agent?: string
+  depth: number
+}
+
+const sessionRegistry = new Map<string, RuntimeSessionMetadata>()
 const sessionCallerAgents = new Map<string, string>()
 const sessionTaskCalls = new Map<
   string,
@@ -289,7 +297,17 @@ const plugin: Plugin = async ({ directory, client }) => {
       const agent = output.message?.agent ?? input.agent ?? "unknown"
       if (sessionID && agent && agent !== "unknown") {
         sessionCallerAgents.set(sessionID, agent)
+        let meta = sessionRegistry.get(sessionID)
+        if (meta) {
+          meta.agent = agent
+        } else {
+          sessionRegistry.set(sessionID, { sessionID, depth: 0, agent })
+        }
       }
+
+      const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
+      const isSubagent = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
+
       const variant = input.variant
       const pkgVersion = "0.8.0-alpha.8"
       const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
@@ -300,6 +318,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         expectedAgent: runtimeCfg.expectedAgent ?? "heidi",
         enforcement: runtimeCfg.enforcement,
         directory: directory,
+        isSubagentSession: isSubagent,
         packageVersion: pkgVersion,
       })
 
@@ -354,7 +373,24 @@ const plugin: Plugin = async ({ directory, client }) => {
       const sessionID = toolInput.sessionID ?? ""
       const callID = toolInput.callID ?? ""
       const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
-      const agent = sessionCallerAgents.get(sessionID) ?? toolInput.agent ?? "heidi"
+      const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
+      const resolvedCaller = sessionMeta?.agent ?? (sessionID ? sessionCallerAgents.get(sessionID) : undefined) ?? toolInput.agent
+
+      if (toolName === "task" && (!resolvedCaller || resolvedCaller === "unknown")) {
+        const govMode = resolveGovernanceMode(directory)
+        if (govMode === "strict") {
+          appendAuditEvent(directory, {
+            kind: "delegation.blocked",
+            session_id: sessionID,
+            tool: toolName,
+            decision: "block",
+            reason: "TASK_CALLER_UNRESOLVED: Unable to resolve calling agent identity for Task execution",
+          })
+          throw new Error("TASK_CALLER_UNRESOLVED: Unable to resolve calling agent identity for Task execution")
+        }
+      }
+
+      const agent = resolvedCaller || "heidi"
 
       // ── 0. Tool call budget tracking ─────────────────────────────────
       if (sessionID) {
@@ -413,8 +449,8 @@ const plugin: Plugin = async ({ directory, client }) => {
         // Do NOT return early if missing — let governance hooks (4, 5, 6, 7) run!
         if (targetAgent && targetAgent.trim() !== "") {
           const isSpecialistCaller = isSpecialistAgent(invocation.callerAgent)
-          const isChildSession = sessionID.startsWith("sub-") || sessionID.startsWith("child-") || sessionID.includes("-child-")
-          const currentDepth = isSpecialistCaller || isChildSession ? 1 : 0
+          const isChildSession = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
+          const currentDepth = isChildSession ? (sessionMeta?.depth && sessionMeta.depth > 0 ? sessionMeta.depth : 1) : (isSpecialistCaller ? 1 : 0)
 
           const depthResult = validateDelegationDepth(
             invocation.callerAgent,
@@ -454,6 +490,41 @@ const plugin: Plugin = async ({ directory, client }) => {
             throw new Error(`${errorCode}: ${depthResult.reason ?? "Delegation blocked"}`)
           }
 
+          // Calculate next delegation count & validate budget BEFORE registering call or emitting delegation.started
+          const nextDelCount = (sessionDelegations.get(sessionID) ?? 0) + 1
+          if (nextDelCount > maxDelegations) {
+            const msg = `Delegation budget exceeded: ${nextDelCount} > ${maxDelegations} for session ${sessionID}`
+            const govMode = resolveGovernanceMode(directory)
+            appendAuditEvent(directory, {
+              kind: "delegation.blocked",
+              session_id: sessionID,
+              agent: invocation.callerAgent,
+              tool: toolName,
+              decision: "block",
+              reason: msg,
+              details: {
+                callID,
+                targetAgent,
+                errorCode: "DELEGATION_BUDGET_EXCEEDED",
+                resolvedFrom: invocation.resolvedFrom,
+              },
+            })
+            recordRecoveryAudit({
+              directory, sessionID, agent: invocation.callerAgent,
+              errorKey: "DELEGATION_BUDGET_EXCEEDED",
+              action: govMode === "strict" ? "circuit_breaker_block" : "targeted_diagnosis",
+              message: msg,
+            })
+            if (govMode === "strict") {
+              throw new Error(`DELEGATION_BUDGET_EXCEEDED: ${msg}`)
+            }
+            appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
+          }
+
+          if (sessionID) {
+            sessionDelegations.set(sessionID, nextDelCount)
+          }
+
           const taskKey = `${sessionID}:${callID || "task"}`
           sessionTaskCalls.set(taskKey, {
             callerAgent: invocation.callerAgent,
@@ -476,25 +547,6 @@ const plugin: Plugin = async ({ directory, client }) => {
               promptSnippet: invocation.promptSnippet,
             },
           })
-
-          if (sessionID) {
-            const delCount = (sessionDelegations.get(sessionID) ?? 0) + 1
-            sessionDelegations.set(sessionID, delCount)
-            if (delCount > maxDelegations) {
-              const msg = `Delegation budget exceeded: ${delCount} > ${maxDelegations} for session ${sessionID}`
-              const govMode = resolveGovernanceMode(directory)
-              recordRecoveryAudit({
-                directory, sessionID, agent: invocation.callerAgent,
-                errorKey: "delegation_budget_exceeded",
-                action: govMode === "strict" ? "circuit_breaker_block" : "targeted_diagnosis",
-                message: msg,
-              })
-              if (govMode === "strict") {
-                throw new Error(msg)
-              }
-              appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
-            }
-          }
         }
       }
 
@@ -656,7 +708,39 @@ const plugin: Plugin = async ({ directory, client }) => {
 
     event: async ({ event }: { event: any }) => {
       const type: string = event?.type ?? ""
-      const sessionID = event?.properties?.sessionID ?? event?.properties?.info?.id ?? event?.sessionID ?? ""
+      const info = event?.properties?.info ?? event?.properties?.session ?? event?.info
+      const eventSessionID = info?.id ?? event?.properties?.sessionID ?? event?.properties?.info?.id ?? event?.sessionID ?? ""
+      const parentID = info?.parentID ?? event?.properties?.parentID ?? undefined
+      const sessionAgent = info?.agent ?? event?.properties?.agent ?? undefined
+
+      if (eventSessionID) {
+        let meta = sessionRegistry.get(eventSessionID)
+        if (!meta) {
+          const parentMeta = parentID ? sessionRegistry.get(parentID) : undefined
+          const calculatedDepth = parentMeta ? parentMeta.depth + 1 : (parentID ? 1 : 0)
+          meta = {
+            sessionID: eventSessionID,
+            parentID,
+            agent: sessionAgent,
+            depth: calculatedDepth,
+          }
+          sessionRegistry.set(eventSessionID, meta)
+        } else {
+          if (parentID && !meta.parentID) {
+            meta.parentID = parentID
+            const parentMeta = sessionRegistry.get(parentID)
+            meta.depth = parentMeta ? parentMeta.depth + 1 : 1
+          }
+          if (sessionAgent && !meta.agent) {
+            meta.agent = sessionAgent
+          }
+        }
+        if (sessionAgent && sessionAgent !== "unknown") {
+          sessionCallerAgents.set(eventSessionID, sessionAgent)
+        }
+      }
+
+      const sessionID = eventSessionID
       if (type === "session.created" || type === "session.started") {
         await sessionStartHook({ directory }, appLog)
         appendAuditEvent(directory, {
@@ -667,7 +751,6 @@ const plugin: Plugin = async ({ directory, client }) => {
           reason: "Session started",
         })
         if (sessionID) {
-          cleanupSessionState(sessionID, loopDetector)
           sessionStartTimes.set(sessionID, Date.now())
         }
       } else if (type === "session.completed" || type === "session.error") {
@@ -742,6 +825,12 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionStartTimes.delete(sessionID)
   sessionFilesChanged.delete(sessionID)
   sessionCallerAgents.delete(sessionID)
+  sessionRegistry.delete(sessionID)
+  for (const key of sessionTaskCalls.keys()) {
+    if (key.startsWith(`${sessionID}:`)) {
+      sessionTaskCalls.delete(key)
+    }
+  }
   if (ld) {
     try { ld.clearSession(sessionID) } catch {}
   }
