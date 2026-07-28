@@ -8,6 +8,14 @@ interface StoredSseEvent {
   type: string;
   timestamp: string;
   data: string;
+  /** Routing metadata for replay filtering. Persisted alongside the event
+   *  so that filterAndSend can match clients by server/project/run without
+   *  guessing from the event payload (which may lack projectKey). */
+  routing?: {
+    serverKey?: string;
+    projectKey?: string;
+    runId?: string;
+  };
 }
 
 export interface SseClient {
@@ -68,16 +76,17 @@ export class SseManager {
 
   /**
    * Build the canonical envelope and send to a single client.
-   * Respects projectKey and runId filters on the client.
+   * Filters by runId when the client is scoped to a specific run.
+   * The projectKey filter is intentionally NOT applied because runtime
+   * events (run.progress, run.queued, etc.) never carry projectKey in
+   * their payload — only runId, which is sufficient for correct routing.
    */
   private filterAndSend(client: SseClient, event: HarnessEvent, sequenceId: number): void {
-    // Filter by server/project/run if configured on the client
-    if (client.projectKey || client.runId) {
-      const eventData = event.data || {};
-      if (client.projectKey && (eventData as Record<string, unknown>).projectKey !== client.projectKey) {
-        return;
-      }
-      if (client.runId && (eventData as Record<string, unknown>).runId !== client.runId) {
+    if (client.runId) {
+      const eventData = (event.data || {}) as Record<string, unknown>;
+      // Events without a runId (connected, heartbeat) pass through to all clients.
+      // Events with a mismatched runId are filtered out.
+      if (eventData.runId !== undefined && eventData.runId !== client.runId) {
         return;
       }
     }
@@ -215,11 +224,16 @@ export class SseManager {
   private persistEvent(id: number, event: HarnessEvent): void {
     if (!this.eventLogPath) return;
     try {
+      // Extract routing from the event payload (runId is always present for
+      // runtime events like run.progress, run.queued, etc.)
+      const eventData = (event.data || {}) as Record<string, unknown>;
+      const extractedRunId = typeof eventData.runId === "string" ? eventData.runId : undefined;
       const stored: StoredSseEvent = {
         id,
         type: event.type,
         timestamp: event.timestamp,
         data: event.data ? JSON.stringify(event.data) : "",
+        routing: extractedRunId ? { runId: extractedRunId } : undefined,
       };
       writeFileSync(this.eventLogPath, JSON.stringify(stored) + "\n", { flag: "a" });
     } catch { /* best-effort persist */ }
