@@ -370,8 +370,8 @@ fn analyze_file_changes(
                 };
 
                 let entry = symbol_change_map.entry(key).or_insert_with(|| {
-
                     (
+
                         change_type,
                         sym.kind.clone(),
                         sym.name.clone(),
