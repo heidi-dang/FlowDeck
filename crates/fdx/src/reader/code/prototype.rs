@@ -107,8 +107,8 @@ pub fn find_symbols_in_tree<'a>(
 
 /// Extract the name of a symbol node.
 pub fn extract_symbol_name(node: Node, source: &str) -> Option<String> {
-
     let mut cursor = node.walk();
+
     for child in node.children(&mut cursor) {
         match child.kind() {
             "identifier" | "type_identifier" | "property_identifier" => {
