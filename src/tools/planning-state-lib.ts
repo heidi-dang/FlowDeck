@@ -26,7 +26,14 @@ export { codebaseDir } from "./codebase-state"
  * Resolves real path if exists, strips UNC prefix, resolves relative components.
  */
 export function normalizePathForId(directory: string): string {
-  let resolved = resolve(directory)
+  let dir = directory.replace(/\\/g, "/")
+  if (/^[a-zA-Z]:/.test(dir)) {
+    const driveMatch = dir.match(/^([a-zA-Z]:)(.*)$/)
+    if (driveMatch) {
+      dir = driveMatch[2] || "/"
+    }
+  }
+  let resolved = resolve(dir)
   if (existsSync(resolved)) {
     try {
       resolved = realpathSync(resolved)
@@ -37,6 +44,7 @@ export function normalizePathForId(directory: string): string {
   }
   return resolved
 }
+
 
 /**
  * Generate a stable project identifier from canonical repository root.

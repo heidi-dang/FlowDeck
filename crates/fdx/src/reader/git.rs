@@ -128,8 +128,8 @@ pub fn validate_git_policy(subcommand: &str, args: &[&str]) -> Result<()> {
         }
     }
 
-
     if sub == "stash" {
+
         let stash_sub = args.first().copied().unwrap_or("").trim();
         if stash_sub != "list" && stash_sub != "show" {
             anyhow::bail!(

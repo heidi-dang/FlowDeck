@@ -56,12 +56,19 @@ use sha2::{Digest, Sha256};
 /// Normalize path deterministically for project ID generation.
 /// Mirrors `src/tools/planning-state-lib.ts:normalizePathForId`.
 pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
-    let abs = if directory.is_absolute() {
+    let s = directory.to_string_lossy().replace('\\', "/");
+    let cleaned = if s.len() >= 2 && s.as_bytes()[1] == b':' {
+        PathBuf::from(&s[2..])
+    } else {
         directory.to_path_buf()
+    };
+
+    let abs = if cleaned.is_absolute() {
+        cleaned
     } else {
         std::env::current_dir()
             .unwrap_or_else(|_| PathBuf::from("."))
-            .join(directory)
+            .join(cleaned)
     };
 
     let resolved = if abs.exists() {
@@ -77,6 +84,7 @@ pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
         resolved
     }
 }
+
 
 fn normalize_components(path: &Path) -> PathBuf {
     use std::path::Component;
