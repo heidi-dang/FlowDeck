@@ -371,7 +371,10 @@ export async function runDoctorCli(rawArgs) {
 }
 
 async function main() {
-  const parsed = parseArgs(process.argv.slice(2))
+  // Strip optional "doctor" command prefix
+  const rawArgs = process.argv.slice(2)
+  const cliArgs = rawArgs[0] === "doctor" ? rawArgs.slice(1) : rawArgs
+  const parsed = parseArgs(cliArgs)
 
   if (parsed.error) {
     process.stderr.write(`Error: ${parsed.error}\n`)
