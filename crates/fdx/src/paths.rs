@@ -80,9 +80,7 @@ pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
     };
 
     let mut path_str = resolved.to_string_lossy().replace('\\', "/");
-    if path_str.starts_with("//?/") {
-        path_str = path_str[4..].to_string();
-    } else if path_str.starts_with(r"\\?\") {
+    if path_str.starts_with("//?/") || path_str.starts_with(r"\\?\") {
         path_str = path_str[4..].to_string();
     }
 
