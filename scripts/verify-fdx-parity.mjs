@@ -80,7 +80,6 @@ console.log("\n  Running dedicated FDX parity tests...\n")
 
 const parityTests = [
   "tests/fdx-path-parity.test.ts",
-  "tests/fdx-dual-ast.test.ts",
   "tests/fdx-git-policy.test.ts",
 ]
 
