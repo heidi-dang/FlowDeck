@@ -106,7 +106,7 @@ export type { RunConfig, RunState } from "./runtime/run-coordinator";
 export { EventBus } from "./runtime/event-bus";
 export type { HarnessEvent, HarnessEventType, EventHandler } from "./runtime/event-bus";
 export { cancelRun, isRunCancelled, clearCancellation } from "./runtime/run-cancellation";
-export { registry } from "./runtime/runtime-registry";
+export { opaqueId, startBh, stopBh } from "./runtime/runtime-registry";
 
 // Transport
 export { HarnessHttpServer } from "./transport/http-server";
