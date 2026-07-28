@@ -30,6 +30,18 @@ try {
 export { CheckResult, DoctorReport, DoctorOptions, Recommendation, AutoFixResult }
 export type { CheckStatus, Severity, CheckCategory } from "./types"
 
+export function resolveDoctorExitCode(
+  report: { failed?: number; warned?: number; summary?: { errors?: number; warnings?: number } } | null | undefined,
+  strict: boolean = false,
+): 0 | 1 {
+  if (!report) return 0
+  const errors = report.failed ?? report.summary?.errors ?? 0
+  const warnings = report.warned ?? report.summary?.warnings ?? 0
+  if (errors > 0) return 1
+  if (strict && warnings > 0) return 1
+  return 0
+}
+
 export async function runDoctor(directory: string, options: DoctorOptions = {}): Promise<DoctorReport> {
   const allChecks: CheckResult[] = []
 
@@ -112,19 +124,22 @@ export function formatReport(report: DoctorReport, verbose: boolean = false): st
 
   // Header
   lines.push(`\n${"=".repeat(60)}`)
-  lines.push(`  FlowDeck Environment Doctor`)
+  lines.push(`  FlowDeck Doctor`)
   lines.push(`  Version: ${report.version}`)
   lines.push(`  Profile: ${report.profile}`)
   lines.push(`  Timestamp: ${report.timestamp}`)
   lines.push(`${"=".repeat(60)}\n`)
 
-  // Summary
+  // Summary / Diagnostics
   const total = report.summary.total
   const passed = report.summary.passed
   const warnings = report.summary.warnings
   const errors = report.summary.errors
-  lines.push(`  Checks: ${total} total | ${passed} passed | ${warnings} warnings | ${errors} errors | ${report.summary.info} info | ${report.summary.skipped} skipped`)
+  lines.push(`  Summary: ${total} checks | ${passed} Passed | ${warnings} warnings | ${errors} errors | ${report.summary.info} info | ${report.summary.skipped} skipped`)
   lines.push("")
+
+  // Diagnostics
+  lines.push(`  Diagnostics:`)
 
   // Scores
   lines.push(`  Scores:`)

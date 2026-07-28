@@ -85,6 +85,7 @@ import {
   enforceRuntimeAgent,
   applyIdentityMarker,
 } from "./services/runtime-agent-policy"
+import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -94,6 +95,27 @@ const sessionBlocks = new Map<string, number>()
 const sessionWarnings = new Map<string, number>()
 const sessionStartTimes = new Map<string, number>()
 const sessionFilesChanged = new Map<string, Set<string>>()
+interface RuntimeSessionMetadata {
+  sessionID: string
+  parentID?: string
+  agent?: string
+  depth: number
+}
+
+interface ChildTaskCorrelation {
+  parentSessionID: string
+  callID: string
+  taskKey: string
+  targetAgent: string
+}
+
+const sessionRegistry = new Map<string, RuntimeSessionMetadata>()
+const sessionCallerAgents = new Map<string, string>()
+const sessionTaskCalls = new Map<
+  string,
+  { callerAgent: string; targetAgent: string; startedAt: number; resolvedFrom: string }
+>()
+const childSessionToTask = new Map<string, ChildTaskCorrelation>()
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
@@ -281,6 +303,19 @@ const plugin: Plugin = async ({ directory, client }) => {
     "chat.message": async (input: { sessionID: string; agent?: string; variant?: string }, output: { message: any; parts?: any[] }) => {
       const sessionID = input.sessionID ?? ""
       const agent = output.message?.agent ?? input.agent ?? "unknown"
+      if (sessionID && agent && agent !== "unknown") {
+        sessionCallerAgents.set(sessionID, agent)
+        let meta = sessionRegistry.get(sessionID)
+        if (meta) {
+          meta.agent = agent
+        } else {
+          sessionRegistry.set(sessionID, { sessionID, depth: 0, agent })
+        }
+      }
+
+      const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
+      const isSubagent = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
+
       const variant = input.variant
       const pkgVersion = "0.8.0-alpha.8"
       const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
@@ -291,6 +326,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         expectedAgent: runtimeCfg.expectedAgent ?? "heidi",
         enforcement: runtimeCfg.enforcement,
         directory: directory,
+        isSubagentSession: isSubagent,
         packageVersion: pkgVersion,
       })
 
@@ -343,7 +379,26 @@ const plugin: Plugin = async ({ directory, client }) => {
     "tool.execute.before": async (toolInput: any, toolOutput: any) => {
       const toolName = toolInput.tool ?? toolInput.name ?? "unknown"
       const sessionID = toolInput.sessionID ?? ""
-      const agent = toolInput.agent ?? "unknown"
+      const callID = toolInput.callID ?? ""
+      const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
+      const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
+      const resolvedCaller = sessionMeta?.agent ?? (sessionID ? sessionCallerAgents.get(sessionID) : undefined) ?? toolInput.agent
+
+      if (toolName === "task" && (!resolvedCaller || resolvedCaller === "unknown")) {
+        const govMode = resolveGovernanceMode(directory)
+        if (govMode === "strict") {
+          appendAuditEvent(directory, {
+            kind: "delegation.blocked",
+            session_id: sessionID,
+            tool: toolName,
+            decision: "block",
+            reason: "TASK_CALLER_UNRESOLVED: Unable to resolve calling agent identity for Task execution",
+          })
+          throw new Error("TASK_CALLER_UNRESOLVED: Unable to resolve calling agent identity for Task execution")
+        }
+      }
+
+      const agent = resolvedCaller || "heidi"
 
       // ── 0. Tool call budget tracking ─────────────────────────────────
       if (sessionID) {
@@ -369,7 +424,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       orchestratorGuard.check(
         sessionID,
         toolName,
-        toolOutput?.args ?? toolInput?.args,
+        rawArgs,
         agent,
       )
 
@@ -379,7 +434,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         sessionID,
         agent,
         tool: toolName,
-        args: toolInput.args,
+        args: rawArgs,
       })
 
       if (governanceResult.action === "block") {
@@ -392,51 +447,114 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       // ── 3. Delegation depth check & budget ───────────────────────────
       if (toolName === "task") {
-        const currentDepth = (toolInput.args?.depth as number) ?? 0
-        const targetAgent = (toolInput.args?.agent as string) ?? ""
+        const invocation = normalizeTaskInvocation(
+          { sessionID, callID, agent },
+          rawArgs,
+        )
+        const targetAgent = invocation.targetAgent
 
-        // When no target agent is provided, default to direct execution
-        // (the task/command pattern — not delegation)
-        if (!targetAgent || targetAgent.trim() === "") {
-          // Allow through — this is a plain task tool call (direct execution or
-          // command dispatch), not a delegation. The task tool handles this.
-          return
-        }
+        // Only run delegation validation if a delegation target is present.
+        // Do NOT return early if missing — let governance hooks (4, 5, 6, 7) run!
+        if (targetAgent && targetAgent.trim() !== "") {
+          const isSpecialistCaller = isSpecialistAgent(invocation.callerAgent)
+          const isChildSession = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
+          const currentDepth = isChildSession ? (sessionMeta?.depth && sessionMeta.depth > 0 ? sessionMeta.depth : 1) : (isSpecialistCaller ? 1 : 0)
 
-        const depthResult = validateDelegationDepth(agent, targetAgent, currentDepth, specialistAgentSet, maxDepth)
-        if (!depthResult.allowed) {
-          const errorCode = depthResult.errorCode ?? "DELEGATION_BLOCKED"
-          const isTerminal = errorCode === "SELF_DELEGATION_BLOCKED" || errorCode === "MISSING_TARGET_AGENT"
+          const depthResult = validateDelegationDepth(
+            invocation.callerAgent,
+            targetAgent,
+            currentDepth,
+            specialistAgentSet,
+            maxDepth,
+          )
+          if (!depthResult.allowed) {
+            const errorCode = depthResult.errorCode ?? "DELEGATION_BLOCKED"
+            const isTerminal = errorCode === "SELF_DELEGATION_BLOCKED" || errorCode === "MISSING_TARGET_AGENT"
 
-          recordRecoveryAudit({
-            directory,
-            sessionID,
-            agent,
-            errorKey: errorCode,
-            action: isTerminal ? "circuit_breaker_block" : "targeted_diagnosis",
-            message: depthResult.reason ?? "Delegation not allowed",
-          })
-          if (sessionID && !isTerminal) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
-          throw new Error(`${errorCode}: ${depthResult.reason ?? "Delegation blocked"}`)
-        }
+            appendAuditEvent(directory, {
+              kind: "delegation.blocked",
+              session_id: sessionID,
+              agent: invocation.callerAgent,
+              tool: toolName,
+              decision: "block",
+              reason: depthResult.reason ?? "Delegation blocked",
+              details: {
+                callID,
+                targetAgent,
+                errorCode,
+                resolvedFrom: invocation.resolvedFrom,
+              },
+            })
 
-        if (sessionID) {
-          const delCount = (sessionDelegations.get(sessionID) ?? 0) + 1
-          sessionDelegations.set(sessionID, delCount)
-          if (delCount > maxDelegations) {
-            const msg = `Delegation budget exceeded: ${delCount} > ${maxDelegations} for session ${sessionID}`
-            const govMode = resolveGovernanceMode(directory)
             recordRecoveryAudit({
-              directory, sessionID, agent,
-              errorKey: "delegation_budget_exceeded",
+              directory,
+              sessionID,
+              agent: invocation.callerAgent,
+              errorKey: errorCode,
+              action: isTerminal ? "circuit_breaker_block" : "targeted_diagnosis",
+              message: depthResult.reason ?? "Delegation not allowed",
+            })
+            if (sessionID && !isTerminal) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
+            throw new Error(`${errorCode}: ${depthResult.reason ?? "Delegation blocked"}`)
+          }
+
+          // Calculate next delegation count & validate budget BEFORE registering call or emitting delegation.started
+          const nextDelCount = (sessionDelegations.get(sessionID) ?? 0) + 1
+          if (nextDelCount > maxDelegations) {
+            const msg = `Delegation budget exceeded: ${nextDelCount} > ${maxDelegations} for session ${sessionID}`
+            const govMode = resolveGovernanceMode(directory)
+            appendAuditEvent(directory, {
+              kind: "delegation.blocked",
+              session_id: sessionID,
+              agent: invocation.callerAgent,
+              tool: toolName,
+              decision: "block",
+              reason: msg,
+              details: {
+                callID,
+                targetAgent,
+                errorCode: "DELEGATION_BUDGET_EXCEEDED",
+                resolvedFrom: invocation.resolvedFrom,
+              },
+            })
+            recordRecoveryAudit({
+              directory, sessionID, agent: invocation.callerAgent,
+              errorKey: "DELEGATION_BUDGET_EXCEEDED",
               action: govMode === "strict" ? "circuit_breaker_block" : "targeted_diagnosis",
               message: msg,
             })
             if (govMode === "strict") {
-              throw new Error(msg)
+              throw new Error(`DELEGATION_BUDGET_EXCEEDED: ${msg}`)
             }
             appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
           }
+
+          if (sessionID) {
+            sessionDelegations.set(sessionID, nextDelCount)
+          }
+
+          const taskKey = `${sessionID}:${callID || "task"}`
+          sessionTaskCalls.set(taskKey, {
+            callerAgent: invocation.callerAgent,
+            targetAgent,
+            startedAt: Date.now(),
+            resolvedFrom: invocation.resolvedFrom,
+          })
+
+          appendAuditEvent(directory, {
+            kind: "delegation.started",
+            session_id: sessionID,
+            agent: invocation.callerAgent,
+            tool: toolName,
+            decision: "allow",
+            details: {
+              callID,
+              targetAgent,
+              resolvedFrom: invocation.resolvedFrom,
+              promptLength: invocation.promptLength,
+              promptSnippet: invocation.promptSnippet,
+            },
+          })
         }
       }
 
@@ -444,8 +562,8 @@ const plugin: Plugin = async ({ directory, client }) => {
       const supConfig = resolveSupervisorConfig(directory)
       if (supConfig.enabled) {
         const decision = runSupervisorReview(directory, toolName, {
-          currentPhase: toolInput.args?.phase as string | undefined,
-          isTrivial: toolInput.args?.trivial === true,
+          currentPhase: rawArgs?.phase as string | undefined,
+          isTrivial: rawArgs?.trivial === true,
         })
         if (!shouldProceed(decision, supConfig.mode, supConfig.canBlock)) {
           appendAuditEvent(directory, {
@@ -477,42 +595,85 @@ const plugin: Plugin = async ({ directory, client }) => {
       // ── 7. Loop detection ────────────────────────────────────────────
       const loop = loopDetector.checkBefore(
         toolName,
-        toolOutput?.args ?? toolInput?.args ?? {},
+        rawArgs,
         sessionID,
       )
       if (loop.action === "block") throw new Error(loop.escalationMessage)
       if (loop.action === "warn") appLog(loop.message, "warn", sessionID)
     },
 
-    "tool.execute.after": async (toolInput: any) => {
+    "tool.execute.after": async (toolInput: any, toolOutput: any) => {
       const toolName = toolInput.tool ?? toolInput.name ?? "unknown"
       const sessionID = toolInput.sessionID ?? ""
-      const agent = toolInput.agent ?? "unknown"
+      const callID = toolInput.callID ?? ""
+      const agent = sessionCallerAgents.get(sessionID) ?? toolInput.agent ?? "unknown"
+      const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
       appLog(`[tool] done tool=${toolName} session=${sessionID}`)
 
-      if (sessionID && toolName && toolInput.args?.file && !toolInput.error) {
+      if (sessionID && toolName && rawArgs.file && !toolInput.error && !toolOutput?.error) {
         if (!sessionFilesChanged.has(sessionID)) {
           sessionFilesChanged.set(sessionID, new Set())
         }
-        sessionFilesChanged.get(sessionID)!.add(String(toolInput.args.file))
+        sessionFilesChanged.get(sessionID)!.add(String(rawArgs.file))
       }
 
-      executePostWriteHook(directory, sessionID, agent, toolName, toolInput.args ?? {})
+      executePostWriteHook(directory, sessionID, agent, toolName, rawArgs)
 
       executeVerifiedPostWrite(directory, {
         sessionID,
         agent,
         tool: toolName,
-        filePath: toolInput.args?.file as string | undefined,
+        filePath: rawArgs.file as string | undefined,
       })
 
       loopDetector.recordAfter(
         toolName,
-        toolInput.args ?? {},
-        toolInput.output ?? "[unavailable]",
+        rawArgs,
+        toolInput.output ?? toolOutput?.output ?? toolOutput?.result ?? "[unavailable]",
         sessionID,
         "success"
       )
+
+      if (toolName === "task") {
+        const taskKey = `${sessionID}:${callID || "task"}`
+        const taskCall = sessionTaskCalls.get(taskKey)
+        const hasError = !!toolInput.error || !!toolOutput?.error || toolOutput === undefined || toolOutput === null
+
+        if (taskCall) {
+          const durationMs = Date.now() - taskCall.startedAt
+          if (hasError) {
+            appendAuditEvent(directory, {
+              kind: "delegation.failed",
+              session_id: sessionID,
+              agent: taskCall.callerAgent,
+              tool: toolName,
+              decision: "block",
+              reason: String(toolInput.error ?? toolOutput?.error ?? "No result returned"),
+              details: {
+                callID,
+                targetAgent: taskCall.targetAgent,
+                durationMs,
+                resolvedFrom: taskCall.resolvedFrom,
+              },
+            })
+          } else {
+            appendAuditEvent(directory, {
+              kind: "delegation.completed",
+              session_id: sessionID,
+              agent: taskCall.callerAgent,
+              tool: toolName,
+              decision: "allow",
+              details: {
+                callID,
+                targetAgent: taskCall.targetAgent,
+                durationMs,
+                resolvedFrom: taskCall.resolvedFrom,
+              },
+            })
+          }
+          sessionTaskCalls.delete(taskKey)
+        }
+      }
 
       if (toolInput.error) {
         const errorMsg = String(toolInput.error)
@@ -555,7 +716,61 @@ const plugin: Plugin = async ({ directory, client }) => {
 
     event: async ({ event }: { event: any }) => {
       const type: string = event?.type ?? ""
-      const sessionID = event?.properties?.sessionID ?? event?.properties?.info?.id ?? event?.sessionID ?? ""
+      const info = event?.properties?.info ?? event?.properties?.session ?? event?.info
+      const eventSessionID = info?.id ?? event?.properties?.sessionID ?? event?.properties?.info?.id ?? event?.sessionID ?? ""
+      const parentID = info?.parentID ?? event?.properties?.parentID ?? undefined
+      const sessionAgent = info?.agent ?? event?.properties?.agent ?? undefined
+
+      if (eventSessionID) {
+        let meta = sessionRegistry.get(eventSessionID)
+        if (!meta) {
+          const parentMeta = parentID ? sessionRegistry.get(parentID) : undefined
+          const calculatedDepth = parentMeta ? parentMeta.depth + 1 : (parentID ? 1 : 0)
+          meta = {
+            sessionID: eventSessionID,
+            parentID,
+            agent: sessionAgent,
+            depth: calculatedDepth,
+          }
+          sessionRegistry.set(eventSessionID, meta)
+        } else {
+          if (parentID && !meta.parentID) {
+            meta.parentID = parentID
+            const parentMeta = sessionRegistry.get(parentID)
+            meta.depth = parentMeta ? parentMeta.depth + 1 : 1
+          }
+          if (sessionAgent && !meta.agent) {
+            meta.agent = sessionAgent
+          }
+        }
+        if (sessionAgent && sessionAgent !== "unknown") {
+          sessionCallerAgents.set(eventSessionID, sessionAgent)
+        }
+
+        // ── Child session correlation ─────────────────────────────────────
+        if (parentID && !childSessionToTask.has(eventSessionID)) {
+          const effectiveTarget = sessionAgent || meta?.agent
+          for (const [taskKey, taskCall] of sessionTaskCalls.entries()) {
+            if (taskKey.startsWith(`${parentID}:`)) {
+              if (!effectiveTarget || effectiveTarget === "unknown" || taskCall.targetAgent === effectiveTarget) {
+                const alreadyLinked = Array.from(childSessionToTask.values()).some(c => c.taskKey === taskKey)
+                if (!alreadyLinked) {
+                  const callIDFromKey = taskKey.slice(parentID.length + 1)
+                  childSessionToTask.set(eventSessionID, {
+                    parentSessionID: parentID,
+                    callID: callIDFromKey !== "task" ? callIDFromKey : "",
+                    taskKey,
+                    targetAgent: taskCall.targetAgent,
+                  })
+                  break
+                }
+              }
+            }
+          }
+        }
+      }
+
+      const sessionID = eventSessionID
       if (type === "session.created" || type === "session.started") {
         await sessionStartHook({ directory }, appLog)
         appendAuditEvent(directory, {
@@ -566,7 +781,6 @@ const plugin: Plugin = async ({ directory, client }) => {
           reason: "Session started",
         })
         if (sessionID) {
-          cleanupSessionState(sessionID, loopDetector)
           sessionStartTimes.set(sessionID, Date.now())
         }
       } else if (type === "session.completed" || type === "session.error") {
@@ -610,6 +824,74 @@ const plugin: Plugin = async ({ directory, client }) => {
               await appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
             }
           } else if (type === "session.error") {
+            const errorMessage = event?.properties?.error ?? event?.error ?? "Session errored"
+
+            // ── Child session failure → delegation.failed ──────────────
+            // When OpenCode's Task execution fails, tool.execute.after is NOT called.
+            // The real failure path is session.error on the child session.
+            // Detect child sessions by exact childSessionToTask correlation.
+            const childMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
+            if (childMeta?.parentID) {
+              const parentSessionID = childMeta.parentID
+              const now = Date.now()
+              const correlation = childSessionToTask.get(sessionID)
+
+              let matchedTaskKey: string | undefined
+              let matchedTaskCall: { callerAgent: string; targetAgent: string; startedAt: number; resolvedFrom: string } | undefined
+
+              if (correlation) {
+                matchedTaskKey = correlation.taskKey
+                matchedTaskCall = sessionTaskCalls.get(matchedTaskKey)
+              } else {
+                // Guarded fallback: find unassigned active task call matching targetAgent
+                for (const [taskKey, taskCall] of sessionTaskCalls.entries()) {
+                  if (taskKey.startsWith(`${parentSessionID}:`)) {
+                    if (!childMeta.agent || childMeta.agent === "unknown" || taskCall.targetAgent === childMeta.agent) {
+                      matchedTaskKey = taskKey
+                      matchedTaskCall = taskCall
+                      break
+                    }
+                  }
+                }
+              }
+
+              if (matchedTaskKey && matchedTaskCall) {
+                const callIDFromKey = matchedTaskKey.slice(parentSessionID.length + 1)
+                const durationMs = now - matchedTaskCall.startedAt
+                appendAuditEvent(directory, {
+                  kind: "delegation.failed",
+                  session_id: parentSessionID,
+                  agent: matchedTaskCall.callerAgent,
+                  tool: "task",
+                  decision: "block",
+                  reason: String(errorMessage),
+                  details: {
+                    callID: callIDFromKey !== "task" ? callIDFromKey : undefined,
+                    targetAgent: matchedTaskCall.targetAgent,
+                    childSessionID: sessionID,
+                    durationMs,
+                    resolvedFrom: matchedTaskCall.resolvedFrom,
+                  },
+                })
+                sessionTaskCalls.delete(matchedTaskKey)
+                childSessionToTask.delete(sessionID)
+              } else {
+                // Unresolved correlation — emit diagnostic without affecting other active tasks
+                appendAuditEvent(directory, {
+                  kind: "delegation.failed",
+                  session_id: parentSessionID,
+                  agent: "system",
+                  tool: "task",
+                  decision: "block",
+                  reason: `UNRESOLVED_CHILD_FAILURE: ${String(errorMessage)}`,
+                  details: {
+                    childSessionID: sessionID,
+                    targetAgent: childMeta.agent,
+                  },
+                })
+              }
+            }
+
             appendAuditEvent(directory, {
               kind: "session.completed",
               session_id: sessionID,
@@ -640,6 +922,20 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionWarnings.delete(sessionID)
   sessionStartTimes.delete(sessionID)
   sessionFilesChanged.delete(sessionID)
+  sessionCallerAgents.delete(sessionID)
+  sessionRegistry.delete(sessionID)
+  sessionTaskCalls.delete(sessionID)
+  childSessionToTask.delete(sessionID)
+  for (const key of sessionTaskCalls.keys()) {
+    if (key.startsWith(`${sessionID}:`)) {
+      sessionTaskCalls.delete(key)
+    }
+  }
+  for (const [childId, corr] of childSessionToTask.entries()) {
+    if (corr.parentSessionID === sessionID) {
+      childSessionToTask.delete(childId)
+    }
+  }
   if (ld) {
     try { ld.clearSession(sessionID) } catch {}
   }
@@ -676,3 +972,4 @@ export default flowDeckPlugin
 export { AGENT_NAMES, createAgent } from "./agents/index"
 export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
 export { acquireLock, releaseLock } from "./services/async-lock"
+export { runDoctor, formatReport, formatJSON, resolveDoctorExitCode } from "./doctor/doctor"

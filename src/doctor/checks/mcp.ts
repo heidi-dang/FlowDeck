@@ -19,7 +19,14 @@ export async function runMCPChecks(_directory: string): Promise<CheckResult[]> {
 
   // Check if npx is available (needed for local MCPs)
   let npxAvailable = false
-  try { execFileSync("npx", ["--version"], { encoding: "utf-8", timeout: 5000 }); npxAvailable = true } catch {}
+  try {
+    execFileSync("npx", ["--version"], {
+      encoding: "utf-8",
+      timeout: 2000,
+      shell: process.platform === "win32",
+    })
+    npxAvailable = true
+  } catch {}
 
   for (const mcp of MCP_SERVERS) {
     const isDisabled = (process.env.FLOWDECK_DISABLE_MCP || "").split(",").includes(mcp.name)

@@ -22,6 +22,7 @@
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { execFileSync } from "node:child_process"
+import { resolveDoctorExitCode } from "../../scripts/doctor-service.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(__dirname, "..", "..")
@@ -65,7 +66,9 @@ function parseArgs(args) {
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]
-    if (arg === "--json") {
+    if (arg === "--help" || arg === "-h") {
+      return { help: true }
+    } else if (arg === "--json") {
       options.json = true
     } else if (arg === "--strict") {
       options.strict = true
@@ -324,16 +327,33 @@ function buildHumanReport(report, verbose) {
 // ─── Main ──────────────────────────────────────────────────────────────
 
 export async function runDoctorCli(rawArgs) {
+  const HELP_TEXT = `FlowDeck Doctor — Environment Health Checker
+
+Usage: doctor [--json] [--strict] [--verbose] [--apply-recommended] [--profile <name>] [--non-interactive] [--help]
+
+Options:
+  --json               Output machine-readable JSON to stdout
+  --strict             Treat warnings as failures
+  --verbose            Include detailed check output
+  --apply-recommended  Apply safe auto-fixes
+  --profile <name>     Check profile (default: recommended-dev)
+  --non-interactive    Disable interactive prompts
+  --help               Show this help message
+`
   // Strip optional "doctor" prefix if present
   const args = rawArgs[0] === "doctor" ? rawArgs.slice(1) : rawArgs;
   const parsed = parseArgs(args);
-  
+
+  if (parsed.help) {
+    process.stderr.write(HELP_TEXT);
+    process.exitCode = 0;
+    return;
+  }
+
   if (parsed.error) {
-    process.stderr.write(`Error: ${parsed.error}
-`);
+    process.stderr.write(`Error: ${parsed.error}\n`);
     if (parsed.usage) {
-      process.stderr.write(`${parsed.usage}
-`);
+      process.stderr.write(`${parsed.usage}\n`);
     }
     process.exitCode = parsed.exitCode;
     return;
@@ -353,17 +373,7 @@ export async function runDoctorCli(rawArgs) {
       process.stdout.write(textOutput);
     }
     
-    const errors = (report.summary && report.summary.errors) || 0;
-    if (options.strict) {
-      const criticals = (report.checks || []).filter(c =>
-        c.status === "error" || c.severity === "critical" || c.severity === "high"
-      );
-      process.exitCode = criticals.length > 0 ? 1 : 0;
-    } else if (errors > 0) {
-      process.exitCode = 1;
-    } else {
-      process.exitCode = 0;
-    }
+    process.exitCode = resolveDoctorExitCode(report, !!options.strict);
   } catch (err) {
     process.stderr.write(`Doctor engine error: ${err.message}\n`);
     process.exitCode = 2;
@@ -371,56 +381,16 @@ export async function runDoctorCli(rawArgs) {
 }
 
 async function main() {
-  // Strip optional "doctor" command prefix
-  const rawArgs = process.argv.slice(2)
-  const cliArgs = rawArgs[0] === "doctor" ? rawArgs.slice(1) : rawArgs
-  const parsed = parseArgs(cliArgs)
-
-  if (parsed.error) {
-    process.stderr.write(`Error: ${parsed.error}\n`)
-    if (parsed.usage) {
-      process.stderr.write(`${parsed.usage}\n`)
-    }
-    process.exit(parsed.exitCode)
-  }
-
-  const { options } = parsed
-
-  try {
-    let report = await runDoctorEngine(options)
-
-    // Redact secrets
-    report = redactSecrets(report)
-
-    // Apply schema version for JSON output
-    if (options.json) {
-      const jsonOutput = JSON.stringify({ schemaVersion: 1, ...report }, null, 2)
-      process.stdout.write(jsonOutput + "\n")
-    } else {
-      const textOutput = buildHumanReport(report, options.verbose)
-      process.stdout.write(textOutput)
-    }
-
-    // Determine exit code
-    const errors = (report.summary && report.summary.errors) || 0
-
-    if (options.strict) {
-      // Strict mode: any error or high/critical severity fails
-      const criticals = (report.checks || []).filter(c =>
-        c.status === "error" || c.severity === "critical" || c.severity === "high"
-      )
-      if (criticals.length > 0) {
-        process.exit(1)
-      }
-    } else if (errors > 0) {
-      process.exit(1)
-    }
-
-    process.exit(0)
-  } catch (err) {
-    process.stderr.write(`Doctor engine error: ${err.message}\n`)
-    process.exit(2)
-  }
+  await runDoctorCli(process.argv.slice(2));
+  process.exit(process.exitCode ?? 0);
 }
 
-main()
+// Only run main() when this file is the direct entry point.
+// Importing the module for its exports (e.g., runDoctorCli) must not trigger execution.
+// Guard against undefined process.argv[1] (e.g., in node -e contexts).
+const isDirectEntry =
+  typeof process.argv[1] === "string" &&
+  import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href
+if (isDirectEntry) {
+  await main()
+}

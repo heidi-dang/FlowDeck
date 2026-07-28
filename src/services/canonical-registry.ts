@@ -32,6 +32,8 @@ export interface CanonicalAgentEntry {
   delegationPolicy: "none" | "justified_only"
   /** Maximum delegation depth (0 = none, 1 = exactly one level) */
   maxDelegationDepth: number
+  /** Required inputs before the agent can execute */
+  requiredInputs: string[]
   /** Expected output fields */
   expectedOutput: string[]
   /** Progress state labels */
@@ -51,7 +53,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     mode: "primary",
     allowedTaskTypes: ["coordination", "orchestration", "direct-execution", "delegation", "phase-management", "implementation", "editing", "testing", "configuration"],
     allowedTools: [
-      "read", "write", "edit", "patch", "bash",
+      "read", "read_file", "write", "write_file", "edit", "edit_file", "patch", "patch_file", "apply_patch", "create_file", "hash-edit", "str-replace", "str_replace", "bash",
       "glob", "grep", "search",
       "planning-state", "codebase-state", "repo-memory",
       "codegraph", "load-rules", "list-rules",
@@ -68,6 +70,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "justified_only",
     maxDelegationDepth: 1,
+    requiredInputs: ["user prompt or STATE.md"],
     expectedOutput: ["execution_strategy", "completed_steps", "summary", "verification_result"],
     progressStates: ["intake", "route", "context", "execute", "verify", "complete"],
     escalationConditions: [
@@ -95,13 +98,14 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     mode: "primary",
     allowedTaskTypes: ["coordination", "orchestration", "direct-execution", "delegation", "phase-management"],
     allowedTools: [
-      "read", "write", "edit", "bash",
+      "read", "read_file", "write", "write_file", "edit", "edit_file", "patch", "patch_file", "apply_patch", "create_file", "hash-edit", "str-replace", "str_replace", "bash",
       "glob", "grep", "search",
       "planning-state", "codebase-state", "repo-memory",
       "codegraph", "load-rules", "list-rules",
       "task", "capture-lesson", "review-lessons",
       "fdx-read", "fdx-search", "fdx-grep", "fdx-outline", "fdx-batch",
       "fdx-impact", "fdx-diff", "fdx-git", "fdx-ls", "fdx-tree",
+      "fdx-test", "fdx-lint",
     ],
     forbiddenActions: [
       "restart_opencode", "reboot_system", "logout_user",
@@ -111,6 +115,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "justified_only",
     maxDelegationDepth: 1,
+    requiredInputs: ["user prompt or STATE.md"],
     expectedOutput: ["execution_strategy", "completed_steps", "summary"],
     progressStates: ["intake", "route", "context", "execute", "verify", "complete"],
     escalationConditions: [
@@ -139,6 +144,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["task description or STATE.md"],
     expectedOutput: ["steps", "phase", "plan_md"],
     progressStates: ["analyze", "decompose", "write_plan", "review_plan"],
     escalationConditions: ["requirements ambiguous", "dependencies unclear", "conflicting constraints"],
@@ -156,6 +162,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["feature or system description", "existing codebase context"],
     expectedOutput: ["architecture_document", "adr", "api_contracts"],
     progressStates: ["analyze", "design", "document", "review"],
     escalationConditions: ["architectural conflict with existing system", "breaking API change required"],
@@ -173,6 +180,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["research topic or question"],
     expectedOutput: ["findings", "references", "recommendations"],
     progressStates: ["query", "analyze", "synthesize"],
     escalationConditions: ["critical information unavailable", "conflicting documentation"],
@@ -190,6 +198,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["project root directory or mapping prompt"],
     expectedOutput: ["architecture_map", "entry_points", "dependencies"],
     progressStates: ["explore", "map", "document"],
     escalationConditions: ["codebase directory inaccessible", "unparseable structures"],
@@ -207,6 +216,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["PLAN.md step description", "relevant context files"],
     expectedOutput: ["files_modified", "summary"],
     progressStates: ["implement", "test", "verify"],
     escalationConditions: ["architecture decision needed", "security-sensitive change without audit"],
@@ -224,6 +234,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["PLAN.md step description", "design handoff for UI-heavy tasks"],
     expectedOutput: ["files_modified", "summary"],
     progressStates: ["implement", "test", "verify"],
     escalationConditions: ["design missing for UI-heavy task", "component library unclear"],
@@ -241,6 +252,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["PLAN.md step description"],
     expectedOutput: ["files_modified", "summary"],
     progressStates: ["implement", "verify", "review"],
     escalationConditions: ["production deployment requires approval", "destructive infra change"],
@@ -258,6 +270,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["feature or step description", "relevant source files"],
     expectedOutput: ["test_files_written", "tests_passing", "coverage_summary"],
     progressStates: ["write_tests", "run_tests", "verify"],
     escalationConditions: ["test infrastructure broken", "flaky tests blocking progress"],
@@ -275,6 +288,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["files to review", "context of changes"],
     expectedOutput: ["verdict", "issues", "recommendations"],
     progressStates: ["inspect", "analyze", "report"],
     escalationConditions: ["security issues found", "critical bugs found", "architectural violations"],
@@ -292,6 +306,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["files to audit", "change context"],
     expectedOutput: ["findings", "severity_breakdown", "recommendations"],
     progressStates: ["audit", "analyze", "report"],
     escalationConditions: ["CRITICAL vulnerability found", "auth bypass detected", "data exposure found"],
@@ -309,6 +324,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     modelPolicy: "inherit",
     delegationPolicy: "none",
     maxDelegationDepth: 0,
+    requiredInputs: ["bug report or build error output", "stack trace, reproduction steps, or affected files"],
     expectedOutput: ["root_cause", "explanation", "recommended_fix"],
     progressStates: ["reproduce", "analyze", "diagnose", "fix"],
     escalationConditions: ["reproduction steps missing", "root cause outside listed files"],

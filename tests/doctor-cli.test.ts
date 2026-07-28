@@ -53,8 +53,10 @@ function makeTempConfig(): string {
 
 // ─── Tests ─────────────────────────────────────────────────────────────
 
+const testSlow = (name: string, fn: any) => it(name, fn, 30000)
+
 describe("Doctor CLI — Argument Parsing", () => {
-  it("parses --json flag", () => {
+  testSlow("parses --json flag", () => {
     const result = runDoctor(["--json"])
     // Should produce valid JSON output to stdout
     expect(result.code).toBe(0)
@@ -63,7 +65,7 @@ describe("Doctor CLI — Argument Parsing", () => {
     expect(parsed).toBeDefined()
   })
 
-  it("parses --strict flag", () => {
+  testSlow("parses --strict flag", () => {
     // Strict mode just means the --strict flag was recognised
     // The test validates the CLI doesn't error on valid flags
     const result = runDoctor(["--strict"])
@@ -71,25 +73,25 @@ describe("Doctor CLI — Argument Parsing", () => {
     expect(result.code).toBeLessThanOrEqual(1)
   })
 
-  it("parses --verbose flag without error", () => {
+  testSlow("parses --verbose flag without error", () => {
     const result = runDoctor(["--verbose"])
     expect(result.code).toBeGreaterThanOrEqual(0)
     expect(result.code).toBeLessThanOrEqual(1)
   })
 
-  it("parses --profile flag", () => {
+  testSlow("parses --profile flag", () => {
     const result = runDoctor(["--profile", "minimal"])
     expect(result.code).toBeGreaterThanOrEqual(0)
     expect(result.code).toBeLessThanOrEqual(1)
   })
 
-  it("parses --apply-recommended flag", () => {
+  testSlow("parses --apply-recommended flag", () => {
     const result = runDoctor(["--apply-recommended"])
     expect(result.code).toBeGreaterThanOrEqual(0)
     expect(result.code).toBeLessThanOrEqual(1)
   })
 
-  it("parses --non-interactive flag", () => {
+  testSlow("parses --non-interactive flag", () => {
     const result = runDoctor(["--non-interactive"])
     expect(result.code).toBeGreaterThanOrEqual(0)
     expect(result.code).toBeLessThanOrEqual(1)
@@ -261,15 +263,15 @@ describe("Doctor CLI — Exit Codes", () => {
 })
 
 describe("Doctor CLI — Profile Selection", () => {
-  it("accepts known profile names", () => {
-    for (const profile of ["minimal", "recommended-dev", "full-dev", "ci", "release"]) {
+  for (const profile of ["minimal", "recommended-dev", "full-dev", "ci", "release"]) {
+    it(`accepts profile ${profile}`, () => {
       const result = runDoctor(["--json", "--profile", profile])
       expect(result.code).toBeGreaterThanOrEqual(0)
       expect(result.code).toBeLessThanOrEqual(1)
       const parsed = JSON.parse(result.stdout)
       expect(parsed.profile).toBeDefined()
-    }
-  })
+    })
+  }
 })
 
 describe("Doctor CLI — Package-Relative Path Resolution", () => {

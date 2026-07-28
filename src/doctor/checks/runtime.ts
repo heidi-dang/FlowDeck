@@ -7,7 +7,11 @@ import type { CheckResult } from "../types"
 
 function tryExec(cmd: string, args: string[] = []): string | null {
   try {
-    return execFileSync(cmd, args, { encoding: "utf-8", timeout: 5000 }).trim()
+    return execFileSync(cmd, args, {
+      encoding: "utf-8",
+      timeout: 2000,
+      shell: process.platform === "win32",
+    }).trim()
   } catch { return null }
 }
 

@@ -88,6 +88,7 @@ export function enforceRuntimeAgent(input: {
   expectedAgent: string
   enforcement: RuntimeAgentMode
   directory: string
+  isSubagentSession?: boolean
   /** @deprecated not used in enforcement, available for audit */
   packageVersion?: string
 }): {
@@ -96,10 +97,11 @@ export function enforceRuntimeAgent(input: {
   reason?: string
   auditEvent: { kind: string; detail: string }
 } {
-  const { sessionID, agent, variant, expectedAgent, enforcement, directory } = input
+  const { sessionID, agent, variant, expectedAgent, enforcement, directory, isSubagentSession: explicitIsSubagent } = input
 
-  // Skip subagent sessions
-  if (isSubagentSession(sessionID)) {
+  // Skip subagent sessions (either via explicit metadata parentID or string fallback)
+  const isSubagent = explicitIsSubagent ?? isSubagentSession(sessionID)
+  if (isSubagent) {
     return {
       allowed: true,
       match: true,
