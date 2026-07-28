@@ -85,9 +85,9 @@ pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
     }
 }
 
-
 fn normalize_components(path: &Path) -> PathBuf {
     use std::path::Component;
+
     let mut components = Vec::new();
     for component in path.components() {
         match component {
