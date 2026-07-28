@@ -114,22 +114,15 @@ export async function routeRequestContext(
       return ok({ status: "ok", timestamp: new Date().toISOString() });
     }
 
-    // --- Discovery metadata ---
+    // --- Discovery metadata (state-backed) ---
     {
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/discovery", urlPath);
       if (m && method === "GET") {
         const { serverKey, projectKey } = m.params;
         const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
-        return ok({
-          available: true,
-          enabled: true,
-          contractVersion: "1.0.0",
-          schemaVersion: 1,
-          serverKey,
-          projectKey,
-          authRequired: !!ctx.authToken,
-        });
+        const { getDiscovery } = require("../runtime/runtime-registry");
+        return ok(getDiscovery(serverKey, projectKey, check.path));
       }
     }
 

@@ -148,10 +148,10 @@ describe("Authentication", () => {
     expect(check("anything")).toBe(true);
   });
 
-  it("allows all when token is null even if enabled", () => {
+  it("rejects all when token is null even if enabled", () => {
     const check = createAuthCheck({ token: null, enabled: true });
-    expect(check()).toBe(true);
-    expect(check("foo")).toBe(true);
+    expect(check()).toBe(false);
+    expect(check("foo")).toBe(false);
   });
 
   it("rejects missing token when auth enabled", () => {
@@ -1436,8 +1436,8 @@ describe("CORS - Wildcard Origin", () => {
     };
     const headers = createCorsHeaders(config);
     expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
-    expect(headers["Access-Control-Allow-Methods"]).toBe("*");
-    expect(headers["Access-Control-Allow-Headers"]).toBe("*");
+    expect(headers["Access-Control-Allow-Methods"]).toBeUndefined();
+    expect(headers["Access-Control-Allow-Headers"]).toBeUndefined();
   });
 });
 
@@ -1696,8 +1696,10 @@ describe("HTTP Server - Request Handling", () => {
     const res = await fetch("http://127.0.0.1:" + port + "/health");
     expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
     expect(res.headers.get("Vary")).toBe("Origin");
-    expect(res.headers.get("Access-Control-Allow-Methods")).toBeTruthy();
-    expect(res.headers.get("Access-Control-Allow-Headers")).toBeTruthy();
+    // Methods/headers only emitted for allowed origins
+    // (test request has no Origin header, so they are absent)
+    expect(res.headers.get("Access-Control-Allow-Methods")).toBeNull();
+    expect(res.headers.get("Access-Control-Allow-Headers")).toBeNull();
     await server.stop();
   });
 });

@@ -1,6 +1,6 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from "http";
 import { routeRequestContext } from "./router";
-import { createCorsHeaders, DEFAULT_CORS_CONFIG, type CorsConfig } from "./cors";
+import { createCorsHeaders, validatePreflight, DEFAULT_CORS_CONFIG, type CorsConfig } from "./cors";
 import { createAuthCheck, type AuthConfig } from "./authentication";
 import type { SseManager } from "./sse";
 import type { RouterContext } from "../runtime/router-context";
@@ -52,9 +52,20 @@ export class HarnessHttpServer {
       ...this.config.cors,
     };
 
+    // Validate auth configuration before starting
+    const authEnabled = this.config.auth?.enabled ?? false;
+    const authToken = this.config.auth?.token ?? null;
+    const isLoopback = this.config.bindHost === "127.0.0.1" || this.config.bindHost === "localhost" || this.config.bindHost === "::1";
+    if (!isLoopback && !authEnabled) {
+      return Promise.reject(new Error("Non-loopback binding requires authentication (authEnabled: true)"));
+    }
+    if (authEnabled && !authToken) {
+      return Promise.reject(new Error("Authentication enabled but no token configured"));
+    }
+
     const authCheck = createAuthCheck({
-      token: this.config.auth?.token ?? null,
-      enabled: this.config.auth?.enabled ?? false,
+      token: authToken,
+      enabled: authEnabled,
     });
 
     return new Promise((resolve, reject) => {
@@ -62,21 +73,29 @@ export class HarnessHttpServer {
         this.hasResponded = false;
 
         // CORS headers
-        const corsHeaders = createCorsHeaders(corsConfig, req.headers.origin);
+        const origin = req.headers.origin as string | undefined;
+        const corsHeaders = createCorsHeaders(corsConfig, origin);
         for (const [key, val] of Object.entries(corsHeaders)) {
           res.setHeader(key, val);
         }
 
-        // Handle preflight
+        // Preflight with validation
         if (req.method === "OPTIONS") {
+          const methodHeader = req.headers["access-control-request-method"] as string | undefined;
+          const headersHeader = req.headers["access-control-request-headers"] as string | undefined;
+          const preflightErr = validatePreflight(corsConfig, origin, methodHeader, headersHeader);
+          if (preflightErr) {
+            res.writeHead(204); // No Content — browser will see the lack of ACAO and reject
+            res.end();
+            return;
+          }
           res.writeHead(204);
           res.end();
           return;
         }
 
-        // Fail-closed auth: non-loopback MUST have token
-        const isLoopback = this.config.bindHost === "127.0.0.1" || this.config.bindHost === "localhost" || this.config.bindHost === "::1";
-        if (!isLoopback) {
+        // Auth check applies to all routes (loopback included when authEnabled)
+        if (authEnabled) {
           const authToken = req.headers.authorization?.replace("Bearer ", "");
           if (!authCheck(authToken)) {
             res.writeHead(401, { "Content-Type": "application/json" });
@@ -88,21 +107,21 @@ export class HarnessHttpServer {
         const urlPath = req.url ?? "/";
         const method = req.method ?? "GET";
 
+        // Auth helper — checks token when auth is enabled
+        const checkAuth = (): boolean => {
+          if (!authEnabled) return true;
+          const token = req.headers.authorization?.replace("Bearer ", "");
+          if (authCheck(token)) return true;
+          res.writeHead(401, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "Unauthorized" }));
+          return false;
+        };
+
         // Detect SSE route and handle specially
         const sseRouteMatch = urlPath.match(/\/api\/v1\/servers\/([^/]+)\/projects\/([^/]+)\/better-harness\/runs\/([^/]+)\/events$/);
         if (method === "GET" && sseRouteMatch && this.sseManager) {
+          if (!checkAuth()) return;
           const [, serverKey, projectKey, runId] = sseRouteMatch;
-
-          // Auth check for SSE too
-          if (!isLoopback) {
-            const authToken = req.headers.authorization?.replace("Bearer ", "");
-            if (!authCheck(authToken)) {
-              res.writeHead(401, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "Unauthorized" }));
-              return;
-            }
-          }
-
           this.sseManager.handleSseRequest(req, res, serverKey, projectKey, runId);
           return;
         }
@@ -110,14 +129,7 @@ export class HarnessHttpServer {
         // Fallback SSE detection (without route params)
         const isSseRoute = method === "GET" && urlPath.includes("/events");
         if (isSseRoute && this.sseManager) {
-          if (!isLoopback) {
-            const authToken = req.headers.authorization?.replace("Bearer ", "");
-            if (!authCheck(authToken)) {
-              res.writeHead(401, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ error: "Unauthorized" }));
-              return;
-            }
-          }
+          if (!checkAuth()) return;
           this.sseManager.handleSseRequest(req, res);
           return;
         }

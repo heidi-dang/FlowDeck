@@ -67,7 +67,7 @@ import { HarnessHttpServer } from "./better-harness/transport/http-server"
 import { SseManager } from "./better-harness/transport/sse"
 import { ProjectRegistry } from "./better-harness/runtime/project-registry"
 import type { RouterContext } from "./better-harness/runtime/router-context"
-import { opaqueId, startBh } from "./better-harness/runtime/runtime-registry"
+import { canonicalize, getServerKey, opaqueProjectId, startBh } from "./better-harness/runtime/runtime-registry"
 
 // ─── Governance integration ────────────────────────────────────────────────
 import {
@@ -279,19 +279,24 @@ const plugin: Plugin = async ({ directory, client }) => {
   const bhConfig = resolveBetterHarnessConfig(flowdeckConfig)
 
   if (bhConfig.enabled) {
-    const serverKey = opaqueId(directory + "/server")
-    const projectKey = opaqueId(directory)
+    let canonicalRoot: string;
+    try { canonicalRoot = canonicalize(directory); } catch (e) {
+      appLog("[better-harness] Invalid project root: " + (e as Error).message, "error");
+      return;
+    }
+    const serverKey = getServerKey();
+    const projectKey = opaqueProjectId(canonicalRoot);
 
     const projectRegistry = new ProjectRegistry()
     projectRegistry.register({
       serverKey,
       projectKey,
-      canonicalProjectRoot: directory,
+      canonicalProjectRoot: canonicalRoot,
     })
 
-    startBh(directory, async () => {
+    startBh(canonicalRoot, async () => {
       const runtime = new HarnessRuntime({
-        projectRoot: directory,
+        projectRoot: canonicalRoot,
         timeoutMs: 120_000,
       })
       const coordinator = runtime.getCoordinator()
@@ -321,7 +326,18 @@ const plugin: Plugin = async ({ directory, client }) => {
       appLog("[better-harness] HTTP server started on port " + port)
 
       coordinator.recoverActiveRuns()
-      return { serverKey, projectKey, stop: async () => { await server.stop(); } }
+
+      const cleanup = async () => {
+        try { await server.stop(); } catch {}
+        projectRegistry.unregister(projectKey);
+      };
+
+      return {
+        serverKey, projectKey, canonicalRoot,
+        state: "starting" as const,
+        stop: cleanup,
+        _cleanup: cleanup,
+      }
     }).catch((err: Error) => {
       appLog("[better-harness] Failed to start: " + err.message, "error")
     })
