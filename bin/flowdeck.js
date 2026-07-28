@@ -23,7 +23,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { readConfig as readConfigFile } from "../scripts/config-mutator.mjs";
 import { executeTransaction, executeRollbackTransaction } from "../scripts/config-transaction.mjs";
 import { runCleanInstall } from "../scripts/clean-install-engine.mjs";
-import { runDoctor as runNewDoctor, formatReport, KNOWN_PROFILES as _KNOWN_PROFILES } from "../scripts/doctor-service.mjs";
+import { runDoctor as runNewDoctor, formatReport, KNOWN_PROFILES as _KNOWN_PROFILES, resolveDoctorExitCode } from "../scripts/doctor-service.mjs";
 
 const DOCTOR_KNOWN_PROFILES = _KNOWN_PROFILES ?? new Set(["minimal", "recommended-dev", "full-dev", "ci", "release"]);
 
@@ -472,18 +472,8 @@ Options:
     }
 
     // Determine exit code
-    if (isStrict) {
-      const criticals = (report.checks || []).filter(c =>
-        c.status === "error" || c.severity === "critical" || c.severity === "high"
-      );
-      if (criticals.length > 0) {
-        process.exit(1);
-      }
-    } else if (errors > 0) {
-      process.exit(1);
-    }
-
-    process.exit(0);
+    const exitCode = resolveDoctorExitCode(report, isStrict);
+    process.exit(exitCode);
   } catch (err) {
     process.stderr.write(`Doctor error: ${err.message}\n`);
     process.exit(2);

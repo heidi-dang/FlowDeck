@@ -390,4 +390,19 @@ describe("Phase 30 — Doctor CLI Service", () => {
       expect(parsed.schemaVersion).toBe(1);
     }
   });
+
+  // ── resolveDoctorExitCode isolated fixture ──────────────────────────
+
+  it("resolveDoctorExitCode returns 0 in normal mode and 1 in strict mode for degraded reports", async () => {
+    const mod = await import("../src/index");
+    const fixtureReport = {
+      passed: 4,
+      warned: 1,
+      failed: 0,
+      status: "degraded",
+    };
+
+    expect(mod.resolveDoctorExitCode(fixtureReport, false)).toBe(0);
+    expect(mod.resolveDoctorExitCode(fixtureReport, true)).toBe(1);
+  });
 });

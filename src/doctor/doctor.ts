@@ -30,6 +30,18 @@ try {
 export { CheckResult, DoctorReport, DoctorOptions, Recommendation, AutoFixResult }
 export type { CheckStatus, Severity, CheckCategory } from "./types"
 
+export function resolveDoctorExitCode(
+  report: { failed?: number; warned?: number; summary?: { errors?: number; warnings?: number } } | null | undefined,
+  strict: boolean = false,
+): 0 | 1 {
+  if (!report) return 0
+  const errors = report.failed ?? report.summary?.errors ?? 0
+  const warnings = report.warned ?? report.summary?.warnings ?? 0
+  if (errors > 0) return 1
+  if (strict && warnings > 0) return 1
+  return 0
+}
+
 export async function runDoctor(directory: string, options: DoctorOptions = {}): Promise<DoctorReport> {
   const allChecks: CheckResult[] = []
 

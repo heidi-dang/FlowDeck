@@ -102,12 +102,20 @@ interface RuntimeSessionMetadata {
   depth: number
 }
 
+interface ChildTaskCorrelation {
+  parentSessionID: string
+  callID: string
+  taskKey: string
+  targetAgent: string
+}
+
 const sessionRegistry = new Map<string, RuntimeSessionMetadata>()
 const sessionCallerAgents = new Map<string, string>()
 const sessionTaskCalls = new Map<
   string,
   { callerAgent: string; targetAgent: string; startedAt: number; resolvedFrom: string }
 >()
+const childSessionToTask = new Map<string, ChildTaskCorrelation>()
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
@@ -738,6 +746,28 @@ const plugin: Plugin = async ({ directory, client }) => {
         if (sessionAgent && sessionAgent !== "unknown") {
           sessionCallerAgents.set(eventSessionID, sessionAgent)
         }
+
+        // ── Child session correlation ─────────────────────────────────────
+        if (parentID && !childSessionToTask.has(eventSessionID)) {
+          const effectiveTarget = sessionAgent || meta?.agent
+          for (const [taskKey, taskCall] of sessionTaskCalls.entries()) {
+            if (taskKey.startsWith(`${parentID}:`)) {
+              if (!effectiveTarget || effectiveTarget === "unknown" || taskCall.targetAgent === effectiveTarget) {
+                const alreadyLinked = Array.from(childSessionToTask.values()).some(c => c.taskKey === taskKey)
+                if (!alreadyLinked) {
+                  const callIDFromKey = taskKey.slice(parentID.length + 1)
+                  childSessionToTask.set(eventSessionID, {
+                    parentSessionID: parentID,
+                    callID: callIDFromKey !== "task" ? callIDFromKey : "",
+                    taskKey,
+                    targetAgent: taskCall.targetAgent,
+                  })
+                  break
+                }
+              }
+            }
+          }
+        }
       }
 
       const sessionID = eventSessionID
@@ -799,32 +829,66 @@ const plugin: Plugin = async ({ directory, client }) => {
             // ── Child session failure → delegation.failed ──────────────
             // When OpenCode's Task execution fails, tool.execute.after is NOT called.
             // The real failure path is session.error on the child session.
-            // Detect child sessions by parentID and emit delegation.failed on the parent.
+            // Detect child sessions by exact childSessionToTask correlation.
             const childMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
             if (childMeta?.parentID) {
               const parentSessionID = childMeta.parentID
               const now = Date.now()
-              for (const [taskKey, taskCall] of sessionTaskCalls.entries()) {
-                if (taskKey.startsWith(`${parentSessionID}:`)) {
-                  const callIDFromKey = taskKey.slice(parentSessionID.length + 1)
-                  const durationMs = now - taskCall.startedAt
-                  appendAuditEvent(directory, {
-                    kind: "delegation.failed",
-                    session_id: parentSessionID,
-                    agent: taskCall.callerAgent,
-                    tool: "task",
-                    decision: "block",
-                    reason: String(errorMessage),
-                    details: {
-                      callID: callIDFromKey !== "task" ? callIDFromKey : undefined,
-                      targetAgent: taskCall.targetAgent,
-                      childSessionID: sessionID,
-                      durationMs,
-                      resolvedFrom: taskCall.resolvedFrom,
-                    },
-                  })
-                  sessionTaskCalls.delete(taskKey)
+              const correlation = childSessionToTask.get(sessionID)
+
+              let matchedTaskKey: string | undefined
+              let matchedTaskCall: { callerAgent: string; targetAgent: string; startedAt: number; resolvedFrom: string } | undefined
+
+              if (correlation) {
+                matchedTaskKey = correlation.taskKey
+                matchedTaskCall = sessionTaskCalls.get(matchedTaskKey)
+              } else {
+                // Guarded fallback: find unassigned active task call matching targetAgent
+                for (const [taskKey, taskCall] of sessionTaskCalls.entries()) {
+                  if (taskKey.startsWith(`${parentSessionID}:`)) {
+                    if (!childMeta.agent || childMeta.agent === "unknown" || taskCall.targetAgent === childMeta.agent) {
+                      matchedTaskKey = taskKey
+                      matchedTaskCall = taskCall
+                      break
+                    }
+                  }
                 }
+              }
+
+              if (matchedTaskKey && matchedTaskCall) {
+                const callIDFromKey = matchedTaskKey.slice(parentSessionID.length + 1)
+                const durationMs = now - matchedTaskCall.startedAt
+                appendAuditEvent(directory, {
+                  kind: "delegation.failed",
+                  session_id: parentSessionID,
+                  agent: matchedTaskCall.callerAgent,
+                  tool: "task",
+                  decision: "block",
+                  reason: String(errorMessage),
+                  details: {
+                    callID: callIDFromKey !== "task" ? callIDFromKey : undefined,
+                    targetAgent: matchedTaskCall.targetAgent,
+                    childSessionID: sessionID,
+                    durationMs,
+                    resolvedFrom: matchedTaskCall.resolvedFrom,
+                  },
+                })
+                sessionTaskCalls.delete(matchedTaskKey)
+                childSessionToTask.delete(sessionID)
+              } else {
+                // Unresolved correlation — emit diagnostic without affecting other active tasks
+                appendAuditEvent(directory, {
+                  kind: "delegation.failed",
+                  session_id: parentSessionID,
+                  agent: "system",
+                  tool: "task",
+                  decision: "block",
+                  reason: `UNRESOLVED_CHILD_FAILURE: ${String(errorMessage)}`,
+                  details: {
+                    childSessionID: sessionID,
+                    targetAgent: childMeta.agent,
+                  },
+                })
               }
             }
 
@@ -860,9 +924,16 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionFilesChanged.delete(sessionID)
   sessionCallerAgents.delete(sessionID)
   sessionRegistry.delete(sessionID)
+  sessionTaskCalls.delete(sessionID)
+  childSessionToTask.delete(sessionID)
   for (const key of sessionTaskCalls.keys()) {
     if (key.startsWith(`${sessionID}:`)) {
       sessionTaskCalls.delete(key)
+    }
+  }
+  for (const [childId, corr] of childSessionToTask.entries()) {
+    if (corr.parentSessionID === sessionID) {
+      childSessionToTask.delete(childId)
     }
   }
   if (ld) {
@@ -901,4 +972,4 @@ export default flowDeckPlugin
 export { AGENT_NAMES, createAgent } from "./agents/index"
 export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
 export { acquireLock, releaseLock } from "./services/async-lock"
-export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
+export { runDoctor, formatReport, formatJSON, resolveDoctorExitCode } from "./doctor/doctor"

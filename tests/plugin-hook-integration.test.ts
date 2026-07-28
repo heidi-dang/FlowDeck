@@ -183,6 +183,82 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
     expect(failedEvent.reason).toContain("Subagent process crashed")
   })
 
+  it("handles two concurrent delegations independently without cross-talk on failure", async () => {
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const parentID = "ses_parent_concurrent"
+    const callA = "call-a-backend"
+    const callB = "call-b-tester"
+    const childA = "ses_child_a"
+    const childB = "ses_child_b"
+
+    // 1. Parent session created
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: { info: { id: parentID, agent: "heidi" } },
+      },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentID, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+
+    // 2. Launch Delegation A (backend-coder)
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callA, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "Build backend" } },
+    )
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childA, parentID, agent: "backend-coder" } },
+      },
+    })
+
+    // 3. Launch Delegation B (tester)
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callB, args: {} },
+      { args: { subagent_type: "tester", prompt: "Run tests" } },
+    )
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childB, parentID, agent: "tester" } },
+      },
+    })
+
+    // 4. Child B fails with session.error
+    await pluginInstance["event"]({
+      event: {
+        type: "session.error",
+        properties: { info: { id: childB, parentID }, error: "Tester process crashed" },
+      },
+    })
+
+    // Audit check: delegation.failed must exist ONLY for callB / tester
+    const lines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    const auditEvents = lines.map(l => JSON.parse(l))
+    const failedEvents = auditEvents.filter(e => e.kind === "delegation.failed")
+
+    expect(failedEvents).toHaveLength(1)
+    expect(failedEvents[0].details.targetAgent).toBe("tester")
+    expect(failedEvents[0].details.childSessionID).toBe(childB)
+
+    // 5. Delegation A (backend-coder) completes successfully in after-hook
+    await pluginInstance["tool.execute.after"](
+      { tool: "task", sessionID: parentID, callID: callA, args: { subagent_type: "backend-coder" } },
+      { title: "Build backend", output: "Done", metadata: {} },
+    )
+
+    const completedEvents = auditEvents.concat(
+      readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n").map(l => JSON.parse(l))
+    ).filter(e => e.kind === "delegation.completed")
+
+    const completedA = completedEvents.find(e => e.details?.callID === callA)
+    expect(completedA).toBeDefined()
+    expect(completedA.details.targetAgent).toBe("backend-coder")
+  })
+
   it("allows specialist child session chat.message via parentID and blocks nested delegation by resolved caller agent", async () => {
     const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_parent_real"

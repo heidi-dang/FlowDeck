@@ -81,8 +81,9 @@ function hasBun() {
     const bin = bunBin()
     execFileSync(bin, ["--version"], {
       encoding: "utf-8",
-      timeout: 5000,
+      timeout: 2000,
       stdio: "ignore",
+      shell: process.platform === "win32",
     })
     return true
   } catch {
@@ -226,6 +227,15 @@ try {
   _pkgVersion = _pkg.version || _pkgVersion
 } catch { /* ignore */ }
 
+export function resolveDoctorExitCode(report, strict = false) {
+  if (!report) return 0
+  const errors = report.failed ?? report.summary?.errors ?? 0
+  const warnings = report.warned ?? report.summary?.warnings ?? 0
+  if (errors > 0) return 1
+  if (strict && warnings > 0) return 1
+  return 0
+}
+
 /**
  * Backward-compatible wrapper: runDoctorService(directory, options)
  * Returns { report, exitCode, stdout, stderr } matching the main branch contract.
@@ -259,9 +269,7 @@ export async function runDoctorService(directory = PKG_ROOT, options = {}) {
   try {
     const rawReport = await runDoctor(directory, options)
     const report = normalizeReport(rawReport, _pkgName, _pkgVersion)
-    const errors = (report.summary && report.summary.errors) || 0
-    const warnings = (report.summary && report.summary.warnings) || 0
-    const exitCode = options.strict ? (errors > 0 || warnings > 0 ? 1 : 0) : (errors > 0 ? 1 : 0)
+    const exitCode = resolveDoctorExitCode(report, !!options.strict)
     const text = buildFallbackReport(report, !!options.verbose)
     const stdout = options.json
       ? JSON.stringify({ schemaVersion: 1, ...report }, null, 2) + "\n"
