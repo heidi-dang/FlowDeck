@@ -7,11 +7,12 @@
 
 import { describe, it, expect } from "vitest"
 import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from "fs"
-import { join, resolve } from "path"
-import { tmpdir, homedir } from "os"
+import { join } from "path"
+import { tmpdir } from "os"
 import { execFileSync } from "child_process"
-import { generateProjectId, planningDir } from "../src/tools/planning-state-lib"
+import { generateProjectId } from "../src/tools/planning-state-lib"
 import { resolveFdxBinaryPath } from "../src/tools/fdx"
+
 
 interface PathFixture {
   label: string

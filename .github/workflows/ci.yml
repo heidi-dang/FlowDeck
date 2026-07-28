@@ -68,7 +68,7 @@ jobs:
       - run: npm run validate:docs
       - name: Pack and inspect tarball
         run: |
-          PACKAGE=$(npm pack 2>/dev/null)
+          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
           echo "Package: $PACKAGE"
           tar tzf "$PACKAGE" | grep -q "scripts/config-mutator.mjs" && echo "PASS: scripts/config-mutator.mjs in tarball" || (echo "FAIL: scripts/config-mutator.mjs missing" && exit 1)
           tar tzf "$PACKAGE" | head -20
@@ -78,7 +78,8 @@ jobs:
         run: |
           set -e
           cd "$GITHUB_WORKSPACE"
-          PACKAGE=$(npm pack 2>/dev/null)
+          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
+
           echo "Package: $PACKAGE"
           TMP_ROOT=$(mktemp -d)
           TMP_APP="$TMP_ROOT/app"

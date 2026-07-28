@@ -973,10 +973,15 @@ fn main() {
                 }
             };
             let cwd = std::path::Path::new(".");
-            let legacy_name = cwd.canonicalize().ok().and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from)).unwrap_or_default();
+            let legacy_name = cwd
+                .canonicalize()
+                .ok()
+                .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+                .unwrap_or_default();
             let project_slug = fdx::paths::project_slug_from_directory(cwd);
             if !legacy_name.is_empty() {
-                let _ = fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name);
+                let _ =
+                    fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name);
             }
             let result = match action.as_str() {
                 "append" => fdx::commands::context::append(
@@ -1014,10 +1019,15 @@ fn main() {
                 }
             };
             let cwd = std::path::Path::new(".");
-            let legacy_name = cwd.canonicalize().ok().and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from)).unwrap_or_default();
+            let legacy_name = cwd
+                .canonicalize()
+                .ok()
+                .and_then(|p| p.file_name().and_then(|n| n.to_str()).map(String::from))
+                .unwrap_or_default();
             let project_slug = fdx::paths::project_slug_from_directory(cwd);
             if !legacy_name.is_empty() {
-                let _ = fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name);
+                let _ =
+                    fdx::paths::migrate_legacy_planning_dir(&home, &project_slug, &legacy_name);
             }
             let result = match action.as_str() {
                 "record" => fdx::commands::decisions::record(
@@ -1039,6 +1049,7 @@ fn main() {
                 }
             }
         }
+
 
     }
 }
