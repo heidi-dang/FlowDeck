@@ -13,3 +13,5 @@ export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services
 export { acquireLock, releaseLock } from "./services/async-lock"
 export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
 export { resolveDoctorExitCode } from "./doctor/exit-code.mjs"
+export { resolveBetterHarnessConfig } from "./config/index"
+export type { ResolvedBetterHarnessConfig } from "./config/index"

@@ -26,7 +26,7 @@ import {
 import { LoopDetector } from "./services/loop-detector"
 
 import { getAgentConfigs, getAgentRoutes } from "./agents/index"
-import { loadFlowDeckConfig, resolveAgentModels, type FlowDeckConfig } from "./config/index"
+import { loadFlowDeckConfig, resolveAgentModels, resolveBetterHarnessConfig, type FlowDeckConfig } from "./config/index"
 import { guardRailsHook } from "./hooks/guard-rails"
 import { OrchestratorGuard } from "./hooks/orchestrator-guard-hook"
 import { sessionStartHook } from "./hooks/session-start"
@@ -66,7 +66,6 @@ import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
 import { HarnessHttpServer } from "./better-harness/transport/http-server"
 import { SseManager } from "./better-harness/transport/sse"
 import { ProjectRegistry } from "./better-harness/runtime/project-registry"
-import type { BetterHarnessConfig } from "./config/schema"
 import type { RouterContext } from "./better-harness/runtime/router-context"
 
 // ─── Governance integration ────────────────────────────────────────────────
@@ -282,8 +281,8 @@ const plugin: Plugin = async ({ directory, client }) => {
   let _betterHarnessCleanup: (() => void) | null = null
 
   const projectRegistry = new ProjectRegistry()
-  const bhConfig: BetterHarnessConfig | undefined = flowdeckConfig.betterHarness
-  if (bhConfig?.enabled) {
+  const bhConfig = resolveBetterHarnessConfig(flowdeckConfig)
+  if (bhConfig.enabled) {
     // Create runtime (it creates its own coordinator internally)
     betterHarnessRuntime = new HarnessRuntime({
       projectRoot: directory,
@@ -303,10 +302,6 @@ const plugin: Plugin = async ({ directory, client }) => {
     const eventLogDir = bhConfig.eventLogDir
     betterHarnessSseManager = new SseManager(eventBus, eventLogDir)
 
-    // Build auth config
-    const authToken = bhConfig.authToken ?? null
-    const authEnabled = bhConfig.authEnabled ?? false
-
     // Build router context with all dependencies
     const routerContext: RouterContext = {
       runtime: betterHarnessRuntime,
@@ -315,20 +310,20 @@ const plugin: Plugin = async ({ directory, client }) => {
         return projectRegistry.resolve(serverKey, projectKey)
       },
       sseManager: betterHarnessSseManager,
-      authToken: authToken ?? undefined,
-      bindHost: bhConfig.bindHost ?? "127.0.0.1",
+      authToken: bhConfig.authToken,
+      bindHost: bhConfig.bindHost,
       opencodeClient: client,
     }
 
     betterHarnessServer = new HarnessHttpServer({
       enabled: true,
-      port: bhConfig.port ?? 0,
-      bindHost: bhConfig.bindHost ?? "127.0.0.1",
+      port: bhConfig.port,
+      bindHost: bhConfig.bindHost,
       auth: {
-        token: authToken ?? undefined,
-        enabled: authEnabled,
+        token: bhConfig.authToken,
+        enabled: bhConfig.authEnabled,
       },
-      maxBodySize: bhConfig.maxBodySize ?? 1024 * 1024,
+      maxBodySize: bhConfig.maxBodySize,
     })
     betterHarnessServer.setSseManager(betterHarnessSseManager)
     betterHarnessServer.setRouterContext(routerContext)
