@@ -103,15 +103,23 @@ export class SseManager {
           const lines = readFileSync(this.eventLogPath, "utf-8").split("\n").filter(Boolean);
           for (const line of lines) {
             const stored: StoredSseEvent = JSON.parse(line);
-            // Last-Event-ID is exclusive — only replay events with ID > lastSeq
+            // Last-Event-ID is exclusive — only replay events with ID > lastSeq.
+            // This guarantees every replayed event ID appears exactly once.
             if (stored.id > lastSeq) {
+              // Use stored routing metadata for client-level filtering.
+              // This is more reliable than parsing the payload, because
+              // routing is extracted at persist time when context is known.
+              if (client.runId && stored.routing?.runId && stored.routing.runId !== client.runId) {
+                continue;
+              }
+
               // Reconstruct HarnessEvent for sending
               const replayEvent: HarnessEvent = {
                 type: stored.type as HarnessEventType,
                 timestamp: stored.timestamp,
                 data: stored.data ? JSON.parse(stored.data) : undefined,
               };
-              this.filterAndSend(client, replayEvent, stored.id);
+              client.send(replayEvent, stored.id);
             }
           }
         } catch { /* best-effort replay from file */ }
@@ -148,7 +156,11 @@ export class SseManager {
       "X-Accel-Buffering": "no",
     });
 
-    // Send initial connected event with canonical envelope
+    // Send initial connected event with canonical envelope.
+    // Connected events are NOT persisted — they are transient connection
+    // metadata, not durable run lifecycle events.  Persisting them would
+    // cause duplicate delivery on every reconnect (sent once directly,
+    // then replayed from the event log).
     const connectedSeq = this.nextSequence();
     const connectedTimestamp = new Date().toISOString();
     const connectedEnvelope = JSON.stringify({
@@ -157,11 +169,6 @@ export class SseManager {
       data: { clientId },
     });
     res.write(`id: ${connectedSeq}\nevent: connected\ndata: ${connectedEnvelope}\n\n`);
-    this.persistEvent(connectedSeq, {
-      type: "connected",
-      timestamp: connectedTimestamp,
-      data: { clientId },
-    });
 
     // Create a client bound to this response
     const client: SseClient = {
@@ -185,7 +192,10 @@ export class SseManager {
 
     this.addClient(client);
 
-    // Start heartbeats with canonical envelope
+    // Start heartbeats with canonical envelope.
+    // Heartbeats are NOT persisted — they are keep-alive signals, not
+    // durable run lifecycle events.  Persisting them would cause
+    // duplicate or excessive replay volume.
     const hb = setInterval(() => {
       try {
         const hbSeq = this.nextSequence();
@@ -196,11 +206,6 @@ export class SseManager {
           data: { time: hbTimestamp },
         });
         res.write(`id: ${hbSeq}\nevent: heartbeat\ndata: ${hbEnvelope}\n\n`);
-        this.persistEvent(hbSeq, {
-          type: "heartbeat",
-          timestamp: hbTimestamp,
-          data: { time: hbTimestamp },
-        });
       } catch {
         this.handleClientDisconnect(clientId);
       }
