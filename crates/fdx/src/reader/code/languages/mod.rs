@@ -14,6 +14,10 @@ fn python_grammar() -> tree_sitter::Language {
     tree_sitter_python::LANGUAGE.into()
 }
 
+fn tsx_grammar() -> tree_sitter::Language {
+    tree_sitter_typescript::LANGUAGE_TSX.into()
+}
+
 fn typescript_grammar() -> tree_sitter::Language {
     tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()
 }
@@ -30,6 +34,7 @@ pub fn get_language_provider(ext: &str) -> Option<LanguageProvider> {
     match ext {
         "rs" => Some(LanguageProvider {
             name: "rust",
+
             grammar: rust_grammar,
             symbol_node_types: vec![
                 "function_item",
@@ -52,7 +57,7 @@ pub fn get_language_provider(ext: &str) -> Option<LanguageProvider> {
                 "decorated_definition",
             ],
         }),
-        "ts" | "tsx" => Some(LanguageProvider {
+        "ts" => Some(LanguageProvider {
             name: "typescript",
             grammar: typescript_grammar,
             symbol_node_types: vec![
@@ -64,10 +69,27 @@ pub fn get_language_provider(ext: &str) -> Option<LanguageProvider> {
                 "type_alias_declaration",
                 "method_definition",
                 "method_signature",
+                "lexical_declaration",
+            ],
+        }),
+        "tsx" => Some(LanguageProvider {
+            name: "tsx",
+            grammar: tsx_grammar,
+            symbol_node_types: vec![
+                "function_declaration",
+                "function_signature",
+                "class_declaration",
+                "interface_declaration",
+                "enum_declaration",
+                "type_alias_declaration",
+                "method_definition",
+                "method_signature",
+                "lexical_declaration",
             ],
         }),
         "js" | "jsx" | "mjs" | "cjs" => Some(LanguageProvider {
             name: "javascript",
+
             grammar: javascript_grammar,
             symbol_node_types: vec![
                 "function_declaration",

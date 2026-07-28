@@ -60,7 +60,7 @@ impl DeepReader {
     }
 
     /// Build a Symbol with full body included.
-    fn build_symbol_with_body(node: Node, source: &str, kind: String, name: String) -> Symbol {
+    fn build_symbol_with_body(node: Node, source: &str, kind: String, name: String, parent_scope: String) -> Symbol {
         let signature = extract_signature(node, source);
         let doc_comment = extract_doc_comment(node, source);
         let line_start = node.start_position().row + 1;
@@ -75,6 +75,7 @@ impl DeepReader {
             line_start,
             line_end,
             body,
+            parent_scope,
         }
     }
 }
@@ -111,28 +112,29 @@ impl CodeReader for DeepReader {
         // Build a lookup map from name to (node, kind) for dependency resolution
         let symbol_map: std::collections::HashMap<String, (Node, String)> = all_symbols
             .iter()
-            .map(|(node, kind, name)| (name.clone(), (*node, kind.clone())))
+            .map(|(node, kind, name, _parent)| (name.clone(), (*node, kind.clone())))
             .collect();
 
         // Find the target node before consuming all_symbols
         let target_node_for_deps = if let Some(target_name) = symbol_name {
             all_symbols
                 .iter()
-                .find(|(_, _, n)| n == target_name)
-                .map(|(n, _, _)| *n)
+                .find(|(_, _, n, _)| n == target_name)
+                .map(|(n, _, _, _)| *n)
         } else {
-            all_symbols.first().map(|(n, _, _)| *n)
+            all_symbols.first().map(|(n, _, _, _)| *n)
         };
 
         let symbols = if let Some(target_name) = symbol_name {
             // Find specific symbol
-            if let Some((node, kind, name)) = all_symbols.iter().find(|(_, _, n)| n == target_name)
+            if let Some((node, kind, name, parent)) = all_symbols.iter().find(|(_, _, n, _)| n == target_name)
             {
                 vec![Self::build_symbol_with_body(
                     *node,
                     source,
                     kind.clone(),
                     name.clone(),
+                    parent.clone(),
                 )]
             } else {
                 return Err(anyhow::anyhow!(
@@ -145,7 +147,7 @@ impl CodeReader for DeepReader {
             // Extract all symbols with bodies
             all_symbols
                 .into_iter()
-                .map(|(node, kind, name)| Self::build_symbol_with_body(node, source, kind, name))
+                .map(|(node, kind, name, parent)| Self::build_symbol_with_body(node, source, kind, name, parent))
                 .collect()
         };
 
@@ -183,6 +185,7 @@ impl CodeReader for DeepReader {
                                 line_start: dep_line_start,
                                 line_end: dep_line_end,
                                 body: None,
+                                parent_scope: "module:top".to_string(),
                             }),
                         });
                     } else {

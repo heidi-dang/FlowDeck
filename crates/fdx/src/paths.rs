@@ -51,9 +51,211 @@ pub fn slugify_topic(topic: &str) -> String {
     trimmed.chars().take(SLUG_MAX_LEN).collect()
 }
 
+use sha2::{Digest, Sha256};
+
+/// Normalize path deterministically for project ID generation.
+/// Mirrors `src/tools/planning-state-lib.ts:normalizePathForId`.
+pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
+    let abs = if directory.is_absolute() {
+        directory.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(directory)
+    };
+
+    let resolved = if abs.exists() {
+        std::fs::canonicalize(&abs).unwrap_or(abs)
+    } else {
+        normalize_components(&abs)
+    };
+
+    let path_str = resolved.to_string_lossy();
+    if let Some(stripped) = path_str.strip_prefix(r"\\?\") {
+        PathBuf::from(stripped)
+    } else {
+        resolved
+    }
+}
+
+fn normalize_components(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut components = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if let Some(last) = components.last() {
+                    if matches!(last, Component::Normal(_)) {
+                        components.pop();
+                    } else {
+                        components.push(component);
+                    }
+                } else {
+                    components.push(component);
+                }
+            }
+            _ => components.push(component),
+        }
+    }
+    components.into_iter().collect()
+}
+
+/// Generate a collision-safe project identifier from a repository root directory.
+/// Mirrors `src/tools/planning-state-lib.ts:generateProjectId`.
+pub fn generate_project_id(directory: &Path) -> String {
+    let norm = normalize_path_for_id(directory);
+    let path_str = norm.to_string_lossy();
+    let name = norm.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    let mut hasher = Sha256::new();
+    hasher.update(path_str.as_bytes());
+    let hash = format!("{:x}", hasher.finalize());
+    format!("{}-{}", name, &hash[..8])
+}
+
 /// Global planning root: `~/.fd-plan/<project-slug>/`.
+/// Legacy migration is handled separately by `migrate_legacy_planning_dir`.
 pub fn planning_dir(home: &Path, project_slug: &str) -> PathBuf {
     home.join(".fd-plan").join(project_slug)
+}
+
+/// Migrate legacy planning state from `~/.fd-plan/<legacy_name>/` to `~/.fd-plan/<project_slug>/`.
+/// Returns a migration result indicating success, no-op, or failure reason.
+pub fn migrate_legacy_planning_dir(
+    home: &Path,
+    project_slug: &str,
+    legacy_name: &str,
+) -> Result<MigrationResult, MigrationError> {
+    let root = home.join(".fd-plan");
+    let new_dir = root.join(project_slug);
+    let legacy_dir = root.join(legacy_name);
+
+    // Nothing to migrate
+    if !legacy_dir.exists() || !legacy_dir.is_dir() {
+        return Ok(MigrationResult::NoOp);
+    }
+
+    // Already migrated
+    if new_dir.exists() && new_dir.join("STATE.md").exists() {
+        return Ok(MigrationResult::AlreadyMigrated);
+    }
+
+    // Legacy dir must have STATE.md to be valid
+    if !legacy_dir.join("STATE.md").exists() {
+        return Err(MigrationError::MissingState(legacy_name.to_string()));
+    }
+
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+
+    let tmp_dir = root.join(format!("{}.tmp.{}", project_slug, now_ms));
+
+    let res = (|| -> std::io::Result<usize> {
+        std::fs::create_dir_all(&tmp_dir)?;
+        let count = copy_dir_recursive_count(&legacy_dir, &tmp_dir)?;
+
+        if !new_dir.exists() {
+            std::fs::rename(&tmp_dir, &new_dir)?;
+        } else {
+            let _ = copy_dir_recursive_count(&tmp_dir, &new_dir);
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+        }
+
+        let backup_dir = root.join(format!("{}.bak.{}", legacy_name, now_ms));
+        let _ = std::fs::rename(&legacy_dir, &backup_dir);
+        Ok(count)
+    })();
+
+    match res {
+        Ok(count) => Ok(MigrationResult::Migrated { entries: count }),
+        Err(e) => {
+            if tmp_dir.exists() {
+                let _ = std::fs::remove_dir_all(&tmp_dir);
+            }
+            Err(MigrationError::CopyFailed(legacy_dir, new_dir, e.to_string()))
+        }
+    }
+}
+
+fn copy_dir_recursive_count(src: &Path, dst: &Path) -> std::io::Result<usize> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst)?;
+    }
+    let mut count = 0usize;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dest_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            count += copy_dir_recursive_count(&entry.path(), &dest_path)?;
+        } else {
+            std::fs::copy(entry.path(), dest_path)?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MigrationResult {
+    NoOp,
+    AlreadyMigrated,
+    Migrated { entries: usize },
+}
+
+#[derive(Debug, Clone)]
+pub enum MigrationError {
+    MissingState(String),
+    CreateFailed(PathBuf, String),
+    ReadFailed(PathBuf, String),
+    CopyFailed(PathBuf, PathBuf, String),
+}
+
+impl std::fmt::Display for MigrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MigrationError::MissingState(name) => {
+                write!(f, "Legacy directory ~/.fd-plan/{} has no STATE.md", name)
+            }
+            MigrationError::CreateFailed(p, msg) => {
+                write!(f, "Failed to create directory {}: {}", p.display(), msg)
+            }
+            MigrationError::ReadFailed(p, msg) => {
+                write!(f, "Failed to read directory {}: {}", p.display(), msg)
+            }
+            MigrationError::CopyFailed(src, dst, msg) => {
+                write!(
+                    f,
+                    "Failed to copy {} to {}: {}",
+                    src.display(),
+                    dst.display(),
+                    msg
+                )
+            }
+        }
+    }
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        std::fs::create_dir_all(dst)?;
+    }
+
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dest_path = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_recursive(&entry.path(), &dest_path)?;
+        } else {
+            std::fs::copy(entry.path(), dest_path)?;
+        }
+    }
+    Ok(())
 }
 
 /// Per-topic directory: `~/.fd-plan/<project-slug>/<topic-slug>/`.
@@ -86,13 +288,12 @@ pub fn topic_affect_path(home: &Path, project_slug: &str, topic: &str) -> PathBu
     topic_dir(home, project_slug, topic).join(AFFECT_FILE)
 }
 
-/// Project slug from a directory path's basename. Matches TS `basename(directory)`.
+/// Generate a collision-safe project slug from a directory path.
+/// Uses `generate_project_id` which always hashes the canonical path.
+/// The legacy heuristic (checking for hyphen + length > 9) is removed
+/// because it incorrectly treated naturally hyphenated names as already hashed.
 pub fn project_slug_from_directory(directory: &Path) -> String {
-    directory
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("")
-        .to_string()
+    generate_project_id(directory)
 }
 
 /// Reserved planning entries (not topics). Reserved for future use.
@@ -103,6 +304,7 @@ pub fn is_reserved_planning_entry(name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]

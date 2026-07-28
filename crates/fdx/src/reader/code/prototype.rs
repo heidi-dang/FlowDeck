@@ -3,28 +3,64 @@ use crate::reader::code::Symbol;
 use std::path::Path;
 use tree_sitter::Node;
 
-/// Shared helper for finding symbols in an AST.
-/// Returns a vector of (node, kind, name) tuples for all top-level symbols.
+/// Container node types that can hold child symbols (methods, nested items).
+const CONTAINER_KINDS: &[&str] = &[
+    "class_declaration",
+    "struct_item",
+    "impl_item",
+    "trait_item",
+    "module",
+    "namespace_definition",
+    "interface_declaration",
+];
+
+/// Find symbols in an AST, computing parent scope for each symbol.
+/// Returns (node, kind, name, parent_scope).
 pub fn find_symbols_in_tree<'a>(
     tree: &'a tree_sitter::Tree,
     source: &str,
     symbol_types: &[&str],
-) -> Vec<(Node<'a>, String, String)> {
+) -> Vec<(Node<'a>, String, String, String)> {
     let root = tree.root_node();
-    let mut symbols = Vec::new();
+    let mut results = Vec::new();
     let mut cursor = root.walk();
 
     for child in root.children(&mut cursor) {
         let kind = child.kind();
-        if !symbol_types.contains(&kind) {
-            continue;
-        }
-        if let Some(name) = extract_symbol_name(child, source) {
-            symbols.push((child, map_kind(kind), name));
+        if CONTAINER_KINDS.contains(&kind) {
+            // Container: extract its name, then extract child symbols
+            if let Some(name) = extract_symbol_name(child, source) {
+                let mapped_kind = map_kind(kind);
+                let parent_scope = format!("{}:{}", mapped_kind, name);
+                // Add the container itself as a symbol
+                if symbol_types.contains(&kind) {
+                    results.push((child, mapped_kind.clone(), name.clone(), "module:top".to_string()));
+                }
+                // Extract child symbols with parent scope
+                let mut child_cursor = child.walk();
+                for grandchild in child.children(&mut child_cursor) {
+                    let gkind = grandchild.kind();
+                    if symbol_types.contains(&gkind) {
+                        if let Some(gname) = extract_symbol_name(grandchild, source) {
+                            results.push((
+                                grandchild,
+                                map_kind(gkind),
+                                gname,
+                                parent_scope.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+        } else if symbol_types.contains(&kind) {
+            // Top-level non-container symbol
+            if let Some(name) = extract_symbol_name(child, source) {
+                results.push((child, map_kind(kind), name, "module:top".to_string()));
+            }
         }
     }
 
-    symbols
+    results
 }
 
 /// Extract the name of a symbol node.
@@ -170,7 +206,7 @@ impl PrototypeReader {
         let found = find_symbols_in_tree(tree, source, &provider.symbol_node_types);
         let mut symbols = Vec::new();
 
-        for (node, kind, name) in found {
+        for (node, kind, name, parent_scope) in found {
             let signature = extract_signature(node, source);
             let doc_comment = extract_doc_comment(node, source);
             let line_start = node.start_position().row + 1;
@@ -184,6 +220,7 @@ impl PrototypeReader {
                 line_start,
                 line_end,
                 body: None,
+                parent_scope,
             });
         }
 

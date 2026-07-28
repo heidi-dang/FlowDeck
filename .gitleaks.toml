@@ -1,0 +1,10 @@
+# Gitleaks configuration file for FlowDeck
+
+[allowlist]
+description = "Ignore test fixtures and deleted test commits containing mock secrets"
+paths = [
+  '''tests/secret-redaction\.test\.ts''',
+]
+commits = [
+  "ca47cdef5217b557cd12a2f373fa8f831600a66f"
+]

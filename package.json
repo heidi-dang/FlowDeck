@@ -38,7 +38,8 @@
     "docs",
     "postinstall.mjs",
     "install.sh",
-    "uninstall.sh"
+    "uninstall.sh",
+    "crates/fdx"
   ],
   "scripts": {
     "clean": "rm -rf dist",
@@ -48,6 +49,8 @@
     "postinstall": "node postinstall.mjs",
     "prepublishOnly": "bun run clean && bun run build",
     "test": "bun test",
+    "test:fdx-parity": "node scripts/verify-fdx-parity.mjs",
+
     "test:coverage": "node scripts/check-coverage.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings",

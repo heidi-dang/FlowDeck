@@ -20,6 +20,7 @@ fn test_batch_read() {
         &[format!("{}/*.rs", temp_dir)],
         ReadMode::Prototype,
         None,
+        None,
         OutputFormat::Text,
         true,
         20,

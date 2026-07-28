@@ -13,19 +13,29 @@ pub struct SearchMatch {
 }
 
 /// Search for symbols by name pattern across files/directories.
+/// Results are capped at `max_matches` (0 returns empty, default 50).
 pub fn search_symbols(
     pattern: &str,
     paths: &[PathBuf],
     kind_filter: Option<&str>,
+    max_matches: usize,
     no_cache: bool,
     cache: &AstCache,
 ) -> anyhow::Result<Vec<SearchMatch>> {
+    if max_matches == 0 {
+        return Ok(Vec::new());
+    }
+
     let pattern_lower = pattern.to_lowercase();
     let mut matches = Vec::new();
 
     let files = collect_code_files(paths)?;
 
     for file in files {
+        if matches.len() >= max_matches {
+            break;
+        }
+
         let source = match std::fs::read_to_string(&file) {
             Ok(s) => s,
             Err(_) => continue, // Skip unreadable files
@@ -72,6 +82,10 @@ pub fn search_symbols(
         };
 
         for sym in symbols {
+            if matches.len() >= max_matches {
+                break;
+            }
+
             // Case-insensitive substring match on name
             if !sym.name.to_lowercase().contains(&pattern_lower) {
                 continue;

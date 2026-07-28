@@ -12,6 +12,17 @@ pub struct Symbol {
     pub line_end: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Qualified parent scope in the form `parent_kind:parent_name`.
+    /// For top-level symbols, this is `"module:top"`.
+    pub parent_scope: String,
+}
+
+impl Symbol {
+    /// Return the scoped identity key used for cross-symbol matching.
+    /// Format: `<parent_scope>/<kind>:<name>`
+    pub fn scoped_identity(&self) -> String {
+        format!("{}/{}:{}", self.parent_scope, self.kind, self.name)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
