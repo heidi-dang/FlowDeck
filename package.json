@@ -61,6 +61,7 @@
     "verify:clean-install": "node bin/flowdeck.js clean-install --verify-only",
     "install:clean": "node bin/flowdeck.js clean-install",
     "better-harness:serve": "node bin/better-harness.js",
+    "standalone:start": "bun run src/better-harness/testing/standalone-server-cli.ts",
     "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\""
   },
   "keywords": [

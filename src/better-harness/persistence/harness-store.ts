@@ -2,8 +2,30 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "
 import { join, dirname } from "path";
 import { homedir } from "os";
 
+/**
+ * Module-level state directory override.
+ * When set, all persistence goes to this directory instead of ~/.flowdeck/state/.
+ * Used by standalone launcher to guarantee isolation from real state.
+ */
+let _stateDirOverride: string | null = null;
+
+/**
+ * Override the default state directory (for standalone/testing isolation).
+ * All subsequent persistence calls will use `dir` instead of ~/.flowdeck/state/.
+ */
+export function setFlowDeckStateDir(dir: string): void {
+  _stateDirOverride = dir;
+}
+
+/**
+ * Reset the state directory back to the default (~/.flowdeck/state/).
+ */
+export function resetFlowDeckStateDir(): void {
+  _stateDirOverride = null;
+}
+
 export function getFlowDeckStateDir(): string {
-  return join(homedir(), ".flowdeck", "state");
+  return _stateDirOverride ?? join(homedir(), ".flowdeck", "state");
 }
 
 export function getProjectStoreDir(projectId: string): string {

@@ -87,7 +87,7 @@ export { executeValidation } from "./opencode/validation-executor";
 export type { ValidationResult } from "./opencode/validation-executor";
 
 // Persistence
-export { getFlowDeckStateDir, getProjectStoreDir, atomicWriteFile, readJsonFile } from "./persistence/harness-store";
+export { getFlowDeckStateDir, setFlowDeckStateDir, resetFlowDeckStateDir, getProjectStoreDir, atomicWriteFile, readJsonFile } from "./persistence/harness-store";
 export { saveRun, loadRun, listRuns } from "./persistence/run-store";
 export type { StoredRun } from "./persistence/run-store";
 export { saveReport, loadReport, listReports } from "./persistence/report-store";

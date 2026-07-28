@@ -2,10 +2,18 @@ import { RunCoordinator } from "./run-coordinator";
 import { EventBus, type HarnessEventType } from "./event-bus";
 import { cancelRun as cancelRunAction } from "./run-cancellation";
 import type { StoredRun } from "../persistence/run-store";
+import { setFlowDeckStateDir } from "../persistence/harness-store";
 
 export interface HarnessRuntimeConfig {
   projectRoot: string;
   timeoutMs?: number;
+  /**
+   * Optional state directory for persistence isolation.
+   * When set, all runtime persistence writes go to this directory
+   * instead of ~/.flowdeck/state/. The caller is responsible for
+   * cleanup. Only supported for standalone/testing usage.
+   */
+  stateDir?: string;
 }
 
 export class HarnessRuntime {
@@ -14,6 +22,9 @@ export class HarnessRuntime {
 
   constructor(config: HarnessRuntimeConfig) {
     this.config = config;
+    if (config.stateDir) {
+      setFlowDeckStateDir(config.stateDir);
+    }
     this.coordinator = new RunCoordinator();
   }
 

@@ -23,6 +23,7 @@ import { SseManager } from "../transport/sse";
 import { RouterContext } from "../runtime/router-context";
 import { HarnessHttpServer } from "../transport/http-server";
 import { captureWorkspaceSnapshot } from "../workspace/workspace-snapshot";
+import { resetFlowDeckStateDir } from "../persistence/harness-store";
 
 export interface StandaloneServerMeta {
   baseUrl: string;
@@ -66,8 +67,8 @@ export async function launchStandaloneServer(
   const snapshot = captureWorkspaceSnapshot(projectDir);
   const projectId = snapshot.projectId;
 
-  // Compose components
-  const runtime = new HarnessRuntime({ projectRoot: projectDir, timeoutMs: 60000 });
+  // Compose components — pass stateDir so all persistence goes to the temp dir
+  const runtime = new HarnessRuntime({ projectRoot: projectDir, timeoutMs: 60000, stateDir });
   const coordinator = runtime.getCoordinator();
   const eventBus = runtime.getEventBus();
   const registry = new ProjectRegistry();
@@ -113,6 +114,8 @@ export async function launchStandaloneServer(
     projectDir,
     stateDir,
     shutdown: async () => {
+      // Reset state dir override so no lingering references remain
+      resetFlowDeckStateDir();
       // Stop the server with a timeout to avoid hanging on active connections
       await Promise.race([
         server.stop(),
