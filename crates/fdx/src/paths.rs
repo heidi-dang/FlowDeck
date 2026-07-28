@@ -183,7 +183,11 @@ pub fn migrate_legacy_planning_dir(
             if tmp_dir.exists() {
                 let _ = std::fs::remove_dir_all(&tmp_dir);
             }
-            Err(MigrationError::CopyFailed(legacy_dir, new_dir, e.to_string()))
+            Err(MigrationError::CopyFailed(
+                legacy_dir,
+                new_dir,
+                e.to_string(),
+            ))
         }
     }
 }
@@ -207,8 +211,8 @@ fn copy_dir_recursive_count(src: &Path, dst: &Path) -> std::io::Result<usize> {
     Ok(count)
 }
 
-
 #[derive(Debug, Clone, PartialEq)]
+
 pub enum MigrationResult {
     NoOp,
     AlreadyMigrated,
