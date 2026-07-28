@@ -17,8 +17,8 @@ VERSION=""; SPEC=""; SCRIPT_MODE="install"
 KEEP_BACKUP=false; VERBOSE=false; PROJECT_FLAG=""; LOCAL_REPO=""
 
 # Doctor flags
-DOCTOR_MODE=false; DOCTOR_STRICT=false; DOCTOR_APPLY=false
-NON_INTERACTIVE=false; DOCTOR_PROFILE=""
+DOCTOR_MODE=false; STRICT_MODE=false; APPLY_RECOMMENDED=false
+NON_INTERACTIVE=false; PROFILE="recommended-dev"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }
@@ -39,13 +39,13 @@ while [ $i -le $# ]; do
     --help|-h)          SCRIPT_MODE="help"; i=$((i + 1)) ;;
     --project|-p)       PROJECT_FLAG="--project"; i=$((i + 1)) ;;
     --global|-g)        PROJECT_FLAG=""; i=$((i + 1)) ;;
-    --doctor)           DOCTOR_MODE=true; SCRIPT_MODE="doctor"; i=$((i + 1)) ;;
-    --strict)           DOCTOR_STRICT=true; i=$((i + 1)) ;;
-    --apply-recommended) DOCTOR_APPLY=true; i=$((i + 1)) ;;
+    --doctor)           DOCTOR_MODE=true; i=$((i + 1)) ;;
+    --strict)           STRICT_MODE=true; i=$((i + 1)) ;;
+    --apply-recommended) APPLY_RECOMMENDED=true; i=$((i + 1)) ;;
     --non-interactive)  NON_INTERACTIVE=true; i=$((i + 1)) ;;
     --profile)
       i=$((i + 1)); [ $i -ge $# ] && { err "--profile requires a value"; exit 1; }
-      DOCTOR_PROFILE="${@:$i:1}"; i=$((i + 1)) ;;
+      PROFILE="${@:$i:1}"; i=$((i + 1)) ;;
     --version)
       i=$((i + 1)); [ $i -ge $# ] && { err "--version requires a value"; exit 1; }
       VERSION="${@:$i:1}"; i=$((i + 1)) ;;
@@ -58,123 +58,165 @@ done
 
 # ---- Help ----
 if [ "$SCRIPT_MODE" = "help" ]; then
-  echo ""; echo "FlowDeck Clean Reinstall Bootstrap"; echo ""
+  echo ""; echo "FlowDeck Bootstrap Installer"; echo ""
   echo "Usage:"
   echo "  curl -fsSL https://raw.githubusercontent.com/heidi-dang/FlowDeck/main/install.sh | bash"
-  echo "  curl ... | bash -s -- --dry-run | --verify-only | --help"
-  echo ""; echo "Install Options:"
-  echo "  --dry-run         Show what would be done, make no changes"
-  echo "  --verify-only     Verify current state, do not install"
-  echo "  --uninstall-only  Remove FlowDeck, do not reinstall"
-  echo "  --keep-backup     Keep backup files after success"
-  echo "  --project, -p     Install in project .opencode/"
-  echo "  --global, -g      Install globally (default)"
-  echo "  --local-repo PATH Install from local checkout"
-  echo "  --verbose, -v     Verbose output"
-  echo "  --version VER     Specific version to install"
-  echo "  --help, -h        Show this help"
-  echo ""; echo "Doctor Options:"
-  echo "  --doctor           Audit-only diagnostics (no installation)"
-  echo "  --strict           Fail on warnings in doctor checks"
-  echo "  --apply-recommended Apply safe auto-fixes (idempotent)"
-  echo "  --non-interactive  Never prompt; use safe defaults"
-  echo "  --profile NAME     Named profile (recommended-dev, ci)"
-  echo ""; echo "Environment:"; echo "  FLOWDECK_PACKAGE_SPEC   Override npm spec"
+  echo "  curl ... | bash -s -- --doctor"
+  echo "  curl ... | bash -s -- --non-interactive --apply-recommended"
+  echo ""; echo "Options:"
+  echo "  --doctor            Audit-only mode — run doctor and exit without installing"
+  echo "  --strict            Propagate doctor failures as exit code 1"
+  echo "  --apply-recommended Apply safe auto-fixes idempotently"
+  echo "  --non-interactive   Never prompt; use safe defaults"
+  echo "  --profile NAME      Select profile (minimal, recommended-dev, full-dev, ci, release)"
+  echo "  --dry-run           Show what would be done, make no changes"
+  echo "  --verify-only       Verify current state, do not install"
+  echo "  --uninstall-only    Remove FlowDeck, do not reinstall"
+  echo "  --keep-backup       Keep backup files after success"
+  echo "  --project, -p       Install in project .opencode/"
+  echo "  --global, -g        Install globally (default)"
+  echo "  --local-repo PATH   Install from local checkout"
+  echo "  --verbose, -v       Verbose output"
+  echo "  --version VER       Specific version to install"
+  echo "  --help, -h          Show this help"
+  echo ""; echo "Environment:"
+  echo "  FLOWDECK_PACKAGE_SPEC   Override npm spec"
   echo "  FLOWDECK_VERSION         Specific version to install"
+  echo "  FLOWDECK_PROFILE         Default doctor profile"
   echo ""; exit 0
 fi
 
-# ---- Helper: locate the FlowDeck package ----
-locate_flowdeck() {
-  # Try npm root global first, then local node_modules
-  local global_root
-  global_root=$(npm root -g 2>/dev/null || echo "")
-  if [ -n "$global_root" ] && [ -f "$global_root/$PACKAGE/package.json" ]; then
-    echo "$global_root/$PACKAGE"
-    return 0
-  fi
-  # Check if we're in the repo
-  if [ -f "package.json" ] && grep -q '"@heidi-dang/flowdeck"' package.json 2>/dev/null; then
-    echo "$(pwd)"
-    return 0
-  fi
-  return 1
-}
+# Non-interactive guard: if --doctor without --non-interactive, ensure safe mode
+if [ "$DOCTOR_MODE" = true ] && [ "$NON_INTERACTIVE" = false ]; then
+  # doctor-mode without --non-interactive is fine — shows output and exits
+  :
+fi
 
-# ---- Helper: run doctor ----
-run_doctor_check() {
-  local pkg_dir="$1"
-  local mode="$2"  # "pre-install" or "post-install"
-  local doctor_args=""
+# Resolve profile from env if not set via flag
+if [ -z "${PROFILE:-}" ] || [ "$PROFILE" = "recommended-dev" ]; then
+  PROFILE="${FLOWDECK_PROFILE:-recommended-dev}"
+fi
 
-  if [ "$DOCTOR_STRICT" = true ]; then
-    doctor_args="$doctor_args --strict"
-  fi
-  if [ "$DOCTOR_APPLY" = true ]; then
-    doctor_args="$doctor_args --apply-recommended"
-  fi
-  if [ -n "$DOCTOR_PROFILE" ]; then
-    doctor_args="$doctor_args --profile $DOCTOR_PROFILE"
-  fi
-  if [ "$VERBOSE" = true ]; then
-    doctor_args="$doctor_args --verbose"
-  fi
+# Preserve all existing modes
+if [ "$DOCTOR_MODE" = true ] && [ "$SCRIPT_MODE" != "install" ]; then
+  # --doctor with other mode flags: doctor takes precedence, no install
+  SCRIPT_MODE="doctor-only"
+fi
 
-  if [ "$mode" = "pre-install" ]; then
-    info "Running pre-install doctor checks..."
+# ─── Doctor Mode (audit-only, no install) ──────────────────────────────
+
+if [ "$DOCTOR_MODE" = true ]; then
+  echo ""
+  echo -e "${BLUE}┌─ FlowDeck Environment Doctor ──────────────────────────────┐${NC}"
+  echo -e "${BLUE}│  Audit-only mode — no installation will be performed        │${NC}"
+  echo -e "${BLUE}└─────────────────────────────────────────────────────────────┘${NC}"
+  echo ""
+
+  # Detect platform
+  PLATFORM="$(uname -s)" 2>/dev/null || PLATFORM="unknown"
+  echo "  Platform: $PLATFORM"
+  echo "  Profile:  $PROFILE"
+  echo ""
+
+  # Locate doctor entry point
+  DOCTOR_SCRIPT=""
+  if [ -f "src/doctor/cli.mjs" ]; then
+    DOCTOR_SCRIPT="src/doctor/cli.mjs"
+  elif [ -f "../src/doctor/cli.mjs" ]; then
+    DOCTOR_SCRIPT="../src/doctor/cli.mjs"
+  elif command -v flowdeck &>/dev/null; then
+    DOCTOR_USE_CLI=true
   else
-    info "Running post-install doctor checks..."
+    # Try via npm exec for the packaged version
+    if [ -n "${SPEC:-}" ]; then
+      DOCTOR_NPM_SPEC="$SPEC"
+    else
+      warn "Doctor script not found locally and flowdeck not in PATH."
+      warn "Install FlowDeck first or run from the repository root."
+      [ "$STRICT_MODE" = true ] && exit 1
+      exit 0
+    fi
   fi
 
-  # Run doctor via node directly against the service CLI
-  local exit_code=0
-  if [ -f "$pkg_dir/src/doctor/cli.mjs" ]; then
-    node "$pkg_dir/src/doctor/cli.mjs" doctor $doctor_args 2>/dev/null || exit_code=$?
-  elif [ -f "$pkg_dir/bin/flowdeck.js" ]; then
-    node "$pkg_dir/bin/flowdeck.js" doctor $doctor_args 2>/dev/null || exit_code=$?
-  else
-    # Fall back to npm exec
-    npm exec --package="$PACKAGE" -- flowdeck doctor $doctor_args 2>/dev/null || exit_code=$?
-  fi
+  # Build doctor arguments
+  DOCTOR_ARGS=""
+  [ "$STRICT_MODE" = true ] && DOCTOR_ARGS="$DOCTOR_ARGS --strict"
+  [ "$VERBOSE" = true ] && DOCTOR_ARGS="$DOCTOR_ARGS --verbose"
+  [ "$APPLY_RECOMMENDED" = true ] && DOCTOR_ARGS="$DOCTOR_ARGS --apply-recommended"
+  [ "$NON_INTERACTIVE" = true ] && DOCTOR_ARGS="$DOCTOR_ARGS --non-interactive"
+  DOCTOR_ARGS="$DOCTOR_ARGS --profile $PROFILE"
 
-  return $exit_code
-}
-
-# ---- Doctor-only mode (audit, no install) ----
-if [ "$SCRIPT_MODE" = "doctor" ]; then
-  info "FlowDeck Doctor — Audit Mode"
-  info "Running diagnostics without installation..."
-
-  PKG_DIR=$(locate_flowdeck) || true
-
-  if [ -n "$PKG_DIR" ]; then
-    run_doctor_check "$PKG_DIR" "pre-install"
+  # Run doctor
+  if [ -n "${DOCTOR_SCRIPT:-}" ]; then
+    node "$DOCTOR_SCRIPT" $DOCTOR_ARGS
     DOCTOR_EXIT=$?
-    if [ $DOCTOR_EXIT -ne 0 ]; then
-      err "Doctor checks failed (exit code: $DOCTOR_EXIT)"
-      exit $DOCTOR_EXIT
-    fi
-    ok "All doctor checks passed."
-  else
-    warn "FlowDeck package not found locally."
-    warn "Running doctor via npm registry..."
-    doctor_args=""
-    [ "$DOCTOR_STRICT" = true ] && doctor_args="$doctor_args --strict"
-    [ "$DOCTOR_APPLY" = true ] && doctor_args="$doctor_args --apply-recommended"
-    [ -n "$DOCTOR_PROFILE" ] && doctor_args="$doctor_args --profile $DOCTOR_PROFILE"
-
-    DOCTOR_EXIT=0
-    npm exec --yes --package="$PACKAGE" -- flowdeck doctor $doctor_args || DOCTOR_EXIT=$?
-    if [ $DOCTOR_EXIT -ne 0 ]; then
-      err "Doctor checks failed (exit code: $DOCTOR_EXIT)"
-      exit $DOCTOR_EXIT
-    fi
-    ok "All doctor checks passed."
+  elif [ "${DOCTOR_USE_CLI:-}" = true ]; then
+    flowdeck doctor $DOCTOR_ARGS
+    DOCTOR_EXIT=$?
+  elif [ -n "${DOCTOR_NPM_SPEC:-}" ]; then
+    npm exec --yes --package="$DOCTOR_NPM_SPEC" -- flowdeck doctor $DOCTOR_ARGS
+    DOCTOR_EXIT=$?
   fi
+
+  echo ""
+  if [ $DOCTOR_EXIT -eq 0 ]; then
+    ok "Doctor completed — environment is healthy"
+  elif [ $DOCTOR_EXIT -eq 1 ]; then
+    if [ "$STRICT_MODE" = true ]; then
+      err "Doctor found issues (strict mode)"
+    else
+      warn "Doctor found issues — review recommendations"
+    fi
+  else
+    err "Doctor encountered an error (exit code: $DOCTOR_EXIT)"
+  fi
+
+  # Audit-only: exit without installing
+  [ "$STRICT_MODE" = true ] && exit $DOCTOR_EXIT
   exit 0
 fi
 
-# ======== Normal installation flow ========
+# ─── Pre-install Doctor ────────────────────────────────────────────────
+# Run a quick pre-install check to catch blocking issues
+
+run_preinstall_doctor() {
+  if [ -f "src/doctor/cli.mjs" ]; then
+    node "src/doctor/cli.mjs" --json --profile "$PROFILE" --non-interactive 2>/dev/null || true
+  elif command -v flowdeck &>/dev/null; then
+    flowdeck doctor --json --non-interactive 2>/dev/null || true
+  fi
+}
+
+# ─── Post-install Doctor ───────────────────────────────────────────────
+# Runs after installation to verify the result
+
+run_postinstall_doctor() {
+  local install_dir="$1"
+  if [ -f "$install_dir/src/doctor/cli.mjs" ]; then
+    node "$install_dir/src/doctor/cli.mjs" --json --profile "$PROFILE" --non-interactive 2>/dev/null || true
+  elif command -v flowdeck &>/dev/null; then
+    flowdeck doctor --json --non-interactive 2>/dev/null || true
+  fi
+}
+
+# ─── Readiness Summary ─────────────────────────────────────────────────
+
+print_readiness_summary() {
+  local pre_report="$1"
+  local post_report="$2"
+  echo ""
+  echo -e "${BLUE}── Readiness Summary ──${NC}"
+  if [ -n "$pre_report" ]; then
+    local pre_errors=$(echo "$pre_report" | grep -o '"errors":[0-9]*' | head -1 | cut -d: -f2)
+    echo "  Pre-install:  errors=${pre_errors:-?}"
+  fi
+  if [ -n "$post_report" ]; then
+    local post_errors=$(echo "$post_report" | grep -o '"errors":[0-9]*' | head -1 | cut -d: -f2)
+    echo "  Post-install: errors=${post_errors:-?}"
+  fi
+  echo "  Profile:      $PROFILE"
+  echo ""
+}
 
 # Prerequisites
 echo -e "\n${BLUE}[1/9]${NC} Prerequisites"
@@ -232,17 +274,14 @@ else
 fi
 info "Version: $VERSION"
 
-# ---- Preview safe changes (non-interactive applies, interactive can be previewed) ----
-if [ "$DOCTOR_APPLY" = true ]; then
-  echo -e "\n${BLUE}[Pre-flight]${NC} Applying safe recommendations..."
-  pkg_dir=$(locate_flowdeck) || true
-  if [ -n "$pkg_dir" ]; then
-    if run_doctor_check "$pkg_dir" "pre-install"; then
-      ok "Safe recommendations applied."
-    else
-      warn "Some recommendations could not be applied automatically."
-    fi
-  fi
+# Pre-install doctor — non-blocking informational check
+PRE_DOCTOR_REPORT=""
+if [ "$NON_INTERACTIVE" = true ] || [ "$APPLY_RECOMMENDED" = true ]; then
+  info "Running pre-install doctor..."
+  # Change back to original directory for doctor
+  cd - >/dev/null 2>&1 || true
+  PRE_DOCTOR_REPORT="$(run_preinstall_doctor)" || true
+  cd "$TMP_ROOT" >/dev/null 2>&1 || true
 fi
 
 # Build CLI args as bash array
@@ -260,39 +299,21 @@ info "Installing $SPEC..."
 EXIT_CODE=0
 npm exec --yes --package="$SPEC" -- flowdeck clean-install "${CLI_ARGS[@]}" || EXIT_CODE=$?
 
+# Post-install doctor verification
+POST_DOCTOR_REPORT=""
+if [ $EXIT_CODE -eq 0 ]; then
+  info "Running post-install doctor..."
+  POST_DOCTOR_REPORT="$(run_postinstall_doctor "$(pwd)")" || true
+fi
+
 # Result
 echo ""
 if [ $EXIT_CODE -eq 0 ]; then
   ok "FlowDeck installation completed."
   echo "  Package: $PACKAGE  Version: $VERSION"
-
-  # ---- Post-install doctor ----
-  if [ "$DOCTOR_MODE" = true ] || [ -n "$DOCTOR_PROFILE" ] || [ "$DOCTOR_STRICT" = true ] || [ "$DOCTOR_APPLY" = true ]; then
-    echo ""
-    pkg_dir=$(locate_flowdeck) || true
-    if [ -n "$pkg_dir" ]; then
-      info "Running post-install verification..."
-      if run_doctor_check "$pkg_dir" "post-install"; then
-        ok "Post-install verification passed."
-      else
-        warn "Post-install doctor found issues."
-        info "Run './install --doctor' for detailed diagnostics."
-      fi
-    fi
-  fi
-
-  # Readiness summary
-  echo ""
-  echo -e "${GREEN}── Readiness Summary ──${NC}"
-  echo "  Package: $PACKAGE"
-  echo "  Version: $VERSION"
-  echo "  Status:  INSTALLED"
-  if [ -n "$DOCTOR_PROFILE" ]; then
-    echo "  Profile: $DOCTOR_PROFILE"
-  fi
-  echo ""
-  echo "  A fresh OpenCode session is required to activate."
+  print_readiness_summary "$PRE_DOCTOR_REPORT" "$POST_DOCTOR_REPORT"
 else
   err "FlowDeck installation FAILED (exit code: $EXIT_CODE)"
+  [ "$STRICT_MODE" = true ] && exit $EXIT_CODE
   exit $EXIT_CODE
 fi

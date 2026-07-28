@@ -22,8 +22,8 @@ import { homedir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { readConfig as readConfigFile } from "../scripts/config-mutator.mjs";
 import { executeTransaction, executeRollbackTransaction } from "../scripts/config-transaction.mjs";
-import { runDoctorCli } from "../src/doctor/cli.mjs";
 import { runCleanInstall } from "../scripts/clean-install-engine.mjs";
+import { runDoctor as runNewDoctor, formatReport } from "../scripts/doctor-service.mjs";
 
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -397,10 +397,61 @@ async function cmdVerify() {
 }
 
 async function cmdDoctor() {
-  // Pass doctor-specific args to the CLI handler
-  // args contains the full process.argv after "flowdeck"
-  // e.g. ["doctor", "--json", "--strict"] → pass ["doctor", "--json", "--strict"]
-  await runDoctorCli(args);
+  // Collect doctor args (everything after "doctor")
+  const doctorArgs = args.slice(1);
+  const validFlags = new Set(["--json", "--strict", "--verbose", "--apply-recommended", "--non-interactive", "--profile"]);
+  let prevWasProfile = false;
+  for (const a of doctorArgs) {
+    if (prevWasProfile) { prevWasProfile = false; continue; }
+    if (a === "--profile") { prevWasProfile = true; continue; }
+    if (a.startsWith("--") && !validFlags.has(a)) {
+      process.stderr.write(`Error: Unknown flag: ${a}\nUsage: flowdeck doctor [--json] [--strict] [--verbose] [--apply-recommended] [--profile <name>]\n`);
+      process.exit(2);
+    }
+  }
+
+  const isJson = doctorArgs.includes("--json");
+  const isStrict = doctorArgs.includes("--strict");
+  const isVerbose = doctorArgs.includes("--verbose");
+  const applyFix = doctorArgs.includes("--apply-recommended");
+  const profileIdx = doctorArgs.indexOf("--profile");
+  const profile = profileIdx >= 0 && profileIdx + 1 < doctorArgs.length ? doctorArgs[profileIdx + 1] : "recommended-dev";
+
+  try {
+    const report = await runNewDoctor(PKG_ROOT, {
+      strict: isStrict,
+      verbose: isVerbose,
+      applyRecommended: applyFix,
+      profile,
+    });
+
+    if (isJson) {
+      // JSON only to stdout; diagnostics to stderr
+      process.stdout.write(JSON.stringify({ schemaVersion: 1, ...report }, null, 2) + "\n");
+    } else {
+      const text = await formatReport(report, isVerbose);
+      process.stdout.write(text);
+    }
+
+    // Determine exit code
+    const errors = (report.summary && report.summary.errors) || 0;
+
+    if (isStrict) {
+      const criticals = (report.checks || []).filter(c =>
+        c.status === "error" || c.severity === "critical" || c.severity === "high"
+      );
+      if (criticals.length > 0) {
+        process.exit(1);
+      }
+    } else if (errors > 0) {
+      process.exit(1);
+    }
+
+    process.exit(0);
+  } catch (err) {
+    process.stderr.write(`Doctor error: ${err.message}\n`);
+    process.exit(2);
+  }
 }
 
 async function cmdConfigValidate() {

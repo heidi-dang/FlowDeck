@@ -1,421 +1,244 @@
 #!/usr/bin/env node
-// scripts/doctor-service.mjs — Doctor Service Bridge
-//
-// Wraps the authoritative doctor-engine.mjs with:
-// - JSON/text output formatting
-// - Strict-mode policy enforcement
-// - Profile-based check filtering
-// - --apply-recommended (safe auto-fixes)
-// - Secret redaction
-// - Package-relative path resolution
-//
-// Used by:
-//   - bin/flowdeck.js (CLI doctor command)
-//   - src/doctor/cli.mjs (standalone CLI handler)
-//   - install.sh (pre/post-install verification)
-
-import { readFileSync, existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { runDoctorChecks } from "./doctor-engine.mjs";
-
-// ── Constants ────────────────────────────────────────────────────────────
-
-export const SCHEMA_VERSION = 1;
-export const EXIT_HEALTHY = 0;
-export const EXIT_FAILURE = 1;
-export const EXIT_ERROR = 2;
-
-// ── Secret patterns (never expose in any output) ────────────────────────
-
-const SECRET_PATTERNS = [
-  /(api[_-]?key|apikey|token|secret|password|credential)[=:]\s*\S+/gi,
-  /(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{36,}/g,
-  /(-----BEGIN\s+(?:RSA\s+)?PRIVATE\s+KEY-----)[\s\S]*?(-----END\s+(?:RSA\s+)?PRIVATE\s+KEY-----)/g,
-  /(?:https?:\/\/)?[\w.-]+@[\w.-]+\.\w{2,}(?::\d+)?[/~][\w./-]+/g,
-];
-
-const SECRET_REPLACEMENT = "[REDACTED]";
-
 /**
- * Redact known secret patterns from a string.
- * Returns the redacted string.
+ * doctor-service.mjs — Bridge between the CLI/installer and the doctor engine.
+ *
+ * Resolves the doctor implementation from (in order):
+ *   1. Compiled dist/index.js (packaged npm install)
+ *   2. TypeScript source via bun (development)
+ *
+ * Used by:
+ *   - bin/flowdeck.js (CLI doctor command)
+ *   - install.sh (doctor integration)
  */
-function redactSecrets(text) {
-  if (typeof text !== "string") return text;
-  let result = text;
-  for (const pattern of SECRET_PATTERNS) {
-    result = result.replace(pattern, (match) => {
-      // Keep the key prefix visible, redact the value part
-      const colonIdx = match.indexOf(":");
-      const eqIdx = match.indexOf("=");
-      const sepIdx = colonIdx > 0 ? colonIdx : eqIdx > 0 ? eqIdx : -1;
-      if (sepIdx > 0 && sepIdx < match.length - 1) {
-        return match.slice(0, sepIdx + 1) + SECRET_REPLACEMENT;
-      }
-      return SECRET_REPLACEMENT;
-    });
+
+import { resolve, dirname, join } from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
+import { execFileSync } from "node:child_process"
+
+// Resolve bun binary path for reliable subprocess detection
+let BUN_BIN_CACHED = null
+function bunBin() {
+  if (BUN_BIN_CACHED !== null) return BUN_BIN_CACHED
+  if (process.env.FLOWDECK_BUN_BIN) {
+    BUN_BIN_CACHED = process.env.FLOWDECK_BUN_BIN
+    return BUN_BIN_CACHED
   }
-  return result;
-}
-
-/**
- * Deep-redact an object (recursively).
- */
-function deepRedact(obj) {
-  if (typeof obj === "string") return redactSecrets(obj);
-  if (Array.isArray(obj)) return obj.map(deepRedact);
-  if (obj && typeof obj === "object") {
-    const result = {};
-    for (const [key, value] of Object.entries(obj)) {
-      result[key] = deepRedact(value);
-    }
-    return result;
+  if (typeof process.versions.bun === "string") {
+    BUN_BIN_CACHED = process.execPath
+    return BUN_BIN_CACHED
   }
-  return obj;
+  BUN_BIN_CACHED = "bun"
+  return BUN_BIN_CACHED
 }
 
-// ── Profiles ─────────────────────────────────────────────────────────────
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const PKG_ROOT = resolve(__dirname, "..")
 
-const PROFILES = {
-  "recommended-dev": {
-    description: "Recommended for local development",
-    minPassRate: 0.7, // Allow up to 30% warning/fail
-    strict: false,
-    requiredChecks: ["pkg.identity", "pkg.version", "config.validity"],
-  },
-  ci: {
-    description: "CI/CD pipeline gate",
-    minPassRate: 1.0,
-    strict: true,
-    requiredChecks: [
-      "pkg.identity",
-      "pkg.version",
-      "config.validity",
-      "agents.count",
-      "delegation.depth",
-      "governance.wiring",
-    ],
-  },
-};
+// ─── Engine Resolution ─────────────────────────────────────────────────
 
-function getProfile(name) {
-  if (!name) return null;
-  return PROFILES[name] || null;
+function resolveDistPath() {
+  return pathToFileURL(join(PKG_ROOT, "dist", "index.js")).href
 }
 
-// ── Safe auto-fixes (--apply-recommended) ────────────────────────────────
-
-/**
- * Apply safe, idempotent fixes for remediable check failures.
- * Returns { fixed: number, failed: number, details: Array<{checkId, status, message}> }.
- */
-async function applyRecommendedFixes(directory, report) {
-  const fixes = [];
-  for (const check of report.checks) {
-    if (check.status !== "fail") continue;
-
-    const fix = await tryFixCheck(directory, check);
-    if (fix) {
-      fixes.push({ checkId: check.id, status: fix.status, message: fix.message });
-    }
-  }
-
-  const fixed = fixes.filter((f) => f.status === "fixed").length;
-  const failed = fixes.filter((f) => f.status === "failed").length;
-  return { fixed, failed, details: fixes };
-}
-
-/**
- * Attempt a single safe, idempotent fix for a check.
- * Returns null if no fix is available or the fix is not safe to auto-apply.
- */
-async function tryFixCheck(directory, check) {
-  switch (check.id) {
-    case "config.registration": {
-      // If flowdeck is not registered, attempt install
-      if (check.message.includes("not registered") || check.message.includes("Upstream")) {
-        try {
-          // Import and run the install command
-          const { executeTransaction } = await import("./config-transaction.mjs");
-          const configDir = resolveConfigDir();
-          mkdirSync(configDir, { recursive: true });
-
-          const configPath = join(configDir, "opencode.json");
-          const manifestPath = join(configDir, ".flowdeck-manifest.json");
-
-          const result = await executeTransaction({
-            configPath,
-            edits: [
-              {
-                path: ["plugin"],
-                value: ["@heidi-dang/flowdeck"],
-              },
-              {
-                path: ["default_agent"],
-                value: "heidi",
-              },
-            ],
-            manifest: {
-              schemaVersion: 2,
-              pluginRef: "@heidi-dang/flowdeck",
-              pluginAdded: true,
-              installationMode: "postinstall",
-              version: readPackageVersion(directory),
-            },
-            manifestPath,
-          });
-
-          if (result.ok) {
-            return { status: "fixed", message: "Registered @heidi-dang/flowdeck in config" };
-          }
-          return { status: "failed", message: `Auto-registration failed: ${result.error}` };
-        } catch (err) {
-          return { status: "failed", message: `Auto-registration error: ${err.message}` };
-        }
-      }
-      return null;
-    }
-
-    case "config.validity": {
-      // Can't auto-fix malformed config
-      return null;
-    }
-
-    default:
-      return null; // No safe auto-fix for this check
-  }
-}
-
-function readPackageVersion(directory) {
+async function loadDoctorEngine() {
+  // Try 1: Compiled dist (packaged npm install)
+  const distUrl = resolveDistPath()
   try {
-    const pkg = JSON.parse(readFileSync(join(directory, "package.json"), "utf-8"));
-    return pkg.version || "unknown";
+    const mod = await import(distUrl)
+    if (typeof mod.runDoctor === "function") {
+      return {
+        runDoctor: mod.runDoctor,
+        formatReport: mod.formatReport,
+        formatJSON: mod.formatJSON,
+        source: "dist",
+      }
+    }
   } catch {
-    return "unknown";
+    // dist not available
+  }
+
+  // Try 2: Run via bun (development)
+  if (hasBun()) {
+    return { runViaBun: true, source: "bun" }
+  }
+
+  throw new Error(
+    "Doctor engine not available. Build the project first: bun run build"
+  )
+}
+
+function hasBun() {
+  try {
+    const bin = bunBin()
+    execFileSync(bin, ["--version"], {
+      encoding: "utf-8",
+      timeout: 5000,
+      stdio: "ignore",
+    })
+    return true
+  } catch {
+    return false
   }
 }
 
-// ── Report formatting ────────────────────────────────────────────────────
+function runViaBun(directory, options = {}) {
+  // Use bun to import and execute the TypeScript doctor module inline
+  const doctorPath = join(PKG_ROOT, "src/doctor/doctor.ts")
+  const opts = {
+    directory: directory || PKG_ROOT,
+    options: {
+      json: false,
+      strict: !!options.strict,
+      verbose: !!options.verbose,
+      applyRecommended: !!options.applyRecommended,
+      profile: options.profile || "recommended-dev",
+      nonInteractive: !!options.nonInteractive,
+    },
+  }
+
+  const script = [
+    `import { runDoctor } from ${JSON.stringify(doctorPath)};`,
+    `const r = await runDoctor(${JSON.stringify(opts.directory)}, ${JSON.stringify(opts.options)});`,
+    `process.stdout.write(JSON.stringify(r));`,
+  ].join("\n")
+
+  try {
+    const output = execFileSync(bunBin(), ["-e", script], {
+      cwd: PKG_ROOT,
+      encoding: "utf-8",
+      timeout: 60000,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    return JSON.parse(output.trim())
+  } catch (e) {
+    const stderr = e.stderr || ""
+    const stdout = e.stdout || ""
+    // Try to parse JSON from stdout even on error
+    try {
+      return JSON.parse(stdout.trim())
+    } catch {
+      if (stderr) {
+        throw new Error(stderr.trim().split("\n").pop() || e.message)
+      }
+      throw e
+    }
+  }
+}
+
+// ─── Public API ────────────────────────────────────────────────────────
+
+export const SCHEMA_VERSION = 1
+export const EXIT_HEALTHY = 0
+export const EXIT_FAILURE = 1
+export const EXIT_ERROR = 2
+
+/**
+ * Run the doctor engine and return a report.
+ * @param {string} [directory] - Package root directory
+ * @param {object} [options]
+ * @param {boolean} [options.json] - Output JSON (not used here, for CLI)
+ * @param {boolean} [options.strict] - Strict mode
+ * @param {boolean} [options.verbose] - Verbose output
+ * @param {boolean} [options.applyRecommended] - Apply auto-fixes
+ * @param {string} [options.profile] - Profile name
+ * @param {boolean} [options.nonInteractive] - Non-interactive mode
+ * @returns {Promise<object>} Doctor report
+ */
+export async function runDoctor(directory = PKG_ROOT, options = {}) {
+  const engine = await loadDoctorEngine()
+
+  if (engine.runViaBun) {
+    return runViaBun(directory, options)
+  }
+
+  return engine.runDoctor(directory, {
+    json: false,
+    strict: !!options.strict,
+    verbose: !!options.verbose,
+    applyRecommended: !!options.applyRecommended,
+    profile: options.profile || "recommended-dev",
+    nonInteractive: !!options.nonInteractive,
+  })
+}
 
 /**
  * Format a doctor report as human-readable text.
+ * @param {object} report - Doctor report
+ * @param {boolean} [verbose] - Include verbose details
+ * @returns {string} Formatted text
  */
-function formatTextReport(report, options = {}) {
-  const lines = [];
-  const { verbose = false } = options;
-
-  lines.push(`FlowDeck Doctor — Comprehensive Diagnostics`);
-  lines.push(`Schema: v${SCHEMA_VERSION}`);
-  lines.push(`Package: ${report.packageName || "@heidi-dang/flowdeck"}`);
-  lines.push(`Version: ${report.packageVersion || "unknown"}`);
-  lines.push("");
-
-  if (report.directory) {
-    lines.push(`Directory: ${report.directory}`);
-    lines.push("");
+export async function formatReport(report, verbose = false) {
+  const engine = await loadDoctorEngine()
+  if (engine.formatReport) {
+    return engine.formatReport(report, verbose)
   }
-
-  lines.push("── Diagnostics ──");
-  for (const check of report.checks) {
-    const icon = check.status === "pass" ? "\u2713" : check.status === "warn" ? "\u26A0" : "\u2717";
-    let msg = check.message || "";
-    if (!verbose) {
-      // Truncate long messages in non-verbose mode
-      if (msg.length > 120) msg = msg.slice(0, 117) + "...";
-    }
-    lines.push(` ${icon} ${check.name}: ${msg}`);
-    if (check.remediation) {
-      lines.push(`    Remedy: ${check.remediation}`);
-    }
-  }
-
-  lines.push("");
-  lines.push("── Summary ──");
-  lines.push(`  Passed: ${report.passed}`);
-  lines.push(`  Warned: ${report.warned}`);
-  lines.push(`  Failed: ${report.failed}`);
-  lines.push(`  Status: ${report.failed > 0 ? "UNHEALTHY" : report.warned > 0 ? "DEGRADED" : "HEALTHY"}`);
-
-  if (report.appliedFixes) {
-    lines.push("");
-    lines.push("── Applied Fixes ──");
-    for (const fix of report.appliedFixes.details) {
-      const icon = fix.status === "fixed" ? "\u2713" : "\u2717";
-      lines.push(` ${icon} ${fix.checkId}: ${fix.message}`);
-    }
-    lines.push(`  Fixed: ${report.appliedFixes.fixed}, Failed: ${report.appliedFixes.failed}`);
-  }
-
-  return lines.join("\n") + "\n";
+  // Fallback: build from scratch
+  return buildFallbackReport(report, verbose)
 }
 
 /**
  * Format a doctor report as JSON.
+ * @param {object} report - Doctor report
+ * @returns {string} JSON string
  */
-function formatJsonReport(report) {
-  const output = {
-    schemaVersion: SCHEMA_VERSION,
-    packageName: report.packageName || "@heidi-dang/flowdeck",
-    packageVersion: report.packageVersion || "unknown",
-    directory: report.directory || null,
-    passed: report.passed,
-    warned: report.warned,
-    failed: report.failed,
-    status: report.failed > 0 ? "unhealthy" : report.warned > 0 ? "degraded" : "healthy",
-    checks: report.checks.map((c) => ({
-      id: c.id,
-      name: c.name,
-      status: c.status,
-      message: c.message,
-      ...(c.remediation ? { remediation: c.remediation } : {}),
-    })),
-  };
-
-  if (report.appliedFixes) {
-    output.appliedFixes = {
-      fixed: report.appliedFixes.fixed,
-      failed: report.appliedFixes.failed,
-      details: report.appliedFixes.details,
-    };
-  }
-
-  return JSON.stringify(output, null, 2) + "\n";
+export async function formatJSON(report) {
+  return JSON.stringify({ schemaVersion: 1, ...report }, null, 2)
 }
-
-// ── Resolve config directory ─────────────────────────────────────────────
-
-function resolveConfigDir() {
-  const xdg = process.env.XDG_CONFIG_HOME;
-  if (xdg) return join(xdg, "opencode");
-  const home = process.env.HOME || process.env.USERPROFILE || "";
-  return join(home, ".config", "opencode");
-}
-
-// ── Main service API ─────────────────────────────────────────────────────
 
 /**
- * Run the doctor service with full CLI support.
- *
- * @param {string} directory - Package root directory
- * @param {object} options
- * @param {boolean} [options.json] - Output JSON (default false)
- * @param {boolean} [options.strict] - Fail on warnings (default false)
- * @param {boolean} [options.verbose] - Include additional detail (default false)
- * @param {boolean} [options.applyRecommended] - Apply safe auto-fixes (default false)
- * @param {string} [options.profile] - Named profile to use (default null)
- * @returns {Promise<{ report: object, exitCode: number, stdout: string, stderr: string }>}
+ * Backward-compatible wrapper: runDoctorService(directory, options)
+ * Returns { report, exitCode, stdout, stderr } matching the main branch contract.
+ * Used by src/doctor/cli.mjs and tests.
  */
-export async function runDoctorService(directory, options = {}) {
-  const {
-    json = false,
-    strict = false,
-    verbose = false,
-    applyRecommended = false,
-    profile = null,
-  } = options;
-
-  const stderrLog = [];
-  const logError = (msg) => stderrLog.push(msg);
-
-  // Resolve the profile
-  let effectiveStrict = strict;
-  let effectiveRequired = null;
-  if (profile) {
-    const resolved = getProfile(profile);
-    if (!resolved) {
-      logError(`Unknown profile: "${profile}"`);
-      return {
-        report: null,
-        exitCode: EXIT_ERROR,
-        stdout: "",
-        stderr: stderrLog.join("\n") + (stderrLog.length > 0 ? "\n" : ""),
-      };
-    }
-    if (resolved.strict) effectiveStrict = true;
-    effectiveRequired = resolved.requiredChecks || null;
-  }
-
-  // Validate directory
-  if (!existsSync(join(directory, "package.json"))) {
-    logError(`Invalid FlowDeck directory: ${directory}`);
-    return {
-      report: null,
-      exitCode: EXIT_ERROR,
-      stdout: "",
-      stderr: stderrLog.join("\n") + (stderrLog.length > 0 ? "\n" : ""),
-    };
-  }
-
-  let report;
+export async function runDoctorService(directory = PKG_ROOT, options = {}) {
   try {
-    report = await runDoctorChecks(directory);
+    const report = await runDoctor(directory, options)
+    const errors = (report.summary && report.summary.errors) || 0
+    const exitCode = errors > 0 ? 1 : 0
+    const text = buildFallbackReport(report, !!options.verbose)
+    const stdout = options.json
+      ? JSON.stringify({ schemaVersion: 1, ...report }, null, 2) + "\n"
+      : text
+    return { report, exitCode, stdout, stderr: "" }
   } catch (err) {
-    logError(`Doctor engine error: ${err.message}`);
     return {
       report: null,
-      exitCode: EXIT_ERROR,
+      exitCode: 2,
       stdout: "",
-      stderr: stderrLog.join("\n") + (stderrLog.length > 0 ? "\n" : ""),
-    };
-  }
-
-  // Apply recommended fixes if requested
-  let appliedFixes = null;
-  if (applyRecommended) {
-    try {
-      appliedFixes = await applyRecommendedFixes(directory, report);
-      // Re-run checks after fixes
-      report = await runDoctorChecks(directory);
-    } catch (err) {
-      logError(`Auto-fix error: ${err.message}`);
+      stderr: `Doctor engine error: ${err.message}\n`,
     }
   }
+}
 
-  // Build the report envelope
-  const pkgVersion = readPackageVersion(directory);
-  const fullReport = {
-    ...report,
-    packageName: "@heidi-dang/flowdeck",
-    packageVersion: pkgVersion,
-    directory,
-    appliedFixes,
-  };
+// ─── Fallback Report Builder ───────────────────────────────────────────
 
-  // Profile-based requirement check
-  let profileFailed = false;
-  if (effectiveRequired) {
-    for (const checkId of effectiveRequired) {
-      const check = report.checks.find((c) => c.id === checkId);
-      if (!check || check.status === "fail") {
-        profileFailed = true;
-        break;
+function buildFallbackReport(report, verbose) {
+  const lines = []
+  lines.push("\n" + "=".repeat(60))
+  lines.push("  FlowDeck Environment Doctor")
+  lines.push(`  Version: ${report.version || "unknown"}`)
+  lines.push(`  Profile: ${report.profile || "recommended-dev"}`)
+  lines.push(`  Timestamp: ${report.timestamp || new Date().toISOString()}`)
+  lines.push("=".repeat(60) + "\n")
+
+  const s = report.summary || report
+  const errors = s.errors || 0
+  const warnings = s.warnings || 0
+
+  lines.push(`  Errors: ${errors} | Warnings: ${warnings}`)
+  lines.push("")
+
+  if (report.checks) {
+    for (const c of report.checks) {
+      const icon = c.status === "pass" ? "OK" : c.status === "warning" ? "WARN" : "ERROR"
+      lines.push(`  ${icon}  ${c.title || c.name}: ${c.detected || c.message || ""}`)
+      if (verbose && c.recommendation) {
+        lines.push(`       ${c.recommendation}`)
       }
     }
+    lines.push("")
   }
 
-  // Determine exit code
-  let exitCode;
-  if (effectiveStrict || profileFailed) {
-    exitCode = report.failed > 0 || (effectiveStrict && report.warned > 0) || profileFailed
-      ? EXIT_FAILURE
-      : EXIT_HEALTHY;
-  } else {
-    exitCode = report.failed > 0 ? EXIT_FAILURE : EXIT_HEALTHY;
-  }
-
-  // Format output
-  const redactedReport = deepRedact(fullReport);
-  let stdout;
-  if (json) {
-    stdout = formatJsonReport(redactedReport);
-  } else {
-    stdout = formatTextReport(redactedReport, { verbose });
-  }
-
-  return {
-    report: redactedReport,
-    exitCode,
-    stdout,
-    stderr: stderrLog.join("\n") + (stderrLog.length > 0 ? "\n" : ""),
-  };
+  lines.push("=".repeat(60) + "\n")
+  return lines.join("\n")
 }
