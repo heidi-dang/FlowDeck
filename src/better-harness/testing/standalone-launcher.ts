@@ -34,6 +34,7 @@ export interface StandaloneServerMeta {
   port: number;
   projectDir: string;
   stateDir: string;
+  eventLogDir: string;
   shutdown: () => Promise<void>;
 }
 
@@ -113,6 +114,7 @@ export async function launchStandaloneServer(
     port,
     projectDir,
     stateDir,
+    eventLogDir,
     shutdown: async () => {
       // Reset state dir override so no lingering references remain
       resetFlowDeckStateDir();

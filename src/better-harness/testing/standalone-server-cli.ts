@@ -10,7 +10,7 @@
  *   bun run src/better-harness/testing/standalone-server-cli.ts
  *
  * Output (single JSON line):
- *   {"baseUrl":"http://127.0.0.1:54321","serverKey":"test-server-...","projectKey":"test-project-...","projectId":"test-project","projectDir":"...","stateDir":"..."}
+ *   {"baseUrl":"...","serverKey":"...","projectKey":"...","projectId":"...","projectDir":"...","stateDir":"...","eventLogDir":"..."}
  */
 import { launchStandaloneServer } from "./standalone-launcher";
 
@@ -21,7 +21,9 @@ async function main() {
     serverKey: meta.serverKey,
     projectKey: meta.projectKey,
     projectId: meta.projectId,
+    projectDir: meta.projectDir,
     stateDir: meta.stateDir,
+    eventLogDir: meta.eventLogDir,
   };
   // Print metadata as the first line so the parent can parse it
   process.stdout.write(JSON.stringify(output) + "\n");
