@@ -60,7 +60,13 @@ impl DeepReader {
     }
 
     /// Build a Symbol with full body included.
-    fn build_symbol_with_body(node: Node, source: &str, kind: String, name: String, parent_scope: String) -> Symbol {
+    fn build_symbol_with_body(
+        node: Node,
+        source: &str,
+        kind: String,
+        name: String,
+        parent_scope: String,
+    ) -> Symbol {
         let signature = extract_signature(node, source);
         let doc_comment = extract_doc_comment(node, source);
         let line_start = node.start_position().row + 1;
@@ -127,7 +133,8 @@ impl CodeReader for DeepReader {
 
         let symbols = if let Some(target_name) = symbol_name {
             // Find specific symbol
-            if let Some((node, kind, name, parent)) = all_symbols.iter().find(|(_, _, n, _)| n == target_name)
+            if let Some((node, kind, name, parent)) =
+                all_symbols.iter().find(|(_, _, n, _)| n == target_name)
             {
                 vec![Self::build_symbol_with_body(
                     *node,
@@ -147,9 +154,12 @@ impl CodeReader for DeepReader {
             // Extract all symbols with bodies
             all_symbols
                 .into_iter()
-                .map(|(node, kind, name, parent)| Self::build_symbol_with_body(node, source, kind, name, parent))
+                .map(|(node, kind, name, parent)| {
+                    Self::build_symbol_with_body(node, source, kind, name, parent)
+                })
                 .collect()
         };
+
 
         let dependencies = if with_deps && !symbols.is_empty() {
             // Collect references from the target symbol's body
