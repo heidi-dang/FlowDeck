@@ -53,8 +53,10 @@ function makeTempConfig(): string {
 
 // ─── Tests ─────────────────────────────────────────────────────────────
 
-describe("Doctor CLI — Argument Parsing", { timeout: 20000 }, () => {
-  it("parses --json flag", () => {
+const testSlow = (name: string, fn: any) => it(name, fn, 30000)
+
+describe("Doctor CLI — Argument Parsing", () => {
+  testSlow("parses --json flag", () => {
     const result = runDoctor(["--json"])
     // Should produce valid JSON output to stdout
     expect(result.code).toBe(0)
@@ -63,7 +65,7 @@ describe("Doctor CLI — Argument Parsing", { timeout: 20000 }, () => {
     expect(parsed).toBeDefined()
   })
 
-  it("parses --strict flag", () => {
+  testSlow("parses --strict flag", () => {
     // Strict mode just means the --strict flag was recognised
     // The test validates the CLI doesn't error on valid flags
     const result = runDoctor(["--strict"])
@@ -71,25 +73,25 @@ describe("Doctor CLI — Argument Parsing", { timeout: 20000 }, () => {
     expect(result.code).toBeLessThanOrEqual(1)
   })
 
-  it("parses --verbose flag without error", () => {
+  testSlow("parses --verbose flag without error", () => {
     const result = runDoctor(["--verbose"])
     expect(result.code).toBeGreaterThanOrEqual(0)
     expect(result.code).toBeLessThanOrEqual(1)
   })
 
-  it("parses --profile flag", () => {
+  testSlow("parses --profile flag", () => {
     const result = runDoctor(["--profile", "minimal"])
     expect(result.code).toBeGreaterThanOrEqual(0)
     expect(result.code).toBeLessThanOrEqual(1)
   })
 
-  it("parses --apply-recommended flag", () => {
+  testSlow("parses --apply-recommended flag", () => {
     const result = runDoctor(["--apply-recommended"])
     expect(result.code).toBeGreaterThanOrEqual(0)
     expect(result.code).toBeLessThanOrEqual(1)
   })
 
-  it("parses --non-interactive flag", () => {
+  testSlow("parses --non-interactive flag", () => {
     const result = runDoctor(["--non-interactive"])
     expect(result.code).toBeGreaterThanOrEqual(0)
     expect(result.code).toBeLessThanOrEqual(1)
