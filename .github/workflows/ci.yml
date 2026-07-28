@@ -31,8 +31,6 @@ jobs:
       - name: Coverage check (unit tests)
         run: bun test tests/check-coverage.test.ts
       - run: 'node scripts/check-coverage.mjs && echo "Coverage threshold met" || echo "Coverage check note: lcov generation unavailable"'
-
-
   test-matrix:
     name: Test Matrix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
