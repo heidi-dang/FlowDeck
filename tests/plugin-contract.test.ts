@@ -14,16 +14,18 @@ import { describe, it, expect, vi } from "vitest"
 import { mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
-import flowDeckPlugin, {
+import flowDeckPlugin from "@/index"
+// Named API exports moved to @/api subpath to keep the plugin entry clean
+import {
   AGENT_NAMES,
   createAgent,
   validateDelegationDepth,
   evaluateGovernanceToolCheck,
   acquireLock,
   releaseLock,
-  cleanupSessionState,
-  getSessionMetricsDiagnostics,
-} from "@/index"
+} from "@/api"
+// Internal state helpers still exported from the main module
+import { cleanupSessionState, getSessionMetricsDiagnostics } from "@/index"
 
 function createMockClient() {
   return {
@@ -44,9 +46,9 @@ function createMockClient() {
 
 describe("modern plugin contract", () => {
   it("default export is an object with id and server", () => {
-    expect(typeof flowDeckPlugin).toBe("object")
-    expect(flowDeckPlugin.id).toBe("@heidi-dang/flowdeck")
-    expect(typeof flowDeckPlugin.server).toBe("function")
+    // Default export is now the plugin Function directly (Plugin type),
+    // not an { id, server } wrapper object.
+    expect(typeof flowDeckPlugin).toBe("function")
   })
 
   it("server returns expected hooks when invoked", async () => {
@@ -54,7 +56,7 @@ describe("modern plugin contract", () => {
     const client = createMockClient()
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      const hooks = await flowDeckPlugin({ directory: dir, client } as any, {})
 
       expect(typeof hooks.config).toBe("function")
       expect(typeof hooks.event).toBe("function")
@@ -72,7 +74,7 @@ describe("modern plugin contract", () => {
     const client = createMockClient()
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      const hooks = await flowDeckPlugin({ directory: dir, client } as any, {})
 
       // Legacy properties are injected via config hook, not returned directly
       expect((hooks as any).name).toBeUndefined()
@@ -88,7 +90,7 @@ describe("modern plugin contract", () => {
     const client = createMockClient()
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      const hooks = await flowDeckPlugin({ directory: dir, client } as any, {})
       const cfg: Record<string, unknown> = {}
       await hooks.config?.(cfg)
 
@@ -103,7 +105,7 @@ describe("modern plugin contract", () => {
     const client = createMockClient()
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      const hooks = await flowDeckPlugin({ directory: dir, client } as any, {})
       const cfg: Record<string, unknown> = {}
       await hooks.config?.(cfg)
 
@@ -124,7 +126,7 @@ describe("modern plugin contract", () => {
     const client = createMockClient()
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      const hooks = await flowDeckPlugin({ directory: dir, client } as any, {})
       const cfg: Record<string, unknown> = { default_agent: "build" }
       await hooks.config?.(cfg)
 
@@ -139,7 +141,7 @@ describe("modern plugin contract", () => {
     const client = createMockClient()
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      const hooks = await flowDeckPlugin({ directory: dir, client } as any, {})
       const cfg: Record<string, unknown> = {
         agent: {
           heidi: { temperature: 0.7 },

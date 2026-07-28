@@ -69,7 +69,7 @@ describe("plugin entry", () => {
   })
 
   async function loadPlugin(client: any): Promise<TestHooks> {
-    return (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    return (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as TestHooks
   }
 
   it("returns a plugin object with expected registration keys", async () => {
@@ -215,7 +215,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
 
   it("writes a flowdeck.log entry on session.idle events", async () => {
     const client = createMockClient()
-    const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    const instance = (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as TestHooks
 
     await instance.event?.({ event: { type: "session.idle", properties: { sessionID: "sess-idle" } } })
 
@@ -227,7 +227,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
 
   it("writes a flowdeck.log entry on session.error events", async () => {
     const client = createMockClient()
-    const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    const instance = (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as TestHooks
 
     await instance.event?.({ event: { type: "session.error", properties: { sessionID: "sess-err" } } })
 
@@ -240,7 +240,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
   it("session.idle preserves per-session write counter while session.completed clears it", async () => {
     const { recordWrite, getWriteCount, clearWriteCounter } = await import("@/hooks/tool-guard")
     const client = createMockClient()
-    const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    const instance = (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as TestHooks
 
     const sessionID = "sess-clear"
     recordWrite(sessionID, "/tmp/a.ts")
@@ -280,7 +280,7 @@ describe("plugin entry: toolGuardHook wiring (bug 3b)", () => {
 
   it("blocks a write in discuss phase when FLOWDECK_TOOL_GUARD_ENABLED=on", async () => {
     const client = createMockClient()
-    const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    const instance = (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as TestHooks
 
     const toolInput: any = { tool: "write", sessionID: "primary", args: { filePath: "src/x.ts" } }
 

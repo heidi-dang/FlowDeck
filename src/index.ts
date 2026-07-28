@@ -1086,16 +1086,12 @@ export function getSessionMetricsDiagnostics(sessionID: string): {
   }
 }
 
-const flowDeckPlugin = {
-  id: "@heidi-dang/flowdeck",
-  server: plugin,
-}
+// Default export: the plugin server function (OpenCode PluginModule contract).
+// PluginModule.default and PluginModule.server must both be callable
+// functions — not an { id, server } wrapper object.
+export default plugin
 
-export default flowDeckPlugin
-
-export { AGENT_NAMES, createAgent } from "./agents/index"
-export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
-export { acquireLock, releaseLock } from "./services/async-lock"
-export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
-// resolveDoctorExitCode provenant du module canonique sans dépendances
-export { resolveDoctorExitCode } from "./doctor/exit-code.mjs"
+// Library utilities are exported from @heidi-dang/flowdeck/api (see api.ts
+// and package.json exports map).  Do NOT add named exports here — they
+// would confuse the OpenCode plugin loader and cause
+// "Plugin export is not a function".
