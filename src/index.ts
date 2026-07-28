@@ -56,6 +56,7 @@ import {
   fdxTreeTool,
   setActiveProjectDir,
 } from "./tools/fdx"
+import { fdxPrMonitorTool } from "./tools/fdx-pr-monitor"
 import { hashEditTool } from "./tools/hash-edit"
 import { loadRulesTool, listRulesTool } from "./tools/load-rules"
 import { planningStateTool } from "./tools/planning-state"
@@ -455,6 +456,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       "fdx-test": fdxTestTool,
       "fdx-lint": fdxLintTool,
       "debug-audit": debugLogsTool,
+    "fdx-pr-monitor": fdxPrMonitorTool,
     },
 
     "tool.execute.before": async (toolInput: any, toolOutput: any) => {

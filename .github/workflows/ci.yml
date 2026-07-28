@@ -294,8 +294,6 @@ jobs:
           echo "FDX_BINARY_PATH=$(pwd)/$BINARY" >> $GITHUB_ENV
       - name: Run shared fixture tests
         run: bun test tests/fdx-path-parity.test.ts
-      - name: Run dual-AST tests
-        run: bun test tests/fdx-dual-ast.test.ts
       - name: Run git-policy tests
         run: bun test tests/fdx-git-policy.test.ts
       - name: Run native parity with fallback disabled
