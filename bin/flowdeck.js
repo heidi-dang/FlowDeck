@@ -23,7 +23,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { readConfig as readConfigFile } from "../scripts/config-mutator.mjs";
 import { executeTransaction, executeRollbackTransaction } from "../scripts/config-transaction.mjs";
 import { runCleanInstall } from "../scripts/clean-install-engine.mjs";
-import { runDoctor as runNewDoctor, formatReport, KNOWN_PROFILES as _KNOWN_PROFILES, resolveDoctorExitCode } from "../scripts/doctor-service.mjs";
+import { runDoctor as runNewDoctor, formatReport, KNOWN_PROFILES as _KNOWN_PROFILES } from "../scripts/doctor-service.mjs";
+import { resolveDoctorExitCode } from "../src/doctor/exit-code.mjs";
 
 const DOCTOR_KNOWN_PROFILES = _KNOWN_PROFILES ?? new Set(["minimal", "recommended-dev", "full-dev", "ci", "release"]);
 

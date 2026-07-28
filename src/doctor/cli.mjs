@@ -22,7 +22,7 @@
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { execFileSync } from "node:child_process"
-import { resolveDoctorExitCode } from "../../scripts/doctor-service.mjs"
+import { resolveDoctorExitCode } from "./exit-code.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = resolve(__dirname, "..", "..")

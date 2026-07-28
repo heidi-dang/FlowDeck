@@ -30,9 +30,20 @@ export const hashEditTool: ToolDefinition = tool({
       }
     }
 
-    const newContent = content.replace(args.targetContent, args.replacementContent)
+    const count = countOccurrences(content, args.targetContent)
+    const newContent = content.replaceAll(args.targetContent, args.replacementContent)
     writeFileSync(fullPath, newContent, "utf-8")
 
-    return `Successfully updated ${args.filePath} using hash-anchored edit.`
+    return `Successfully updated ${args.filePath} using hash-anchored edit (${count} replacement${count !== 1 ? "s" : ""}).`
   },
 })
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0
+  let idx = 0
+  while ((idx = haystack.indexOf(needle, idx)) !== -1) {
+    count++
+    idx += needle.length
+  }
+  return count
+}

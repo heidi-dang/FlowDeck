@@ -403,4 +403,536 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
     const specialistTaskPerm = (configs["backend-coder"] as any)?.permission?.task
     expect(specialistTaskPerm).toBe("deny")
   })
+
+  // ── Adversarial child-session correlation tests ────────────────────
+
+  it("correlates two concurrent calls to the same target agent (FIFO order)", async () => {
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const parentID = "ses_same_agent_fifo"
+    const callFirst = "call-first"
+    const callSecond = "call-second"
+    const childFirst = "ses_child_first"
+    const childSecond = "ses_child_second"
+
+    // 1. Parent session created
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentID, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentID, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+
+    // 2. Two concurrent delegations to the SAME target agent (backend-coder)
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callFirst, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "First task" } },
+    )
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callSecond, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "Second task" } },
+    )
+
+    // 3. First child session created — must correlate to callFirst
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childFirst, parentID, agent: "backend-coder" } },
+      },
+    })
+
+    // 4. Second child session created — must correlate to callSecond
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childSecond, parentID, agent: "backend-coder" } },
+      },
+    })
+
+    // Verify: first child is correlated to callFirst, second to callSecond
+    const { childSessionToTask } = await import("../src/index")
+    const corr1 = childSessionToTask.get(childFirst)
+    const corr2 = childSessionToTask.get(childSecond)
+    expect(corr1).toBeDefined()
+    expect(corr2).toBeDefined()
+    expect(corr1!.callID).toBe(callFirst)
+    expect(corr2!.callID).toBe(callSecond)
+    expect(corr1!.taskKey).toContain(callFirst)
+    expect(corr2!.taskKey).toContain(callSecond)
+    expect(corr1!.targetAgent).toBe("backend-coder")
+    expect(corr2!.targetAgent).toBe("backend-coder")
+
+    // First child fails — only its task call should be cleaned up
+    await pluginInstance["event"]({
+      event: {
+        type: "session.error",
+        properties: { info: { id: childFirst, parentID }, error: "First child crashed" },
+      },
+    })
+
+    const auditLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    const failedEvents = auditLines.map(l => JSON.parse(l)).filter(e => e.kind === "delegation.failed")
+    expect(failedEvents).toHaveLength(1)
+    expect(failedEvents[0].details.callID).toBe(callFirst)
+    expect(failedEvents[0].details.childSessionID).toBe(childFirst)
+  })
+
+  it("correlates child sessions created in reverse task-call order", async () => {
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const parentID = "ses_reverse_order"
+    const callA = "call-a"
+    const callB = "call-b"
+    const childA = "ses_rev_a"
+    const childB = "ses_rev_b"
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentID, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentID, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+
+    // Task A (backend-coder) then Task B (tester) registered
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callA, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "A" } },
+    )
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callB, args: {} },
+      { args: { subagent_type: "tester", prompt: "B" } },
+    )
+
+    // Child B (tester) created before Child A (backend-coder)
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childB, parentID, agent: "tester" } },
+      },
+    })
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childA, parentID, agent: "backend-coder" } },
+      },
+    })
+
+    const { childSessionToTask } = await import("../src/index")
+    const corrA = childSessionToTask.get(childA)
+    const corrB = childSessionToTask.get(childB)
+    expect(corrA).toBeDefined()
+    expect(corrB).toBeDefined()
+    // Child B (tester) gets the tester task (callB), even though it appeared first
+    expect(corrB!.callID).toBe(callB)
+    expect(corrB!.targetAgent).toBe("tester")
+    // Child A (backend-coder) gets the backend-coder task (callA)
+    expect(corrA!.callID).toBe(callA)
+    expect(corrA!.targetAgent).toBe("backend-coder")
+  })
+
+  it("first child fails while second remains active — no cross-talk", async () => {
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const parentID = "ses_first_fail"
+    const callA = "call-fail-a"
+    const callB = "call-ok-b"
+    const childA = "ses_fail_child_a"
+    const childB = "ses_ok_child_b"
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentID, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentID, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callA, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "A" } },
+    )
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callB, args: {} },
+      { args: { subagent_type: "tester", prompt: "B" } },
+    )
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: childA, parentID, agent: "backend-coder" } } },
+    })
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: childB, parentID, agent: "tester" } } },
+    })
+
+    // Child A fails
+    await pluginInstance["event"]({
+      event: {
+        type: "session.error",
+        properties: { info: { id: childA, parentID }, error: "Child A crashed" },
+      },
+    })
+
+    // Audit: only callA should have delegation.failed
+    let auditLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    let failedEvents = auditLines.map(l => JSON.parse(l)).filter(e => e.kind === "delegation.failed")
+    expect(failedEvents).toHaveLength(1)
+    expect(failedEvents[0].details.callID).toBe(callA)
+
+    // Child B completes successfully
+    await pluginInstance["tool.execute.after"](
+      { tool: "task", sessionID: parentID, callID: callB, args: { subagent_type: "tester" } },
+      { output: "Done", metadata: {} },
+    )
+
+    auditLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    const completedEvents = auditLines.map(l => JSON.parse(l)).filter(e => e.kind === "delegation.completed")
+    expect(completedEvents).toHaveLength(1)
+    expect(completedEvents[0].details.callID).toBe(callB)
+  })
+
+  it("second child fails while first completes — independent tracking", async () => {
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const parentID = "ses_second_fail"
+    const callOk = "call-ok"
+    const callFail = "call-fail"
+    const childOk = "ses_child_ok"
+    const childFail = "ses_child_fail"
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentID, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentID, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+
+    // Two calls to different agents
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callOk, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "OK" } },
+    )
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callFail, args: {} },
+      { args: { subagent_type: "tester", prompt: "FAIL" } },
+    )
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: childOk, parentID, agent: "backend-coder" } } },
+    })
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: childFail, parentID, agent: "tester" } } },
+    })
+
+    // First completes OK
+    await pluginInstance["tool.execute.after"](
+      { tool: "task", sessionID: parentID, callID: callOk, args: { subagent_type: "backend-coder" } },
+      { output: "OK", metadata: {} },
+    )
+
+    // Second fails
+    await pluginInstance["event"]({
+      event: {
+        type: "session.error",
+        properties: { info: { id: childFail, parentID }, error: "Second failed" },
+      },
+    })
+
+    const auditLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    const auditEvents = auditLines.map(l => JSON.parse(l))
+    const completedEvents = auditEvents.filter(e => e.kind === "delegation.completed")
+    const failedEvents = auditEvents.filter(e => e.kind === "delegation.failed")
+
+    expect(completedEvents).toHaveLength(1)
+    expect(completedEvents[0].details.callID).toBe(callOk)
+    expect(failedEvents).toHaveLength(1)
+    expect(failedEvents[0].details.callID).toBe(callFail)
+    expect(failedEvents[0].details.childSessionID).toBe(childFail)
+  })
+
+  it("three concurrent calls with two sharing the same target agent", async () => {
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const parentID = "ses_three_concurrent"
+    const callBc1 = "call-bc1"
+    const callTester = "call-tester"
+    const callBc2 = "call-bc2"
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentID, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentID, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+
+    // Three registrations: backend-coder, tester, backend-coder
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callBc1, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "BC1" } },
+    )
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callTester, args: {} },
+      { args: { subagent_type: "tester", prompt: "TEST" } },
+    )
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callBc2, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "BC2" } },
+    )
+
+    // All three children created
+    const childBc1 = "ses_bc1"
+    const childTester = "ses_tester"
+    const childBc2 = "ses_bc2"
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: childBc1, parentID, agent: "backend-coder" } } },
+    })
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: childTester, parentID, agent: "tester" } } },
+    })
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: childBc2, parentID, agent: "backend-coder" } } },
+    })
+
+    const { childSessionToTask } = await import("../src/index")
+    expect(childSessionToTask.get(childBc1)!.callID).toBe(callBc1)
+    expect(childSessionToTask.get(childTester)!.callID).toBe(callTester)
+    expect(childSessionToTask.get(childBc2)!.callID).toBe(callBc2)
+    expect(childSessionToTask.get(childBc1)!.targetAgent).toBe("backend-coder")
+    expect(childSessionToTask.get(childTester)!.targetAgent).toBe("tester")
+    expect(childSessionToTask.get(childBc2)!.targetAgent).toBe("backend-coder")
+
+    // Tester fails — only tester task is affected
+    await pluginInstance["event"]({
+      event: {
+        type: "session.error",
+        properties: { info: { id: childTester, parentID }, error: "Tester failed" },
+      },
+    })
+
+    const auditLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    const failedEvents = auditLines.map(l => JSON.parse(l)).filter(e => e.kind === "delegation.failed")
+    expect(failedEvents).toHaveLength(1)
+    expect(failedEvents[0].details.callID).toBe(callTester)
+    expect(failedEvents[0].details.childSessionID).toBe(childTester)
+
+    // Both backend-coder tasks complete unaffected
+    await pluginInstance["tool.execute.after"](
+      { tool: "task", sessionID: parentID, callID: callBc1, args: { subagent_type: "backend-coder" } },
+      { output: "BC1 done", metadata: {} },
+    )
+    await pluginInstance["tool.execute.after"](
+      { tool: "task", sessionID: parentID, callID: callBc2, args: { subagent_type: "backend-coder" } },
+      { output: "BC2 done", metadata: {} },
+    )
+
+    const finalLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    const completedEvents = finalLines.map(l => JSON.parse(l)).filter(e => e.kind === "delegation.completed")
+    expect(completedEvents).toHaveLength(2)
+    expect(completedEvents.map((e: any) => e.details.callID).sort()).toEqual([callBc1, callBc2])
+  })
+
+  it("missing child agent metadata produces diagnostic without deleting active tasks", async () => {
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const parentID = "ses_no_agent_meta"
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentID, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentID, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+
+    // Register two calls to different agents
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: "call-x", args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "X" } },
+    )
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: "call-y", args: {} },
+      { args: { subagent_type: "tester", prompt: "Y" } },
+    )
+
+    // Child session created WITHOUT agent metadata
+    const childNoAgent = "ses_no_agent"
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childNoAgent, parentID } },  // no agent field
+      },
+    })
+
+    // With multiple pending calls and no agent info, the dequeue should
+    // detect ambiguity and emit a diagnostic instead of attaching to
+    // an arbitrary task.
+    const auditLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    const blockedEvents = auditLines.map(l => JSON.parse(l)).filter(e => e.kind === "delegation.blocked")
+    const unresolvedBlock = blockedEvents.find(e => e.reason?.startsWith("UNRESOLVED_CHILD_CORRELATION:"))
+    expect(unresolvedBlock).toBeDefined()
+
+    // All active task calls must remain untouched
+    const { sessionTaskCalls } = await import("../src/index")
+    const parentCalls = Array.from((sessionTaskCalls as Map<string, any>).entries())
+      .filter(([k]) => k.startsWith(`${parentID}:`))
+    expect(parentCalls).toHaveLength(2)
+  })
+
+  it("duplicate or late session.created does not double-correlate", async () => {
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const parentID = "ses_dup_event"
+    const callID = "call-dup"
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentID, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentID, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "Dup" } },
+    )
+
+    const childDup = "ses_dup_child"
+    // Fire session.created twice for the same child
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: childDup, parentID, agent: "backend-coder" } } },
+    })
+    // Late duplicate
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: childDup, parentID, agent: "backend-coder" } } },
+    })
+
+    const { childSessionToTask } = await import("../src/index")
+    // The second event should NOT create a second correlation entry
+    // (Map key is unique, so it overwrites — verify values)
+    expect(childSessionToTask.has(childDup)).toBe(true)
+    expect(childSessionToTask.get(childDup)!.callID).toBe(callID)
+  })
+
+  it("session.error before correlation emits diagnostic without affecting other tasks", async () => {
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const parentID = "ses_error_before_corr"
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentID, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentID, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: "call-main", args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "Main" } },
+    )
+
+    // Child session errors without having been created first
+    const childErr = "ses_err_child"
+    await pluginInstance["event"]({
+      event: {
+        type: "session.error",
+        properties: { info: { id: childErr, parentID, agent: "backend-coder" }, error: "Early crash" },
+      },
+    })
+
+    // The session.error handler correlates through the pending-slot FIFO queue
+    // (even without session.created), matching the error to the pending task call
+    const auditLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    const failedEvents = auditLines.map(l => JSON.parse(l)).filter(e => e.kind === "delegation.failed")
+    // Should be correlated as a delegation.failed with the actual error message
+    const correlatedFail = failedEvents.find(e => e.reason === "Early crash")
+    expect(correlatedFail).toBeDefined()
+    expect(correlatedFail!.details?.targetAgent).toBe("backend-coder")
+    expect(correlatedFail!.details?.childSessionID).toBe(childErr)
+
+    // The correlated task call (call-main) should be removed after resolution
+    const { sessionTaskCalls } = await import("../src/index")
+    const mainTask = Array.from((sessionTaskCalls as Map<string, any>).entries())
+      .find(([k]) => k === `${parentID}:call-main`)
+    expect(mainTask).toBeUndefined()
+  })
+
+  it("parent cleanup removes every child correlation and active task", () => {
+    const parentID = "ses_cleanup_all"
+    const child1 = "ses_clean_child1"
+    const child2 = "ses_clean_child2"
+
+    // Simulate registered session state
+    const { cleanupSessionState, sessionTaskCalls, childSessionToTask } = require("../src/index")
+    // Use module internals to set up state
+    ;(sessionTaskCalls as Map<string, any>).set(`${parentID}:call1`, { targetAgent: "bc", callerAgent: "heidi", startedAt: 100, resolvedFrom: "subagent_type" })
+    ;(sessionTaskCalls as Map<string, any>).set(`${parentID}:call2`, { targetAgent: "tester", callerAgent: "heidi", startedAt: 200, resolvedFrom: "subagent_type" })
+    ;(childSessionToTask as Map<string, any>).set(child1, { parentSessionID: parentID, callID: "call1", taskKey: `${parentID}:call1`, targetAgent: "bc" })
+    ;(childSessionToTask as Map<string, any>).set(child2, { parentSessionID: parentID, callID: "call2", taskKey: `${parentID}:call2`, targetAgent: "tester" })
+
+    cleanupSessionState(parentID)
+
+    // All task calls for this parent must be deleted
+    const remainingTaskCalls = Array.from((sessionTaskCalls as Map<string, any>).keys())
+      .filter(k => k.startsWith(`${parentID}:`))
+    expect(remainingTaskCalls).toHaveLength(0)
+
+    // All child correlations owned by this parent must be deleted
+    const remainingCorrelations = Array.from((childSessionToTask as Map<string, any>).entries())
+      .filter(([, c]) => c.parentSessionID === parentID)
+    expect(remainingCorrelations).toHaveLength(0)
+  })
+
+  it("late child error after cleanup does not affect a new session reusing similar IDs", async () => {
+    // Simulate: session A completes cleanup, then a late error from session A's
+    // child fires. If IDs overlap with a new session B, session B must not be affected.
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const { cleanupSessionState, sessionTaskCalls, childSessionToTask } = await import("../src/index")
+    const parentOld = "ses_late_old"
+    const childOld = "ses_late_child"
+    const parentNew = "ses_late_new"
+
+    // Set up and clean up old session
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentOld, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentOld, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentOld, callID: "call-old", args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "Old" } },
+    )
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: childOld, parentID: parentOld, agent: "backend-coder" } } },
+    })
+    cleanupSessionState(parentOld)
+
+    // Set up new session with a child that happens to have the same ID
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentNew, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentNew, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentNew, callID: "call-new", args: {} },
+      { args: { subagent_type: "tester", prompt: "New" } },
+    )
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: `${childOld}_new`, parentID: parentNew, agent: "tester" } } },
+    })
+
+    // Late error from old child fires — must not affect new session
+    await pluginInstance["event"]({
+      event: {
+        type: "session.error",
+        properties: { info: { id: childOld, parentID: parentOld }, error: "Late crash" },
+      },
+    })
+
+    // New session's task call must still be active
+    const newTaskCalls = Array.from((sessionTaskCalls as Map<string, any>).entries())
+      .filter(([k]) => k.startsWith(`${parentNew}:`))
+    expect(newTaskCalls).toHaveLength(1)
+    expect(newTaskCalls[0][1].targetAgent).toBe("tester")
+  })
 })

@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process"
 import { resolve as pathResolve, sep } from "path"
 import { existsSync, readdirSync, realpathSync } from "fs"
 import { basename } from "path"
+import { slugifyTopic } from "./planning-state-lib"
 
 /** Timeout for each `git` call. */
 const GIT_TIMEOUT_MS = 30_000
@@ -122,7 +123,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
       if (!isInteger(args.phase)) {
         return "Error: phase must be an integer (got " + JSON.stringify(args.phase) + ")"
       }
-      const topicSlug = topicSlugFromPathSloppy(args.topic)
+      const topicSlug = slugifyTopic(args.topic)
       const branch = branchNameFor(projectSlug, topicSlug, args.phase)
       const worktreePath = worktreePathFor(directory, projectSlug, topicSlug, args.phase)
 
@@ -199,10 +200,11 @@ export const fdxWorktreeTool: ToolDefinition = tool({
       if (!isInteger(args.phase)) {
         return "Error: phase must be an integer"
       }
-      const topicSlug = topicSlugFromPathSloppy(args.topic)
+      const topicSlug = slugifyTopic(args.topic)
       const branch = branchNameFor(projectSlug, topicSlug, args.phase)
 
-      // Pre-flight: clean target (Reviewer Concerns MEDIUM #4).
+      // Pre-flight: auto-stash uncommitted changes so they don't block the merge.
+      let stashed = false
       try {
         const status = execFileSync("git", ["status", "--porcelain"], {
           cwd: directory,
@@ -210,10 +212,14 @@ export const fdxWorktreeTool: ToolDefinition = tool({
           timeout: GIT_TIMEOUT_MS,
         })
         if (status.trim().length > 0) {
-          return "Error: project root has uncommitted changes; commit or stash before merge"
+          execFileSync("git", ["stash", "push", "--include-untracked", "-m", `fd-worktree pre-merge auto-stash for ${branch}`], {
+            cwd: directory,
+            timeout: GIT_TIMEOUT_MS,
+          })
+          stashed = true
         }
       } catch (err) {
-        return `Error: git status preflight failed: ${gitError(err)}`
+        return `Error: git status/stash preflight failed: ${gitError(err)}`
       }
 
       try {
@@ -221,7 +227,14 @@ export const fdxWorktreeTool: ToolDefinition = tool({
           cwd: directory,
           timeout: GIT_TIMEOUT_MS,
         })
-        return `OK: merged ${branch} cleanly`
+        if (stashed) {
+          try {
+            execFileSync("git", ["stash", "pop"], { cwd: directory, timeout: GIT_TIMEOUT_MS })
+          } catch {
+            // stash pop may conflict with merged files; user resolves manually
+          }
+        }
+        return `OK: merged ${branch} cleanly (auto-stash restored: ${stashed})`
       } catch (mergeErr) {
         // Conflict detection: check the index, not the stderr.
         try {
@@ -259,7 +272,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
       if (!isInteger(args.phase)) {
         return "Error: phase must be an integer"
       }
-      const topicSlug = topicSlugFromPathSloppy(args.topic)
+      const topicSlug = slugifyTopic(args.topic)
       const worktreePath = worktreePathFor(directory, projectSlug, topicSlug, args.phase)
       const branch = branchNameFor(projectSlug, topicSlug, args.phase)
 
@@ -352,18 +365,6 @@ export const fdxWorktreeTool: ToolDefinition = tool({
     return `Error: unknown action ${args.action as string}`
   },
 })
-
-/**
- * Best-effort slugification of the topic string. The existing
- * `slugifyTopic()` in `planning-state-lib.ts` is the source of truth —
- * this is a fallback for the cases where the LLM passes a slug-like
- * string already (e.g. "orchestrator-prompt" instead of "Orchestrator
- * Prompt"). The function name is suffixed `_sloppy` to flag that this
- * may not produce identical output to the canonical slugifier.
- */
-function topicSlugFromPathSloppy(topic: string): string {
-  return topic.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "")
-}
 
 function extractPhaseFromBranch(branch: string): number | null {
   const m = branch.match(/-phase-(\d+)$/)

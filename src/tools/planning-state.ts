@@ -87,7 +87,7 @@ export const planningStateTool: ToolDefinition = tool({
         if (u.design_approved !== undefined) content = upsertLine(content, "design_approved", `${u.design_approved}`)
         if (u.design_override !== undefined) content = upsertLine(content, "design_override", `${u.design_override}`)
         if (u.design_override_reason !== undefined) content = upsertLine(content, "design_override_reason", `"${u.design_override_reason}"`)
-        if (u.design_artifact !== undefined) content = upsertLine(content, "design_artifact", `'${u.design_artifact.replace(/'/g, "''")}'`)
+        if (u.design_artifact !== undefined) content = upsertLine(content, "design_artifact", JSON.stringify(u.design_artifact))
         if (u.steps_complete !== undefined) content = upsertLine(content, "steps_complete", `[${u.steps_complete.join(", ")}]`)
         if (u.steps_pending !== undefined) content = upsertLine(content, "steps_pending", `[${u.steps_pending.join(", ")}]`)
 

@@ -28,13 +28,27 @@ export const DEFAULT_EXECUTABLE_ALLOWLIST = [
  * Prevents execution of unauthorized commands or command injection via paths.
  */
 export function validateExecutable(name: string, allowlist: string[] = DEFAULT_EXECUTABLE_ALLOWLIST): string {
-  // If `name` is an absolute path to an existing executable file (e.g. FDX_BINARY_PATH), allow it
+  // Reject NUL bytes unconditionally
+  if (name.includes("\0")) {
+    throw new Error(`Executable name contains NUL byte`)
+  }
+  // If `name` is an absolute path to an existing executable file (e.g. FDX_BINARY_PATH),
+  // verify its filename (basename) matches an allowlist entry.
   if (existsSync(name)) {
     try {
       if (statSync(name).isFile()) {
-        return name
+        const basename = name.split(/[/\\]/).pop() ?? ""
+        if (allowlist.some(a => a === basename)) {
+          return name
+        }
+        throw new Error(
+          `Executable path "${name}" resolves to "${basename}" which is not in the allowlist. ` +
+          `Allowed: ${allowlist.join(", ")}`
+        )
       }
-    } catch {}
+    } catch (err: unknown) {
+      if (err instanceof Error) throw err // re-throw our own error
+    }
   }
   if (!allowlist.includes(name)) {
     throw new Error(`Executable "${name}" is not in the allowlist. Allowed: ${allowlist.join(", ")}`)

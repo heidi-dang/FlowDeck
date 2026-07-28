@@ -14,6 +14,7 @@
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { execFileSync } from "node:child_process"
+import { resolveDoctorExitCode as canonicalResolveDoctorExitCode } from "../src/doctor/exit-code.mjs"
 
 // Resolve bun binary path for reliable subprocess detection
 let BUN_BIN_CACHED = null
@@ -227,14 +228,7 @@ try {
   _pkgVersion = _pkg.version || _pkgVersion
 } catch { /* ignore */ }
 
-export function resolveDoctorExitCode(report, strict = false) {
-  if (!report) return 0
-  const errors = report.failed ?? report.summary?.errors ?? 0
-  const warnings = report.warned ?? report.summary?.warnings ?? 0
-  if (errors > 0) return 1
-  if (strict && warnings > 0) return 1
-  return 0
-}
+export const resolveDoctorExitCode = canonicalResolveDoctorExitCode
 
 /**
  * Backward-compatible wrapper: runDoctorService(directory, options)
