@@ -171,13 +171,16 @@ describe("fdx-worktree tool", () => {
     expect(status.trim()).toBe("")
   })
 
-  itIfGit("merge refuses to run on dirty target", async () => {
+  itIfGit("merge auto-stashes uncommitted changes instead of refusing", async () => {
     writeFileSync(join(TMP, "uncommitted.txt"), "dirty", "utf-8")
     const result = await fdxWorktreeTool.execute(
       { action: "merge", topic: "auth-phase-1", phase: 1 },
       ctx(),
     )
-    expect(result).toContain("uncommitted changes")
+    // Should NOT say "uncommitted changes" - it auto-stashes instead of refusing.
+    // The actual merge will fail (branch doesn't exist), but that's fine.
+    expect(result).not.toContain("uncommitted changes")
+    expect(result).toContain("Error")
   })
 
   itIfGit("list returns empty array on no fd-* worktrees", async () => {

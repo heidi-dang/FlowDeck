@@ -30,7 +30,7 @@ describe("Phase 32 — FDX Argument Validation & Git Read-Only Policy", () => {
 
       expect(() => validateExecutable("malicious_cmd")).toThrow(/not in the allowlist/)
       expect(() => validateExecutable("git/bin", ["git/bin"])).toThrow(/contains path separators/)
-      expect(() => validateExecutable("git\0evil", ["git\0evil"])).toThrow(/contains path separators or invalid characters/)
+      expect(() => validateExecutable("git\0evil", ["git\0evil"])).toThrow(/contains NUL byte/)
     })
 
     it("rejects arguments containing NUL bytes", () => {

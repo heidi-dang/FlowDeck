@@ -55,7 +55,7 @@ function parseAffect(
       continue
     }
 
-    if (line.startsWith("# ")) {
+    if (line.startsWith("## ") && !line.toLowerCase().startsWith("## affected files")) {
       inSection = false
       continue
     }

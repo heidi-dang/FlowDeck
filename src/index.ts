@@ -56,6 +56,7 @@ import {
   fdxTreeTool,
   setActiveProjectDir,
 } from "./tools/fdx"
+import { fdxPrMonitorTool } from "./tools/fdx-pr-monitor"
 import { hashEditTool } from "./tools/hash-edit"
 import { loadRulesTool, listRulesTool } from "./tools/load-rules"
 import { planningStateTool } from "./tools/planning-state"
@@ -111,11 +112,92 @@ interface ChildTaskCorrelation {
 
 const sessionRegistry = new Map<string, RuntimeSessionMetadata>()
 const sessionCallerAgents = new Map<string, string>()
-const sessionTaskCalls = new Map<
+export const sessionTaskCalls = new Map<
   string,
   { callerAgent: string; targetAgent: string; startedAt: number; resolvedFrom: string }
 >()
-const childSessionToTask = new Map<string, ChildTaskCorrelation>()
+export const childSessionToTask = new Map<string, ChildTaskCorrelation>()
+/**
+ * FIFO pending-slot queue per (parentSessionID, targetAgent).
+ * Enqueued in tool.execute.before when a task call is registered.
+ * Dequeued in the event handler when the child session is created.
+ * Eliminates ambiguous correlation when multiple concurrent calls
+ * target the same agent — the queue order (call insertion order)
+ * is deterministic.
+ */
+const pendingChildSlots = new Map<string, ChildTaskCorrelation[]>()
+
+function enqueuePendingSlot(
+  parentSessionID: string,
+  callID: string,
+  taskKey: string,
+  targetAgent: string,
+): void {
+  const key = `${parentSessionID}:${targetAgent}`
+  let queue = pendingChildSlots.get(key)
+  if (!queue) {
+    queue = []
+    pendingChildSlots.set(key, queue)
+  }
+  queue.push({ parentSessionID, callID, taskKey, targetAgent })
+}
+
+/**
+ * Dequeue the next pending slot for the given parent and target agent.
+ * When the child session's agent is unknown/absent and there are multiple
+ * pending calls for the same parent with different targets, returns null
+ * (unresolved) rather than attaching to an arbitrary task.
+ */
+function dequeuePendingSlot(
+  parentSessionID: string,
+  effectiveTarget?: string,
+): { correlation: ChildTaskCorrelation | null; ambiguous: boolean } {
+  if (effectiveTarget && effectiveTarget !== "unknown") {
+    // Exact agent match — deterministic dequeue
+    const key = `${parentSessionID}:${effectiveTarget}`
+    const queue = pendingChildSlots.get(key)
+    if (queue && queue.length > 0) {
+      const correlation = queue.shift()!
+      if (queue.length === 0) pendingChildSlots.delete(key)
+      return { correlation, ambiguous: false }
+    }
+    // No pending slot for this exact agent — nothing to correlate
+    return { correlation: null, ambiguous: false }
+  }
+
+  // Agent is unknown — scan all queues for this parent
+  let found: ChildTaskCorrelation | null = null
+  let count = 0
+  for (const [key, queue] of pendingChildSlots.entries()) {
+    if (key.startsWith(`${parentSessionID}:`) && queue.length > 0) {
+      count++
+      if (!found) found = queue[0]
+    }
+  }
+  if (count === 0) return { correlation: null, ambiguous: false }
+  if (count > 1) return { correlation: null, ambiguous: true }
+
+  // Exactly one pending slot for this parent — safe to use
+  const agentKey = `${parentSessionID}:${found!.targetAgent}`
+  const agentQueue = pendingChildSlots.get(agentKey)
+  const correlation = agentQueue?.shift() ?? null
+  if (agentQueue?.length === 0) pendingChildSlots.delete(agentKey)
+  return { correlation, ambiguous: false }
+}
+
+function cleanupPendingSlots(sessionID: string): void {
+  for (const [key, queue] of pendingChildSlots.entries()) {
+    if (key.startsWith(`${sessionID}:`)) {
+      // Shift entries owned by this session
+      const remaining = queue.filter(c => c.parentSessionID !== sessionID)
+      if (remaining.length === 0) {
+        pendingChildSlots.delete(key)
+      } else {
+        pendingChildSlots.set(key, remaining)
+      }
+    }
+  }
+}
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
@@ -374,6 +456,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       "fdx-test": fdxTestTool,
       "fdx-lint": fdxLintTool,
       "debug-audit": debugLogsTool,
+    "fdx-pr-monitor": fdxPrMonitorTool,
     },
 
     "tool.execute.before": async (toolInput: any, toolOutput: any) => {
@@ -540,6 +623,13 @@ const plugin: Plugin = async ({ directory, client }) => {
             startedAt: Date.now(),
             resolvedFrom: invocation.resolvedFrom,
           })
+
+          // Enqueue a pending child-slot so the event handler can
+          // correlate the child session deterministically even when
+          // multiple concurrent calls target the same agent.
+          // The FIFO queue guarantees that the first-created task call
+          // is linked to the first-created child session.
+          enqueuePendingSlot(sessionID, callID, taskKey, targetAgent)
 
           appendAuditEvent(directory, {
             kind: "delegation.started",
@@ -747,25 +837,32 @@ const plugin: Plugin = async ({ directory, client }) => {
           sessionCallerAgents.set(eventSessionID, sessionAgent)
         }
 
-        // ── Child session correlation ─────────────────────────────────────
+        // ── Child session correlation (deterministic FIFO) ──────────────
+        // Uses the pendingChildSlots queue to correlate child sessions
+        // to the exact task call that created them, even when multiple
+        // concurrent calls target the same agent.
         if (parentID && !childSessionToTask.has(eventSessionID)) {
-          const effectiveTarget = sessionAgent || meta?.agent
-          for (const [taskKey, taskCall] of sessionTaskCalls.entries()) {
-            if (taskKey.startsWith(`${parentID}:`)) {
-              if (!effectiveTarget || effectiveTarget === "unknown" || taskCall.targetAgent === effectiveTarget) {
-                const alreadyLinked = Array.from(childSessionToTask.values()).some(c => c.taskKey === taskKey)
-                if (!alreadyLinked) {
-                  const callIDFromKey = taskKey.slice(parentID.length + 1)
-                  childSessionToTask.set(eventSessionID, {
-                    parentSessionID: parentID,
-                    callID: callIDFromKey !== "task" ? callIDFromKey : "",
-                    taskKey,
-                    targetAgent: taskCall.targetAgent,
-                  })
-                  break
-                }
-              }
-            }
+          const effectiveTarget = sessionAgent || meta?.agent || undefined
+          const { correlation, ambiguous } = dequeuePendingSlot(parentID, effectiveTarget)
+          if (correlation) {
+            childSessionToTask.set(eventSessionID, correlation)
+          } else if (ambiguous) {
+            // Cannot determine which task call this child belongs to.
+            // Emit a diagnostic instead of attaching to a potentially
+            // incorrect task — never delete or fail another active task.
+            appendAuditEvent(directory, {
+              kind: "delegation.blocked",
+              session_id: parentID,
+              agent: "system",
+              tool: "task",
+              decision: "block",
+              reason: "UNRESOLVED_CHILD_CORRELATION: Multiple pending task calls match the same parent; unable to determine which one created this child session",
+              details: {
+                childSessionID: eventSessionID,
+                parentSessionID: parentID,
+                effectiveTarget: effectiveTarget ?? "unknown",
+              },
+            })
           }
         }
       }
@@ -843,15 +940,20 @@ const plugin: Plugin = async ({ directory, client }) => {
                 matchedTaskKey = correlation.taskKey
                 matchedTaskCall = sessionTaskCalls.get(matchedTaskKey)
               } else {
-                // Guarded fallback: find unassigned active task call matching targetAgent
-                for (const [taskKey, taskCall] of sessionTaskCalls.entries()) {
-                  if (taskKey.startsWith(`${parentSessionID}:`)) {
-                    if (!childMeta.agent || childMeta.agent === "unknown" || taskCall.targetAgent === childMeta.agent) {
-                      matchedTaskKey = taskKey
-                      matchedTaskCall = taskCall
-                      break
-                    }
-                  }
+                // No correlation available — try pending queue as last resort.
+                // This handles the edge case where session.error fires before
+                // session.created (unusual but defensive).
+                const pendingResult = dequeuePendingSlot(parentSessionID, childMeta.agent || undefined)
+                if (pendingResult.correlation) {
+                  matchedTaskKey = pendingResult.correlation.taskKey
+                  matchedTaskCall = sessionTaskCalls.get(matchedTaskKey)
+                  // Also register in childSessionToTask so subsequent events
+                  // don't create a duplicate correlation
+                  childSessionToTask.set(sessionID, pendingResult.correlation)
+                } else if (pendingResult.ambiguous) {
+                  // Cannot resolve — emit diagnostic without failing another task
+                  matchedTaskKey = undefined
+                  matchedTaskCall = undefined
                 }
               }
 
@@ -924,18 +1026,24 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionFilesChanged.delete(sessionID)
   sessionCallerAgents.delete(sessionID)
   sessionRegistry.delete(sessionID)
+  // ── Child session correlation cleanup ──────────────────────────
+  // Remove the sessionID entry from sessionTaskCalls (used as a direct key
+  // by some flows) and all taskKey entries prefixed by sessionID.
   sessionTaskCalls.delete(sessionID)
-  childSessionToTask.delete(sessionID)
   for (const key of sessionTaskCalls.keys()) {
     if (key.startsWith(`${sessionID}:`)) {
       sessionTaskCalls.delete(key)
     }
   }
+  // Remove childSessionToTask entries owned by or pointing to this session
+  childSessionToTask.delete(sessionID)
   for (const [childId, corr] of childSessionToTask.entries()) {
     if (corr.parentSessionID === sessionID) {
       childSessionToTask.delete(childId)
     }
   }
+  // Remove pending child slots queued by this session
+  cleanupPendingSlots(sessionID)
   if (ld) {
     try { ld.clearSession(sessionID) } catch {}
   }
@@ -972,4 +1080,6 @@ export default flowDeckPlugin
 export { AGENT_NAMES, createAgent } from "./agents/index"
 export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
 export { acquireLock, releaseLock } from "./services/async-lock"
-export { runDoctor, formatReport, formatJSON, resolveDoctorExitCode } from "./doctor/doctor"
+export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
+// resolveDoctorExitCode provenant du module canonique sans dépendances
+export { resolveDoctorExitCode } from "./doctor/exit-code.mjs"

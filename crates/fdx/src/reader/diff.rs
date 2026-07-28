@@ -303,12 +303,18 @@ fn analyze_file_changes(
     }
 
     // Map changed lines using qualified scoped identity (parent_scope/kind:name)
-    #[allow(clippy::type_complexity)]
-    let mut symbol_change_map: std::collections::HashMap<
-        String,
-        (ChangeType, String, String, usize, usize, usize, usize),
-    > = std::collections::HashMap::new();
+    struct SymbolChangeEntry {
+        change_type: ChangeType,
+        kind: String,
+        name: String,
+        line_start: usize,
+        line_end: usize,
+        lines_added: usize,
+        lines_removed: usize,
+    }
 
+    let mut symbol_change_map: std::collections::HashMap<String, SymbolChangeEntry> =
+        std::collections::HashMap::new();
     let mut file_level_raw: Vec<(usize, String, ChangeType)> = Vec::new();
 
     // Process added lines against target_symbols
@@ -330,18 +336,18 @@ fn analyze_file_changes(
                     ChangeType::BodyChanged
                 };
 
-                let entry = symbol_change_map.entry(key).or_insert_with(|| {
-                    (
+                let entry = symbol_change_map
+                    .entry(key)
+                    .or_insert_with(|| SymbolChangeEntry {
                         change_type,
-                        sym.kind.clone(),
-                        sym.name.clone(),
-                        sym.line_start,
-                        sym.line_end,
-                        0,
-                        0,
-                    )
-                });
-                entry.5 += 1;
+                        kind: sym.kind.clone(),
+                        name: sym.name.clone(),
+                        line_start: sym.line_start,
+                        line_end: sym.line_end,
+                        lines_added: 0,
+                        lines_removed: 0,
+                    });
+                entry.lines_added += 1;
                 break;
             }
         }
@@ -369,18 +375,18 @@ fn analyze_file_changes(
                     ChangeType::BodyChanged
                 };
 
-                let entry = symbol_change_map.entry(key).or_insert_with(|| {
-                    (
+                let entry = symbol_change_map
+                    .entry(key)
+                    .or_insert_with(|| SymbolChangeEntry {
                         change_type,
-                        sym.kind.clone(),
-                        sym.name.clone(),
-                        sym.line_start,
-                        sym.line_end,
-                        0,
-                        0,
-                    )
-                });
-                entry.6 += 1;
+                        kind: sym.kind.clone(),
+                        name: sym.name.clone(),
+                        line_start: sym.line_start,
+                        line_end: sym.line_end,
+                        lines_added: 0,
+                        lines_removed: 0,
+                    });
+                entry.lines_removed += 1;
                 break;
             }
         }
@@ -398,17 +404,15 @@ fn analyze_file_changes(
 
     let mut symbol_changes: Vec<SymbolChange> = Vec::new();
 
-    for (_, (change_type, kind, name, line_start, line_end, lines_added, lines_removed)) in
-        symbol_change_map
-    {
+    for (_, entry) in symbol_change_map {
         symbol_changes.push(SymbolChange {
-            kind,
-            name,
-            change_type,
-            line_start,
-            line_end,
-            lines_added,
-            lines_removed,
+            kind: entry.kind,
+            name: entry.name,
+            change_type: entry.change_type,
+            line_start: entry.line_start,
+            line_end: entry.line_end,
+            lines_added: entry.lines_added,
+            lines_removed: entry.lines_removed,
         });
     }
 

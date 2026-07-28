@@ -35,9 +35,12 @@ function stringValue(v: unknown): string | undefined {
 
 function truncateSnippet(str: string | undefined, maxLen = 150): string | undefined {
   if (!str) return undefined
-  const singleLine = str.replace(/\s+/g, " ").trim()
-  if (singleLine.length <= maxLen) return singleLine
-  return singleLine.slice(0, maxLen) + "..."
+  // Preserve JSON-like content structure (keep newlines in objects/arrays).
+  // For plain text, collapse whitespace for readability.
+  const isStructured = /^[\s]*[{[]/.test(str.trim())
+  const display = isStructured ? str.trim() : str.replace(/\s+/g, " ").trim()
+  if (display.length <= maxLen) return display
+  return display.slice(0, maxLen) + "..."
 }
 
 /**

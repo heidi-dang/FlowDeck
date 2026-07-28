@@ -473,6 +473,9 @@ export async function guardRailsHook(
 
   if (input.tool === "write" || input.tool === "edit") {
     if (!existsSync(planningDirPath)) return
+    // Lockfile check: /fd-task creates .fd-task-lock during its run so the
+    // guard does not block artifact writes before STATE.md is fully initialized.
+    if (existsSync(join(planningDirPath, ".fd-task-lock"))) return
     if (!existsSync(codebaseDirectory)) {
       throw new Error(`[flowdeck] WARNING: .codebase/ not found. Run /fd-task — its init step maps the codebase.`)
     }
@@ -569,11 +572,13 @@ export function getPlanConfirmed(statePath: string): boolean {
 }
 
 function getWarningMessage(planningDir: string): string {
-  if (!existsSync(join(planningDir, STATE_FILE))) return "No STATE.md found. Run /fd-task to initialize."
+  if (!existsSync(join(planningDir, STATE_FILE)))
+    return `No STATE.md found in ${planningDir}. The planning workspace is incomplete. Run /fd-task to initialize it, or delete the directory to bypass the guard entirely.`
   return "Guard enforcement is set to 'warn'. Plan is not confirmed."
 }
 
 function getBlockMessage(planningDir: string): string {
-  if (!existsSync(join(planningDir, STATE_FILE))) return "No STATE.md found. Run /fd-task to initialize."
+  if (!existsSync(join(planningDir, STATE_FILE)))
+    return `No STATE.md found in ${planningDir}. The planning workspace is incomplete. Run /fd-task to initialize it, or delete the directory to bypass the guard entirely.`
   return "Plan not confirmed. Run /fd-task and confirm the plan to enable execution."
 }

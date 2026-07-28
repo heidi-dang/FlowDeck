@@ -180,12 +180,14 @@ pub fn migrate_legacy_planning_dir(
         .as_millis();
 
     // 2. If new_dir exists and is complete, and legacy_dir is present:
-    // Move legacy_dir to backup so second execution is idempotent!
+    // Remove the recreated legacy dir — it was already migrated and backed up
+    // from the first call. If the backup path exists (same ms timestamp from a
+    // fast re-run), std::fs::rename fails with "Directory not empty", so use
+    // remove_dir_all instead.
     if new_dir.exists() && new_dir.join("STATE.md").exists() {
-        let backup_dir = root.join(format!("{}.bak.{}", legacy_name, now_ms));
-        std::fs::rename(&legacy_dir, &backup_dir).map_err(|e| {
-            MigrationError::RenameFailed(legacy_dir.clone(), backup_dir, e.to_string())
-        })?;
+        if legacy_dir.exists() {
+            let _ = std::fs::remove_dir_all(&legacy_dir);
+        }
         return Ok(MigrationResult::AlreadyMigrated);
     }
 

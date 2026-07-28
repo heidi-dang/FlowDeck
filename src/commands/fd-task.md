@@ -15,8 +15,9 @@ If `$ARGUMENTS` is empty, ask the user what they want to build before doing anyt
 ## Step 1: Auto-init
 
 Check whether `~/.fd-plan/<slug>/` exists, where `<slug>` is the project directory name.
+Also check whether `STATE.md` exists inside it.
 
-**If it is missing**, initialize before continuing:
+**If the directory is missing**, initialize from scratch:
 
 1. Create `~/.fd-plan/<slug>/`.
 2. Map the codebase. Prefer codegraph when it is indexed and fresh:
@@ -35,7 +36,27 @@ Check whether `~/.fd-plan/<slug>/` exists, where `<slug>` is the project directo
 
 Log: `"Initialized ~/.fd-plan/<slug>/ — project architecture mapped."`
 
-**If it already exists**, skip init. Never overwrite an existing `architecture.md`.
+**If the directory exists but `STATE.md` is missing**, the workspace is incomplete
+(a prior `/fd-task` may have crashed mid-init). Recover by re-initializing STATE.md
+and config.json without overwriting any existing artifact files:
+
+1. Initialize `STATE.md` via `planning-state action:update` with `createDefaultState()`
+   values, and create or repair `~/.fd-plan/<slug>/config.json` with the default config.
+2. Log: `"Recovered incomplete workspace — STATE.md was missing in ~/.fd-plan/<slug>/."`
+
+**If both directory and `STATE.md` exist**, skip init. Never overwrite an existing
+`architecture.md`.
+
+### Lockfile
+
+Before performing any write or planning-state operation, create a lockfile to tell the
+guard that `/fd-task` is in progress and file writes should be allowed:
+
+```bash
+touch ~/.fd-plan/<slug>/.fd-task-lock
+```
+
+Remove it at the end of Step 7 so the guard re-engages for later pipeline stages.
 
 ## Step 2: Research the codebase
 
@@ -227,7 +248,13 @@ planning-state action:update
   next_action: "run /fd-review"
 ```
 
-## Step 7: Update checkpoint
+## Step 7: Remove lockfile and update checkpoint
+
+Remove the lockfile so the guard re-engages for subsequent pipeline stages:
+
+```bash
+rm -f ~/.fd-plan/<slug>/.fd-task-lock
+```
 
 Update `~/.fd-plan/<slug>/checkpoint.json`:
 
