@@ -553,6 +553,7 @@ describe("Phase 30 — Doctor CLI Service", { timeout: 20000 }, () => {
   it("canonical function is re-exported by scripts/doctor-service.mjs", async () => {
     const exitMod = await import("../src/doctor/exit-code.mjs");
     const serviceMod = await import("../scripts/doctor-service.mjs");
+    // @ts-expect-error — tsc cannot trace .mjs → .mjs re-exports; runtime works
     expect(serviceMod.resolveDoctorExitCode).toBe(exitMod.resolveDoctorExitCode);
   });
 
@@ -563,6 +564,7 @@ describe("Phase 30 — Doctor CLI Service", { timeout: 20000 }, () => {
   });
 
   it("canonical function called via scripts/doctor-service.mjs matches contract", async () => {
+    // @ts-expect-error — tsc cannot trace .mjs → .mjs re-exports; runtime works
     const { resolveDoctorExitCode } = await import("../scripts/doctor-service.mjs");
     expect(resolveDoctorExitCode({ failed: 0, warned: 0 }, false)).toBe(0);
     expect(resolveDoctorExitCode({ failed: 1, warned: 0 }, false)).toBe(1);

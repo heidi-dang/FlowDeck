@@ -883,7 +883,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
     // Simulate: session A completes cleanup, then a late error from session A's
     // child fires. If IDs overlap with a new session B, session B must not be affected.
     const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
-    const { cleanupSessionState, sessionTaskCalls, childSessionToTask } = await import("../src/index")
+    const { cleanupSessionState, sessionTaskCalls } = await import("../src/index")
     const parentOld = "ses_late_old"
     const childOld = "ses_late_child"
     const parentNew = "ses_late_new"
