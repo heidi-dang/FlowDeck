@@ -122,7 +122,9 @@ export async function routeRequestContext(
         const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
         const { getDiscovery } = require("../runtime/runtime-registry");
-        return ok(getDiscovery(serverKey, projectKey, check.path));
+        // authRequired derives from resolved authEnabled mode, not token presence
+        const authRequired = !!ctx.authToken;
+        return ok(getDiscovery(serverKey, projectKey, check.path, authRequired));
       }
     }
 

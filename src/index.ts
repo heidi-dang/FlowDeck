@@ -279,40 +279,33 @@ const plugin: Plugin = async ({ directory, client }) => {
   const bhConfig = resolveBetterHarnessConfig(flowdeckConfig)
 
   if (bhConfig.enabled) {
-    let canonicalRoot: string;
-    try { canonicalRoot = canonicalize(directory); } catch (e) {
-      appLog("[better-harness] Invalid project root: " + (e as Error).message, "error");
-      return;
-    }
-    const serverKey = getServerKey();
-    const projectKey = opaqueProjectId(canonicalRoot);
+    // All resource creation is inside startBh's factory, which handles
+    // rollback.  We start it fire-and-forget — a failure logs a diagnostic
+    // but does NOT prevent the rest of FlowDeck from loading.
+    startBh(directory, async () => {
+      // 1. Canonicalize inside transaction
+      let canonicalRoot: string;
+      try { canonicalRoot = canonicalize(directory); } catch (e) {
+        throw new Error("[better-harness] Invalid project root: " + (e as Error).message);
+      }
+      const serverKey = getServerKey();
+      const projectKey = opaqueProjectId(canonicalRoot);
 
-    const projectRegistry = new ProjectRegistry()
-    projectRegistry.register({
-      serverKey,
-      projectKey,
-      canonicalProjectRoot: canonicalRoot,
-    })
+      // 2. Create project registry and register
+      const projectRegistry = new ProjectRegistry()
+      projectRegistry.register({ serverKey, projectKey, canonicalProjectRoot: canonicalRoot });
 
-    startBh(canonicalRoot, async () => {
-      const runtime = new HarnessRuntime({
-        projectRoot: canonicalRoot,
-        timeoutMs: 120_000,
-      })
+      // 3-16. Create resources in order
+      const runtime = new HarnessRuntime({ projectRoot: canonicalRoot, timeoutMs: 120_000 })
       const coordinator = runtime.getCoordinator()
       const eventBus = coordinator.getEventBus()
       const sseManager = new SseManager(eventBus, bhConfig.eventLogDir)
-
       const routerContext: RouterContext = {
-        runtime,
-        coordinator,
+        runtime, coordinator,
         resolveProjectPath: (sk: string, pk: string) => projectRegistry.resolve(sk, pk),
-        sseManager,
-        authToken: bhConfig.authToken,
-        bindHost: bhConfig.bindHost,
-        opencodeClient: client,
+        sseManager, authToken: bhConfig.authToken,
+        bindHost: bhConfig.bindHost, opencodeClient: client,
       }
-
       const server = new HarnessHttpServer({
         enabled: true, port: bhConfig.port, bindHost: bhConfig.bindHost,
         cors: { allowedOrigins: bhConfig.corsOrigins },
@@ -324,22 +317,21 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       const port = await server.start()
       appLog("[better-harness] HTTP server started on port " + port)
-
       coordinator.recoverActiveRuns()
-
-      const cleanup = async () => {
-        try { await server.stop(); } catch {}
-        projectRegistry.unregister(projectKey);
-      };
 
       return {
         serverKey, projectKey, canonicalRoot,
-        state: "starting" as const,
-        stop: cleanup,
-        _cleanup: cleanup,
+        state: "running" as const,
+        stop: async () => {
+          try { await server.stop(); } catch {}
+          projectRegistry.unregister(projectKey);
+        },
+        _cleanup: undefined,
+        startupError: undefined,
+        startedAt: new Date().toISOString(),
       }
     }).catch((err: Error) => {
-      appLog("[better-harness] Failed to start: " + err.message, "error")
+      appLog("[better-harness] Failed to start: " + err.message, "error");
     })
   }
 

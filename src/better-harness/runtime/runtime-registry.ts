@@ -18,7 +18,7 @@ import { buildRepairPrompt } from "../opencode/repair-prompt";
 import { executeValidation } from "../opencode/validation-executor";
 import { createHash, randomBytes } from "crypto";
 import { realpathSync, existsSync } from "fs";
-import { normalize, sep, win32 } from "path";
+import { normalize, sep } from "path";
 
 export const registry = {
   collectors: {
@@ -49,36 +49,31 @@ export const registry = {
   },
 };
 
+// ── Constants ──────────────────────────────────────────────────────────
+
+export const BH_CONTRACT_VERSION = "1.0.0";
+export const BH_SCHEMA_VERSION = 1;
+
 // ── Identity ───────────────────────────────────────────────────────────
 
-const CONTRACT_VERSION = "1.0.0";
-const SCHEMA_VERSION = 1;
-
-/** Process-scoped crypto-random server identity (128 bits). Never changes within one process lifetime. */
+/** Process-scoped crypto-random server identity (128 bits). */
 const SERVER_KEY: string = randomBytes(16).toString("hex");
 export function getServerKey(): string { return SERVER_KEY; }
 
 /**
- * Canonicalize a project root path:
- * 1. Resolve to absolute
- * 2. Resolve symlinks via realpath
- * 3. Normalize separators and dot segments
- * 4. Validate the path exists and is accessible
- * Throws on invalid or inaccessible roots.
+ * Canonicalize a project root: resolve to absolute, follow symlinks,
+ * normalize separators and dot segments.
  */
 export function canonicalize(root: string): string {
-  if (!root || typeof root !== "string") throw new Error(`Invalid project root: ${root}`);
-  if (!existsSync(root)) throw new Error(`Project root does not exist: ${root}`);
-  let resolved = realpathSync(root);
-  resolved = normalize(resolved);
-  // Normalize Windows-style separators to forward slashes for consistency
-  if (sep === "\\") resolved = resolved.replace(/\\/g, "/");
-  return resolved;
+  if (!root || typeof root !== "string") throw new Error("Invalid project root");
+  if (!existsSync(root)) throw new Error("Project root does not exist: " + root);
+  let r = realpathSync(root);
+  r = normalize(r);
+  if (sep === "\\") r = r.replace(/\\/g, "/");
+  return r;
 }
 
-/**
- * Generate a stable opaque project identity (128 bits) from the canonical root.
- */
+/** Stable opaque project identity (128 bits) from canonical root. */
 export function opaqueProjectId(canonicalRoot: string): string {
   return createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 32);
 }
@@ -87,114 +82,145 @@ export function opaqueProjectId(canonicalRoot: string): string {
 
 export type BhState = "starting" | "running" | "stopping" | "stopped" | "failed";
 
-export interface BhEntry {
-  serverKey: string;
-  projectKey: string;
-  canonicalRoot: string;
-  state: BhState;
-  startupError?: string;
-  startedAt?: string;
-  stop: () => Promise<void>;
-  // Internal references held for cleanup (not exposed to consumers)
-  _cleanup?: () => Promise<void>;
+/** Legal transitions: starting->running, starting->failed, running->stopping, stopping->stopped */
+const VALID_TRANSITIONS: Record<BhState, BhState[]> = {
+  starting: ["running", "failed"],
+  running: ["stopping"],
+  stopping: ["stopped"],
+  stopped: [],
+  failed: [],
+};
+
+function transition(from: BhState, to: BhState): void {
+  const allowed = VALID_TRANSITIONS[from];
+  if (!allowed.includes(to)) throw new Error(`Invalid state transition: ${from} -> ${to}`);
 }
 
-interface PendingEntry {
-  promise: Promise<BhEntry>;
-  cancel: () => void;
+export interface BhEntry {
+  canonicalRoot: string;
+  serverKey: string;
+  projectKey: string;
+  state: BhState;
+  startupPromise?: Promise<void>;
+  cleanupPromise?: Promise<void>;
+  startupError?: string;
+  startedAt?: string;
+  /** Single cleanup function — first caller runs it, concurrent callers await the promise. */
+  stop: () => Promise<void>;
 }
 
 const entries = new Map<string, BhEntry>();
-const pending = new Map<string, PendingEntry>();
+const pending = new Map<string, { promise: Promise<void>; cancel: () => void }>();
 
 /**
- * Start Better Harness for a canonical project root.
- * Idempotent: returns existing entry if already started.
- * Concurrent calls share one startup promise.
+ * Start Better Harness for a project. Idempotent — concurrent calls share
+ * one startup promise.  All resource creation is inside `factory`.  On
+ * failure, only successfully-created resources are rolled back in reverse
+ * order (handled by the caller in the factory's catch).
  */
 export async function startBh(
-  canonicalRoot: string,
+  rawRoot: string,
   factory: () => Promise<BhEntry>,
-): Promise<BhEntry> {
+): Promise<void> {
+  // Resolve canonical root for the registry key
+  const canonicalRoot = canonicalize(rawRoot);
+
   const existing = entries.get(canonicalRoot);
-  if (existing && existing.state !== "stopped" && existing.state !== "failed") return existing;
+  if (existing && existing.state !== "stopped" && existing.state !== "failed") return;
 
   const inFlight = pending.get(canonicalRoot);
-  if (inFlight) return inFlight.promise;
+  if (inFlight) return;
 
-  const cancelToken = { cancelled: false };
+  // Reserve entry in "starting" state
+  const entry: BhEntry = {
+    canonicalRoot, serverKey: getServerKey(), projectKey: opaqueProjectId(canonicalRoot),
+    state: "starting", stop: async () => {},
+  };
+  entries.set(canonicalRoot, entry);
+
+  const cancelled = { value: false };
   const promise = (async () => {
     try {
-      const entry = await factory();
-      if (!cancelToken.cancelled) {
-        entry.state = "running";
-        entry.startedAt = new Date().toISOString();
-        entries.set(canonicalRoot, entry);
+      const result = await factory();
+      // If cancellation was requested during startup, clean up immediately
+      if (cancelled.value) {
+        await result.stop();
+        entries.delete(canonicalRoot);
+        return;
       }
-      pending.delete(canonicalRoot);
-      return entry;
+      entry.serverKey = result.serverKey;
+      entry.projectKey = result.projectKey;
+      entry.stop = result.stop;
+      entry.startedAt = result.startedAt || new Date().toISOString();
+      transition(entry.state, "running");
+      entry.state = "running";
+      entries.set(canonicalRoot, entry);
     } catch (err) {
-      pending.delete(canonicalRoot);
-      // Register failed state so retry is possible
-      const failedEntry: BhEntry = {
-        serverKey: SERVER_KEY,
-        projectKey: opaqueProjectId(canonicalRoot),
-        canonicalRoot,
-        state: "failed",
-        startupError: err instanceof Error ? err.message : String(err),
-        stop: async () => {},
-      };
-      entries.set(canonicalRoot, failedEntry);
+      // Failed startup — remove entry, allow retry
+      entries.delete(canonicalRoot);
       throw err;
+    } finally {
+      pending.delete(canonicalRoot);
     }
   })();
 
-  pending.set(canonicalRoot, { promise, cancel: () => { cancelToken.cancelled = true; } });
-  return promise;
+  pending.set(canonicalRoot, { promise, cancel: () => { cancelled.value = true; } });
 }
 
-/** Stop and remove the entry. Idempotent. */
+/** Stop Better Harness. Idempotent — first call runs cleanup, concurrent calls await. */
 export async function stopBh(canonicalRoot: string): Promise<void> {
+  // Cancel pending startup
   const p = pending.get(canonicalRoot);
   if (p) {
     p.cancel();
     pending.delete(canonicalRoot);
   }
-  const e = entries.get(canonicalRoot);
-  if (!e) return;
-  if (e.state === "stopping" || e.state === "stopped") return;
-  e.state = "stopping";
-  try {
-    if (e._cleanup) await e._cleanup();
-    await e.stop();
-  } catch {}
-  e.state = "stopped";
-  entries.delete(canonicalRoot);
+
+  const entry = entries.get(canonicalRoot);
+  if (!entry) return;
+  if (entry.state === "stopping" || entry.state === "stopped") {
+    // Await existing cleanup if in progress
+    if (entry.cleanupPromise) await entry.cleanupPromise;
+    return;
+  }
+
+  transition(entry.state, "stopping");
+  entry.state = "stopping";
+
+  if (!entry.cleanupPromise) {
+    entry.cleanupPromise = (async () => {
+      try {
+        await entry.stop();
+      } catch (err) {
+        console.error("[better-harness] Cleanup error:", (err as Error).message);
+      }
+      transition(entry.state, "stopped");
+      entry.state = "stopped";
+      entries.delete(canonicalRoot);
+    })();
+  }
+
+  await entry.cleanupPromise;
 }
 
-/** Get the current entry for a canonical root. */
+/** Get entry for a canonical root. */
 export function getBh(canonicalRoot: string): BhEntry | undefined {
   return entries.get(canonicalRoot);
 }
 
-/** Build discovery response from registry state. */
+/** Build state-backed discovery response. */
 export function getDiscovery(
-  serverKey: string,
-  projectKey: string,
-  canonicalRoot?: string,
-  authRequired = false,
+  serverKey: string, projectKey: string,
+  canonicalRoot?: string, authRequired = false,
 ): Record<string, unknown> {
   const entry = canonicalRoot ? entries.get(canonicalRoot) : undefined;
   const state = entry?.state ?? (canonicalRoot ? "stopped" : "unknown");
   const available = state === "running";
   return {
-    available,
-    enabled: true,
-    state,
-    contractVersion: CONTRACT_VERSION,
-    schemaVersion: SCHEMA_VERSION,
-    serverKey,
-    projectKey,
+    available, enabled: true, state,
+    contractVersion: BH_CONTRACT_VERSION,
+    schemaVersion: BH_SCHEMA_VERSION,
+    serverKey, projectKey,
     authRequired,
     capabilities: ["run", "report", "history", "cancel", "plan-fix", "verify", "ignore", "batch", "sse"],
     startedAt: entry?.startedAt,
