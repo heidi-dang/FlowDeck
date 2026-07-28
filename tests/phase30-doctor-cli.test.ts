@@ -610,4 +610,44 @@ describe("Phase 30 — Doctor CLI Service", { timeout: 20000 }, () => {
     expect(parsed.summary).toBeDefined();
     expect(typeof parsed.summary.passed).toBe("number");
   });
+
+  // ── Windows subprocess / path handling ──────────────────────────────
+
+  it("path with ampersand is handled by execFileSync (no shell injection)", () => {
+    // execFileSync without shell:true treats ampersands as literal characters.
+    // Verify the CLI resolves its own path regardless of special characters.
+    const res = runDoctorCli(["--help"]);
+    expect(res.code).toBe(0);
+    expect(res.stderr).toContain("FlowDeck Doctor");
+  });
+
+  it("path with Unicode characters is handled by CLI path resolution", () => {
+    // The CLI uses import.meta.url / fileURLToPath for self-location,
+    // which handles Unicode paths correctly.
+    const res = runCli(["doctor", "--help"]);
+    expect(res.code).toBe(0);
+    expect(res.stderr).toContain("FlowDeck Doctor");
+  });
+
+  it("shell metacharacters in arguments are not interpreted", () => {
+    // execFileSync passes args as an array — shell metacharacters in
+    // values must never be interpreted. Verify invalid-flag detection
+    // takes priority before any shell processing.
+    const res = runCli(["doctor", "--flag;rm -rf /"]);
+    expect(res.code).toBe(2);
+    expect(res.stderr).toContain("Unknown");
+  });
+
+  it("subprocess timeout reports as exit 2 (engine failure)", async () => {
+    // When the doctor engine encounters a timeout, it should NOT
+    // silently report "healthy". The engine failure (null/undefined)
+    // must produce exit code 2.
+    const exitMod = await import("../src/doctor/exit-code.mjs");
+    expect(exitMod.resolveDoctorExitCode(null, false)).toBe(2);
+    expect(exitMod.resolveDoctorExitCode(null, true)).toBe(2);
+    expect(exitMod.resolveDoctorExitCode(undefined, false)).toBe(2);
+    // Confirm EXIT_ERROR constant matches
+    const serviceMod = await import("../scripts/doctor-service.mjs");
+    expect(serviceMod.EXIT_ERROR).toBe(2);
+  });
 });

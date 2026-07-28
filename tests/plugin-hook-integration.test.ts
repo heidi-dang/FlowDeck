@@ -406,9 +406,9 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
 
   // ── Adversarial child-session correlation tests ────────────────────
 
-  it("correlates two concurrent calls to the same target agent (FIFO order)", async () => {
+  it("same-agent concurrent calls emit diagnostic and leave children uncorrelated", async () => {
     const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
-    const parentID = "ses_same_agent_fifo"
+    const parentID = "ses_same_agent_concurrent"
     const callFirst = "call-first"
     const callSecond = "call-second"
     const childFirst = "ses_child_first"
@@ -433,15 +433,14 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
       { args: { subagent_type: "backend-coder", prompt: "Second task" } },
     )
 
-    // 3. First child session created — must correlate to callFirst
+    // 3. Both child sessions created — neither should be correlated because
+    //    there are multiple pending calls to the same agent, creating ambiguity.
     await pluginInstance["event"]({
       event: {
         type: "session.created",
         properties: { info: { id: childFirst, parentID, agent: "backend-coder" } },
       },
     })
-
-    // 4. Second child session created — must correlate to callSecond
     await pluginInstance["event"]({
       event: {
         type: "session.created",
@@ -449,20 +448,20 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
       },
     })
 
-    // Verify: first child is correlated to callFirst, second to callSecond
+    // Verify: neither child is correlated (same-agent ambiguity)
     const { childSessionToTask } = await import("../src/index")
-    const corr1 = childSessionToTask.get(childFirst)
-    const corr2 = childSessionToTask.get(childSecond)
-    expect(corr1).toBeDefined()
-    expect(corr2).toBeDefined()
-    expect(corr1!.callID).toBe(callFirst)
-    expect(corr2!.callID).toBe(callSecond)
-    expect(corr1!.taskKey).toContain(callFirst)
-    expect(corr2!.taskKey).toContain(callSecond)
-    expect(corr1!.targetAgent).toBe("backend-coder")
-    expect(corr2!.targetAgent).toBe("backend-coder")
+    expect(childSessionToTask.has(childFirst)).toBe(false)
+    expect(childSessionToTask.has(childSecond)).toBe(false)
 
-    // First child fails — only its task call should be cleaned up
+    // Verify: diagnostic was emitted for the ambiguity
+    const auditLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    const blockedEvents = auditLines.map(l => JSON.parse(l)).filter(e => e.kind === "delegation.blocked")
+    const unresolvedBlocks = blockedEvents.filter(e => e.reason?.startsWith("UNRESOLVED_CHILD_CORRELATION:"))
+    expect(unresolvedBlocks.length).toBeGreaterThanOrEqual(1)
+    expect(unresolvedBlocks[0].details.parentSessionID).toBe(parentID)
+    expect(unresolvedBlocks[0].details.effectiveTarget).toBe("backend-coder")
+
+    // 4. First child fails — no task call should be affected (no correlation to remove)
     await pluginInstance["event"]({
       event: {
         type: "session.error",
@@ -470,11 +469,22 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
       },
     })
 
-    const auditLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
-    const failedEvents = auditLines.map(l => JSON.parse(l)).filter(e => e.kind === "delegation.failed")
-    expect(failedEvents).toHaveLength(1)
-    expect(failedEvents[0].details.callID).toBe(callFirst)
-    expect(failedEvents[0].details.childSessionID).toBe(childFirst)
+    // Both sessionTaskCalls must still be present (neither was removed by the error)
+    const { sessionTaskCalls } = await import("../src/index")
+    const parentCalls = Array.from((sessionTaskCalls as Map<string, any>).entries())
+      .filter(([k]) => k.startsWith(`${parentID}:`))
+    expect(parentCalls).toHaveLength(2)
+    expect(parentCalls.map(([, v]: any) => v.targetAgent)).toEqual(["backend-coder", "backend-coder"])
+
+    // Clean up via tool.execute.after to avoid leaking state
+    await pluginInstance["tool.execute.after"](
+      { tool: "task", sessionID: parentID, callID: callFirst, args: {} },
+      { output: "First done", metadata: {} },
+    )
+    await pluginInstance["tool.execute.after"](
+      { tool: "task", sessionID: parentID, callID: callSecond, args: {} },
+      { output: "Second done", metadata: {} },
+    )
   })
 
   it("correlates child sessions created in reverse task-call order", async () => {
@@ -692,12 +702,14 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
     })
 
     const { childSessionToTask } = await import("../src/index")
-    expect(childSessionToTask.get(childBc1)!.callID).toBe(callBc1)
+    // childBc1 is NOT correlated (same-agent concurrency with callBc2)
+    expect(childSessionToTask.has(childBc1)).toBe(false)
+    // childTester is uniquely correlated (only one pending call for this agent)
+    expect(childSessionToTask.has(childTester)).toBe(true)
     expect(childSessionToTask.get(childTester)!.callID).toBe(callTester)
-    expect(childSessionToTask.get(childBc2)!.callID).toBe(callBc2)
-    expect(childSessionToTask.get(childBc1)!.targetAgent).toBe("backend-coder")
     expect(childSessionToTask.get(childTester)!.targetAgent).toBe("tester")
-    expect(childSessionToTask.get(childBc2)!.targetAgent).toBe("backend-coder")
+    // childBc2 is NOT correlated (same-agent concurrency with callBc1)
+    expect(childSessionToTask.has(childBc2)).toBe(false)
 
     // Tester fails — only tester task is affected
     await pluginInstance["event"]({
@@ -934,5 +946,78 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
       .filter(([k]) => k.startsWith(`${parentNew}:`))
     expect(newTaskCalls).toHaveLength(1)
     expect(newTaskCalls[0][1].targetAgent).toBe("tester")
+  })
+
+  it("same-agent reverse-order child creation detects ambiguity consistently", async () => {
+    // Two concurrent calls to the SAME target agent; children created in
+    // REVERSE call order (call-second's child appears first). The dequeue
+    // must detect ambiguity (length > 1) for both children, not silently
+    // reassign the first queue slot to the second child.
+    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const parentID = "ses_rev_same_agent"
+    const callFirst = "call-first"
+    const callSecond = "call-second"
+    const childFirst = "ses_rev_first"
+    const childSecond = "ses_rev_second"
+
+    await pluginInstance["event"]({
+      event: { type: "session.created", properties: { info: { id: parentID, agent: "heidi" } } },
+    })
+    await pluginInstance["chat.message"](
+      { sessionID: parentID, agent: "heidi" },
+      { message: { agent: "heidi", system: "" } as any },
+    )
+
+    // Two concurrent delegations to backend-coder
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callFirst, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "First" } },
+    )
+    await pluginInstance["tool.execute.before"](
+      { tool: "task", sessionID: parentID, callID: callSecond, args: {} },
+      { args: { subagent_type: "backend-coder", prompt: "Second" } },
+    )
+
+    // Children created in REVERSE order (second child before first)
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childSecond, parentID, agent: "backend-coder" } },
+      },
+    })
+    await pluginInstance["event"]({
+      event: {
+        type: "session.created",
+        properties: { info: { id: childFirst, parentID, agent: "backend-coder" } },
+      },
+    })
+
+    // Neither child should be correlated (same-agent concurrency ambiguity)
+    const { childSessionToTask } = await import("../src/index")
+    expect(childSessionToTask.has(childFirst)).toBe(false)
+    expect(childSessionToTask.has(childSecond)).toBe(false)
+
+    // Diagnostics emitted for both ambiguous children
+    const auditLines = readFileSync(auditLogPath(tmpDir), "utf-8").trim().split("\n")
+    const blockedEvents = auditLines.map(l => JSON.parse(l)).filter(e => e.kind === "delegation.blocked")
+    const unresolvedBlocks = blockedEvents.filter(e => e.reason?.startsWith("UNRESOLVED_CHILD_CORRELATION:"))
+    // At least one diagnostic (could be one per session.created attempt)
+    expect(unresolvedBlocks.length).toBeGreaterThanOrEqual(1)
+
+    // Both task calls still present (none removed by error)
+    const { sessionTaskCalls } = await import("../src/index")
+    const parentCalls = Array.from((sessionTaskCalls as Map<string, any>).entries())
+      .filter(([k]) => k.startsWith(`${parentID}:`))
+    expect(parentCalls).toHaveLength(2)
+
+    // Clean up
+    await pluginInstance["tool.execute.after"](
+      { tool: "task", sessionID: parentID, callID: callFirst, args: {} },
+      { output: "First done", metadata: {} },
+    )
+    await pluginInstance["tool.execute.after"](
+      { tool: "task", sessionID: parentID, callID: callSecond, args: {} },
+      { output: "Second done", metadata: {} },
+    )
   })
 })

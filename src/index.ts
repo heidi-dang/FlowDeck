@@ -144,8 +144,16 @@ function enqueuePendingSlot(
 
 /**
  * Dequeue the next pending slot for the given parent and target agent.
+ *
+ * When the child session's agent is known and the pending queue has exactly
+ * one call for that agent, the correlation is authoritative.
+ *
+ * When the queue has multiple calls to the SAME agent, returns ambiguous
+ * (unresolved) rather than guessing via FIFO — attaching failure to a
+ * potentially incorrect task is worse than no correlation.
+ *
  * When the child session's agent is unknown/absent and there are multiple
- * pending calls for the same parent with different targets, returns null
+ * queues with pending calls for different targets, also returns ambiguous
  * (unresolved) rather than attaching to an arbitrary task.
  */
 function dequeuePendingSlot(
@@ -153,10 +161,18 @@ function dequeuePendingSlot(
   effectiveTarget?: string,
 ): { correlation: ChildTaskCorrelation | null; ambiguous: boolean } {
   if (effectiveTarget && effectiveTarget !== "unknown") {
-    // Exact agent match — deterministic dequeue
+    // Exact agent match
     const key = `${parentSessionID}:${effectiveTarget}`
     const queue = pendingChildSlots.get(key)
     if (queue && queue.length > 0) {
+      // Multiple pending calls to the same target agent — cannot determine
+      // which specific task call created this child session. Return
+      // ambiguous so the caller can emit an unresolved-correlation
+      // diagnostic rather than attaching failure to a potentially
+      // incorrect task.
+      if (queue.length > 1) {
+        return { correlation: null, ambiguous: true }
+      }
       const correlation = queue.shift()!
       if (queue.length === 0) pendingChildSlots.delete(key)
       return { correlation, ambiguous: false }
