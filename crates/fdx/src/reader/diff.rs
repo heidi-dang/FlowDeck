@@ -144,8 +144,8 @@ pub fn diff_against(
 
     let diff_text = String::from_utf8_lossy(&output.stdout);
 
-
     if diff_text.trim().is_empty() {
+
         return Ok(Vec::new());
     }
 
