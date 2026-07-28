@@ -319,6 +319,9 @@ const plugin: Plugin = async ({ directory, client }) => {
       enabled: true,
       port: bhConfig.port,
       bindHost: bhConfig.bindHost,
+      cors: {
+        allowedOrigins: bhConfig.corsOrigins,
+      },
       auth: {
         token: bhConfig.authToken,
         enabled: bhConfig.authEnabled,
