@@ -78,8 +78,8 @@ class Calculator {
     assert_eq!(symbols[1].name, "Calculator");
     assert_eq!(symbols[2].kind, "method");
     assert_eq!(symbols[2].name, "multiply");
-
 }
+
 
 #[test]
 fn test_prototype_typescript() {
