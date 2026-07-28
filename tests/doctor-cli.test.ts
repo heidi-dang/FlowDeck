@@ -261,15 +261,15 @@ describe("Doctor CLI — Exit Codes", () => {
 })
 
 describe("Doctor CLI — Profile Selection", () => {
-  it("accepts known profile names", () => {
-    for (const profile of ["minimal", "recommended-dev", "full-dev", "ci", "release"]) {
+  for (const profile of ["minimal", "recommended-dev", "full-dev", "ci", "release"]) {
+    it(`accepts profile ${profile}`, () => {
       const result = runDoctor(["--json", "--profile", profile])
       expect(result.code).toBeGreaterThanOrEqual(0)
       expect(result.code).toBeLessThanOrEqual(1)
       const parsed = JSON.parse(result.stdout)
       expect(parsed.profile).toBeDefined()
-    }
-  })
+    })
+  }
 })
 
 describe("Doctor CLI — Package-Relative Path Resolution", () => {
