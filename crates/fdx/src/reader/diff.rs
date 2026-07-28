@@ -373,8 +373,8 @@ fn analyze_file_changes(
                     (
                         change_type,
                         sym.kind.clone(),
-
                         sym.name.clone(),
+
                         sym.line_start,
                         sym.line_end,
                         0,
