@@ -46,6 +46,40 @@ export class RunCoordinator {
     return this.activeRun !== null && (this.activeRun.status === "queued" || this.activeRun.status === "running");
   }
 
+  /**
+   * Update run progress, persist the run state, then emit run.progress.
+   * Ensures persistence happens before broadcast so consumers never see
+   * unpersisted progress.
+   */
+  private emitProgress(runId: string, projectId: string, updates: Partial<RunState>): void {
+    if (!this.activeRun || this.activeRun.runId !== runId) return;
+
+    // Apply updates
+    Object.assign(this.activeRun, updates);
+
+    // Persist first
+    const now = new Date().toISOString();
+    const runRecord = {
+      runId: this.activeRun.runId,
+      projectId,
+      status: this.activeRun.status,
+      startedAt: now,
+      stage: this.activeRun.stage,
+      progressPercent: this.activeRun.progressPercent,
+    };
+    saveRun(projectId, runRecord);
+
+    // Then emit
+    this.eventBus.emit("run.progress", {
+      runId: this.activeRun.runId,
+      status: this.activeRun.status,
+      stage: this.activeRun.stage,
+      progressPercent: this.activeRun.progressPercent,
+      updatedAt: now,
+      errorMessage: this.activeRun.errorMessage,
+    });
+  }
+
   async enqueueRun(config: RunConfig): Promise<RunState> {
     if (this.isActive()) {
       throw new Error("A run is already in progress for this coordinator");
@@ -80,8 +114,7 @@ export class RunCoordinator {
     setImmediate(async () => {
       try {
         await this.runWithTimeout(timeoutMs, runId, async () => {
-          this.activeRun!.status = "running";
-          this.activeRun!.stage = "collecting";
+          this.emitProgress(runId, snapshot.projectId, { status: "running", stage: "collecting", progressPercent: 5 });
           this.eventBus.emit("run.started", { runId });
           this.eventBus.emit("collector.started", { runId });
 
@@ -92,7 +125,7 @@ export class RunCoordinator {
 
           const { evidence, collectorResults: _collectorResults } = await runAllCollectors(projectRoot);
 
-          this.activeRun!.progressPercent = 30;
+          this.emitProgress(runId, snapshot.projectId, { progressPercent: 10 });
           this.eventBus.emit("collector.completed", { runId, evidenceCount: evidence.length });
 
           if (isRunCancelled(runId)) {
@@ -100,7 +133,7 @@ export class RunCoordinator {
             return;
           }
 
-          this.activeRun!.stage = "analyzing";
+          this.emitProgress(runId, snapshot.projectId, { stage: "analyzing", progressPercent: 15 });
           this.eventBus.emit("analysis.started", { runId });
 
           const dimensionResults = [
@@ -111,7 +144,7 @@ export class RunCoordinator {
             analyzeLearningCapture(evidence),
           ];
 
-          this.activeRun!.progressPercent = 55;
+          this.emitProgress(runId, snapshot.projectId, { progressPercent: 55 });
 
           const findings = synthesizeFindings(dimensionResults.map((r) => ({
             dimension: r.dimension,
@@ -126,10 +159,10 @@ export class RunCoordinator {
             }),
           );
 
-          this.activeRun!.progressPercent = 75;
+          this.emitProgress(runId, snapshot.projectId, { progressPercent: 75 });
           this.eventBus.emit("finding.created", { runId, findingCount: findings.length });
 
-          this.activeRun!.stage = "scoring";
+          this.emitProgress(runId, snapshot.projectId, { stage: "scoring", progressPercent: 85 });
           const { overallScore, evidenceCoverage } = calculateOverallScore(dimensionScores);
 
           const sessionRecords = readSessionRecords(projectRoot);
@@ -175,9 +208,7 @@ export class RunCoordinator {
           saveReport(snapshot.projectId, report);
           saveFindingIndex(snapshot.projectId, findings);
 
-          this.activeRun!.progressPercent = 100;
-          this.activeRun!.status = "completed";
-          this.activeRun!.stage = "completed";
+          this.emitProgress(runId, snapshot.projectId, { status: "completed", stage: "completed", progressPercent: 100 });
           this.eventBus.emit("report.completed", { runId, report });
 
           const completedRecord: StoredRun = {
@@ -244,49 +275,24 @@ export class RunCoordinator {
   }
 
   private internalCancelRun(runId: string, projectId: string): void {
-    const status: RunState = {
-      runId,
+    this.emitProgress(runId, projectId, {
       status: "cancelled",
-      progressPercent: this.activeRun?.progressPercent ?? 0,
       stage: this.activeRun?.stage ?? "unknown",
+      progressPercent: this.activeRun?.progressPercent ?? 0,
       errorMessage: "Run cancelled",
-    };
-    this.activeRun = status;
-    this.eventBus.emit("run.cancelled", { runId, errorMessage: "Run cancelled" });
-
-    saveRun(projectId, {
-      runId,
-      projectId,
-      status: "cancelled",
-      startedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
-      errorMessage: "Run cancelled",
-      stage: status.stage,
     });
+    this.eventBus.emit("run.cancelled", { runId, errorMessage: "Run cancelled" });
   }
 
   private failRun(runId: string, projectId: string, errorMessage: string): RunState {
-    const status: RunState = {
-      runId,
+    this.emitProgress(runId, projectId, {
       status: "failed",
-      progressPercent: this.activeRun?.progressPercent ?? 0,
       stage: this.activeRun?.stage ?? "unknown",
+      progressPercent: this.activeRun?.progressPercent ?? 0,
       errorMessage,
-    };
-    this.activeRun = status;
-    this.eventBus.emit("run.failed", { runId, errorMessage });
-
-    saveRun(projectId, {
-      runId,
-      projectId,
-      status: "failed",
-      startedAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
-      errorMessage,
-      stage: status.stage,
     });
-
-    return status;
+    this.eventBus.emit("run.failed", { runId, errorMessage });
+    return this.activeRun!;
   }
 
   recoverActiveRuns(): void {
