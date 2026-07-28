@@ -1,5 +1,5 @@
 /**
- * Provider-backed OpenCode Acceptance Test
+ * Mock OpenCode Integration Test
  *
  * OPT-IN ONLY: Set OPENCODE_PROVIDER_ACCEPTANCE=1 to enable this test.
  * Requires a configured OpenCode model provider (OPENCODE_API_KEY or provider config).

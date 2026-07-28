@@ -157,3 +157,5 @@ fd-worktrees/
 
 # Incremental TypeScript build cache (pre-push fast typecheck)
 .cache/
+scripts/*.d.mts
+scripts/*.d.mts.map

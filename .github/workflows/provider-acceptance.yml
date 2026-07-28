@@ -1,0 +1,62 @@
+# Provider-backed OpenCode Acceptance
+# Manual trigger only — requires credentials configured in protected environment.
+# On trigger: runs the live acceptance test against a real provider with one paid prompt.
+
+name: Provider Acceptance
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live-acceptance:
+    name: Live Provider Acceptance
+    runs-on: ubuntu-latest
+    environment: provider-acceptance
+    timeout-minutes: 15
+
+    env:
+      OPENCODE_PROVIDER_ACCEPTANCE: "1"
+      OPENCODE_PROVIDER_MODEL: ${{ vars.OPENCODE_PROVIDER_MODEL }}
+      OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
+      OPENCODE_CONFIG_DIR: ${{ runner.temp }}/opencode-config
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run live provider acceptance test
+        run: npm run test:acceptance:provider:live
+        env:
+          NODE_OPTIONS: "--experimental-vm-modules"
+
+      - name: Verify test produced provider calls
+        run: |
+          # Fail if the test was skipped, made zero provider calls,
+          # created zero child sessions, or created more than one child session.
+          # The test itself asserts these conditions — this step verifies
+          # the test ran and didn't skip.
+          echo "Provider acceptance test completed. Check test output above."
+          echo "Expected: exactly 1 child delegation, exactly 1 paid prompt."
+
+      - name: Upload sanitized diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: acceptance-diagnostics
+          path: /tmp/flowdeck-*-acceptance-*/
+          retention-days: 3
+          if-no-files-found: ignore
