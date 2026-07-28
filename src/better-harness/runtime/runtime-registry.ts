@@ -61,52 +61,52 @@ function assertTransition(from: BhState, to: BhState): void {
   if (!validTransition(from, to)) throw new Error(`Invalid transition: ${from} -> ${to}`);
 }
 
-// ── Entry ──────────────────────────────────────────────────────────────
+// ── Entry with per-project cancellation ─────────────────────────────────
 
-export interface BhEntry {
-  canonicalRoot: string;
+/** Result contract for a startup factory function. */
+export interface BhFactoryResult {
   serverKey: string;
   projectKey: string;
+  canonicalRoot: string;
   state: BhState;
+  stop: () => Promise<void>;
+  startedAt?: string;
+}
+
+export interface BhEntry extends BhFactoryResult {
+  cancellationRequested: boolean;
   startupPromise?: Promise<void>;
   cleanupPromise?: Promise<void>;
   cleanupErrors?: string[];
   startupError?: string;
-  startedAt?: string;
-  stop: () => Promise<void>;
 }
 
 const entries = new Map<string, BhEntry>();
 const pending = new Map<string, Promise<void>>();
-let cancelFlag: (() => void) | null = null;
 
-/** Start BH — returns the shared promise. Idempotent for concurrent callers. */
+/** Start BH — returns the shared promise. Per-project cancellation. */
 export function startBh(
   rawRoot: string,
-  factory: () => Promise<BhEntry>,
+  factory: () => Promise<BhFactoryResult>,
 ): Promise<void> {
   const canonicalRoot = canonicalize(rawRoot);
   const existing = entries.get(canonicalRoot);
   if (existing && existing.state !== "stopped" && existing.state !== "failed") {
     return existing.startupPromise || Promise.resolve();
   }
-
   const inFlight = pending.get(canonicalRoot);
   if (inFlight) return inFlight;
 
   const entry: BhEntry = {
     canonicalRoot, serverKey: getServerKey(), projectKey: opaqueProjectId(canonicalRoot),
-    state: "starting", stop: async () => {},
+    state: "starting", cancellationRequested: false, stop: async () => {},
   };
   entries.set(canonicalRoot, entry);
-
-  const cancelled = { value: false };
-  cancelFlag = () => { cancelled.value = true; };
 
   const promise = (async () => {
     try {
       const result = await factory();
-      if (cancelled.value) {
+      if (entry.cancellationRequested) {
         await result.stop();
         entries.delete(canonicalRoot);
         return;
@@ -131,24 +131,26 @@ export function startBh(
   return promise;
 }
 
-/** Stop BH. Idempotent. */
-export async function stopBh(rawRoot: string): Promise<void> {
-  if (cancelFlag) cancelFlag();
-  const canonicalRoot = canonicalize(rawRoot);
+/** Stop BH by canonical key (no re-canonicalization). Per-project isolation. */
+export async function stopBhByKey(canonicalRoot: string): Promise<void> {
   const entry = entries.get(canonicalRoot);
   if (!entry) return;
+  entry.cancellationRequested = true;
 
   if (entry.state === "stopping" || entry.state === "stopped") {
     if (entry.cleanupPromise) await entry.cleanupPromise;
     return;
   }
-
   assertTransition(entry.state, "stopping");
   entry.state = "stopping";
 
   if (!entry.cleanupPromise) {
     entry.cleanupPromise = (async () => {
       const errors: string[] = [];
+      // Await startup first if pending
+      if (entry.startupPromise && entry.state !== "running") {
+        try { await entry.startupPromise; } catch { /* startup failed — already cleaned */ }
+      }
       try { await entry.stop(); } catch (e) { errors.push((e as Error).message); }
       entry.cleanupErrors = errors;
       assertTransition(entry.state, "stopped");
@@ -156,8 +158,12 @@ export async function stopBh(rawRoot: string): Promise<void> {
       entries.delete(canonicalRoot);
     })();
   }
-
   await entry.cleanupPromise;
+}
+
+/** Stop BH by raw path (canonicalizes first). */
+export async function stopBh(rawRoot: string): Promise<void> {
+  return stopBhByKey(canonicalize(rawRoot));
 }
 
 export function getBh(canonicalRoot: string): BhEntry | undefined {
@@ -169,6 +175,12 @@ export function getDiscovery(
   canonicalRoot?: string, authRequired = false,
 ): Record<string, unknown> {
   const entry = canonicalRoot ? entries.get(canonicalRoot) : undefined;
+  if (entry) {
+    // Verify identity matches the stored entry
+    if (entry.serverKey !== serverKey || entry.projectKey !== projectKey) {
+      return { available: false, enabled: true, state: "unknown", contractVersion: BH_CONTRACT_VERSION, schemaVersion: BH_SCHEMA_VERSION, serverKey, projectKey, authRequired, reason: "Identity mismatch" };
+    }
+  }
   const state = entry?.state ?? (canonicalRoot ? "stopped" : "unknown");
   const available = state === "running";
   return {
@@ -185,7 +197,7 @@ export function getDiscovery(
 
 /** Original registry of all BH modules, augmented with lifecycle functions. */
 export const registry = {
-  canonicalize, getServerKey, opaqueProjectId, startBh, stopBh, getDiscovery, validTransition,
+  canonicalize, getServerKey, opaqueProjectId, startBh, stopBh, stopBhByKey, getDiscovery, validTransition,
   BH_CONTRACT_VERSION, BH_SCHEMA_VERSION,
   collectors: {
     customization: customizationCollector,
@@ -215,7 +227,6 @@ export const registry = {
   },
 };
 
-/** Internal: used by tests to reset state. */
 export function _resetForTesting(): void {
   entries.clear();
   pending.clear();

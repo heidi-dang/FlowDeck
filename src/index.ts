@@ -27,7 +27,7 @@ import { LoopDetector } from "./services/loop-detector"
 
 import { getAgentConfigs, getAgentRoutes } from "./agents/index"
 import { loadFlowDeckConfig, resolveAgentModels, resolveBetterHarnessConfig, type FlowDeckConfig } from "./config/index"
-import { canonicalize, getServerKey, opaqueProjectId, startBh, stopBh, getDiscovery } from "./better-harness/runtime/runtime-registry"
+import { canonicalize, getServerKey, opaqueProjectId, startBh, stopBhByKey, getDiscovery } from "./better-harness/runtime/runtime-registry"
 import { guardRailsHook } from "./hooks/guard-rails"
 import { OrchestratorGuard } from "./hooks/orchestrator-guard-hook"
 import { sessionStartHook } from "./hooks/session-start"
@@ -277,10 +277,12 @@ const plugin: Plugin = async ({ directory, client }) => {
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
   // --- Better Harness integration using shared graph ------------------------
+  let _bhCanonicalRoot: string | undefined;
   const bhConfig = resolveBetterHarnessConfig(flowdeckConfig)
   if (bhConfig.enabled) {
     startBh(directory, async () => {
       const canonicalRoot = canonicalize(directory)
+      _bhCanonicalRoot = canonicalRoot
       const serverKey = getServerKey()
       const projectKey = opaqueProjectId(canonicalRoot)
       const projectRegistry = new ProjectRegistry()
@@ -294,7 +296,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       const routerContext: RouterContext = {
         runtime, coordinator,
         resolveProjectPath: (sk: string, pk: string) => projectRegistry.resolve(sk, pk),
-        sseManager, authToken: bhConfig.authToken,
+        sseManager, authToken: bhConfig.authToken, authEnabled: bhConfig.authEnabled,
         bindHost: bhConfig.bindHost, opencodeClient: client,
       }
       const server = new HarnessHttpServer({
@@ -1003,12 +1005,15 @@ const plugin: Plugin = async ({ directory, client }) => {
     },
 
     dispose: async () => {
-      // Called by OpenCode when the plugin is shut down.
-      // Clean up Better Harness resources for the current project.
+      // OpenCode calls dispose when the plugin shuts down.
+      // Use the captured canonical root — never re-canonicalize during cleanup.
+      if (!_bhCanonicalRoot) return;
       try {
-        const { stopBh, canonicalize } = await import("./better-harness/runtime/runtime-registry");
-        await stopBh(canonicalize(directory));
-      } catch { /* BH may not be running */ }
+        const { stopBhByKey } = await import("./better-harness/runtime/runtime-registry");
+        await stopBhByKey(_bhCanonicalRoot);
+      } catch (err) {
+        appLog("[better-harness] Dispose cleanup error: " + (err as Error).message, "error");
+      }
     },
   }
 }
