@@ -15,6 +15,7 @@
 | **OS** | Linux, macOS, Windows (WSL2) |
 | **Rust toolchain** | Required for FDX native CLI (optional) |
 | **CI** | [![CI](https://github.com/heidi-dang/FlowDeck/actions/workflows/ci.yml/badge.svg)](https://github.com/heidi-dang/FlowDeck/actions/workflows/ci.yml) |
+| **Skills** | **61 skills** validated workflow patterns |
 
 ---
 
