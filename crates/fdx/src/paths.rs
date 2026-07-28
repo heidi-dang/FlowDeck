@@ -200,9 +200,8 @@ pub fn migrate_legacy_planning_dir(
     let tmp_dir = root.join(format!("{}.tmp.{}", project_slug, now_ms));
 
     let perform_migration = || -> Result<usize, MigrationError> {
-        std::fs::create_dir_all(&tmp_dir).map_err(|e| {
-            MigrationError::CreateFailed(tmp_dir.clone(), e.to_string())
-        })?;
+        std::fs::create_dir_all(&tmp_dir)
+            .map_err(|e| MigrationError::CreateFailed(tmp_dir.clone(), e.to_string()))?;
 
         let count = copy_dir_recursive_count(&legacy_dir, &tmp_dir).map_err(|e| {
             MigrationError::CopyFailed(legacy_dir.clone(), tmp_dir.clone(), e.to_string())
