@@ -8,7 +8,10 @@ export function saveReport(projectId: string, report: HarnessReport): void {
   if (!parsed.success) {
     throw new Error(`Report validation failed: ${parsed.error.message}`);
   }
-  const filePath = join(getProjectStoreDir(projectId), "reports", `${report.generatedAt}.json`);
+  // Sanitise the generatedAt timestamp for safe use as a filename:
+  // colons (:) are reserved on Windows and cause ENOENT through WSL2 interop.
+  const safeName = report.generatedAt.replace(/[:]/g, "-");
+  const filePath = join(getProjectStoreDir(projectId), "reports", `${safeName}.json`);
   // Ensure the reports directory exists before writing (belt-and-suspenders
   // alongside the dir creation inside atomicWriteFile).
   const dir = dirname(filePath);
