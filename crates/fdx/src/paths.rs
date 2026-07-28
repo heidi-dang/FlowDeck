@@ -182,7 +182,7 @@ pub fn migrate_legacy_planning_dir(
     // 2. If new_dir exists and is complete, and legacy_dir is present:
     // Move legacy_dir to backup so second execution is idempotent!
     if new_dir.exists() && new_dir.join("STATE.md").exists() {
-        let backup_dir = root.join(format!("{}.bak.{}", legacy_name, now_ms));
+        let backup_dir = get_unique_backup_dir(&root, legacy_name, now_ms);
         std::fs::rename(&legacy_dir, &backup_dir).map_err(|e| {
             MigrationError::RenameFailed(legacy_dir.clone(), backup_dir, e.to_string())
         })?;
@@ -231,7 +231,7 @@ pub fn migrate_legacy_planning_dir(
 
         // If new_dir exists but is incomplete, move it to a recovery backup first
         if new_dir.exists() {
-            let recovery_dir = root.join(format!("{}.bak.incomplete.{}", project_slug, now_ms));
+            let recovery_dir = get_unique_backup_dir(&root, &format!("{}.incomplete", project_slug), now_ms);
             std::fs::rename(&new_dir, &recovery_dir).map_err(|e| {
                 MigrationError::RenameFailed(new_dir.clone(), recovery_dir, e.to_string())
             })?;
@@ -251,7 +251,7 @@ pub fn migrate_legacy_planning_dir(
         }
 
         // Rename legacy directory to timestamped backup only AFTER destination validation
-        let backup_dir = root.join(format!("{}.bak.{}", legacy_name, now_ms));
+        let backup_dir = get_unique_backup_dir(&root, legacy_name, now_ms);
         std::fs::rename(&legacy_dir, &backup_dir).map_err(|e| {
             MigrationError::RenameFailed(legacy_dir.clone(), backup_dir, e.to_string())
         })?;
@@ -268,6 +268,24 @@ pub fn migrate_legacy_planning_dir(
             Err(err)
         }
     }
+}
+
+fn get_unique_backup_dir(root: &Path, prefix: &str, now_ms: u128) -> PathBuf {
+    let base = root.join(format!("{}.bak.{}", prefix, now_ms));
+    if !base.exists() {
+        return base;
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let mut candidate = root.join(format!("{}.bak.{}.{}", prefix, now_ms, nanos));
+    let mut count = 1;
+    while candidate.exists() {
+        candidate = root.join(format!("{}.bak.{}.{}_{}", prefix, now_ms, nanos, count));
+        count += 1;
+    }
+    candidate
 }
 
 fn copy_dir_recursive_count(src: &Path, dst: &Path) -> std::io::Result<usize> {
