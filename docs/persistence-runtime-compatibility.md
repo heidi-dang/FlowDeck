@@ -1,43 +1,25 @@
 # Persistence Runtime Compatibility
 
-## Supported Production Runtime
-- **Node.js** >= 20.0.0 (primary, tested)
-- **Runtime**: All persistence operations run on `better-sqlite3` which compiles via `node-gyp`
+## Current Status: bun:sqlite
 
-## Supported Test Runtime
-- **Node.js** >= 20.0.0 (all tests pass)
-- **bun** 1.3.14: Unit tests without native module dependencies pass
-- **bun + better-sqlite3**: Observed compatibility failure (see below)
+- **Runtime**: All persistence operations run on `bun:sqlite` (Bun's built-in SQLite driver)
+- **Driver**: `bun:sqlite` — no native addon compilation, no `node-gyp` dependency
+- **Compatibility**: Works on all platforms Bun supports (macOS, Linux, Windows)
 
-## Known Bun Limitation
+## Architecture
 
-### Observed Compatibility Failure
-When running `bun test` with the `better-sqlite3` native addon, bun crashes with:
-```
-panic(main thread): NAPI FATAL ERROR: Error::New napi_get_last_error_info
-```
-This occurs in bun v1.3.14 on Windows (including WSL2). The crash happens during NAPI lifecycle management when loading the `better-sqlite3` native Node.js addon.
+The persistence layer uses Bun's native `bun:sqlite` module directly:
 
-### Affected Environments
-| Environment | Status |
-|------------|--------|
-| Node.js (all platforms) | ✅ Fully supported |
-| bun on macOS | ✅ Works (native NAPI support) |
-| bun on Linux (native) | ✅ Works |
-| bun on Windows/WSL2 | ❌ Observed crash |
-| bun on Windows (native) | ❌ Observed crash |
-
-### Reproduction
-```bash
-npm install better-sqlite3
-bun test src/orchestration/persistence/__tests__/persistence.test.ts
-# Panic: NAPI FATAL ERROR
+```typescript
+import { Database } from "bun:sqlite"
 ```
 
-### Recommended Runtime
-- **Development**: Node.js >= 20.0.0
-- **CI**: Node.js >= 20.0.0 (cross-platform matrix)
-- **Production**: Node.js >= 20.0.0
+Key differences from `better-sqlite3`:
+- Constructor: `new Database(path, { create: true })` instead of `new Database(path)`
+- Pragma read: `db.query("PRAGMA ...").get()` instead of `db.pragma()`
+- Pragma set: `db.run("PRAGMA ... = ...")` instead of `db.pragma("... = ...")`
+- Boolean pragma values: returned as integers (1/0) instead of strings ("on"/"off")
 
-### Fallback Decision
-A pure-JS SQLite driver (`sql.js`) is **not** included in this PR. Adding a driver abstraction layer is deferred until cross-runtime compatibility becomes an explicit requirement. The current `better-sqlite3` dependency is the standard choice for Node.js SQLite access in the npm ecosystem.
+## Bundled — No Extra Dependencies
+
+`bun:sqlite` is included with the Bun runtime. No additional npm packages or native addons are required.
