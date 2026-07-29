@@ -6,8 +6,8 @@ const DB = '/tmp/flowdeck-hardening-test.db';
 let pass = 0, fail = 0;
 
 function clean() {
-  try { closeConn(DB); } catch (e) {}
-  for (const f of [DB, DB+'-wal', DB+'-shm']) { try { unlinkSync(f) } catch (e) {} }
+  try { closeConn(DB); } catch {}
+  for (const f of [DB, DB+'-wal', DB+'-shm']) { try { unlinkSync(f) } catch {} }
 }
 const conns = new Map();
 function openConn(p, ro = false) {
@@ -25,7 +25,7 @@ function closeAll() { for (const [, d] of conns) { d.close(); } conns.clear(); }
 function ok(c, m) { if (c) { pass++; console.log(`  ✅ ${m}`); } else { fail++; console.error(`  ❌ ${m}`); } }
 function eq(a, b, m) { ok(a === b, `${m}: ${a} === ${b}`); }
 function neq(a, b, m) { ok(a !== b, `${m}: ${a} !== ${b}`); }
-function thr(fn, m) { try { fn(); fail++; console.error(`  ❌ ${m}: no error`); } catch (e) { pass++; console.log(`  ✅ ${m}`); } }
+function thr(fn, m) { try { fn(); fail++; console.error(`  ❌ ${m}: no error`); } catch { pass++; console.log(`  ✅ ${m}`); } }
 
 function applySchema(db) {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT, applied_at TEXT, checksum TEXT, duration_ms INTEGER)`);
@@ -103,7 +103,7 @@ const platform = process.platform;
 const arch = process.arch;
 const isWindows = platform === 'win32';
 console.log(`  Runtime: Node ${bunVersion}, platform=${platform}, arch=${arch}, isWindows=${isWindows}`);
-try { const pkg = JSON.parse(require('fs').readFileSync('node_modules/better-sqlite3/package.json','utf-8')); console.log('  better-sqlite3 version: ' + pkg.version); } catch (e) { console.log('  better-sqlite3: installed'); };
+try { const pkg = JSON.parse(require('fs').readFileSync('node_modules/better-sqlite3/package.json','utf-8')); console.log('  better-sqlite3 version: ' + pkg.version); } catch { console.log('  better-sqlite3: installed'); };
 const dbVer = new Database(':memory:').prepare('SELECT sqlite_version()').get();
 console.log(`  SQLite version: ${JSON.stringify(dbVer)}`);
 
@@ -248,16 +248,16 @@ try {
   db9b.exec('BEGIN IMMEDIATE EXCLUSIVE');
   try {
     tx9.write(() => { db9.prepare("SELECT 1").run(); });
-  } catch (e) {
+  } catch {
     exhausted = true;
   }
   db9b.exec('ROLLBACK');
-} catch (e) { exhausted = true; }
+} catch { exhausted = true; }
 ok(exhausted, 'busy retry exhaustion detected');
 closeConn(DB);
 closeConn(DB + '-lock');
-try { unlinkSync(DB + '-lock'); } catch (e) {}
-try { unlinkSync(DB + '-lock-wal'); } catch (e) {}
+try { unlinkSync(DB + '-lock'); } catch {}
+try { unlinkSync(DB + '-lock-wal'); } catch {}
 
 // 12. Event aggregate version integrity
 clean();
@@ -333,13 +333,13 @@ if (existsSync(schemaPath)) {
     eq(fk.length, 0, 'full schema: 0 FK violations');
     const integ = db13.prepare("PRAGMA integrity_check").get();
     eq(integ.integrity_check, 'ok', 'full schema: integrity ok');
-  } catch (e) {
+  } catch {
     console.error(`  ❌ Full schema failed: ${e.message}`);
     fail++;
   }
   closeConn(DB + '-full');
-  try { unlinkSync(DB + '-full'); } catch (e) {}
-  try { unlinkSync(DB + '-full-wal'); } catch (e) {}
+  try { unlinkSync(DB + '-full'); } catch {}
+  try { unlinkSync(DB + '-full-wal'); } catch {}
 }
 
 // ════════════════════════════════════════════════════════════════
