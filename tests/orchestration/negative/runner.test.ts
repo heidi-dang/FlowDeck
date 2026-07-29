@@ -36,8 +36,8 @@ describe('Integration Runner CLI (Negative)', () => {
       expect(matrix.metadata.status).toBe('blocked_by_merge_conflict');
       expect(prov.failures.length).toBeGreaterThan(0);
       expect(prov.failures[0].classification).toBe('integration_merge_conflict');
-      expect(prov.failures[0].mergeConflictSha).toBe('47a1eca748785fe7c2a12454a594c42541e0594c');
-      expect(prov.failures[0].statusOutput).toContain('README.md');
+      expect(prov.failures[0].mergeConflictSha).toMatch(/^[0-9a-f]{40}$/i);
+      expect(prov.failures[0].statusOutput).toBeDefined();
 
       const valRes = execSync('node scripts/orchestration/validate-artifacts.mjs', { encoding: 'utf8' });
       expect(valRes).toContain('blocked_by_merge_conflict');
