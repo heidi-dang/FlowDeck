@@ -33,21 +33,24 @@ export class LeasingError extends Error {
 
 /**
  * In-memory lease repository with full fencing support
+ * Fencing tokens are now monotonic PER WORKTREE, not per owner
  */
 export class InMemoryWorktreeLeaseRepository {
   private leases = new Map<string, Lease>();
-  private owners = new Map<string, number>(); // ownerId → current fencing token
+  // Token is per-worktree, increments on each acquire regardless of owner
+  private worktreeTokens = new Map<string, number>();
 
   static readonly DEFAULT_TTL_MS = 30000; // 30 second TTL
   static readonly RENEWAL_THRESHOLD_MS = 15000; // Renew if less than 15s remaining
 
   /**
    * Acquire a lease with atomic fencing token check
+   * New: increments worktree-level token for monotonicity
    */
   async acquire(
     worktreeKey: string,
     ownerId: string,
-    options?: { ttlMs?: number; fencingToken?: number }
+    options?: { ttlMs?: number }
   ): Promise<LeasingResult> {
     const existing = this.leases.get(worktreeKey);
 
@@ -59,8 +62,10 @@ export class InMemoryWorktreeLeaseRepository {
       };
     }
 
-    // Calculate fencing token
-    const fenceToken = options?.fencingToken ?? this.nextToken(ownerId);
+    // Increment and assign NEW fencing token for THIS worktree
+    const currentToken = this.worktreeTokens.get(worktreeKey) ?? 0;
+    const newToken = currentToken + 1;
+    this.worktreeTokens.set(worktreeKey, newToken);
 
     const now = new Date();
     const lease: Lease = {
@@ -68,7 +73,7 @@ export class InMemoryWorktreeLeaseRepository {
       ownerId,
       acquiredAt: now,
       expiresAt: new Date(now.getTime() + (options?.ttlMs ?? InMemoryWorktreeLeaseRepository.DEFAULT_TTL_MS)),
-      fencingToken: fenceToken
+      fencingToken: newToken
     };
 
     this.leases.set(worktreeKey, lease);
@@ -78,6 +83,7 @@ export class InMemoryWorktreeLeaseRepository {
 
   /**
    * Renew an existing lease if still owned by same owner
+   * Token remains SAME on renewal (only changes on new acquire)
    */
   async renew(
     worktreeKey: string,
@@ -100,7 +106,7 @@ export class InMemoryWorktreeLeaseRepository {
       };
     }
 
-    // Extend expiration
+    // Extend expiration WITHOUT changing token
     const now = new Date();
     existing.expiresAt = new Date(now.getTime() + (options?.ttlMs ?? InMemoryWorktreeLeaseRepository.DEFAULT_TTL_MS));
 
@@ -187,13 +193,11 @@ export class InMemoryWorktreeLeaseRepository {
   }
 
   /**
-   * Generate next fencing token for owner
+   * Get owner ID if holding lease
    */
-  private nextToken(ownerId: string): number {
-    const current = this.owners.get(ownerId) ?? 0;
-    const next = current + 1;
-    this.owners.set(ownerId, next);
-    return next;
+  async getOwner(worktreeKey: string): Promise<string | undefined> {
+    const lease = await this.getLease(worktreeKey);
+    return lease?.ownerId;
   }
 
   /**
@@ -201,7 +205,7 @@ export class InMemoryWorktreeLeaseRepository {
    */
   clear(): void {
     this.leases.clear();
-    this.owners.clear();
+    this.worktreeTokens.clear(); // Updated to use worktreeTokens
   }
 
   /**
