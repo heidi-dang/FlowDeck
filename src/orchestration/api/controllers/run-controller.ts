@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import type { RunService } from "../../services/run-service";
 import { CreateRunInputSchema, UpdateRunInputSchema, RunFilterSchema } from "../../types";
-import { PaginationRequestSchema } from "../../types/pagination";
+import { PagePaginationSchema } from "../../types/pagination";
 import { errorHandler } from "../middleware/error-handler";
 import type { RequestContext } from "../middleware/request-context";
 
@@ -23,7 +23,7 @@ export function createRunController(runService: RunService) {
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
         const filter = RunFilterSchema.parse(Object.fromEntries(url.searchParams));
-        const pagination = PaginationRequestSchema.parse(Object.fromEntries(url.searchParams));
+        const pagination = PagePaginationSchema.parse(Object.fromEntries(url.searchParams));
         const result = await runService.listRuns(filter, pagination);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ data: result.items, pagination: { page: pagination.page, limit: pagination.limit, total: result.total } }));

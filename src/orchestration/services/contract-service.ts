@@ -1,8 +1,9 @@
 import { randomUUID } from "crypto";
 import type { Contract, CreateContractInput, UpdateContractInput, ContractFilter } from "../types";
-import { ContractStatus, OrchestrationError, ErrorCodes, OrchestrationEventType } from "../types";
+import { ContractStatus, OrchestrationError, ErrorCodes, OrchestrationEventType, assertNever } from "../types";
+import { createEvent } from "../types/events";
 import type { IContractRepository, IEventBus, PaginatedResult } from "./ports";
-import type { PaginationRequestDTO } from "../types/pagination";
+import type { PagePaginationRequest } from "../types/pagination";
 
 export class ContractService {
   constructor(
@@ -32,17 +33,18 @@ export class ContractService {
 
     const saved = await this.contractRepo.create(contract);
 
-    await this.eventBus.publish({
-      id: randomUUID(),
-      type: OrchestrationEventType.CONTRACT_CREATED,
-      timestamp: now,
-      correlationId: input.correlationId,
-      causationId: input.causationId,
-      contractId: id,
-      runId: input.runId,
-      data: { name: input.name, version: input.version },
-      metadata: {},
-    });
+    await this.eventBus.publish(createEvent(
+      OrchestrationEventType.CONTRACT_CREATED,
+      {
+        correlationId: input.correlationId,
+        causationId: input.causationId,
+        aggregateId: id,
+        aggregateVersion: 1,
+        runId: input.runId,
+        contractId: id,
+        data: { name: input.name, version: input.version },
+      },
+    ));
 
     return saved;
   }
@@ -59,23 +61,18 @@ export class ContractService {
     }
 
     if (input.status && input.status !== existing.status) {
-      const eventType = input.status === ContractStatus.COMPLETED
-        ? OrchestrationEventType.CONTRACT_COMPLETED
-        : input.status === ContractStatus.FAILED
-          ? OrchestrationEventType.CONTRACT_FAILED
-          : OrchestrationEventType.CONTRACT_UPDATED;
-
-      await this.eventBus.publish({
-        id: randomUUID(),
-        type: eventType,
-        timestamp: new Date().toISOString(),
-        correlationId: existing.correlationId,
-        causationId: existing.correlationId,
-        contractId: id,
-        runId: existing.runId,
-        data: { previousStatus: existing.status, newStatus: input.status },
-        metadata: {},
-      });
+      const eventType = this.getStatusEvent(input.status);
+      await this.eventBus.publish(createEvent(
+        eventType,
+        {
+          correlationId: existing.correlationId,
+          causationId: existing.correlationId,
+          aggregateId: id,
+          runId: existing.runId,
+          contractId: id,
+          data: { previousStatus: existing.status, newStatus: input.status },
+        },
+      ));
     }
 
     return updated;
@@ -89,7 +86,7 @@ export class ContractService {
     return contract;
   }
 
-  async listContracts(filter: ContractFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<Contract>> {
+  async listContracts(filter: ContractFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Contract>> {
     return this.contractRepo.findMany(filter, pagination);
   }
 
@@ -103,5 +100,19 @@ export class ContractService {
 
   async failContract(id: string): Promise<Contract> {
     return this.updateContract(id, { status: ContractStatus.FAILED });
+  }
+
+  /** Exhaustive contract status → event mapping. Unknown statuses produce a compile error. */
+  private getStatusEvent(status: string): string {
+    switch (status) {
+      case ContractStatus.COMPLETED: return OrchestrationEventType.CONTRACT_COMPLETED;
+      case ContractStatus.FAILED: return OrchestrationEventType.CONTRACT_FAILED;
+      case ContractStatus.ACTIVE:
+      case ContractStatus.PENDING:
+      case ContractStatus.CANCELLED:
+        return OrchestrationEventType.CONTRACT_UPDATED;
+      default:
+        return assertNever(status as unknown as never, `Unhandled contract status event mapping: ${status}`);
+    }
   }
 }

@@ -32,6 +32,7 @@ export const ErrorCodes = {
   RUN_ALREADY_EXISTS: { code: "RUN_ALREADY_EXISTS", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   CONTRACT_ALREADY_EXISTS: { code: "CONTRACT_ALREADY_EXISTS", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   RUN_IN_TERMINAL_STATE: { code: "RUN_IN_TERMINAL_STATE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
+  SEMANTIC_SATURATED: { code: "SEMANTIC_SATURATED", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   DUPLICATE_REQUEST: { code: "DUPLICATE_REQUEST", category: ErrorCategory.IDEMPOTENCY, httpStatus: 409, retryable: false },
   DEPENDENCY_FAILURE: { code: "DEPENDENCY_FAILURE", category: ErrorCategory.DEPENDENCY, httpStatus: 502, retryable: true },
   DATABASE_UNAVAILABLE: { code: "DATABASE_UNAVAILABLE", category: ErrorCategory.DEPENDENCY, httpStatus: 503, retryable: true },
@@ -88,6 +89,16 @@ export class OrchestrationError extends Error {
       details: opts?.details, cause: opts?.cause,
     });
   }
+}
+
+/**
+ * Exhaustive type guard — use in default branches of switch statements over
+ * union types to ensure the compiler catches addition of new variants.
+ */
+export function assertNever(value: never, message?: string): never {
+  throw new OrchestrationError(
+    { code: "INTERNAL_ERROR", message: message ?? `Unhandled case: ${value}`, category: ErrorCategory.INTERNAL, retryable: false },
+  );
 }
 
 export const ApiErrorResponseSchema = z.object({

@@ -1,8 +1,9 @@
 import { randomUUID } from "crypto";
 import type { Replay, CreateReplayInput } from "../types";
 import { ReplayStatus, OrchestrationError, ErrorCodes, OrchestrationEventType } from "../types";
+import { createEvent } from "../types/events";
 import type { IReplayRepository, IEventBus, PaginatedResult } from "./ports";
-import type { PaginationRequestDTO } from "../types/pagination";
+import type { PagePaginationRequest } from "../types/pagination";
 
 export class ReplayService {
   constructor(
@@ -20,12 +21,17 @@ export class ReplayService {
       createdAt: now, updatedAt: now,
     };
     const saved = await this.replayRepo.create(replay);
-    await this.eventBus.publish({
-      id: randomUUID(), type: OrchestrationEventType.REPLAY_STARTED,
-      timestamp: now, correlationId: input.correlationId,
-      causationId: input.causationId, data: { sourceRunId: input.sourceRunId },
-      metadata: {},
-    });
+    await this.eventBus.publish(createEvent(
+      OrchestrationEventType.REPLAY_STARTED,
+      {
+        correlationId: input.correlationId,
+        causationId: input.causationId,
+        aggregateId: id,
+        aggregateVersion: 1,
+        runId: input.sourceRunId,
+        data: { sourceRunId: input.sourceRunId },
+      },
+    ));
     return saved;
   }
 
@@ -35,7 +41,7 @@ export class ReplayService {
     return r;
   }
 
-  async listReplays(pagination: PaginationRequestDTO): Promise<PaginatedResult<Replay>> {
+  async listReplays(pagination: PagePaginationRequest): Promise<PaginatedResult<Replay>> {
     return this.replayRepo.findMany(pagination);
   }
 }

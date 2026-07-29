@@ -1,8 +1,9 @@
 import { randomUUID } from "crypto";
 import type { Assignment, CreateAssignmentInput, UpdateAssignmentInput, AssignmentFilter } from "../types";
-import { AssignmentStatus, OrchestrationError, ErrorCodes, OrchestrationEventType } from "../types";
+import { AssignmentStatus, OrchestrationError, ErrorCodes, OrchestrationEventType, assertNever } from "../types";
+import { createEvent } from "../types/events";
 import type { IAssignmentRepository, IEventBus, PaginatedResult } from "./ports";
-import type { PaginationRequestDTO } from "../types/pagination";
+import type { PagePaginationRequest } from "../types/pagination";
 
 export class AssignmentService {
   constructor(
@@ -31,18 +32,21 @@ export class AssignmentService {
 
     const saved = await this.assignmentRepo.create(assignment);
 
-    await this.eventBus.publish({
-      id: randomUUID(),
-      type: OrchestrationEventType.ASSIGNMENT_CREATED,
-      timestamp: now,
-      correlationId: input.correlationId,
-      causationId: input.causationId,
-      runId: input.runId,
-      assignmentId: id,
-      agentId: input.agentId,
-      data: { role: input.role },
-      metadata: {},
-    });
+    await this.eventBus.publish(createEvent(
+      OrchestrationEventType.ASSIGNMENT_CREATED,
+      {
+        correlationId: input.correlationId,
+        causationId: input.causationId,
+        aggregateId: id,
+        aggregateVersion: 1,
+        sessionId: input.causationId, // propagate session from causation chain
+        agentId: input.agentId,
+        runId: input.runId,
+        assignmentId: id,
+        contractId: input.contractId,
+        data: { role: input.role },
+      },
+    ));
 
     return saved;
   }
@@ -58,20 +62,18 @@ export class AssignmentService {
 
     if (input.status && input.status !== existing.status) {
       const eventType = this.getStatusEvent(input.status);
-      if (eventType) {
-        await this.eventBus.publish({
-          id: randomUUID(),
-          type: eventType,
-          timestamp: new Date().toISOString(),
+      await this.eventBus.publish(createEvent(
+        eventType,
+        {
           correlationId: existing.correlationId,
           causationId: existing.correlationId,
+          aggregateId: id,
           runId: existing.runId,
           assignmentId: id,
           agentId: existing.agentId,
           data: { previousStatus: existing.status, newStatus: input.status },
-          metadata: {},
-        });
-      }
+        },
+      ));
     }
 
     return updated;
@@ -83,7 +85,7 @@ export class AssignmentService {
     return a;
   }
 
-  async listAssignments(filter: AssignmentFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<Assignment>> {
+  async listAssignments(filter: AssignmentFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Assignment>> {
     return this.assignmentRepo.findMany(filter, pagination);
   }
 
@@ -103,13 +105,17 @@ export class AssignmentService {
     return this.updateAssignment(id, { status: AssignmentStatus.FAILED });
   }
 
-  private getStatusEvent(status: string): string | null {
+  /** Exhaustive status → event mapping. Adding a new AssignmentStatus triggers a compile error. */
+  private getStatusEvent(status: string): string {
     switch (status) {
       case AssignmentStatus.ASSIGNED: return OrchestrationEventType.ASSIGNMENT_ASSIGNED;
       case AssignmentStatus.IN_PROGRESS: return OrchestrationEventType.ASSIGNMENT_STARTED;
       case AssignmentStatus.COMPLETED: return OrchestrationEventType.ASSIGNMENT_COMPLETED;
       case AssignmentStatus.FAILED: return OrchestrationEventType.ASSIGNMENT_FAILED;
-      default: return null;
+      case AssignmentStatus.PENDING:
+      case AssignmentStatus.SKIPPED:
+      default:
+        return assertNever(status as unknown as never, `Unhandled assignment status event mapping: ${status}`);
     }
   }
 }

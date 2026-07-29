@@ -1,5 +1,6 @@
 import type { IEventBus } from "../services/ports";
 import { OrchestrationEventType } from "../types";
+import { createEvent } from "../types/events";
 import type { SseManager } from "./sse-manager";
 import type { WebSocketManager } from "./websocket-manager";
 import type { EventSubscriptionManager } from "./event-subscription";
@@ -29,40 +30,40 @@ export function wireLiveUpdates(
 export function createLiveRunUpdates(sseManager: SseManager) {
   return {
     onRunProgress(runId: string, progressPercent: number, stage: string, status: string): void {
-      sseManager.broadcast({
-        id: `run-${Date.now()}`,
-        type: OrchestrationEventType.RUN_PROGRESS as any,
-        timestamp: new Date().toISOString(),
-        correlationId: runId,
-        runId,
-        data: { progressPercent, stage, status, updatedAt: new Date().toISOString() },
-        metadata: {},
-      });
+      sseManager.broadcast(createEvent(
+        OrchestrationEventType.RUN_PROGRESS,
+        {
+          correlationId: runId,
+          runId,
+          aggregateId: runId,
+          data: { progressPercent, stage, status, updatedAt: new Date().toISOString() },
+        },
+      ));
     },
 
     onAssignmentUpdate(assignmentId: string, runId: string, status: string): void {
-      sseManager.broadcast({
-        id: `assignment-${Date.now()}`,
-        type: "assignment.progress" as any,
-        timestamp: new Date().toISOString(),
-        correlationId: assignmentId,
-        runId,
-        assignmentId,
-        data: { status, updatedAt: new Date().toISOString() },
-        metadata: {},
-      });
+      sseManager.broadcast(createEvent(
+        "assignment.progress",
+        {
+          correlationId: assignmentId,
+          runId,
+          assignmentId,
+          aggregateId: assignmentId,
+          data: { status, updatedAt: new Date().toISOString() },
+        },
+      ));
     },
 
     onVerificationUpdate(verificationId: string, runId: string, status: string): void {
-      sseManager.broadcast({
-        id: `verification-${Date.now()}`,
-        type: "verification.progress" as any,
-        timestamp: new Date().toISOString(),
-        correlationId: verificationId,
-        runId,
-        data: { status, updatedAt: new Date().toISOString() },
-        metadata: {},
-      });
+      sseManager.broadcast(createEvent(
+        "verification.progress",
+        {
+          correlationId: verificationId,
+          runId,
+          aggregateId: verificationId,
+          data: { status, updatedAt: new Date().toISOString() },
+        },
+      ));
     },
   };
 }

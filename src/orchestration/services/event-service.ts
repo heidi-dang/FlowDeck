@@ -1,8 +1,9 @@
 import { randomUUID } from "crypto";
 import type { OrchestrationEvent, EventFilter } from "../types";
-import { OrchestrationError, ErrorCodes, OrchestrationEventType } from "../types";
+import { OrchestrationError, ErrorCodes } from "../types";
+import { createEvent } from "../types/events";
 import type { IEventRepository, IOutboxRepository, IEventBus, PaginatedResult } from "./ports";
-import type { PaginationRequestDTO } from "../types/pagination";
+import type { PagePaginationRequest } from "../types/pagination";
 import type { OutboxEntry, OutboxStatus } from "../types/outbox";
 
 export class EventService {
@@ -18,14 +19,27 @@ export class EventService {
     return ev;
   }
 
-  async listEvents(filter: EventFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<OrchestrationEvent>> {
+  async listEvents(filter: EventFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<OrchestrationEvent>> {
     return this.eventRepo.findMany(filter, pagination);
   }
 
   async publishEvent(event: Omit<OrchestrationEvent, "id" | "timestamp">): Promise<OrchestrationEvent> {
-    const now = new Date().toISOString();
-    const id = randomUUID();
-    const fullEvent: OrchestrationEvent = { ...event, id, timestamp: now };
+    const fullEvent = createEvent(
+      event.type,
+      {
+        correlationId: event.correlationId,
+        causationId: event.causationId,
+        aggregateId: event.aggregateId,
+        aggregateVersion: event.aggregateVersion,
+        sessionId: event.sessionId,
+        agentId: event.agentId,
+        runId: event.runId,
+        assignmentId: event.assignmentId,
+        contractId: event.contractId,
+        data: event.data,
+        metadata: event.metadata,
+      },
+    );
 
     // Store in event repo
     const saved = await this.eventRepo.store(fullEvent);
@@ -34,7 +48,7 @@ export class EventService {
     const outboxEntry: OutboxEntry = {
       id: randomUUID(),
       destination: "internal",
-      eventId: id,
+      eventId: fullEvent.id,
       eventType: fullEvent.type,
       payload: fullEvent as unknown as Record<string, unknown>,
       correlationId: fullEvent.correlationId,
@@ -44,7 +58,7 @@ export class EventService {
       attemptCount: 0,
       retryCount: 0,
       maxRetries: 3,
-      createdAt: now,
+      createdAt: new Date().toISOString(),
     };
     await this.outboxRepo.create(outboxEntry);
 

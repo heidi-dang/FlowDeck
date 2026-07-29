@@ -7,9 +7,9 @@ import { OrchestrationError, ErrorCodes } from "../types";
 import type {
   IRunRepository, IContractRepository, IAssignmentRepository,
   IVerificationRepository, IEventRepository, IOutboxRepository,
-  PaginatedResult,
 } from "./ports";
-import type { PaginationRequestDTO } from "../types/pagination";
+import type { PagePaginationRequest, CursorPaginationResponse } from "../types/pagination";
+import { toCursorResponse } from "./ports";
 
 export class QueryService {
   constructor(
@@ -23,8 +23,9 @@ export class QueryService {
 
   // ── Run queries ─────────────────────────────────────────────────────────
 
-  async listRuns(filter: RunFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<Run>> {
-    return this.runRepo.findMany(filter, pagination);
+  async listRuns(filter: RunFilter, pagination: PagePaginationRequest): Promise<CursorPaginationResponse<Run>> {
+    const result = await this.runRepo.findMany(filter, pagination);
+    return toCursorResponse(result);
   }
 
   async getRun(id: string): Promise<Run> {
@@ -35,8 +36,9 @@ export class QueryService {
 
   // ── Contract queries ────────────────────────────────────────────────────
 
-  async listContracts(filter: ContractFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<Contract>> {
-    return this.contractRepo.findMany(filter, pagination);
+  async listContracts(filter: ContractFilter, pagination: PagePaginationRequest): Promise<CursorPaginationResponse<Contract>> {
+    const result = await this.contractRepo.findMany(filter, pagination);
+    return toCursorResponse(result);
   }
 
   async getContract(id: string): Promise<Contract> {
@@ -47,8 +49,9 @@ export class QueryService {
 
   // ── Assignment queries ──────────────────────────────────────────────────
 
-  async listAssignments(filter: AssignmentFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<Assignment>> {
-    return this.assignmentRepo.findMany(filter, pagination);
+  async listAssignments(filter: AssignmentFilter, pagination: PagePaginationRequest): Promise<CursorPaginationResponse<Assignment>> {
+    const result = await this.assignmentRepo.findMany(filter, pagination);
+    return toCursorResponse(result);
   }
 
   async getAssignment(id: string): Promise<Assignment> {
@@ -59,8 +62,9 @@ export class QueryService {
 
   // ── Verification queries ────────────────────────────────────────────────
 
-  async listVerifications(filter: VerificationFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<VerificationResult>> {
-    return this.verificationRepo.findMany(filter, pagination);
+  async listVerifications(filter: VerificationFilter, pagination: PagePaginationRequest): Promise<CursorPaginationResponse<VerificationResult>> {
+    const result = await this.verificationRepo.findMany(filter, pagination);
+    return toCursorResponse(result);
   }
 
   async getVerification(id: string): Promise<VerificationResult> {
@@ -69,18 +73,19 @@ export class QueryService {
     return v;
   }
 
-  async listEvidence(filter: VerificationFilter): Promise<Evidence[]> {
+  async listEvidence(_filter: VerificationFilter): Promise<Evidence[]> {
     return []; // Placeholder - depends on evidence repo
   }
 
-  async getEvidence(id: string): Promise<Evidence> {
+  async getEvidence(_id: string): Promise<Evidence> {
     throw OrchestrationError.fromCode(ErrorCodes.ENTITY_NOT_FOUND);
   }
 
   // ── Event queries ───────────────────────────────────────────────────────
 
-  async listEvents(filter: EventFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<OrchestrationEvent>> {
-    return this.eventRepo.findMany(filter, pagination);
+  async listEvents(filter: EventFilter, pagination: PagePaginationRequest): Promise<CursorPaginationResponse<OrchestrationEvent>> {
+    const result = await this.eventRepo.findMany(filter, pagination);
+    return toCursorResponse(result);
   }
 
   async getEvent(id: string): Promise<OrchestrationEvent> {
@@ -91,8 +96,9 @@ export class QueryService {
 
   // ── Outbox queries ──────────────────────────────────────────────────────
 
-  async listOutboxEntries(filter: OutboxFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<OutboxEntry>> {
-    return this.outboxRepo.findMany(filter, pagination);
+  async listOutboxEntries(filter: OutboxFilter, pagination: PagePaginationRequest): Promise<CursorPaginationResponse<OutboxEntry>> {
+    const result = await this.outboxRepo.findMany(filter, pagination);
+    return toCursorResponse(result);
   }
 
   async getOutboxEntry(id: string): Promise<OutboxEntry> {
@@ -101,7 +107,7 @@ export class QueryService {
     return entry;
   }
 
-  async getDeliveryStatus(runId: string): Promise<{ delivered: number; pending: number; failed: number }> {
+  async getDeliveryStatus(_runId: string): Promise<{ delivered: number; pending: number; failed: number }> {
     const pending = await this.outboxRepo.count({ status: "pending" as any });
     const published = await this.outboxRepo.count({ status: "published" as any });
     const failed = await this.outboxRepo.count({ status: "failed" as any });

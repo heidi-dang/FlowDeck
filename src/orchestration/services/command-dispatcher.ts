@@ -1,13 +1,8 @@
 import { randomUUID } from "crypto";
 import { OrchestrationError, ErrorCodes, OrchestrationEventType } from "../types";
+import { createEvent } from "../types/events";
 import type { IAuthorizationService, IIdempotencyStore, IEventBus } from "./ports";
-import type { RunService } from "./run-service";
-import type { ContractService } from "./contract-service";
-import type { AssignmentService } from "./assignment-service";
-import type { VerificationService } from "./verification-service";
-import type { CompletionService } from "./completion-service";
-import type { ReplayService } from "./replay-service";
-import type { EventService } from "./event-service";
+
 
 // ── Command types ─────────────────────────────────────────────────────────
 
@@ -42,7 +37,7 @@ export class CommandDispatcher {
     private readonly eventBus: IEventBus,
   ) {}
 
-  registerService(typePrefix: string, service: Record<string, unknown>): void {
+  registerService(_typePrefix: string, _service: Record<string, unknown>): void {
     // Services register their command handlers
   }
 
@@ -127,14 +122,13 @@ export class CommandDispatcher {
   private async publishCommandEvent(
     commandId: string, command: Command, correlationId: string, eventType: string,
   ): Promise<void> {
-    await this.eventBus.publish({
-      id: randomUUID(),
-      type: eventType as any,
-      timestamp: new Date().toISOString(),
-      correlationId,
-      causationId: command.causationId,
-      data: { commandId, commandType: command.type },
-      metadata: {},
-    });
+    await this.eventBus.publish(createEvent(
+      eventType,
+      {
+        correlationId,
+        causationId: command.causationId,
+        data: { commandId, commandType: command.type },
+      },
+    ));
   }
 }

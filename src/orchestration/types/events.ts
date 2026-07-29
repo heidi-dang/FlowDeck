@@ -41,22 +41,43 @@ export const OrchestrationEventType = {
 
 export type OrchestrationEventType = (typeof OrchestrationEventType)[keyof typeof OrchestrationEventType];
 
+export const EVENT_VERSION = 1;
+
+/** Full domain event with complete metadata for replay and distributed tracing. */
 export interface OrchestrationEvent {
+  /** Unique event identifier (UUID). */
   id: string;
+  /** Event type string, e.g. "run.created". */
   type: string;
+  /** Schema version — increment when event shape changes. Consumers MUST reject unknown versions. */
+  eventVersion: number;
+  /** ISO-8601 timestamp of when the event occurred. */
   timestamp: string;
+  /** Correlation ID tracing the logical operation across service boundaries. */
   correlationId: string;
+  /** Causation ID — the immediate parent event that caused this event. */
   causationId?: string;
+  /** Aggregate root ID (e.g. run ID, contract ID). */
   aggregateId?: string;
-  runId?: string;
-  assignmentId?: string;
-  contractId?: string;
+  /** Monotonic version of the aggregate at the time this event was recorded. */
+  aggregateVersion?: number;
+  /** Session ID running this orchestration (optional — populated when within a user session). */
   sessionId?: string;
+  /** Agent that performed the action (optional). */
   agentId?: string;
+  /** Related run ID. */
+  runId?: string;
+  /** Related assignment ID. */
+  assignmentId?: string;
+  /** Related contract ID. */
+  contractId?: string;
+  /** Event payload — MUST be plain JSON-serializable data. */
   data: Record<string, unknown>;
+  /** System metadata (source, trace headers, etc.) — MUST be plain JSON. */
   metadata: Record<string, unknown>;
 }
 
+/** Event filter for querying stored events. */
 export interface EventFilter {
   type?: string;
   correlationId?: string;
@@ -65,12 +86,16 @@ export interface EventFilter {
   until?: string;
 }
 
+/** Public DTO — safe for API and SSE consumption. Never leaks internal event representation. */
 export interface OrchestrationEventDTO {
   id: string;
   type: string;
+  eventVersion: number;
   timestamp: string;
   correlationId: string;
   runId?: string;
+  causationId?: string;
+  aggregateId?: string;
 }
 
 export interface EventSubscriber {
@@ -87,3 +112,39 @@ export const EventFilterSchema = z.object({
   since: z.string().datetime().optional(),
   until: z.string().datetime().optional(),
 });
+
+/** Helper to create a properly structured event with all required metadata. */
+export function createEvent(
+  type: string,
+  fields: {
+    correlationId: string;
+    causationId?: string;
+    aggregateId?: string;
+    aggregateVersion?: number;
+    sessionId?: string;
+    agentId?: string;
+    runId?: string;
+    assignmentId?: string;
+    contractId?: string;
+    data?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  },
+): OrchestrationEvent {
+  return {
+    id: crypto.randomUUID(),
+    type,
+    eventVersion: EVENT_VERSION,
+    timestamp: new Date().toISOString(),
+    correlationId: fields.correlationId,
+    causationId: fields.causationId,
+    aggregateId: fields.aggregateId,
+    aggregateVersion: fields.aggregateVersion,
+    sessionId: fields.sessionId,
+    agentId: fields.agentId,
+    runId: fields.runId,
+    assignmentId: fields.assignmentId,
+    contractId: fields.contractId,
+    data: fields.data ?? {},
+    metadata: fields.metadata ?? {},
+  };
+}

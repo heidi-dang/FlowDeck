@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import type { ReplayService } from "../../services/replay-service";
 import { CreateReplayInputSchema } from "../../types";
-import { PaginationRequestSchema } from "../../types/pagination";
+import { PagePaginationSchema } from "../../types/pagination";
 import { errorHandler } from "../middleware/error-handler";
 import type { RequestContext } from "../middleware/request-context";
 
@@ -26,7 +26,7 @@ export function createReplayController(replayService: ReplayService) {
     async list(req: IncomingMessage, res: ServerResponse, ctx: RequestContext): Promise<void> {
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-        const pagination = PaginationRequestSchema.parse(Object.fromEntries(url.searchParams));
+        const pagination = PagePaginationSchema.parse(Object.fromEntries(url.searchParams));
         const result = await replayService.listReplays(pagination);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ data: result.items, pagination }));

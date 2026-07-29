@@ -1,18 +1,18 @@
 import type {
-  Run, CreateRunInput, UpdateRunInput, RunFilter, RunDTO,
-  Contract, CreateContractInput, UpdateContractInput, ContractFilter, ContractDTO,
-  Assignment, CreateAssignmentInput, UpdateAssignmentInput, AssignmentFilter, AssignmentDTO,
-  VerificationResult, VerificationFilter, VerificationResultDTO,
-  Evidence, EvidenceDTO,
-  Completion, CreateCompletionInput, UpdateCompletionInput, CompletionDTO,
-  Replay, CreateReplayInput, ReplayDTO,
-  OrchestrationEvent, EventFilter, OrchestrationEventDTO,
-  OutboxEntry, OutboxFilter, OutboxEntryDTO,
-  PaginationRequestDTO,
+  Run, UpdateRunInput, RunFilter,
+  Contract, UpdateContractInput, ContractFilter,
+  Assignment, UpdateAssignmentInput, AssignmentFilter,
+  VerificationResult, VerificationFilter,
+  Completion, UpdateCompletionInput,
+  Replay,
+  OrchestrationEvent, EventFilter,
+  OutboxEntry, OutboxFilter,
+  PagePaginationRequest,
 } from "../types";
 import type { OrchestrationEventType } from "../types/events";
+import type { CursorPaginationResponse } from "../types/pagination";
 
-// ── Paginated result ──────────────────────────────────────────────────────
+// ── Paginated result (internal — page-based) ──────────────────────────────
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -21,13 +21,26 @@ export interface PaginatedResult<T> {
   limit: number;
 }
 
+/**
+ * Convert an internal PagePaginationRequest + PaginatedResult into a
+ * cursor-based API response. Uses page number as the cursor token.
+ */
+export function toCursorResponse<T>(result: PaginatedResult<T>): CursorPaginationResponse<T> {
+  const hasMore = result.page * result.limit < result.total;
+  return {
+    items: result.items,
+    nextCursor: hasMore ? String(result.page + 1) : null,
+    hasMore,
+  };
+}
+
 // ── Run repository ────────────────────────────────────────────────────────
 
 export interface IRunRepository {
   create(run: Run): Promise<Run>;
   update(id: string, input: UpdateRunInput): Promise<Run | null>;
   findById(id: string): Promise<Run | null>;
-  findMany(filter: RunFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<Run>>;
+  findMany(filter: RunFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Run>>;
   count(filter: RunFilter): Promise<number>;
 }
 
@@ -37,7 +50,7 @@ export interface IContractRepository {
   create(contract: Contract): Promise<Contract>;
   update(id: string, input: UpdateContractInput): Promise<Contract | null>;
   findById(id: string): Promise<Contract | null>;
-  findMany(filter: ContractFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<Contract>>;
+  findMany(filter: ContractFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Contract>>;
   count(filter: ContractFilter): Promise<number>;
 }
 
@@ -47,7 +60,7 @@ export interface IAssignmentRepository {
   create(assignment: Assignment): Promise<Assignment>;
   update(id: string, input: UpdateAssignmentInput): Promise<Assignment | null>;
   findById(id: string): Promise<Assignment | null>;
-  findMany(filter: AssignmentFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<Assignment>>;
+  findMany(filter: AssignmentFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Assignment>>;
   count(filter: AssignmentFilter): Promise<number>;
 }
 
@@ -57,7 +70,7 @@ export interface IVerificationRepository {
   create(verification: VerificationResult): Promise<VerificationResult>;
   update(id: string, input: Partial<VerificationResult>): Promise<VerificationResult | null>;
   findById(id: string): Promise<VerificationResult | null>;
-  findMany(filter: VerificationFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<VerificationResult>>;
+  findMany(filter: VerificationFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<VerificationResult>>;
   count(filter: VerificationFilter): Promise<number>;
   findByRunId(runId: string): Promise<VerificationResult[]>;
 }
@@ -76,7 +89,7 @@ export interface ICompletionRepository {
 export interface IEventRepository {
   store(event: OrchestrationEvent): Promise<OrchestrationEvent>;
   findById(id: string): Promise<OrchestrationEvent | null>;
-  findMany(filter: EventFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<OrchestrationEvent>>;
+  findMany(filter: EventFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<OrchestrationEvent>>;
   count(filter: EventFilter): Promise<number>;
   findByRunId(runId: string): Promise<OrchestrationEvent[]>;
 }
@@ -87,7 +100,7 @@ export interface IOutboxRepository {
   create(entry: OutboxEntry): Promise<OutboxEntry>;
   update(id: string, input: Partial<OutboxEntry>): Promise<OutboxEntry | null>;
   findById(id: string): Promise<OutboxEntry | null>;
-  findMany(filter: OutboxFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<OutboxEntry>>;
+  findMany(filter: OutboxFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<OutboxEntry>>;
   findPending(): Promise<OutboxEntry[]>;
   count(filter: OutboxFilter): Promise<number>;
 }
@@ -97,7 +110,7 @@ export interface IOutboxRepository {
 export interface IReplayRepository {
   create(replay: Replay): Promise<Replay>;
   findById(id: string): Promise<Replay | null>;
-  findMany(pagination: PaginationRequestDTO): Promise<PaginatedResult<Replay>>;
+  findMany(pagination: PagePaginationRequest): Promise<PaginatedResult<Replay>>;
   count(): Promise<number>;
 }
 

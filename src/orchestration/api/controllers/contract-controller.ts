@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import type { ContractService } from "../../services/contract-service";
 import { CreateContractInputSchema, UpdateContractInputSchema, ContractFilterSchema } from "../../types";
-import { PaginationRequestSchema } from "../../types/pagination";
+import { PagePaginationSchema } from "../../types/pagination";
 import { errorHandler } from "../middleware/error-handler";
 import type { RequestContext } from "../middleware/request-context";
 
@@ -27,7 +27,7 @@ export function createContractController(contractService: ContractService) {
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
         const filter = ContractFilterSchema.parse(Object.fromEntries(url.searchParams));
-        const pagination = PaginationRequestSchema.parse(Object.fromEntries(url.searchParams));
+        const pagination = PagePaginationSchema.parse(Object.fromEntries(url.searchParams));
         const result = await contractService.listContracts(filter, pagination);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ data: result.items, pagination }));

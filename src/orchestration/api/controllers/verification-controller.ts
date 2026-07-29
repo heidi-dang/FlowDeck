@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import type { VerificationService } from "../../services/verification-service";
 import { VerificationFilterSchema } from "../../types";
-import { PaginationRequestSchema } from "../../types/pagination";
+import { PagePaginationSchema } from "../../types/pagination";
 import { errorHandler } from "../middleware/error-handler";
 import type { RequestContext } from "../middleware/request-context";
 
@@ -11,7 +11,7 @@ export function createVerificationController(verificationService: VerificationSe
       try {
         const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
         const filter = VerificationFilterSchema.parse(Object.fromEntries(url.searchParams));
-        const pagination = PaginationRequestSchema.parse(Object.fromEntries(url.searchParams));
+        const pagination = PagePaginationSchema.parse(Object.fromEntries(url.searchParams));
         const result = await verificationService.listVerifications(filter, pagination);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ data: result.items, pagination }));
@@ -26,7 +26,7 @@ export function createVerificationController(verificationService: VerificationSe
       } catch (err) { errorHandler(err, req, res, ctx); }
     },
 
-    async listEvidence(req: IncomingMessage, res: ServerResponse, ctx: RequestContext, runId: string): Promise<void> {
+    async listEvidence(req: IncomingMessage, res: ServerResponse, ctx: RequestContext, _runId: string): Promise<void> {
       try {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ data: [] }));

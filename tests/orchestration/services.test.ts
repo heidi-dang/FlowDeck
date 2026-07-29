@@ -18,8 +18,14 @@ import { OrchestrationMetrics } from "../../src/orchestration/metrics";
 import { Tracer } from "../../src/orchestration/tracing";
 import { StructuredLogger, LogSeverity } from "../../src/orchestration/logging";
 import type { IRunRepository, IContractRepository, IAssignmentRepository, IVerificationRepository, ICompletionRepository, IReplayRepository, IEventRepository, IOutboxRepository, IIdempotencyStore, IAuthorizationService, PaginatedResult } from "../../src/orchestration/services/ports";
-import type { PaginationRequestDTO } from "../../src/orchestration/types/pagination";
-import type { Run, Contract, Assignment, AssignmentFilter, VerificationResult, OrchestrationEvent, EventFilter, OutboxEntry, OutboxFilter } from "../../src/orchestration/types";
+import type { PagePaginationRequest } from "../../src/orchestration/types/pagination";
+import type { Run, Contract, Assignment, OrchestrationEvent, OutboxEntry } from "../../src/orchestration/types";
+import { EVENT_VERSION } from "../../src/orchestration/types/events";
+
+// Local type aliases since the modules use them as interfaces
+type ContractFilter = Partial<Contract>;
+type VerificationFilter = { runId?: string; checkType?: string; status?: string; correlationId?: string };
+type OutboxFilter = { status?: string; destination?: string; correlationId?: string };
 
 // ── Mock repositories ────────────────────────────────────────────────────
 
@@ -35,7 +41,7 @@ function createMockRunRepo(): IRunRepository {
       return updated;
     }),
     findById: vi.fn(async (id: string) => runs.get(id) ?? null),
-    findMany: vi.fn(async (_filter: any, _pagination: PaginationRequestDTO): Promise<PaginatedResult<Run>> => {
+    findMany: vi.fn(async (_filter: any, _pagination: PagePaginationRequest): Promise<PaginatedResult<Run>> => {
       const items = Array.from(runs.values());
       return { items, total: items.length, page: 1, limit: 20 };
     }),
@@ -52,7 +58,7 @@ function createMockContractRepo(): IContractRepository {
       const u = { ...e, ...input, updatedAt: new Date().toISOString() }; items.set(id, u); return u;
     }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: ContractFilter, __: PaginationRequestDTO) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_: ContractFilter, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
   };
 }
@@ -66,23 +72,23 @@ function createMockAssignmentRepo(): IAssignmentRepository {
       const u = { ...e, ...input, updatedAt: new Date().toISOString() }; items.set(id, u); return u;
     }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: AssignmentFilter, __: PaginationRequestDTO) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_: any, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
   };
 }
 
 function createMockVerificationRepo(): IVerificationRepository {
-  const items = new Map<string, VerificationResult>();
+  const items = new Map<string, any>();
   return {
-    create: vi.fn(async (v: VerificationResult) => { items.set(v.id, v); return v; }),
+    create: vi.fn(async (v: any) => { items.set(v.id, v); return v; }),
     update: vi.fn(async (id: string, input: any) => {
       const e = items.get(id); if (!e) return null;
       const u = {...e, ...input, updatedAt: new Date().toISOString()}; items.set(id, u); return u;
     }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: VerificationFilter, __: PaginationRequestDTO) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_: VerificationFilter, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
-    findByRunId: vi.fn(async (runId: string) => Array.from(items.values()).filter(v => v.runId === runId)),
+    findByRunId: vi.fn(async (runId: string) => Array.from(items.values()).filter((v: any) => v.runId === runId)),
   };
 }
 
@@ -104,7 +110,7 @@ function createMockReplayRepo(): IReplayRepository {
   return {
     create: vi.fn(async (r: any) => { items.set(r.id, r); return r; }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: PaginationRequestDTO) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
   };
 }
@@ -114,7 +120,7 @@ function createMockEventRepo(): IEventRepository {
   return {
     store: vi.fn(async (e: OrchestrationEvent) => { items.set(e.id, e); return e; }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: EventFilter, __: PaginationRequestDTO) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_: any, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
     findByRunId: vi.fn(async (runId: string) => Array.from(items.values()).filter(e => e.runId === runId)),
   };
@@ -129,7 +135,7 @@ function createMockOutboxRepo(): IOutboxRepository {
       const u = {...e, ...input}; items.set(id, u); return u;
     }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: OutboxFilter, __: PaginationRequestDTO) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_: OutboxFilter, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     findPending: vi.fn(async () => Array.from(items.values()).filter(e => e.status === "pending")),
     count: vi.fn(async (filter?: any) => {
       if (filter?.status) return Array.from(items.values()).filter(e => e.status === filter.status).length;
@@ -154,11 +160,6 @@ function createMockAuthService(): IAuthorizationService {
   };
 }
 
-// ── Types used in mock repos ──────────────────────────────────────────────
-
-type ContractFilter = Partial<Contract>;
-type VerificationFilter = Partial<VerificationResult>;
-
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe("Orchestration Services", () => {
@@ -178,8 +179,8 @@ describe("Orchestration Services", () => {
   let contractService: ContractService;
   let assignmentService: AssignmentService;
   let verificationService: VerificationService;
-  let completionService: CompletionService;
-  let replayService: ReplayService;
+  let _completionService: CompletionService;
+  let _replayService: ReplayService;
   let eventService: EventService;
   let healthService: HealthService;
   let commandDispatcher: CommandDispatcher;
@@ -202,8 +203,8 @@ describe("Orchestration Services", () => {
     contractService = new ContractService(mockContractRepo, eventBus);
     assignmentService = new AssignmentService(mockAssignmentRepo, eventBus);
     verificationService = new VerificationService(mockVerificationRepo, eventBus);
-    completionService = new CompletionService(mockCompletionRepo, eventBus);
-    replayService = new ReplayService(mockReplayRepo, eventBus);
+    _completionService = new CompletionService(mockCompletionRepo, eventBus);
+    _replayService = new ReplayService(mockReplayRepo, eventBus);
     eventService = new EventService(mockEventRepo, mockOutboxRepo, eventBus);
     healthService = new HealthService("test");
     commandDispatcher = new CommandDispatcher(mockAuthService, mockIdempotencyStore, eventBus);
@@ -215,7 +216,8 @@ describe("Orchestration Services", () => {
     it("should create a run with queued status", async () => {
       const run = await runService.createRun({
         runType: "test-run",
-      }, "corr-1");
+        correlationId: "corr-1",
+      });
       expect(run.id).toBeDefined();
       expect(run.status).toBe(RunStatus.QUEUED);
       expect(run.runType).toBe("test-run");
@@ -334,22 +336,33 @@ describe("Orchestration Services", () => {
     it("should publish and store an event", async () => {
       const ev = await eventService.publishEvent({
         type: "run.started" as any,
+        eventVersion: EVENT_VERSION,
         correlationId: "corr-1",
+        causationId: undefined,
+        aggregateId: undefined,
+        aggregateVersion: undefined,
+        sessionId: undefined,
+        agentId: undefined,
         runId: "run-1",
+        assignmentId: undefined,
+        contractId: undefined,
         data: {},
         metadata: { source: "test" },
       });
       expect(ev.id).toBeDefined();
       expect(ev.type).toBe("run.started");
+      expect(ev.eventVersion).toBe(EVENT_VERSION);
     });
   });
 
   // ── QueryService ────────────────────────────────────────────────────
   describe("QueryService", () => {
-    it("should list runs", async () => {
+    it("should list runs with cursor pagination", async () => {
       await runService.createRun({ runType: "test", correlationId: "c1" });
       const result = await queryService.listRuns({}, { page: 1, limit: 20 });
       expect(result.items.length).toBe(1);
+      expect(result).toHaveProperty("nextCursor");
+      expect(result).toHaveProperty("hasMore");
     });
   });
 });
@@ -362,12 +375,44 @@ describe("Streaming", () => {
       const sse = new SseManager(5000);
       expect(sse.getClientCount()).toBe(0);
 
-      const mockRes = { writeHead: vi.fn(), write: vi.fn(), on: vi.fn() };
+      const mockRes = { writeHead: vi.fn(), write: vi.fn(), on: vi.fn(), end: vi.fn() };
       sse.addClient("client-1", mockRes as any);
       expect(sse.getClientCount()).toBe(1);
 
       sse.removeClient("client-1");
       expect(sse.getClientCount()).toBe(0);
+      sse.dispose();
+    });
+
+    it("should reject when max clients reached", () => {
+      const sse = new SseManager(5000);
+      // Fill to max
+      const mockRes = { writeHead: vi.fn(), write: vi.fn(), on: vi.fn(), end: vi.fn() };
+      for (let i = 0; i < 500; i++) {
+        const res = { writeHead: vi.fn(), write: vi.fn(), on: vi.fn(), end: vi.fn() };
+        sse.addClient(`client-${i}`, res as any);
+      }
+      // Next one should be rejected
+      const result = sse.addClient("overflow", mockRes as any);
+      expect(result.accepted).toBe(false);
+      expect(result.reason).toBe("max_clients_reached");
+      sse.dispose();
+    });
+
+    it("should handle reconnect by replacing old connection", () => {
+      const sse = new SseManager(5000);
+      const oldRes = { writeHead: vi.fn(), write: vi.fn(), on: vi.fn(), end: vi.fn() };
+      const newRes = { writeHead: vi.fn(), write: vi.fn(), on: vi.fn(), end: vi.fn() };
+
+      sse.addClient("client-1", oldRes as any);
+      expect(sse.getClientCount()).toBe(1);
+
+      // Reconnect with same ID
+      const result = sse.addClient("client-1", newRes as any);
+      expect(result.accepted).toBe(true);
+      expect(sse.getClientCount()).toBe(1);
+      // Old connection should have been ended
+      expect(oldRes.end).toHaveBeenCalled();
       sse.dispose();
     });
   });
@@ -394,7 +439,8 @@ describe("Streaming", () => {
       });
 
       await mgr.deliver({
-        id: "ev-1", type: "run.started" as any, timestamp: new Date().toISOString(),
+        id: "ev-1", type: "run.started" as any,
+        eventVersion: EVENT_VERSION, timestamp: new Date().toISOString(),
         correlationId: "c1", data: {}, metadata: {},
       });
 
@@ -447,7 +493,6 @@ describe("Logging", () => {
     const parent = new StructuredLogger("parent");
     const child = parent.child("child");
     child.info("child message");
-    // Should not throw
     expect(true).toBe(true);
   });
 });
@@ -494,5 +539,12 @@ describe("Error handling", () => {
     const err = OrchestrationError.fromCode(ErrorCodes.INTERNAL_ERROR);
     const response = err.toApiResponse();
     expect(JSON.stringify(response)).not.toContain("stack");
+  });
+
+  it("should handle SEMANTIC_SATURATED error", () => {
+    const err = OrchestrationError.fromCode(ErrorCodes.SEMANTIC_SATURATED);
+    expect(err.code).toBe("SEMANTIC_SATURATED");
+    expect(err.httpStatus).toBe(409);
+    expect(err.retryable).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import { randomUUID } from "crypto";
 import type { Completion, CreateCompletionInput, UpdateCompletionInput } from "../types";
 import { CompletionStatus, OrchestrationError, ErrorCodes, OrchestrationEventType } from "../types";
+import { createEvent } from "../types/events";
 import type { ICompletionRepository, IEventBus } from "./ports";
 
 export class CompletionService {
@@ -19,12 +20,17 @@ export class CompletionService {
       createdAt: now, updatedAt: now,
     };
     const saved = await this.completionRepo.create(completion);
-    await this.eventBus.publish({
-      id: randomUUID(), type: OrchestrationEventType.COMPLETION_STARTED,
-      timestamp: now, correlationId: input.correlationId,
-      causationId: input.causationId, runId: input.runId,
-      data: {}, metadata: {},
-    });
+    await this.eventBus.publish(createEvent(
+      OrchestrationEventType.COMPLETION_STARTED,
+      {
+        correlationId: input.correlationId,
+        causationId: input.causationId,
+        aggregateId: id,
+        aggregateVersion: 1,
+        runId: input.runId,
+        data: {},
+      },
+    ));
     return saved;
   }
 
@@ -50,12 +56,16 @@ export class CompletionService {
     });
     if (!updated) throw OrchestrationError.fromCode(ErrorCodes.ENTITY_NOT_FOUND);
 
-    await this.eventBus.publish({
-      id: randomUUID(), type: OrchestrationEventType.COMPLETION_COMPLETED,
-      timestamp: now, correlationId: updated.correlationId,
-      causationId: updated.correlationId, runId: updated.runId,
-      data: { outcome, summary }, metadata: {},
-    });
+    await this.eventBus.publish(createEvent(
+      OrchestrationEventType.COMPLETION_COMPLETED,
+      {
+        correlationId: updated.correlationId,
+        causationId: updated.correlationId,
+        aggregateId: id,
+        runId: updated.runId,
+        data: { outcome, summary },
+      },
+    ));
     return updated;
   }
 }

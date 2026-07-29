@@ -1,8 +1,9 @@
 import { randomUUID } from "crypto";
 import type { Run, CreateRunInput, UpdateRunInput, RunFilter } from "../types";
-import { RunStatus, isTerminalRunStatus, OrchestrationError, ErrorCodes, OrchestrationEventType } from "../types";
+import { RunStatus, isTerminalRunStatus, OrchestrationError, ErrorCodes, OrchestrationEventType, assertNever } from "../types";
+import { createEvent } from "../types/events";
 import type { IRunRepository, IEventBus, PaginatedResult } from "./ports";
-import type { PaginationRequestDTO } from "../types/pagination";
+import type { PagePaginationRequest } from "../types/pagination";
 
 export class RunService {
   constructor(
@@ -13,7 +14,7 @@ export class RunService {
   async createRun(input: CreateRunInput, correlationId?: string): Promise<Run> {
     const now = new Date().toISOString();
     const runId = randomUUID();
-    const corrId = correlationId ?? randomUUID();
+    const corrId = correlationId ?? input.correlationId ?? randomUUID();
 
     const run: Run = {
       id: runId,
@@ -36,19 +37,19 @@ export class RunService {
 
     const saved = await this.runRepo.create(run);
 
-    await this.eventBus.publish({
-      id: randomUUID(),
-      type: OrchestrationEventType.RUN_QUEUED,
-      timestamp: now,
-      correlationId: corrId,
-      causationId: input.causationId,
-      runId: runId,
-      sessionId: input.sessionId,
-      agentId: input.agentId,
-      aggregateId: input.aggregateId,
-      data: { runType: input.runType },
-      metadata: {},
-    });
+    await this.eventBus.publish(createEvent(
+      OrchestrationEventType.RUN_QUEUED,
+      {
+        correlationId: corrId,
+        causationId: input.causationId,
+        aggregateId: runId,
+        aggregateVersion: 1,
+        sessionId: input.sessionId,
+        agentId: input.agentId,
+        runId,
+        data: { runType: input.runType },
+      },
+    ));
 
     return saved;
   }
@@ -72,20 +73,19 @@ export class RunService {
 
     if (input.status) {
       const eventType = this.getStatusEventType(input.status);
-      if (eventType) {
-        await this.eventBus.publish({
-          id: randomUUID(),
-          type: eventType,
-          timestamp: new Date().toISOString(),
+      await this.eventBus.publish(createEvent(
+        eventType,
+        {
           correlationId: existing.correlationId,
           causationId: existing.correlationId,
-          runId: id,
+          aggregateId: id,
+          aggregateVersion: undefined, // backend maintains version
           sessionId: existing.sessionId,
           agentId: existing.agentId,
+          runId: id,
           data: { previousStatus: existing.status, newStatus: input.status, stage: input.stage },
-          metadata: {},
-        });
-      }
+        },
+      ));
     }
 
     return updated;
@@ -99,7 +99,7 @@ export class RunService {
     return run;
   }
 
-  async listRuns(filter: RunFilter, pagination: PaginationRequestDTO): Promise<PaginatedResult<Run>> {
+  async listRuns(filter: RunFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Run>> {
     return this.runRepo.findMany(filter, pagination);
   }
 
@@ -135,14 +135,19 @@ export class RunService {
     return this.updateRun(id, { status: RunStatus.PAUSED, stage: "paused" });
   }
 
-  private getStatusEventType(status: string): string | null {
+  /** Maps status → event type via exhaustive switch. Adding a new RunStatus triggers a compile-time error. */
+  private getStatusEventType(status: string): string {
     switch (status) {
       case RunStatus.RUNNING: return OrchestrationEventType.RUN_STARTED;
       case RunStatus.COMPLETED: return OrchestrationEventType.RUN_COMPLETED;
       case RunStatus.FAILED: return OrchestrationEventType.RUN_FAILED;
       case RunStatus.CANCELLED: return OrchestrationEventType.RUN_CANCELLED;
       case RunStatus.PAUSED: return OrchestrationEventType.RUN_PAUSED;
-      default: return null;
+      case RunStatus.QUEUED:
+      case RunStatus.PENDING:
+      case RunStatus.TIMEOUT:
+      default:
+        return assertNever(status as unknown as never, `Unhandled run status event mapping: ${status}`);
     }
   }
 }
