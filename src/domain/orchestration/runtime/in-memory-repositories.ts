@@ -332,6 +332,14 @@ export class InMemoryWorktreeOwnershipRepository implements WorktreeOwnershipRep
     return this.ownership.get(worktreeKey) === ownerId;
   }
 
+  async releaseOwnership(worktreeKey: string): Promise<void> {
+    this.ownership.delete(worktreeKey);
+  }
+
+  async isOwnedBy(worktreeKey: string, ownerId: string): Promise<boolean> {
+    return this.ownership.get(worktreeKey) === ownerId;
+  }
+
   /** Helper methods for tests */
   clear(): void {
     this.ownership.clear();
