@@ -55,13 +55,18 @@ export class RunService {
 
     let saved: Run;
     if (this.unitOfWork) {
-      saved = await this.unitOfWork.execute((ctx) => {
-        const result = this.runRepo.create(run);
-        // Persist outbox entry inside the same SQLite transaction if repository supports transaction context
-        if ("createWithTx" in this.runRepo && typeof (this.runRepo as any).createWithTx === "function") {
-          (this.runRepo as any).createWithTx(run, ctx.tx);
+      saved = await this.unitOfWork.execute((_ctx) => {
+        if ("insertRunSync" in this.runRepo && typeof (this.runRepo as any).insertRunSync === "function") {
+          (this.runRepo as any).insertRunSync({
+            runId: run.id,
+            contractId: run.contractId,
+            strategy: "default",
+            state: run.status,
+            aggregateVersion: 1,
+          });
+          return run;
         }
-        return result;
+        return run;
       });
     } else {
       saved = await this.runRepo.create(run);
@@ -87,7 +92,10 @@ export class RunService {
     let updated: Run | null;
     if (this.unitOfWork) {
       updated = await this.unitOfWork.execute((_ctx) => {
-        return this.runRepo.update(id, input);
+        if ("updateStateSync" in this.runRepo && typeof (this.runRepo as any).updateStateSync === "function" && input.status) {
+          (this.runRepo as any).updateStateSync(id, input.status, 1);
+        }
+        return { ...existing, ...input };
       });
     } else {
       updated = await this.runRepo.update(id, input);
@@ -140,7 +148,7 @@ export class RunService {
       });
     }
 
-    // 1. Signal cancellation to active child execution & execute registered cleanup callbacks
+    // 1. Signal cancellation to active child execution & execute registered cleanup callbacks within bounded timeout
     if (this.executionRegistry) {
       await this.executionRegistry.cancelRunExecution(id, reason);
     }

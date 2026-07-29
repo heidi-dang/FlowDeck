@@ -64,7 +64,23 @@ describe("ExecutionRegistry & RunService Cancellation Lifecycle", () => {
     expect(registry.hasActiveRun(run.id)).toBe(false);
   });
 
-  it("resolves completion vs cancellation race deterministically", async () => {
+  it("handles hanging cleanup and resolves timeout deterministically without timer leak", async () => {
+    const run = await runService.createRun({ runType: "test", sessionId: "s1", correlationId: "c1" });
+    const abortController = new AbortController();
+
+    // Register a hanging cleanup function
+    registry.registerRun(run.id, abortController, () => new Promise<void>(() => {}));
+
+    const result = await registry.cancelRunExecution(run.id, "Testing hanging cleanup", 50);
+
+    expect(result.cancelled).toBe(true);
+    expect(result.timedOut).toBe(true);
+    expect(result.cleanupErrors.length).toBeGreaterThan(0);
+    expect(result.cleanupErrors[0].message).toContain("timed out after 50ms");
+    expect(registry.hasActiveRun(run.id)).toBe(false);
+  });
+
+  it("resolves concurrent completion vs cancellation race deterministically", async () => {
     const run = await runService.createRun({ runType: "test", sessionId: "s1", correlationId: "c1" });
     await runService.updateRun(run.id, { status: RunStatus.RUNNING });
 
@@ -85,7 +101,22 @@ describe("ExecutionRegistry & RunService Cancellation Lifecycle", () => {
 
     const result = await registry.cancelRunExecution(run.id, "Testing cleanup failure");
     expect(result.cancelled).toBe(true);
-    expect(result.cleanupError?.message).toBe("Cleanup resource error");
+    expect(result.cleanupErrors.length).toBe(1);
+    expect(result.cleanupErrors[0].message).toBe("Cleanup resource error");
     expect(registry.hasActiveRun(run.id)).toBe(false);
+  });
+
+  it("ensures reusing run ID clears previous state", async () => {
+    const runId = "reused-run-id";
+    registry.registerRun(runId, new AbortController(), () => {});
+    registry.unregisterRun(runId);
+
+    expect(registry.hasActiveRun(runId)).toBe(false);
+
+    let newCleanupCount = 0;
+    registry.registerRun(runId, new AbortController(), () => { newCleanupCount++; });
+    await registry.cancelRunExecution(runId, "Cancelling reused run");
+
+    expect(newCleanupCount).toBe(1);
   });
 });
