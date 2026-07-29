@@ -41,7 +41,7 @@ export function getBunExecutable() {
  */
 export function validateThreshold(thresholdRaw = process.env.COVERAGE_THRESHOLD) {
   if (thresholdRaw === undefined) {
-    return 70.0
+    return 80.0
   }
 
   if (typeof thresholdRaw !== "string" && typeof thresholdRaw !== "number") {
