@@ -14,15 +14,23 @@ import { EventsRepository } from "../../src/orchestration/persistence/repositori
 import { TaskRunsRepository } from "../../src/orchestration/persistence/repositories/task-run"
 import { WorktreesRepository } from "../../src/orchestration/persistence/repositories/worktree"
 
-const DB_PATH = join(tmpdir(), "fd-e2e-orch-test.db")
+let dbCounter = 0
+const DB_PATH = () => { dbCounter++; return join(tmpdir(), `fd-e2e-orch-test-${dbCounter}.db`) }
 
 /** Bootstrap FK parent rows needed by task_runs. */
 
+let currentDbPath = ""
+
 function freshDb(): Database {
-  if (existsSync(DB_PATH)) {
-    try { unlinkSync(DB_PATH) } catch { /* ignore EBUSY on Windows */ }
+  const path = DB_PATH()
+  currentDbPath = path
+  const sidecars = [path + "-wal", path + "-shm", path]
+  for (const p of sidecars) {
+    if (existsSync(p)) {
+      try { unlinkSync(p) } catch { /* ignore EBUSY on Windows */ }
+    }
   }
-  const db = new Database(DB_PATH, { create: true })
+  const db = new Database(path, { create: true })
   db.prepare("PRAGMA journal_mode = WAL").run()
   db.prepare("PRAGMA foreign_keys = ON").run()
   runMigrations(db)
@@ -58,10 +66,13 @@ describe("E2E Orchestration Pipeline", () => {
   afterEach(() => {
     closeAllConnections()
     if (db) {
-      try { db.close() } catch { /* ignore */ }
+      try { db.close() } catch {}
     }
-    if (existsSync(DB_PATH)) {
-      try { unlinkSync(DB_PATH) } catch { /* ignore EBUSY on Windows */ }
+    if (currentDbPath && existsSync(currentDbPath)) {
+      for (const ext of ["-wal", "-shm", ""]) {
+        const f = currentDbPath.replace(/\.db$/, ext)
+        if (existsSync(f)) try { unlinkSync(f) } catch {}
+      }
     }
   })
 
