@@ -7,13 +7,6 @@
 import { describe, it, expect, beforeEach } from "bun:test";
 
 // Inline types for now (can be removed when build works)
-type RuntimeEventType = 'RunCreated' | 'RunStartedPlanning' | 'RunCompletedPlanning' | 'RunStartedAnalysis' | 'RunCompletedAnalysis' | 'RunStartedExecution' | 'RunCompletedExecution' | 'RunVerified' | 'RunCompleted' | 'RunFailed' | 'RunCancelled' | 'RunRecovered';
-
-const EVENT_PAYLOAD_VERSIONS = {
-  RUN_CREATED: '1.0',
-  RUN_STARTED_PLANNING: '1.0',
-  RUN_COMPLETED_PLANNING: '1.0'
-} as const;
 
 function createUncommittedEvent(type: string, aggregateId: string, expectedVersion: number, payload: any): any {
   return {
@@ -63,7 +56,7 @@ class InMemoryRuntimeEventStore {
     return this.streams.get(aggregateId) ?? [];
   }
 
-  async validateEventType(eventType: string): Promise<{ valid: boolean }> {
+  async validateEventType(_eventType: string): Promise<{ valid: boolean }> {
     return { valid: true };
   }
 
@@ -356,7 +349,7 @@ describe('Phase 3B - Event Store', () => {
     });
 
     it('version gap logged but replay continues', async () => {
-      const store = new InMemoryRuntimeEventStore();
+      const _store = new InMemoryRuntimeEventStore();
       
       // Manually insert gap by writing events directly (test helper would be better)
       const events: PersistedRuntimeEvent[] = [

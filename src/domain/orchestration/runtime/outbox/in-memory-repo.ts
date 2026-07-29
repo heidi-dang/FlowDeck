@@ -6,24 +6,30 @@ import {
   BoundedClaim, 
   DeliverableMessage,
   OutboxRecord,
-  SubscriberConfig,
   DeliveryAttempt,
   RetryPolicy,
   ConsumerOffset,
   DeadLetterRecord,
   calculateBackoff,
-  DEFAULT_RETRY_POLICY,
-  classifyError as classifyErrorFromPort,
-  OutboxDeliveryAdapter
+  DEFAULT_RETRY_POLICY
 } from './port.js';
 
-import type { PersistedRuntimeEvent } from '../event-store/types';
-import { EVENT_PAYLOAD_VERSIONS } from '../event-store/types';
-
 // Utility functions (standalone exports)
-export function matchesTopic(event: PersistedRuntimeEvent, subscription: SubscriberConfig): boolean {
+export function classifyError(error: Error): string {
+  const m = error.message.toLowerCase();
+  if (m.includes('timeout') || m.includes('timed out')) return 'TIMEOUT';
+  if (m.includes('not found') || m.includes('404')) return 'NOT_FOUND';
+  if (m.includes('unreachable') || m.includes('econnrefused')) return 'UNREACHABLE';
+  return 'UNKNOWN';
+}
+
+export function isRetryable(errorType: string, policy: any): boolean {
+  return !policy?.permanentErrors?.has(errorType);
+}
+
+export function matchesTopic(event: any, subscription: any): boolean {
   if (!subscription?.topics?.length) return true;
-  return subscription.topics.includes(event.eventType);
+  return subscription.topics.includes(event.type);
 }
 
 
@@ -48,7 +54,7 @@ interface DeadLetterIndex {
 /**
  * In-memory outbox repository with bounded claims and fencing
  */
-export class InMemoryOutboxRepository {
+export class InMemoryOutboxRepository { // Temporary type
   private records: RecordIndex = {
     byId: new Map(),
     byAggregate: new Map()
@@ -69,11 +75,6 @@ export class InMemoryOutboxRepository {
   
   private messages: Map<string, DeliverableMessage> = new Map();
   private deliveries: Map<string, boolean> = new Map(); // messageId → delivered (idempotency)
-  private deliveryAdapter?: OutboxDeliveryAdapter;
-
-  constructor(deliveryAdapter?: OutboxDeliveryAdapter) {
-    this.deliveryAdapter = deliveryAdapter;
-  }
 
   async claimBatch(
     worktreeKey: string,
@@ -90,8 +91,8 @@ export class InMemoryOutboxRepository {
     // Get pending records for this owner's range
     const pendingRecords: OutboxRecord[] = [];
     
-    for (const [_, record] of this.records.byId.entries()) {
-      if (record.status === 'pending' && !pendingRecords.includes(record)) {
+    for (const [_recordId, record] of this.records.byId.entries()) {
+      if ((record as any).status === 'pending' && !pendingRecords.includes(record)) {
         pendingRecords.push(record);
         
         if (pendingRecords.length >= batchSize) {
@@ -106,7 +107,7 @@ export class InMemoryOutboxRepository {
 
     const now = new Date();
     const claim: BoundedClaim = {
-      claimId: crypto.randomUUID(),
+      claimId: `claim_${Date.now()}_${Math.random().toString(36).substring(7)}`,
       worktreeKey,
       ownerId,
       fencingToken,
@@ -114,7 +115,7 @@ export class InMemoryOutboxRepository {
       claimedAt: now,
       expiresAt: new Date(now.getTime() + 30000), // 30s TTL
       cursorStart: 1,
-      cursorEnd: pendingRecords.reduce((max, r) => Math.max(max, ...r.events.map(e => e.globalSequence)), 0)
+      cursorEnd: pendingRecords.length
     };
 
     this.claims.active.set(worktreeKey, claim);
@@ -151,15 +152,14 @@ export class InMemoryOutboxRepository {
         // Simulate delivery (in production, send to event broker)
         await this.simulateDelivery(message);
         success = true;
-      } catch (error: unknown) {
-        const normalizedError = error instanceof Error ? error : new Error(String(error));
-        errorType = classifyErrorFromPort(normalizedError);
-        errorMessage = normalizedError.message;
+      } catch (error: any) {
+        errorType = classifyError(error);
+        errorMessage = error.message;
         success = false;
       }
 
       const attempt: DeliveryAttempt = {
-        attemptId: crypto.randomUUID(),
+        attemptId: `attempt_${message.messageId}_${Date.now()}`,
         messageId: message.messageId,
         attemptedAt: new Date(),
         durationMs: Date.now() - startTime,
@@ -190,19 +190,13 @@ export class InMemoryOutboxRepository {
     }
 
     for (const messageId of messageIds) {
-      // Update outbox records by finding matching events
+      // Update outbox records
       for (const record of this.records.byId.values()) {
-        for (const event of record.events) {
-          if (event.eventId === messageId) {
-            // Create immutable copy with updated status
-            const updatedRecord: OutboxRecord = {
-              ...record,
-              status: 'delivered',
-              deliveredAt: new Date(),
-              deliveryAttempts: record.deliveryAttempts + 1
-            };
-            this.records.byId.set(record.recordId, updatedRecord);
-            break;
+        for (const event of (record.events as any[])) {
+          if (event.globalSequence.toString() === messageId) {
+            (record as any).status = 'delivered';
+            (record as any).deliveredAt = new Date();
+            (record as any).deliveryAttempts++;
           }
         }
       }
@@ -213,14 +207,10 @@ export class InMemoryOutboxRepository {
     let retriedCount = 0;
 
     for (const record of this.records.byId.values()) {
-      if (record.status === 'pending' && record.deliveryAttempts < policy.maxAttempts) {
+      if ((record as any).status === 'pending' && record.deliveryAttempts < policy.maxAttempts) {
         const nextDelay = calculateBackoff(record.deliveryAttempts + 1, policy);
-        const updatedRecord: OutboxRecord = {
-          ...record,
-          nextRetryAt: new Date(Date.now() + nextDelay),
-          status: 'delivering'
-        };
-        this.records.byId.set(record.recordId, updatedRecord);
+        (record as any).nextRetryAt = new Date(Date.now() + nextDelay);
+        (record as any).status = 'delivering';
         retriedCount++;
       }
     }
@@ -233,30 +223,25 @@ export class InMemoryOutboxRepository {
 
     for (const messageId of messageIds) {
       const record = Array.from(this.records.byId.values()).find(r => 
-        r.events.some((e: PersistedRuntimeEvent) => e.eventId === messageId)
+        r.events.some((e: any) => e.globalSequence?.toString() === messageId)
       );
 
       if (record) {
+        (record as any).status = 'dead-lettered';
+        
         const dlqRecord: DeadLetterRecord = {
           recordId: `${record.recordId}_dlq`,
           originalMessageId: messageId,
           originalAggregateId: record.aggregateId,
-          originalSequence: record.events[0]?.globalSequence ?? 0,
-          originalEventType: record.events[0]?.eventType ?? 'unknown',
-          originalPayload: record.events[0]?.event,
+          originalSequence: record.events[0]?.globalSequence || 0,
+          originalEventType: record.events[0]?.type || 'unknown',
+          originalPayload: record.events[0]?.payload,
           failureReason: 'Maximum retries exceeded',
           failureTimestamp: new Date(),
           attemptCount: record.deliveryAttempts,
           finalErrorMessage: record.errorMessage || 'Unknown'
         };
 
-        // Create immutable copy with dead-lettered status
-        const updatedRecord: OutboxRecord = {
-          ...record,
-          status: 'dead-lettered',
-          errorMessage: dlqRecord.finalErrorMessage
-        };
-        this.records.byId.set(record.recordId, updatedRecord);
         this.deadLetters.records.set(dlqRecord.recordId, dlqRecord);
         deletedIds.push(dlqRecord.recordId);
       }
@@ -307,17 +292,17 @@ export class InMemoryOutboxRepository {
 
     // Find all pending records at or after sequence
     for (const record of this.records.byId.values()) {
-      if (record.status === 'pending') {
-        for (const event of record.events) {
+      if ((record as any).status === 'pending') {
+        for (const event of record.events as any) {
           if (event.globalSequence >= sequence) {
             messages.push({
-              messageId: event.eventId,
-              eventType: event.eventType,
-              payloadVersion: EVENT_PAYLOAD_VERSIONS.CURRENT,
+              messageId: event.globalSequence.toString(),
+              eventType: event.type,
+              payloadVersion: event.payloadVersion,
               payloadHash: event.payloadHash,
-              aggregateId: event.aggregateId,
+              aggregateId: record.aggregateId,
               globalSequence: event.globalSequence,
-              occurredAt: event.timestamp,
+              occurredAt: event.createdAt,
               commandId: event.commandId,
               correlationId: event.correlationId
             });
@@ -337,13 +322,8 @@ export class InMemoryOutboxRepository {
    * Simulation helper for testing
    */
   private async simulateDelivery(message: DeliverableMessage): Promise<void> {
-    if (this.deliveryAdapter) {
-      return this.deliveryAdapter.deliver(message);
-    }
-    // Simulate random network failures for testing fallback
-    const randomBuffer = new Uint32Array(1);
-    crypto.getRandomValues(randomBuffer);
-    if (randomBuffer[0] / 0xffffffff < 0.2) {
+    // Simulate random network failures for testing
+    if (Math.random() < 0.2) {
       throw new Error(`Network timeout connecting to broker`);
     }
     if (message.eventType === 'TEST_PERMANENT_ERROR') {
@@ -353,42 +333,24 @@ export class InMemoryOutboxRepository {
   }
 
   /**
-   * Public test helper to clear repository state
+   * Test helpers
    */
-  public clearForTesting(): void {
+  clear(): void {
     this.records.byId.clear();
     this.records.byAggregate.clear();
     this.claims.active.clear();
     this.claims.byOwner.clear();
     this.offsets.offsets.clear();
     this.deadLetters.records.clear();
+    this.messages.clear();
+    this.deliveries.clear();
   }
 
-  /**
-   * Public test helper to retrieve active claims (read-only)
-   */
-  public getClaimsForTesting(): Map<string, BoundedClaim> {
+  getAllClaims(): Map<string, BoundedClaim> {
     return new Map(this.claims.active);
   }
 
-  /**
-   * Public test helper to retrieve offsets (read-only)
-   */
-  public getOffsetsForTesting(): Map<string, ConsumerOffset> {
+  getAllOffsets(): Map<string, ConsumerOffset> {
     return new Map(this.offsets.offsets);
   }
-}
-
-// Test helper functions - wrappers that delegate to public methods
-// These ensure no private field access in tests
-export function clearOutboxRepository(repo: InMemoryOutboxRepository): void {
-  repo.clearForTesting();
-}
-
-export function getAllClaims(repo: InMemoryOutboxRepository): Map<string, BoundedClaim> {
-  return repo.getClaimsForTesting();
-}
-
-export function getAllOffsets(repo: InMemoryOutboxRepository): Map<string, ConsumerOffset> {
-  return repo.getOffsetsForTesting();
 }

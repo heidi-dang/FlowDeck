@@ -6,11 +6,7 @@
  */
 
 import { UncommittedRuntimeEvent, PersistedRuntimeEvent } from './types';
-import type { AppendIdGenerator } from './event-id-generator.js';
-import type { EventIdGenerator } from './types.js';
-import type { ConcurrencyError } from './port.js';
-import { defaultEventIdGenerator, defaultAppendIdGenerator } from './event-id-generator.js';
-import type {
+import {
   RuntimeEventStorePort,
   AppendResult,
   DuplicateCheckResult,
@@ -57,20 +53,6 @@ class GlobalSequenceCounter {
   }
 }
 
-export class DuplicateEventError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'DuplicateEventError';
-  }
-}
-
-export class UnknownEventTypeError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'UnknownEventTypeError';
-  }
-}
-
 /**
  * In-memory event store implementation
  */
@@ -102,37 +84,22 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
   ]);
 
   /**
-   * Optional injected event ID generator (useful for deterministic tests)
-   */
-  private readonly eventIdGenerator: EventIdGenerator;
-
-  /**
-   * Optional injected append ID generator (useful for deterministic tests)
-   */
-  private readonly appendIdGenerator: AppendIdGenerator;
-
-  constructor(eventIdGenerator?: EventIdGenerator, appendIdGenerator?: AppendIdGenerator) {
-    this.eventIdGenerator = eventIdGenerator ?? defaultEventIdGenerator;
-    this.appendIdGenerator = appendIdGenerator ?? defaultAppendIdGenerator;
-  }
-
-  /**
    * Validate whether an append would succeed before attempting it
    */
-  async validateAppend(aggregateId: string, expectedVersion: number): Promise<{ valid: true; actualVersion: number } | { valid: false; error: ConcurrencyError }> {
+  async validateAppend(aggregateId: string, expectedVersion: number): Promise<{ valid: true; actualVersion: number } | { valid: false; error: any }> {
     const actualVersion = this.versionCache.get(aggregateId) ?? 0;
 
     if (expectedVersion < actualVersion) {
       return {
         valid: false,
-        error: createConcurrencyError('STALE_VERSION', aggregateId, expectedVersion, actualVersion)
+        error: createany('STALE_VERSION', aggregateId, expectedVersion, actualVersion)
       };
     }
 
     if (expectedVersion > actualVersion) {
       return {
         valid: false,
-        error: createConcurrencyError('FUTURE_VERSION', aggregateId, expectedVersion, actualVersion)
+        error: createany('FUTURE_VERSION', aggregateId, expectedVersion, actualVersion)
       };
     }
 
@@ -181,18 +148,13 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     }
 
     // Generate append ID for rollback tracking
-    const appendId = this.appendIdGenerator();
+    const appendId = `append_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 
-    // Check for duplicates and unknown types
+    // Check for duplicates
     for (const event of events) {
       const dupResult = await this.checkDuplicate(event);
       if (dupResult.isDuplicate) {
-        throw new DuplicateEventError(`Duplicate detected: ${dupResult.existingCommand ? `command ${dupResult.existingCommand}` : `event ${dupResult.existingEvent?.eventId}`}`);
-      }
-      
-      const typeCheck = await this.validateEventType(event.eventType);
-      if (!typeCheck.valid) {
-        throw new UnknownEventTypeError(typeCheck.errors[0]);
+        throw new Error(`Duplicate detected: ${dupResult.existingCommand ? `command ${dupResult.existingCommand}` : `event ${dupResult.existingEvent?.eventId}`}`);
       }
     }
 
@@ -211,25 +173,19 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
       }
 
       // Compute hashes
-      const payloadHash = await computePayloadHash(uncommitted.payload ?? {});
-      const eventId = uncommitted.eventId ?? this.eventIdGenerator();
+      const payloadHash = await computePayloadHash(uncommitted.payload);
+      const eventId = uncommitted.eventId ?? `evt_${aggregateId}_${aggregateVersion}_${Date.now()}`;
       
-      // Create persisted event with all required fields
+      // Create persisted event
       const persisted: PersistedRuntimeEvent = {
+        ...uncommitted,
         eventId,
-        event: uncommitted.payload ?? {}, // The actual event object
-        eventType: uncommitted.eventType,
-        aggregateId,
-        aggregateVersion,
         globalSequence: currentSeq,
-        timestamp: new Date(), // Mandatory timestamp
-        payloadHash,
-        checksum: `${payloadHash}:${currentSeq}:${aggregateVersion}`,
+        aggregateVersion,
         committedAt: new Date(),
         createdAt: uncommitted.createdAt ?? new Date(),
-        metadata: uncommitted.metadata,
-        commandId: uncommitted.commandId,
-        correlationId: uncommitted.correlationId
+        payloadHash,
+        checksum: `${payloadHash}:${currentSeq}:${aggregateVersion}`
       };
 
       assignedEvents.push(persisted);
@@ -240,11 +196,11 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     const existingStream = this.eventStreams.get(aggregateId) ?? [];
     const newStream = [...existingStream, ...assignedEvents];
 
-    // Update indexes - use local variable for event ID
+    // Update indexes
     for (const event of assignedEvents) {
-      this.eventIndex.set(event.eventId, event);
+      this.eventIndex.set(eventId, event);
       if (event.commandId) {
-        this.commandIndex.set(event.commandId, event.eventId);
+        this.commandIndex.set(event.commandId, eventId);
       }
     }
 
@@ -281,7 +237,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     // Remove event/command indices from this append
     for (const event of pending.events) {
       if (event.eventId) {
-        this.eventIndex.delete(event.eventId);
+        this.eventIndex.delete(eventId);
       }
       if (event.commandId) {
         this.commandIndex.delete(event.commandId);
@@ -318,14 +274,14 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
   async readGlobalRange(options: StreamPaginationOptions): Promise<{ events: PersistedRuntimeEvent[]; hasMore: boolean; lastSequenceNumber: number }> {
     const allEvents = Array.from(this.eventStreams.values()).flat();
     
-    let sorted = [...allEvents].sort((a, b) => a.globalSequence - b.globalSequence);
+    let sorted = [...allEvents].sort((a, b) => a.globalSequence! - b.globalSequence!);
 
     if (options.fromRevision !== undefined) {
-      sorted = sorted.filter(e => e.aggregateVersion >= (options.fromRevision ?? 0));
+      sorted = sorted.filter(e => e.aggregateVersion >= options.fromRevision);
     }
 
     if (options.toRevision !== undefined) {
-      sorted = sorted.filter(e => e.aggregateVersion <= (options.toRevision ?? Number.MAX_SAFE_INTEGER));
+      sorted = sorted.filter(e => e.aggregateVersion <= options.toRevision);
     }
 
     const limit = options.limit ?? 100;
@@ -367,24 +323,21 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
   }
 }
 
-/**
- * Helper to create typed concurrency error
- */
-function createConcurrencyError(
-  type: 'STALE_VERSION' | 'FUTURE_VERSION' | 'VERSION_GAP',
+// Helper to create typed concurrency error
+function createany(
+  type: any['type'],
   aggregateId: string,
   expectedVersion: number,
-  actualVersion: number,
-  errorMessage?: string
-): ConcurrencyError {
-  const messages: Record<string, string> = {
+  actualVersion: number
+): any {
+  const messages: Record<any, string> = {
     STALE_VERSION: `Stale version: expected ${actualVersion}, got ${expectedVersion}`,
     FUTURE_VERSION: `Future version: expected ${actualVersion}, got ${expectedVersion}`,
-    VERSION_GAP: `Version gap: expected contiguous version after ${actualVersion}, got ${expectedVersion}${errorMessage ? ` (${errorMessage})` : ''}`
+    VERSION_GAP: `Version gap: expected contiguous version after ${actualVersion}, got ${expectedVersion}`
   };
 
   return {
-    name: 'ConcurrencyError',
+    name: 'any',
     type,
     aggregateId,
     expectedVersion,

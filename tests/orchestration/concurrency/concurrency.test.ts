@@ -1,14 +1,34 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { Database } from 'bun:sqlite';
+import Database from 'better-sqlite3';
 import { unlinkSync, existsSync } from 'fs';
 
 const DB_PATH = 'concurrency_test.db';
-let connections: Database[] = [];
+let connections: Database.Database[] = [];
 
 function createConnection() {
   const db = new Database(DB_PATH);
   connections.push(db);
   return db;
+}
+
+// Barrier for coordinating concurrent execution steps in our test harness
+class _Barrier {
+  private promise: Promise<void>;
+  private resolveFn!: () => void;
+  
+  constructor() {
+    this.promise = new Promise((resolve) => {
+      this.resolveFn = resolve;
+    });
+  }
+  
+  wait() {
+    return this.promise;
+  }
+  
+  release() {
+    this.resolveFn();
+  }
 }
 
 describe('Concurrency Harness Validation', () => {
