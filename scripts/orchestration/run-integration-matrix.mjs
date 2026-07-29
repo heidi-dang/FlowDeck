@@ -41,32 +41,28 @@ console.log('Fetching remote branches...');
 execGit('fetch origin --prune');
 
 function resolveSha(ref) {
-  try {
-    let sha;
-    try {
-      sha = execGit(`rev-parse ${ref}`);
-    } catch {
-      // Fallbacks for ref alias variations
-      if (ref.includes('contract-domain')) {
-        sha = execGit(`rev-parse origin/dev2/orchestration-contract-domain`);
-      } else if (ref.includes('runtime-domain')) {
-        sha = execGit(`rev-parse origin/dev3/orchestration-runtime-domain`);
-      } else if (ref.includes('persistence-foundation')) {
-        sha = execGit(`rev-parse origin/dev1/orchestration-persistence-foundation`);
-      } else if (ref.includes('final-integration')) {
-        sha = execGit(`rev-parse origin/feat/orchestration-final-integration`);
-      } else {
-        throw new Error(`Could not resolve git ref: ${ref}`);
-      }
-    }
-    if (!sha || !/^[0-9a-f]{40}$/i.test(sha) || sha === 'unknown') {
-      throw new Error(`Invalid SHA for ref ${ref}: ${sha}`);
-    }
-    return sha;
-  } catch (err) {
-    console.error(`Failed to resolve branch ${ref}:`, err.message);
-    process.exit(1);
+  const refsToTry = [ref];
+  if (ref.includes('persistence-foundation')) {
+    refsToTry.push('origin/dev1/orchestration-persistence-foundation', 'origin/feat/orchestration-persistence-foundation');
+  } else if (ref.includes('contract-domain')) {
+    refsToTry.push('origin/dev2/orchestration-contract-domain', 'origin/feat/orchestration-contract-domain');
+  } else if (ref.includes('runtime-domain')) {
+    refsToTry.push('origin/dev3/orchestration-runtime-domain', 'origin/feat/orchestration-runtime-domain');
+  } else if (ref.includes('final-integration')) {
+    refsToTry.push('origin/feat/orchestration-final-integration');
   }
+  
+  for (const r of refsToTry) {
+    try {
+      const sha = execGit(`rev-parse ${r}`);
+      if (sha && /^[0-9a-f]{40}$/i.test(sha) && sha !== 'unknown') {
+        return sha;
+      }
+    } catch {}
+  }
+  
+  console.error(`Failed to resolve branch ref: ${ref}`);
+  process.exit(1);
 }
 
 const shas = {
