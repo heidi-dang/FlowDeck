@@ -77,4 +77,46 @@ describe('Fault Injection & Recovery Harness', () => {
 
     await injector.checkFault('outbox_insert', 'before'); // 3rd
   });
+
+  it('Transaction rollback', async () => {
+    const injector = new FaultInjector();
+    injector.injectFault('transaction_rollback', { mode: 'before', action: 'throw', value: new Error('Rollback Triggered') });
+    expect(injector.checkFault('transaction_rollback', 'before')).rejects.toThrow('Rollback Triggered');
+  });
+
+  it('Partial outbox failure', async () => {
+    const injector = new FaultInjector();
+    injector.injectFault('outbox_delivery', { mode: 'after', action: 'throw', value: new Error('Partial Network Failure') });
+    expect(injector.checkFault('outbox_delivery', 'after')).rejects.toThrow('Partial Network Failure');
+  });
+
+  it('Corrupt event', async () => {
+    const injector = new FaultInjector();
+    injector.injectFault('event_rehydrate', { mode: 'before', action: 'throw', value: new Error('SyntaxError: JSON Parse Error') });
+    expect(injector.checkFault('event_rehydrate', 'before')).rejects.toThrow('JSON Parse');
+  });
+
+  it('Invalid transition', async () => {
+    const injector = new FaultInjector();
+    injector.injectFault('state_transition', { mode: 'before', action: 'throw', value: new Error('Invalid Transition: ACTIVE -> PENDING') });
+    expect(injector.checkFault('state_transition', 'before')).rejects.toThrow('Invalid Transition');
+  });
+
+  it('Interrupted migration', async () => {
+    const injector = new FaultInjector();
+    injector.injectFault('schema_migration', { mode: 'before', action: 'throw', value: new Error('Interrupted') });
+    expect(injector.checkFault('schema_migration', 'before')).rejects.toThrow('Interrupted');
+  });
+
+  it('Stale ownership', async () => {
+    const injector = new FaultInjector();
+    injector.injectFault('claim_ownership', { mode: 'before', action: 'throw', value: new Error('Stale Ownership') });
+    expect(injector.checkFault('claim_ownership', 'before')).rejects.toThrow('Stale Ownership');
+  });
+
+  it('Invalid evidence/completion state', async () => {
+    const injector = new FaultInjector();
+    injector.injectFault('evidence_validation', { mode: 'before', action: 'throw', value: new Error('Invalid Evidence State') });
+    expect(injector.checkFault('evidence_validation', 'before')).rejects.toThrow('Invalid Evidence State');
+  });
 });

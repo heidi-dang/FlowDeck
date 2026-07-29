@@ -78,7 +78,8 @@
     "test:orchestration:concurrency": "bun test tests/orchestration/concurrency",
     "test:orchestration:faults": "bun test tests/orchestration/fault",
     "test:orchestration:integration": "node scripts/orchestration/run-integration-matrix.mjs",
-    "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults"
+    "verify:orchestration:schema": "bun run scripts/orchestration/verify-schema.mjs",
+    "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults && npm run test:orchestration:integration && npm run verify:orchestration:schema"
   },
   "keywords": [
     "opencode",

@@ -103,7 +103,7 @@ const platform = process.platform;
 const arch = process.arch;
 const isWindows = platform === 'win32';
 console.log(`  Runtime: Node ${bunVersion}, platform=${platform}, arch=${arch}, isWindows=${isWindows}`);
-try { const pkg = JSON.parse(require('fs').readFileSync('node_modules/bun-types/package.json','utf-8')); console.log('  bun-types: installed'); } catch { console.log('  bun-types: missing (expected if bun is global)'); };
+try { require('fs').readFileSync('node_modules/bun-types/package.json','utf-8'); console.log('  bun-types: installed'); } catch { console.log('  bun-types: missing (expected if bun is global)'); };
 const dbVer = new Database(':memory:').prepare('SELECT sqlite_version()').get();
 console.log(`  SQLite version: ${JSON.stringify(dbVer)}`);
 
