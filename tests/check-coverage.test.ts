@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { validateThreshold, isEligibleSourceFile, parseLcov, getBunExecutable } from "../scripts/check-coverage.mjs"
 
 describe("Coverage Checker Unit Tests (tests/check-coverage.test.ts)", () => {

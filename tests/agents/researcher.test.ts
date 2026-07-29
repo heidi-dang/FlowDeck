@@ -7,7 +7,7 @@
  * - createResearcherAgent produces valid definition
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { createResearcherAgent } from "@/agents/researcher"
 
 describe("researcher prompt: search priority", () => {

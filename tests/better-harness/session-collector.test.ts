@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { readSessionRecords } from "../../src/better-harness/opencode/session-reader";
 import { analyzeSessions } from "../../src/better-harness/opencode/session-analyzer";
 

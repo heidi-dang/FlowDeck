@@ -19,7 +19,9 @@ const DB_PATH = join(tmpdir(), "fd-e2e-orch-test.db")
 /** Bootstrap FK parent rows needed by task_runs. */
 
 function freshDb(): Database {
-  if (existsSync(DB_PATH)) unlinkSync(DB_PATH)
+  if (existsSync(DB_PATH)) {
+    try { unlinkSync(DB_PATH) } catch { /* ignore EBUSY on Windows */ }
+  }
   const db = new Database(DB_PATH, { create: true })
   db.prepare("PRAGMA journal_mode = WAL").run()
   db.prepare("PRAGMA foreign_keys = ON").run()
@@ -55,7 +57,12 @@ describe("E2E Orchestration Pipeline", () => {
 
   afterEach(() => {
     closeAllConnections()
-    if (existsSync(DB_PATH)) unlinkSync(DB_PATH)
+    if (db) {
+      try { db.close() } catch { /* ignore */ }
+    }
+    if (existsSync(DB_PATH)) {
+      try { unlinkSync(DB_PATH) } catch { /* ignore EBUSY on Windows */ }
+    }
   })
 
   /* ─── Run lifecycle ─── */

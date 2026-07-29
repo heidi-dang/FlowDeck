@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { join } from "path";
 import { getProjectStoreDir, atomicWriteFile, readJsonFile } from "../../src/better-harness/persistence/harness-store";
 import { saveRun, loadRun } from "../../src/better-harness/persistence/run-store";

@@ -11,7 +11,7 @@
  * - Routing options are supplied via constructor injection (`{ routes }`)
  */
 
-import { describe, it, expect, beforeEach } from "vitest"
+import { describe, it, expect, beforeEach } from "bun:test"
 import { OrchestratorGuard } from "@/hooks/orchestrator-guard-hook"
 
 describe("OrchestratorGuard: default behavior", () => {

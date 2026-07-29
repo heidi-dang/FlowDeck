@@ -12,7 +12,7 @@
  * mark_complete to make sure quoted values resolve cleanly.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"

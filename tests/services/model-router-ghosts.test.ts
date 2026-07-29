@@ -14,7 +14,7 @@
  * to them. This suite locks in the cleanup.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { AGENT_NAMES } from "@/agents/index"
 import { getTierForAgent, filterAgentsForStage } from "@/services/model-router"
 

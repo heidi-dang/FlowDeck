@@ -5,7 +5,7 @@
  * removed during clean install, and unrelated plugins preserved.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, mkdirSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"

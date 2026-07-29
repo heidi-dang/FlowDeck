@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import os from "os";
 import { createRepairSession } from "../../src/better-harness/opencode/repair-session";
 import { buildRepairPrompt } from "../../src/better-harness/opencode/repair-prompt";

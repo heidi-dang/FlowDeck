@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { formatContextPacket, type ExplorationResult, type DerivedTaskContext } from "../../src/services/preflight-explorer"
 
 const baseResult: ExplorationResult = {

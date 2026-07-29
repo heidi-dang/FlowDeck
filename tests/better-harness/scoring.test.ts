@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { scoreDimension } from "../../src/better-harness/scoring/dimension-scoring";
 import { calculateOverallScore } from "../../src/better-harness/scoring/overall-scoring";
 
