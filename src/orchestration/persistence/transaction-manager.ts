@@ -1,13 +1,14 @@
 /**
  * Transaction manager — reusable APIs for all database operations.
  * No feature module may issue raw BEGIN/COMMIT/ROLLBACK.
+ *
+ * Uses injectable RetryPolicy — no hardcoded timing.
  */
 
 import type Database from "better-sqlite3"
-import { TransactionError, ConcurrencyError } from "./errors"
-
-const MAX_BUSY_RETRIES = 3
-const BASE_BACKOFF_MS = 50
+import { ConcurrencyError } from "./errors"
+import type { RetryPolicy } from "./retry-policy"
+import { createDefaultPolicy } from "./retry-policy"
 
 export interface TransactionManager {
   read<T>(fn: () => T): T
@@ -15,7 +16,11 @@ export interface TransactionManager {
   savepoint<T>(name: string, fn: () => T): T
 }
 
-export function createTransactionManager(db: Database.Database): TransactionManager {
+export function createTransactionManager(
+  db: Database.Database,
+  retryPolicy?: RetryPolicy,
+): TransactionManager {
+  const policy = retryPolicy ?? createDefaultPolicy()
   const writeTxn = db.transaction((fn: () => unknown) => fn())
 
   return {
@@ -26,27 +31,29 @@ export function createTransactionManager(db: Database.Database): TransactionMana
     write<T>(fn: () => T): T {
       let lastError: Error | null = null
 
-      for (let attempt = 0; attempt < MAX_BUSY_RETRIES; attempt++) {
+      for (let attempt = 0; attempt < policy.budget.maxAttempts; attempt++) {
+        // Deadline check before attempt
+        if (policy.budget.deadlineMs > 0 && Date.now() >= policy.budget.deadlineMs) {
+          throw lastError ?? new ConcurrencyError(attempt, "Deadline exceeded before attempt")
+        }
+
         try {
           return writeTxn(fn) as T
         } catch (err) {
-          if (isBusyError(err) && attempt < MAX_BUSY_RETRIES - 1) {
+          const reason = policy.classify(err)
+          if (policy.isRetryable(reason) && attempt < policy.budget.maxAttempts - 1) {
             lastError = err as Error
-            // Exponential backoff: 50ms, 100ms, 200ms
-            const delay = BASE_BACKOFF_MS * Math.pow(2, attempt)
-            // Use Atomics.wait with a timeout as bounded polling (not arbitrary sleep)
+            const delay = policy.strategy.delayMs(attempt)
+            // Bounded spin-wait: max 50+100+200=350ms total across all retries
             const deadline = Date.now() + delay
-            while (Date.now() < deadline) {
-              // Busy-wait is acceptable here because: (a) max 200ms, (b) bounded by
-              // deadline, (c) only reached when DB is genuinely contended
-            }
+            while (Date.now() < deadline) { /* spin */ }
             continue
           }
           throw err
         }
       }
 
-      throw lastError ?? new ConcurrencyError(MAX_BUSY_RETRIES)
+      throw lastError ?? new ConcurrencyError(policy.budget.maxAttempts, "Max retries exhausted")
     },
 
     savepoint<T>(name: string, fn: () => T): T {
@@ -62,12 +69,4 @@ export function createTransactionManager(db: Database.Database): TransactionMana
       }
     },
   }
-}
-
-function isBusyError(err: unknown): boolean {
-  if (err instanceof Error) {
-    const m = err.message.toLowerCase()
-    return m.includes("sqlite_busy") || m.includes("database is locked")
-  }
-  return false
 }

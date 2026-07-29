@@ -1,4 +1,4 @@
-/** Typed persistence errors for clear diagnostic categories. */
+/** Typed persistence errors with machine-readable codes. No SQLite internals leak to domain callers. */
 
 export class PersistenceError extends Error {
   constructor(message: string) { super(message); this.name = "PersistenceError" }
@@ -9,20 +9,42 @@ export class MigrationError extends PersistenceError {
 }
 
 export class MigrationChecksumError extends MigrationError {
+  public version: number
   constructor(version: number, expected: string, actual: string) {
-    super(`Migration v${version} checksum mismatch. Expected: ${expected}, got: ${actual}. Manual intervention required.`)
+    super(`Migration v${version} checksum mismatch`)
+    this.version = version
     this.name = "MigrationChecksumError"
   }
 }
 
-export class SchemaValidationError extends PersistenceError {
-  public categories: Record<string, string[]>
+export class MigrationDuplicateError extends MigrationError {
+  public version: number
+  constructor(version: number) {
+    super(`Duplicate migration v${version} detected`)
+    this.version = version
+    this.name = "MigrationDuplicateError"
+  }
+}
 
-  constructor(categories: Record<string, string[]>) {
+export class MigrationInterruptedError extends MigrationError {
+  public version: number
+  constructor(version: number, cause: string) {
+    super(`Migration v${version} was interrupted: ${cause}`)
+    this.version = version
+    this.name = "MigrationInterruptedError"
+  }
+}
+
+export class SchemaValidationError extends PersistenceError {
+  public categories: Record<string, unknown[]>
+  public recovery: string[]
+
+  constructor(categories: Record<string, unknown[]>, recovery: string[]) {
     const parts = Object.entries(categories).filter(([, v]) => v.length > 0)
-    super(parts.map(([k, v]) => `${k} (${v.length}): ${v.join(", ")}`).join("\n"))
-    this.name = "SchemaValidationError"
+    super(parts.map(([k, v]) => `${k}: ${v.length} issue(s)`).join("; "))
     this.categories = categories
+    this.recovery = recovery
+    this.name = "SchemaValidationError"
   }
 }
 
@@ -31,8 +53,16 @@ export class TransactionError extends PersistenceError {
 }
 
 export class ConcurrencyError extends PersistenceError {
-  constructor(attempts: number) {
-    super(`Operation failed after ${attempts} retries due to concurrent access`)
+  public attempts: number
+  public reason: string
+  constructor(attempts: number, reason: string) {
+    super(`Concurrency conflict after ${attempts} attempt(s): ${reason}`)
+    this.attempts = attempts
+    this.reason = reason
     this.name = "ConcurrencyError"
   }
+}
+
+export class RepositoryError extends PersistenceError {
+  constructor(message: string) { super(message); this.name = "RepositoryError" }
 }
