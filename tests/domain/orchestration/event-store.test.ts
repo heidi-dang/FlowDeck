@@ -4,91 +4,42 @@
  * Comprehensive tests for event append, rehydration, replay, concurrency, and leases
  */
 
-import { describe, it, expect, beforeEach } from "bun:test";
-import { PersistedRuntimeEvent, UncommittedRuntimeEvent } from "../../src/domain/orchestration/runtime/event-store/types";
+import { describe, it, expect, beforeEach } from 'bun:test';
+import type { 
+  PersistedRuntimeEvent, 
+  UncommittedRuntimeEvent, 
+  RuntimeEventType
+} from '../../../src/domain/orchestration/runtime/event-store/types';
+import { InMemoryRuntimeEventStore } from '../../../src/domain/orchestration/runtime/event-store/in-memory-store';
+import { isConcurrencyError, DuplicateEventError, UnknownEventTypeError } from '../../../src/domain/orchestration/runtime/event-store';
 
-// Inline types for now (can be removed when build works)
-
-function createUncommittedEvent(type: string, aggregateId: string, expectedVersion: number, payload: any): any {
+function createUncommittedEvent<TPayload>(
+  eventType: RuntimeEventType,
+  aggregateId: string,
+  aggregateVersion: number,
+  payload: TPayload,
+  eventId?: string
+): UncommittedRuntimeEvent<TPayload> {
   return {
-    eventId: undefined,
+    eventType,
     aggregateId,
-    expectedVersion,
-    type,
-    payloadVersion: '1.0',
+    aggregateVersion,
     payload,
-    correlationId: payload.correlationId
+    eventId,
+    metadata: {
+      payloadVersion: '1.0'
+    }
   };
 }
 
-class InMemoryRuntimeEventStore {
-  private streams = new Map<string, any[]>();
-
-  async append(aggregateId: string, events: any[], expectedVersion: number, startSeq: number): Promise<any> {
-    const currentVersion = this.streams.get(aggregateId)?.length ?? 0;
-    
-    if (expectedVersion !== currentVersion) {
-      throw new Error(`Version mismatch: expected ${currentVersion}, got ${expectedVersion}`);
-    }
-
-    const persistedEvents = events.map((e, i) => ({
-      ...e,
-      eventId: `evt_${aggregateId}_${expectedVersion + i + 1}`,
-      aggregateVersion: expectedVersion + i + 1,
-      globalSequence: startSeq + i,
-      committedAt: new Date(),
-      createdAt: new Date(),
-      payloadHash: 'mock',
-      checksum: 'mock'
-    }));
-
-    const existing = this.streams.get(aggregateId) ?? [];
-    this.streams.set(aggregateId, [...existing, ...persistedEvents]);
-
-    return {
-      appendedCount: events.length,
-      nextExpectedVersion: expectedVersion + events.length,
-      sequenceNumberStart: startSeq,
-      events: persistedEvents
-    };
-  }
-
-  async readStream(aggregateId: string): Promise<any[]> {
-    return this.streams.get(aggregateId) ?? [];
-  }
-
-  async validateEventType(_eventType: string): Promise<{ valid: boolean }> {
-    return { valid: true };
-  }
-
-  async getAggregateVersion(aggregateId: string): Promise<number> {
-    return (this.streams.get(aggregateId)?.length) ?? 0;
-  }
-}
-
-class CommandIdempotencyChecker {
-  private commands = new Map<string, string>();
-
-  isDuplicate(id: string): boolean {
-    return this.commands.has(id);
-  }
-
-  register(id: string, eventId: string): void {
-    this.commands.set(id, eventId);
-  }
-
-  getExistingEvent(id: string): string | undefined {
-    return this.commands.get(id);
-  }
-}
-
-function deterministicReplay(events: any[]): string[] {
+// Deterministic replay based on actual payload
+function deterministicReplay(events: PersistedRuntimeEvent<unknown>[]): string[] {
   const states: string[] = [];
   let current = 'created';
   
   for (const e of events.sort((a, b) => a.aggregateVersion - b.aggregateVersion)) {
-    if (e.type.includes('Planning')) current = 'planning';
-    if (e.type.includes('Planning') && e.type.includes('Completed')) current = 'completed';
+    if (e.eventType.includes('Planning')) current = 'planning';
+    if (e.eventType.includes('Planning') && e.eventType.includes('Completed')) current = 'completed';
   }
   
   states.push(current);
@@ -96,10 +47,10 @@ function deterministicReplay(events: any[]): string[] {
 }
 
 class InMemoryWorktreeLeaseRepository {
-  private leases = new Map<string, any>();
+  private leases = new Map<string, { worktreeKey: string; ownerId: string; fencingToken: number }>();
   private owners = new Map<string, number>();
 
-  async acquire(worktreeKey: string, ownerId: string): Promise<{ success: boolean; lease?: any }> {
+  async acquire(worktreeKey: string, ownerId: string): Promise<{ success: boolean; lease?: { worktreeKey: string; ownerId: string; fencingToken: number } }> {
     const existing = this.leases.get(worktreeKey);
     
     if (existing && existing.ownerId !== ownerId) {
@@ -115,7 +66,7 @@ class InMemoryWorktreeLeaseRepository {
     return { success: true, lease };
   }
 
-  async renew(worktreeKey: string, ownerId: string): Promise<{ success: boolean }> {
+  async renew(worktreeKey: string, ownerId: string): Promise<{ success: boolean; lease?: { worktreeKey: string; ownerId: string; fencingToken: number } }> {
     const existing = this.leases.get(worktreeKey);
     
     if (!existing || existing.ownerId !== ownerId) {
@@ -130,7 +81,7 @@ class InMemoryWorktreeLeaseRepository {
     return lease?.ownerId;
   }
 
-  validateFencing(worktreeKey: string, ownerId: string, token?: number): { valid: boolean; error?: any } {
+  validateFencing(worktreeKey: string, ownerId: string, token?: number): { valid: boolean; error?: { type: string } } {
     const current = this.leases.get(worktreeKey);
     
     if (!current) {
@@ -160,35 +111,22 @@ describe('Phase 3B - Event Store', () => {
         correlationId: 'corr_456'
       };
       
-      const events = createUncommittedEvent('RunCreated', 'run_123', 0, eventPayload);
+      const event = createUncommittedEvent('RunCreated', 'run_123', 0, eventPayload);
 
-      expect(events.eventId).toBeUndefined();
-      expect(events.aggregateId).toBe('run_123');
-      expect(events.expectedVersion).toBe(0);
-      expect(events.type).toBe('RunCreated');
-      expect((events.payload as any).strategy).toBe('simple');
+      expect(event.eventId).toBeUndefined();
+      expect(event.aggregateId).toBe('run_123');
+      expect(event.aggregateVersion).toBe(0);
+      expect(event.eventType).toBe('RunCreated');
+      expect((event.payload as typeof eventPayload).strategy).toBe('simple');
     });
 
-    it('assigns persisted fields on commit', () => {
-      const uncommitted = {
-        aggregateId: 'run_123',
-        expectedVersion: 0,
-        type: 'RunCreated',
-        payload: { runId: 'run_123', newStatus: 'created', strategy: 'simple' }
-      };
+    it('assigns persisted fields on commit', async () => {
+      const store = new InMemoryRuntimeEventStore();
+      const eventPayload = { runId: 'run_123', newStatus: 'created', strategy: 'simple' };
+      const uncommitted = createUncommittedEvent('RunCreated', 'run_123', 1, eventPayload); // Note: 1 because in-memory store uses current version 0 + 1
 
-      const persisted: any = {
-        ...uncommitted,
-        eventId: 'evt_run_123_1_1234567890',
-        globalSequence: 1,
-        aggregateVersion: 1,
-        createdAt: new Date(),
-        commandId: 'cmd_789',
-        causationId: undefined,
-        committedAt: new Date(),
-        payloadHash: 'abc123...',
-        checksum: 'abc123...:1:1'
-      };
+      const result = await store.append('run_123', [uncommitted], 0);
+      const persisted = result.events[0];
 
       expect(persisted.eventId).toBeDefined();
       expect(persisted.globalSequence).toBe(1);
@@ -207,22 +145,16 @@ describe('Phase 3B - Event Store', () => {
 
     it('first append succeeds with expected version 0', async () => {
       const events = [
-        {
-          aggregateId: 'run_123',
-          expectedVersion: 0,
-          type: 'RunCreated',
-          payload: {
-            runId: 'run_123',
-            newStatus: 'created',
-            strategy: 'simple',
-            initialVersion: 1,
-            correlationId: 'corr_1'
-          },
-          commandId: 'cmd_create_run_1'
-        }
+        createUncommittedEvent('RunCreated', 'run_123', 1, {
+          runId: 'run_123',
+          newStatus: 'created',
+          strategy: 'simple',
+          initialVersion: 1,
+          correlationId: 'corr_1'
+        })
       ];
 
-      const result = await store.append('run_123', events, 0, 1);
+      const result = await store.append('run_123', events, 0);
 
       expect(result.appendedCount).toBe(1);
       expect(result.nextExpectedVersion).toBe(1);
@@ -232,28 +164,13 @@ describe('Phase 3B - Event Store', () => {
     });
 
     it('multi-event append is atomic', async () => {
-      const events: any[] = [
-        {
-          aggregateId: 'run_456',
-          expectedVersion: 0,
-          type: 'RunCreated',
-          payload: { runId: 'run_456', newStatus: 'created', strategy: 'planned', initialVersion: 1 }
-        },
-        {
-          aggregateId: 'run_456',
-          expectedVersion: 1,
-          type: 'RunStartedPlanning',
-          payload: { runId: 'run_456', newStatus: 'planning', oldStatus: 'created' }
-        },
-        {
-          aggregateId: 'run_456',
-          expectedVersion: 2,
-          type: 'RunCompletedPlanning',
-          payload: { runId: 'run_456', newStatus: 'planned', oldStatus: 'planning', analysisRequired: true }
-        }
+      const events = [
+        createUncommittedEvent('RunCreated', 'run_456', 1, { runId: 'run_456', newStatus: 'created', strategy: 'planned', initialVersion: 1 }),
+        createUncommittedEvent('RunStartedPlanning', 'run_456', 2, { runId: 'run_456', newStatus: 'planning', oldStatus: 'created' }),
+        createUncommittedEvent('RunCompletedPlanning', 'run_456', 3, { runId: 'run_456', newStatus: 'planned', oldStatus: 'planning', analysisRequired: true })
       ];
 
-      const result = await store.append('run_456', events, 0, 10);
+      const result = await store.append('run_456', events, 0);
 
       expect(result.appendedCount).toBe(3);
       expect(result.nextExpectedVersion).toBe(3);
@@ -264,68 +181,93 @@ describe('Phase 3B - Event Store', () => {
       expect(result.events[2].aggregateVersion).toBe(3);
 
       // Verify monotonic sequences
-      expect(result.events[0].globalSequence).toBe(10);
-      expect(result.events[1].globalSequence).toBe(11);
-      expect(result.events[2].globalSequence).toBe(12);
+      expect(result.events[0].globalSequence).toBe(1);
+      expect(result.events[1].globalSequence).toBe(2);
+      expect(result.events[2].globalSequence).toBe(3);
+    });
+
+    it('empty append lists fail', async () => {
+      try {
+        await store.append('run_empty', [], 0);
+        throw new Error('Should have thrown on empty append');
+      } catch (err: unknown) {
+        expect(err).toBeInstanceOf(Error);
+        if (err instanceof Error) {
+          expect(err.message).toContain('Cannot append empty event list');
+        }
+      }
     });
 
     it('stale version fails with typed error', async () => {
-      // First append establishes version 1
-      await store.append('run_789', [createEvent('run_789', 0, 'Created')], 0, 1);
+      await store.append('run_789', [createUncommittedEvent('RunCreated', 'run_789', 1, {})], 0);
 
-      // Try stale version (still trying to append first event)
-      const staleEvent = {
-        aggregateId: 'run_789',
-        expectedVersion: 0,
-        type: 'RunStartedPlanning',
-        payload: {}
-      };
+      const staleEvent = createUncommittedEvent('RunStartedPlanning', 'run_789', 1, {});
 
-      await expect(store.append('run_789', [staleEvent], 0, 1)).rejects.toThrow(/Version mismatch/);
+      try {
+        await store.append('run_789', [staleEvent], 0);
+        throw new Error('Should have thrown on stale version');
+      } catch (err: unknown) {
+        expect(isConcurrencyError(err)).toBe(true);
+      }
     });
 
     it('future version fails', async () => {
-      const futureEvent = {
-        aggregateId: 'run_789',
-        expectedVersion: 5,
-        type: 'RunCompleted',
-        payload: {}
-      };
+      const futureEvent = createUncommittedEvent('RunCompleted', 'run_789', 6, {});
 
-      await expect(store.append('run_789', [futureEvent], 5, 1)).rejects.toThrow(/Version mismatch/);
+      try {
+        await store.append('run_789', [futureEvent], 5);
+        throw new Error('Should have thrown on future version');
+      } catch (err: unknown) {
+        expect(isConcurrencyError(err)).toBe(true);
+      }
     });
 
-    it('duplicate event ID fails', async () => {
+    it('duplicate event ID fails closed', async () => {
       const eventId = 'evt_dup_test_1';
-
-      const events: any[] = [
-        {
-          aggregateId: 'run_999',
-          expectedVersion: 0,
-          eventId,
-          type: 'RunCreated',
-          payload: { runId: 'run_999', newStatus: 'created', strategy: 'simple', initialVersion: 1 }
-        }
+      const events = [
+        createUncommittedEvent('RunCreated', 'run_999', 1, { runId: 'run_999' }, eventId)
       ];
+      await store.append('run_999', events, 0);
 
-      await store.append('run_999', events, 0, 1);
+      const duplicateEvent = createUncommittedEvent('RunStartedPlanning', 'run_999', 2, {}, eventId);
 
-      // Same event ID should fail (mock check by duplicate detection)
-      const duplicateEvent = {
-        aggregateId: 'run_999',
-        expectedVersion: 1,
-        eventId, // Same ID!
-        type: 'RunStartedPlanning',
-        payload: {}
-      };
-
-      // Mock doesn't implement duplicate detection yet
-      await expect(store.append('run_999', [duplicateEvent], 1, 2)).resolves.toBeDefined();
+      try {
+        await store.append('run_999', [duplicateEvent], 1);
+        throw new Error('Should have thrown duplicate event error');
+      } catch (err: unknown) {
+        expect(err).toBeInstanceOf(DuplicateEventError);
+      }
     });
 
     it('unknown event type fails closed', async () => {
-      const invalidResult = await store.validateEventType('UnknownEventType');
-      expect(invalidResult.valid).toBe(true); // Mock implementation always returns true
+      try {
+        await store.append('run_999', [createUncommittedEvent('UnknownEventType' as any, 'run_999', 1, {})], 0);
+        throw new Error('Should have thrown on unknown event type');
+      } catch (err: unknown) {
+        expect(err).toBeInstanceOf(UnknownEventTypeError);
+      }
+    });
+
+    it('failed appends do not partially modify state', async () => {
+      // Setup base version
+      await store.append('run_atomic', [createUncommittedEvent('RunCreated', 'run_atomic', 1, {})], 0);
+
+      // Try appending good and bad event
+      const events = [
+        createUncommittedEvent('RunStartedPlanning', 'run_atomic', 2, {}),
+        createUncommittedEvent('UnknownEventType' as any, 'run_atomic', 3, {}) // Invalid event type should abort both
+      ];
+
+      try {
+        await store.append('run_atomic', events, 1);
+      } catch {
+        // Expected to fail
+      }
+
+      // Check state
+      const stream = await store.readStream('run_atomic');
+      expect(stream).toHaveLength(1);
+      expect(await store.getAggregateVersion('run_atomic')).toBe(1);
     });
   });
 
@@ -334,60 +276,36 @@ describe('Phase 3B - Event Store', () => {
       const store = new InMemoryRuntimeEventStore();
       
       await store.append('run_rehydrate', [
-        { aggregateId: 'run_rehydrate', expectedVersion: 0, type: 'RunCreated', payload: {} }
-      ], 0, 1);
+        createUncommittedEvent('RunCreated', 'run_rehydrate', 1, {})
+      ], 0);
 
       const events = await store.readStream('run_rehydrate');
       expect(events).toHaveLength(1);
-
       expect(events[0].aggregateVersion).toBe(1);
     });
 
     it('empty stream produces minimal state', async () => {
-      // Empty stream returns zero version
-      const events: PersistedRuntimeEvent[] = [];
+      const store = new InMemoryRuntimeEventStore();
+      const events = await store.readStream('nonexistent');
       expect(events.length).toBe(0);
     });
 
-    it('version gap logged but replay continues', async () => {
-      const _store = new InMemoryRuntimeEventStore();
-      
-      // Manually insert gap by writing events directly (test helper would be better)
-      const events: PersistedRuntimeEvent[] = [
-        createPersistedEvent('run_gap', 1, 'RunCreated'),
-        createPersistedEvent('run_gap', 3, 'RunCompleted') // Skip version 2
+    it('deterministic replay produces same output', async () => {
+      const store = new InMemoryRuntimeEventStore();
+      const eventsToAppend = [
+        createUncommittedEvent('RunCreated', 'det_test', 1, {}),
+        createUncommittedEvent('RunStartedPlanning', 'det_test', 2, {}),
+        createUncommittedEvent('RunCompletedPlanning', 'det_test', 3, {}),
+        createUncommittedEvent('RunCompleted', 'det_test', 4, {})
       ];
+      await store.append('det_test', eventsToAppend, 0);
 
-      const transitions = deterministicReplay(events);
-      expect(transitions.length).toBeGreaterThan(0);
-    });
-
-    it('deterministic replay produces same output', () => {
-      const events: any[] = [
-        createPersistedEvent('det_test', 1, 'RunCreated'),
-        createPersistedEvent('det_test', 2, 'RunStartedPlanning'),
-        createPersistedEvent('det_test', 3, 'RunCompletedPlanning'),
-        createPersistedEvent('det_test', 4, 'RunCompleted')
-      ];
-
-      const transitions1 = deterministicReplay(events);
-      const transitions2 = deterministicReplay(events);
+      const persisted = await store.readStream('det_test');
+      const transitions1 = deterministicReplay(persisted);
+      const transitions2 = deterministicReplay(persisted);
 
       expect(transitions1).toEqual(transitions2);
       expect(transitions1.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe('Command Idempotency', () => {
-    it('detects duplicate commands via commandId', () => {
-      const checker = new CommandIdempotencyChecker();
-
-      expect(checker.isDuplicate('cmd_unique')).toBe(false);
-
-      checker.register('cmd_unique', 'evt_123');
-
-      expect(checker.isDuplicate('cmd_unique')).toBe(true);
-      expect(checker.getExistingEvent('cmd_unique')).toBe('evt_123');
     });
   });
 
@@ -395,27 +313,16 @@ describe('Phase 3B - Event Store', () => {
     it('exactly one succeeds on concurrent writers', async () => {
       const store = new InMemoryRuntimeEventStore();
 
-      const eventA = {
-        aggregateId: 'race_test',
-        expectedVersion: 0,
-        type: 'RunCreated',
-        payload: {}
-      };
+      const eventA = createUncommittedEvent('RunCreated', 'race_test', 1, {});
+      const eventB = createUncommittedEvent('RunStartedPlanning', 'race_test', 1, {});
 
-      const eventB = {
-        aggregateId: 'race_test',
-        expectedVersion: 0,
-        type: 'RunStartedPlanning',
-        payload: {}
-      };
-
-      const resultA = await store.append('race_test', [eventA], 0, 1);
+      const resultA = await store.append('race_test', [eventA], 0);
       
       try {
-        await store.append('race_test', [eventB], 0, 2);
+        await store.append('race_test', [eventB], 0);
         throw new Error('Should have thrown');
-      } catch (error: any) {
-        expect(error.message).toContain('Version mismatch');
+      } catch (error: unknown) {
+        expect(isConcurrencyError(error)).toBe(true);
       }
 
       expect(resultA.appendedCount).toBe(1);
@@ -471,33 +378,3 @@ describe('Phase 3B - Event Store', () => {
     });
   });
 });
-
-// Helper functions
-function createEvent(runId: string, version: number, type: string): UncommittedRuntimeEvent {
-  return {
-    aggregateId: runId,
-    expectedVersion: version,
-    type: `Run${type}` as RuntimeEvents.RuntimeEventType,
-    payloadVersion: `1.0` as any,
-    payload: {
-      runId,
-      newStatus: type === 'Created' ? 'created' : 'planned',
-      oldStatus: version > 0 ? 'created' : undefined,
-      strategy: 'simple',
-      correlationId: `corr_${Date.now()}`
-    }
-  };
-}
-
-function createPersistedEvent(aggregateId: string, version: number, type: string): PersistedRuntimeEvent {
-  return {
-    ...createEvent(aggregateId, version, type),
-    eventId: `evt_${aggregateId}_${version}`,
-    aggregateVersion: version,
-    globalSequence: version,
-    createdAt: new Date(),
-    committedAt: new Date(),
-    payloadHash: 'mock_hash',
-    checksum: 'mock_checksum'
-  } as PersistedRuntimeEvent;
-}

@@ -35,13 +35,6 @@ export function validatePersistedEvent(event: PersistedRuntimeEvent): { valid: t
 
   // Verify payload hash integrity
   try {
-    const encoder = new TextEncoder();
-    const data = encoder.encode(JSON.stringify(event.payload));
-    const _hashBuffer = crypto.subtle.digest('SHA-256', data).then(_hash => {
-      // Compute hash synchronously would require different approach
-      // For now, we just verify structure
-    });
-
     if (!event.payloadHash) {
       errors.push('Missing payload hash');
     }
@@ -79,11 +72,12 @@ function applyEventToBuilder(
   builder: TaskRunBuilder,
   event: PersistedRuntimeEvent
 ): void {
-  switch (event.type) {
+  switch (event.eventType) {
     case 'RunCreated':
       builder.status = 'created';
-      builder.strategy = (event.payload as any).strategy ?? 'simple';
-      builder.planScope = (event.payload as any).planScope;
+      const payload = event.event as Record<string, unknown>;
+      builder.strategy = (payload.strategy ?? 'simple') as TaskRunBuilder['strategy'];
+      builder.planScope = payload.planScope;
       builder.correlationId = event.correlationId;
       break;
 
@@ -107,7 +101,8 @@ function applyEventToBuilder(
 
     case 'RunStartedExecution':
       builder.status = 'executing';
-      builder.delegationTarget = (event.payload as any).delegationTarget;
+      const execPayload = event.event as Record<string, unknown>;
+      builder.delegationTarget = typeof execPayload.delegationTarget === 'string' ? execPayload.delegationTarget : undefined;
       break;
 
     case 'RunCompletedExecution':
@@ -133,12 +128,13 @@ function applyEventToBuilder(
       break;
 
     case 'RunRecovered':
-      builder.recoveryPath = (event.payload as any).recoveryPath;
+      const recoveryPayload = event.event as Record<string, unknown>;
+      builder.recoveryPath = typeof recoveryPayload.recoveryPath === 'string' ? recoveryPayload.recoveryPath : undefined;
       break;
 
     default:
       // Unknown event type - fail closed during validation phase
-      console.warn(`Unknown event type during replay: ${event.type}`);
+      console.warn(`Unknown event type during replay: ${event.eventType}`);
   }
 
   builder.version = event.aggregateVersion;
@@ -226,7 +222,7 @@ export function deterministicReplay(events: PersistedRuntimeEvent[]): TaskRunSta
 }
 
 function determineNextState(event: PersistedRuntimeEvent): TaskRunState {
-  switch (event.type) {
+  switch (event.eventType) {
     case 'RunCreated':
       return 'created';
     case 'RunStartedPlanning':

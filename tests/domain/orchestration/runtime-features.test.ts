@@ -2,7 +2,7 @@
  * Tests for task run state transitions and domain invariants
  */
 
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach } from 'vitest';
 import type { TaskRunState } from '@/domain/orchestration/runtime/task-run.js';
 import { TRANSITION_MATRIX, STRATEGY_RULES, TERMINAL_STATES } from '@/domain/orchestration/runtime/task-run.js';
 import { TransitionProcessor } from '@/domain/orchestration/runtime/domain-service.js';
