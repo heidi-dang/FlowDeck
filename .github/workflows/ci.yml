@@ -46,15 +46,15 @@ jobs:
         with:
           node-version: "22.x"
           cache: "npm"
-       - uses: oven-sh/setup-bun@v2
-         with:
-           bun-version: "1.3.14"
-       - run: npm ci
-       - run: npm run build
-       - run: npm run test
-       - name: Typecheck (always runs)
-         if: always()
-         run: npm run typecheck
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test
+      - name: Typecheck (always runs)
+        if: always()
+        run: npm run typecheck
 
   build:
     name: Build & Validate
@@ -365,11 +365,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
-       - uses: oven-sh/setup-bun@v2
-         with:
-           bun-version: "1.3.14"
-       - run: npm ci
-       - name: Local-repo install test
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci
+      - name: Local-repo install test
         run: |
           node bin/flowdeck.js install --local-repo 2>&1
           node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" || (echo "FAIL: verify"; exit 1)
@@ -394,12 +394,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
-       - uses: oven-sh/setup-bun@v2
-         with:
-           bun-version: "1.3.14"
-       - run: npm ci
-       - run: npm run build
-       - name: Packed CLI test with spaces
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci
+      - run: npm run build
+      - name: Packed CLI test with spaces
         run: |
           set -e
           PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
@@ -428,15 +428,15 @@ jobs:
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck uninstall --force || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: all commands"
 
-   completion:
-     name: Pipeline Completion
-     if: always()
-     needs: [lint-typecheck, test-matrix, build, installer-test, rust-gates, security-scan, local-installer, packed-cli-matrix, test-fdx-parity]
+  completion:
+    name: Pipeline Completion
+    if: always()
+    needs: [lint-typecheck, test-matrix, build, installer-test, rust-gates, security-scan, local-installer, packed-cli-matrix, test-fdx-parity]
     runs-on: ubuntu-latest
     steps:
       - run: |
           echo "## CI Production Gates" >> $GITHUB_STEP_SUMMARY
-           echo "- Lint & Typecheck: ${{ needs.lint-typecheck.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Lint & Typecheck: ${{ needs.lint-typecheck.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Test Matrix: ${{ needs.test-matrix.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Build & Validate: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Installer Tests: ${{ needs.installer-test.result }}" >> $GITHUB_STEP_SUMMARY
