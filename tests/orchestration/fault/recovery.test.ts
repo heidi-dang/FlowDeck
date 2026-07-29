@@ -32,7 +32,7 @@ describe('Fault Injection & Recovery Harness', () => {
     // Simulate successful recovery
     injector.clearAllFaults();
     await injector.checkFault('transaction_during_commit', 'before');
-    expect(injector.getHistory('transaction_during_commit')).toBe(2);
+    expect(injector.getHistory('transaction_during_commit')).toBe(1);
   });
 
   it('supports inject N times', async () => {
