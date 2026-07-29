@@ -18,6 +18,8 @@ import { OrchestrationMetrics } from "../../src/orchestration/metrics";
 import { Tracer } from "../../src/orchestration/tracing";
 import { StructuredLogger, LogSeverity } from "../../src/orchestration/logging";
 import type { IRunRepository, IContractRepository, IAssignmentRepository, IVerificationRepository, ICompletionRepository, IReplayRepository, IEventRepository, IOutboxRepository, IIdempotencyStore, IAuthorizationService, PaginatedResult } from "../../src/orchestration/services/ports";
+import { ExecutionRegistry } from "../../src/orchestration/services/execution-registry";
+import type { UnitOfWork } from "../../src/orchestration/persistence/unit-of-work";
 import type { PagePaginationRequest } from "../../src/orchestration/types/pagination";
 import type { Run, Contract, Assignment, OrchestrationEvent, OutboxEntry } from "../../src/orchestration/types";
 import { EVENT_VERSION } from "../../src/orchestration/types/events";
@@ -186,8 +188,15 @@ describe("Orchestration Services", () => {
   let commandDispatcher: CommandDispatcher;
   let queryService: QueryService;
 
+  let executionRegistry: ExecutionRegistry;
+  let mockUnitOfWork: UnitOfWork;
+
   beforeEach(() => {
     eventBus = new InMemoryEventBus();
+    executionRegistry = new ExecutionRegistry();
+    mockUnitOfWork = {
+      execute: vi.fn(async (fn: any) => fn({ tx: {} })),
+    };
     mockRunRepo = createMockRunRepo();
     mockContractRepo = createMockContractRepo();
     mockAssignmentRepo = createMockAssignmentRepo();
@@ -199,7 +208,7 @@ describe("Orchestration Services", () => {
     mockIdempotencyStore = createMockIdempotencyStore();
     mockAuthService = createMockAuthService();
 
-    runService = new RunService(mockRunRepo, eventBus);
+        runService = new RunService(mockRunRepo, eventBus, executionRegistry, mockUnitOfWork);
     contractService = new ContractService(mockContractRepo, eventBus);
     assignmentService = new AssignmentService(mockAssignmentRepo, eventBus);
     verificationService = new VerificationService(mockVerificationRepo, eventBus);

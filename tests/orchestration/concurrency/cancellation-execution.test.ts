@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach } from "bun:test";
+import { describe, it, expect, beforeEach, vi } from "bun:test";
 import { ExecutionRegistry } from "../../../src/orchestration/services/execution-registry";
 import { RunService } from "../../../src/orchestration/services/run-service";
 import { RunStatus } from "../../../src/orchestration/types";
 import type { IRunRepository, IEventBus } from "../../../src/orchestration/services/ports";
+import type { UnitOfWork } from "../../../src/orchestration/persistence/unit-of-work";
 
 class InMemoryRunRepo implements IRunRepository {
   private runs = new Map<string, any>();
@@ -17,7 +18,7 @@ class InMemoryRunRepo implements IRunRepository {
   }
   async findMany() {
     const items = Array.from(this.runs.values());
-    return { data: items, items, total: items.length, page: 1, pageSize: 50, limit: 50, hasMore: false };
+    return { items, total: items.length, page: 1, limit: 50 };
   }
   async count() { return this.runs.size; }
 }
@@ -35,12 +36,16 @@ describe("ExecutionRegistry & RunService Cancellation Lifecycle", () => {
   let repo: InMemoryRunRepo;
   let eventBus: FakeEventBus;
   let runService: RunService;
+  let mockUnitOfWork: UnitOfWork;
 
   beforeEach(() => {
     registry = new ExecutionRegistry();
     repo = new InMemoryRunRepo();
     eventBus = new FakeEventBus();
-    runService = new RunService(repo, eventBus, registry);
+    mockUnitOfWork = {
+      execute: vi.fn(async (fn: any) => fn({ tx: {} })),
+    };
+    runService = new RunService(repo, eventBus, registry, mockUnitOfWork);
   });
 
   it("signals AbortController and executes cleanup idempotently", async () => {
@@ -85,7 +90,8 @@ describe("ExecutionRegistry & RunService Cancellation Lifecycle", () => {
 
     const result = await registry.cancelRunExecution(run.id, "Testing cleanup failure");
     expect(result.cancelled).toBe(true);
-    expect(result.cleanupError?.message).toBe("Cleanup resource error");
+    expect(result.cleanupErrors.length).toBeGreaterThan(0);
+    expect(result.cleanupErrors[0]?.message).toBe("Cleanup resource error");
     expect(registry.hasActiveRun(run.id)).toBe(false);
   });
 });

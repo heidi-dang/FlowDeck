@@ -43,49 +43,56 @@ export class ExecutionRegistry {
     return this.activeHandles.has(runId);
   }
 
-  /** Signal cancellation to active child execution, execute cleanup, and wait for completion */
-  async cancelRunExecution(runId: string, reason?: string, timeoutMs: number = 5000): Promise<{ cancelled: boolean; cleanupError?: Error }> {
+  /** Signal cancellation to active child execution, execute cleanup within bounded timeout */
+  async cancelRunExecution(runId: string, reason?: string, timeoutMs: number = 5000): Promise<{ cancelled: boolean; cleanupErrors: Error[]; timedOut: boolean }> {
     const handle = this.activeHandles.get(runId);
     if (!handle) {
-      return { cancelled: false };
+      return { cancelled: false, cleanupErrors: [], timedOut: false };
     }
 
-    // 1. Signal cancellation on abort controller
     if (!handle.abortController.signal.aborted) {
       handle.abortController.abort(reason ?? "Run cancellation requested");
     }
 
-    // 2. Execute registered cleanup functions idempotently
-    let cleanupError: Error | undefined;
+    const cleanupErrors: Error[] = [];
+    let timedOut = false;
+
     if (!this.executedCleanups.has(runId)) {
       this.executedCleanups.add(runId);
-      for (const fn of handle.cleanupFns) {
-        try {
-          await Promise.resolve(fn());
-        } catch (err) {
-          cleanupError = err instanceof Error ? err : new Error(String(err));
+
+      const runAllCleanups = async () => {
+        for (const fn of handle.cleanupFns) {
+          try {
+            await Promise.resolve(fn());
+          } catch (err) {
+            cleanupErrors.push(err instanceof Error ? err : new Error(String(err)));
+          }
+        }
+      };
+
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeoutPromise = new Promise<{ timedOut: boolean }>((resolve) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          cleanupErrors.push(OrchestrationError.fromCode(ErrorCodes.INTERNAL_ERROR, {
+            message: `Cancellation cleanup for run ${runId} timed out after ${timeoutMs}ms`,
+          }));
+          resolve({ timedOut: true });
+        }, timeoutMs);
+      });
+
+      try {
+        await Promise.race([runAllCleanups().then(() => ({ timedOut: false })), timeoutPromise]);
+      } finally {
+        if (timer !== undefined) {
+          clearTimeout(timer);
         }
       }
     }
 
-    // 3. Wait for bounded cancellation completion
-    const cancellationPromise = new Promise<{ cancelled: boolean; cleanupError?: Error }>((resolve) => {
-      resolve({ cancelled: true, cleanupError });
-    });
+    this.activeHandles.delete(runId);
 
-    const timeoutPromise = new Promise<{ cancelled: boolean; cleanupError?: Error }>((_, reject) => {
-      setTimeout(() => reject(OrchestrationError.fromCode(ErrorCodes.INTERNAL_ERROR, {
-        message: `Cancellation cleanup for run ${runId} timed out after ${timeoutMs}ms`,
-      })), timeoutMs);
-    });
-
-    try {
-      const result = await Promise.race([cancellationPromise, timeoutPromise]);
-      return result;
-    } finally {
-      // 4. Remove active handle ONLY after cleanup completes
-      this.activeHandles.delete(runId);
-    }
+    return { cancelled: true, cleanupErrors, timedOut };
   }
 
   /** Unregister active execution handle upon normal completion or failure */
@@ -99,7 +106,7 @@ export class ExecutionRegistry {
     return Array.from(this.activeHandles.keys());
   }
 
-  /** Clear all handles (for testing) */
+  /** Clear all handles and bookkeeping (for testing) */
   clear(): void {
     this.activeHandles.clear();
     this.executedCleanups.clear();
