@@ -10,7 +10,7 @@ import type { AppendIdGenerator } from './event-id-generator.js';
 import type { EventIdGenerator } from './types.js';
 import type { ConcurrencyError } from './port.js';
 import { defaultEventIdGenerator, defaultAppendIdGenerator } from './event-id-generator.js';
-import {
+import type {
   RuntimeEventStorePort,
   AppendResult,
   DuplicateCheckResult,
@@ -54,6 +54,20 @@ class GlobalSequenceCounter {
 
   current(): number {
     return this.nextSequence - 1;
+  }
+}
+
+export class DuplicateEventError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DuplicateEventError';
+  }
+}
+
+export class UnknownEventTypeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnknownEventTypeError';
   }
 }
 
@@ -169,11 +183,16 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     // Generate append ID for rollback tracking
     const appendId = this.appendIdGenerator();
 
-    // Check for duplicates
+    // Check for duplicates and unknown types
     for (const event of events) {
       const dupResult = await this.checkDuplicate(event);
       if (dupResult.isDuplicate) {
-        throw new Error(`Duplicate detected: ${dupResult.existingCommand ? `command ${dupResult.existingCommand}` : `event ${dupResult.existingEvent?.eventId}`}`);
+        throw new DuplicateEventError(`Duplicate detected: ${dupResult.existingCommand ? `command ${dupResult.existingCommand}` : `event ${dupResult.existingEvent?.eventId}`}`);
+      }
+      
+      const typeCheck = await this.validateEventType(event.eventType);
+      if (!typeCheck.valid) {
+        throw new UnknownEventTypeError(typeCheck.errors[0]);
       }
     }
 
