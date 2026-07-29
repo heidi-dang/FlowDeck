@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { SessionConsistencyValidator } from "../src/domain/orchestration/runtime/session";
 import { QueryService } from "../src/orchestration/services/query-service";
-import { OrchestrationError, ErrorCodes, OutboxStatus } from "../src/orchestration/types";
+import { OutboxStatus } from "../src/orchestration/types";
 
 // ─── Helpers ─────────────────────────────────────────────────────────────
 
