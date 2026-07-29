@@ -144,7 +144,7 @@ function cleanupWorktree() {
 async function runCommand(cmd, args, cwd) {
   return new Promise((resolve) => {
     const start = Date.now();
-    const child = spawn(cmd, args, { cwd, shell: true, stdio: 'inherit' });
+    const child = spawn(cmd, args, { cwd, shell: true, stdio: ['inherit', 'inherit', 'pipe'] });
 
     // Set bounded timeout (e.g., 5 mins max per command)
     const timeoutId = setTimeout(() => {
@@ -153,9 +153,15 @@ async function runCommand(cmd, args, cwd) {
       resolve({ exitCode: -1, durationMs: Date.now() - start, timedOut: true });
     }, 5 * 60 * 1000);
 
+    let capturedStderr = '';
+    child.stderr.on('data', (data) => {
+      capturedStderr += data.toString();
+      process.stderr.write(data);
+    });
+
     child.on('close', (code, signal) => {
       clearTimeout(timeoutId);
-      resolve({ exitCode: code, signal, durationMs: Date.now() - start, timedOut: false });
+      resolve({ exitCode: code, signal, stderr: capturedStderr, durationMs: Date.now() - start, timedOut: false });
     });
   });
 }
@@ -244,8 +250,13 @@ async function main() {
     if (result.exitCode !== 0 || result.signal) {
       console.error(`${test.name} failed with exit code ${result.exitCode} signal ${result.signal} (${result.durationMs}ms).`);
       success = false;
-      // If signal is present or code indicates a crash, mark it
-      if (result.signal || result.exitCode > 128) {
+      
+      const isCrash = (result.exitCode === null && result.signal) || 
+                      (result.exitCode !== null && result.exitCode > 128) ||
+                      result.stderr?.includes('FATAL ERROR') || 
+                      result.stderr?.includes('panic(');
+
+      if (isCrash) {
          finalStatus = 'failed_by_runtime_crash';
       } else if (finalStatus === 'completed') {
          finalStatus = 'failed_during_validation';

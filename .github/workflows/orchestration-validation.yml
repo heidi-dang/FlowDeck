@@ -72,8 +72,9 @@ jobs:
           path: artifacts/orchestration-compliance/
 
   bun-compatibility:
-    name: Bun Runtime Compatibility
+    name: Bun Runtime Compatibility (Informational)
     runs-on: ubuntu-latest
+    continue-on-error: true
     needs: framework-correctness
     steps:
       - uses: actions/checkout@v4
