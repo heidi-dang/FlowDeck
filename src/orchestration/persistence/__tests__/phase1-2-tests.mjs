@@ -45,7 +45,7 @@ function makePolicy(maxAttempts = 3) {
 }
 
 function createTxWithPolicy(db, policy) {
-  const _p = policy || makePolicy();
+  const p = policy || makePolicy();
   return {
     read: (fn) => db.transaction(fn)(),
     write: (fn) => {

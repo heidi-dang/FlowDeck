@@ -54,7 +54,7 @@ function createTxMan(db, policy) {
       const id = ++savepointCounter;
       const sp = `sp_${name.replace(/[^a-z0-9_]/gi,'_')}_${id}`;
       try { db.exec(`SAVEPOINT ${sp}`); const r = fn(); detectThenable(r); db.exec(`RELEASE ${sp}`); return r }
-      catch { try { db.exec(`ROLLBACK TO ${sp}`) } catch {} try { db.exec(`RELEASE ${sp}`) } catch {}; throw e }
+      catch (e) { try { db.exec(`ROLLBACK TO ${sp}`) } catch {} try { db.exec(`RELEASE ${sp}`) } catch {}; throw e }
     },
   }
 }
@@ -88,7 +88,7 @@ try {
     db.prepare("INSERT INTO contract_families (family_id,name,created_by,created_at) VALUES ('async','a','t',datetime('now'))").run();
     return Promise.resolve('should not commit');
   });
-} catch { asyncRejected = e.message.includes('ASYNC') || e.message.includes('thenable') || true; }
+} catch (e) { asyncRejected = e.message.includes('ASYNC') || e.message.includes('thenable') || true; }
 ok(asyncRejected, 'async callback: rejected');
 eq(db.prepare("SELECT COUNT(*) AS c FROM contract_families").get().c, 0, 'async: no row committed');
 
