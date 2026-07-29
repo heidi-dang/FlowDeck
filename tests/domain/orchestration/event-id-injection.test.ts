@@ -4,18 +4,12 @@
  * Verify deterministic event ID generation with injectable generators
  */
 
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import { InMemoryRuntimeEventStore } from '../../../src/domain/orchestration/runtime/event-store/in-memory-store';
-import { createDeterministicGenerators, defaultEventIdGenerator, defaultAppendIdGenerator } from '../../../src/domain/orchestration/runtime/event-store/event-id-generator';
+import { createDeterministicGenerators, defaultEventIdGenerator } from '../../../src/domain/orchestration/runtime/event-store/event-id-generator';
 import type { UncommittedRuntimeEvent } from '../../../src/domain/orchestration/runtime/event-store/types';
 
 describe('PR 3B - Event ID Injection', () => {
-  let store: InMemoryRuntimeEventStore;
-  
-  beforeEach(() => {
-    // Default generator uses crypto.randomUUID()
-    store = new InMemoryRuntimeEventStore();
-  });
 
   it('deterministic ID injection works correctly', async () => {
     const eventIds = ['evt_1', 'evt_2', 'evt_3'];

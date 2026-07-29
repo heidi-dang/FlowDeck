@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 
 function measure(fn: () => void): number {
   const start = performance.now();

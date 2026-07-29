@@ -13,7 +13,8 @@ import {
   DeadLetterRecord,
   calculateBackoff,
   DEFAULT_RETRY_POLICY,
-  classifyError as classifyErrorFromPort
+  classifyError as classifyErrorFromPort,
+  OutboxDeliveryAdapter
 } from './port.js';
 
 import type { PersistedRuntimeEvent } from '../event-store/types';
@@ -68,6 +69,11 @@ export class InMemoryOutboxRepository {
   
   private messages: Map<string, DeliverableMessage> = new Map();
   private deliveries: Map<string, boolean> = new Map(); // messageId → delivered (idempotency)
+  private deliveryAdapter?: OutboxDeliveryAdapter;
+
+  constructor(deliveryAdapter?: OutboxDeliveryAdapter) {
+    this.deliveryAdapter = deliveryAdapter;
+  }
 
   async claimBatch(
     worktreeKey: string,
@@ -100,7 +106,7 @@ export class InMemoryOutboxRepository {
 
     const now = new Date();
     const claim: BoundedClaim = {
-      claimId: `claim_${Date.now()}_${Date.now().toString(36)}`,
+      claimId: crypto.randomUUID(),
       worktreeKey,
       ownerId,
       fencingToken,
@@ -153,7 +159,7 @@ export class InMemoryOutboxRepository {
       }
 
       const attempt: DeliveryAttempt = {
-        attemptId: `attempt_${message.messageId}_${Date.now()}`,
+        attemptId: crypto.randomUUID(),
         messageId: message.messageId,
         attemptedAt: new Date(),
         durationMs: Date.now() - startTime,
@@ -331,8 +337,13 @@ export class InMemoryOutboxRepository {
    * Simulation helper for testing
    */
   private async simulateDelivery(message: DeliverableMessage): Promise<void> {
-    // Simulate random network failures for testing
-    if (Math.random() < 0.2) {
+    if (this.deliveryAdapter) {
+      return this.deliveryAdapter.deliver(message);
+    }
+    // Simulate random network failures for testing fallback
+    const randomBuffer = new Uint32Array(1);
+    crypto.getRandomValues(randomBuffer);
+    if (randomBuffer[0] / 0xffffffff < 0.2) {
       throw new Error(`Network timeout connecting to broker`);
     }
     if (message.eventType === 'TEST_PERMANENT_ERROR') {

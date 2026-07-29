@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { unlinkSync, existsSync } from 'fs';
 
 const DB_PATH = 'concurrency_test.db';
-let connections: Database.Database[] = [];
+let connections: Database[] = [];
 
 function createConnection() {
   const db = new Database(DB_PATH);

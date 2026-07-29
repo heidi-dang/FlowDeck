@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 
 describe('Replay Harness Validation', () => {
-  let db: Database.Database;
+  let db: Database;
 
   beforeEach(() => {
     db = new Database(':memory:');

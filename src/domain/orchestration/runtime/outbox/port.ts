@@ -121,6 +121,13 @@ export interface DeadLetterRecord {
 }
 
 /**
+ * Outbox Delivery Adapter for typed test seams
+ */
+export interface OutboxDeliveryAdapter {
+  deliver(message: DeliverableMessage): Promise<void>;
+}
+
+/**
  * Outbox port interface
  */
 export interface OutboxPort {
@@ -216,7 +223,10 @@ export function calculateBackoff(attemptNumber: number, policy: RetryPolicy): nu
   
   if (policy.jitter) {
     const jitterAmount = cappedDelay * 0.1;
-    return cappedDelay + (Math.random() * jitterAmount * 2 - jitterAmount);
+    const randomBuffer = new Uint32Array(1);
+    crypto.getRandomValues(randomBuffer);
+    const randomRatio = randomBuffer[0] / 0xffffffff;
+    return cappedDelay + (randomRatio * jitterAmount * 2 - jitterAmount);
   }
   
   return cappedDelay;

@@ -125,7 +125,7 @@ export class TransitionProcessor {
     command: Command,
     fromState: TaskRunState,
     toState: TaskRunState,
-    globalSequence: number
+    _globalSequence: number
   ) {
     return {
       eventId: this.generateEventId(),
