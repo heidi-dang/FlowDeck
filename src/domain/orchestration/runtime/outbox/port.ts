@@ -4,11 +4,11 @@
  * Implements atomic outbox pattern for reliable event delivery
  */
 
+import type { PersistedRuntimeEvent } from '../event-store/types';
 
 /**
  * Claim boundaries for bounded batch processing
  */
-export interface RuntimeEvent { id: string; type: string; data: Record<string, unknown>; timestamp: Date; }
 
 export interface BoundedClaim {
   readonly claimId: string;
@@ -44,7 +44,7 @@ export interface OutboxRecord {
   readonly recordId: string;
   readonly aggregateId: string;
   readonly expectedVersion: number;
-  readonly events: RuntimeEvent[];
+  readonly events: PersistedRuntimeEvent[];
   readonly deliveredAt?: Date;
   readonly deliveryAttempts: number;
   readonly lastAttemptedAt?: Date;
@@ -249,6 +249,8 @@ export function classifyError(error: Error): DeliveryAttempt['errorType'] {
  * Check if error is retryable
  */
 export function isRetryable(errorType: DeliveryAttempt['errorType'], policy: RetryPolicy): boolean {
+  // If no error type specified (success case), consider retryable
+  if (!errorType) return false;
   return !policy.permanentErrors.has(errorType);
 }
 

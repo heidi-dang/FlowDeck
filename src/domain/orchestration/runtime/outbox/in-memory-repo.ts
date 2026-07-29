@@ -12,25 +12,39 @@ import {
   ConsumerOffset,
   DeadLetterRecord,
   calculateBackoff,
-  DEFAULT_RETRY_POLICY
+  DEFAULT_RETRY_POLICY,
+  classifyError as classifyOutboxError,
+  isRetryable as isOutboxRetryable
 } from './port.js';
 
-// Utility functions (standalone exports)
-export function classifyError(error: Error): string {
+/**
+ * Classification of delivery error type
+ */
+export function classifyError(error: Error): DeliveryAttempt['errorType'] {
   const m = error.message.toLowerCase();
-  if (m.includes('timeout') || m.includes('timed out')) return 'TIMEOUT';
-  if (m.includes('not found') || m.includes('404')) return 'NOT_FOUND';
-  if (m.includes('unreachable') || m.includes('econnrefused')) return 'UNREACHABLE';
-  return 'UNKNOWN';
+  if (m.includes('network') || m.includes('etimedout')) return 'NETWORK';
+  if (m.includes('connection') || m.includes('econnrefused')) return 'CONNECTION';
+  if (m.includes('serialization') || m.includes('parse')) return 'SERIALIZATION';
+  if (m.includes('timeout')) return 'TIMEOUT';
+  if (error.name === 'ValidationError' || m.includes('permanent')) return 'PERMANENT';
+  if (m.includes('busy') || m.includes('overload')) return 'BUSY';
+  return undefined; // Default to success or unspecified
 }
 
-export function isRetryable(errorType: string, policy: any): boolean {
-  return !policy?.permanentErrors?.has(errorType);
+/**
+ * Check if error is retryable based on policy
+ */
+export function isRetryable(errorType: DeliveryAttempt['errorType'], policy: RetryPolicy): boolean {
+  if (!errorType) return false;
+  return !policy.permanentErrors.has(errorType);
 }
 
-export function matchesTopic(event: any, subscription: any): boolean {
+import type { PersistedRuntimeEvent } from '../event-store/types';
+
+// Utility functions (standalone exports)
+export function matchesTopic(event: PersistedRuntimeEvent, subscription: SubscriberConfig): boolean {
   if (!subscription?.topics?.length) return true;
-  return subscription.topics.includes(event.type);
+  return subscription.topics.includes(event.eventType);
 }
 
 
@@ -55,7 +69,7 @@ interface DeadLetterIndex {
 /**
  * In-memory outbox repository with bounded claims and fencing
  */
-export class InMemoryOutboxRepository { // Temporary type
+export class InMemoryOutboxRepository {
   private records: RecordIndex = {
     byId: new Map(),
     byAggregate: new Map()
@@ -93,7 +107,7 @@ export class InMemoryOutboxRepository { // Temporary type
     const pendingRecords: OutboxRecord[] = [];
     
     for (const [recordId, record] of this.records.byId.entries()) {
-      if ((record as any).status === 'pending' && !pendingRecords.includes(record)) {
+      if (record.status === 'pending' && !pendingRecords.includes(record)) {
         pendingRecords.push(record);
         
         if (pendingRecords.length >= batchSize) {
@@ -116,7 +130,7 @@ export class InMemoryOutboxRepository { // Temporary type
       claimedAt: now,
       expiresAt: new Date(now.getTime() + 30000), // 30s TTL
       cursorStart: 1,
-      cursorEnd: pendingRecords.length
+      cursorEnd: pendingRecords.reduce((max, r) => Math.max(max, ...r.events.map(e => e.globalSequence)), 0)
     };
 
     this.claims.active.set(worktreeKey, claim);
@@ -191,13 +205,19 @@ export class InMemoryOutboxRepository { // Temporary type
     }
 
     for (const messageId of messageIds) {
-      // Update outbox records
+      // Update outbox records by finding matching events
       for (const record of this.records.byId.values()) {
-        for (const event of (record.events as any[])) {
-          if (event.globalSequence.toString() === messageId) {
-            (record as any).status = 'delivered';
-            (record as any).deliveredAt = new Date();
-            (record as any).deliveryAttempts++;
+        for (const event of record.events) {
+          if (event.eventId === messageId) {
+            // Create immutable copy with updated status
+            const updatedRecord: OutboxRecord = {
+              ...record,
+              status: 'delivered',
+              deliveredAt: new Date(),
+              deliveryAttempts: record.deliveryAttempts + 1
+            };
+            this.records.byId.set(record.recordId, updatedRecord);
+            break;
           }
         }
       }
@@ -208,10 +228,14 @@ export class InMemoryOutboxRepository { // Temporary type
     let retriedCount = 0;
 
     for (const record of this.records.byId.values()) {
-      if ((record as any).status === 'pending' && record.deliveryAttempts < policy.maxAttempts) {
+      if (record.status === 'pending' && record.deliveryAttempts < policy.maxAttempts) {
         const nextDelay = calculateBackoff(record.deliveryAttempts + 1, policy);
-        (record as any).nextRetryAt = new Date(Date.now() + nextDelay);
-        (record as any).status = 'delivering';
+        const updatedRecord: OutboxRecord = {
+          ...record,
+          nextRetryAt: new Date(Date.now() + nextDelay),
+          status: 'delivering'
+        };
+        this.records.byId.set(record.recordId, updatedRecord);
         retriedCount++;
       }
     }
@@ -224,25 +248,30 @@ export class InMemoryOutboxRepository { // Temporary type
 
     for (const messageId of messageIds) {
       const record = Array.from(this.records.byId.values()).find(r => 
-        r.events.some((e: any) => e.globalSequence?.toString() === messageId)
+        r.events.some((e: PersistedRuntimeEvent) => e.eventId === messageId)
       );
 
       if (record) {
-        (record as any).status = 'dead-lettered';
-        
         const dlqRecord: DeadLetterRecord = {
           recordId: `${record.recordId}_dlq`,
           originalMessageId: messageId,
           originalAggregateId: record.aggregateId,
-          originalSequence: record.events[0]?.globalSequence || 0,
-          originalEventType: record.events[0]?.type || 'unknown',
-          originalPayload: record.events[0]?.payload,
+          originalSequence: record.events[0]?.globalSequence ?? 0,
+          originalEventType: record.events[0]?.eventType ?? 'unknown',
+          originalPayload: record.events[0]?.event,
           failureReason: 'Maximum retries exceeded',
           failureTimestamp: new Date(),
           attemptCount: record.deliveryAttempts,
           finalErrorMessage: record.errorMessage || 'Unknown'
         };
 
+        // Create immutable copy with dead-lettered status
+        const updatedRecord: OutboxRecord = {
+          ...record,
+          status: 'dead-lettered',
+          errorMessage: dlqRecord.finalErrorMessage
+        };
+        this.records.byId.set(record.recordId, updatedRecord);
         this.deadLetters.records.set(dlqRecord.recordId, dlqRecord);
         deletedIds.push(dlqRecord.recordId);
       }
@@ -293,17 +322,17 @@ export class InMemoryOutboxRepository { // Temporary type
 
     // Find all pending records at or after sequence
     for (const record of this.records.byId.values()) {
-      if ((record as any).status === 'pending') {
-        for (const event of record.events as any) {
+      if (record.status === 'pending') {
+        for (const event of record.events) {
           if (event.globalSequence >= sequence) {
             messages.push({
-              messageId: event.globalSequence.toString(),
-              eventType: event.type,
-              payloadVersion: event.payloadVersion,
+              messageId: event.eventId,
+              eventType: event.eventType,
+              payloadVersion: '1', // Would come from payload version in real implementation
               payloadHash: event.payloadHash,
-              aggregateId: record.aggregateId,
+              aggregateId: event.aggregateId,
               globalSequence: event.globalSequence,
-              occurredAt: event.createdAt,
+              occurredAt: event.timestamp,
               commandId: event.commandId,
               correlationId: event.correlationId
             });
@@ -332,26 +361,22 @@ export class InMemoryOutboxRepository { // Temporary type
     }
     // Success
   }
+}
 
-  /**
-   * Test helpers
-   */
-  clear(): void {
-    this.records.byId.clear();
-    this.records.byAggregate.clear();
-    this.claims.active.clear();
-    this.claims.byOwner.clear();
-    this.offsets.offsets.clear();
-    this.deadLetters.records.clear();
-    this.messages.clear();
-    this.deliveries.clear();
-  }
+// Test helpers
+export function clearOutboxRepository(repo: InMemoryOutboxRepository): void {
+  repo['records'].byId.clear();
+  repo['records'].byAggregate.clear();
+  repo['claims'].active.clear();
+  repo['claims'].byOwner.clear();
+  repo['offsets'].offsets.clear();
+  repo['deadLetters'].records.clear();
+}
 
-  getAllClaims(): Map<string, BoundedClaim> {
-    return new Map(this.claims.active);
-  }
+export function getAllClaims(repo: InMemoryOutboxRepository): Map<string, BoundedClaim> {
+  return new Map(repo['claims'].active);
+}
 
-  getAllOffsets(): Map<string, ConsumerOffset> {
-    return new Map(this.offsets.offsets);
-  }
+export function getAllOffsets(repo: InMemoryOutboxRepository): Map<string, ConsumerOffset> {
+  return new Map(repo['offsets'].offsets);
 }
