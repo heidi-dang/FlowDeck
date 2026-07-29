@@ -4,11 +4,11 @@
  * Implements atomic outbox pattern for reliable event delivery
  */
 
+import type { PersistedRuntimeEvent } from '../event-store/types';
 
 /**
  * Claim boundaries for bounded batch processing
  */
-export interface RuntimeEvent { id: string; type: string; data: Record<string, unknown>; timestamp: Date; }
 
 export interface BoundedClaim {
   readonly claimId: string;
@@ -44,7 +44,7 @@ export interface OutboxRecord {
   readonly recordId: string;
   readonly aggregateId: string;
   readonly expectedVersion: number;
-  readonly events: RuntimeEvent[];
+  readonly events: PersistedRuntimeEvent[];
   readonly deliveredAt?: Date;
   readonly deliveryAttempts: number;
   readonly lastAttemptedAt?: Date;
@@ -118,6 +118,13 @@ export interface DeadLetterRecord {
   readonly failureTimestamp: Date;
   readonly attemptCount: number;
   finalErrorMessage: string;
+}
+
+/**
+ * Outbox Delivery Adapter for typed test seams
+ */
+export interface OutboxDeliveryAdapter {
+  deliver(message: DeliverableMessage): Promise<void>;
 }
 
 /**
@@ -216,7 +223,10 @@ export function calculateBackoff(attemptNumber: number, policy: RetryPolicy): nu
   
   if (policy.jitter) {
     const jitterAmount = cappedDelay * 0.1;
-    return cappedDelay + (Math.random() * jitterAmount * 2 - jitterAmount);
+    const randomBuffer = new Uint32Array(1);
+    crypto.getRandomValues(randomBuffer);
+    const randomRatio = randomBuffer[0] / 0xffffffff;
+    return cappedDelay + (randomRatio * jitterAmount * 2 - jitterAmount);
   }
   
   return cappedDelay;
@@ -249,6 +259,8 @@ export function classifyError(error: Error): DeliveryAttempt['errorType'] {
  * Check if error is retryable
  */
 export function isRetryable(errorType: DeliveryAttempt['errorType'], policy: RetryPolicy): boolean {
+  // If no error type specified (success case), consider retryable
+  if (!errorType) return false;
   return !policy.permanentErrors.has(errorType);
 }
 

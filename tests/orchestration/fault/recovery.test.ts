@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { FaultInjector, type FaultPoint } from './fault-injector';
+import { FaultInjector } from './fault-injector';
 
 describe('Fault Injection & Recovery Harness', () => {
   it('intercepts execution and triggers invariant recovery', async () => {
@@ -48,7 +48,7 @@ describe('Fault Injection & Recovery Harness', () => {
     for (let i = 0; i < 3; i++) {
       try {
         await injector.checkFault('event_insert', 'before');
-      } catch (e) {
+      } catch {
         failures++;
       }
     }

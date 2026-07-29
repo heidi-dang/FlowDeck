@@ -3,6 +3,8 @@
  * Enforces all invariants and emits events through aggregate
  */
 
+import { randomUUID } from 'crypto';
+import type { UncommittedRuntimeEvent } from './event-store/types';
 import type { TaskRun, TaskRunState } from './task-run';
 
 import { TRANSITION_MATRIX, STRATEGY_RULES, type TransitionDefinition } from './task-run';
@@ -83,7 +85,7 @@ export class TransitionProcessor {
     run: TaskRun,
     command: Command,
     globalSequence: number
-  ): { events: any[]; newVersion: number } {
+  ): { events: UncommittedRuntimeEvent[]; newVersion: number } {
     const validation = this.validateTransition(run, command);
     
     if (!validation.valid) {
@@ -123,30 +125,30 @@ export class TransitionProcessor {
     command: Command,
     fromState: TaskRunState,
     toState: TaskRunState,
-    globalSequence: number
+    _globalSequence: number
   ) {
     return {
-      id: this.generateEventId(),
+      eventId: this.generateEventId(),
       aggregateId,
       aggregateVersion: version,
-      globalSequence,
-      type: 'TaskRunStateChanged',
-      payloadVersion: '1.0',
+      eventType: 'TaskRunStateChanged',
       payload: {
         fromState,
         toState,
         command: command.type
       },
-      causationId: command.causationId || command.commandId,
+      metadata: {
+        causationId: command.causationId || command.commandId,
+        payloadVersion: '1.0',
+      },
       correlationId: command.correlationId,
       commandId: command.commandId,
-      createdAt: new Date(),
-      createdAtTs: Date.now()
+      createdAt: new Date()
     };
   }
 
-  private static createStrategyEvents(run: TaskRun, command: Command): any[] {
-    const events: any[] = [];
+  private static createStrategyEvents(run: TaskRun, command: Command): UncommittedRuntimeEvent[] {
+    const events: UncommittedRuntimeEvent[] = [];
 
     switch (run.strategy) {
       case 'planning' as string:
@@ -171,65 +173,65 @@ export class TransitionProcessor {
 
   private static createPlanningStartedEvent(run: TaskRun, command: Command) {
     return {
-      id: this.generateEventId(),
+      eventId: this.generateEventId(),
       aggregateId: run.aggregateId,
       aggregateVersion: run.version + 1,
-      globalSequence: 0, // To be assigned by event store
-      type: 'PlanningStarted',
-      payloadVersion: '1.0',
+      eventType: 'PlanningStarted',
       payload: {
         planScope: run.planScope
       },
-      causationId: command.causationId || command.commandId,
+      metadata: {
+        causationId: command.causationId || command.commandId,
+        payloadVersion: '1.0',
+      },
       correlationId: command.correlationId,
       commandId: command.commandId,
-      createdAt: new Date(),
-      createdAtTs: Date.now()
+      createdAt: new Date()
     };
   }
 
   private static createDelegationStartedEvent(run: TaskRun, command: Command) {
     return {
-      id: this.generateEventId(),
+      eventId: this.generateEventId(),
       aggregateId: run.aggregateId,
       aggregateVersion: run.version + 1,
-      globalSequence: 0,
-      type: 'DelegationStarted',
-      payloadVersion: '1.0',
+      eventType: 'DelegationStarted',
       payload: {
         delegatedTo: run.delegationTarget,
         delegationMode: run.delegationMode
       },
-      causationId: command.causationId || command.commandId,
+      metadata: {
+        causationId: command.causationId || command.commandId,
+        payloadVersion: '1.0',
+      },
       correlationId: command.correlationId,
       commandId: command.commandId,
-      createdAt: new Date(),
-      createdAtTs: Date.now()
+      createdAt: new Date()
     };
   }
 
   private static createRecoveryStartedEvent(run: TaskRun, command: Command) {
     return {
-      id: this.generateEventId(),
+      eventId: this.generateEventId(),
       aggregateId: run.aggregateId,
       aggregateVersion: run.version + 1,
-      globalSequence: 0,
-      type: 'RecoveryStarted',
-      payloadVersion: '1.0',
+      eventType: 'RecoveryStarted',
       payload: {
         recoveryPath: run.recoveryPath,
         failedStage: run.failedStage
       },
-      causationId: command.causationId || command.commandId,
+      metadata: {
+        causationId: command.causationId || command.commandId,
+        payloadVersion: '1.0',
+      },
       correlationId: command.correlationId,
       commandId: command.commandId,
-      createdAt: new Date(),
-      createdAtTs: Date.now()
+      createdAt: new Date()
     };
   }
 
   private static generateEventId(): string {
-    return `evt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    return `evt_${randomUUID()}`;
   }
 }
 

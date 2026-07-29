@@ -6,7 +6,7 @@ let matrix;
 
 try {
   matrix = JSON.parse(readFileSync(join(artifactsDir, 'compatibility-matrix.json'), 'utf8'));
-} catch (e) {
+} catch {
   console.error('Failed to read compatibility-matrix.json');
   process.exit(1);
 }

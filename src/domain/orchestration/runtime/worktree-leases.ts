@@ -164,7 +164,7 @@ export class InMemoryWorktreeLeaseRepository {
     const current = this.leases.get(worktreeKey);
 
     if (!current) {
-      return { valid: false, error: new LeasingError('EXPIRED' as any, worktreeKey, 'No active lease found') };
+      return { valid: false, error: new LeasingError('LEASE_EXPIRED', worktreeKey, 'No active lease found') };
     }
 
     if (current.ownerId !== ownerId) {

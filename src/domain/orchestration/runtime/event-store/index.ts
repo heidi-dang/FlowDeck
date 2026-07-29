@@ -6,13 +6,11 @@
 
 // Types
 export {
-  EVENT_PAYLOAD_VERSIONS,
-  createUncommittedEvent
+  EVENT_PAYLOAD_VERSIONS
 } from './types';
 
 export type {
   RuntimeEventPayload,
-  RuntimeEventPayloadMap,
   RuntimeEventType,
   UncommittedRuntimeEvent,
   PersistedRuntimeEvent,
@@ -32,16 +30,32 @@ export type {
 } from './types';
 
 // Port
-export {
+export type {
   RuntimeEventStorePort,
-  isConcurrencyError,
-  type AppendResult,
-  type ConcurrencyError,
-  type DuplicateCheckResult
+  AppendResult,
+  ConcurrencyError,
+  DuplicateCheckResult
+} from './port';
+
+export {
+  isConcurrencyError
 } from './port';
 
 // Implementation
-export { InMemoryRuntimeEventStore } from './in-memory-store';
+export { 
+  InMemoryRuntimeEventStore,
+  DuplicateEventError,
+  UnknownEventTypeError
+} from './in-memory-store';
+
+// ID generators
+export { 
+  defaultEventIdGenerator,
+  defaultAppendIdGenerator,
+  createDeterministicGenerators
+} from './event-id-generator.js';
+
+export type { AppendIdGenerator } from './types.js';
 
 // Rehydration
 export {

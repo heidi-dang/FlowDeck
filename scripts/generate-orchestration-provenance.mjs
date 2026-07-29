@@ -1,5 +1,4 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
 
 const COMPLIANCE_PATH = 'artifacts/orchestration-compliance/dev1-dev2-compatibility.json';
 const PROVENANCE_PATH = 'artifacts/orchestration-compliance/failure-provenance.json';

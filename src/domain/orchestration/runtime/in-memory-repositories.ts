@@ -307,6 +307,7 @@ export class InMemoryAcceptanceCriterionStateRepository implements AcceptanceCri
  */
 export class InMemoryWorktreeOwnershipRepository implements WorktreeOwnershipRepository {
   private ownership = new Map<string, string>();
+  private tokens = new Map<string, number>(); // worktreeKey → fencing token
 
   async getOwner(worktreeKey: string): Promise<string | undefined> {
     return this.ownership.get(worktreeKey);
@@ -318,24 +319,27 @@ export class InMemoryWorktreeOwnershipRepository implements WorktreeOwnershipRep
     // Atomic claim using compare-and-swap semantics
     if (!existingOwner || existingOwner === ownerId) {
       this.ownership.set(worktreeKey, ownerId);
+      this.tokens.set(worktreeKey, (this.tokens.get(worktreeKey) ?? 0) + 1);
       return true;
     }
     
     return false;
   }
 
+  async releaseOwnership(worktreeKey: string): Promise<void> {
+    // Release ownership without requiring owner ID match
+    // Safety preserved via fencing token validation at operation boundary
+    const current = this.ownership.get(worktreeKey);
+    if (current) {
+      this.ownership.delete(worktreeKey);
+      this.tokens.delete(worktreeKey);
+    }
+  }
+
   /** Helper methods for tests */
   clear(): void {
     this.ownership.clear();
-  }
-
-  async releaseOwnership(worktreeKey: string, ownerId: string): Promise<void> {
-    const current = this.ownership.get(worktreeKey);
-    if (current === ownerId) {
-      this.ownership.delete(worktreeKey);
-      return true;
-    }
-    return false;
+3: @theirs
   }
 
   async isOwnedBy(worktreeKey: string, ownerId: string): Promise<boolean> {

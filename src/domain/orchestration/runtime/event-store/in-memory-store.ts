@@ -5,8 +5,12 @@
  * with strict concurrency and duplicate handling
  */
 
-import { UncommittedRuntimeEvent, PersistedRuntimeEvent, EVENT_PAYLOAD_VERSIONS } from './types';
-import {
+import { UncommittedRuntimeEvent, PersistedRuntimeEvent } from './types';
+import type { AppendIdGenerator } from './event-id-generator.js';
+import type { EventIdGenerator } from './types.js';
+import type { ConcurrencyError } from './port.js';
+import { defaultEventIdGenerator, defaultAppendIdGenerator } from './event-id-generator.js';
+import type {
   RuntimeEventStorePort,
   AppendResult,
   DuplicateCheckResult,
@@ -53,6 +57,20 @@ class GlobalSequenceCounter {
   }
 }
 
+export class DuplicateEventError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DuplicateEventError';
+  }
+}
+
+export class UnknownEventTypeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnknownEventTypeError';
+  }
+}
+
 /**
  * In-memory event store implementation
  */
@@ -84,22 +102,37 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
   ]);
 
   /**
+   * Optional injected event ID generator (useful for deterministic tests)
+   */
+  private readonly eventIdGenerator: EventIdGenerator;
+
+  /**
+   * Optional injected append ID generator (useful for deterministic tests)
+   */
+  private readonly appendIdGenerator: AppendIdGenerator;
+
+  constructor(eventIdGenerator?: EventIdGenerator, appendIdGenerator?: AppendIdGenerator) {
+    this.eventIdGenerator = eventIdGenerator ?? defaultEventIdGenerator;
+    this.appendIdGenerator = appendIdGenerator ?? defaultAppendIdGenerator;
+  }
+
+  /**
    * Validate whether an append would succeed before attempting it
    */
-  async validateAppend(aggregateId: string, expectedVersion: number): Promise<{ valid: true; actualVersion: number } | { valid: false; error: any }> {
+  async validateAppend(aggregateId: string, expectedVersion: number): Promise<{ valid: true; actualVersion: number } | { valid: false; error: ConcurrencyError }> {
     const actualVersion = this.versionCache.get(aggregateId) ?? 0;
 
     if (expectedVersion < actualVersion) {
       return {
         valid: false,
-        error: createany('STALE_VERSION', aggregateId, expectedVersion, actualVersion)
+        error: createConcurrencyError('STALE_VERSION', aggregateId, expectedVersion, actualVersion)
       };
     }
 
     if (expectedVersion > actualVersion) {
       return {
         valid: false,
-        error: createany('FUTURE_VERSION', aggregateId, expectedVersion, actualVersion)
+        error: createConcurrencyError('FUTURE_VERSION', aggregateId, expectedVersion, actualVersion)
       };
     }
 
@@ -148,13 +181,18 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     }
 
     // Generate append ID for rollback tracking
-    const appendId = `append_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const appendId = this.appendIdGenerator();
 
-    // Check for duplicates
+    // Check for duplicates and unknown types
     for (const event of events) {
       const dupResult = await this.checkDuplicate(event);
       if (dupResult.isDuplicate) {
-        throw new Error(`Duplicate detected: ${dupResult.existingCommand ? `command ${dupResult.existingCommand}` : `event ${dupResult.existingEvent?.eventId}`}`);
+        throw new DuplicateEventError(`Duplicate detected: ${dupResult.existingCommand ? `command ${dupResult.existingCommand}` : `event ${dupResult.existingEvent?.eventId}`}`);
+      }
+      
+      const typeCheck = await this.validateEventType(event.eventType);
+      if (!typeCheck.valid) {
+        throw new UnknownEventTypeError(typeCheck.errors[0]);
       }
     }
 
@@ -173,19 +211,25 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
       }
 
       // Compute hashes
-      const payloadHash = await computePayloadHash(uncommitted.payload);
-      const eventId = uncommitted.eventId ?? `evt_${aggregateId}_${aggregateVersion}_${Date.now()}`;
+      const payloadHash = await computePayloadHash(uncommitted.payload ?? {});
+      const eventId = uncommitted.eventId ?? this.eventIdGenerator();
       
-      // Create persisted event
+      // Create persisted event with all required fields
       const persisted: PersistedRuntimeEvent = {
-        ...uncommitted,
         eventId,
-        globalSequence: currentSeq,
+        event: uncommitted.payload ?? {}, // The actual event object
+        eventType: uncommitted.eventType,
+        aggregateId,
         aggregateVersion,
+        globalSequence: currentSeq,
+        timestamp: new Date(), // Mandatory timestamp
+        payloadHash,
+        checksum: `${payloadHash}:${currentSeq}:${aggregateVersion}`,
         committedAt: new Date(),
         createdAt: uncommitted.createdAt ?? new Date(),
-        payloadHash,
-        checksum: `${payloadHash}:${currentSeq}:${aggregateVersion}`
+        metadata: uncommitted.metadata,
+        commandId: uncommitted.commandId,
+        correlationId: uncommitted.correlationId
       };
 
       assignedEvents.push(persisted);
@@ -196,11 +240,11 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     const existingStream = this.eventStreams.get(aggregateId) ?? [];
     const newStream = [...existingStream, ...assignedEvents];
 
-    // Update indexes
+    // Update indexes - use local variable for event ID
     for (const event of assignedEvents) {
-      this.eventIndex.set(eventId, event);
+      this.eventIndex.set(event.eventId, event);
       if (event.commandId) {
-        this.commandIndex.set(event.commandId, eventId);
+        this.commandIndex.set(event.commandId, event.eventId);
       }
     }
 
@@ -237,7 +281,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     // Remove event/command indices from this append
     for (const event of pending.events) {
       if (event.eventId) {
-        this.eventIndex.delete(eventId);
+        this.eventIndex.delete(event.eventId);
       }
       if (event.commandId) {
         this.commandIndex.delete(event.commandId);
@@ -257,7 +301,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     let result = stream;
 
     if (options?.fromRevision !== undefined) {
-      result = result.filter(e => e.aggregateVersion >= ((options.fromRevision!) ?? 0));
+      result = result.filter(e => e.aggregateVersion >= (options.fromRevision ?? 0));
     }
 
     if (options?.maxEvents !== undefined) {
@@ -274,14 +318,14 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
   async readGlobalRange(options: StreamPaginationOptions): Promise<{ events: PersistedRuntimeEvent[]; hasMore: boolean; lastSequenceNumber: number }> {
     const allEvents = Array.from(this.eventStreams.values()).flat();
     
-    let sorted = [...allEvents].sort((a, b) => a.globalSequence! - b.globalSequence!);
+    let sorted = [...allEvents].sort((a, b) => a.globalSequence - b.globalSequence);
 
-    if (((options.fromRevision || 0) ?? 0) !== undefined) {
-      sorted = sorted.filter(e => e.aggregateVersion >= ((options.fromRevision || 0) ?? 0));
+    if (options.fromRevision !== undefined) {
+      sorted = sorted.filter(e => e.aggregateVersion >= (options.fromRevision ?? 0));
     }
 
-    if (((options.toRevision || 999999) ?? 999999) !== undefined) {
-      sorted = sorted.filter(e => e.aggregateVersion <= ((options.toRevision || 999999) ?? 999999));
+    if (options.toRevision !== undefined) {
+      sorted = sorted.filter(e => e.aggregateVersion <= (options.toRevision ?? Number.MAX_SAFE_INTEGER));
     }
 
     const limit = options.limit ?? 100;
@@ -319,25 +363,28 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
    * Get persisted event by ID
    */
   async getEventById(eventId: string): Promise<PersistedRuntimeEvent | undefined> {
-    return this.eventIndex.get(event.eventId);
+    return this.eventIndex.get(eventId);
   }
 }
 
-// Helper to create typed concurrency error
-function createany(
-  type: any['type'],
+/**
+ * Helper to create typed concurrency error
+ */
+function createConcurrencyError(
+  type: 'STALE_VERSION' | 'FUTURE_VERSION' | 'VERSION_GAP',
   aggregateId: string,
   expectedVersion: number,
-  actualVersion: number
-): any {
-  const messages: Record<any, string> = {
+  actualVersion: number,
+  errorMessage?: string
+): ConcurrencyError {
+  const messages: Record<string, string> = {
     STALE_VERSION: `Stale version: expected ${actualVersion}, got ${expectedVersion}`,
     FUTURE_VERSION: `Future version: expected ${actualVersion}, got ${expectedVersion}`,
-    VERSION_GAP: `Version gap: expected contiguous version after ${actualVersion}, got ${expectedVersion}`
+    VERSION_GAP: `Version gap: expected contiguous version after ${actualVersion}, got ${expectedVersion}${errorMessage ? ` (${errorMessage})` : ''}`
   };
 
   return {
-    name: 'any',
+    name: 'ConcurrencyError',
     type,
     aggregateId,
     expectedVersion,

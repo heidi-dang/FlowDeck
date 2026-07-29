@@ -37,6 +37,7 @@ export interface RuntimeRequirement {
   readonly title: string;
   readonly status: 'pending' | 'in-progress' | 'validated' | 'failed' | 'skipped';
 }
+import type { UncommittedRuntimeEvent } from './event-store/types';
 
 export interface AcceptanceCriterionState {
   readonly id: string;
@@ -51,7 +52,7 @@ export interface AcceptanceCriterionState {
  */
 export interface UnitOfWork {
   /** Register aggregate for commit */
-  register(aggregate: { getId(): string; getUncommittedEvents(): any[] }): void;
+  register(aggregate: { getId(): string; getUncommittedEvents(): UncommittedRuntimeEvent[] }): void;
   
   /** Commit all registered changes atomically */
   commit(): Promise<void>;
