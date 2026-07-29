@@ -11,6 +11,7 @@ function tryExec(cmd: string, args: string[] = []): string | null {
       encoding: "utf-8",
       timeout: 2000,
       shell: process.platform === "win32",
+      stdio: ["ignore", "pipe", "ignore"],
     }).trim()
   } catch { return null }
 }

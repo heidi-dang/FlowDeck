@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { unlinkSync, existsSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
-const DB_PATH = 'concurrency_test.db';
+let tempDir: string = '';
+let DB_PATH: string = '';
 let connections: any = [];
 
 function createConnection() {
@@ -33,7 +36,8 @@ class _Barrier {
 
 describe('Concurrency Harness Validation', () => {
   beforeEach(() => {
-    if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
+    tempDir = mkdtempSync(join(tmpdir(), 'conc-test-'));
+    DB_PATH = join(tempDir, 'concurrency_test.db');
     const setupDb = createConnection();
     setupDb.exec(`CREATE TABLE events (aggregate_id TEXT, version INTEGER, UNIQUE(aggregate_id, version))`);
     setupDb.close();
@@ -49,7 +53,9 @@ describe('Concurrency Harness Validation', () => {
     }
     connections = [];
     try {
-      if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
+      if (tempDir && existsSync(tempDir)) {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     } catch {}
   });
 

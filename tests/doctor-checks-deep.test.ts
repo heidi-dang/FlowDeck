@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { runDoctor, scoreCategory } from "../src/doctor/doctor"
+import { runDoctor, scoreCategory, formatReport, formatJSON } from "../src/doctor/doctor"
 import { runRuntimeChecks } from "../src/doctor/checks/runtime"
 import { runRepositoryChecks } from "../src/doctor/checks/repository"
 import { runEnvironmentChecks } from "../src/doctor/checks/environment"
@@ -10,7 +10,6 @@ import { runSecurityChecks } from "../src/doctor/checks/security"
 import { runConfigurationChecks } from "../src/doctor/checks/configuration"
 import { generateRecommendations } from "../src/doctor/recommendations/recommendations"
 import { applyAutoFixes } from "../src/doctor/apply/apply"
-import { runDoctorCli } from "../src/doctor/cli.mjs"
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
@@ -175,8 +174,21 @@ describe("Doctor Engine Deep Coverage Tests", () => {
     }
   })
 
-  it("runDoctorCli formats JSON and text outputs correctly", async () => {
-    const res = await runDoctorCli(["--json"])
-    expect(res).toBeUndefined()
+  it("formatReport and formatJSON format reports correctly", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "doc-fmt-"))
+    try {
+      const report = await runDoctor(tempDir, { verbose: true, profile: "recommended-dev" })
+      const textVerbose = formatReport(report, true)
+      expect(textVerbose).toContain("FlowDeck Doctor")
+      expect(textVerbose).toContain("Readiness:")
+      
+      const textQuiet = formatReport(report, false)
+      expect(textQuiet).toBeDefined()
+
+      const jsonStr = formatJSON(report)
+      expect(JSON.parse(jsonStr).version).toBeDefined()
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
   })
 })

@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { unlinkSync, existsSync } from 'fs';
+import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
-const DB_PATH = 'cleanup_test.db';
+let tempDir = '';
+let DB_PATH = '';
 let connections: Database[] = [];
 
 function createConnection() {
@@ -13,7 +16,8 @@ function createConnection() {
 
 describe('Resource Cleanup Validation', () => {
   beforeEach(() => {
-    if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
+    tempDir = mkdtempSync(join(tmpdir(), 'clean-test-'));
+    DB_PATH = join(tempDir, 'cleanup_test.db');
     const setupDb = createConnection();
     setupDb.exec(`CREATE TABLE events (id TEXT)`);
   });
@@ -23,12 +27,14 @@ describe('Resource Cleanup Validation', () => {
       try {
         db.close();
       } catch {
-        // ignore already closed
+        // ignore if already closed
       }
     }
     connections = [];
     try {
-      if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
+      if (tempDir && existsSync(tempDir)) {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
     } catch {}
   });
 

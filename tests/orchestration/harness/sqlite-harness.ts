@@ -1,9 +1,13 @@
 import { Database, type SQLQueryBindings } from 'bun:sqlite';
+import { mkdtempSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
 
 export class SqliteTestHarness {
   public db: Database;
   constructor(memory: boolean = true) {
-    this.db = new Database(memory ? ':memory:' : 'test.db');
+    const dbPath = memory ? ':memory:' : join(mkdtempSync(join(tmpdir(), 'harness-')), 'test.db');
+    this.db = new Database(dbPath);
   }
   execute(query: string, params: unknown[] = []): void {
     const stmt = this.db.prepare(query);

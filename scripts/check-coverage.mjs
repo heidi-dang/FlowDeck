@@ -163,50 +163,61 @@ export function parseLcov(lcovContent) {
   }
 }
 
+export function evaluateProcessResult(proc, tempDir, threshold) {
+  if (proc.error) {
+    throw new Error(`Coverage test process execution error: ${proc.error.message}`)
+  }
+
+  if (proc.signal) {
+    throw new Error(`Coverage test process terminated by signal: ${proc.signal}`)
+  }
+
+  if (proc.status === null) {
+    throw new Error(`Coverage test process exited with null status`)
+  }
+
+  if (proc.status !== 0) {
+    const fullOut = (proc.stdout || "") + "\n" + (proc.stderr || "")
+    const failLines = fullOut.split("\n").filter(l => /fail|error|exception|stack|at /i.test(l)).slice(-30).join("\n")
+    const tailOut = fullOut.slice(-3000)
+    throw new Error(`Coverage test execution failed with exit code ${proc.status}:\n--- FAILING LINES ---\n${failLines}\n--- TAIL OUTPUT ---\n${tailOut}`)
+  }
+
+  const lcovFile = join(tempDir, "lcov.info")
+  if (!existsSync(lcovFile)) {
+    throw new Error(`Coverage report file lcov.info was not created at ${lcovFile}`)
+  }
+
+  const lcovContent = readFileSync(lcovFile, "utf-8")
+  const { coveredLines, totalLines, rawPercentage, displayPercentage, fileCount } = parseLcov(lcovContent)
+
+  console.log(`Measured weighted aggregate line coverage: ${displayPercentage}% (raw: ${rawPercentage}%, ${coveredLines}/${totalLines} lines across ${fileCount} source files). Required threshold: ${threshold}%`)
+
+  // Raw percentage controls pass/fail; display percentage is display-only
+  if (rawPercentage < threshold) {
+    throw new Error(`Coverage threshold not met: ${displayPercentage}% is below required threshold of ${threshold}%`)
+  }
+
+  console.log(`\n[SUCCESS] Coverage threshold requirement satisfied (${displayPercentage}% >= ${threshold}%).`)
+  return { status: 0, rawPercentage, displayPercentage, coveredLines, totalLines, fileCount }
+}
+
 /**
  * Main coverage execution wrapper without shell fallback.
  */
-export function runCoverageCheck(thresholdRaw = process.env.COVERAGE_THRESHOLD) {
+export function runCoverageCheckWithRunner(thresholdRaw = process.env.COVERAGE_THRESHOLD, runner = spawnSync) {
   const threshold = validateThreshold(thresholdRaw)
   const tempDir = mkdtempSync(join(tmpdir(), "fd-cov-"))
   const bunBin = getBunExecutable()
 
   try {
-    const proc = spawnSync(bunBin, ["test", "--coverage", "--coverage-reporter=lcov", `--coverage-dir=${tempDir}`], {
+    const proc = runner(bunBin, ["test", "--coverage", "--coverage-reporter=lcov", `--coverage-dir=${tempDir}`], {
       shell: false,
       encoding: "utf-8",
       maxBuffer: 50 * 1024 * 1024,
     })
 
-    const lcovFile = join(tempDir, "lcov.info")
-    const fullOut = (proc.stdout || "") + "\n" + (proc.stderr || "")
-    const hasFailures = / (?:[1-9]\d*)\s+fail/i.test(fullOut)
-
-    if (proc.error) {
-      throw new Error(`Coverage test process execution error: ${proc.error.message}`)
-    }
-
-    if ((proc.status !== 0 && proc.status !== 2) || hasFailures || !existsSync(lcovFile)) {
-      const failLines = fullOut.split("\n").filter(l => /fail|error|exception|stack|at /i.test(l)).slice(-30).join("\n")
-      const tailOut = fullOut.slice(-3000)
-      throw new Error(`Coverage test execution failed with exit code ${proc.status}:\n--- FAILING LINES ---\n${failLines}\n--- TAIL OUTPUT ---\n${tailOut}`)
-    }
-    if (!existsSync(lcovFile)) {
-      throw new Error(`Coverage report file lcov.info was not created at ${lcovFile}`)
-    }
-
-    const lcovContent = readFileSync(lcovFile, "utf-8")
-    const { coveredLines, totalLines, rawPercentage, displayPercentage, fileCount } = parseLcov(lcovContent)
-
-    console.log(`Measured weighted aggregate line coverage: ${displayPercentage}% (raw: ${rawPercentage}%, ${coveredLines}/${totalLines} lines across ${fileCount} source files). Required threshold: ${threshold}%`)
-
-    // Raw percentage controls pass/fail; display percentage is display-only
-    if (rawPercentage < threshold) {
-      throw new Error(`Coverage threshold not met: ${displayPercentage}% is below required threshold of ${threshold}%`)
-    }
-
-    console.log(`\n[SUCCESS] Coverage threshold requirement satisfied (${displayPercentage}% >= ${threshold}%).`)
-    return { status: 0, rawPercentage, displayPercentage, coveredLines, totalLines, fileCount }
+    return evaluateProcessResult(proc, tempDir, threshold)
   } finally {
     try {
       rmSync(tempDir, { recursive: true, force: true })
@@ -214,6 +225,10 @@ export function runCoverageCheck(thresholdRaw = process.env.COVERAGE_THRESHOLD) 
       // Best-effort cleanup of temporary directory
     }
   }
+}
+
+export function runCoverageCheck(thresholdRaw = process.env.COVERAGE_THRESHOLD) {
+  return runCoverageCheckWithRunner(thresholdRaw)
 }
 
 // Execute CLI entry point when run directly
