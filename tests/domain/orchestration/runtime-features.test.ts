@@ -227,9 +227,9 @@ describe('PR 3A - Runtime State Domain', () => {
     });
 
     it('enforces unique assignment per run + agent', () => {
-      const assignment = { id: 'assign_1', runId: 'run_123', agentName: 'coder' };
+      const assignment = { id: 'assign_1', runId: 'run_123', agentName: 'coder'} as Assignment;
       const existingAssignments = [
-        { id: 'assign_2', runId: 'run_123', agentName: 'coder' }
+        { id: 'assign_2', runId: 'run_123', agentName: 'coder'} as Assignment
       ];
       
       const result = AssignmentConsistencyValidator.validateUniqueness(assignment, existingAssignments);
@@ -362,7 +362,8 @@ describe('PR 3A - Runtime State Domain', () => {
         const run = {
           aggregateId: 'run_123',
           version: 1,
-          state: 'created'
+          status: 'created' as TaskRunState,
+          strategy: 'simple'
         } as TaskRun;
 
         await repo.save(run);
@@ -526,7 +527,7 @@ describe('PR 3A - Runtime State Domain', () => {
       const run = {
         aggregateId: 'run_123',
         version: 1,
-        state: 'created',
+        status: 'created' as TaskRunState,
         strategy: 'simple'
       } as TaskRun;
 
@@ -549,7 +550,7 @@ describe('PR 3A - Runtime State Domain', () => {
       const run = {
         aggregateId: 'run_123',
         version: 1,
-        state: 'created',
+        status: 'created' as TaskRunState,
         strategy: 'simple'
       } as TaskRun;
 
@@ -575,7 +576,7 @@ describe('PR 3A - Runtime State Domain', () => {
       const run = {
         aggregateId: 'run_123',
         version: 1,
-        state: 'created',
+        status: 'created' as TaskRunState,
         strategy: 'simple'
       } as TaskRun;
 
