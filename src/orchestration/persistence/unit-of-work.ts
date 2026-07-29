@@ -1,36 +1,38 @@
 /**
  * Unit of Work — one atomic operation spanning multiple repositories.
- * Callbacks are STRICTLY SYNCHRONOUS. Returns Promise for API convenience.
- * Async/thenable callbacks cause AsyncTransactionCallbackError and rollback.
+ * Callbacks are STRICTLY SYNCHRONOUS. Thenable detection happens INSIDE
+ * the transaction boundary via TransactionManager's sync wrappers.
  */
 
 import type Database from "better-sqlite3"
 import { createTransactionManager, type TransactionManager } from "./transaction-manager"
 import { AsyncTransactionCallbackError } from "./errors"
-
-export interface UnitOfWorkContext {
-  db: Database.Database
-  tx: TransactionManager
-}
+import type { RetryPolicy } from "./retry-policy"
+import type { Scheduler } from "./clock"
 
 export interface UnitOfWork {
-  execute<T>(operation: (context: UnitOfWorkContext) => T): Promise<T>
+  execute<T>(operation: (ctx: UnitOfWorkContext) => T): Promise<T>
+}
+
+export interface UnitOfWorkContext {
+  readonly tx: TransactionManager
 }
 
 export class SqliteUnitOfWork implements UnitOfWork {
   private db: Database.Database
+  private policy?: RetryPolicy
+  private scheduler?: Scheduler
 
-  constructor(db: Database.Database) {
+  constructor(db: Database.Database, policy?: RetryPolicy, scheduler?: Scheduler) {
     this.db = db
+    this.policy = policy
+    this.scheduler = scheduler
   }
 
-  async execute<T>(operation: (context: UnitOfWorkContext) => T): Promise<T> {
-    return createTransactionManager(this.db).writeWithRetry(() => {
-      const result = operation({ db: this.db, tx: createTransactionManager(this.db) })
-      if (result !== null && result !== undefined && typeof (result as any).then === 'function') {
-        throw new AsyncTransactionCallbackError()
-      }
-      return result
+  async execute<T>(operation: (ctx: UnitOfWorkContext) => T): Promise<T> {
+    const tx = createTransactionManager(this.db, this.policy, this.scheduler)
+    return tx.writeWithRetry(() => {
+      return operation({ tx })
     })
   }
 }
