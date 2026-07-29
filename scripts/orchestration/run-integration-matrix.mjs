@@ -109,7 +109,10 @@ const worktreePath = join(tmpdir(), `flowdeck-orchestration-integration-${runId}
 console.log(`Creating worktree at ${worktreePath}...`);
 execGit(`worktree add --detach "${worktreePath}" "${shas.base}"`);
 
-// 4. Write ownership marker
+// 4. Write ownership marker and configure git identity
+execGit(`config user.name "github-actions[bot]"`, { cwd: worktreePath });
+execGit(`config user.email "github-actions[bot]@users.noreply.github.com"`, { cwd: worktreePath });
+
 const marker = {
   runId,
   repoRoot,
@@ -134,7 +137,9 @@ for (const sha of mergeOrder) {
   console.log(`Merging ${sha}...`);
   try {
     execSync(`git merge --no-commit --no-ff "${sha}"`, { cwd: worktreePath, stdio: 'pipe' });
-  } catch {
+  } catch (err) {
+    if (err.stdout) console.log(err.stdout.toString());
+    if (err.stderr) console.error(err.stderr.toString());
     console.error(`Merge conflict or failure when merging ${sha}`);
     mergeConflict = true;
     failedMergeSha = sha;
