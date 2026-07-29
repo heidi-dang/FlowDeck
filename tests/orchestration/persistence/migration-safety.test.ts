@@ -17,10 +17,12 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { unlinkSync } from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
 import { Database } from "bun:sqlite"
 import { runMigrations, getCurrentVersion } from "@/orchestration/persistence/migrations/migration-runner"
 
-const TEST_DB = "/tmp/fd-migration-safety-test.db"
+const TEST_DB = join(tmpdir(), "fd-migration-safety-test.db")
 
 function clean() {
   for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {

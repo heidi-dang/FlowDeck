@@ -7,11 +7,13 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { unlinkSync } from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
 import { Database } from "bun:sqlite"
 import { createTransactionManager } from "@/orchestration/persistence/transaction-manager"
 import { createDefaultPolicy } from "@/orchestration/persistence/retry-policy"
 
-const TEST_DB = "/tmp/fd-txn-mgr-test.db"
+const TEST_DB = join(tmpdir(), "fd-txn-mgr-test.db")
 
 function clean() {
   for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {

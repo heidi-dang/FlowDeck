@@ -4,6 +4,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { unlinkSync, existsSync } from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
 import { Database } from "bun:sqlite"
 import { closeAllConnections } from "../../src/orchestration/persistence/connection"
 import { runMigrations } from "../../src/orchestration/persistence/migrations/migration-runner"
@@ -12,7 +14,7 @@ import { EventsRepository } from "../../src/orchestration/persistence/repositori
 import { TaskRunsRepository } from "../../src/orchestration/persistence/repositories/task-run"
 import { WorktreesRepository } from "../../src/orchestration/persistence/repositories/worktree"
 
-const DB_PATH = "/tmp/e2e-orch-test.db"
+const DB_PATH = join(tmpdir(), "fd-e2e-orch-test.db")
 
 /** Bootstrap FK parent rows needed by task_runs. */
 
