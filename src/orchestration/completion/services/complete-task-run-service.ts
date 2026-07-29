@@ -1,20 +1,19 @@
 /**
  * CompleteTaskRunService — atomic completion command.
  *
- * Transactional sequence (all inside UnitOfWork):
- * 1. Canonicalize and hash the full decision fingerprint
+ * Transactional sequence:
+ * 1. Build full canonical fingerprint of all decision inputs
  * 2. Atomically reserve the scoped idempotency key
- * 3. Replay, reject conflict, or reject in-progress
- * 4. Load and validate required domain state
- * 5. Evaluate completion gates
- * 6. Validate approvals and overrides
- * 7. Persist evaluation
- * 8. Persist completion decision
- * 9. CAS-consume approved overrides
- * 10. Supersede previous decision when applicable
- * 11. Append domain events via event appender
- * 12. Mark idempotency reservation completed
- * 13. Commit once
+ * 3. Replay, reject conflict (typed), or reject in-progress (typed)
+ * 4. Evaluate completion gates
+ * 5. Validate approvals and overrides
+ * 6. Persist evaluation
+ * 7. Persist completion decision
+ * 8. CAS-consume approved overrides (throw typed error if override not found)
+ * 9. Supersede previous decision (with validation)
+ * 10. Append domain events
+ * 11. Complete idempotency reservation
+ * 12. Commit once
  *
  * Any exception rolls back every step.
  * No external I/O inside the transaction.
@@ -27,7 +26,7 @@ import { type CompletionDecision } from "../decision/completion-decision"
 import { getCompletionPolicyVersion } from "../domain/policy-version"
 import { CompletionDecisionService } from "./decision-service"
 import { IdempotencyService } from "../../idempotency/domain/idempotency-service"
-import { IdempotencyIntegrityError } from "../../idempotency/domain/errors"
+import { IdempotencyIntegrityError, IdempotencyInProgressError, IdempotencyConflictError } from "../../idempotency/domain/errors"
 import { type IdempotencyRepository } from "../../idempotency/ports/idempotency-repository"
 import { type CompletionRepository } from "../ports/completion-repository"
 import { type OverrideRepository } from "../../override/ports/override-repository"
@@ -40,12 +39,85 @@ import type { ApprovalDecision } from "../../approval/domain/approval-decision"
 
 const COMMAND_TYPE = "completion.completeTaskRun"
 
+/** Error thrown when a consumed override ID cannot be found. */
+export class MissingConsumedOverrideError extends Error {
+  public readonly code = "MISSING_CONSUMED_OVERRIDE"
+  constructor(overrideId: string) {
+    super(`Consumed override ${overrideId} not found in input overrides — aborting transaction`)
+    this.name = "MissingConsumedOverrideError"
+  }
+}
+
+/** Error thrown when supersession validation fails. */
+export class SupersessionError extends Error {
+  public readonly code = "SUPERSESSION_FAILED"
+  public readonly detail: string
+  constructor(detail: string) {
+    super(`Supersession failed: ${detail}`)
+    this.detail = detail
+    this.name = "SupersessionError"
+  }
+}
+
 export interface AtomicCompletionInput {
   readonly command: CompleteTaskRunCommand
   readonly evaluationInput: CompletionEvaluationInput
   readonly overrides: readonly OverrideRequest[]
   readonly approvalPairs: readonly { request: ApprovalRequest; decision?: ApprovalDecision }[]
   readonly previousDecisionId?: string
+}
+
+function buildFingerprint(
+  command: CompleteTaskRunCommand,
+  evaluationInput: CompletionEvaluationInput,
+  overrides: readonly OverrideRequest[],
+  approvalPairs: readonly { request: ApprovalRequest; decision?: ApprovalDecision }[],
+  previousDecisionId: string | undefined,
+): Record<string, unknown> {
+  return {
+    taskRunId: command.taskRunId,
+    contractFamilyId: command.contractFamilyId,
+    contractVersionId: command.contractVersionId,
+    evaluatedSha: command.evaluatedSha,
+    actor: command.actor,
+    actorAuthority: command.actorAuthority,
+    previousDecisionId: previousDecisionId ?? null,
+    requiredAssignmentsComplete: evaluationInput.requiredAssignmentsComplete,
+    currentSha: evaluationInput.currentSha,
+    expectedRunId: evaluationInput.expectedRunId,
+    // Full canonical projections — not counts
+    requirements: evaluationInput.requirements.map((r) => ({
+      id: r.id, description: r.description, priority: r.priority,
+    })),
+    acceptanceCriteria: evaluationInput.acceptanceCriteria.map((a) => ({
+      id: a.id, description: a.description, priority: a.priority,
+    })),
+    verificationResults: evaluationInput.verificationResults.map((vr) => ({
+      id: (vr as any).id, ruleId: (vr as any).ruleId, status: (vr as any).status,
+      required: (vr as any).required, targetSha: (vr as any).targetSha,
+      runId: (vr as any).runId,
+    })),
+    evidenceItems: evaluationInput.evidenceItems.map((ev) => ({
+      id: (ev as any).id, sha: (ev as any).sha, runId: (ev as any).runId,
+      status: (ev as any).status, criterionIds: (ev as any).criterionIds,
+    })),
+    // Override details
+    overrides: overrides.map((o) => ({
+      id: o.id, gateId: o.gateId, version: o.version, status: o.status,
+      sha: o.sha, taskRunId: o.taskRunId,
+    })),
+    // Approval details
+    approvals: approvalPairs.map((a) => ({
+      requestId: a.request.id, gateId: a.request.gateId, status: a.request.status,
+      sha: a.request.sha, requester: a.request.requester,
+      requesterAuthority: a.request.requesterAuthority,
+      decision: a.decision ? {
+        id: a.decision.id, outcome: a.decision.outcome,
+        approver: a.decision.approver, approverAuthority: a.decision.approverAuthority,
+      } : null,
+    })),
+    policyVersion: getCompletionPolicyVersion(),
+  }
 }
 
 export class CompleteTaskRunService {
@@ -62,40 +134,21 @@ export class CompleteTaskRunService {
   async execute(input: AtomicCompletionInput): Promise<CompleteTaskRunResult> {
     const { command, evaluationInput, overrides, approvalPairs, previousDecisionId } = input
 
-    return this.unitOfWork.execute(async () => {
-      // 1. Build the full decision fingerprint
-      const fingerprint: Record<string, unknown> = {
-        taskRunId: command.taskRunId,
-        contractFamilyId: command.contractFamilyId,
-        contractVersionId: command.contractVersionId,
-        evaluatedSha: command.evaluatedSha,
-        actor: command.actor,
-        actorAuthority: command.actorAuthority,
-        previousDecisionId: previousDecisionId ?? null,
-        requiredAssignmentsComplete: evaluationInput.requiredAssignmentsComplete,
-        currentSha: evaluationInput.currentSha,
-        expectedRunId: evaluationInput.expectedRunId,
-        requirementCount: evaluationInput.requirements.length,
-        criteriaCount: evaluationInput.acceptanceCriteria.length,
-        verificationResultCount: evaluationInput.verificationResults.length,
-        evidenceCount: evaluationInput.evidenceItems.length,
-        overrideIds: overrides.map((o) => o.id).sort(),
-        overrideVersions: Object.fromEntries(overrides.map((o) => [o.id, o.version])),
-        approvalRequestIds: approvalPairs.map((a) => a.request.id).sort(),
-        approvalDecisionIds: approvalPairs.filter((a) => a.decision).map((a) => a.decision!.id).sort(),
-        policyVersion: getCompletionPolicyVersion(),
-      }
+    // 1. Build the full decision fingerprint (canonical projections)
+    const fingerprint = buildFingerprint(command, evaluationInput, overrides, approvalPairs, previousDecisionId)
 
+    return this.unitOfWork.execute(async () => {
       // 2. Atomically reserve the scoped idempotency key
       const reservation = await this.idempotencyService.tryReserve(
-        COMMAND_TYPE, command.taskRunId, command.idempotencyKey, fingerprint,
+        COMMAND_TYPE, command.taskRunId, command.idempotencyKey, fingerprint, command.requestedAt,
       )
 
-      // 3. Handle non-acquired results
+      // 3. Handle non-acquired results with typed errors
       if (reservation.status === "completed") {
-        // Exact replay — load persisted result
         const record = reservation.record
-        if (!record.resultId) throw new IdempotencyIntegrityError(record.scopedKey, "completed record has no resultId")
+        if (!record.resultId) {
+          throw new IdempotencyIntegrityError(record.scopedKey, "completed record has no resultId")
+        }
 
         const existingDecision = await this.completionRepository.getDecision(record.resultId)
         if (!existingDecision) {
@@ -111,11 +164,10 @@ export class CompleteTaskRunService {
       }
 
       if (reservation.status === "in_progress") {
-        throw new Error(`Command already in progress for key ${command.idempotencyKey}`)
+        throw new IdempotencyInProgressError(`${COMMAND_TYPE}:${command.taskRunId}:${command.idempotencyKey}`)
       }
 
       if (reservation.status === "conflict") {
-        const { IdempotencyConflictError } = await import("../../idempotency/domain/errors")
         throw new IdempotencyConflictError(
           `${COMMAND_TYPE}:${command.taskRunId}:${command.idempotencyKey}`,
           reservation.expectedPayloadHash,
@@ -124,9 +176,8 @@ export class CompleteTaskRunService {
       }
 
       // reservation.status === "acquired" — proceed
-
       try {
-        // 4-6. Evaluate and decide (gates, overrides, approvals)
+        // 4-5. Evaluate and decide (gates, overrides, approvals)
         const { decision, evaluation, consumedOverrideIds } = await this.decisionService.evaluateAndDecide({
           taskRunId: command.taskRunId,
           contractFamilyId: command.contractFamilyId,
@@ -141,33 +192,34 @@ export class CompleteTaskRunService {
           now: command.requestedAt,
         })
 
-        // 7. Persist evaluation
+        // 6. Persist evaluation
         await this.completionRepository.saveEvaluation(evaluation)
 
-        // 8. Persist completion decision
+        // 7. Persist completion decision
         await this.completionRepository.saveDecision(decision)
 
-        // 9. CAS-consume approved overrides
+        // 8. CAS-consume approved overrides — never silently skip
         for (const overrideId of consumedOverrideIds) {
-          const ov = (overrides as OverrideRequest[]).find((o) => o.id === overrideId)
-          if (ov) {
-            await this.overrideRepository.consume(overrideId, decision.id, ov.version, command.requestedAt)
+          const ov = overrides.find((o) => o.id === overrideId)
+          if (!ov) {
+            throw new MissingConsumedOverrideError(overrideId)
           }
+          await this.overrideRepository.consume(overrideId, decision.id, ov.version, command.requestedAt)
         }
 
-        // 10. Supersede previous decision when applicable
+        // 9. Supersede previous decision with validation
         if (previousDecisionId) {
-          await this.completionRepository.supersedeDecision(previousDecisionId, decision.id)
+          await this.validateAndSupersede(previousDecisionId, decision, command)
         }
 
-        // 11. Generate and append domain events
-        const events = this.generateEvents(decision, evaluation, command, consumedOverrideIds, overrides as OverrideRequest[])
+        // 10. Generate and append domain events
+        const events = this.generateEvents(decision, evaluation, command, consumedOverrideIds, overrides)
         await this.eventAppender.appendMany(events)
 
-        // 12. Mark idempotency reservation completed
+        // 11. Complete idempotency reservation
         await this.idempotencyService.complete(
           COMMAND_TYPE, command.taskRunId, command.idempotencyKey,
-          "completion_decision", decision.id,
+          "completion_decision", decision.id, command.requestedAt,
         )
 
         return {
@@ -186,6 +238,32 @@ export class CompleteTaskRunService {
     })
   }
 
+  private async validateAndSupersede(
+    previousDecisionId: string,
+    newDecision: CompletionDecision,
+    command: CompleteTaskRunCommand,
+  ): Promise<void> {
+    const prev = await this.completionRepository.getDecision(previousDecisionId)
+    if (!prev) {
+      throw new SupersessionError(`Previous decision ${previousDecisionId} not found`)
+    }
+    if (prev.taskRunId !== command.taskRunId) {
+      throw new SupersessionError(`Previous decision belongs to run ${prev.taskRunId}, expected ${command.taskRunId}`)
+    }
+    if (prev.contractFamilyId !== command.contractFamilyId) {
+      throw new SupersessionError(`Previous decision belongs to family ${prev.contractFamilyId}, expected ${command.contractFamilyId}`)
+    }
+    if (prev.contractVersionId !== command.contractVersionId) {
+      throw new SupersessionError(`Previous decision belongs to version ${prev.contractVersionId}, expected ${command.contractVersionId}`)
+    }
+    if (prev.id === newDecision.id) {
+      throw new SupersessionError("Cannot supersede self")
+    }
+    // Check not already superseded by looking up the supersession chain
+    // (actual persistence check would be in repository)
+    await this.completionRepository.supersedeDecision(previousDecisionId, newDecision.id)
+  }
+
   private generateEvents(
     decision: CompletionDecision,
     evaluation: CompletionEvaluation,
@@ -195,6 +273,7 @@ export class CompleteTaskRunService {
   ): DomainEvent[] {
     const events: DomainEvent[] = []
     const policyVersion = getCompletionPolicyVersion()
+    const timestamp = command.requestedAt
 
     // CompletionEvaluated — always emitted
     events.push(createEvent(
@@ -209,7 +288,7 @@ export class CompleteTaskRunService {
         passedGates: evaluation.passedGates,
         policyVersion,
       },
-      undefined, command.actor, 1,
+      timestamp, undefined, command.actor, 1,
     ))
 
     // Terminal event based on outcome
@@ -223,7 +302,7 @@ export class CompleteTaskRunService {
           approvalIds: [...decision.approvalIds],
           policyVersion,
         },
-        undefined, command.actor, 1,
+        timestamp, undefined, command.actor, 1,
       ))
     } else if (decision.outcome === "blocked") {
       events.push(createEvent(
@@ -234,7 +313,7 @@ export class CompleteTaskRunService {
           failureReasons: [...decision.failureReasons],
           policyVersion,
         },
-        undefined, command.actor, 1,
+        timestamp, undefined, command.actor, 1,
       ))
     } else if (decision.outcome === "rejected") {
       events.push(createEvent(
@@ -245,7 +324,7 @@ export class CompleteTaskRunService {
           failureReasons: [...decision.failureReasons],
           policyVersion,
         },
-        undefined, command.actor, 1,
+        timestamp, undefined, command.actor, 1,
       ))
     }
 
@@ -259,10 +338,10 @@ export class CompleteTaskRunService {
           decisionId: decision.id,
           previousVersion: ov?.version ?? 0,
           newVersion: (ov?.version ?? 0) + 1,
-          consumedAt: command.requestedAt,
+          consumedAt: timestamp,
           taskRunId: command.taskRunId,
         },
-        undefined, command.actor, (ov?.version ?? 0) + 1,
+        timestamp, undefined, command.actor, (ov?.version ?? 0) + 1,
       ))
     }
 

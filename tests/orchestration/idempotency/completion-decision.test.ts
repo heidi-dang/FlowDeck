@@ -149,7 +149,7 @@ describe("Idempotency — reservation-first API", () => {
     const repo = new InMemoryIdempotencyRepository()
     const service = new IdempotencyService(repo)
 
-    const result = await service.tryReserve("completion.decision", RUN_ID, "idem-1", { sha: SHA })
+    const result = await service.tryReserve("completion.decision", RUN_ID, "idem-1", { sha: SHA }, NOW)
     expect(result.status).toBe("acquired")
   })
 
@@ -158,11 +158,11 @@ describe("Idempotency — reservation-first API", () => {
     const service = new IdempotencyService(repo)
 
     const fp = { sha: SHA, taskRunId: RUN_ID }
-    const r1 = await service.tryReserve("completion.decision", RUN_ID, "idem-2", fp)
+    const r1 = await service.tryReserve("completion.decision", RUN_ID, "idem-2", fp, NOW)
     expect(r1.status).toBe("acquired")
-    await service.complete("completion.decision", RUN_ID, "idem-2", "decision", "dec-1")
+    await service.complete("completion.decision", RUN_ID, "idem-2", "decision", "dec-1", NOW)
 
-    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-2", fp)
+    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-2", fp, NOW)
     expect(r2.status).toBe("completed")
     if (r2.status === "completed") {
       expect(r2.record.resultId).toBe("dec-1")
@@ -173,10 +173,10 @@ describe("Idempotency — reservation-first API", () => {
     const repo = new InMemoryIdempotencyRepository()
     const service = new IdempotencyService(repo)
 
-    await service.tryReserve("completion.decision", RUN_ID, "idem-3", { sha: "abc" })
-    await service.complete("completion.decision", RUN_ID, "idem-3", "decision", "dec-3")
+    await service.tryReserve("completion.decision", RUN_ID, "idem-3", { sha: "abc" }, NOW)
+    await service.complete("completion.decision", RUN_ID, "idem-3", "decision", "dec-3", NOW)
 
-    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-3", { sha: "def" })
+    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-3", { sha: "def" }, NOW)
     expect(r2.status).toBe("conflict")
   })
 
@@ -184,8 +184,8 @@ describe("Idempotency — reservation-first API", () => {
     const repo = new InMemoryIdempotencyRepository()
     const service = new IdempotencyService(repo)
 
-    await service.tryReserve("completion.decision", RUN_ID, "idem-4", { sha: SHA })
-    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-4", { sha: SHA })
+    await service.tryReserve("completion.decision", RUN_ID, "idem-4", { sha: SHA }, NOW)
+    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-4", { sha: SHA }, NOW)
     expect(r2.status).toBe("in_progress")
   })
 
@@ -193,10 +193,10 @@ describe("Idempotency — reservation-first API", () => {
     const repo = new InMemoryIdempotencyRepository()
     const service = new IdempotencyService(repo)
 
-    await service.tryReserve("completion.decision", RUN_ID, "idem-5", { sha: SHA })
+    await service.tryReserve("completion.decision", RUN_ID, "idem-5", { sha: SHA }, NOW)
     await service.release("completion.decision", RUN_ID, "idem-5")
 
-    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-5", { sha: SHA })
+    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-5", { sha: SHA }, NOW)
     expect(r2.status).toBe("acquired")
   })
 
@@ -211,6 +211,7 @@ describe("Idempotency — reservation-first API", () => {
     })
     await repo.saveRequest(override)
     await repo.consume("ovr-cas", "dec-cas", 1, NOW)
+
 
     const stored = await repo.getRequest("ovr-cas")
     expect(stored?.status).toBe("consumed")
@@ -253,17 +254,17 @@ describe("Canonical hashing", () => {
 
 describe("Domain events", () => {
   it("creates a domain event with required fields", () => {
-    const event = createEvent("ApprovalRequested", "agg-1", RUN_ID, CORRELATION_ID, "1.0.0", { requestId: "req-1" })
+    const event = createEvent("ApprovalRequested", "agg-1", RUN_ID, CORRELATION_ID, "1.0.0", { requestId: "req-1" }, NOW)
     expect(event.eventType).toBe("ApprovalRequested")
     expect(event.aggregateId).toBe("agg-1")
     expect(event.taskRunId).toBe(RUN_ID)
   })
   it("event payload is frozen", () => {
-    const event = createEvent("CompletionEvaluated", "agg-1", RUN_ID, CORRELATION_ID, "1.0.0", { result: "pass" })
+    const event = createEvent("CompletionEvaluated", "agg-1", RUN_ID, CORRELATION_ID, "1.0.0", { result: "pass" }, NOW)
     expect(Object.isFrozen(event.payload)).toBe(true)
   })
   it("CompletionRejected event type exists", () => {
-    const event = createEvent("CompletionRejected", "dec-1", RUN_ID, CORRELATION_ID, "1.0.0", { failureReasons: ["test"] })
+    const event = createEvent("CompletionRejected", "dec-1", RUN_ID, CORRELATION_ID, "1.0.0", { failureReasons: ["test"] }, NOW)
     expect(event.eventType).toBe("CompletionRejected")
   })
 })

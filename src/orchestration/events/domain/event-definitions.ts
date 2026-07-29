@@ -1,11 +1,6 @@
 /**
  * Domain event definitions.
- * Canonical types for all orchestration domain events.
- *
- * Terminal event mapping:
- *   completed → CompletionEvaluated + CompletionApproved
- *   blocked   → CompletionEvaluated + CompletionBlocked
- *   rejected  → CompletionEvaluated + CompletionRejected
+ * occurredAt comes from the caller's injected clock — never generated internally.
  */
 
 export type DomainEventType =
@@ -44,13 +39,14 @@ export function createEvent(
   correlationId: string,
   policyVersion: string,
   payload: Record<string, unknown>,
+  occurredAt: string,
   causationId?: string,
   actor?: string,
   aggregateVersion?: number,
 ): DomainEvent {
   eventCounter++
   return Object.freeze({
-    eventId: `${eventType}-${aggregateId}-${Date.now()}-${eventCounter}`,
+    eventId: `${eventType}-${aggregateId}-${occurredAt}-${eventCounter}`,
     eventType,
     eventVersion: 1,
     aggregateType: eventType.includes("Approval") ? "Approval" :
@@ -60,7 +56,7 @@ export function createEvent(
     taskRunId,
     correlationId,
     causationId,
-    occurredAt: new Date().toISOString(),
+    occurredAt,
     policyVersion,
     actor: actor ?? "system",
     payload: Object.freeze({ ...payload }),
