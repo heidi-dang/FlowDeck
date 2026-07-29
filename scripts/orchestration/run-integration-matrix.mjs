@@ -90,12 +90,17 @@ console.table(shas);
 
 // Determine merge order based on profile
 const mergeOrder = [];
-if (PROFILE.includes('dev1') || PROFILE === 'all') mergeOrder.push(shas.dev1);
-if (PROFILE.includes('dev2') || PROFILE === 'all') mergeOrder.push(shas.dev2);
-if (PROFILE.includes('dev3') || PROFILE === 'all') mergeOrder.push(shas.dev3);
-if (PROFILE !== 'framework') mergeOrder.push(shas.dev4); 
-// Note: If profile is framework, it should just be dev4 over base.
-if (PROFILE === 'framework') mergeOrder.push(shas.dev4);
+const isFinalIntegrationBase = shas.base === 'bc116721b27346871e6de575daf2738a1c6f624e';
+if (isFinalIntegrationBase) {
+  // Base already contains dev1, dev2, dev3 integrated. Only merge dev4 candidate.
+  mergeOrder.push(shas.dev4);
+} else {
+  if (PROFILE.includes('dev1') || PROFILE === 'all') mergeOrder.push(shas.dev1);
+  if (PROFILE.includes('dev2') || PROFILE === 'all') mergeOrder.push(shas.dev2);
+  if (PROFILE.includes('dev3') || PROFILE === 'all') mergeOrder.push(shas.dev3);
+  if (PROFILE !== 'framework') mergeOrder.push(shas.dev4);
+  if (PROFILE === 'framework') mergeOrder.push(shas.dev4);
+}
 
 const runId = randomUUID();
 const worktreePath = join(tmpdir(), `flowdeck-orchestration-integration-${runId}`);
