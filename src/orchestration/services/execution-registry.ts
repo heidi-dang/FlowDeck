@@ -50,12 +50,10 @@ export class ExecutionRegistry {
       return { cancelled: false, cleanupErrors: [], timedOut: false };
     }
 
-    // 1. Signal cancellation on abort controller
     if (!handle.abortController.signal.aborted) {
       handle.abortController.abort(reason ?? "Run cancellation requested");
     }
 
-    // 2. Execute registered cleanup functions idempotently
     const cleanupErrors: Error[] = [];
     let timedOut = false;
 
@@ -92,7 +90,6 @@ export class ExecutionRegistry {
       }
     }
 
-    // 3. Unregister active handle after cleanup or timeout resolution
     this.activeHandles.delete(runId);
 
     return { cancelled: true, cleanupErrors, timedOut };

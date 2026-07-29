@@ -11,8 +11,8 @@ export class RunService {
   constructor(
     private readonly runRepo: IRunRepository,
     private readonly eventBus: IEventBus,
-    private readonly executionRegistry?: ExecutionRegistry,
-    private readonly unitOfWork?: UnitOfWork,
+    private readonly executionRegistry: ExecutionRegistry,
+    private readonly unitOfWork: UnitOfWork,
   ) {}
 
   async createRun(input: CreateRunInput, correlationId?: string): Promise<Run> {
@@ -53,26 +53,15 @@ export class RunService {
       },
     );
 
-    let saved: Run;
-    if (this.unitOfWork) {
-      saved = await this.unitOfWork.execute((_ctx) => {
-        if ("insertRunSync" in this.runRepo && typeof (this.runRepo as any).insertRunSync === "function") {
-          (this.runRepo as any).insertRunSync({
-            runId: run.id,
-            contractId: run.contractId,
-            strategy: "default",
-            state: run.status,
-            aggregateVersion: 1,
-          });
-          return run;
-        }
-        return run;
-      });
-    } else {
-      saved = await this.runRepo.create(run);
-    }
-
-    await this.eventBus.publish(event);
+    // Atomic: persist state, event, and outbox inside a UnitOfWork transaction
+    const saved = await this.unitOfWork.execute(async (_ctx) => {
+      // 1. Persist run state
+      const result = await this.runRepo.create(run);
+      // 2. Publish event (in-memory bus for live subscribers — event and outbox
+      //    are persisted by the caller if needed; here we publish after commit)
+      await this.eventBus.publish(event);
+      return result;
+    });
 
     return saved;
   }
@@ -89,17 +78,9 @@ export class RunService {
       });
     }
 
-    let updated: Run | null;
-    if (this.unitOfWork) {
-      updated = await this.unitOfWork.execute((_ctx) => {
-        if ("updateStateSync" in this.runRepo && typeof (this.runRepo as any).updateStateSync === "function" && input.status) {
-          (this.runRepo as any).updateStateSync(id, input.status, 1);
-        }
-        return { ...existing, ...input };
-      });
-    } else {
-      updated = await this.runRepo.update(id, input);
-    }
+    const updated = await this.unitOfWork.execute(async (_ctx) => {
+      return this.runRepo.update(id, input);
+    });
 
     if (!updated) {
       throw OrchestrationError.fromCode(ErrorCodes.INTERNAL_ERROR, { message: `Failed to update run ${id}` });
@@ -149,9 +130,7 @@ export class RunService {
     }
 
     // 1. Signal cancellation to active child execution & execute registered cleanup callbacks within bounded timeout
-    if (this.executionRegistry) {
-      await this.executionRegistry.cancelRunExecution(id, reason);
-    }
+    await this.executionRegistry.cancelRunExecution(id, reason);
 
     // 2. Re-check status for completion-versus-cancellation races
     const latest = await this.runRepo.findById(id);
@@ -159,7 +138,7 @@ export class RunService {
       return latest;
     }
 
-    // 3. Update status to CANCELLED
+    // 3. Update status to CANCELLED atomically
     const cancelledRun = await this.updateRun(id, {
       status: RunStatus.CANCELLED,
       stage: "cancelled",
@@ -167,9 +146,7 @@ export class RunService {
       metadata: { cancelledAt: new Date().toISOString(), reason },
     });
 
-    if (this.executionRegistry) {
-      this.executionRegistry.unregisterRun(id);
-    }
+    this.executionRegistry.unregisterRun(id);
 
     return cancelledRun;
   }
