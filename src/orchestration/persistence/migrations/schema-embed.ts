@@ -1,4 +1,4 @@
-// Auto-generated from schema-v0.2.6.sql dump
+// Auto-generated from schema-v0.2.6.sql
 // Do not edit directly. Regenerate when canonical schema changes.
 
 export const SCHEMA_V_0_2_6 = `CREATE TABLE contract_families (
@@ -422,7 +422,6 @@ CREATE TABLE events (
     created_ts INTEGER NOT NULL,
     UNIQUE(aggregate_type, aggregate_id, aggregate_version)
 );
-CREATE TABLE sqlite_sequence(name,seq);
 CREATE INDEX idx_evt_type ON events(event_type);
 CREATE INDEX idx_evt_aggregate ON events(aggregate_type, aggregate_id);
 CREATE INDEX idx_evt_agg_version ON events(aggregate_type, aggregate_id, aggregate_version);
