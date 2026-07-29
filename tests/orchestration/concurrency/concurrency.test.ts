@@ -11,26 +11,6 @@ function createConnection() {
   return db;
 }
 
-// Barrier for coordinating concurrent execution steps in our test harness
-class Barrier {
-  private promise: Promise<void>;
-  private resolveFn!: () => void;
-  
-  constructor() {
-    this.promise = new Promise((resolve) => {
-      this.resolveFn = resolve;
-    });
-  }
-  
-  wait() {
-    return this.promise;
-  }
-  
-  release() {
-    this.resolveFn();
-  }
-}
-
 describe('Concurrency Harness Validation', () => {
   beforeEach(() => {
     if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
@@ -43,14 +23,14 @@ describe('Concurrency Harness Validation', () => {
     for (const db of connections) {
       try {
         db.close();
-      } catch (e) {
+      } catch {
         // ignore if already closed
       }
     }
     connections = [];
     try {
       if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
-    } catch (e) {}
+    } catch {}
   });
 
   it('validates the test harness barrier mechanisms on concurrent DB inserts', async () => {

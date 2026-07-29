@@ -14,7 +14,14 @@ export type FaultPoint =
   | 'replay_event_decode'
   | 'lease_acquire'
   | 'lease_renew'
-  | 'lease_release';
+  | 'lease_release'
+  | 'transaction_rollback'
+  | 'outbox_delivery'
+  | 'event_rehydrate'
+  | 'state_transition'
+  | 'schema_migration'
+  | 'claim_ownership'
+  | 'evidence_validation';
 
 export interface FaultConfig {
   mode: 'before' | 'after';

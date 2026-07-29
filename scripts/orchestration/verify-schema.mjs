@@ -48,5 +48,5 @@ try {
   process.exit(1);
 } finally {
   closeConnection(databasePath);
-  try { rmSync(directory, { recursive: true, force: true }); } catch(e) {}
+  try { rmSync(directory, { recursive: true, force: true }); } catch {}
 }

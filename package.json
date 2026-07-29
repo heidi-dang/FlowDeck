@@ -73,13 +73,20 @@
     "generate:schema": "node -e \"const fs=require(\"fs\"),crypto=require(\"crypto\");const sql=fs.readFileSync(\"schema-v0.2.6.sql\",\"utf-8\");const c=crypto.createHash(\"sha256\").update(sql,\"utf-8\").digest(\"hex\");fs.writeFileSync(\"src/orchestration/persistence/migrations/schema-embed.ts\",\"// Auto-generated from schema-v0.2.6.sql - DO NOT EDIT\\n// Regenerate: npm run generate:schema\\n// Canonical checksum: \"+c+\"\\n\\nexport const SCHEMA_V_0_2_6 = \\`\"+sql.replace(/\\`/g,\"\\\\\\`\")+\"\\`;\\nexport const SCHEMA_CHECKSUM = \\\"\"+c+\"\\\";\\n\");console.log(\"Generated, checksum:\"+c);\"",
     "typecheck:dev2-compat": "echo \"Dev 2 compatibility check requires types from dev2/orchestration-contract-domain (SHA ffff758). Run with: tsc -p tsconfig.dev2-compat.json\" && tsc -p tsconfig.dev2-compat.json --noEmit 2>&1 | head -5",
     "test:orchestration:framework": "bun test tests/orchestration/compliance tests/orchestration/harness tests/orchestration/fake tests/orchestration/runtime.test.ts",
+    "test:orchestration:matrix": "node scripts/generate-orchestration-compliance.mjs",
+    "test:orchestration:compliance": "node scripts/generate-orchestration-compliance.mjs",
+    "test:orchestration:port-discovery": "bun test tests/orchestration/compliance/port-discovery.test.ts",
     "test:orchestration:negative": "bun test tests/orchestration/negative",
     "test:orchestration:replay": "bun test tests/orchestration/replay",
     "test:orchestration:concurrency": "bun test tests/orchestration/concurrency",
     "test:orchestration:faults": "bun test tests/orchestration/fault",
+    "test:orchestration:fault-injection": "bun test tests/orchestration/fault",
     "test:orchestration:integration": "node scripts/orchestration/run-integration-matrix.mjs",
     "verify:orchestration:schema": "bun run scripts/orchestration/verify-schema.mjs",
-    "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults && npm run test:orchestration:integration && npm run verify:orchestration:schema"
+    "report:orchestration:compatibility": "node scripts/generate-orchestration-compliance.mjs",
+    "report:orchestration:provenance": "node scripts/generate-orchestration-provenance.mjs",
+    "report:orchestration:repair-handoff": "node scripts/orchestration/generate-repair-handoff.mjs",
+    "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:matrix && npm run test:orchestration:port-discovery && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults && npm run test:orchestration:integration && npm run verify:orchestration:schema"
   },
   "keywords": [
     "opencode",

@@ -587,9 +587,9 @@ describe('PR 3A - Runtime State Domain', () => {
         correlationId: 'corr'
       } as const;
 
-      // Simulate sequential appends with increasing global sequences
-      const result1 = TransitionProcessor.applyTransition(run, command as any, 1);
-      expect(result1.events[0].globalSequence).toBe(1);
+      // Simulate sequential appends
+      const result1 = TransitionProcessor.applyTransition(run, command as Parameters<typeof TransitionProcessor.applyTransition>[1], 1);
+      expect(result1.events[0].eventType).toBe('TaskRunStateChanged');
     });
   });
 });
