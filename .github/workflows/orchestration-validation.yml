@@ -48,6 +48,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       
       - uses: oven-sh/setup-bun@v2
@@ -64,6 +65,7 @@ jobs:
       - name: Run Cross-Branch Integration
         env:
           BASE_SHA: bc116721b27346871e6de575daf2738a1c6f624e
+          CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: npm run test:orchestration:integration:all
         
       - name: Upload Artifacts

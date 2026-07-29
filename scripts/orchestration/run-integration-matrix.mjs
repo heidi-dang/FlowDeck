@@ -82,7 +82,7 @@ const shas = {
   dev1: resolveSha('origin/feat/orchestration-persistence-foundation'),
   dev2: resolveSha('origin/feat/orchestration-contract-domain'),
   dev3: resolveSha('origin/feat/orchestration-runtime-domain'),
-  dev4: resolveSha('HEAD') // Validation framework head
+  dev4: process.env.CANDIDATE_SHA || execGit('rev-parse HEAD') // Validation framework head
 };
 
 console.log('Resolved SHAs:');
