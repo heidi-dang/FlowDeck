@@ -257,7 +257,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     let result = stream;
 
     if (options?.fromRevision !== undefined) {
-      result = result.filter(e => e.aggregateVersion >= ((options.fromRevision ?? 0) ?? 0));
+      result = result.filter(e => e.aggregateVersion >= ((options.fromRevision!) ?? 0));
     }
 
     if (options?.maxEvents !== undefined) {
@@ -276,12 +276,12 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     
     let sorted = [...allEvents].sort((a, b) => a.globalSequence! - b.globalSequence!);
 
-    if (((options.fromRevision ?? 0) ?? 0) !== undefined) {
-      sorted = sorted.filter(e => e.aggregateVersion >= ((options.fromRevision ?? 0) ?? 0));
+    if (((options.fromRevision || 0) ?? 0) !== undefined) {
+      sorted = sorted.filter(e => e.aggregateVersion >= ((options.fromRevision || 0) ?? 0));
     }
 
-    if (((options.toRevision ?? 999999) ?? 999999) !== undefined) {
-      sorted = sorted.filter(e => e.aggregateVersion <= ((options.toRevision ?? 999999) ?? 999999));
+    if (((options.toRevision || 999999) ?? 999999) !== undefined) {
+      sorted = sorted.filter(e => e.aggregateVersion <= ((options.toRevision || 999999) ?? 999999));
     }
 
     const limit = options.limit ?? 100;

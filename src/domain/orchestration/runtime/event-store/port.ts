@@ -89,7 +89,7 @@ export interface RuntimeEventStorePort {
   /**
    * Check for duplicate command/event
    */
-  checkDuplicate(event: Omit<UncommittedRuntimeEvent<any>, 'eventId'>): Promise<DuplicateCheckResult>;
+  checkDuplicate(event: Omit<UncommittedRuntimeEvent, 'eventId'>): Promise<DuplicateCheckResult>;
 
   /**
    * Atomic append of single or multiple events

@@ -154,7 +154,7 @@ export class InMemoryOutboxRepository { // Temporary type
         await this.simulateDelivery(message);
         success = true;
       } catch (error: any) {
-        errorType = classifyError(error);
+        ;(record as any).errorType = classifyError(error);
         errorMessage = error.message;
         success = false;
       }
