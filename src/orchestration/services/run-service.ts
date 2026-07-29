@@ -53,15 +53,15 @@ export class RunService {
       },
     );
 
-    // Atomic: persist state, event, and outbox inside a UnitOfWork transaction
-    const saved = await this.unitOfWork.execute(async (_ctx) => {
-      // 1. Persist run state
-      const result = await this.runRepo.create(run);
-      // 2. Publish event (in-memory bus for live subscribers — event and outbox
-      //    are persisted by the caller if needed; here we publish after commit)
-      await this.eventBus.publish(event);
-      return result;
+    // Atomic: persist run state inside UnitOfWork transaction
+    // Callback must be synchronous — no await inside
+    const saved = await this.unitOfWork.execute((_ctx) => {
+      this.runRepo.create(run);
+      return run;
     });
+
+    // Publish event after successful commit
+    await this.eventBus.publish(event);
 
     return saved;
   }
@@ -78,7 +78,7 @@ export class RunService {
       });
     }
 
-    const updated = await this.unitOfWork.execute(async (_ctx) => {
+    const updated = await this.unitOfWork.execute((_ctx) => {
       return this.runRepo.update(id, input);
     });
 

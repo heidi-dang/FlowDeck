@@ -35,12 +35,10 @@ describe("Production Composition Deep Integration", () => {
 
     // Contract service
     const contract = await runtime.services.contractService.createContract({
-      title: "Test Contract",
+      name: "Test Contract",
+      correlationId: "test-corr",
       description: "Desc",
-      repoUrl: "https://github.com/heidi-dang/FlowDeck",
-      repoSha: "0000000000000000000000000000000000000000",
-      createdBy: "test",
-      version: 1,
+      version: "1",
     });
     expect(contract.id).toBeDefined();
 
@@ -49,6 +47,7 @@ describe("Production Composition Deep Integration", () => {
       runType: "test",
       sessionId: "s1",
       contractId: contract.id,
+      correlationId: "test-corr",
     });
     expect(run.id).toBeDefined();
 
@@ -56,7 +55,8 @@ describe("Production Composition Deep Integration", () => {
     const assignment = await runtime.services.assignmentService.createAssignment({
       runId: run.id,
       agentId: "agent-1",
-      assignedRole: "coder",
+      role: "coder",
+      correlationId: "test-corr",
     });
     expect(assignment.id).toBeDefined();
 
@@ -77,8 +77,8 @@ describe("Production Composition Deep Integration", () => {
     expect(completion.id).toBeDefined();
 
     // Event service
-    const events = await runtime.services.eventService.listEvents({}, { page: 1, pageSize: 10 });
-    expect(events.data.length).toBeGreaterThanOrEqual(0);
+    const events = await runtime.services.eventService.listEvents({}, { page: 1, limit: 10 });
+    expect(events.items.length).toBeGreaterThanOrEqual(0);
 
     // Replay service
     const replay = await runtime.services.replayService.createReplay({

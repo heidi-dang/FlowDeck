@@ -3,8 +3,9 @@ import { OverrideRequest, OverrideRequestTransitionError } from "../src/orchestr
 import { ApprovalRequest, ApprovalRequestTransitionError } from "../src/orchestration/approval/domain/approval-request";
 import { Evidence } from "../src/orchestration/evidence/domain/evidence";
 import { VerificationResult } from "../src/orchestration/verification/domain/verification-result";
+import { toInstant } from "../src/orchestration/common/types";
 
-const NOW = new Date().toISOString();
+const NOW = toInstant(new Date());
 
 function makeOverrideRequest(statusOverride?: any): OverrideRequest {
   return new OverrideRequest({
@@ -107,7 +108,7 @@ describe("OverrideRequest Domain Entity Coverage", () => {
   it("isExpired returns true when past expiresAt", () => {
     const req = new OverrideRequest({
       ...makeOverrideRequest(),
-      expiresAt: new Date(Date.now() - 1000).toISOString(),
+      expiresAt: toInstant(new Date(Date.now() - 1000)),
     });
     expect(req.isExpired()).toBe(true);
   });

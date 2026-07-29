@@ -15,11 +15,14 @@ class MockOutboxRepo implements IOutboxRepository {
     this.entries.set(id, updated);
     return updated;
   }
-  async findMany(filter?: any) {
-    const items = Array.from(this.entries.values()).filter(e => filter?.status ? e.status === filter.status : true);
-    return { data: items, items, total: items.length, page: 1, pageSize: 50, limit: 50, hasMore: false };
+  async findMany(_filter?: any, pagination?: any) {
+    const items = Array.from(this.entries.values()).filter(e => _filter?.status ? e.status === _filter.status : true);
+    return { items, total: items.length, page: 1, limit: pagination?.limit ?? 50 };
   }
-  async count() { return this.entries.size; }
+  async findPending() {
+    return Array.from(this.entries.values()).filter(e => e.status === OutboxStatus.PENDING);
+  }
+  async count(_filter?: any) { return this.entries.size; }
 }
 
 class MockEventBus implements IEventBus {

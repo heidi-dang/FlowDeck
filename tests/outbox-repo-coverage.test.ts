@@ -76,10 +76,10 @@ describe("Domain Orchestration Outbox Repository Coverage", () => {
 
   it("commitOffset and getOffset round-trip", async () => {
     const repo = new InMemoryOutboxRepository();
-    const offset = { subscriberId: "sub-1", topic: "RunCreated", lastSequence: 5, committedAt: new Date() } as any;
+    const offset = { subscriberId: "sub-1", topic: "RunCreated", committedSequence: 5, committedAt: new Date() } as any;
     await repo.commitOffset(offset);
     const got = await repo.getOffset("sub-1", "RunCreated");
-    expect(got?.lastSequence).toBe(5);
+    expect(got?.committedSequence).toBe(5);
   });
 
   it("releaseExpiredClaims removes expired claims", async () => {
