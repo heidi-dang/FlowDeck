@@ -1,0 +1,1 @@
+export interface RuntimeEvent { id: string; type: string; data: Record<string, unknown>; timestamp: Date; metadata?: Record<string, unknown>; }

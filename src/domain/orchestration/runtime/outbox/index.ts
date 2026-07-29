@@ -7,12 +7,12 @@
 // Types & Ports
 export {
   InMemoryOutboxRepository,
-  DEFAULT_RETRY_POLICY,
-  calculateBackoff,
+  // DEFAULT_RETRY_POLICY as any,
+  // calculateBackoff as any,
   classifyError,
   isRetryable,
   matchesTopic
-} from './in-memory-repo.js';
+} from './in-memory-repo';
 
 export type {
   BoundedClaim,

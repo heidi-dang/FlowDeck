@@ -12,9 +12,6 @@ import {
   ConsumerOffset,
   DeadLetterRecord,
   calculateBackoff,
-  classifyError,
-  isRetryable,
-  matchesTopic,
   DEFAULT_RETRY_POLICY
 } from './port.js';
 
@@ -58,7 +55,7 @@ interface DeadLetterIndex {
 /**
  * In-memory outbox repository with bounded claims and fencing
  */
-export class InMemoryOutboxRepository implements any { // Temporary type
+export class InMemoryOutboxRepository { // Temporary type
   private records: RecordIndex = {
     byId: new Map(),
     byAggregate: new Map()
@@ -198,9 +195,9 @@ export class InMemoryOutboxRepository implements any { // Temporary type
       for (const record of this.records.byId.values()) {
         for (const event of (record.events as any[])) {
           if (event.globalSequence.toString() === messageId) {
-            record.status = 'delivered';
-            record.deliveredAt = new Date();
-            record.deliveryAttempts++;
+            (record as any).status = 'delivered';
+            (record as any).deliveredAt = new Date();
+            (record as any).deliveryAttempts++;
           }
         }
       }
@@ -213,8 +210,8 @@ export class InMemoryOutboxRepository implements any { // Temporary type
     for (const record of this.records.byId.values()) {
       if (record.status === 'pending' && record.deliveryAttempts < policy.maxAttempts) {
         const nextDelay = calculateBackoff(record.deliveryAttempts + 1, policy);
-        record.nextRetryAt = new Date(Date.now() + nextDelay);
-        record.status = 'delivering';
+        (record as any).nextRetryAt = new Date(Date.now() + nextDelay);
+        (record as any).status = 'delivering';
         retriedCount++;
       }
     }

@@ -8,7 +8,7 @@
 export {
   EVENT_PAYLOAD_VERSIONS,
   createUncommittedEvent
-} from './types.js';
+} from './types';
 
 export type {
   RuntimeEventPayload,
@@ -29,7 +29,7 @@ export type {
   RunFailedEventPayload,
   RunCancelledEventPayload,
   RunRecoveredEventPayload
-} from './types.js';
+} from './types';
 
 // Port
 export {

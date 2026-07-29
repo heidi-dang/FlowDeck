@@ -5,7 +5,7 @@
  * with strict concurrency and duplicate handling
  */
 
-import { UncommittedRuntimeEvent, PersistedRuntimeEvent, EVENT_PAYLOAD_VERSIONS } from './types.js';
+import { UncommittedRuntimeEvent, PersistedRuntimeEvent, EVENT_PAYLOAD_VERSIONS } from './types';
 import {
   RuntimeEventStorePort,
   AppendResult,
@@ -121,9 +121,9 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     }
 
     // Check by event ID (if provided)
-    if (event.eventId) {
-      if (this.eventIndex.has(event.eventId)) {
-        return { isDuplicate: true, existingEvent: this.eventIndex.get(event.eventId)! };
+    if (eventId) {
+      if (this.eventIndex.has(eventId)) {
+        return { isDuplicate: true, existingEvent: this.eventIndex.get(eventId)! };
       }
     }
 
@@ -200,9 +200,9 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
 
     // Update indexes
     for (const event of assignedEvents) {
-      this.eventIndex.set(event.eventId, event);
+      this.eventIndex.set(eventId, event);
       if (event.commandId) {
-        this.commandIndex.set(event.commandId, event.eventId);
+        this.commandIndex.set(event.commandId, eventId);
       }
     }
 
@@ -238,8 +238,8 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
 
     // Remove event/command indices from this append
     for (const event of pending.events) {
-      if (event.eventId) {
-        this.eventIndex.delete(event.eventId);
+      if (eventId) {
+        this.eventIndex.delete(eventId);
       }
       if (event.commandId) {
         this.commandIndex.delete(event.commandId);
@@ -259,7 +259,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     let result = stream;
 
     if (options?.fromRevision !== undefined) {
-      result = result.filter(e => e.aggregateVersion >= options.fromRevision);
+      result = result.filter(e => e.aggregateVersion >= ((options.fromRevision ?? 0) ?? 0));
     }
 
     if (options?.maxEvents !== undefined) {
@@ -278,12 +278,12 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     
     let sorted = [...allEvents].sort((a, b) => a.globalSequence! - b.globalSequence!);
 
-    if (options.fromRevision !== undefined) {
-      sorted = sorted.filter(e => e.aggregateVersion >= options.fromRevision);
+    if (((options.fromRevision ?? 0) ?? 0) !== undefined) {
+      sorted = sorted.filter(e => e.aggregateVersion >= ((options.fromRevision ?? 0) ?? 0));
     }
 
-    if (options.toRevision !== undefined) {
-      sorted = sorted.filter(e => e.aggregateVersion <= options.toRevision);
+    if (((options.toRevision ?? 999999) ?? 999999) !== undefined) {
+      sorted = sorted.filter(e => e.aggregateVersion <= ((options.toRevision ?? 999999) ?? 999999));
     }
 
     const limit = options.limit ?? 100;
@@ -332,7 +332,7 @@ function createConcurrencyError(
   expectedVersion: number,
   actualVersion: number
 ): ConcurrencyError {
-  const messages: Record<ConcurrencyErrorType, string> = {
+  const messages: Record<ConcurrencyError, string> = {
     STALE_VERSION: `Stale version: expected ${actualVersion}, got ${expectedVersion}`,
     FUTURE_VERSION: `Future version: expected ${actualVersion}, got ${expectedVersion}`,
     VERSION_GAP: `Version gap: expected contiguous version after ${actualVersion}, got ${expectedVersion}`

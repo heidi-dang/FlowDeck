@@ -4,7 +4,7 @@
  * Defines the append/read contracts for persistent event storage
  */
 
-import { UncommittedRuntimeEvent, PersistedRuntimeEvent } from './types.js';
+import type { UncommittedRuntimeEvent, PersistedRuntimeEvent } from './types';
 
 /**
  * Append result
@@ -153,4 +153,3 @@ export interface RuntimeEventStorePort {
 }
 
 // Re-export for convenience
-export type { AppendResult, ConcurrencyError, DuplicateCheckResult };

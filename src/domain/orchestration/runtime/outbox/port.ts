@@ -8,6 +8,8 @@
 /**
  * Claim boundaries for bounded batch processing
  */
+export interface RuntimeEvent { id: string; type: string; data: Record<string, unknown>; timestamp: Date; }
+
 export interface BoundedClaim {
   readonly claimId: string;
   readonly worktreeKey: string;

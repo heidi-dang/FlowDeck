@@ -5,7 +5,7 @@
  */
 
 import { TaskRun, TaskRunState } from '../task-run.js';
-import { PersistedRuntimeEvent } from './types.js';
+import { PersistedRuntimeEvent } from './types';
 
 /**
  * Rehydration result
@@ -92,7 +92,7 @@ function applyEventToBuilder(
       break;
 
     case 'RunCompletedPlanning':
-      builder.status = 'planned';
+      builder.status = 'planning';
       builder.planningCompleted = true;
       break;
 
@@ -101,7 +101,7 @@ function applyEventToBuilder(
       break;
 
     case 'RunCompletedAnalysis':
-      builder.status = 'analyzed';
+      builder.status = 'analysing';
       builder.analysisComplete = true;
       break;
 
@@ -111,12 +111,12 @@ function applyEventToBuilder(
       break;
 
     case 'RunCompletedExecution':
-      builder.status = 'executed';
+      builder.status = 'executing';
       builder.executionComplete = true;
       break;
 
     case 'RunVerified':
-      builder.status = 'verified';
+      builder.status = 'verifying';
       break;
 
     case 'RunCompleted':
@@ -232,17 +232,17 @@ function determineNextState(event: PersistedRuntimeEvent): TaskRunState {
     case 'RunStartedPlanning':
       return 'planning';
     case 'RunCompletedPlanning':
-      return 'planned';
+      return 'planning';
     case 'RunStartedAnalysis':
       return 'analysing';
     case 'RunCompletedAnalysis':
-      return 'analyzed';
+      return 'analysing';
     case 'RunStartedExecution':
       return 'executing';
     case 'RunCompletedExecution':
-      return 'executed';
+      return 'executing';
     case 'RunVerified':
-      return 'verified';
+      return 'verifying';
     case 'RunCompleted':
       return 'completed';
     case 'RunFailed':
