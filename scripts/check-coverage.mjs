@@ -180,8 +180,10 @@ export function runCoverageCheck(thresholdRaw = process.env.COVERAGE_THRESHOLD) 
     }
 
     if (proc.status === null || proc.status !== 0) {
-      const errOutput = (proc.stdout || "") + "\n" + (proc.stderr || "")
-      throw new Error(`Coverage test execution failed with exit code ${proc.status}:\n${errOutput.slice(0, 500)}`)
+      const fullOut = (proc.stdout || "") + "\n" + (proc.stderr || "")
+      const failLines = fullOut.split("\n").filter(l => /fail|error|exception|stack|at /i.test(l)).slice(-30).join("\n")
+      const tailOut = fullOut.slice(-3000)
+      throw new Error(`Coverage test execution failed with exit code ${proc.status}:\n--- FAILING LINES ---\n${failLines}\n--- TAIL OUTPUT ---\n${tailOut}`)
     }
 
     const lcovFile = join(tempDir, "lcov.info")
