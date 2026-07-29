@@ -6,7 +6,6 @@
 
 import type Database from "better-sqlite3"
 import { createTransactionManager, type TransactionManager } from "./transaction-manager"
-import { AsyncTransactionCallbackError } from "./errors"
 import type { RetryPolicy } from "./retry-policy"
 import type { Scheduler } from "./clock"
 

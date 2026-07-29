@@ -17,7 +17,7 @@ function classify(err) {
 function isRetryable(reason) { return reason === 'busy' || reason === 'deadlock'; }
 
 const fc = new FakeClock(); const fs = new FakeScheduler();
-const startMono = fc.monotonic();
+const _startMono = fc.monotonic();
 
 // ── Test 1: Retry policy classification ────────────────────────
 eq(classify(new Error('SQLITE_BUSY: database is locked')), 'busy', 'classify: SQLITE_BUSY');
@@ -46,7 +46,7 @@ const expiredBudget = { maxAttempts: 10, deadlineMs: fc.monotonic() }; // deadli
 let rejectedBeforeFirst = false;
 try {
   if (fc.monotonic() >= expiredBudget.deadlineMs) throw new Error('DEADLINE_EXCEEDED');
-} catch (e) { rejectedBeforeFirst = true; }
+} catch { rejectedBeforeFirst = true; }
 ok(rejectedBeforeFirst, 'deadline: rejected before first attempt');
 
 // ── Test 4: Delay clamped to remaining budget ──────────────────
@@ -76,7 +76,7 @@ try {
     fc.advance(5000);
     if (fc.monotonic() >= 10000) throw new Error('DEADLINE');
   }
-} catch (e) { caughtByDeadline = true; }
+} catch { caughtByDeadline = true; }
 ok(caughtByDeadline, 'deadline: caught between attempts');
 
 // ── Test 7: Zero real waiting — only fake clock ticks ──────────

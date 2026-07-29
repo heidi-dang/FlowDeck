@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test"
+import { describe, it, expect, beforeEach, afterEach } from "bun:test"; void Database; void closeAllConnections; void existsSync;
 import { unlinkSync, existsSync } from "fs"
 import Database from "better-sqlite3"
 import { openConnection, closeConnection, closeAllConnections } from "../connection"

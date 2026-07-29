@@ -11,7 +11,7 @@
 | **Version** | v0.8.0-alpha.12 |
 | **License** | [MIT](LICENSE) |
 | **OpenCode** | >= 1.4.0 |
-| **Node.js** | >= 18.0.0 |
+| **Node.js** | >= 20.0.0 |
 | **OS** | Linux, macOS, Windows (WSL2) |
 | **Rust toolchain** | Required for FDX native CLI (optional) |
 | **CI** | [![CI](https://github.com/heidi-dang/FlowDeck/actions/workflows/ci.yml/badge.svg)](https://github.com/heidi-dang/FlowDeck/actions/workflows/ci.yml) |

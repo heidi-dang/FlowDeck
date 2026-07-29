@@ -1,5 +1,5 @@
 // Persistence hardening tests — migration stress, concurrency, retry policy, diagnostics
-import { unlinkSync, readFileSync, existsSync } from 'fs';
+import { unlinkSync, readFileSync } from 'fs';
 import Database from 'better-sqlite3';
 
 const DB = '/tmp/flowdeck-hardening-test.db';
@@ -20,7 +20,7 @@ function openConn(p, ro = false) {
   conns.set(p, d); return d;
 }
 function closeConn(p) { const d = conns.get(p); if (d) { d.close(); conns.delete(p); } }
-function closeAll() { for (const [k, d] of conns) { d.close(); } conns.clear(); }
+function closeAll() { for (const [, d] of conns) { d.close(); } conns.clear(); }
 
 function ok(c, m) { if (c) { pass++; console.log(`  ✅ ${m}`); } else { fail++; console.error(`  ❌ ${m}`); } }
 function eq(a, b, m) { ok(a === b, `${m}: ${a} === ${b}`); }
@@ -51,7 +51,7 @@ function createTx(db, policy) {
     write: (fn) => {
       for (let a = 0; a < pol.maxAttempts; a++) {
         try { return db.transaction(fn)(); }
-        catch (e) {
+        catch {
           const reason = pol.classify(e);
           if (pol.isRetryable(reason) && a < pol.maxAttempts - 1) {
             const delay = pol.baseMs * Math.pow(2, a);
@@ -65,7 +65,7 @@ function createTx(db, policy) {
     },
     savepoint: (name, fn) => {
       try { db.exec(`SAVEPOINT sp_${name}`); const r = fn(); db.exec(`RELEASE sp_${name}`); return r; }
-      catch (e) { db.exec(`ROLLBACK TO sp_${name}`); throw e; }
+      catch { db.exec(`ROLLBACK TO sp_${name}`); throw e; }
     }
   };
 }
@@ -88,7 +88,7 @@ const expiredPolicy = { maxAttempts: 10, baseMs: 1000, budgetMs: 0,
 clean();
 const db0 = openConn(DB + '-deadline');
 applySchema(db0);
-const tx0 = createTx(db0, expiredPolicy);
+const _tx0 = createTx(db0, expiredPolicy);
   // Verify deadline-aware retry policy configuration
   ok(expiredPolicy.maxAttempts === 10, 'deadline policy: maxAttempts=10');
   ok(expiredPolicy.classify(new Error("SQLITE_BUSY")) === "busy", 'classify: busy detected');
@@ -103,7 +103,7 @@ const platform = process.platform;
 const arch = process.arch;
 const isWindows = platform === 'win32';
 console.log(`  Runtime: Node ${bunVersion}, platform=${platform}, arch=${arch}, isWindows=${isWindows}`);
-try { const pkg = JSON.parse(require('fs').readFileSync('node_modules/better-sqlite3/package.json','utf-8')); console.log('  better-sqlite3 version: ' + pkg.version); } catch(e) { console.log('  better-sqlite3: installed'); };
+try { const pkg = JSON.parse(require('fs').readFileSync('node_modules/better-sqlite3/package.json','utf-8')); console.log('  better-sqlite3 version: ' + pkg.version); } catch { console.log('  better-sqlite3: installed'); };
 const dbVer = new Database(':memory:').prepare('SELECT sqlite_version()').get();
 console.log(`  SQLite version: ${JSON.stringify(dbVer)}`);
 
@@ -248,11 +248,11 @@ try {
   db9b.exec('BEGIN IMMEDIATE EXCLUSIVE');
   try {
     tx9.write(() => { db9.prepare("SELECT 1").run(); });
-  } catch (e) {
+  } catch {
     exhausted = true;
   }
   db9b.exec('ROLLBACK');
-} catch (e) { exhausted = true; }
+} catch { exhausted = true; }
 ok(exhausted, 'busy retry exhaustion detected');
 closeConn(DB);
 closeConn(DB + '-lock');
@@ -319,7 +319,7 @@ closeConn(DB);
 
 // 15. Extracted schema creates successfully (from schema-v0.2.6.sql)
 // This test validates the full canonical schema is valid SQLite
-import fs from "fs";
+
 const schemaPath = './schema-v0.2.6.sql';
 if (existsSync(schemaPath)) {
   clean();
@@ -333,7 +333,7 @@ if (existsSync(schemaPath)) {
     eq(fk.length, 0, 'full schema: 0 FK violations');
     const integ = db13.prepare("PRAGMA integrity_check").get();
     eq(integ.integrity_check, 'ok', 'full schema: integrity ok');
-  } catch (e) {
+  } catch {
     console.error(`  ❌ Full schema failed: ${e.message}`);
     fail++;
   }

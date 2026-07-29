@@ -5,8 +5,8 @@
  */
 
 import type Database from "better-sqlite3"
-import { MIGRATIONS, type MigrationEntry } from "./migration-registry"
 import { MigrationError, MigrationChecksumError } from "../errors"
+import { MIGRATIONS } from "./migration-registry"
 
 function createLedgerTable(db: Database.Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (

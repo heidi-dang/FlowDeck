@@ -1,11 +1,11 @@
 # Persistence Runtime Compatibility
 
 ## Supported Production Runtime
-- **Node.js** >= 18.0.0 (primary, tested)
+- **Node.js** >= 20.0.0 (primary, tested)
 - **Runtime**: All persistence operations run on `better-sqlite3` which compiles via `node-gyp`
 
 ## Supported Test Runtime
-- **Node.js** >= 18.0.0 (all tests pass)
+- **Node.js** >= 20.0.0 (all tests pass)
 - **bun** 1.3.14: Unit tests without native module dependencies pass
 - **bun + better-sqlite3**: Observed compatibility failure (see below)
 
@@ -35,9 +35,9 @@ bun test src/orchestration/persistence/__tests__/persistence.test.ts
 ```
 
 ### Recommended Runtime
-- **Development**: Node.js >= 18.0.0
-- **CI**: Node.js >= 18.0.0 (cross-platform matrix)
-- **Production**: Node.js >= 18.0.0
+- **Development**: Node.js >= 20.0.0
+- **CI**: Node.js >= 20.0.0 (cross-platform matrix)
+- **Production**: Node.js >= 20.0.0
 
 ### Fallback Decision
 A pure-JS SQLite driver (`sql.js`) is **not** included in this PR. Adding a driver abstraction layer is deferred until cross-runtime compatibility becomes an explicit requirement. The current `better-sqlite3` dependency is the standard choice for Node.js SQLite access in the npm ecosystem.

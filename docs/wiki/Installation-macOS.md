@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node.js >= 18.0.0 (install via [Homebrew](https://brew.sh) or [nodejs.org](https://nodejs.org))
+- Node.js >= 20.0.0 (install via [Homebrew](https://brew.sh) or [nodejs.org](https://nodejs.org))
 - OpenCode >= 1.4.0
 
 ### Install Node.js via Homebrew

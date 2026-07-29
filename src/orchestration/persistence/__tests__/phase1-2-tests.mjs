@@ -1,5 +1,5 @@
 // Phase 1.2 — Domain persistence adapters and final merge gate tests
-import { unlinkSync, readFileSync, existsSync } from 'fs';
+import { unlinkSync, readFileSync } from 'fs';
 import Database from 'better-sqlite3';
 
 const DB = '/tmp/fd-phase12.db';
@@ -17,7 +17,7 @@ function openConn(p, ro = false) {
   conns.set(p, d); return d;
 }
 function closeConn(p) { const d = conns.get(p); if (d) { d.close(); conns.delete(p); } }
-function closeAll() { for (const [k,d] of conns) { d.close(); } conns.clear(); }
+function closeAll() { for (const [,d] of conns) { d.close(); } conns.clear(); }
 
 function ok(c, m) { if (c) { pass++; console.log(`  ✅ ${m}`); } else { fail++; console.error(`  ❌ ${m}`); } }
 function eq(a, b, m) { ok(a === b, `${m}: ${a} === ${b}`); }
@@ -45,13 +45,13 @@ function makePolicy(maxAttempts = 3) {
 }
 
 function createTxWithPolicy(db, policy) {
-  const p = policy || makePolicy();
+  const _p = policy || makePolicy();
   return {
     read: (fn) => db.transaction(fn)(),
     write: (fn) => {
       for (let a = 0; a < p.maxAttempts; a++) {
         try { return db.transaction(fn)(); }
-        catch (e) {
+        catch {
           const reason = p.classify(e);
           if (p.isRetryable(reason) && a < p.maxAttempts - 1) {
             fakeDelay(p.delayMs(a));
@@ -63,7 +63,7 @@ function createTxWithPolicy(db, policy) {
     },
     savepoint: (name, fn) => {
       try { db.exec(`SAVEPOINT sp_${name}`); const r = fn(); db.exec(`RELEASE sp_${name}`); return r; }
-      catch (e) { db.exec(`ROLLBACK TO sp_${name}`); throw e; }
+      catch { db.exec(`ROLLBACK TO sp_${name}`); throw e; }
     }
   };
 }
@@ -93,7 +93,7 @@ try {
     db1.prepare("INSERT INTO contract_families (family_id,name,created_by,created_at) VALUES ('f4','roll2','t',datetime('now'))").run();
     throw new Error('force_rollback');
   });
-} catch (e) { rollbackCaught = true; }
+} catch { rollbackCaught = true; }
 ok(rollbackCaught, 'UoW rollback on error');
 eq(db1.prepare("SELECT COUNT(*) AS c FROM contract_families").get().c, 2, 'UoW rollback: no extra rows');
 
@@ -106,7 +106,7 @@ tx1.write(() => {
       db1.prepare("INSERT INTO contract_families (family_id,name,created_by,created_at) VALUES ('f6','inner','t',datetime('now'))").run();
       throw new Error('inner_rollback');
     });
-  } catch (e) { nestedOk = true; }
+  } catch { nestedOk = true; }
 });
 ok(nestedOk, 'nested UoW savepoint rollback');
 eq(db1.prepare("SELECT COUNT(*) AS c FROM contract_families").get().c, 3, 'nested: outer+2original=3');
@@ -116,7 +116,7 @@ console.log('\n=== 2. Optimistic Concurrency ===');
 // task_runs updateState with expectedVersion
 closeConn(DB); clean(); const db2 = openConn(DB);
 applySchema(db2);
-const tx2 = createTxWithPolicy(db2);
+const _tx2 = createTxWithPolicy(db2);
 
 // Insert a task_run (starts at aggregate_version=1)
 db2.prepare("INSERT INTO contract_families (family_id,name,created_by,created_at) VALUES ('fam2','t','t',datetime('now'))").run();
@@ -135,10 +135,10 @@ eq(db2.prepare("SELECT state FROM task_runs WHERE run_id='run-oc'").get().state,
 // Concurrent aggregate update detection
 const db2b = openConn(DB + '-lock');
 db2b.exec('BEGIN IMMEDIATE');
-let concurrentBlocked = false;
+let _concurrentBlocked = false;
 try {
   db2.prepare("UPDATE task_runs SET state='verifying',aggregate_version=aggregate_version+1 WHERE run_id='run-oc' AND aggregate_version=2").run();
-} catch (e) { concurrentBlocked = true; }
+} catch { concurrentBlocked = true; }
 // This depends on timing — the write lock should already be held
 db2b.exec('ROLLBACK');
 closeConn(DB + '-lock');
@@ -166,7 +166,7 @@ try {
     db3.prepare("INSERT INTO event_outbox (id,event_id,event_type,aggregate_id,data,status,idempotency_key,source_component,created_ts) VALUES ('ob-fail','ev-fail','Test','r-fail','{}','pending','ik-fail','test',strftime('%s','now'))").run();
     throw new Error('atomic_fail');
   });
-} catch (e) { atomicRollback = true; }
+} catch { atomicRollback = true; }
 ok(atomicRollback, 'atomic rollback on failure');
 eq(db3.prepare("SELECT COUNT(*) AS c FROM events WHERE aggregate_id='r-fail'").get().c, 0, 'no event after rollback');
 eq(db3.prepare("SELECT COUNT(*) AS c FROM event_outbox WHERE event_id='ev-fail'").get().c, 0, 'no outbox after rollback');
@@ -269,7 +269,7 @@ try {
   // JSON is stored as TEXT — no parsing at DB level. Application layer validates.
   // Test that invalid JSON can be stored (application responsibility to validate)
   ok(true, 'malformed JSON stored as text (app validates at read time)');
-} catch (e) {
+} catch {
   // Not expected to fail — SQLite doesn't validate JSON
   ok(true, 'malformed JSON handled');
 }
