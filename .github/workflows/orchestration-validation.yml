@@ -62,6 +62,8 @@ jobs:
         run: npm ci
         
       - name: Run Cross-Branch Integration
+        env:
+          BASE_SHA: bc116721b27346871e6de575daf2738a1c6f624e
         run: npm run test:orchestration:integration:all
         
       - name: Upload Artifacts

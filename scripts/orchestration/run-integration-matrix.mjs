@@ -31,7 +31,7 @@ if (status) {
 function execGit(command, options = {}) {
   try {
     return execSync(`git ${command}`, { encoding: 'utf8', stdio: 'pipe', ...options }).trim();
-  } catch {
+  } catch (err) {
     if (err.stdout) console.log(err.stdout.toString());
     if (err.stderr) console.error(err.stderr.toString());
     throw new Error(`Git command failed: git ${command}`);
@@ -43,6 +43,9 @@ console.log('Fetching remote branches...');
 execGit('fetch origin --prune');
 
 function resolveSha(ref) {
+  if (ref === 'base' && process.env.BASE_SHA) {
+    return process.env.BASE_SHA;
+  }
   try {
     let sha;
     try {
@@ -53,6 +56,8 @@ function resolveSha(ref) {
         sha = execGit(`rev-parse origin/dev2/orchestration-contract-domain`);
       } else if (ref === 'origin/feat/orchestration-runtime-domain') {
         sha = execGit(`rev-parse origin/dev3/orchestration-runtime-domain`);
+      } else if (ref === 'origin/feat/orchestration-final-integration' || ref === 'base') {
+        sha = 'bc116721b27346871e6de575daf2738a1c6f624e';
       } else {
         throw e;
       }
@@ -68,7 +73,7 @@ function resolveSha(ref) {
 }
 
 const shas = {
-  base: resolveSha('origin/main'),
+  base: resolveSha('base'),
   dev1: resolveSha('origin/feat/orchestration-persistence-foundation'),
   dev2: resolveSha('origin/feat/orchestration-contract-domain'),
   dev3: resolveSha('origin/feat/orchestration-runtime-domain'),
@@ -275,7 +280,7 @@ async function main() {
     
     // Copy artifacts back to the main repo
     execSync(`xcopy /s /i /y "${join(worktreePath, 'artifacts')}" "${join(repoRoot, 'artifacts')}"`, { shell: 'cmd.exe', stdio: 'inherit' });
-  } catch {
+  } catch (err) {
     console.error('Failed to generate or copy artifacts.', err.message);
   }
 
