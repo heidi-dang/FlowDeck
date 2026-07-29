@@ -3,9 +3,9 @@
  * Enforces all invariants and emits events through aggregate
  */
 
-import type { TaskRun, TaskRunState } from './task-run.js';
+import type { TaskRun, TaskRunState } from './task-run';
 
-import { TRANSITION_MATRIX, STRATEGY_RULES, type TransitionDefinition } from './task-run.js';
+import { TRANSITION_MATRIX, STRATEGY_RULES, type TransitionDefinition } from './task-run';
 
 /**
  * Command interface for task run state changes
@@ -234,5 +234,5 @@ export class TransitionProcessor {
 }
 
 // Re-export types and constants
-export { TRANSITION_MATRIX, STRATEGY_RULES, TERMINAL_STATES } from './task-run.js';
+export { TRANSITION_MATRIX, STRATEGY_RULES, TERMINAL_STATES } from './task-run';
 

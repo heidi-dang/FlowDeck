@@ -8,7 +8,7 @@
  * - Sessions must follow run state lifecycle
  */
 
-import type { TaskRun, TaskRunState } from './task-run.js';
+import type { TaskRun, TaskRunState } from './task-run';
 
 /**
  * Session status

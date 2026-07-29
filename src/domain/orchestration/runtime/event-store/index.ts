@@ -38,10 +38,10 @@ export {
   type AppendResult,
   type ConcurrencyError,
   type DuplicateCheckResult
-} from './port.js';
+} from './port';
 
 // Implementation
-export { InMemoryRuntimeEventStore } from './in-memory-store.js';
+export { InMemoryRuntimeEventStore } from './in-memory-store';
 
 // Rehydration
 export {
@@ -49,7 +49,7 @@ export {
   deterministicReplay,
   validatePersistedEvent,
   type RehydrationResult
-} from './rehydration.js';
+} from './rehydration';
 
 // Commands
 export {
@@ -58,6 +58,6 @@ export {
   createStartPlanningCommand,
   createCompletePlanningCommand,
   type RuntimeCommand
-} from './commands.js';
+} from './commands';
 
-export type { BaseCommand } from './commands.js';
+export type { BaseCommand } from './commands';

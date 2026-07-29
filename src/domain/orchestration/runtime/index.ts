@@ -5,18 +5,18 @@
  */
 
 // Core types (Phase 3A)
-export { TaskRun, TaskRunState, TaskRunStrategy } from './task-run.js';
-export { TRANSITION_MATRIX, STRATEGY_RULES, TERMINAL_STATES } from './task-run.js';
+export { TaskRun, TaskRunState, TaskRunStrategy } from './task-run';
+export { TRANSITION_MATRIX, STRATEGY_RULES, TERMINAL_STATES } from './task-run';
 export { TransitionProcessor } from './domain-service.js';
 
 // Entities
 export type { Assignment } from './assignment.js';
 export { AssignmentConsistencyValidator } from './assignment.js';
-export type { Session } from './session.js';
+export type { Session } from './session';
 export const SessionValidator = {} as any;
 export const WorktreeManager = {} as any;
-export type { ContextItem } from './context-item.js';
-export { ContextConsistencyValidator } from './context-item.js';
+export type { ContextItem } from './context-item';
+export { ContextConsistencyValidator } from './context-item';
 export type { RuntimeRequirement } from './runtime-requirement.js';
 export type { AcceptanceCriterionState } from './acceptance-criterion-state.js';
 

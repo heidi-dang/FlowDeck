@@ -23,4 +23,4 @@ export type {
   RetryPolicy,
   ConsumerOffset,
   DeadLetterRecord
-} from './port.js';
+} from './port';

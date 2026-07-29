@@ -7,7 +7,7 @@
  * - Assignment must be unique per run + agent combination
  */
 
-import type { TaskRun } from './task-run.js';
+import type { TaskRun } from './task-run';
 
 /**
  * Assignment status

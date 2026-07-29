@@ -8,7 +8,7 @@
  * - Context can be shared across runs but not mutated between runs
  */
 
-import type { TaskRun } from './task-run.js';
+import type { TaskRun } from './task-run';
 
 /**
  * Context item type

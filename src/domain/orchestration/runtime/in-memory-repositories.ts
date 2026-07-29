@@ -11,10 +11,10 @@ import type {
   AcceptanceCriterionStateRepository,
   WorktreeOwnershipRepository
 } from './ports.js';
-import type { TaskRun } from './task-run.js';
+import type { TaskRun } from './task-run';
 import type { Assignment } from './assignment.js';
-import type { Session } from './session.js';
-import type { ContextItem } from './context-item.js';
+import type { Session } from './session';
+import type { ContextItem } from './context-item';
 import type { RuntimeRequirement } from './runtime-requirement.js';
 import type { AcceptanceCriterionState } from './acceptance-criterion-state.js';
 
@@ -322,22 +322,6 @@ export class InMemoryWorktreeOwnershipRepository implements WorktreeOwnershipRep
     }
     
     return false;
-  }
-
-  async releaseOwnership(worktreeKey: string): Promise<void> {
-    this.ownership.delete(worktreeKey);
-  }
-
-  async isOwnedBy(worktreeKey: string, ownerId: string): Promise<boolean> {
-    return this.ownership.get(worktreeKey) === ownerId;
-  }
-
-  async releaseOwnership(worktreeKey: string): Promise<void> {
-    this.ownership.delete(worktreeKey);
-  }
-
-  async isOwnedBy(worktreeKey: string, ownerId: string): Promise<boolean> {
-    return this.ownership.get(worktreeKey) === ownerId;
   }
 
   /** Helper methods for tests */

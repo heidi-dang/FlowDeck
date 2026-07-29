@@ -4,7 +4,6 @@
  * Defines all runtime commands with strict typing for exact expected-version validation
  */
 
-import { TaskRunState } from './task-run.js';
 
 /**
  * Base command interface
@@ -117,7 +116,7 @@ export interface InitiateRecoveryCommand extends BaseCommand {
   readonly type: 'InitiateRecoveryCommand';
   readonly payload: {
     readonly recoveryPath?: string;
-    readonly recoveredFrom?: TaskRunState;
+    readonly recoveredFrom?: string;
   };
 }
 

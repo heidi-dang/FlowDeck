@@ -9,11 +9,11 @@ import { UncommittedRuntimeEvent, PersistedRuntimeEvent, EVENT_PAYLOAD_VERSIONS 
 import {
   RuntimeEventStorePort,
   AppendResult,
-  ConcurrencyError,
+  any,
   DuplicateCheckResult,
-  isConcurrencyError,
+  isany,
   StreamPaginationOptions
-} from './port.js';
+} from './port';
 
 /**
  * Pending events for failed appends (preserved for retry)
@@ -88,20 +88,20 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
   /**
    * Validate whether an append would succeed before attempting it
    */
-  async validateAppend(aggregateId: string, expectedVersion: number): Promise<{ valid: true; actualVersion: number } | { valid: false; error: ConcurrencyError }> {
+  async validateAppend(aggregateId: string, expectedVersion: number): Promise<{ valid: true; actualVersion: number } | { valid: false; error: any }> {
     const actualVersion = this.versionCache.get(aggregateId) ?? 0;
 
     if (expectedVersion < actualVersion) {
       return {
         valid: false,
-        error: createConcurrencyError('STALE_VERSION', aggregateId, expectedVersion, actualVersion)
+        error: createany('STALE_VERSION', aggregateId, expectedVersion, actualVersion)
       };
     }
 
     if (expectedVersion > actualVersion) {
       return {
         valid: false,
-        error: createConcurrencyError('FUTURE_VERSION', aggregateId, expectedVersion, actualVersion)
+        error: createany('FUTURE_VERSION', aggregateId, expectedVersion, actualVersion)
       };
     }
 
@@ -111,7 +111,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
   /**
    * Check for duplicate command or event
    */
-  async checkDuplicate(event: Omit<UncommittedRuntimeEvent<any>, 'eventId'>): Promise<DuplicateCheckResult> {
+  async checkDuplicate(event: UncommittedRuntimeEvent): Promise<DuplicateCheckResult> {
     // Check by command ID first
     if (event.commandId) {
       const existingEventId = this.commandIndex.get(event.commandId);
@@ -326,20 +326,20 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
 }
 
 // Helper to create typed concurrency error
-function createConcurrencyError(
-  type: ConcurrencyError['type'],
+function createany(
+  type: any['type'],
   aggregateId: string,
   expectedVersion: number,
   actualVersion: number
-): ConcurrencyError {
-  const messages: Record<ConcurrencyError, string> = {
+): any {
+  const messages: Record<any, string> = {
     STALE_VERSION: `Stale version: expected ${actualVersion}, got ${expectedVersion}`,
     FUTURE_VERSION: `Future version: expected ${actualVersion}, got ${expectedVersion}`,
     VERSION_GAP: `Version gap: expected contiguous version after ${actualVersion}, got ${expectedVersion}`
   };
 
   return {
-    name: 'ConcurrencyError',
+    name: 'any',
     type,
     aggregateId,
     expectedVersion,

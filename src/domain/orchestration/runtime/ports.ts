@@ -3,7 +3,7 @@
  * These interfaces define the contract between orchestration runtime and persistence
  */
 
-import type { TaskRun } from './task-run.js';
+import type { TaskRun } from './task-run';
 
 // Inline type definitions for cross-file dependencies
 export interface Assignment {

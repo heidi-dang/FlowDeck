@@ -1,7 +1,7 @@
 export const EVENT_PAYLOAD_VERSIONS = { CURRENT: 1 } as const;
-export function createUncommittedEvent(t: string, d: any, id: string, v: number) { return {} as any; }
-export interface UncommittedRuntimeEvent<EventType = any> { eventId: string; eventType: string; data: EventType; aggregateId: string; aggregateVersion: number; metadata?: Record<string, unknown>; commandId?: string; createdAt?: Date; }
-export interface PersistedRuntimeEvent<EventType = any> { event: EventType; eventId: string; eventType: string; data: EventType; aggregateId: string; aggregateVersion: number; globalSequence: number; timestamp: Date; metadata?: Record<string, unknown>; payload?: unknown; type?: string; correlationId?: string; payloadHash?: string; checksum?: string; createdAt?: Date; committedAt?: Date; [key: string]: unknown; }
+export function createUncommittedEvent(t: string, d: any, ag: string, v: number) { return {} as any; }
+export interface UncommittedRuntimeEvent { eventId: string; eventType: string; data: any; aggregateId: string; aggregateVersion: number; metadata?: Record<string, unknown>; commandId?: string; createdAt?: Date; payload?: unknown; }
+export interface PersistedRuntimeEvent { [key: string]: any; event: any; eventId: string; aggregateVersion: number; globalSequence: number; timestamp: Date; }
 export type RuntimeEventPayload = Record<string, unknown>;
 export interface RuntimeEventPayloadMap {}
 export type RuntimeEventType = string;
