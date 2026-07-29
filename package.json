@@ -82,6 +82,7 @@
     "test:orchestration:faults": "bun test tests/orchestration/fault",
     "test:orchestration:fault-injection": "bun test tests/orchestration/fault",
     "test:orchestration:integration": "node scripts/orchestration/run-integration-matrix.mjs",
+    "test:orchestration:integration:all": "node scripts/orchestration/run-integration-matrix.mjs --profile all",
     "verify:orchestration:schema": "bun run scripts/orchestration/verify-schema.mjs",
     "validate:orchestration:artifacts": "node scripts/orchestration/validate-artifacts.mjs",
     "report:orchestration:compatibility": "node scripts/generate-orchestration-compliance.mjs",

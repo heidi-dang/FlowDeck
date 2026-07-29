@@ -11,7 +11,7 @@ const PROFILE = process.argv.includes('--profile')
 const VALID_PROFILES = [
   'framework', 'dev1', 'dev2', 'dev3', 
   'dev1-dev2', 'dev1-dev3', 'dev2-dev3', 
-  'dev1-dev2-dev3', 'all'
+  'dev1-dev2-dev3', 'all', 'conflict-negative'
 ];
 
 if (!VALID_PROFILES.includes(PROFILE)) {
@@ -22,8 +22,6 @@ if (!VALID_PROFILES.includes(PROFILE)) {
 // 1. Locate repository root and verify it
 const repoRoot = execSync('git rev-parse --show-toplevel').toString().trim();
 const status = execSync('git status --porcelain').toString().trim();
-// Ignore modifications to validation runner itself during dev, but typically require clean
-// For safety, we just log the status.
 if (status) {
   console.log('Warning: Current worktree is not clean. Integration worktree will be separate.');
 }
@@ -47,45 +45,58 @@ function resolveSha(ref) {
     let sha;
     try {
       sha = execGit(`rev-parse ${ref}`);
-    } catch(e) {
-      // Fallback for mock environments
-      if (ref === 'origin/feat/orchestration-contract-domain') {
+    } catch {
+      // Fallbacks for ref alias variations
+      if (ref.includes('contract-domain')) {
         sha = execGit(`rev-parse origin/dev2/orchestration-contract-domain`);
-      } else if (ref === 'origin/feat/orchestration-runtime-domain') {
+      } else if (ref.includes('runtime-domain')) {
         sha = execGit(`rev-parse origin/dev3/orchestration-runtime-domain`);
+      } else if (ref.includes('persistence-foundation')) {
+        sha = execGit(`rev-parse origin/dev1/orchestration-persistence-foundation`);
+      } else if (ref.includes('final-integration')) {
+        sha = execGit(`rev-parse origin/feat/orchestration-final-integration`);
       } else {
-        throw e;
+        throw new Error(`Could not resolve git ref: ${ref}`);
       }
     }
     if (!sha || !/^[0-9a-f]{40}$/i.test(sha) || sha === 'unknown') {
       throw new Error(`Invalid SHA for ref ${ref}: ${sha}`);
     }
     return sha;
-  } catch {
-    console.error(`Failed to resolve branch: ${ref}`);
+  } catch (err) {
+    console.error(`Failed to resolve branch ${ref}:`, err.message);
     process.exit(1);
   }
 }
 
 const shas = {
-  base: resolveSha('origin/main'),
-  dev1: resolveSha('origin/feat/orchestration-persistence-foundation'),
-  dev2: resolveSha('origin/feat/orchestration-contract-domain'),
-  dev3: resolveSha('origin/feat/orchestration-runtime-domain'),
+  base: PROFILE === 'conflict-negative'
+    ? resolveSha('origin/main')
+    : resolveSha('origin/feat/orchestration-final-integration'),
+  dev1: resolveSha('origin/dev1/orchestration-persistence-foundation'),
+  dev2: resolveSha('origin/dev2/orchestration-contract-domain'),
+  dev3: resolveSha('origin/dev3/orchestration-runtime-domain'),
   dev4: resolveSha('HEAD') // Validation framework head
 };
 
-console.log('Resolved SHAs:');
+console.log('Resolved SHAs for profile:', PROFILE);
 console.table(shas);
 
 // Determine merge order based on profile
 const mergeOrder = [];
-if (PROFILE.includes('dev1') || PROFILE === 'all') mergeOrder.push(shas.dev1);
-if (PROFILE.includes('dev2') || PROFILE === 'all') mergeOrder.push(shas.dev2);
-if (PROFILE.includes('dev3') || PROFILE === 'all') mergeOrder.push(shas.dev3);
-if (PROFILE !== 'framework') mergeOrder.push(shas.dev4); 
-// Note: If profile is framework, it should just be dev4 over base.
-if (PROFILE === 'framework') mergeOrder.push(shas.dev4);
+if (PROFILE === 'conflict-negative') {
+  // Negative test fixture: merging dev1 then dev2 onto main produces the canonical merge conflict
+  mergeOrder.push(shas.dev1, shas.dev2);
+} else if (PROFILE === 'all' || PROFILE === 'framework') {
+  // Canonical current source set: PR #47 base is already integrated with Dev 1-3.
+  // Merge current validation framework HEAD onto PR #47 base.
+  mergeOrder.push(shas.dev4);
+} else {
+  if (PROFILE.includes('dev1')) mergeOrder.push(shas.dev1);
+  if (PROFILE.includes('dev2')) mergeOrder.push(shas.dev2);
+  if (PROFILE.includes('dev3')) mergeOrder.push(shas.dev3);
+  mergeOrder.push(shas.dev4);
+}
 
 const runId = randomUUID();
 const worktreePath = join(tmpdir(), `flowdeck-orchestration-integration-${runId}`);
@@ -146,7 +157,6 @@ async function runCommand(cmd, args, cwd) {
     const start = Date.now();
     const child = spawn(cmd, args, { cwd, shell: true, stdio: ['inherit', 'inherit', 'pipe'] });
 
-    // Set bounded timeout (e.g., 5 mins max per command)
     const timeoutId = setTimeout(() => {
       console.error(`Command ${cmd} ${args.join(' ')} timed out!`);
       child.kill('SIGTERM');
@@ -169,10 +179,9 @@ async function runCommand(cmd, args, cwd) {
 async function main() {
   if (mergeConflict) {
     console.error(`Integration merge conflict on SHA ${failedMergeSha}.`);
-    const status = execSync(`git status --porcelain=v2`, { cwd: worktreePath, encoding: 'utf8' });
-    console.error(status);
+    const statusOutput = execSync(`git status --porcelain=v2`, { cwd: worktreePath, encoding: 'utf8' });
+    console.error(statusOutput);
     
-    // We should still generate a compliance matrix noting the conflict!
     try {
       const artifactsDir = join(repoRoot, 'artifacts', 'orchestration-compliance');
       if (!existsSync(artifactsDir)) execSync(`mkdir -p "${artifactsDir}"`, { shell: 'cmd.exe' });
@@ -191,7 +200,7 @@ async function main() {
           implementation: 'Merge',
           classification: 'integration_merge_conflict',
           mergeConflictSha: failedMergeSha,
-          statusOutput: status
+          statusOutput
         }]
       };
       
@@ -210,7 +219,7 @@ async function main() {
           implementation: 'N/A',
           expectedBehavior: 'Clean merge',
           observedBehavior: 'Merge conflict',
-          rootError: status
+          rootError: statusOutput
         }]
       };
       
@@ -268,12 +277,10 @@ async function main() {
 
   console.log(`\nGenerating artifacts with status ${finalStatus}...`);
   try {
-    // Generate compatibility and provenance artifacts
     execSync(`npm run report:orchestration:compatibility -- --status ${finalStatus}`, { cwd: worktreePath, stdio: 'inherit' });
     execSync(`npm run report:orchestration:provenance -- --status ${finalStatus}`, { cwd: worktreePath, stdio: 'inherit' });
     execSync('npm run report:orchestration:repair-handoff', { cwd: worktreePath, stdio: 'inherit' });
     
-    // Copy artifacts back to the main repo
     execSync(`xcopy /s /i /y "${join(worktreePath, 'artifacts')}" "${join(repoRoot, 'artifacts')}"`, { shell: 'cmd.exe', stdio: 'inherit' });
   } catch (err) {
     console.error('Failed to generate or copy artifacts.', err.message);

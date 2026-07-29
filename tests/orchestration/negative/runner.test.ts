@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { execSync } from 'child_process';
+import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
 const runnerPath = join(process.cwd(), 'scripts', 'orchestration', 'run-integration-matrix.mjs');
@@ -8,28 +9,38 @@ describe('Integration Runner CLI (Negative)', () => {
   it('rejects missing or invalid profile', () => {
     try {
       execSync(`node "${runnerPath}" --profile non_existent_profile`, { stdio: 'pipe' });
-      expect(true).toBe(false); // Should not reach here
+      expect(true).toBe(false);
     } catch (err: any) {
       expect(err.stderr.toString()).toContain('Invalid profile');
     }
   });
 
-  it('rejects short SHA or invalid SHAs internally', () => {
-    // If we stubbed git rev-parse it would throw, but testing the script's exit code is enough.
-    // The script currently exits with 1 when merge conflict or fetch failure occurs.
-    expect(true).toBe(true);
-  });
-});
-
-describe('Artifact Validator (Negative)', () => {
-  it('rejects invalid schema or SHAs', () => {
-    const validatorPath = join(process.cwd(), 'scripts', 'orchestration', 'validate-artifacts.mjs');
-    // We expect it to pass currently or if no artifacts exist, it just returns.
+  it('runs conflict-negative profile: exits non-zero, records merge conflict provenance/matrix, exact SHAs, and cleans worktree', () => {
     try {
-      execSync(`node "${validatorPath}"`, { stdio: 'pipe' });
-      expect(true).toBe(true);
-    } catch {
-      // If we manually place a bad json it would fail.
+      execSync(`node "${runnerPath}" --profile conflict-negative`, { stdio: 'pipe' });
+      expect(true).toBe(false);
+    } catch (err: any) {
+      expect(err.status).not.toBe(0);
+
+      const artifactsDir = join(process.cwd(), 'artifacts', 'orchestration-compliance');
+      const provPath = join(artifactsDir, 'failure-provenance.json');
+      const matrixPath = join(artifactsDir, 'compatibility-matrix.json');
+
+      expect(existsSync(provPath)).toBe(true);
+      expect(existsSync(matrixPath)).toBe(true);
+
+      const prov = JSON.parse(readFileSync(provPath, 'utf8'));
+      const matrix = JSON.parse(readFileSync(matrixPath, 'utf8'));
+
+      expect(prov.status).toBe('blocked_by_merge_conflict');
+      expect(matrix.metadata.status).toBe('blocked_by_merge_conflict');
+      expect(prov.failures.length).toBeGreaterThan(0);
+      expect(prov.failures[0].classification).toBe('integration_merge_conflict');
+      expect(prov.failures[0].mergeConflictSha).toBe('47a1eca748785fe7c2a12454a594c42541e0594c');
+      expect(prov.failures[0].statusOutput).toContain('README.md');
+
+      const valRes = execSync('node scripts/orchestration/validate-artifacts.mjs', { encoding: 'utf8' });
+      expect(valRes).toContain('blocked_by_merge_conflict');
     }
   });
 });
