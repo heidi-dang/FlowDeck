@@ -1,0 +1,8 @@
+export { initializeDatabase, openConnection, closeConnection, closeAllConnections, getCurrentVersion, createTransactionManager } from "./database"
+export type { TransactionManager } from "./transaction-manager"
+export type { DatabaseConfig } from "./configuration"
+export { runMigrations } from "./migrations/migration-runner"
+export { validateSchema } from "./validation"
+export type { SchemaDiagnostics } from "./validation"
+export * from "./errors"
+export * from "./repositories"
