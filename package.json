@@ -1,7 +1,7 @@
 {
   "name": "@heidi-dang/flowdeck",
   "version": "0.8.0-alpha.13",
-  "description": "FlowDeck \u2014 structured planning and execution workflows for OpenCode (Heidi fork)",
+  "description": "FlowDeck — structured planning and execution workflows for OpenCode (Heidi fork)",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -71,7 +71,14 @@
     "test:persistence:node": "node src/orchestration/persistence/__tests__/run-tests.mjs",
     "check:schema-generated": "node scripts/check-schema-generated.mjs",
     "generate:schema": "node -e \"const fs=require(\"fs\"),crypto=require(\"crypto\");const sql=fs.readFileSync(\"schema-v0.2.6.sql\",\"utf-8\");const c=crypto.createHash(\"sha256\").update(sql,\"utf-8\").digest(\"hex\");fs.writeFileSync(\"src/orchestration/persistence/migrations/schema-embed.ts\",\"// Auto-generated from schema-v0.2.6.sql - DO NOT EDIT\\n// Regenerate: npm run generate:schema\\n// Canonical checksum: \"+c+\"\\n\\nexport const SCHEMA_V_0_2_6 = \\`\"+sql.replace(/\\`/g,\"\\\\\\`\")+\"\\`;\\nexport const SCHEMA_CHECKSUM = \\\"\"+c+\"\\\";\\n\");console.log(\"Generated, checksum:\"+c);\"",
-    "typecheck:dev2-compat": "echo \"Dev 2 compatibility check requires types from dev2/orchestration-contract-domain (SHA ffff758). Run with: tsc -p tsconfig.dev2-compat.json\" && tsc -p tsconfig.dev2-compat.json --noEmit 2>&1 | head -5"
+    "typecheck:dev2-compat": "echo \"Dev 2 compatibility check requires types from dev2/orchestration-contract-domain (SHA ffff758). Run with: tsc -p tsconfig.dev2-compat.json\" && tsc -p tsconfig.dev2-compat.json --noEmit 2>&1 | head -5",
+    "test:orchestration:framework": "bun test tests/orchestration/compliance tests/orchestration/harness tests/orchestration/fake tests/orchestration/runtime.test.ts",
+    "test:orchestration:negative": "bun test tests/orchestration/negative",
+    "test:orchestration:replay": "bun test tests/orchestration/replay",
+    "test:orchestration:concurrency": "bun test tests/orchestration/concurrency",
+    "test:orchestration:faults": "bun test tests/orchestration/fault",
+    "test:orchestration:integration": "node scripts/orchestration/run-integration-matrix.mjs",
+    "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults"
   },
   "keywords": [
     "opencode",

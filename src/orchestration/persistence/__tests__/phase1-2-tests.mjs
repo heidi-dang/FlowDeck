@@ -1,6 +1,6 @@
 // Phase 1.2 — Domain persistence adapters and final merge gate tests
 import { unlinkSync, readFileSync } from 'fs';
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 
 const DB = '/tmp/fd-phase12.db';
 let pass = 0, fail = 0;

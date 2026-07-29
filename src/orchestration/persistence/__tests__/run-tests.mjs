@@ -1,6 +1,6 @@
 // Persistence hardening tests — migration stress, concurrency, retry policy, diagnostics
 import { unlinkSync, readFileSync, existsSync } from 'fs';
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 
 const DB = '/tmp/flowdeck-hardening-test.db';
 let pass = 0, fail = 0;
@@ -103,7 +103,7 @@ const platform = process.platform;
 const arch = process.arch;
 const isWindows = platform === 'win32';
 console.log(`  Runtime: Node ${bunVersion}, platform=${platform}, arch=${arch}, isWindows=${isWindows}`);
-try { const pkg = JSON.parse(require('fs').readFileSync('node_modules/better-sqlite3/package.json','utf-8')); console.log('  better-sqlite3 version: ' + pkg.version); } catch { console.log('  better-sqlite3: installed'); };
+try { const pkg = JSON.parse(require('fs').readFileSync('node_modules/bun-types/package.json','utf-8')); console.log('  bun-types: installed'); } catch { console.log('  bun-types: missing (expected if bun is global)'); };
 const dbVer = new Database(':memory:').prepare('SELECT sqlite_version()').get();
 console.log(`  SQLite version: ${JSON.stringify(dbVer)}`);
 

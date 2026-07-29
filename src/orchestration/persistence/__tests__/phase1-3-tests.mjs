@@ -1,6 +1,6 @@
 // Phase 1.3 — Transaction correctness, runtime portability, concurrency, provider boundary
 import { unlinkSync, readFileSync } from 'fs';
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 
 const DB = '/tmp/fd-p13.db';
 let pass = 0, fail = 0;
