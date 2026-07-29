@@ -10,7 +10,7 @@ Install FlowDeck for a single project. The plugin is registered in the project's
 
 ## Prerequisites
 
-- Node.js >= 18.0.0
+- Node.js >= 20.0.0
 - npm
 - OpenCode >= 1.4.0
 

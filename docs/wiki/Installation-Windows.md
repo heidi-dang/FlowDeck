@@ -4,7 +4,7 @@ FlowDeck supports Windows 10 and later via Node.js. The CLI uses Node.js directl
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org) >= 18.0.0 (LTS recommended)
+- [Node.js](https://nodejs.org) >= 20.0.0 (LTS recommended)
 - OpenCode >= 1.4.0
 
 ## Install from npm (Recommended)

@@ -4,7 +4,7 @@ Install FlowDeck from the published npm package. This is the recommended method 
 
 ## Prerequisites
 
-- Node.js >= 18.0.0
+- Node.js >= 20.0.0
 - npm (bundled with Node.js)
 - OpenCode >= 1.4.0
 

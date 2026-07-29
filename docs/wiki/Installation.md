@@ -16,7 +16,7 @@ FlowDeck supports multiple installation methods. Choose the one that matches you
 
 | Dependency | Minimum Version | Required For |
 |---|---|---|
-| [Node.js](https://nodejs.org) | >= 18.0.0 | All installations |
+| [Node.js](https://nodejs.org) | >= 20.0.0 | All installations |
 | [npm](https://www.npmjs.com) | (bundled with Node.js) | All installations |
 | [OpenCode](https://opencode.ai) | >= 1.4.0 | Plugin activation |
 | [Bun](https://bun.sh) | >= 1.0.0 | Development and local builds |
@@ -25,7 +25,7 @@ FlowDeck supports multiple installation methods. Choose the one that matches you
 ### Verify Prerequisites
 
 ```bash
-node --version     # Must be >= 18.0.0
+node --version     # Must be >= 20.0.0
 npm --version      # Bundled with Node.js
 opencode --version # Must be >= 1.4.0
 ```
