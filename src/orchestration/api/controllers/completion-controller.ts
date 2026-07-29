@@ -1,8 +1,17 @@
 import type { IncomingMessage, ServerResponse } from "http";
 import type { CompletionService } from "../../services/completion-service";
-import { CreateCompletionInputSchema } from "../../types";
+import { CreateCompletionInputSchema, OrchestrationError, ErrorCodes } from "../../types";
 import { errorHandler } from "../middleware/error-handler";
 import type { RequestContext } from "../middleware/request-context";
+
+function parseOutcome(raw: unknown): "success" | "failure" | "partial" {
+  if (raw === "success" || raw === "failure" || raw === "partial") {
+    return raw;
+  }
+  throw OrchestrationError.fromCode(ErrorCodes.INVALID_INPUT, {
+    message: `Invalid completion outcome: "${String(raw)}". Expected "success", "failure", or "partial".`,
+  });
+}
 
 export function createCompletionController(completionService: CompletionService) {
   async function parseBody(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -33,7 +42,9 @@ export function createCompletionController(completionService: CompletionService)
     async finalize(req: IncomingMessage, res: ServerResponse, ctx: RequestContext, completionId: string): Promise<void> {
       try {
         const body = await parseBody(req);
-        const c = await completionService.completeRun(completionId, body.summary as string, body.outcome as any);
+        const outcome = parseOutcome(body.outcome);
+        const summary = typeof body.summary === "string" ? body.summary : "";
+        const c = await completionService.completeRun(completionId, summary, outcome);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ data: c }));
       } catch (err) { errorHandler(err, req, res, ctx); }

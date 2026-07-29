@@ -3,7 +3,7 @@ import type {
   VerificationResult, VerificationFilter, Evidence, OrchestrationEvent, EventFilter,
   OutboxEntry, OutboxFilter,
 } from "../types";
-import { OrchestrationError, ErrorCodes } from "../types";
+import { OutboxStatus, OrchestrationError, ErrorCodes } from "../types";
 import type {
   IRunRepository, IContractRepository, IAssignmentRepository,
   IVerificationRepository, IEventRepository, IOutboxRepository,
@@ -108,9 +108,9 @@ export class QueryService {
   }
 
   async getDeliveryStatus(_runId: string): Promise<{ delivered: number; pending: number; failed: number }> {
-    const pending = await this.outboxRepo.count({ status: "pending" as any });
-    const published = await this.outboxRepo.count({ status: "published" as any });
-    const failed = await this.outboxRepo.count({ status: "failed" as any });
-    return { delivered: published, pending, failed };
+    const pending = await this.outboxRepo.count({ status: OutboxStatus.PENDING });
+    const delivered = await this.outboxRepo.count({ status: OutboxStatus.DELIVERED });
+    const failed = await this.outboxRepo.count({ status: OutboxStatus.FAILED });
+    return { delivered, pending, failed };
   }
 }
