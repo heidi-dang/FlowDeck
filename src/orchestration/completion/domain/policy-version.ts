@@ -1,18 +1,21 @@
 /**
  * Policy version identifiers.
- * Each policy has a stable version that is captured in completion decisions
- * so that historical decisions remain explainable after policy changes.
+ * Strong PolicyVersion value object used for historical explainability.
  */
 
-export const POLICY_VERSIONS = {
-  SIX_GATE_EVALUATION: "six-gate-evaluation-v1",
-  APPROVAL_POLICY: "approval-policy-v1",
-  OVERRIDE_POLICY: "override-policy-v1",
-  AUTHORITY_POLICY: "authority-policy-v1",
-} as const
+import { type PolicyVersion, CURRENT_POLICY_VERSION } from "../../common/types"
 
-export const CURRENT_POLICY_VERSION = "1.0.0"
-
-export function getCompletionPolicyVersion(): string {
+export function getCompletionPolicyVersion(): PolicyVersion {
   return CURRENT_POLICY_VERSION
+}
+
+export function isCompatiblePolicyVersion(version: string): boolean {
+  // For now, only v1 is supported
+  return version === CURRENT_POLICY_VERSION || version === "1.0.0"
+}
+
+export function assertValidPolicyVersion(version: string): void {
+  if (!isCompatiblePolicyVersion(version)) {
+    throw new Error(`Unknown policy version: "${version}". Supported: ${CURRENT_POLICY_VERSION}`)
+  }
 }

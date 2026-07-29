@@ -1,5 +1,6 @@
 import { IdempotencyRecord } from "../domain/idempotency-record"
 import type { IdempotencyRepository } from "../ports/idempotency-repository"
+import type { Instant } from "../../common/types"
 
 export class InMemoryIdempotencyRepository implements IdempotencyRepository {
   private readonly records = new Map<string, IdempotencyRecord>()
@@ -8,10 +9,17 @@ export class InMemoryIdempotencyRepository implements IdempotencyRepository {
     return `${commandType}:${taskRunId}:${idempotencyKey}`
   }
 
-  async tryReserve(commandType: string, taskRunId: string, idempotencyKey: string, payloadHash: string, resultType: string, resultId: string, createdAt: Date): Promise<IdempotencyRecord | undefined> {
+  async tryReserve(
+    commandType: string, taskRunId: string, idempotencyKey: string,
+    payloadHash: string, resultType: string, resultId: string,
+  ): Promise<IdempotencyRecord | undefined> {
     const key = this.scopedKey(commandType, taskRunId, idempotencyKey)
     if (this.records.has(key)) return undefined
-    const record = new IdempotencyRecord({ id: key, commandType, taskRunId, idempotencyKey, payloadHash, resultType, resultId, createdAt })
+    const record = new IdempotencyRecord({
+      id: key, commandType, taskRunId, idempotencyKey,
+      payloadHash, resultType, resultId, createdAt: new Date().toISOString() as Instant,
+      status: "completed",
+    })
     this.records.set(key, record)
     return record
   }

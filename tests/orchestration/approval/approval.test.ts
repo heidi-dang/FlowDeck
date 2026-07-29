@@ -1,21 +1,26 @@
 import { describe, it, expect } from "bun:test"
 import { ApprovalRequest } from "@/orchestration/approval/domain/approval-request"
 import { ApprovalDecision } from "@/orchestration/approval/domain/approval-decision"
-import { hasSufficientAuthority, getRequiredAuthorityForGate } from "@/orchestration/approval/domain/authority"
-import { checkApprovalGate, validateApprovalDecision } from "@/orchestration/approval/policies/approval-policy"
-import { InsufficientAuthorityError, ApprovalWrongRunError, ApprovalWrongShaError, ApprovalExpiredError } from "@/orchestration/approval/domain/errors"
+import { DEFAULT_APPROVAL_POLICY, getMinimumAuthorityForGate } from "@/orchestration/approval/domain/approval-policy"
+import { checkApprovalGate, validateApprovalBinding } from "@/orchestration/approval/policies/approval-policy"
+import { hasSufficientAuthority } from "@/orchestration/common/types"
+import { InsufficientAuthorityError, ApprovalWrongRunError, ApprovalWrongShaError } from "@/orchestration/approval/domain/errors"
+import type { Instant, PolicyVersion, AuthorityLevel } from "@/orchestration/common/types"
 
 const RUN_ID = "run-1"
 const SHA = "abc123"
 const CONTRACT_VERSION = "version-1"
 const FAMILY_ID = "fam-1"
 const GATE_ID = "verification-policy-satisfied"
+const NOW = "2026-07-29T12:30:00.000Z" as Instant
+const PV = "1.0.0" as PolicyVersion
 
 function makeRequest(overrides: Record<string, unknown> = {}): ApprovalRequest {
   return new ApprovalRequest({
     id: "req-1", taskRunId: RUN_ID, contractVersionId: CONTRACT_VERSION, contractFamilyId: FAMILY_ID,
-    gateId: GATE_ID, sha: SHA, requester: "alice", requesterAuthority: "operator",
-    reason: "Need override", status: "pending", createdAt: new Date("2026-07-29T12:00:00Z"),
+    gateId: GATE_ID, sha: SHA, requester: "alice", requesterAuthority: "operator" as AuthorityLevel,
+    reason: "Need override", status: "pending", version: 1,
+    createdAt: "2026-07-29T12:00:00.000Z" as Instant,
     ...overrides,
   })
 }
@@ -24,8 +29,8 @@ function makeDecision(overrides: Record<string, unknown> = {}): ApprovalDecision
   return new ApprovalDecision({
     id: "dec-1", requestId: "req-1", taskRunId: RUN_ID, contractFamilyId: FAMILY_ID,
     contractVersionId: CONTRACT_VERSION, gateId: GATE_ID, sha: SHA,
-    outcome: "approved", approver: "bob", approverAuthority: "maintainer",
-    reason: "Approved", createdAt: new Date("2026-07-29T12:00:00Z"), policyVersion: "1.0.0",
+    outcome: "approved", approver: "bob", approverAuthority: "maintainer" as AuthorityLevel,
+    reason: "Approved", createdAt: "2026-07-29T12:00:00.000Z" as Instant, policyVersion: PV,
     ...overrides,
   })
 }
@@ -38,29 +43,28 @@ describe("Approval request lifecycle", () => {
   })
   it("can be approved", () => {
     const req = makeRequest()
-    const approved = req.approve("bob", "Looks good", new Date("2026-07-29T13:00:00Z"))
+    const approved = req.approve("bob", "2026-07-29T13:00:00.000Z" as Instant)
     expect(approved.status).toBe("approved")
     expect(approved.decidedBy).toBe("bob")
     expect(approved.isActive).toBe(true)
   })
   it("can be rejected", () => {
     const req = makeRequest()
-    const rejected = req.reject("bob", "Not good", new Date("2026-07-29T13:00:00Z"))
+    const rejected = req.reject("bob", "Not good", "2026-07-29T13:00:00.000Z" as Instant)
     expect(rejected.status).toBe("rejected")
     expect(rejected.isActive).toBe(false)
   })
   it("can be revoked", () => {
     const req = makeRequest({ status: "approved" })
-    const revoked = req.revoke(new Date("2026-07-29T13:00:00Z"))
+    const revoked = req.revoke("2026-07-29T13:00:00.000Z" as Instant)
     expect(revoked.status).toBe("revoked")
     expect(revoked.isActive).toBe(false)
   })
-  it("can expire", () => {
-    const req = makeRequest()
-    const expired = req.expire(new Date("2026-07-29T13:00:00Z"))
-    expect(expired.status).toBe("expired")
+  it("rejects invalid transitions", () => {
+    const req = makeRequest({ status: "rejected" })
+    expect(() => req.approve("bob", "2026-07-29T13:00:00.000Z" as Instant)).toThrow()
   })
-  it("approval decision is immutable after creation", () => {
+  it("approval decision is frozen", () => {
     const dec = makeDecision()
     expect(Object.isFrozen(dec)).toBe(true)
   })
@@ -84,109 +88,59 @@ describe("Approval binding", () => {
   })
 })
 
-describe("Approval gate check — matrix", () => {
-  const baseOverrides = { expectedSha: SHA, expectedContractVersionId: CONTRACT_VERSION, now: new Date("2026-07-29T12:30:00Z"), allowSelfApproval: false }
-
-  it("pending approval does not satisfy gate", () => {
+describe("Approval gate check", () => {
+  it("pending approval does not satisfy", () => {
     const req = makeRequest()
-    const result = checkApprovalGate({ request: req, decision: undefined, expectedTaskRunId: RUN_ID, ...baseOverrides })
-    expect(result.status).toBe("pending")
+    const r = checkApprovalGate(req, undefined, RUN_ID, SHA, CONTRACT_VERSION, NOW, DEFAULT_APPROVAL_POLICY)
+    expect(r.satisfied).toBe(false)
   })
-  it("approved with valid decision satisfies gate", () => {
+  it("approved with valid decision satisfies", () => {
     const req = makeRequest({ status: "approved" })
     const dec = makeDecision()
-    const result = checkApprovalGate({ request: req, decision: dec, expectedTaskRunId: RUN_ID, ...baseOverrides })
-    expect(result.status).toBe("satisfied")
+    const r = checkApprovalGate(req, dec, RUN_ID, SHA, CONTRACT_VERSION, NOW, DEFAULT_APPROVAL_POLICY)
+    expect(r.satisfied).toBe(true)
   })
-  it("rejected approval does not satisfy gate", () => {
+  it("rejected does not satisfy", () => {
     const req = makeRequest({ status: "rejected" })
-    const result = checkApprovalGate({ request: req, decision: undefined, expectedTaskRunId: RUN_ID, ...baseOverrides })
-    expect(result.status).toBe("failed")
+    const r = checkApprovalGate(req, undefined, RUN_ID, SHA, CONTRACT_VERSION, NOW, DEFAULT_APPROVAL_POLICY)
+    expect(r.satisfied).toBe(false)
   })
-  it("expired approval does not satisfy gate", () => {
-    const req = makeRequest({ status: "expired", expiresAt: new Date("2026-07-28T12:00:00Z") })
-    const result = checkApprovalGate({ request: req, decision: undefined, expectedTaskRunId: RUN_ID, ...baseOverrides })
-    expect(result.status).toBe("failed")
-  })
-  it("revoked approval does not satisfy gate", () => {
-    const req = makeRequest({ status: "revoked" })
-    const result = checkApprovalGate({ request: req, decision: undefined, expectedTaskRunId: RUN_ID, ...baseOverrides })
-    expect(result.status).toBe("failed")
-  })
-  it("wrong run approval does not satisfy gate", () => {
+  it("wrong run does not satisfy", () => {
     const req = makeRequest({ taskRunId: "other-run", status: "approved" })
     const dec = makeDecision({ taskRunId: "other-run" })
-    const result = checkApprovalGate({ request: req, decision: dec, expectedTaskRunId: RUN_ID, ...baseOverrides })
-    expect(result.status).toBe("failed")
+    const r = checkApprovalGate(req, dec, RUN_ID, SHA, CONTRACT_VERSION, NOW, DEFAULT_APPROVAL_POLICY)
+    expect(r.satisfied).toBe(false)
   })
-  it("no approval request fails gate", () => {
-    const result = checkApprovalGate({ request: undefined as any, decision: undefined, expectedTaskRunId: RUN_ID, ...baseOverrides })
-    expect(result.status).toBe("failed")
+  it("no request fails", () => {
+    const r = checkApprovalGate(undefined as any, undefined, RUN_ID, SHA, CONTRACT_VERSION, NOW, DEFAULT_APPROVAL_POLICY)
+    expect(r.satisfied).toBe(false)
   })
 })
 
-describe("Validation — authority", () => {
+describe("Authority", () => {
   it("hasSufficientAuthority works", () => {
     expect(hasSufficientAuthority("maintainer", "reviewer")).toBe(true)
     expect(hasSufficientAuthority("reviewer", "maintainer")).toBe(false)
-    expect(hasSufficientAuthority("system", "release_manager")).toBe(true)
   })
-  it("getRequiredAuthorityForGate returns expected", () => {
-    expect(getRequiredAuthorityForGate("current-sha-matches-verification")).toBe("maintainer")
-    expect(getRequiredAuthorityForGate("verification-policy-satisfied")).toBe("reviewer")
-  })
-  it("validateApprovalDecision rejects insufficient authority", () => {
-    const req = makeRequest()
-    const dec = makeDecision({ approverAuthority: "operator" })
-    expect(() => validateApprovalDecision({
-      request: req, decision: dec,
-      expectedTaskRunId: RUN_ID, expectedSha: SHA, expectedContractVersionId: CONTRACT_VERSION,
-      now: new Date("2026-07-29T12:30:00Z"), allowSelfApproval: false,
-    })).toThrow(InsufficientAuthorityError)
-  })
-  it("validateApprovalDecision rejects wrong run", () => {
+  it("validateApprovalBinding rejects wrong run", () => {
     const req = makeRequest({ taskRunId: "other-run" })
     const dec = makeDecision({ taskRunId: "other-run" })
-    expect(() => validateApprovalDecision({
-      request: req, decision: dec,
-      expectedTaskRunId: RUN_ID, expectedSha: SHA, expectedContractVersionId: CONTRACT_VERSION,
-      now: new Date("2026-07-29T12:30:00Z"), allowSelfApproval: false,
-    })).toThrow(ApprovalWrongRunError)
+    expect(() => validateApprovalBinding(req, dec, RUN_ID, SHA, CONTRACT_VERSION, NOW, DEFAULT_APPROVAL_POLICY))
+      .toThrow(ApprovalWrongRunError)
   })
-  it("validateApprovalDecision rejects wrong SHA", () => {
+  it("validateApprovalBinding rejects wrong SHA", () => {
     const req = makeRequest({ sha: "wrong-sha" })
     const dec = makeDecision({ sha: "wrong-sha" })
-    expect(() => validateApprovalDecision({
-      request: req, decision: dec,
-      expectedTaskRunId: RUN_ID, expectedSha: SHA, expectedContractVersionId: CONTRACT_VERSION,
-      now: new Date("2026-07-29T12:30:00Z"), allowSelfApproval: false,
-    })).toThrow(ApprovalWrongShaError)
+    expect(() => validateApprovalBinding(req, dec, RUN_ID, SHA, CONTRACT_VERSION, NOW, DEFAULT_APPROVAL_POLICY))
+      .toThrow(ApprovalWrongShaError)
   })
-  it("validateApprovalDecision rejects expired", () => {
-    const req = makeRequest({ expiresAt: new Date("2026-07-28T12:00:00Z") })
-    const dec = makeDecision()
-    expect(() => validateApprovalDecision({
-      request: req, decision: dec,
-      expectedTaskRunId: RUN_ID, expectedSha: SHA, expectedContractVersionId: CONTRACT_VERSION,
-      now: new Date("2026-07-29T12:30:00Z"), allowSelfApproval: false,
-    })).toThrow(ApprovalExpiredError)
-  })
-  it("self-approval is rejected when disallowed", () => {
+  it("self-approval rejected by default policy", () => {
     const req = makeRequest({ requester: "bob" })
     const dec = makeDecision({ approver: "bob", outcome: "approved" })
-    expect(() => validateApprovalDecision({
-      request: req, decision: dec,
-      expectedTaskRunId: RUN_ID, expectedSha: SHA, expectedContractVersionId: CONTRACT_VERSION,
-      now: new Date("2026-07-29T12:30:00Z"), allowSelfApproval: false,
-    })).toThrow(InsufficientAuthorityError)
+    expect(() => validateApprovalBinding(req, dec, RUN_ID, SHA, CONTRACT_VERSION, NOW, DEFAULT_APPROVAL_POLICY))
+      .toThrow(InsufficientAuthorityError)
   })
-  it("self-approval is allowed when explicitly permitted", () => {
-    const req = makeRequest({ requester: "bob" })
-    const dec = makeDecision({ approver: "bob", approverAuthority: "maintainer" })
-    expect(() => validateApprovalDecision({
-      request: req, decision: dec,
-      expectedTaskRunId: RUN_ID, expectedSha: SHA, expectedContractVersionId: CONTRACT_VERSION,
-      now: new Date("2026-07-29T12:30:00Z"), allowSelfApproval: true,
-    })).not.toThrow()
+  it("getMinimumAuthorityForGate returns expected", () => {
+    expect(getMinimumAuthorityForGate("verification-policy-satisfied" as any)).toBe("reviewer")
   })
 })

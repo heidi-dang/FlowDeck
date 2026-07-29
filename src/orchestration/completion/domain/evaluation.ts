@@ -1,9 +1,10 @@
 /**
  * Completion evaluation domain model.
  *
- * Defines the six gates, gate results, and the overall completion evaluation.
- * Override support will be added in Phase 2C.
+ * Defines gates, typed failure codes, and structured evaluation results.
  */
+
+import type { CompletionFailureCode } from "../../common/types"
 
 /**
  * The six completion gate identifiers.
@@ -29,18 +30,27 @@ export const GATE_NAMES: Record<GateId, string> = {
 }
 
 /**
+ * Typed gate failure code plus structured facts.
+ */
+export interface GateFailure {
+  readonly code: CompletionFailureCode
+  readonly message: string
+  readonly facts: readonly (readonly [string, string])[]
+}
+
+/**
  * Result of evaluating a single gate.
  */
 export interface GateResult {
   readonly gateId: GateId
   readonly gateName: string
   readonly passed: boolean
+  readonly failures: readonly GateFailure[]
   readonly reasons: readonly string[]
 }
 
 /**
  * Overall completion evaluation.
- * An evaluation passes when ALL six gates pass.
  */
 export interface CompletionEvaluation {
   readonly allPassed: boolean
@@ -50,30 +60,48 @@ export interface CompletionEvaluation {
   readonly failingGates: readonly GateResult[]
 }
 
+function deepFreezeGateResult(g: GateResult): GateResult {
+  return Object.freeze({
+    gateId: g.gateId,
+    gateName: g.gateName,
+    passed: g.passed,
+    failures: Object.freeze(g.failures.map((f) => Object.freeze({ code: f.code, message: f.message, facts: Object.freeze(f.facts.map((x) => Object.freeze(x))) }))),
+    reasons: Object.freeze([...g.reasons]),
+  })
+}
+
 /**
- * Creates a gate result.
+ * Creates a typed gate result with failure codes.
  */
-export function createGateResult(gateId: GateId, passed: boolean, reasons: string[] = []): GateResult {
-  return {
+export function createGateResult(
+  gateId: GateId,
+  passed: boolean,
+  failures: GateFailure[] = [],
+  reasons: string[] = [],
+): GateResult {
+  return deepFreezeGateResult({
     gateId,
     gateName: GATE_NAMES[gateId],
     passed,
+    failures: Object.freeze([...failures]),
     reasons: Object.freeze([...reasons]),
-  }
+  })
 }
 
 /**
  * Aggregates gate results into a completion evaluation.
+ * Deep-freezes the entire evaluation.
  */
 export function aggregateEvaluation(gates: GateResult[]): CompletionEvaluation {
-  const passed = gates.filter((g) => g.passed)
-  const failing = gates.filter((g) => !g.passed)
+  const frozen = gates.map(deepFreezeGateResult)
+  const passed = frozen.filter((g) => g.passed)
+  const failing = frozen.filter((g) => !g.passed)
 
-  return {
+  return Object.freeze({
     allPassed: failing.length === 0,
-    gates: Object.freeze([...gates]),
+    gates: Object.freeze(frozen),
     passedGates: passed.length,
-    totalGates: gates.length,
-    failingGates: Object.freeze([...failing]),
-  }
+    totalGates: frozen.length,
+    failingGates: Object.freeze(failing),
+  })
 }

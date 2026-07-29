@@ -1,10 +1,10 @@
 import { ApprovalRequest } from "../domain/approval-request"
 import { ApprovalDecision } from "../domain/approval-decision"
+import { type ApprovalPolicy, DEFAULT_APPROVAL_POLICY } from "../domain/approval-policy"
 import { ApprovalNotFoundError } from "../domain/errors"
-import { validateApprovalDecision } from "../policies/approval-policy"
+import { validateApprovalBinding } from "../policies/approval-policy"
 import { type ApprovalRepository } from "../ports/approval-repository"
-import { type Clock } from "../../common/ports/clock"
-import { type IdGenerator } from "../../common/ports/id-generator"
+import { type AuthorityLevel, type Instant, type PolicyVersion, toInstant } from "../../common/types"
 
 export interface CreateRequestInput {
   readonly taskRunId: string
@@ -13,30 +13,30 @@ export interface CreateRequestInput {
   readonly gateId: string
   readonly sha: string
   readonly requester: string
-  readonly requesterAuthority: string
+  readonly requesterAuthority: AuthorityLevel
   readonly reason: string
-  readonly expiresAt?: Date
+  readonly expiresAt?: Instant
 }
 
 export interface CreateDecisionInput {
   readonly requestId: string
   readonly outcome: "approved" | "rejected"
   readonly approver: string
-  readonly approverAuthority: string
+  readonly approverAuthority: AuthorityLevel
   readonly reason: string
   readonly expectedTaskRunId: string
   readonly expectedSha: string
   readonly expectedContractVersionId: string
-  readonly allowSelfApproval: boolean
-  readonly policyVersion: string
+  readonly policyVersion: PolicyVersion
+  readonly approvalPolicy?: ApprovalPolicy
 }
 
 export class ApprovalService {
   constructor(private readonly repository: ApprovalRepository) {}
 
-  async createRequest(input: CreateRequestInput, clock: Clock, idGen: IdGenerator): Promise<ApprovalRequest> {
+  async createRequest(input: CreateRequestInput): Promise<ApprovalRequest> {
     const request = new ApprovalRequest({
-      id: idGen.generate(),
+      id: `apr-${input.taskRunId}-${Date.now()}`,
       taskRunId: input.taskRunId,
       contractVersionId: input.contractVersionId,
       contractFamilyId: input.contractFamilyId,
@@ -46,19 +46,21 @@ export class ApprovalService {
       requesterAuthority: input.requesterAuthority,
       reason: input.reason,
       status: "pending",
-      createdAt: clock.now(),
+      version: 1,
+      createdAt: toInstant(new Date()),
       expiresAt: input.expiresAt,
     })
     await this.repository.saveRequest(request)
     return request
   }
 
-  async submitDecision(input: CreateDecisionInput, clock: Clock, idGen: IdGenerator): Promise<ApprovalDecision> {
+  async submitDecision(input: CreateDecisionInput): Promise<ApprovalDecision> {
     const request = await this.repository.getRequest(input.requestId)
     if (!request) throw new ApprovalNotFoundError(input.requestId)
+    const now = toInstant(new Date())
 
     const decision = new ApprovalDecision({
-      id: idGen.generate(),
+      id: `apd-${input.requestId}-${Date.now()}`,
       requestId: input.requestId,
       taskRunId: request.taskRunId,
       contractFamilyId: request.contractFamilyId,
@@ -69,23 +71,21 @@ export class ApprovalService {
       approver: input.approver,
       approverAuthority: input.approverAuthority,
       reason: input.reason,
-      createdAt: clock.now(),
+      createdAt: now,
       policyVersion: input.policyVersion,
     })
 
-    validateApprovalDecision({
-      request,
-      decision,
-      expectedTaskRunId: input.expectedTaskRunId,
-      expectedSha: input.expectedSha,
-      expectedContractVersionId: input.expectedContractVersionId,
-      now: clock.now(),
-      allowSelfApproval: input.allowSelfApproval,
-    })
+    const policy = input.approvalPolicy ?? DEFAULT_APPROVAL_POLICY
+
+    validateApprovalBinding(
+      request, decision,
+      input.expectedTaskRunId, input.expectedSha, input.expectedContractVersionId,
+      now, policy,
+    )
 
     const updatedRequest = input.outcome === "approved"
-      ? request.approve(input.approver, input.reason, clock.now())
-      : request.reject(input.approver, input.reason, clock.now())
+      ? request.approve(input.approver, now)
+      : request.reject(input.approver, input.reason, now)
 
     await this.repository.saveRequest(updatedRequest)
     await this.repository.saveDecision(decision)

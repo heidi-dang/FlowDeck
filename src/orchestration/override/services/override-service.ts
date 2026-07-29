@@ -2,8 +2,7 @@ import { OverrideRequest } from "../domain/override-request"
 import { OverrideNotFoundError } from "../domain/errors"
 import { checkDuplicateActiveOverride } from "../policies/override-policy"
 import { type OverrideRepository } from "../ports/override-repository"
-import { type Clock } from "../../common/ports/clock"
-import { type IdGenerator } from "../../common/ports/id-generator"
+import { type AuthorityLevel, type Instant, toInstant } from "../../common/types"
 
 export interface CreateOverrideInput {
   readonly gateId: string
@@ -13,59 +12,59 @@ export interface CreateOverrideInput {
   readonly sha: string
   readonly justification: string
   readonly requester: string
-  readonly requesterAuthority: string
+  readonly requesterAuthority: AuthorityLevel
   readonly failureClass?: string
-  readonly expiresAt?: Date
+  readonly expiresAt?: Instant
 }
 
 export class OverrideService {
   constructor(private readonly repository: OverrideRepository) {}
 
-  async createRequest(input: CreateOverrideInput, clock: Clock, idGen: IdGenerator): Promise<OverrideRequest> {
+  async createRequest(input: CreateOverrideInput): Promise<OverrideRequest> {
     const existing = await this.repository.listActiveOverridesByRun(input.taskRunId)
     if (checkDuplicateActiveOverride(existing, input.gateId, input.taskRunId)) {
       throw new Error(`An active override already exists for gate ${input.gateId} in run ${input.taskRunId}`)
     }
 
     const request = new OverrideRequest({
-      id: idGen.generate(),
-      gateId: input.gateId,
-      taskRunId: input.taskRunId,
-      contractVersionId: input.contractVersionId,
-      contractFamilyId: input.contractFamilyId,
-      sha: input.sha,
-      justification: input.justification,
-      requester: input.requester,
-      requesterAuthority: input.requesterAuthority,
-      status: "requested",
+      id: `${input.taskRunId}-override-${Date.now()}`,
+      gateId: input.gateId, taskRunId: input.taskRunId,
+      contractVersionId: input.contractVersionId, contractFamilyId: input.contractFamilyId,
+      sha: input.sha, justification: input.justification,
+      requester: input.requester, requesterAuthority: input.requesterAuthority,
+      status: "requested", version: 1,
       failureClass: input.failureClass,
-      createdAt: clock.now(),
+      createdAt: toInstant(new Date()),
       expiresAt: input.expiresAt,
     })
     await this.repository.saveRequest(request)
     return request
   }
 
-  async approveRequest(requestId: string, approver: string, approverAuthority: string, clock: Clock): Promise<OverrideRequest> {
+  async approveRequest(requestId: string, approver: string, approverAuthority: AuthorityLevel): Promise<OverrideRequest> {
     const request = await this.repository.getRequest(requestId)
     if (!request) throw new OverrideNotFoundError(requestId)
-    const approved = request.approve(approver, approverAuthority, clock.now())
+    const approved = request.approve(approver, approverAuthority, toInstant(new Date()))
     await this.repository.saveRequest(approved)
     return approved
   }
 
-  async rejectRequest(requestId: string, approver: string, clock: Clock): Promise<OverrideRequest> {
+  async rejectRequest(requestId: string, approver: string): Promise<OverrideRequest> {
     const request = await this.repository.getRequest(requestId)
     if (!request) throw new OverrideNotFoundError(requestId)
-    const rejected = request.reject(approver, clock.now())
+    const rejected = request.reject(approver, toInstant(new Date()))
     await this.repository.saveRequest(rejected)
     return rejected
   }
 
-  async consumeOverride(requestId: string, clock: Clock): Promise<OverrideRequest> {
+  /** Consumes an override atomically — requires compare-and-set in persistence. */
+  async consumeOverride(requestId: string, decisionId: string): Promise<OverrideRequest> {
     const request = await this.repository.getRequest(requestId)
     if (!request) throw new OverrideNotFoundError(requestId)
-    const consumed = request.consume(clock.now())
+    if (request.status !== "approved") {
+      throw new Error(`Cannot consume override ${requestId}: status is "${request.status}", expected "approved"`)
+    }
+    const consumed = request.consume(decisionId, toInstant(new Date()))
     await this.repository.saveRequest(consumed)
     return consumed
   }

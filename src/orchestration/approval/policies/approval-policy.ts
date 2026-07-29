@@ -1,109 +1,94 @@
 /**
- * Approval policy.
- * Enforces run/SHA/contract binding, authority, expiry, and self-approval rules.
+ * Approval policy enforcement.
+ * Uses canonical gate policy registry, typed authority, and versioned approval policy.
  */
 
 import { ApprovalRequest } from "../domain/approval-request"
 import { ApprovalDecision } from "../domain/approval-decision"
-import { hasSufficientAuthority, getRequiredAuthorityForGate, type AuthorityLevel } from "../domain/authority"
+import { type ApprovalPolicy, getMinimumAuthorityForGate } from "../domain/approval-policy"
+import { hasSufficientAuthority, type Instant } from "../../common/types"
+import { getGateDefinition } from "../../completion/domain/gate-policy"
 import {
   InsufficientAuthorityError, ApprovalWrongRunError, ApprovalWrongShaError,
   ApprovalWrongContractError, ApprovalExpiredError, ApprovalRejectedError, ApprovalRevokedError,
 } from "../domain/errors"
 
-export interface ValidateApprovalInput {
-  readonly request: ApprovalRequest
-  readonly decision: ApprovalDecision
-  readonly expectedTaskRunId: string
-  readonly expectedSha: string
-  readonly expectedContractVersionId: string
-  readonly now: Date
-  readonly allowSelfApproval: boolean
+export interface ApprovalGateCheckResult {
+  readonly satisfied: boolean
+  readonly reasons: readonly string[]
 }
 
-export interface ApprovalGateCheck {
-  readonly request: ApprovalRequest | undefined
-  readonly decision: ApprovalDecision | undefined
-  readonly expectedTaskRunId: string
-  readonly expectedSha: string
-  readonly expectedContractVersionId: string
-  readonly now: Date
-  readonly allowSelfApproval: boolean
-}
-
-export type ApprovalGateStatus = "satisfied" | "pending" | "failed"
-
-export function checkApprovalGate(input: ApprovalGateCheck): { status: ApprovalGateStatus; reasons: string[] } {
+/**
+ * Checks whether an approval gate is satisfied.
+ * Uses exact binding fields — no ambiguous matching.
+ */
+export function checkApprovalGate(
+  request: ApprovalRequest,
+  decision: ApprovalDecision | undefined,
+  expectedTaskRunId: string,
+  expectedSha: string,
+  expectedContractVersionId: string,
+  now: Instant,
+  _policy: ApprovalPolicy,
+): ApprovalGateCheckResult {
   const reasons: string[] = []
 
-  if (!input.request) {
-    reasons.push("No approval request exists for this gate")
-    return { status: "failed", reasons }
+  if (!request) {
+    return { satisfied: false, reasons: Object.freeze(["No approval request exists"]) }
   }
 
-  if (input.request.status === "pending") {
-    reasons.push("Approval request is still pending")
-    return { status: "pending", reasons }
+  if (request.status === "pending") {
+    return { satisfied: false, reasons: Object.freeze(["Approval request is still pending"]) }
   }
 
-  if (!input.request.belongsToRun(input.expectedTaskRunId)) {
-    reasons.push(`Approval belongs to run ${input.request.taskRunId}, expected ${input.expectedTaskRunId}`)
-    return { status: "failed", reasons }
+  // Exact binding checks
+  if (!request.belongsToRun(expectedTaskRunId)) {
+    return { satisfied: false, reasons: Object.freeze([`Approval belongs to run ${request.taskRunId}, expected ${expectedTaskRunId}`]) }
+  }
+  if (!request.matchesSha(expectedSha)) {
+    return { satisfied: false, reasons: Object.freeze([`Approval targets SHA ${request.sha}, expected ${expectedSha}`]) }
+  }
+  if (!request.matchesContract(expectedContractVersionId)) {
+    return { satisfied: false, reasons: Object.freeze([`Approval targets contract ${request.contractVersionId}, expected ${expectedContractVersionId}`]) }
+  }
+  if (request.isExpired(now)) {
+    return { satisfied: false, reasons: Object.freeze(["Approval has expired"]) }
   }
 
-  if (input.request.isExpired(input.now)) {
-    reasons.push("Approval has expired")
-    return { status: "failed", reasons }
+  if (request.status === "expired") reasons.push("Approval is expired")
+  else if (request.status === "revoked") reasons.push("Approval has been revoked")
+  else if (request.status === "rejected") reasons.push("Approval was rejected")
+
+  if (reasons.length > 0) {
+    return { satisfied: false, reasons: Object.freeze(reasons) }
   }
 
-  if (input.request.status === "expired") {
-    reasons.push("Approval is expired")
-    return { status: "failed", reasons }
+  // Must have a decision record
+  if (!decision) {
+    return { satisfied: false, reasons: Object.freeze(["No approval decision record exists"]) }
   }
-
-  if (input.request.status === "revoked") {
-    reasons.push("Approval has been revoked")
-    return { status: "failed", reasons }
-  }
-
-  if (input.request.status === "rejected") {
-    reasons.push("Approval was rejected")
-    return { status: "failed", reasons }
-  }
-
-  if (!input.decision) {
-    if (input.request.status === "approved") {
-      // If the request says approved but there's no decision record, treat as pending
-      reasons.push("Approval decision record is missing")
-      return { status: "pending", reasons }
-    }
-    reasons.push("No approval decision has been recorded")
-    return { status: "failed", reasons }
-  }
-
-  if (input.decision.outcome === "rejected") {
-    reasons.push("Approval was rejected")
-    return { status: "failed", reasons }
-  }
-
-  if (!input.decision.approver || input.decision.approver.length === 0) {
-    reasons.push("Approval has no approver identity")
-    return { status: "failed", reasons }
-  }
-
-  return { status: "satisfied", reasons: [] }
-}
-
-export function validateApprovalDecision(input: ValidateApprovalInput): void {
-  const { request, decision, expectedTaskRunId, expectedSha, expectedContractVersionId, now, allowSelfApproval } = input
 
   if (decision.outcome === "rejected") {
-    if (!allowSelfApproval && decision.approver === request.requester) {
-      throw new InsufficientAuthorityError("requires_different_approver", decision.approver)
-    }
-    return // rejection is always valid as long as not self-approved if prohibited
+    return { satisfied: false, reasons: Object.freeze(["Approval was rejected"]) }
   }
 
+  if (!decision.approver || decision.approver.length === 0) {
+    return { satisfied: false, reasons: Object.freeze(["Approval has no approver identity"]) }
+  }
+
+  return { satisfied: true, reasons: Object.freeze([]) }
+}
+
+export function validateApprovalBinding(
+  request: ApprovalRequest,
+  decision: ApprovalDecision,
+  expectedTaskRunId: string,
+  expectedSha: string,
+  expectedContractVersionId: string,
+  now: Instant,
+  policy: ApprovalPolicy,
+): void {
+  // Binding checks
   if (!request.belongsToRun(expectedTaskRunId)) {
     throw new ApprovalWrongRunError(expectedTaskRunId, request.taskRunId)
   }
@@ -116,20 +101,22 @@ export function validateApprovalDecision(input: ValidateApprovalInput): void {
   if (request.isExpired(now)) {
     throw new ApprovalExpiredError(request.id)
   }
-  if (request.status === "revoked") {
-    throw new ApprovalRevokedError(request.id)
-  }
-  if (request.status === "rejected") {
-    throw new ApprovalRejectedError(request.id)
-  }
+  if (request.status === "revoked") throw new ApprovalRevokedError(request.id)
+  if (request.status === "rejected") throw new ApprovalRejectedError(request.id)
 
-  const requiredLevel: AuthorityLevel = getRequiredAuthorityForGate(request.gateId)
-  const allowedLevel: AuthorityLevel = decision.approverAuthority as AuthorityLevel
-  if (!hasSufficientAuthority(allowedLevel, requiredLevel)) {
-    throw new InsufficientAuthorityError(requiredLevel, allowedLevel)
-  }
+  // Authority check (only for approvals, not rejections)
+  if (decision.outcome === "approved") {
+    const gateDef = getGateDefinition(request.gateId)
+    if (gateDef.overridePolicy.kind !== "not_overridable") {
+      const requiredLevel = getMinimumAuthorityForGate(request.gateId as any)
+      if (!hasSufficientAuthority(decision.approverAuthority, requiredLevel)) {
+        throw new InsufficientAuthorityError(requiredLevel, decision.approverAuthority)
+      }
+    }
 
-  if (!allowSelfApproval && decision.approver === request.requester) {
-    throw new InsufficientAuthorityError("requires_different_approver", decision.approver)
+    // Self-approval check
+    if (!policy.allowSelfApproval && decision.approver === request.requester) {
+      throw new InsufficientAuthorityError("requires_different_approver(denied_by_policy)", decision.approver)
+    }
   }
 }

@@ -345,7 +345,7 @@ describe("Create gate result", () => {
   })
 
   it("creates a failing gate result with reasons", () => {
-    const result = createGateResult("required-assignments-complete", false, ["Not complete"])
+    const result = createGateResult("required-assignments-complete", false, [{ code: "ASSIGNMENTS_INCOMPLETE" as any, message: "Not complete", facts: [] }], ["Not complete"])
     expect(result.passed).toBe(false)
     expect(result.reasons).toEqual(["Not complete"])
   })
@@ -354,7 +354,7 @@ describe("Create gate result", () => {
 describe("Aggregate evaluation function", () => {
   it("aggregates multiple gate results", () => {
     const g1 = createGateResult("required-assignments-complete", true)
-    const g2 = createGateResult("current-sha-matches-verification", false, ["SHA mismatch"])
+    const g2 = createGateResult("current-sha-matches-verification", false, [{ code: "CURRENT_SHA_MISMATCH" as any, message: "SHA mismatch", facts: [] }], ["SHA mismatch"])
     const g3 = createGateResult("critical-acceptance-criteria-passed", true)
 
     const evaluation = aggregateEvaluation([g1, g2, g3])

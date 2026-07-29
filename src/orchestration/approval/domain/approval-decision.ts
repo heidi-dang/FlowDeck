@@ -1,8 +1,9 @@
 /**
- * ApprovalDecision — immutable record of an approval outcome.
- * Once created, an ApprovalDecision is never mutated.
- * A later revocation creates a new audit record.
+ * ApprovalDecision — immutable record.
+ * Once created, absolutely no mutation possible (deep frozen).
  */
+
+import { type Instant, type PolicyVersion, type AuthorityLevel } from "../../common/types"
 
 export type ApprovalOutcome = "approved" | "rejected"
 
@@ -16,10 +17,10 @@ export interface ApprovalDecisionData {
   readonly sha: string
   readonly outcome: ApprovalOutcome
   readonly approver: string
-  readonly approverAuthority: string
+  readonly approverAuthority: AuthorityLevel
   readonly reason: string
-  readonly createdAt: Date
-  readonly policyVersion: string
+  readonly createdAt: Instant
+  readonly policyVersion: PolicyVersion
 }
 
 export class ApprovalDecision {
@@ -32,25 +33,17 @@ export class ApprovalDecision {
   public readonly sha: string
   public readonly outcome: ApprovalOutcome
   public readonly approver: string
-  public readonly approverAuthority: string
+  public readonly approverAuthority: AuthorityLevel
   public readonly reason: string
-  public readonly createdAt: Date
-  public readonly policyVersion: string
+  public readonly createdAt: Instant
+  public readonly policyVersion: PolicyVersion
 
   constructor(data: ApprovalDecisionData) {
-    this.id = data.id
-    this.requestId = data.requestId
-    this.taskRunId = data.taskRunId
-    this.contractFamilyId = data.contractFamilyId
-    this.contractVersionId = data.contractVersionId
-    this.gateId = data.gateId
-    this.sha = data.sha
-    this.outcome = data.outcome
-    this.approver = data.approver
-    this.approverAuthority = data.approverAuthority
-    this.reason = data.reason
-    this.createdAt = data.createdAt
-    this.policyVersion = data.policyVersion
+    this.id = data.id; this.requestId = data.requestId; this.taskRunId = data.taskRunId
+    this.contractFamilyId = data.contractFamilyId; this.contractVersionId = data.contractVersionId
+    this.gateId = data.gateId; this.sha = data.sha; this.outcome = data.outcome
+    this.approver = data.approver; this.approverAuthority = data.approverAuthority
+    this.reason = data.reason; this.createdAt = data.createdAt; this.policyVersion = data.policyVersion
     Object.freeze(this)
   }
 }

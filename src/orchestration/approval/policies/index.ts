@@ -1,1 +1,1 @@
-export { checkApprovalGate, validateApprovalDecision, type ValidateApprovalInput, type ApprovalGateCheck, type ApprovalGateStatus } from "./approval-policy"
+export { checkApprovalGate, validateApprovalBinding, type ApprovalGateCheckResult } from "./approval-policy"

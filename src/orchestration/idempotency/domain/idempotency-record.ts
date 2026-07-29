@@ -1,11 +1,6 @@
-/**
- * Idempotency record.
- *
- * Tracks idempotent command execution.
- * Scope: command_type + task_run_id + idempotency_key
- *
- * Payload hash is used to detect mismatched payloads on key reuse.
- */
+import { type Instant } from "../../common/types"
+
+export type IdempotencyStatus = "reserved" | "completed" | "released"
 
 export interface IdempotencyRecordData {
   readonly id: string
@@ -15,7 +10,8 @@ export interface IdempotencyRecordData {
   readonly payloadHash: string
   readonly resultType: string
   readonly resultId: string
-  readonly createdAt: Date
+  readonly status: IdempotencyStatus
+  readonly createdAt: Instant
 }
 
 export class IdempotencyRecord {
@@ -26,17 +22,15 @@ export class IdempotencyRecord {
   public readonly payloadHash: string
   public readonly resultType: string
   public readonly resultId: string
-  public readonly createdAt: Date
+  public readonly status: IdempotencyStatus
+  public readonly createdAt: Instant
 
   constructor(data: IdempotencyRecordData) {
-    this.id = data.id
-    this.commandType = data.commandType
-    this.taskRunId = data.taskRunId
-    this.idempotencyKey = data.idempotencyKey
-    this.payloadHash = data.payloadHash
-    this.resultType = data.resultType
-    this.resultId = data.resultId
-    this.createdAt = data.createdAt
+    this.id = data.id; this.commandType = data.commandType; this.taskRunId = data.taskRunId
+    this.idempotencyKey = data.idempotencyKey; this.payloadHash = data.payloadHash
+    this.resultType = data.resultType; this.resultId = data.resultId
+    this.status = data.status; this.createdAt = data.createdAt
+    Object.freeze(this)
   }
 
   get scopedKey(): string {
