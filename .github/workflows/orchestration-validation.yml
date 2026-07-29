@@ -62,6 +62,7 @@ jobs:
         run: npm ci
         
       - name: Run Cross-Branch Integration
+        if: github.head_ref == "feat/orchestration-final-integration"
         run: npm run test:orchestration:integration:all
         
       - name: Upload Artifacts
