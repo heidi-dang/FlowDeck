@@ -4,9 +4,8 @@
  * Comprehensive tests for event append, rehydration, replay, concurrency, and leases
  */
 
-import { describe, it, expect, beforeEach } from 'vitest';
-import { describe, it, expect, beforeEach } from 'vitest';
-
+import { describe, it, expect, beforeEach } from 'bun:test';
+import type { PersistedRuntimeEvent, UncommittedRuntimeEvent } from '../../../src/domain/orchestration/runtime/event-store/types';
 // Inline types for now (can be removed when build works)
 type RuntimeEventType = 'RunCreated' | 'RunStartedPlanning' | 'RunCompletedPlanning' | 'RunStartedAnalysis' | 'RunCompletedAnalysis' | 'RunStartedExecution' | 'RunCompletedExecution' | 'RunVerified' | 'RunCompleted' | 'RunFailed' | 'RunCancelled' | 'RunRecovered';
 
@@ -94,8 +93,8 @@ function deterministicReplay(events: any[]): string[] {
   let current = 'created';
   
   for (const e of events.sort((a, b) => a.aggregateVersion - b.aggregateVersion)) {
-    if (e.type.includes('Planning')) current = 'planning';
-    if (e.type.includes('Planning') && e.type.includes('Completed')) current = 'completed';
+    if (e.eventType.includes('Planning')) current = 'planning';
+    if (e.eventType.includes('Planning') && e.eventType.includes('Completed')) current = 'completed';
   }
   
   states.push(current);
@@ -122,7 +121,7 @@ class InMemoryWorktreeLeaseRepository {
     return { success: true, lease };
   }
 
-  async renew(worktreeKey: string, ownerId: string): Promise<{ success: boolean }> {
+  async renew(worktreeKey: string, ownerId: string): Promise<{ success: boolean; lease?: any }> {
     const existing = this.leases.get(worktreeKey);
     
     if (!existing || existing.ownerId !== ownerId) {
@@ -483,15 +482,17 @@ describe('Phase 3B - Event Store', () => {
 function createEvent(runId: string, version: number, type: string): UncommittedRuntimeEvent {
   return {
     aggregateId: runId,
-    expectedVersion: version,
-    type: `Run${type}` as RuntimeEvents.RuntimeEventType,
-    payloadVersion: `1.0` as any,
+    aggregateVersion: version,
+    eventType: `Run${type}`,
     payload: {
       runId,
       newStatus: type === 'Created' ? 'created' : 'planned',
       oldStatus: version > 0 ? 'created' : undefined,
       strategy: 'simple',
       correlationId: `corr_${Date.now()}`
+    },
+    metadata: {
+      payloadVersion: '1.0'
     }
   };
 }
@@ -500,7 +501,6 @@ function createPersistedEvent(aggregateId: string, version: number, type: string
   return {
     ...createEvent(aggregateId, version, type),
     eventId: `evt_${aggregateId}_${version}`,
-    aggregateVersion: version,
     globalSequence: version,
     createdAt: new Date(),
     committedAt: new Date(),

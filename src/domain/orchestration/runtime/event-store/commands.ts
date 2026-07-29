@@ -1,3 +1,5 @@
+import { randomUUID } from 'crypto';
+
 /**
  * Typed Runtime Commands with Command Idempotency - Phase 3B
  * 
@@ -148,7 +150,7 @@ export function createStartPlanningCommand(
     type: 'StartPlanningCommand',
     aggregateId,
     payload,
-    commandId: options?.commandId ?? `cmd_${aggregateId}_start_planning_${Date.now()}`,
+    commandId: options?.commandId ?? `cmd_${aggregateId}_start_planning_${randomUUID()}`,
     correlationId: options?.correlationId,
     causationId: options?.causationId
   };
@@ -163,7 +165,7 @@ export function createCompletePlanningCommand(
     type: 'CompletePlanningCommand',
     aggregateId,
     payload,
-    commandId: options?.commandId ?? `cmd_${aggregateId}_complete_planning_${Date.now()}`,
+    commandId: options?.commandId ?? `cmd_${aggregateId}_complete_planning_${randomUUID()}`,
     correlationId: options?.correlationId,
     causationId: options?.causationId
   };

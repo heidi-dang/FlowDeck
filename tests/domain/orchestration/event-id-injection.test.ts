@@ -6,8 +6,8 @@
 
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { InMemoryRuntimeEventStore } from '../../../src/domain/orchestration/runtime/event-store/in-memory-store';
-import type { EventIdGenerator, AppendIdGenerator } from '../../../src/domain/orchestration/runtime/event-store/types';
 import { createDeterministicGenerators, defaultEventIdGenerator, defaultAppendIdGenerator } from '../../../src/domain/orchestration/runtime/event-store/event-id-generator';
+import type { UncommittedRuntimeEvent } from '../../../src/domain/orchestration/runtime/event-store/types';
 
 describe('PR 3B - Event ID Injection', () => {
   let store: InMemoryRuntimeEventStore;
@@ -30,7 +30,7 @@ describe('PR 3B - Event ID Injection', () => {
         aggregateVersion: 0,
         eventId: undefined,
         payload: {}
-      }
+      } as UncommittedRuntimeEvent
     ], 0);
     
     const events = await testStore.readStream('test-aggregate');
@@ -71,32 +71,31 @@ describe('PR 3B - Event ID Injection', () => {
     const appendIds: string[] = [];
     
     // Test that appendIdGenerator uses separate namespace
+    const crypto = require('crypto');
     const testStore = new InMemoryRuntimeEventStore(undefined, () => `app_${crypto.randomUUID()}`);
     
     // Multiple appends should have unique IDs
-    await testStore.append('agg-1', [], 0);
-    await testStore.append('agg-2', [], 0);
+    const dummyEvent: UncommittedRuntimeEvent = { eventType: 'Test', aggregateId: 'agg-1', aggregateVersion: 1 };
+    await testStore.append('agg-1', [{ ...dummyEvent, aggregateId: 'agg-1' }], 0);
+    await testStore.append('agg-2', [{ ...dummyEvent, aggregateId: 'agg-2' }], 0);
     
     expect(appendIds.length).toBe(0); // Not stored, just generated
     
     // The actual implementation uses UUID so collisions are astronomically unlikely
   });
 
-  it('deterministic generators cycle correctly', () => {
-    const eventIds = ['A', 'B', 'C'];
-    const appendIds = ['X', 'Y', 'Z'];
+  it('deterministic generators throw when exhausted', () => {
+    const eventIds = ['A', 'B'];
+    const appendIds = ['X'];
     
     const { eventIdGenerator, appendIdGenerator } = createDeterministicGenerators(eventIds, appendIds);
     
     expect(eventIdGenerator()).toBe('A');
     expect(eventIdGenerator()).toBe('B');
-    expect(eventIdGenerator()).toBe('C');
-    expect(eventIdGenerator()).toBe('A'); // Cycles back
+    expect(() => eventIdGenerator()).toThrow('sequence exhausted');
     
     expect(appendIdGenerator()).toBe('X');
-    expect(appendIdGenerator()).toBe('Y');
-    expect(appendIdGenerator()).toBe('Z');
-    expect(appendIdGenerator()).toBe('X'); // Cycles back
+    expect(() => appendIdGenerator()).toThrow('sequence exhausted');
   });
 
   it('explicit eventId overrides generator', async () => {
@@ -110,23 +109,10 @@ describe('PR 3B - Event ID Injection', () => {
         aggregateVersion: 0,
         eventId: customId,
         payload: {}
-      }
+      } as UncommittedRuntimeEvent
     ], 0);
     
     const events = await testStore.readStream('test');
     expect(events[0].eventId).toBe(customId);
-  });
-
-  it('typed concurrency error has all required fields', () => {
-    const store = new InMemoryRuntimeEventStore();
-    
-    try {
-      store.validateAppend('test', 10); // This will fail validation but return typed error
-    } catch {
-      // Expected
-    }
-    
-    // The validateAppend returns ConcurrencyError type, not any
-    // This is verified at compile time by TypeScript
   });
 });

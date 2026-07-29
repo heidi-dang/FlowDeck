@@ -36,7 +36,13 @@ export function createDeterministicGenerators(
   let appendIndex = 0;
   
   return {
-    eventIdGenerator: () => eventIds[eventIndex++ % eventIds.length],
-    appendIdGenerator: () => appendIds[appendIndex++ % appendIds.length]
+    eventIdGenerator: () => {
+      if (eventIndex >= eventIds.length) throw new Error('Event ID generator sequence exhausted');
+      return eventIds[eventIndex++];
+    },
+    appendIdGenerator: () => {
+      if (appendIndex >= appendIds.length) throw new Error('Append ID generator sequence exhausted');
+      return appendIds[appendIndex++];
+    }
   };
 }

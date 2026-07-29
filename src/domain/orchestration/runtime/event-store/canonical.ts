@@ -30,8 +30,10 @@ export function freezeDeep<T>(obj: T): Readonly<T> {
     const keys = Object.keys(obj).sort(); // Sort keys for determinism
     
     for (const key of keys) {
-      const value = (obj as any)[key];
-      (frozen as any)[key] = freezeDeep(value);
+      const recordObj = obj as Record<string, unknown>;
+      const value = recordObj[key];
+      const recordFrozen = frozen as Record<string, unknown>;
+      recordFrozen[key] = freezeDeep(value);
     }
     
     Object.freeze(frozen);
@@ -66,7 +68,7 @@ export async function verifyPayloadDigest(payload: unknown, expectedDigest: stri
 /**
  * Get canonical replacer for sorted key ordering
  */
-function getCanonicalReplacer(): (key: string, value: any) => any {
+function getCanonicalReplacer(): (key: string, value: unknown) => unknown {
   const seen = new WeakSet();
 
   return (key, value) => {
@@ -86,7 +88,7 @@ function getCanonicalReplacer(): (key: string, value: any) => any {
 export function validateImmutablePayload(payload: unknown): void {
   const checks: string[] = [];
   
-  function checkPath(path: string, value: any, visited: Set<object>): void {
+  function checkPath(path: string, value: unknown, visited: Set<object>): void {
     if (value !== null && typeof value === 'object') {
       if (visited.has(value)) {
         checks.push(`${path}: Circular reference detected`);
