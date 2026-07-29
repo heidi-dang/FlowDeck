@@ -49,7 +49,7 @@ function runDoctorCli(
   };
 }
 
-describe("Phase 30 — Doctor CLI Service", { timeout: 20000 }, () => {
+describe("Phase 30 — Doctor CLI Service", () => {
   // ── Service module imports ──────────────────────────────────────────
 
   it("imports doctor-service.mjs without error", async () => {
