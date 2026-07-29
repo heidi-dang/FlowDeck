@@ -1,0 +1,217 @@
+{
+  "dev1Sha": "unknown",
+  "dev2Sha": "unknown",
+  "dev4Sha": "unknown",
+  "portsDiscovered": [
+    "EventStore",
+    "ContractRepository",
+    "EvidenceRepository",
+    "VerificationRepository",
+    "ApprovalRepository",
+    "OverrideRepository",
+    "CompletionRepository",
+    "IdempotencyRepository",
+    "OutboxRepository",
+    "UnitOfWork",
+    "RuntimeStateMachine",
+    "Replay"
+  ],
+  "adaptersDiscovered": [
+    "EventsRepository",
+    "SqliteContractAdapter",
+    "Missing Implementation",
+    "Missing Implementation",
+    "Missing Implementation",
+    "Missing Implementation",
+    "Missing Implementation",
+    "Missing Implementation",
+    "Missing Implementation",
+    "Missing Implementation",
+    "Missing Implementation",
+    "Missing Implementation"
+  ],
+  "matrices": [
+    {
+      "port": "EventStore",
+      "implementation": "EventsRepository",
+      "status": "non_compliant",
+      "missingMethods": [
+        "appendEvent",
+        "getEvents",
+        "getAllEvents"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "ContractRepository",
+      "implementation": "SqliteContractAdapter",
+      "status": "non_compliant",
+      "missingMethods": [
+        "saveFamily",
+        "getFamily",
+        "listFamilies",
+        "deleteFamily"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "EvidenceRepository",
+      "implementation": "Missing Implementation",
+      "status": "non_compliant",
+      "missingMethods": [
+        "saveEvidence",
+        "getEvidence",
+        "listEvidenceByTaskRun"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "VerificationRepository",
+      "implementation": "Missing Implementation",
+      "status": "non_compliant",
+      "missingMethods": [
+        "saveRun",
+        "getRun",
+        "listRunsByContractVersion",
+        "saveResult",
+        "getResult",
+        "listResultsByRun"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "ApprovalRepository",
+      "implementation": "Missing Implementation",
+      "status": "non_compliant",
+      "missingMethods": [
+        "saveApproval",
+        "getApproval",
+        "listPendingApprovals"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "OverrideRepository",
+      "implementation": "Missing Implementation",
+      "status": "non_compliant",
+      "missingMethods": [
+        "saveOverride",
+        "getOverride",
+        "listActiveOverrides"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "CompletionRepository",
+      "implementation": "Missing Implementation",
+      "status": "non_compliant",
+      "missingMethods": [
+        "saveCompletion",
+        "getCompletion",
+        "listCompletionsByTaskRun"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "IdempotencyRepository",
+      "implementation": "Missing Implementation",
+      "status": "non_compliant",
+      "missingMethods": [
+        "saveReservation",
+        "getReservation",
+        "deleteReservation"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "OutboxRepository",
+      "implementation": "Missing Implementation",
+      "status": "non_compliant",
+      "missingMethods": [
+        "saveMessage",
+        "getUnpublishedMessages",
+        "markAsPublished"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "UnitOfWork",
+      "implementation": "Missing Implementation",
+      "status": "non_compliant",
+      "missingMethods": [
+        "begin",
+        "commit",
+        "rollback"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "RuntimeStateMachine",
+      "implementation": "Missing Implementation",
+      "status": "non_compliant",
+      "missingMethods": [
+        "transition",
+        "canTransition"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    },
+    {
+      "port": "Replay",
+      "implementation": "Missing Implementation",
+      "status": "non_compliant",
+      "missingMethods": [
+        "replayFromStart",
+        "replayFromSequence"
+      ],
+      "testsExecuted": 0,
+      "passed": 0,
+      "failed": 0,
+      "version": "v0.2.6",
+      "sha": "unknown"
+    }
+  ]
+}

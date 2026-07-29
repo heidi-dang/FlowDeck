@@ -156,10 +156,48 @@ async function main() {
     
     // We should still generate a compliance matrix noting the conflict!
     try {
-      execSync('npm run report:orchestration:compatibility', { cwd: worktreePath, stdio: 'inherit', env: { ...process.env, MERGE_CONFLICT_SHA: failedMergeSha }});
-      execSync(`xcopy /s /i /y "${join(worktreePath, 'artifacts')}" "${join(repoRoot, 'artifacts')}"`, { shell: 'cmd.exe', stdio: 'inherit' });
+      const artifactsDir = join(repoRoot, 'artifacts', 'orchestration-compliance');
+      if (!existsSync(artifactsDir)) execSync(`mkdir -p "${artifactsDir}"`, { shell: 'cmd.exe' });
+      
+      const provenance = {
+        baseSha: shas.base,
+        integrationDev1Sha: shas.dev1,
+        integrationDev2Sha: shas.dev2,
+        integrationDev3Sha: shas.dev3,
+        integrationDev4Sha: shas.dev4,
+        mergeOrder,
+        profile: PROFILE,
+        failures: [{
+          port: 'Integration',
+          implementation: 'Merge',
+          classification: 'integration_merge_conflict',
+          mergeConflictSha: failedMergeSha,
+          statusOutput: status
+        }]
+      };
+      
+      writeFileSync(join(artifactsDir, 'failure-provenance.json'), JSON.stringify(provenance, null, 2));
+      
+      const matrix = {
+        schemaVersion: '1.0',
+        metadata: { runId, profile: PROFILE, generatedAt: new Date().toISOString() },
+        shas,
+        findings: [{
+          id: 'F-INT-MERGE-01',
+          owner: 'Dev ' + (failedMergeSha === shas.dev1 ? '1' : failedMergeSha === shas.dev2 ? '2' : '3'),
+          category: 'integration_merge_conflict',
+          evidenceLevel: 'confirmed',
+          canonicalPort: 'N/A',
+          implementation: 'N/A',
+          expectedBehavior: 'Clean merge',
+          observedBehavior: 'Merge conflict',
+          rootError: status
+        }]
+      };
+      
+      writeFileSync(join(artifactsDir, 'compatibility-matrix.json'), JSON.stringify(matrix, null, 2));
     } catch (e) {
-      // ignore errors generating failure artifact
+      console.error('Failed to generate failure artifact manually', e);
     }
     
     cleanupWorktree();
