@@ -63,7 +63,7 @@ function insertRaw(
   db: Database,
   id: string,
   status: string,
-  extra?: { lastError?: string },
+  _extra?: { lastError?: string },
 ): void {
   db.prepare(
     "INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, retry_count, idempotency_key, source_component, created_ts) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, strftime('%s','now'))",
