@@ -69,7 +69,7 @@ describe('PR 3B - Event ID Injection', () => {
     const testStore = new InMemoryRuntimeEventStore(undefined, () => `app_${crypto.randomUUID()}`);
     
     // Multiple appends should have unique IDs
-    const dummyEvent: UncommittedRuntimeEvent = { eventType: 'Test', aggregateId: 'agg-1', aggregateVersion: 1 };
+    const dummyEvent: UncommittedRuntimeEvent = { eventType: 'RunCreated', aggregateId: 'agg-1', aggregateVersion: 1 };
     await testStore.append('agg-1', [{ ...dummyEvent, aggregateId: 'agg-1' }], 0);
     await testStore.append('agg-2', [{ ...dummyEvent, aggregateId: 'agg-2' }], 0);
     
