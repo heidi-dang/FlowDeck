@@ -5,7 +5,11 @@
  * with strict concurrency and duplicate handling
  */
 
-import { UncommittedRuntimeEvent, PersistedRuntimeEvent, EVENT_PAYLOAD_VERSIONS, EventIdGenerator } from './types';
+import { UncommittedRuntimeEvent, PersistedRuntimeEvent } from './types';
+import type { AppendIdGenerator } from './event-id-generator.js';
+import type { EventIdGenerator } from './types.js';
+import type { ConcurrencyError } from './port.js';
+import { defaultEventIdGenerator, defaultAppendIdGenerator } from './event-id-generator.js';
 import {
   RuntimeEventStorePort,
   AppendResult,
@@ -54,13 +58,6 @@ class GlobalSequenceCounter {
 }
 
 /**
- * Default event ID generator using deterministic timestamp + random component
- */
-function defaultEventIdGenerator(): string {
-  return `evt_${Date.now()}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 9)}`;
-}
-
-/**
  * In-memory event store implementation
  */
 export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
@@ -95,14 +92,20 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
    */
   private readonly eventIdGenerator: EventIdGenerator;
 
-  constructor(eventIdGenerator?: EventIdGenerator) {
+  /**
+   * Optional injected append ID generator (useful for deterministic tests)
+   */
+  private readonly appendIdGenerator: AppendIdGenerator;
+
+  constructor(eventIdGenerator?: EventIdGenerator, appendIdGenerator?: AppendIdGenerator) {
     this.eventIdGenerator = eventIdGenerator ?? defaultEventIdGenerator;
+    this.appendIdGenerator = appendIdGenerator ?? defaultAppendIdGenerator;
   }
 
   /**
    * Validate whether an append would succeed before attempting it
    */
-  async validateAppend(aggregateId: string, expectedVersion: number): Promise<{ valid: true; actualVersion: number } | { valid: false; error: any }> {
+  async validateAppend(aggregateId: string, expectedVersion: number): Promise<{ valid: true; actualVersion: number } | { valid: false; error: ConcurrencyError }> {
     const actualVersion = this.versionCache.get(aggregateId) ?? 0;
 
     if (expectedVersion < actualVersion) {
@@ -164,7 +167,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     }
 
     // Generate append ID for rollback tracking
-    const appendId = `append_${Date.now()}_${Date.now().toString(36)}`;
+    const appendId = this.appendIdGenerator();
 
     // Check for duplicates
     for (const event of events) {
@@ -352,12 +355,13 @@ function createConcurrencyError(
   type: 'STALE_VERSION' | 'FUTURE_VERSION' | 'VERSION_GAP',
   aggregateId: string,
   expectedVersion: number,
-  actualVersion: number
-): any {
+  actualVersion: number,
+  errorMessage?: string
+): ConcurrencyError {
   const messages: Record<string, string> = {
     STALE_VERSION: `Stale version: expected ${actualVersion}, got ${expectedVersion}`,
     FUTURE_VERSION: `Future version: expected ${actualVersion}, got ${expectedVersion}`,
-    VERSION_GAP: `Version gap: expected contiguous version after ${actualVersion}, got ${expectedVersion}`
+    VERSION_GAP: `Version gap: expected contiguous version after ${actualVersion}, got ${expectedVersion}${errorMessage ? ` (${errorMessage})` : ''}`
   };
 
   return {

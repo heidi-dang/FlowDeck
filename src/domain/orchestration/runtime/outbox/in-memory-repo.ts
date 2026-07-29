@@ -84,7 +84,7 @@ export class InMemoryOutboxRepository {
     // Get pending records for this owner's range
     const pendingRecords: OutboxRecord[] = [];
     
-    for (const [recordId, record] of this.records.byId.entries()) {
+    for (const [_, record] of this.records.byId.entries()) {
       if (record.status === 'pending' && !pendingRecords.includes(record)) {
         pendingRecords.push(record);
         
@@ -145,9 +145,10 @@ export class InMemoryOutboxRepository {
         // Simulate delivery (in production, send to event broker)
         await this.simulateDelivery(message);
         success = true;
-      } catch (error: any) {
-        errorType = classifyErrorFromPort(error);
-        errorMessage = error.message;
+      } catch (error: unknown) {
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        errorType = classifyErrorFromPort(normalizedError);
+        errorMessage = normalizedError.message;
         success = false;
       }
 
@@ -367,21 +368,16 @@ export class InMemoryOutboxRepository {
   }
 }
 
-// Test helper functions (deprecated - use repository public methods instead)
-// These wrappers exist only for backwards compatibility
+// Test helper functions - wrappers that delegate to public methods
+// These ensure no private field access in tests
 export function clearOutboxRepository(repo: InMemoryOutboxRepository): void {
-  repo['records'].byId.clear();
-  repo['records'].byAggregate.clear();
-  repo['claims'].active.clear();
-  repo['claims'].byOwner.clear();
-  repo['offsets'].offsets.clear();
-  repo['deadLetters'].records.clear();
+  repo.clearForTesting();
 }
 
 export function getAllClaims(repo: InMemoryOutboxRepository): Map<string, BoundedClaim> {
-  return new Map(repo['claims'].active);
+  return repo.getClaimsForTesting();
 }
 
 export function getAllOffsets(repo: InMemoryOutboxRepository): Map<string, ConsumerOffset> {
-  return new Map(repo['offsets'].offsets);
+  return repo.getOffsetsForTesting();
 }

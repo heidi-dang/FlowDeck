@@ -4,7 +4,7 @@
  * Implements deterministic rehydration from event stream
  */
 
-import { TaskRun, TaskRunState } from '../task-run.js';
+import { TaskRunState } from '../task-run.js';
 import { PersistedRuntimeEvent } from './types';
 
 /**

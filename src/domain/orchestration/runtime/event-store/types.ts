@@ -6,6 +6,11 @@ export const EVENT_PAYLOAD_VERSIONS = { CURRENT: '1.0' as const };
 export type EventIdGenerator = () => string;
 
 /**
+ * Typed append operation ID provider (separate namespace from event IDs)
+ */
+export type AppendIdGenerator = () => string;
+
+/**
  * Uncommitted event (generic payload to be serialized)
  */
 export interface UncommittedRuntimeEvent<T = unknown> {

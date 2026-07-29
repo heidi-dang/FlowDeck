@@ -10,6 +10,13 @@ export {
   matchesTopic
 } from './in-memory-repo';
 
+// Test helpers (re-exported from in-memory-repo)
+export { 
+  clearOutboxRepository,
+  getAllClaims,
+  getAllOffsets
+} from './in-memory-repo';
+
 // Utilities (re-exported from port)
 export { 
   DEFAULT_RETRY_POLICY,

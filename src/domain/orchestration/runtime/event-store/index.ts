@@ -41,6 +41,15 @@ export {
 // Implementation
 export { InMemoryRuntimeEventStore } from './in-memory-store';
 
+// ID generators
+export { 
+  defaultEventIdGenerator,
+  defaultAppendIdGenerator,
+  createDeterministicGenerators
+} from './event-id-generator.js';
+
+export type { AppendIdGenerator } from './types.js';
+
 // Rehydration
 export {
   rehydrateAggregate,
