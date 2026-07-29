@@ -4,6 +4,14 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "tests", "src/doctor"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "tests",
+    "src/doctor",
+    "src/orchestration/persistence/adapters/dev2-compatibility-check.ts"
+  ]
 }
