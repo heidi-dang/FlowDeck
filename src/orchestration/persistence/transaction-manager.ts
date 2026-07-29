@@ -35,13 +35,7 @@ export class SavepointCleanupError extends PersistenceError {
     readonly rollbackError?: unknown,
     readonly releaseError?: unknown,
   ) { super("Savepoint operation failed and cleanup encountered errors"); this.name = "SavepointCleanupError" }
-}
 
-let globalSpCounter = 0
-
-/** Creates a sync-thunk that detects thenables INSIDE the transaction boundary. */
-function synced<T>(fn: () => T): () => T {
-  return () => { const r = fn(); assertSync(r); return r }
 }
 
 export function createTransactionManager(

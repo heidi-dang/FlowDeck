@@ -1,5 +1,4 @@
 /** Domain port for contract persistence. Adapters implement this interface. No policy logic here. */
-import type { PersistenceError, ConcurrencyError } from "../../persistence/errors"
 
 export interface ContractRecord {
   contractId: string; familyId: string; version: number

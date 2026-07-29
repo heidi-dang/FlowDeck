@@ -1,5 +1,6 @@
-// Auto-generated from schema-v0.2.6.sql
-// Do not edit directly. Regenerate when canonical schema changes.
+// Auto-generated from schema-v0.2.6.sql — DO NOT EDIT
+// Regenerate: node scripts/generate-schema-embed.mjs
+// Canonical checksum: dcda41acdffaeae3a58020a019636002ac263ab5ec59434db3d9b97a2916d66c
 
 export const SCHEMA_V_0_2_6 = `CREATE TABLE contract_families (
     family_id TEXT PRIMARY KEY,
@@ -1180,3 +1181,4 @@ BEGIN
     SELECT RAISE(ABORT, 'verification result must belong to the same run as its assignment');
 END;
 `;
+export const SCHEMA_CHECKSUM = "dcda41acdffaeae3a58020a019636002ac263ab5ec59434db3d9b97a2916d66c";

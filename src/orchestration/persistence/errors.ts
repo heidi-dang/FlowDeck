@@ -6,8 +6,9 @@ export class MigrationError extends PersistenceError {
   constructor(message: string) { super(message); this.name = "MigrationError" }
 }
 export class MigrationChecksumError extends MigrationError {
+  _ignoreParams?: never
   public version: number
-  constructor(version: number, expected: string, actual: string) {
+  constructor(version: number, _expected: string, _actual: string) {
     super(`Migration v${version} checksum mismatch`); this.version = version; this.name = "MigrationChecksumError"
   }
 }
