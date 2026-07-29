@@ -11,10 +11,14 @@ if (!existsSync(COMPLIANCE_PATH)) {
 
 const compliance = JSON.parse(readFileSync(COMPLIANCE_PATH, 'utf-8'));
 
+const statusArgIndex = process.argv.indexOf('--status');
+const status = statusArgIndex !== -1 ? process.argv[statusArgIndex + 1] : 'completed';
+
 const provenance = {
   baseSha: 'origin/main',
-  integrationDev1Sha: compliance.dev1Sha,
-  integrationDev2Sha: compliance.dev2Sha,
+  integrationDev1Sha: compliance.DEV1_SHA || compliance.dev1Sha,
+  integrationDev2Sha: compliance.DEV2_SHA || compliance.dev2Sha,
+  status,
   failures: []
 };
 

@@ -9,6 +9,23 @@ const dev1Sha = process.env.DEV1_SHA || 'unknown';
 const dev2Sha = process.env.DEV2_SHA || 'unknown';
 const dev4Sha = process.env.DEV4_SHA || 'unknown';
 
+const statusArgIndex = process.argv.indexOf('--status');
+const status = statusArgIndex !== -1 ? process.argv[statusArgIndex + 1] : 'completed';
+
+const matrix = {
+  schemaVersion: '1.0',
+  metadata: {
+    runId: 'local-report-run',
+    profile: 'dev4-manual',
+    generatedAt: new Date().toISOString(),
+    status
+  },
+  DEV1_SHA: dev1Sha,
+  DEV2_SHA: dev2Sha,
+  DEV4_SHA: dev4Sha,
+  ARTIFACT_PATH: '../flowdeck-dev/artifacts/orchestration-compliance/dev1-dev2-compatibility.json'
+};
+
 const env = { 
   ...process.env, 
   GENERATE_COMPLIANCE_ARTIFACT: 'true',

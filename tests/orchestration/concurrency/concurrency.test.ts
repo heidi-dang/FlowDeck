@@ -3,9 +3,12 @@ import Database from 'better-sqlite3';
 import { unlinkSync, existsSync } from 'fs';
 
 const DB_PATH = 'concurrency_test.db';
+let connections: Database.Database[] = [];
 
 function createConnection() {
-  return new Database(DB_PATH);
+  const db = new Database(DB_PATH);
+  connections.push(db);
+  return db;
 }
 
 // Barrier for coordinating concurrent execution steps in our test harness
@@ -37,7 +40,17 @@ describe('Concurrency Harness Validation', () => {
   });
 
   afterEach(() => {
-    if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
+    for (const db of connections) {
+      try {
+        db.close();
+      } catch (e) {
+        // ignore if already closed
+      }
+    }
+    connections = [];
+    try {
+      if (existsSync(DB_PATH)) unlinkSync(DB_PATH);
+    } catch (e) {}
   });
 
   it('validates the test harness barrier mechanisms on concurrent DB inserts', async () => {
@@ -69,8 +82,5 @@ describe('Concurrency Harness Validation', () => {
     
     expect(successes).toBe(1);
     expect(failures).toBe(1);
-
-    conn1.close();
-    conn2.close();
   });
 });

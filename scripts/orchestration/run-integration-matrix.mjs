@@ -51,6 +51,8 @@ function resolveSha(ref) {
       // Fallback for mock environments
       if (ref === 'origin/feat/orchestration-contract-domain') {
         sha = execGit(`rev-parse origin/dev2/orchestration-contract-domain`);
+      } else if (ref === 'origin/feat/orchestration-runtime-domain') {
+        sha = execGit(`rev-parse origin/dev3/orchestration-runtime-domain`);
       } else {
         throw e;
       }
@@ -151,9 +153,9 @@ async function runCommand(cmd, args, cwd) {
       resolve({ exitCode: -1, durationMs: Date.now() - start, timedOut: true });
     }, 5 * 60 * 1000);
 
-    child.on('close', (code) => {
+    child.on('close', (code, signal) => {
       clearTimeout(timeoutId);
-      resolve({ exitCode: code, durationMs: Date.now() - start, timedOut: false });
+      resolve({ exitCode: code, signal, durationMs: Date.now() - start, timedOut: false });
     });
   });
 }
@@ -177,6 +179,7 @@ async function main() {
         integrationDev4Sha: shas.dev4,
         mergeOrder,
         profile: PROFILE,
+        status: 'blocked_by_merge_conflict',
         failures: [{
           port: 'Integration',
           implementation: 'Merge',
@@ -190,7 +193,7 @@ async function main() {
       
       const matrix = {
         schemaVersion: '1.0',
-        metadata: { runId, profile: PROFILE, generatedAt: new Date().toISOString() },
+        metadata: { runId, profile: PROFILE, generatedAt: new Date().toISOString(), status: 'blocked_by_merge_conflict' },
         shas,
         findings: [{
           id: 'F-INT-MERGE-01',
@@ -233,23 +236,30 @@ async function main() {
   ];
 
   let success = true;
+  let finalStatus = 'completed';
 
   for (const test of testsToRun) {
     console.log(`\n--- Running ${test.name} ---`);
     const result = await runCommand(test.cmd, test.args, worktreePath);
-    if (result.exitCode !== 0) {
-      console.error(`${test.name} failed with exit code ${result.exitCode} (${result.durationMs}ms).`);
+    if (result.exitCode !== 0 || result.signal) {
+      console.error(`${test.name} failed with exit code ${result.exitCode} signal ${result.signal} (${result.durationMs}ms).`);
       success = false;
+      // If signal is present or code indicates a crash, mark it
+      if (result.signal || result.exitCode > 128) {
+         finalStatus = 'failed_by_runtime_crash';
+      } else if (finalStatus === 'completed') {
+         finalStatus = 'failed_during_validation';
+      }
     } else {
       console.log(`${test.name} passed (${result.durationMs}ms).`);
     }
   }
 
-  console.log('\nGenerating artifacts...');
+  console.log(`\nGenerating artifacts with status ${finalStatus}...`);
   try {
     // Generate compatibility and provenance artifacts
-    execSync('npm run report:orchestration:compatibility', { cwd: worktreePath, stdio: 'inherit' });
-    execSync('npm run report:orchestration:provenance', { cwd: worktreePath, stdio: 'inherit' });
+    execSync(`npm run report:orchestration:compatibility -- --status ${finalStatus}`, { cwd: worktreePath, stdio: 'inherit' });
+    execSync(`npm run report:orchestration:provenance -- --status ${finalStatus}`, { cwd: worktreePath, stdio: 'inherit' });
     execSync('npm run report:orchestration:repair-handoff', { cwd: worktreePath, stdio: 'inherit' });
     
     // Copy artifacts back to the main repo

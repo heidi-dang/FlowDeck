@@ -1,16 +1,17 @@
 {
   "schemaVersion": "1.0",
   "metadata": {
-    "runId": "4dae3385-7c52-4b5c-9fa5-d243df4a3fab",
+    "runId": "291441b1-b3c5-49d4-a229-7d7cbd233916",
     "profile": "all",
-    "generatedAt": "2026-07-29T04:26:49.243Z"
+    "generatedAt": "2026-07-29T04:36:05.649Z",
+    "status": "blocked_by_merge_conflict"
   },
   "shas": {
     "base": "cda20c3f3477639639a760df4ca038b487d50d83",
     "dev1": "db3b39d234bd3bcc522a537d181155493b7e6111",
     "dev2": "47a1eca748785fe7c2a12454a594c42541e0594c",
     "dev3": "23251745f3c8c2e60180c987262e0662962f04ad",
-    "dev4": "1e386fc8b5bd443842623f60b55bae133a9ed726"
+    "dev4": "49f023d43656b18bf85447052b0576ca48d64d29"
   },
   "findings": [
     {
