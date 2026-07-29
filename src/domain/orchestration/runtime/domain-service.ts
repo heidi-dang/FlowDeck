@@ -149,7 +149,7 @@ export class TransitionProcessor {
     const events: any[] = [];
 
     switch (run.strategy) {
-      case 'planning' as TaskRunStrategy:
+      case 'planning' as string:
         if (command.type === 'StartPlanningCommand') {
           events.push(this.createPlanningStartedEvent(run, command));
         }

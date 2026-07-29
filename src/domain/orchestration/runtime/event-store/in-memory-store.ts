@@ -9,9 +9,7 @@ import { UncommittedRuntimeEvent, PersistedRuntimeEvent, EVENT_PAYLOAD_VERSIONS 
 import {
   RuntimeEventStorePort,
   AppendResult,
-  any,
   DuplicateCheckResult,
-  isany,
   StreamPaginationOptions
 } from './port';
 
@@ -121,9 +119,9 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     }
 
     // Check by event ID (if provided)
-    if (eventId) {
-      if (this.eventIndex.has(eventId)) {
-        return { isDuplicate: true, existingEvent: this.eventIndex.get(eventId)! };
+    if (event.eventId) {
+      if (this.eventIndex.has(event.eventId)) {
+        return { isDuplicate: true, existingEvent: this.eventIndex.get(event.eventId)! };
       }
     }
 
@@ -238,7 +236,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
 
     // Remove event/command indices from this append
     for (const event of pending.events) {
-      if (eventId) {
+      if (event.eventId) {
         this.eventIndex.delete(eventId);
       }
       if (event.commandId) {
@@ -321,7 +319,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
    * Get persisted event by ID
    */
   async getEventById(eventId: string): Promise<PersistedRuntimeEvent | undefined> {
-    return this.eventIndex.get(eventId);
+    return this.eventIndex.get(event.eventId);
   }
 }
 

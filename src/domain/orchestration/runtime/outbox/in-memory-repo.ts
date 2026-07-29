@@ -93,7 +93,7 @@ export class InMemoryOutboxRepository { // Temporary type
     const pendingRecords: OutboxRecord[] = [];
     
     for (const [recordId, record] of this.records.byId.entries()) {
-      if (record.status === 'pending' && !pendingRecords.includes(record)) {
+      if ((record as any).status === 'pending' && !pendingRecords.includes(record)) {
         pendingRecords.push(record);
         
         if (pendingRecords.length >= batchSize) {
@@ -208,7 +208,7 @@ export class InMemoryOutboxRepository { // Temporary type
     let retriedCount = 0;
 
     for (const record of this.records.byId.values()) {
-      if (record.status === 'pending' && record.deliveryAttempts < policy.maxAttempts) {
+      if ((record as any).status === 'pending' && record.deliveryAttempts < policy.maxAttempts) {
         const nextDelay = calculateBackoff(record.deliveryAttempts + 1, policy);
         (record as any).nextRetryAt = new Date(Date.now() + nextDelay);
         (record as any).status = 'delivering';
@@ -228,7 +228,7 @@ export class InMemoryOutboxRepository { // Temporary type
       );
 
       if (record) {
-        record.status = 'dead-lettered';
+        (record as any).status = 'dead-lettered';
         
         const dlqRecord: DeadLetterRecord = {
           recordId: `${record.recordId}_dlq`,
@@ -293,7 +293,7 @@ export class InMemoryOutboxRepository { // Temporary type
 
     // Find all pending records at or after sequence
     for (const record of this.records.byId.values()) {
-      if (record.status === 'pending') {
+      if ((record as any).status === 'pending') {
         for (const event of record.events as any) {
           if (event.globalSequence >= sequence) {
             messages.push({
