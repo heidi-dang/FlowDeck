@@ -1,7 +1,11 @@
 /**
  * Domain event definitions.
- * Every event includes: event ID, version, aggregate type/ID/version,
- * task run, contract IDs, SHA, correlation/causation, timestamp, policy version, actor, payload.
+ * Canonical types for all orchestration domain events.
+ *
+ * Terminal event mapping:
+ *   completed → CompletionEvaluated + CompletionApproved
+ *   blocked   → CompletionEvaluated + CompletionBlocked
+ *   rejected  → CompletionEvaluated + CompletionRejected
  */
 
 export type DomainEventType =
@@ -9,7 +13,7 @@ export type DomainEventType =
   | "ApprovalExpired" | "ApprovalRevoked"
   | "OverrideRequested" | "OverrideApproved" | "OverrideRejected"
   | "OverrideExpired" | "OverrideRevoked" | "OverrideConsumed"
-  | "CompletionEvaluated" | "CompletionBlocked" | "CompletionApproved"
+  | "CompletionEvaluated" | "CompletionBlocked" | "CompletionApproved" | "CompletionRejected"
   | "CompletionDecisionSuperseded"
 
 export interface DomainEvent {
@@ -42,6 +46,7 @@ export function createEvent(
   payload: Record<string, unknown>,
   causationId?: string,
   actor?: string,
+  aggregateVersion?: number,
 ): DomainEvent {
   eventCounter++
   return Object.freeze({
@@ -51,7 +56,7 @@ export function createEvent(
     aggregateType: eventType.includes("Approval") ? "Approval" :
       eventType.includes("Override") ? "Override" : "Completion",
     aggregateId,
-    aggregateVersion: 1,
+    aggregateVersion: aggregateVersion ?? 1,
     taskRunId,
     correlationId,
     causationId,

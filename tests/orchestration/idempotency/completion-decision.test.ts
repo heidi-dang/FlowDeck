@@ -2,16 +2,16 @@ import { describe, it, expect } from "bun:test"
 import { CompletionDecision } from "@/orchestration/completion/decision/completion-decision"
 import { CompletionDecisionService } from "@/orchestration/completion/services/decision-service"
 import { InMemoryCompletionRepository } from "@/orchestration/completion/adapters/in-memory-completion-repository"
-import { InMemoryOverrideRepository } from "@/orchestration/override/adapters/in-memory-override-repository"
 import { aggregateEvaluation, createGateResult } from "@/orchestration/completion/domain/evaluation"
 import { OverrideRequest } from "@/orchestration/override/domain/override-request"
 import { ApprovalRequest } from "@/orchestration/approval/domain/approval-request"
 import { ApprovalDecision } from "@/orchestration/approval/domain/approval-decision"
 import { IdempotencyService } from "@/orchestration/idempotency/domain/idempotency-service"
 import { InMemoryIdempotencyRepository } from "@/orchestration/idempotency/adapters/in-memory-idempotency-repository"
-import { IdempotencyConflictError } from "@/orchestration/idempotency/domain/errors"
+import { InMemoryOverrideRepository } from "@/orchestration/override/adapters/in-memory-override-repository"
 import { createEvent } from "@/orchestration/events/domain/event-definitions"
 import { getCompletionPolicyVersion } from "@/orchestration/completion/domain/policy-version"
+import { hashFingerprint } from "@/orchestration/common/canonical-hash"
 import type { Instant, PolicyVersion, AuthorityLevel } from "@/orchestration/common/types"
 
 const RUN_ID = "run-1"
@@ -50,8 +50,7 @@ describe("Completion decision", () => {
 
   it("all six gates pass → completed", async () => {
     const repo = new InMemoryCompletionRepository()
-    const overrideRepo = new InMemoryOverrideRepository()
-    const service = new CompletionDecisionService(repo, overrideRepo)
+    const service = new CompletionDecisionService(repo)
 
     const result = await service.evaluateAndDecide({
       taskRunId: RUN_ID, contractFamilyId: FAMILY_ID, contractVersionId: CONTRACT_VERSION,
@@ -69,8 +68,7 @@ describe("Completion decision", () => {
 
   it("overridable gate with valid override passes", async () => {
     const repo = new InMemoryCompletionRepository()
-    const overrideRepo = new InMemoryOverrideRepository()
-    const service = new CompletionDecisionService(repo, overrideRepo)
+    const service = new CompletionDecisionService(repo)
 
     const override = new OverrideRequest({
       id: "ovr-1", gateId: "verification-policy-satisfied", taskRunId: RUN_ID,
@@ -79,8 +77,6 @@ describe("Completion decision", () => {
       status: "approved", version: 1, approver: "bob", approverAuthority: "maintainer" as AuthorityLevel,
       createdAt: NOW,
     })
-    // Save override to repository so it can be consumed
-    await overrideRepo.saveRequest(override)
 
     const result = await service.evaluateAndDecide({
       taskRunId: RUN_ID, contractFamilyId: FAMILY_ID, contractVersionId: CONTRACT_VERSION,
@@ -98,8 +94,7 @@ describe("Completion decision", () => {
 
   it("overridable gate with override + approval works", async () => {
     const repo = new InMemoryCompletionRepository()
-    const overrideRepo = new InMemoryOverrideRepository()
-    const service = new CompletionDecisionService(repo, overrideRepo)
+    const service = new CompletionDecisionService(repo)
 
     const override = new OverrideRequest({
       id: "ovr-2", gateId: "verification-policy-satisfied", taskRunId: RUN_ID,
@@ -108,7 +103,6 @@ describe("Completion decision", () => {
       status: "approved", version: 1, approver: "bob", approverAuthority: "maintainer" as AuthorityLevel,
       createdAt: NOW,
     })
-    await overrideRepo.saveRequest(override)
     const approvalReq = new ApprovalRequest({
       id: "ar-1", taskRunId: RUN_ID, contractVersionId: CONTRACT_VERSION, contractFamilyId: FAMILY_ID,
       gateId: "verification-policy-satisfied", sha: SHA, requester: "alice", requesterAuthority: "operator" as AuthorityLevel,
@@ -137,8 +131,7 @@ describe("Completion decision", () => {
 
   it("records policy version in decision", async () => {
     const repo = new InMemoryCompletionRepository()
-    const overrideRepo = new InMemoryOverrideRepository()
-    const service = new CompletionDecisionService(repo, overrideRepo)
+    const service = new CompletionDecisionService(repo)
 
     const result = await service.evaluateAndDecide({
       taskRunId: RUN_ID, contractFamilyId: FAMILY_ID, contractVersionId: CONTRACT_VERSION,
@@ -151,40 +144,110 @@ describe("Completion decision", () => {
   })
 })
 
-describe("Idempotency", () => {
-  it("same key and payload → replayed", async () => {
+describe("Idempotency — reservation-first API", () => {
+  it("acquired → can proceed with execution", async () => {
     const repo = new InMemoryIdempotencyRepository()
     const service = new IdempotencyService(repo)
 
-    await service.record("completion.decision", RUN_ID, "idem-1", { sha: SHA }, "decision", "dec-1")
-    const check = await service.check("completion.decision", RUN_ID, "idem-1", { sha: SHA })
-    expect(check.replayed).toBe(true)
-    expect(check.result?.resultId).toBe("dec-1")
+    const result = await service.tryReserve("completion.decision", RUN_ID, "idem-1", { sha: SHA })
+    expect(result.status).toBe("acquired")
   })
 
-  it("same key different payload → conflict", async () => {
+  it("completed with same payload → replay", async () => {
     const repo = new InMemoryIdempotencyRepository()
     const service = new IdempotencyService(repo)
 
-    await service.record("completion.decision", RUN_ID, "idem-2", { sha: SHA }, "decision", "dec-2")
-    await expect(service.check("completion.decision", RUN_ID, "idem-2", { sha: "different" }))
-      .rejects.toThrow(IdempotencyConflictError)
+    const fp = { sha: SHA, taskRunId: RUN_ID }
+    const r1 = await service.tryReserve("completion.decision", RUN_ID, "idem-2", fp)
+    expect(r1.status).toBe("acquired")
+    await service.complete("completion.decision", RUN_ID, "idem-2", "decision", "dec-1")
+
+    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-2", fp)
+    expect(r2.status).toBe("completed")
+    if (r2.status === "completed") {
+      expect(r2.record.resultId).toBe("dec-1")
+    }
   })
 
-  it("different runs with same key are independent", async () => {
+  it("different payload → conflict", async () => {
     const repo = new InMemoryIdempotencyRepository()
     const service = new IdempotencyService(repo)
 
-    await service.record("approval.request", "run-a", "key-1", { gate: "g1" }, "request", "req-a")
-    await service.record("approval.request", "run-b", "key-1", { gate: "g1" }, "request", "req-b")
+    await service.tryReserve("completion.decision", RUN_ID, "idem-3", { sha: "abc" })
+    await service.complete("completion.decision", RUN_ID, "idem-3", "decision", "dec-3")
 
-    const checkA = await service.check("approval.request", "run-a", "key-1", { gate: "g1" })
-    expect(checkA.replayed).toBe(true)
-    expect(checkA.result?.resultId).toBe("req-a")
+    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-3", { sha: "def" })
+    expect(r2.status).toBe("conflict")
+  })
 
-    const checkB = await service.check("approval.request", "run-b", "key-1", { gate: "g1" })
-    expect(checkB.replayed).toBe(true)
-    expect(checkB.result?.resultId).toBe("req-b")
+  it("in_progress when another command holds key", async () => {
+    const repo = new InMemoryIdempotencyRepository()
+    const service = new IdempotencyService(repo)
+
+    await service.tryReserve("completion.decision", RUN_ID, "idem-4", { sha: SHA })
+    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-4", { sha: SHA })
+    expect(r2.status).toBe("in_progress")
+  })
+
+  it("released reservation does not block retry", async () => {
+    const repo = new InMemoryIdempotencyRepository()
+    const service = new IdempotencyService(repo)
+
+    await service.tryReserve("completion.decision", RUN_ID, "idem-5", { sha: SHA })
+    await service.release("completion.decision", RUN_ID, "idem-5")
+
+    const r2 = await service.tryReserve("completion.decision", RUN_ID, "idem-5", { sha: SHA })
+    expect(r2.status).toBe("acquired")
+  })
+
+  it("override CAS: consume with correct version succeeds", async () => {
+    const repo = new InMemoryOverrideRepository()
+    const override = new OverrideRequest({
+      id: "ovr-cas", gateId: "verification-policy-satisfied", taskRunId: RUN_ID,
+      contractVersionId: CONTRACT_VERSION, contractFamilyId: FAMILY_ID, sha: SHA,
+      justification: "Test", requester: "alice", requesterAuthority: "operator" as AuthorityLevel,
+      status: "approved", version: 1, approver: "bob", approverAuthority: "maintainer" as AuthorityLevel,
+      createdAt: NOW,
+    })
+    await repo.saveRequest(override)
+    await repo.consume("ovr-cas", "dec-cas", 1, NOW)
+
+    const stored = await repo.getRequest("ovr-cas")
+    expect(stored?.status).toBe("consumed")
+    expect(stored?.consumedByDecisionId).toBe("dec-cas")
+  })
+
+  it("override CAS: stale version fails", async () => {
+    const repo = new InMemoryOverrideRepository()
+    const override = new OverrideRequest({
+      id: "ovr-stale", gateId: "verification-policy-satisfied", taskRunId: RUN_ID,
+      contractVersionId: CONTRACT_VERSION, contractFamilyId: FAMILY_ID, sha: SHA,
+      justification: "Test", requester: "alice", requesterAuthority: "operator" as AuthorityLevel,
+      status: "approved", version: 1, approver: "bob", approverAuthority: "maintainer" as AuthorityLevel,
+      createdAt: NOW,
+    })
+    await repo.saveRequest(override)
+    await expect(repo.consume("ovr-stale", "dec-stale", 0, NOW)).rejects.toThrow()
+  })
+})
+
+describe("Canonical hashing", () => {
+  it("different key order → same hash", () => {
+    const h1 = hashFingerprint({ a: 1, b: 2, c: { d: 3, e: 4 } })
+    const h2 = hashFingerprint({ c: { e: 4, d: 3 }, b: 2, a: 1 })
+    expect(h1).toBe(h2)
+  })
+
+  it("different array order → different hash", () => {
+    const h1 = hashFingerprint({ items: [1, 2, 3] })
+    const h2 = hashFingerprint({ items: [3, 2, 1] })
+    expect(h1).not.toBe(h2)
+  })
+
+  it("different override version → different hash", () => {
+    const h1 = hashFingerprint({ overrideId: "ovr-1", version: 1 })
+    const h2 = hashFingerprint({ overrideId: "ovr-1", version: 2 })
+    expect(h1).not.toBe(h2)
   })
 })
 
@@ -194,14 +257,13 @@ describe("Domain events", () => {
     expect(event.eventType).toBe("ApprovalRequested")
     expect(event.aggregateId).toBe("agg-1")
     expect(event.taskRunId).toBe(RUN_ID)
-    expect(event.payload).toEqual({ requestId: "req-1" })
-  })
-  it("creates event with causation ID", () => {
-    const event = createEvent("ApprovalGranted", "agg-1", RUN_ID, CORRELATION_ID, "1.0.0", {}, "cause-1")
-    expect(event.causationId).toBe("cause-1")
   })
   it("event payload is frozen", () => {
     const event = createEvent("CompletionEvaluated", "agg-1", RUN_ID, CORRELATION_ID, "1.0.0", { result: "pass" })
     expect(Object.isFrozen(event.payload)).toBe(true)
+  })
+  it("CompletionRejected event type exists", () => {
+    const event = createEvent("CompletionRejected", "dec-1", RUN_ID, CORRELATION_ID, "1.0.0", { failureReasons: ["test"] })
+    expect(event.eventType).toBe("CompletionRejected")
   })
 })

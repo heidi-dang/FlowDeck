@@ -7,11 +7,21 @@ export class IdempotencyError extends Error {
   }
 }
 export class IdempotencyConflictError extends IdempotencyError {
+  public readonly expectedHash: string
+  public readonly actualHash: string
   constructor(key: string, expectedHash: string, actualHash: string) {
-    super("IDEMPOTENCY_CONFLICT",
-      `Idempotency key "${key}" used with different payload (hash ${actualHash}, expected ${expectedHash})`)
+    super("IDEMPOTENCY_CONFLICT", `Idempotency key "${key}" used with different payload`)
+    this.expectedHash = expectedHash
+    this.actualHash = actualHash
   }
 }
-export class IdempotencyKeyNotFoundError extends IdempotencyError {
-  constructor(key: string) { super("IDEMPOTENCY_KEY_NOT_FOUND", `Idempotency key not found: ${key}`) }
+export class IdempotencyInProgressError extends IdempotencyError {
+  constructor(key: string) {
+    super("IDEMPOTENCY_IN_PROGRESS", `Command already in progress for key "${key}"`)
+  }
+}
+export class IdempotencyIntegrityError extends IdempotencyError {
+  constructor(key: string, detail: string) {
+    super("IDEMPOTENCY_INTEGRITY", `Idempotency record "${key}" points to missing result: ${detail}`)
+  }
 }

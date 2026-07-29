@@ -1,13 +1,14 @@
 /**
- * Event publisher port.
+ * DomainEventAppender — transactional event store port.
  *
- * Publication is behind a port so the domain does not depend on
- * a specific event bus implementation.
+ * Appends events inside the domain transaction. External delivery
+ * happens after commit, managed by runtime infrastructure.
+ * Do NOT call HTTP, SSE, WebSocket, or non-transactional delivery here.
  */
 
 import type { DomainEvent } from "../domain/event-definitions"
 
-export interface EventPublisher {
-  publish(event: DomainEvent): Promise<void>
-  publishMany(events: DomainEvent[]): Promise<void>
+export interface DomainEventAppender {
+  append(event: DomainEvent): Promise<void>
+  appendMany(events: DomainEvent[]): Promise<void>
 }

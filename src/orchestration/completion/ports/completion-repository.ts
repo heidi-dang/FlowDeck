@@ -1,10 +1,3 @@
-/**
- * Completion repository port.
- *
- * Defines persistence boundaries for the completion sub-domain.
- * Will be connected to Dev 1's persistence layer after integration.
- */
-
 import type { CompletionEvaluation } from "../domain/evaluation"
 import type { CompletionDecision } from "../decision/completion-decision"
 
@@ -29,4 +22,7 @@ export interface CompletionRepository {
 
   /** Lists all decisions for a task run. */
   listDecisionsByRun(taskRunId: string): Promise<CompletionDecision[]>
+
+  /** Supersede a previous decision by linking it to its replacement. */
+  supersedeDecision(previousDecisionId: string, newDecisionId: string): Promise<void>
 }

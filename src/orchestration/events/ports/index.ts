@@ -1,1 +1,1 @@
-export type { EventPublisher } from "./event-publisher"
+export type { DomainEventAppender } from "./event-publisher"

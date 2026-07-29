@@ -21,7 +21,6 @@ import type { OverrideRequest } from "../../override/domain/override-request"
 import type { ApprovalRequest } from "../../approval/domain/approval-request"
 import type { ApprovalDecision } from "../../approval/domain/approval-decision"
 import type { CompletionRepository } from "../ports/completion-repository"
-import type { OverrideRepository } from "../../override/ports/override-repository"
 import type { Instant, CompletionFailureCode } from "../../common/types"
 
 /**
@@ -142,7 +141,6 @@ export interface DecisionResult {
 export class CompletionDecisionService {
   constructor(
     private readonly completionRepository: CompletionRepository,
-    private readonly overrideRepository: OverrideRepository,
   ) {}
 
   async evaluateAndDecide(input: CreateDecisionInput): Promise<DecisionResult> {
@@ -234,12 +232,7 @@ export class CompletionDecisionService {
       }
     }
 
-    // Step 3: Consume overrides atomically with expected version
-    for (const { id: ovId, version: expectedVersion } of consumedOverrides) {
-      await this.overrideRepository.consume(ovId, `decision-${now}`, expectedVersion, now)
-    }
-
-    // Step 4: Determine outcome using typed rules (no string matching)
+    // Step 3: Determine outcome using typed rules (no string matching)
     const finalEval = aggregateEvaluation(gateResults)
     const allPassed = finalEval.allPassed
 

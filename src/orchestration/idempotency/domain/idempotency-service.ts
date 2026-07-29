@@ -1,71 +1,59 @@
 /**
- * Idempotency service — protects commands by scoped key + payload hash.
- * Used by the atomic completion command service.
+ * Idempotency service — reservation-first API.
+ * The command sequence must begin with tryReserve.
+ * No domain evaluation happens before reservation.
  */
 
-import { IdempotencyConflictError } from "./errors"
-import { type IdempotencyRepository } from "../ports/idempotency-repository"
+import { type IdempotencyRepository, type ReservationResult } from "../ports/idempotency-repository"
+import { hashFingerprint } from "../../common/canonical-hash"
 
 export class IdempotencyService {
   constructor(private readonly repository: IdempotencyRepository) {}
 
   /**
-   * Checks idempotency for a command.
+   * Attempt to acquire an idempotency reservation.
+   * Must be called first, before any domain mutation.
+   *
    * Returns:
-   *   - { replayed: true, result } if exact replay
-   *   - { replayed: false } if new execution is needed
-   *   - throws IdempotencyConflictError if same key, different payload
+   *   acquired → caller may proceed with command execution
+   *   completed → exact replay available
+   *   in_progress → another command holds the key
+   *   conflict → same key, different payload
    */
-  async check(
+  async tryReserve(
     commandType: string,
     taskRunId: string,
     idempotencyKey: string,
-    payload: unknown,
-  ): Promise<{ replayed: boolean; result?: { resultType: string; resultId: string } }> {
-    const payloadHash = hashPayload(payload)
-    const existing = await this.repository.getByScopedKey(commandType, taskRunId, idempotencyKey)
-
-    if (existing) {
-      if (existing.payloadHash === payloadHash) {
-        // Same payload — replay existing result
-        return { replayed: true, result: { resultType: existing.resultType, resultId: existing.resultId } }
-      }
-      throw new IdempotencyConflictError(
-        `${commandType}:${taskRunId}:${idempotencyKey}`,
-        existing.payloadHash,
-        payloadHash,
-      )
-    }
-
-    return { replayed: false }
+    fingerprint: Record<string, unknown>,
+  ): Promise<ReservationResult & { payloadHash: string }> {
+    const payloadHash = hashFingerprint(fingerprint)
+    const result = await this.repository.tryReserve(commandType, taskRunId, idempotencyKey, payloadHash, new Date().toISOString() as any)
+    return { ...result, payloadHash }
   }
 
   /**
-   * Records a successful idempotent execution.
+   * Complete a reservation with result linkage.
+   * Must be called after successful command execution, before commit.
    */
-  async record(
+  async complete(
     commandType: string,
     taskRunId: string,
     idempotencyKey: string,
-    payload: unknown,
     resultType: string,
     resultId: string,
   ): Promise<void> {
-    const payloadHash = hashPayload(payload)
-    const record = await this.repository.tryReserve(
-      commandType, taskRunId, idempotencyKey, payloadHash, resultType, resultId,
-    )
-    if (!record) {
-      // Already reserved — this shouldn't happen after check()
-      throw new Error(`Idempotency key already reserved: ${commandType}:${taskRunId}:${idempotencyKey}`)
-    }
+    await this.repository.completeReservation(commandType, taskRunId, idempotencyKey, resultType, resultId, new Date().toISOString() as any)
   }
-}
 
-/** Deterministic hash of the command payload. */
-export function hashPayload(payload: unknown): string {
-  const canonical = JSON.stringify(payload, Object.keys(payload as object).sort())
-  const hasher = new Bun.CryptoHasher("sha256")
-  hasher.update(canonical)
-  return hasher.digest("hex")
+  /**
+   * Release a reservation (rollback).
+   * Must be called on failure before transaction rollback completes.
+   */
+  async release(
+    commandType: string,
+    taskRunId: string,
+    idempotencyKey: string,
+  ): Promise<void> {
+    await this.repository.releaseReservation(commandType, taskRunId, idempotencyKey)
+  }
 }
