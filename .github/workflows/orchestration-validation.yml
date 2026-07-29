@@ -2,12 +2,16 @@ name: Orchestration Validation
 
 on:
   push:
-    branches: [ "main", "feat/*" ]
+    branches: [ "main", "feat/orchestration-*" ]
   pull_request:
     branches: [ "main" ]
 
+permissions:
+  contents: read
+
 jobs:
-  test:
+  framework-correctness:
+    name: Framework Correctness
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,11 +19,117 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20.x'
+          cache: 'npm'
       - name: Install Bun
         uses: oven-sh/setup-bun@v1
         with:
-          bun-version: latest
-      - run: npm install
+          bun-version: 1.1.20
+      - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm test tests/orchestration/
+      
+      # Core validation tasks
+      - run: npm run test:orchestration:framework
+      - run: npm run test:orchestration:negative
+      - run: npm run test:orchestration:architecture
+      - run: npm run test:orchestration:replay
+      - run: npm run test:orchestration:concurrency
+      - run: npm run test:orchestration:faults
+
+      # Benchmarks
+      - run: bun test tests/orchestration/performance/benchmark.test.ts > benchmark_results.txt
+      
+      - name: Upload Benchmark Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: benchmark_results.txt
+
+  cross-branch-integration:
+    name: Cross-Branch Integration Diagnostic
+    runs-on: ubuntu-latest
+    continue-on-error: true # Expected red until Dev 1 / Dev 2 complete ports
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: flowdeck-dev
+      
+      - name: Fetch Dev 1 & Dev 2
+        run: |
+          cd flowdeck-dev
+          git fetch origin feat/orchestration-persistence-foundation feat/orchestration-contract-domain
+          echo "DEV1_SHA=$(git rev-parse origin/feat/orchestration-persistence-foundation)" >> $GITHUB_ENV
+          echo "DEV2_SHA=$(git rev-parse origin/feat/orchestration-contract-domain)" >> $GITHUB_ENV
+          echo "DEV4_SHA=$(git rev-parse HEAD)" >> $GITHUB_ENV
+
+      - name: Setup Integration Worktree
+        run: |
+          git clone ./flowdeck-dev flowdeck-validation-integration
+          cd flowdeck-validation-integration
+          git checkout -b integration-test ${{ env.DEV1_SHA }}
+          git config user.email "ci@example.com"
+          git config user.name "CI"
+          git merge --no-edit ${{ env.DEV2_SHA }}
+          git merge --no-edit ${{ env.DEV4_SHA }}
+          
+      - name: Setup Tooling
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+      - uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.1.20
+          
+      - name: Install Dependencies
+        run: |
+          cd flowdeck-dev
+          npm ci
+          cd ../flowdeck-validation-integration
+          npm ci
+
+      - name: Run Cross-Branch Compliance (Dev 1 & Dev 2)
+        run: |
+          cd flowdeck-dev
+          npm run test:orchestration:dev1-dev2
+        continue-on-error: true
+      
+      - name: Upload Compliance Matrix
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-matrix
+          path: flowdeck-dev/artifacts/orchestration-compliance/dev1-dev2-compatibility.json
+
+  production-compliance:
+    name: Current Production Compliance
+    runs-on: ubuntu-latest
+    needs: [framework-correctness]
+    continue-on-error: true # Might be red depending on main branch state
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: 'npm'
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: 1.1.20
+      - run: npm ci
+      - name: Run Production Compliance 
+        run: |
+          export DEV1_SHA=$(git rev-parse HEAD)
+          export DEV2_SHA=$(git rev-parse HEAD)
+          export DEV4_SHA=$(git rev-parse HEAD)
+          export GENERATE_COMPLIANCE_ARTIFACT=true
+          export ARTIFACT_PATH=artifacts/orchestration-compliance/main-compatibility.json
+          bun test tests/orchestration/integration/sqlite-production.test.ts
+      
+      - name: Upload Main Compliance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: main-compliance-matrix
+          path: artifacts/orchestration-compliance/main-compatibility.json

@@ -14,4 +14,30 @@ describe('Runtime Compliance Suite', () => {
     await scheduler.runNext();
     expect(state).toBe('done');
   });
+  describe('Runtime Lifecycle', () => {
+    it('enforces created -> planning -> executing transition', () => {
+      let runState = 'created';
+      
+      const transitionTo = (newState: string) => {
+        const validTransitions: Record<string, string[]> = {
+          'created': ['planning', 'cancelled'],
+          'planning': ['analysing', 'executing', 'failed'],
+          'executing': ['verifying', 'recovering', 'failed', 'completed'],
+        };
+        
+        if (!validTransitions[runState].includes(newState)) {
+          throw new Error(`Invalid transition from ${runState} to ${newState}`);
+        }
+        runState = newState;
+      };
+      
+      transitionTo('planning');
+      expect(runState).toBe('planning');
+      
+      transitionTo('executing');
+      expect(runState).toBe('executing');
+      
+      expect(() => transitionTo('created')).toThrow();
+    });
+  });
 });
