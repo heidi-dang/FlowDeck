@@ -50,6 +50,8 @@ function resolveSha(ref) {
     refsToTry.push('origin/dev3/orchestration-runtime-domain', 'origin/feat/orchestration-runtime-domain');
   } else if (ref.includes('final-integration')) {
     refsToTry.push('origin/feat/orchestration-final-integration');
+  } else if (ref.includes('validation')) {
+    refsToTry.push('origin/fix/orchestration-validation-final', 'HEAD');
   }
   
   for (const r of refsToTry) {
@@ -72,7 +74,7 @@ const shas = {
   dev1: resolveSha('origin/dev1/orchestration-persistence-foundation'),
   dev2: resolveSha('origin/dev2/orchestration-contract-domain'),
   dev3: resolveSha('origin/dev3/orchestration-runtime-domain'),
-  dev4: resolveSha('HEAD') // Validation framework head
+  dev4: resolveSha('origin/fix/orchestration-validation-final')
 };
 
 console.log('Resolved SHAs for profile:', PROFILE);
