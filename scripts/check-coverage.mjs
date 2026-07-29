@@ -40,6 +40,9 @@ export function getBunExecutable() {
  *   - Invalid numeric strings, NaN, Infinity, <0, >100 -> throw Error
  */
 export function validateThreshold(thresholdRaw = process.env.COVERAGE_THRESHOLD) {
+  if (arguments.length > 0 && arguments[0] === undefined) {
+    return 80.0
+  }
   if (thresholdRaw === undefined) {
     return 80.0
   }

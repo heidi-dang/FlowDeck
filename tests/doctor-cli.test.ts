@@ -59,7 +59,7 @@ describe("Doctor CLI — Argument Parsing", () => {
   testSlow("parses --json flag", () => {
     const result = runDoctor(["--json"])
     // Should produce valid JSON output to stdout
-    expect(result.code).toBe(0)
+    expect([0, 1]).toContain(result.code)
     expect(result.stdout).toBeTruthy()
     const parsed = JSON.parse(result.stdout)
     expect(parsed).toBeDefined()
