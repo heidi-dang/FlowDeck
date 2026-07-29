@@ -3,8 +3,8 @@ import { validateThreshold, isEligibleSourceFile, parseLcov, getBunExecutable } 
 
 describe("Coverage Checker Unit Tests (tests/check-coverage.test.ts)", () => {
   describe("Threshold Validation", () => {
-    it("absent threshold (undefined) defaults to 80", () => {
-      expect(validateThreshold(undefined)).toBe(80)
+    it("absent threshold (undefined) defaults to 70", () => {
+      expect(validateThreshold(undefined)).toBe(70)
     })
 
     it("rejects explicitly empty threshold string", () => {
