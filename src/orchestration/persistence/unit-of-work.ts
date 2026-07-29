@@ -1,33 +1,36 @@
 /**
  * Unit of Work — one atomic operation spanning multiple repositories.
- * Backed by TransactionManager. Domain services never manually begin transactions.
+ * Callbacks are STRICTLY SYNCHRONOUS. Returns Promise for API convenience.
+ * Async/thenable callbacks cause AsyncTransactionCallbackError and rollback.
  */
 
-import type { TransactionManager } from "./transaction-manager"
-import { createTransactionManager } from "./transaction-manager"
 import type Database from "better-sqlite3"
-
-export interface UnitOfWork {
-  execute<T>(fn: (ctx: UnitOfWorkContext) => Promise<T>): Promise<T>
-}
+import { createTransactionManager, type TransactionManager } from "./transaction-manager"
+import { AsyncTransactionCallbackError } from "./errors"
 
 export interface UnitOfWorkContext {
-  /** Run operations within the current transaction. All succeed or all roll back. */
-  // Context is implicit via the shared TransactionManager — repositories share the same db/tx
+  db: Database.Database
+  tx: TransactionManager
+}
+
+export interface UnitOfWork {
+  execute<T>(operation: (context: UnitOfWorkContext) => T): Promise<T>
 }
 
 export class SqliteUnitOfWork implements UnitOfWork {
   private db: Database.Database
-  private tx: TransactionManager
 
-  constructor(db: Database.Database, tx?: TransactionManager) {
+  constructor(db: Database.Database) {
     this.db = db
-    this.tx = tx ?? createTransactionManager(db)
   }
 
-  async execute<T>(fn: (ctx: UnitOfWorkContext) => Promise<T>): Promise<T> {
-    return this.tx.write(async () => {
-      return fn({})
+  async execute<T>(operation: (context: UnitOfWorkContext) => T): Promise<T> {
+    return createTransactionManager(this.db).writeWithRetry(() => {
+      const result = operation({ db: this.db, tx: createTransactionManager(this.db) })
+      if (result !== null && result !== undefined && typeof (result as any).then === 'function') {
+        throw new AsyncTransactionCallbackError()
+      }
+      return result
     })
   }
 }
