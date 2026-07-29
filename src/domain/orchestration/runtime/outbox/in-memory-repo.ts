@@ -151,7 +151,10 @@ export class InMemoryOutboxRepository {
         // Simulate delivery (in production, send to event broker)
         await this.simulateDelivery(message);
         success = true;
-4: @theirs
+      } catch (error: unknown) {
+        const normalizedError = error instanceof Error ? error : new Error(String(error));
+        errorType = classifyErrorFromPort(normalizedError);
+        errorMessage = normalizedError.message;
         success = false;
       }
 

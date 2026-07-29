@@ -339,7 +339,7 @@ export class InMemoryWorktreeOwnershipRepository implements WorktreeOwnershipRep
   /** Helper methods for tests */
   clear(): void {
     this.ownership.clear();
-3: @theirs
+    this.tokens.clear();
   }
 
   async isOwnedBy(worktreeKey: string, ownerId: string): Promise<boolean> {
