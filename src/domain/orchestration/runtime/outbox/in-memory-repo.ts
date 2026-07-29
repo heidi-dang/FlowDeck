@@ -18,6 +18,25 @@ import {
   DEFAULT_RETRY_POLICY
 } from './port.js';
 
+// Utility functions (standalone exports)
+export function classifyError(error: Error): string {
+  const m = error.message.toLowerCase();
+  if (m.includes('timeout') || m.includes('timed out')) return 'TIMEOUT';
+  if (m.includes('not found') || m.includes('404')) return 'NOT_FOUND';
+  if (m.includes('unreachable') || m.includes('econnrefused')) return 'UNREACHABLE';
+  return 'UNKNOWN';
+}
+
+export function isRetryable(errorType: string, policy: any): boolean {
+  return !policy?.permanentErrors?.has(errorType);
+}
+
+export function matchesTopic(event: any, subscription: any): boolean {
+  if (!subscription?.topics?.length) return true;
+  return subscription.topics.includes(event.type);
+}
+
+
 interface RecordIndex {
   byId: Map<string, OutboxRecord>;
   byAggregate: Map<string, string[]>; // aggregateId → recordIds
@@ -177,7 +196,7 @@ export class InMemoryOutboxRepository implements any { // Temporary type
     for (const messageId of messageIds) {
       // Update outbox records
       for (const record of this.records.byId.values()) {
-        for (const event of record.events) as any {
+        for (const event of (record.events as any[])) {
           if (event.globalSequence.toString() === messageId) {
             record.status = 'delivered';
             record.deliveredAt = new Date();

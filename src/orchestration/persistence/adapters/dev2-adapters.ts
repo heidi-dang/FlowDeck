@@ -1,5 +1,5 @@
 /** SQLite adapters for Dev 2 authoritative persistence ports. Self-contained — no external imports. */
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import type { TransactionManager } from "../transaction-manager"
 import { ConcurrencyError } from "../errors"
 
@@ -20,7 +20,7 @@ export interface DomainEvData { id: string; type: string; data: Record<string, u
 
 // ── ContractRepository ────────────────────────────────────────────
 export class SqliteContractRepoAdapter {
-  constructor(private db: Database.Database, private tx: TransactionManager) {}
+  constructor(private db: Database, private tx: TransactionManager) {}
   async saveFamily(f: FamilyData): Promise<void> {
     return this.tx.write(() => { this.db.prepare("INSERT INTO contract_families (family_id,name,description,created_by,created_at) VALUES (?,?,?,?,datetime('now')) ON CONFLICT(family_id) DO UPDATE SET name=excluded.name,description=excluded.description").run(f.id,f.name,f.description??null,f.createdBy??'system') })
   }
@@ -38,7 +38,7 @@ export class SqliteContractRepoAdapter {
 
 // ── VerificationRepository ────────────────────────────────────────
 export class SqliteVerificationRepoAdapter {
-  constructor(private db: Database.Database, private tx: TransactionManager) {}
+  constructor(private db: Database, private tx: TransactionManager) {}
   async saveRun(r: VerRunData): Promise<void> {
     return this.tx.write(() => { this.db.prepare("INSERT INTO verification_results (id,run_id,verification_type,status,target_sha,started_at,completed_at) VALUES (?,?,'verification',?,?,datetime('now'),datetime('now')) ON CONFLICT(id) DO UPDATE SET status=excluded.status,completed_at=excluded.completed_at").run(r.id,r.contractVersionId,r.status,r.targetSha) })
   }
@@ -64,7 +64,7 @@ export class SqliteVerificationRepoAdapter {
 
 // ── EvidenceRepository ────────────────────────────────────────────
 export class SqliteEvidenceRepoAdapter {
-  constructor(private db: Database.Database, private tx: TransactionManager) {}
+  constructor(private db: Database, private tx: TransactionManager) {}
   async saveEvidence(e: EvData): Promise<void> {
     return this.tx.write(() => { this.db.prepare("INSERT INTO evidence (id,run_id,evidence_type,title,content_hash,sha,created_at) VALUES (?,?,?,?,?,?,datetime('now')) ON CONFLICT(id) DO UPDATE SET status='current'").run(e.id,e.runId,e.contentType,e.content?.substring(0,80)??'ev',e.content,e.sha) })
   }
@@ -89,7 +89,7 @@ export class SqliteEvidenceRepoAdapter {
 
 // ── ApprovalRepository ────────────────────────────────────────────
 export class SqliteApprovalRepoAdapter {
-  constructor(private db: Database.Database, private tx: TransactionManager) {}
+  constructor(private db: Database, private tx: TransactionManager) {}
   async saveRequest(r: AppReqData): Promise<void> {
     this.tx.write(() => { this.db.prepare("INSERT INTO completion_overrides (id,run_id,override_type,target_id,reason,approved_by,approval_type,overridden_findings,created_at) VALUES (?,?,?,'pending','',?,'auto_policy','{}',datetime('now'))").run(r.id,r.runId,r.status,r.requester) })
   }
@@ -108,7 +108,7 @@ export class SqliteApprovalRepoAdapter {
 
 // ── OverrideRepository ────────────────────────────────────────────
 export class SqliteOverrideRepoAdapter {
-  constructor(private db: Database.Database, private tx: TransactionManager) {}
+  constructor(private db: Database, private tx: TransactionManager) {}
   async saveRequest(r: OvReqData): Promise<void> {
     this.tx.write(() => { this.db.prepare("INSERT INTO completion_overrides (id,run_id,override_type,target_id,reason,approved_by,approval_type,overridden_findings,created_at) VALUES (?,?,?,?,'','system','auto_policy','{}',datetime('now'))").run(r.id,r.runId,r.overrideType,r.id) })
   }
@@ -128,7 +128,7 @@ export class SqliteOverrideRepoAdapter {
 
 // ── CompletionRepository ──────────────────────────────────────────
 export class SqliteCompletionRepoAdapter {
-  constructor(private db: Database.Database, private tx: TransactionManager) {}
+  constructor(private db: Database, private tx: TransactionManager) {}
   async saveEvaluation(e: CompEvalData): Promise<void> {
     this.tx.write(() => { this.db.prepare("INSERT INTO verification_results (id,run_id,verification_type,status,started_at) VALUES (?,?,?,?,datetime('now')) ON CONFLICT(id) DO UPDATE SET status=excluded.status").run(e.id,e.contractVersionId,'evaluation',e.status) })
   }
@@ -158,7 +158,7 @@ export class SqliteCompletionRepoAdapter {
 
 // ── IdempotencyRepository ─────────────────────────────────────────
 export class SqliteIdempotencyRepoAdapter {
-  constructor(private db: Database.Database, private tx: TransactionManager) {}
+  constructor(private db: Database, private tx: TransactionManager) {}
   async tryReserve(commandType: string, aggregateId: string, idempotencyKey: string, _payloadHash: string, _createdAt: string): Promise<ReservResult> {
     try { return this.tx.write(() => { this.db.prepare("INSERT INTO command_idempotency (idempotency_key,command_type,aggregate_type,aggregate_id,status,started_at,created_ts) VALUES (?,?,'task_run',?,'executing',datetime('now'),strftime('%s','now'))").run(idempotencyKey,commandType,aggregateId); return {status:'acquired' as const,record:{idempotencyKey,commandType,aggregateId,status:'executing',createdAt:new Date()}} }) }
     catch { return {status:'conflict' as const,record:{idempotencyKey,commandType,aggregateId,status:'completed',createdAt:new Date()},expectedPayloadHash:_payloadHash,actualPayloadHash:''} }
@@ -173,7 +173,7 @@ export class SqliteIdempotencyRepoAdapter {
 
 // ── DomainEventAppender ───────────────────────────────────────────
 export class SqliteEventAppenderAdapter {
-  constructor(private db: Database.Database, private tx: TransactionManager) {}
+  constructor(private db: Database, private tx: TransactionManager) {}
   async append(event: DomainEvData): Promise<void> {
     this.tx.write(() => { this.db.prepare("INSERT INTO events (event_id,event_type,aggregate_type,aggregate_id,aggregate_version,timestamp,data,metadata,created_ts) VALUES (?,?,'task_run','unknown',1,datetime('now'),'{}','{}',strftime('%s','now'))").run(event.id,event.type) })
   }

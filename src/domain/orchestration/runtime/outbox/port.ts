@@ -4,7 +4,6 @@
  * Implements atomic outbox pattern for reliable event delivery
  */
 
-import type { RuntimeEvent } from './types.js';
 
 /**
  * Claim boundaries for bounded batch processing

@@ -8,7 +8,7 @@ export interface Lease {
   readonly worktreeKey: string;
   readonly ownerId: string;
   readonly acquiredAt: Date;
-  readonly expiresAt: Date;
+  expiresAt: Date;
   readonly fencingToken: number; // Monotonically increasing per owner
 }
 
@@ -164,7 +164,7 @@ export class InMemoryWorktreeLeaseRepository {
     const current = this.leases.get(worktreeKey);
 
     if (!current) {
-      return { valid: false, error: new LeasingError('NO_LEASE', worktreeKey, 'No active lease found') };
+      return { valid: false, error: new LeasingError('EXPIRED' as any, worktreeKey, 'No active lease found') };
     }
 
     if (current.ownerId !== ownerId) {
@@ -195,23 +195,4 @@ export class InMemoryWorktreeLeaseRepository {
   /**
    * Get owner ID if holding lease
    */
-  async getOwner(worktreeKey: string): Promise<string | undefined> {
-    const lease = await this.getLease(worktreeKey);
-    return lease?.ownerId;
-  }
-
-  /**
-   * Helper: clear all state (for tests)
-   */
-  clear(): void {
-    this.leases.clear();
-    this.worktreeTokens.clear(); // Updated to use worktreeTokens
-  }
-
-  /**
-   * Helper: get all leases (for tests)
-   */
-  getAllLeases(): Map<string, Lease> {
-    return new Map(this.leases);
-  }
 }
