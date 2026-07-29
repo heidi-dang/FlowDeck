@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/orchestration/persistence/adapters/dev2-compatibility-check.ts"],
+  "exclude": []
+}
