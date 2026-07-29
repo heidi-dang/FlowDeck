@@ -49,7 +49,7 @@ Never skip Red. A test written after the code is not a TDD test.
 Every test follows Arrange-Act-Assert:
 
 \`\`\`typescript
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'bun:test';
 import { UserService } from '../user-service';
 import { createMockDb } from '../test-utils';
 \`\`\`;

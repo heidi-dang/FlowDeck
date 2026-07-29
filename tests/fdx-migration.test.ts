@@ -10,7 +10,7 @@
  * 6. No partial destination after failure
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync, readdirSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"

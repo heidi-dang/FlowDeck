@@ -13,7 +13,7 @@
  * - Multiple planned self-delegations produce one coherent block
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { validateDelegationDepth } from "../src/services/governance-wiring"
 import { getSubagentIds } from "../src/services/canonical-registry"
 

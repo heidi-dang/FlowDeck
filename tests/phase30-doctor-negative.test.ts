@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { testFdxVersionCompatibility, runDoctorChecks } from "../scripts/doctor-engine.mjs"
 import { mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { join } from "node:path"

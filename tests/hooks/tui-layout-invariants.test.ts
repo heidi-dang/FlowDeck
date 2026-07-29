@@ -12,7 +12,7 @@
  * Tests also confirm no new tool was introduced to work around the issue.
  */
 
-import { describe, it, expect, vi, afterEach } from "vitest"
+import { describe, it, expect, vi, afterEach } from "bun:test"
 import { mkdirSync, writeFileSync, rmSync } from "fs"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"

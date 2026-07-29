@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { runDoctorChecks, testFdxVersionCompatibility } from "../scripts/doctor-engine.mjs";
 
 describe("Phase 28 — FDX Version Compatibility Gates", () => {

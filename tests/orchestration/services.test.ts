@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "bun:test";
 import { RunService } from "../../src/orchestration/services/run-service";
 import { CommandDispatcher } from "../../src/orchestration/services/command-dispatcher";
 import { QueryService } from "../../src/orchestration/services/query-service";

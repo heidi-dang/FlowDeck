@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { getAgentConfigs, AGENT_NAMES } from "@/agents/index"
 import { createHeidiAgent, createOrchestratorAgent } from "@/agents/orchestrator"
 import {

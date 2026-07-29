@@ -5,7 +5,7 @@
  * exactly across absolute, relative, spaces, unicode, `.`, `..`, trailing separators, symlinks, and nonexistent paths.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, symlinkSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"

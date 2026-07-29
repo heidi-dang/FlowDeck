@@ -5,7 +5,7 @@
  * secret redaction, installer integration, and cross-platform paths.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs"
 import { join } from "node:path"

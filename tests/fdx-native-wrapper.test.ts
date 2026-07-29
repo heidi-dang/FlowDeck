@@ -9,7 +9,7 @@
  * 5. No result contains a fallback marker when native execution runs.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { existsSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"

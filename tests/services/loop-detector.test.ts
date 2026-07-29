@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "vitest"
+import { describe, it, expect, beforeEach, vi } from "bun:test"
 import { LoopDetector, normalizeAction } from "@/services/loop-detector"
 
 describe("LoopDetector", () => {
