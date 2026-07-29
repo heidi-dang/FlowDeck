@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"; void Database; void closeAllConnections; void existsSync;
 import { unlinkSync, existsSync } from "fs"
-import Database from "better-sqlite3"
+import { Database } from "bun:sqlite"
 import { openConnection, closeConnection, closeAllConnections } from "../connection"
 import { initializeDatabase } from "../database"
 import { runMigrations, getCurrentVersion } from "../migrations/migration-runner"

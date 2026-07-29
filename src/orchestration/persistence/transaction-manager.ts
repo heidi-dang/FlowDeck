@@ -8,7 +8,7 @@
  * Retry uses injectable async Scheduler — zero CPU spin.
  */
 
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import { AsyncTransactionCallbackError, ConcurrencyError, PersistenceError } from "./errors"
 import type { RetryPolicy } from "./retry-policy"
 import { createDefaultPolicy } from "./retry-policy"
@@ -39,7 +39,7 @@ export class SavepointCleanupError extends PersistenceError {
 }
 
 export function createTransactionManager(
-  db: Database.Database,
+  db: Database,
   retryPolicy?: RetryPolicy,
   scheduler?: Scheduler,
 ): TransactionManager {

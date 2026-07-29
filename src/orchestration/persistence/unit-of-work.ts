@@ -4,7 +4,7 @@
  * the transaction boundary via TransactionManager's sync wrappers.
  */
 
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import { createTransactionManager, type TransactionManager } from "./transaction-manager"
 import type { RetryPolicy } from "./retry-policy"
 import type { Scheduler } from "./clock"
@@ -18,11 +18,11 @@ export interface UnitOfWorkContext {
 }
 
 export class SqliteUnitOfWork implements UnitOfWork {
-  private db: Database.Database
+  private db: Database
   private policy?: RetryPolicy
   private scheduler?: Scheduler
 
-  constructor(db: Database.Database, policy?: RetryPolicy, scheduler?: Scheduler) {
+  constructor(db: Database, policy?: RetryPolicy, scheduler?: Scheduler) {
     this.db = db
     this.policy = policy
     this.scheduler = scheduler

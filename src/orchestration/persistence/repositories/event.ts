@@ -1,5 +1,5 @@
 /** Repository for append-only events, outbox, and subscriber persistence. */
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import type { TransactionManager } from "../transaction-manager"
 import { BaseRepository } from "./repository"
 
@@ -21,7 +21,7 @@ export interface OutboxRow {
 }
 
 export class EventsRepository extends BaseRepository {
-  constructor(db: Database.Database, tx: TransactionManager) { super(db, tx) }
+  constructor(db: Database, tx: TransactionManager) { super(db, tx) }
 
   append(event: NewEventInput): EventRow {
     return this.tx.write(() => {
@@ -30,7 +30,7 @@ export class EventsRepository extends BaseRepository {
         VALUES (?, ?, 1, ?, ?, ?, ?, ?, datetime('now'), ?, ?, strftime('%s','now'))`)
         .run(event.eventId, event.eventType, event.causationId ?? null, event.correlationId ?? null,
           event.aggregateType, event.aggregateId, event.aggregateVersion, event.data, event.metadata ?? '{}')
-      return this.db.prepare("SELECT * FROM events WHERE event_id = ?").get(event.eventId) as EventRow
+      return mapRow(this.db.prepare("SELECT * FROM events WHERE event_id = ?").get(event.eventId) as Record<string, unknown>)
     })
   }
 
@@ -39,7 +39,7 @@ export class EventsRepository extends BaseRepository {
     const params: unknown[] = [fromSeq]
     if (toSeq !== undefined) { sql += " AND global_sequence <= ?"; params.push(toSeq) }
     sql += " ORDER BY global_sequence ASC"
-    return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(mapRow)
+    return (this.db.prepare(sql).all(...(params as [number])) as Record<string, unknown>[]).map(mapRow)
   }
 
   getMaxAggregateVersion(aggregateType: string, aggregateId: string): number {
@@ -53,7 +53,7 @@ export class EventsRepository extends BaseRepository {
       this.db.prepare(`INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, idempotency_key, source_component, created_ts)
         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, strftime('%s','now'))`)
         .run(input.id, input.eventId, input.eventType, input.aggregateId, input.data, input.idempotencyKey, input.sourceComponent)
-      return this.db.prepare("SELECT * FROM event_outbox WHERE id = ?").get(input.id) as OutboxRow
+      return mapOutboxRow(this.db.prepare("SELECT * FROM event_outbox WHERE id = ?").get(input.id) as Record<string, unknown>)
     })
   }
 
@@ -73,5 +73,14 @@ function mapRow(r: Record<string, unknown>): EventRow {
     aggregateType: r.aggregate_type as string, aggregateId: r.aggregate_id as string,
     aggregateVersion: r.aggregate_version as number, timestamp: r.timestamp as string,
     data: r.data as string, metadata: r.metadata as string,
+  }
+}
+
+function mapOutboxRow(r: Record<string, unknown>): OutboxRow {
+  return {
+    id: r.id as string, eventId: r.event_id as string,
+    eventType: r.event_type as string, aggregateId: r.aggregate_id as string,
+    data: r.data as string, status: r.status as string,
+    idempotencyKey: r.idempotency_key as string, sourceComponent: r.source_component as string,
   }
 }

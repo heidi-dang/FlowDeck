@@ -1,6 +1,6 @@
 /**
  * Database Provider — single boundary for database lifecycle, transactions, and migrations.
- * Callers must not construct raw better-sqlite3 databases independently.
+ * Callers must not construct raw bun:sqlite databases independently.
  */
 
 import type { TransactionManager } from "./transaction-manager"
@@ -29,14 +29,14 @@ export function createProvider(): DatabaseProvider {
   return {
     open(config: DatabaseConfig): DatabaseSession {
       if (!nativeInit) {
-        // Lazy-load better-sqlite3 only when open() is called
-        const BetterSqlite3 = require("better-sqlite3")
+        // Lazy-load bun:sqlite only when open() is called
+        const { Database } = require('bun:sqlite')
         nativeInit = (cfg: DatabaseConfig) => {
-          const db = new BetterSqlite3(cfg.path, { readonly: cfg.readonly ?? false })
-          db.pragma("journal_mode = WAL")
-          db.pragma("foreign_keys = ON")
+          const db = new Database(cfg.path, { create: true })
+          db.run(`PRAGMA journal_mode = WAL`)
+          db.run(`PRAGMA foreign_keys = ON`)
           db.pragma(`busy_timeout = ${cfg.busyTimeout ?? 5000}`)
-          db.pragma("synchronous = NORMAL")
+          db.run(`PRAGMA synchronous = NORMAL`)
           const tx = createTransactionManager(db)
           return { db, session: { tx, config: cfg, close: () => db.close() } }
         }

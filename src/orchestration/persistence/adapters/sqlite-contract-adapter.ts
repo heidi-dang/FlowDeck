@@ -1,10 +1,10 @@
 /** SQLite adapter for ContractRepository. No policy logic. */
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import type { TransactionManager } from "../transaction-manager"
 import type { ContractRepository, ContractRecord, ContractLifecycleRecord, RequirementRecord, AcceptanceCriterionRecord, VerificationRuleRecord, ObjectiveRecord, ConstraintRecord } from "../../domain/ports/contract-repository"
 
 export class SqliteContractAdapter implements ContractRepository {
-  constructor(private db: Database.Database, private tx: TransactionManager) {}
+  constructor(private db: Database, private tx: TransactionManager) {}
   async insertContract(r: ContractRecord): Promise<ContractRecord> {
     return this.tx.write(() => {
       this.db.prepare(`INSERT INTO task_contracts (contract_id,family_id,version,title,description,in_scope,out_of_scope,payload_hash,repo_url,repo_sha,created_by,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`).run(r.contractId,r.familyId,r.version,r.title,r.description,r.inScope,r.outOfScope,r.payloadHash,r.repoUrl,r.repoSha,r.createdBy)

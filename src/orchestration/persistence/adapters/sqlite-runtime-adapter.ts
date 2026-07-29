@@ -1,11 +1,11 @@
 /** SQLite adapters for runtime domain ports. No policy logic. */
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import type { TransactionManager } from "../transaction-manager"
 import { ConcurrencyError } from "../errors"
 import type { TaskRunRecord, RunRequirementRecord, RunAcceptanceCriterionRecord, EventRecord, OutboxRecord } from "../../domain/ports/runtime-repository"
 
 export class SqliteTaskRunAdapter {
-  constructor(private db: Database.Database, private tx: TransactionManager) {}
+  constructor(private db: Database, private tx: TransactionManager) {}
 
   async insertRun(r: TaskRunRecord): Promise<TaskRunRecord> {
     return this.tx.write(() => {

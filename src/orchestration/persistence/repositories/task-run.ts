@@ -1,5 +1,5 @@
 /** Repository for task_runs and related run-scoped entities. */
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import type { TransactionManager } from "../transaction-manager"
 import { BaseRepository } from "./repository"
 
@@ -16,7 +16,7 @@ export interface CreateTaskRunInput {
 }
 
 export class TaskRunsRepository extends BaseRepository {
-  constructor(db: Database.Database, tx: TransactionManager) { super(db, tx) }
+  constructor(db: Database, tx: TransactionManager) { super(db, tx) }
 
   create(input: CreateTaskRunInput): TaskRunRow {
     return this.tx.write(() => {

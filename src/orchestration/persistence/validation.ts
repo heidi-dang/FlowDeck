@@ -1,6 +1,6 @@
 /** Startup schema validation. Returns structured diagnostics with recovery recommendations. */
 
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import { getCurrentVersion } from "./migrations/migration-runner"
 
 export interface DiagnosticItem {
@@ -67,7 +67,7 @@ const RECOVERY_MAP: Record<string, string> = {
   integrity: "Database corruption detected. Restore from backup or run PRAGMA integrity_check for details.",
 }
 
-export function validateSchema(db: Database.Database): SchemaDiagnostics {
+export function validateSchema(db: Database): SchemaDiagnostics {
   const items: DiagnosticItem[] = []
   const machine = { missingTables: [] as string[], missingTriggers: [] as string[], fkViolations: [] as string[], integrityErrors: [] as string[] }
   const version = getCurrentVersion(db)

@@ -4,11 +4,11 @@
  * because each migration runs in its own transaction.
  */
 
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import { MigrationError, MigrationChecksumError } from "../errors"
 import { MIGRATIONS } from "./migration-registry"
 
-function createLedgerTable(db: Database.Database): void {
+function createLedgerTable(db: Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -24,7 +24,7 @@ export interface AppliedMigration {
   checksum: string
 }
 
-function getApplied(db: Database.Database): Map<number, AppliedMigration> {
+function getApplied(db: Database): Map<number, AppliedMigration> {
   try {
     const rows = db.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all() as AppliedMigration[]
     return new Map(rows.map(r => [r.version, r]))
@@ -33,7 +33,7 @@ function getApplied(db: Database.Database): Map<number, AppliedMigration> {
   }
 }
 
-export function getCurrentVersion(db: Database.Database): number {
+export function getCurrentVersion(db: Database): number {
   try {
     const row = db.prepare("SELECT COALESCE(MAX(version), 0) AS v FROM schema_migrations").get() as { v: number }
     return row.v
@@ -42,7 +42,7 @@ export function getCurrentVersion(db: Database.Database): number {
   }
 }
 
-export function runMigrations(db: Database.Database): void {
+export function runMigrations(db: Database): void {
   createLedgerTable(db)
   const applied = getApplied(db)
 

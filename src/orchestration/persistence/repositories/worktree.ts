@@ -1,5 +1,5 @@
 /** Repository for the worktrees table. Tracks git worktree ownership per run/assignment. */
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import type { TransactionManager } from "../transaction-manager"
 import { BaseRepository } from "./repository"
 
@@ -10,7 +10,7 @@ export interface WorktreeRow {
 }
 
 export class WorktreesRepository extends BaseRepository {
-  constructor(db: Database.Database, tx: TransactionManager) { super(db, tx) }
+  constructor(db: Database, tx: TransactionManager) { super(db, tx) }
 
   create(input: { id: string; runId: string; repositoryId: string; path: string; branch: string; phase: number; assignmentId?: string }): WorktreeRow {
     return this.tx.write(() => {

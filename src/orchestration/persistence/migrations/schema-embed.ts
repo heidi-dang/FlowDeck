@@ -848,7 +848,7 @@ CREATE TABLE compaction_records (
         ON DELETE RESTRICT ON UPDATE RESTRICT
 );
 CREATE INDEX idx_cr_run ON compaction_records(run_id);
-CREATE TABLE schema_migrations (
+CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
     applied_at TEXT NOT NULL,

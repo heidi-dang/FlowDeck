@@ -1,12 +1,12 @@
 /** Database bootstrap. Called once at application startup. */
-import type Database from "better-sqlite3"
+import type { Database } from "bun:sqlite"
 import { openConnection, closeConnection } from "./connection"
 import { runMigrations } from "./migrations/migration-runner"
 import { validateSchema } from "./validation"
 import { SchemaValidationError } from "./errors"
 import type { DatabaseConfig } from "./configuration"
 
-export function initializeDatabase(config: DatabaseConfig): { db: Database.Database; diagnostics: ReturnType<typeof validateSchema> } {
+export function initializeDatabase(config: DatabaseConfig): { db: Database; diagnostics: ReturnType<typeof validateSchema> } {
   const db = openConnection(config)
   if (!config.readonly) {
     runMigrations(db)
