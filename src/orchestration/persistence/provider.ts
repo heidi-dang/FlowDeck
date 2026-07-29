@@ -35,7 +35,7 @@ export function createProvider(): DatabaseProvider {
           const db = new Database(cfg.path, { create: true })
           db.run(`PRAGMA journal_mode = WAL`)
           db.run(`PRAGMA foreign_keys = ON`)
-          db.pragma(`busy_timeout = ${cfg.busyTimeout ?? 5000}`)
+          db.run(`PRAGMA busy_timeout = ${cfg.busyTimeout ?? 5000}`)
           db.run(`PRAGMA synchronous = NORMAL`)
           const tx = createTransactionManager(db)
           return { db, session: { tx, config: cfg, close: () => db.close() } }

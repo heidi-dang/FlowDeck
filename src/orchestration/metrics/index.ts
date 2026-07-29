@@ -61,7 +61,6 @@ export class OrchestrationMetrics {
   readonly deadLetterCount: Counter;
 
   constructor() {
-    const now = () => new Date().toISOString();
     const counters = new Map<string, number>();
     const gauges = new Map<string, number>();
     const histograms = new Map<string, number[]>();

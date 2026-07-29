@@ -2,7 +2,6 @@
  * Acceptance Criterion State entity - tracks state of acceptance criteria during execution
  */
 
-import type { TaskRun } from './task-run.js';
 
 /**
  * Acceptance criterion status

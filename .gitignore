@@ -157,3 +157,4 @@ fd-worktrees/
 
 # Incremental TypeScript build cache (pre-push fast typecheck)
 .cache/
+.flowdeck/

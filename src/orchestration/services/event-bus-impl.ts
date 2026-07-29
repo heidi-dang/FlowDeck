@@ -1,6 +1,5 @@
-import { OrchestrationEventType } from "../types/events";
-import type { OrchestrationEvent } from "../types/events";
-import type { IEventBus, EventHandler } from "./ports";
+import { OrchestrationEvent } from "../types/events";
+import { IEventBus, EventHandler } from "./ports";
 
 export class InMemoryEventBus implements IEventBus {
   private readonly handlers = new Map<string, Set<EventHandler>>();

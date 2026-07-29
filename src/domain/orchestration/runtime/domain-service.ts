@@ -3,8 +3,8 @@
  * Enforces all invariants and emits events through aggregate
  */
 
-import type { TaskRun, TaskRunState, TaskRunStrategy } from './task-run.js';
-import type { GlobalSequence } from './events/envelope.js';
+import type { TaskRun, TaskRunState } from './task-run.js';
+
 import { TRANSITION_MATRIX, STRATEGY_RULES, type TransitionDefinition } from './task-run.js';
 
 /**

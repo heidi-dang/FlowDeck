@@ -3,19 +3,18 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { TaskRunState, TaskRunStrategy } from '@/domain/orchestration/runtime/task-run.js';
+import type { TaskRunState } from '@/domain/orchestration/runtime/task-run.js';
 import { TRANSITION_MATRIX, STRATEGY_RULES, TERMINAL_STATES } from '@/domain/orchestration/runtime/task-run.js';
 import { TransitionProcessor } from '@/domain/orchestration/runtime/domain-service.js';
 import { AssignmentConsistencyValidator } from '@/domain/orchestration/runtime/assignment.js';
 import { SessionConsistencyValidator } from '@/domain/orchestration/runtime/session.js';
-import { ContextConsistencyValidator, ContextSourceValidator } from '@/domain/orchestration/runtime/context-item.js';
+import { ContextSourceValidator } from '@/domain/orchestration/runtime/context-item.js';
 import { 
   InMemoryTaskRunRepository,
   InMemoryAssignmentRepository,
   InMemorySessionRepository,
   InMemoryContextItemRepository,
-  InMemoryRuntimeRequirementRepository,
-  InMemoryAcceptanceCriterionStateRepository,
+
   InMemoryWorktreeOwnershipRepository
 } from '@/domain/orchestration/runtime/in-memory-repositories.js';
 import type { TaskRun } from '@/domain/orchestration/runtime/task-run.js';

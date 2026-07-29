@@ -1,4 +1,3 @@
-import type { GlobalSequence } from './events/envelope.js';
 import type { DomainEvent } from './events/envelope.js';
 
 /**
@@ -401,7 +400,7 @@ export const TRANSITION_MATRIX: Record<string, TransitionDefinition[]> = {
  * Strategy-specific validation rules
  */
 export const STRATEGY_RULES: Record<TaskRunStrategy, (run: TaskRun) => boolean> = {
-  simple: (run: TaskRun) => true,
+  simple: (_run: TaskRun) => true,
   planned: (run: TaskRun) => run.strategy === 'planned',
   delegated: (run: TaskRun) => run.strategy === 'delegated',
   audit: (run: TaskRun) => run.strategy === 'audit',

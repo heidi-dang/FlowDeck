@@ -2,7 +2,6 @@
  * Runtime Requirement entity - requirements validated at runtime
  */
 
-import type { TaskRun } from './task-run.js';
 
 /**
  * Requirement type
