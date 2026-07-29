@@ -30,15 +30,23 @@ function execGit(command, options = {}) {
   try {
     return execSync(`git ${command}`, { encoding: 'utf8', stdio: 'pipe', ...options }).trim();
   } catch (err) {
-    if (err.stdout) console.log(err.stdout.toString());
-    if (err.stderr) console.error(err.stderr.toString());
-    throw new Error(`Git command failed: git ${command}`);
+    const stderrStr = err.stderr ? err.stderr.toString().trim() : '';
+    const stdoutStr = err.stdout ? err.stdout.toString().trim() : '';
+    if (stdoutStr) console.log(stdoutStr);
+    if (stderrStr) console.error(stderrStr);
+    throw new Error(`Git command failed: git ${command}${stderrStr ? ' -> ' + stderrStr : ''}`);
   }
 }
 
 // 2. Fetch and resolve exact SHAs
 console.log('Fetching remote branches...');
-execGit('fetch origin --prune');
+try {
+  execGit('fetch origin --unshallow');
+} catch {
+  try {
+    execGit('fetch origin --prune');
+  } catch {}
+}
 
 function resolveSha(ref) {
   const refsToTry = [ref];
@@ -122,9 +130,9 @@ let failedMergeSha = null;
 for (const sha of mergeOrder) {
   console.log(`Merging ${sha}...`);
   try {
-    execSync(`git merge --no-commit --no-ff "${sha}"`, { cwd: worktreePath, stdio: 'pipe' });
-  } catch {
-    console.error(`Merge conflict or failure when merging ${sha}`);
+    execGit(`merge --no-commit --no-ff "${sha}"`, { cwd: worktreePath });
+  } catch (err) {
+    console.error(`Merge conflict or failure when merging ${sha}:`, err.message);
     mergeConflict = true;
     failedMergeSha = sha;
     break;
@@ -177,8 +185,11 @@ async function runCommand(cmd, args, cwd) {
 async function main() {
   if (mergeConflict) {
     console.error(`Integration merge conflict on SHA ${failedMergeSha}.`);
-    const statusOutput = execSync(`git status --porcelain=v2`, { cwd: worktreePath, encoding: 'utf8' });
-    console.error(statusOutput);
+    let statusOutput = '';
+    try {
+      statusOutput = execSync(`git status --porcelain=v2`, { cwd: worktreePath, encoding: 'utf8' });
+      console.error(statusOutput);
+    } catch {}
     
     try {
       const artifactsDir = join(repoRoot, 'artifacts', 'orchestration-compliance');
