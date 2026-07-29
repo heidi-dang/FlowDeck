@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"; void Database; void closeAllConnections; void existsSync;
-import { unlinkSync, existsSync } from "fs"
+import { unlinkSync, existsSync, mkdtempSync } from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
 import { Database } from "bun:sqlite"
 import { openConnection, closeConnection, closeAllConnections } from "../connection"
 import { initializeDatabase } from "../database"
@@ -7,13 +9,17 @@ import { runMigrations, getCurrentVersion } from "../migrations/migration-runner
 import { createTransactionManager } from "../transaction-manager"
 import { validateSchema } from "../validation"
 
-const TEST_DB = "/tmp/flowdeck-persist-test.db"
+let TEST_DB = ""
 
 function clean() {
-  closeConnection(TEST_DB)
-  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
-    try { unlinkSync(f) } catch {}
+  if (TEST_DB) {
+    closeConnection(TEST_DB)
+    for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
+      try { unlinkSync(f) } catch {}
+    }
   }
+  const dir = mkdtempSync(join(tmpdir(), "fd-persist-test-"))
+  TEST_DB = join(dir, "test.db")
 }
 
 describe("Database bootstrap", () => {

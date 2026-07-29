@@ -31,7 +31,7 @@ export function normalizePathForId(directory: string): string {
     dir = dir[0].toUpperCase() + dir.slice(1)
   }
   let resolved = resolve(dir).replace(/\\/g, "/")
-  if (existsSync(resolved)) {
+  if (!dir.startsWith("//") && !dir.startsWith("\\\\") && existsSync(resolved)) {
     try {
       resolved = realpathSync(resolved).replace(/\\/g, "/")
     } catch {}

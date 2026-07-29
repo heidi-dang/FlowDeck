@@ -100,7 +100,7 @@ describe("Exact TypeScript vs Native Rust Project ID Parity", () => {
       mkdirSync(targetDir, { recursive: true })
 
       try {
-        symlinkSync(targetDir, symlinkPath, process.platform === "win32" ? "dir" : "file")
+        symlinkSync(targetDir, symlinkPath, process.platform === "win32" ? "junction" : "dir")
       } catch {}
 
       const testDirs = [

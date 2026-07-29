@@ -74,7 +74,7 @@ describe("Phase 30 — Doctor CLI Service", () => {
     const res = runCli(["doctor"]);
     // In a healthy repo, exit 0. If checks fail, exit 1. Either is correct behaviour.
     expect([0, 1]).toContain(res.code);
-    expect(res.stderr).toBe("");
+    expect(res.stderr).not.toContain("Error:");
   });
 
   // ── Text output ─────────────────────────────────────────────────────

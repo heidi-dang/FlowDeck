@@ -1,37 +1,30 @@
-/**
- * Migration safety regression tests.
- *
- * Proves:
- * - Mid-migration failures roll back all changes atomically
- * - The migration ledger does NOT advance before success
- * - Restart safely retries the failed migration
- * - Repeated startup remains idempotent
- * - Checksum tampering is detected
- * - Process interruption before commit cannot leave partial state
- *
- * KEY INSIGHT: bun:sqlite does NOT auto-rollback on statement error inside
- * explicit transactions. The migration runner's catch block must call
- * ROLLBACK explicitly (which it does: see migration-runner.ts catch block).
- * These tests verify that the runner's rollback pattern works correctly.
- */
-
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { unlinkSync } from "fs"
+import { unlinkSync, mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { Database } from "bun:sqlite"
 import { runMigrations, getCurrentVersion } from "@/orchestration/persistence/migrations/migration-runner"
 
-const TEST_DB = join(tmpdir(), "fd-migration-safety-test.db")
+let currentDir = ""
+let TEST_DB = ""
 
 function clean() {
-  for (const f of [TEST_DB, TEST_DB + "-wal", TEST_DB + "-shm"]) {
-    try { unlinkSync(f) } catch {}
+  if (currentDir) {
+    try { rmSync(currentDir, { recursive: true, force: true }) } catch {}
+    currentDir = ""
+    TEST_DB = ""
   }
 }
 
+function setupTestDb(): string {
+  clean()
+  currentDir = mkdtempSync(join(tmpdir(), "fd-mig-safe-"))
+  TEST_DB = join(currentDir, "test.db")
+  return TEST_DB
+}
+
 describe("migration atomicity — interruption safety", () => {
-  beforeEach(clean)
+  beforeEach(setupTestDb)
   afterEach(clean)
 
   it("mid-migration failure rolls back all schema changes (matching runner pattern)", () => {
@@ -41,27 +34,22 @@ describe("migration atomicity — interruption safety", () => {
       applied_at TEXT NOT NULL, checksum TEXT NOT NULL, duration_ms INTEGER
     )`)
 
-    // Simulate what the runner does: BEGIN, exec schema, INSERT ledger, COMMIT
-    // If any step fails, catch rolls back
     let caught = false
     try {
       db.exec("BEGIN IMMEDIATE")
       db.exec("CREATE TABLE mid_table_a (id INTEGER PRIMARY KEY, name TEXT)")
       db.exec("CREATE TABLE mid_table_b (id INTEGER PRIMARY KEY, value TEXT)")
-      // Deliberate SQL error: duplicate table name
       db.exec("CREATE TABLE mid_table_a (id INTEGER PRIMARY KEY, name TEXT)")
       db.exec("COMMIT")
     } catch {
-      db.exec("ROLLBACK") // exact same pattern as migration-runner.ts
+      db.exec("ROLLBACK")
       caught = true
     }
     expect(caught).toBe(true)
 
-    // No partial tables survive
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name='mid_table_a' OR name='mid_table_b')").all()
     expect(tables).toHaveLength(0)
 
-    // Schema_migrations ledger has zero rows
     const count = db.prepare("SELECT COUNT(*) AS c FROM schema_migrations").get() as { c: number }
     expect(count.c).toBe(0)
 
@@ -77,25 +65,21 @@ describe("migration atomicity — interruption safety", () => {
 
     const beforeVersion = getCurrentVersion(db)
 
-    // Execute partial schema then fail on invalid INSERT
     let caught = false
     try {
       db.exec("BEGIN IMMEDIATE")
       db.exec("CREATE TABLE contract_families (family_id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT, created_by TEXT NOT NULL, created_at TEXT NOT NULL)")
-      // Valid DDL ran, now fail on DML targeting a table that doesn't exist
       db.exec("INSERT INTO nonexistent_table VALUES (1)")
       db.exec("COMMIT")
     } catch {
-      db.exec("ROLLBACK") // runner's exact pattern
+      db.exec("ROLLBACK")
       caught = true
     }
     expect(caught).toBe(true)
 
-    // contract_families was rolled back
     const hasTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='contract_families'").all()
     expect(hasTable).toHaveLength(0)
 
-    // Version unchanged
     const afterVersion = getCurrentVersion(db)
     expect(afterVersion).toBe(beforeVersion)
 
@@ -109,22 +93,18 @@ describe("migration atomicity — interruption safety", () => {
       applied_at TEXT NOT NULL, checksum TEXT NOT NULL, duration_ms INTEGER
     )`)
 
-    // Simulate interruption: CREATE TABLE executed then ROLLBACK / crash before ledger write
     db.exec("BEGIN IMMEDIATE")
     db.exec("CREATE TABLE contract_families (family_id TEXT PRIMARY KEY, name TEXT NOT NULL)")
-    db.exec("ROLLBACK") // simulate power loss / crash before ledger INSERT + COMMIT
+    db.exec("ROLLBACK")
 
     expect(getCurrentVersion(db)).toBe(0)
 
-    // Clean retry — full migration applies correctly
     runMigrations(db)
     expect(getCurrentVersion(db)).toBe(1)
 
-    // Third run — idempotent
     runMigrations(db)
     expect(getCurrentVersion(db)).toBe(1)
 
-    // Core tables present
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
     const names = tables.map(r => r.name)
     expect(names).toContain("contract_families")
@@ -141,13 +121,10 @@ describe("migration atomicity — interruption safety", () => {
     runMigrations(db)
     expect(getCurrentVersion(db)).toBe(1)
 
-    // Tamper with checksum (simulates manual DB edit or file corruption)
     db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = 1").run("tampered_checksum")
 
-    // Runner throws MigrationChecksumError
     expect(() => runMigrations(db)).toThrow()
 
-    // DB tables are intact
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
     expect(tables.length).toBeGreaterThan(10)
 
