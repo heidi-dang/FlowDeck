@@ -121,6 +121,11 @@ let mergeConflict = false;
 let failedMergeSha = null;
 
 for (const sha of mergeOrder) {
+  try {
+    execSync(`git merge-base --is-ancestor "${sha}" HEAD`, { cwd: worktreePath });
+    console.log(`SHA ${sha} is already ancestor of base, skipping merge.`);
+    continue;
+  } catch {}
   console.log(`Merging ${sha}...`);
   try {
     execSync(`git merge --no-commit --no-ff "${sha}"`, { cwd: worktreePath, stdio: 'pipe' });
