@@ -66,7 +66,7 @@
     "better-harness:serve": "node bin/better-harness.js",
     "standalone:start": "bun run src/better-harness/testing/standalone-server-cli.ts",
     "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\"",
-    "test:orchestration:framework": "bun test tests/orchestration/framework",
+    "test:orchestration:framework": "bun test tests/orchestration/chaos tests/orchestration/compliance tests/orchestration/concurrency tests/orchestration/fault tests/orchestration/performance tests/orchestration/replay",
     "test:orchestration:negative": "bun test tests/orchestration/negative",
     "test:orchestration:architecture": "bun test tests/orchestration/compliance/architecture.test.ts",
     "test:orchestration:replay": "bun test tests/orchestration/replay",
