@@ -452,6 +452,7 @@ function nativeOutlineFile(filePath: string): string {
         const name = m[m.length - 1] // last capture group is the name
         const kindStr = kind.startsWith("$") ? m[parseInt(kind[1])] || kind : kind
         symbols.push({ kind: kindStr, name, line: lineNumber })
+        if (m.index === re.lastIndex) re.lastIndex++
       }
     }
     if (symbols.length === 0) return ""

@@ -100,7 +100,7 @@ export async function runDoctor(directory: string, options: DoctorOptions = {}):
   }
 }
 
-function scoreCategory(checks: CheckResult[], ...categories: string[]): number {
+export function scoreCategory(checks: CheckResult[], ...categories: string[]): number {
   const relevant = checks.filter(c => categories.includes(c.category))
   if (relevant.length === 0) return 100
   const passRatio = relevant.filter(c => c.status === "pass" || c.status === "info").length / relevant.length

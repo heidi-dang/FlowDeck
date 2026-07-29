@@ -178,18 +178,19 @@ export function runCoverageCheck(thresholdRaw = process.env.COVERAGE_THRESHOLD) 
       maxBuffer: 50 * 1024 * 1024,
     })
 
+    const lcovFile = join(tempDir, "lcov.info")
+    const fullOut = (proc.stdout || "") + "\n" + (proc.stderr || "")
+    const hasFailures = / (?:[1-9]\d*)\s+fail/i.test(fullOut)
+
     if (proc.error) {
       throw new Error(`Coverage test process execution error: ${proc.error.message}`)
     }
 
-    if (proc.status === null || proc.status !== 0) {
-      const fullOut = (proc.stdout || "") + "\n" + (proc.stderr || "")
+    if ((proc.status !== 0 && proc.status !== 2) || hasFailures || !existsSync(lcovFile)) {
       const failLines = fullOut.split("\n").filter(l => /fail|error|exception|stack|at /i.test(l)).slice(-30).join("\n")
       const tailOut = fullOut.slice(-3000)
       throw new Error(`Coverage test execution failed with exit code ${proc.status}:\n--- FAILING LINES ---\n${failLines}\n--- TAIL OUTPUT ---\n${tailOut}`)
     }
-
-    const lcovFile = join(tempDir, "lcov.info")
     if (!existsSync(lcovFile)) {
       throw new Error(`Coverage report file lcov.info was not created at ${lcovFile}`)
     }

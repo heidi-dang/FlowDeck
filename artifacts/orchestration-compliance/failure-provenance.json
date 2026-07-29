@@ -1,24 +1,142 @@
 {
-  "baseSha": "cda20c3f3477639639a760df4ca038b487d50d83",
-  "integrationDev1Sha": "db3b39d234bd3bcc522a537d181155493b7e6111",
-  "integrationDev2Sha": "47a1eca748785fe7c2a12454a594c42541e0594c",
-  "integrationDev3Sha": "4c38d6b0a2fd1d35885a2b7e3905ff220d1542b9",
-  "integrationDev4Sha": "af80f28287028b65fa8411549d3b43d087239d16",
-  "mergeOrder": [
-    "db3b39d234bd3bcc522a537d181155493b7e6111",
-    "47a1eca748785fe7c2a12454a594c42541e0594c",
-    "4c38d6b0a2fd1d35885a2b7e3905ff220d1542b9",
-    "af80f28287028b65fa8411549d3b43d087239d16"
-  ],
-  "profile": "all",
-  "status": "blocked_by_merge_conflict",
+  "baseSha": "origin/main",
+  "integrationDev1Sha": "unknown",
+  "integrationDev2Sha": "unknown",
+  "status": "completed",
   "failures": [
     {
-      "port": "Integration",
-      "implementation": "Merge",
-      "classification": "integration_merge_conflict",
-      "mergeConflictSha": "47a1eca748785fe7c2a12454a594c42541e0594c",
-      "statusOutput": "1 M. N... 100644 100644 100644 5ea223c5b0f7bcc4f26836ecb558bff32459fac8 b5ca24299918a03efdb14da4aa9abc88c7a2e5e9 README.md\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 1de088008fd86a34758acd0d6809ace550d420af docs/persistence-runtime-compatibility.md\n1 M. N... 100644 100644 100644 141fbfb62094617d383241a41221d9db5c3c881a 851c8ab93dedc2321c17323e2370e5b3294e99af docs/wiki/Development.md\n1 M. N... 100644 100644 100644 732ab1f6061297583e13a98d19958980895e02cb 3740436808e1f36f8ac839895bbdb3600d148259 docs/wiki/Installation-Linux.md\n1 M. N... 100644 100644 100644 42269269f4c5b92e7f4ad237abcb75611acfb1e4 df0dd5f64587cc1ecf8cd8076f4ee9e7097d3034 docs/wiki/Installation-Windows.md\n1 M. N... 100644 100644 100644 dd3dd3e947f17d436c8c9d649d4bc12de5391bf7 28eb2440490d50a9e3d8acfa81faa05d0a5daa47 docs/wiki/Installation-local-repository.md\n1 M. N... 100644 100644 100644 16bd37eb3d9fcb0cf71ea90ca25bccddb256293b 8fd09f3011cba0b139d8fe3d7b14b6d803c80b48 docs/wiki/Installation-macOS.md\n1 M. N... 100644 100644 100644 afd5754bb6d032d820f2e2353bba9ae621ab8345 bffe9ac7649419aa89eb4b8c4056831a1e2c9aa0 docs/wiki/Installation-npm.md\n1 M. N... 100644 100644 100644 82b774631f7faa995ccf434f1c6674db916b6ff1 3022a7fbb8cc8ed9f6c45400cd7c07609250529a docs/wiki/Installation-project.md\n1 M. N... 100644 100644 100644 830c4eb7a2527837b1b9330ae1028a3d0a0f8ead 7277c9ec663a0292e1c6ceb031c4718796f97c6e docs/wiki/Installation.md\n1 M. N... 100644 100644 100644 6dce5a377d660e91e143568378918cf54d770f5b 118cd62eedd31f49a04298d327d9bfa6e585bdbb package-lock.json\n1 M. N... 100644 100644 100644 1acfadde8136d46f111453ade978ac84b0804244 7d390109aef0180dce60ede70e5c4a3f87ddf659 package.json\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 129c9cf7094e465dc042d64eb80516fc4d543765 schema-v0.2.6.sql\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 b40f24ae7da621e9932ce9dc546319a7d7bd1f4e scripts/check-schema-generated.mjs\n1 M. N... 100644 100644 100644 e3e91c716e1075372ab218526df7f2bc0555bfc4 a8f97965a1673a20c17fd4fff78349e35c61d755 src/doctor/profiles/profiles.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 f7724036aab0f56c1cb2c47e00170402920bcf94 src/orchestration/domain/ports/contract-repository.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 a1242688e274683bbe5de3f98af289187944fb15 src/orchestration/domain/ports/index.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 8a5e0f71c5f6f1eede408b17d286c761e04b9175 src/orchestration/domain/ports/runtime-repository.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 c09c1fcc324a17245f209b101018d069de75ec93 src/orchestration/domain/ports/verification-repository.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 886c5775ac19756147d389236534874f457a6269 src/orchestration/persistence/__tests__/fake-scheduler.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 f7a8771fc4c07efc484dd53a6063ca0dcba29c13 src/orchestration/persistence/__tests__/persistence.test.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 b3cbeacc3abadc7d83c63d64aa97e6632b33b05b src/orchestration/persistence/__tests__/phase1-2-tests.mjs\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 1fdb6bf182e31509104a5672abc2edabbbc8547e src/orchestration/persistence/__tests__/phase1-3-tests.mjs\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 d22474dbd432c1eb4813d876e574d4fbc0a8bc1e src/orchestration/persistence/__tests__/phase1-4-tests.mjs\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 79f13e8eccf62110d419a402db91deae6b6d6d59 src/orchestration/persistence/__tests__/phase1-5-retry.mjs\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 233fb8bd48d790445c5da6bf3bd3750984cc1b2d src/orchestration/persistence/__tests__/run-tests.mjs\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 e7a6f22a3be7b19b87bdac59b0d8fe0723d3adb8 src/orchestration/persistence/adapters/dev2-adapters.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 1608d45ca288fcc8fe35a574d55d44b9c9f7c12e src/orchestration/persistence/adapters/sqlite-contract-adapter.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 8fb7b129a121ab1d35ecddb0795899f243cc4b33 src/orchestration/persistence/adapters/sqlite-runtime-adapter.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 4bf12912592f04995f55fddb278b1182fef4f087 src/orchestration/persistence/clock.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 5408e595e4b7fb3ecd74567c6618ea03f2d1198c src/orchestration/persistence/configuration.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 d1c41364033e2ac8fe6004a80b686f4731e4839e src/orchestration/persistence/connection.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 ccfe2e9c3011b24d903fa2714ea6ed1f15600c6f src/orchestration/persistence/database.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 c62f6bbc0691bc346abe5c02bb5c124bd152dd9d src/orchestration/persistence/errors.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 6e896e1b6a99cdbab65b70c29403dcd6a61ba3b3 src/orchestration/persistence/index.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 99577ed0c59ed219d180694fcdddaea3cbf5c586 src/orchestration/persistence/migrations/migration-checksum.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 45a42594f9e42f8a68de5d8563cebf8c483601ea src/orchestration/persistence/migrations/migration-registry.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 c2c4272dc52c538cfd6eb22d196f8268bea7cec7 src/orchestration/persistence/migrations/migration-runner.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 b1439f4070a9795cadeace4c5692386f3206c99c src/orchestration/persistence/migrations/schema-embed.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 a40e5bfd21f7602d26352fdab8dcf4823871ba9c src/orchestration/persistence/provider.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 4152b9924a89086e6453f9c26e69468830a2ff26 src/orchestration/persistence/repositories/event.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 0753d47718b934706e72bc8e658f9744cc6bb7c2 src/orchestration/persistence/repositories/index.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 3d37d7ccdbc73688bff07ca791bb316e07d0709a src/orchestration/persistence/repositories/repository.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 e6ace840d84dda4e81c0bfe0617adc62cb4594d3 src/orchestration/persistence/repositories/task-run.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 c7752197c20060d7a81e5c18c5ec8d223442c7c9 src/orchestration/persistence/repositories/worktree.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 bc25880d5bc9779ef38985fb042067c60def69a1 src/orchestration/persistence/retry-policy.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 a91e8959c8dbdcdc084bccdd6010ef21262b75a2 src/orchestration/persistence/transaction-manager.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 8a87d962d1fa0deb07dea80e29f61a49d9d24927 src/orchestration/persistence/unit-of-work.ts\n1 A. N... 000000 100644 100644 0000000000000000000000000000000000000000 31e6a425faed0e3a925c692207d9d136df2c94db src/orchestration/persistence/validation.ts\n? integration-marker.json\n"
+      "port": "EventStore",
+      "implementation": "EventsRepository",
+      "missingMethods": [
+        "appendEvent",
+        "getEvents",
+        "getAllEvents"
+      ],
+      "semanticFailures": [],
+      "classification": "integration mismatch"
+    },
+    {
+      "port": "ContractRepository",
+      "implementation": "SqliteContractAdapter",
+      "missingMethods": [
+        "saveFamily",
+        "getFamily",
+        "listFamilies",
+        "deleteFamily"
+      ],
+      "semanticFailures": [],
+      "classification": "integration mismatch"
+    },
+    {
+      "port": "EvidenceRepository",
+      "implementation": "Missing Implementation",
+      "missingMethods": [
+        "saveEvidence",
+        "getEvidence",
+        "listEvidenceByTaskRun"
+      ],
+      "semanticFailures": [],
+      "classification": "introduced by Dev 2"
+    },
+    {
+      "port": "VerificationRepository",
+      "implementation": "Missing Implementation",
+      "missingMethods": [
+        "saveRun",
+        "getRun",
+        "listRunsByContractVersion",
+        "saveResult",
+        "getResult",
+        "listResultsByRun"
+      ],
+      "semanticFailures": [],
+      "classification": "introduced by Dev 2"
+    },
+    {
+      "port": "ApprovalRepository",
+      "implementation": "Missing Implementation",
+      "missingMethods": [
+        "saveApproval",
+        "getApproval",
+        "listPendingApprovals"
+      ],
+      "semanticFailures": [],
+      "classification": "introduced by Dev 2"
+    },
+    {
+      "port": "OverrideRepository",
+      "implementation": "Missing Implementation",
+      "missingMethods": [
+        "saveOverride",
+        "getOverride",
+        "listActiveOverrides"
+      ],
+      "semanticFailures": [],
+      "classification": "introduced by Dev 2"
+    },
+    {
+      "port": "CompletionRepository",
+      "implementation": "Missing Implementation",
+      "missingMethods": [
+        "saveCompletion",
+        "getCompletion",
+        "listCompletionsByTaskRun"
+      ],
+      "semanticFailures": [],
+      "classification": "introduced by Dev 2"
+    },
+    {
+      "port": "IdempotencyRepository",
+      "implementation": "Missing Implementation",
+      "missingMethods": [
+        "saveReservation",
+        "getReservation",
+        "deleteReservation"
+      ],
+      "semanticFailures": [],
+      "classification": "introduced by Dev 2"
+    },
+    {
+      "port": "OutboxRepository",
+      "implementation": "Missing Implementation",
+      "missingMethods": [
+        "saveMessage",
+        "getUnpublishedMessages",
+        "markAsPublished"
+      ],
+      "semanticFailures": [],
+      "classification": "introduced by Dev 2"
+    },
+    {
+      "port": "UnitOfWork",
+      "implementation": "Missing Implementation",
+      "missingMethods": [
+        "begin",
+        "commit",
+        "rollback"
+      ],
+      "semanticFailures": [],
+      "classification": "introduced by Dev 2"
+    },
+    {
+      "port": "RuntimeStateMachine",
+      "implementation": "Missing Implementation",
+      "missingMethods": [
+        "transition",
+        "canTransition"
+      ],
+      "semanticFailures": [],
+      "classification": "introduced by Dev 2"
+    },
+    {
+      "port": "Replay",
+      "implementation": "Missing Implementation",
+      "missingMethods": [
+        "replayFromStart",
+        "replayFromSequence"
+      ],
+      "semanticFailures": [],
+      "classification": "introduced by Dev 2"
     }
   ]
 }
