@@ -198,9 +198,9 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
 
     // Update indexes
     for (const event of assignedEvents) {
-      this.eventIndex.set(eventId, event);
+      this.eventIndex.set(event.eventId, event);
       if (event.commandId) {
-        this.commandIndex.set(event.commandId, eventId);
+        this.commandIndex.set(event.commandId, event.eventId);
       }
     }
 
@@ -237,7 +237,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     // Remove event/command indices from this append
     for (const event of pending.events) {
       if (event.eventId) {
-        this.eventIndex.delete(eventId);
+        this.eventIndex.delete(event.eventId);
       }
       if (event.commandId) {
         this.commandIndex.delete(event.commandId);
@@ -256,8 +256,9 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
 
     let result = stream;
 
-    if (options?.fromRevision !== undefined) {
-      result = result.filter(e => e.aggregateVersion >= (options.fromRevision ?? 0));
+    const fromRev = options?.fromRevision;
+    if (fromRev !== undefined) {
+      result = result.filter(e => e.aggregateVersion >= fromRev);
     }
 
     if (options?.maxEvents !== undefined) {
@@ -276,12 +277,14 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     
     let sorted = [...allEvents].sort((a, b) => a.globalSequence! - b.globalSequence!);
 
-    if (options.fromRevision !== undefined) {
-      sorted = sorted.filter(e => e.aggregateVersion >= options.fromRevision);
+    const fromRev = options.fromRevision;
+    if (fromRev !== undefined) {
+      sorted = sorted.filter(e => e.aggregateVersion >= fromRev);
     }
 
-    if (options.toRevision !== undefined) {
-      sorted = sorted.filter(e => e.aggregateVersion <= options.toRevision);
+    const toRev = options.toRevision;
+    if (toRev !== undefined) {
+      sorted = sorted.filter(e => e.aggregateVersion <= toRev);
     }
 
     const limit = options.limit ?? 100;

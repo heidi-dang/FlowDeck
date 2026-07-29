@@ -5,6 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach } from "bun:test";
+import { PersistedRuntimeEvent, UncommittedRuntimeEvent } from "../../src/domain/orchestration/runtime/event-store/types";
 
 // Inline types for now (can be removed when build works)
 
