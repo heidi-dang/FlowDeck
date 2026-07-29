@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { unlinkSync, mkdtempSync, rmSync } from "fs"
+import { mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { Database } from "bun:sqlite"
