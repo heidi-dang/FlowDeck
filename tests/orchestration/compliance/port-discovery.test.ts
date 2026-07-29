@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'bun:test';
 import { discoverCanonicalPorts } from './port-discovery';
-import { join } from 'path';
 
 describe('Canonical Port Discovery', () => {
   it('discovers production interfaces and types using TS compiler API', () => {

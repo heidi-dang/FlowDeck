@@ -61,7 +61,7 @@ function resolveSha(ref) {
       throw new Error(`Invalid SHA for ref ${ref}: ${sha}`);
     }
     return sha;
-  } catch (err) {
+  } catch {
     console.error(`Failed to resolve branch: ${ref}`);
     process.exit(1);
   }
@@ -114,7 +114,7 @@ for (const sha of mergeOrder) {
   console.log(`Merging ${sha}...`);
   try {
     execSync(`git merge --no-commit --no-ff "${sha}"`, { cwd: worktreePath, stdio: 'pipe' });
-  } catch (err) {
+  } catch {
     console.error(`Merge conflict or failure when merging ${sha}`);
     mergeConflict = true;
     failedMergeSha = sha;
@@ -226,7 +226,7 @@ async function main() {
   console.log('Merge complete. Installing dependencies...');
   try {
     execSync('npm ci', { cwd: worktreePath, stdio: 'inherit' });
-  } catch (e) {
+  } catch {
     console.error('Failed to install dependencies in worktree.');
     cleanupWorktree();
     process.exit(1);

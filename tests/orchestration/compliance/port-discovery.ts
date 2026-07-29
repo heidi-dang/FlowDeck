@@ -1,5 +1,4 @@
 import ts from 'typescript';
-import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
 export interface DiscoveredMethod {

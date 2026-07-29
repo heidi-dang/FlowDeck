@@ -28,7 +28,7 @@ describe('Artifact Validator (Negative)', () => {
     try {
       execSync(`node "${validatorPath}"`, { stdio: 'pipe' });
       expect(true).toBe(true);
-    } catch(err) {
+    } catch {
       // If we manually place a bad json it would fail.
     }
   });
