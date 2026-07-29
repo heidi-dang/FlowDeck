@@ -13,33 +13,11 @@ import {
   DeadLetterRecord,
   calculateBackoff,
   DEFAULT_RETRY_POLICY,
-  classifyError as classifyOutboxError,
-  isRetryable as isOutboxRetryable
+  classifyError as classifyErrorFromPort
 } from './port.js';
 
-/**
- * Classification of delivery error type
- */
-export function classifyError(error: Error): DeliveryAttempt['errorType'] {
-  const m = error.message.toLowerCase();
-  if (m.includes('network') || m.includes('etimedout')) return 'NETWORK';
-  if (m.includes('connection') || m.includes('econnrefused')) return 'CONNECTION';
-  if (m.includes('serialization') || m.includes('parse')) return 'SERIALIZATION';
-  if (m.includes('timeout')) return 'TIMEOUT';
-  if (error.name === 'ValidationError' || m.includes('permanent')) return 'PERMANENT';
-  if (m.includes('busy') || m.includes('overload')) return 'BUSY';
-  return undefined; // Default to success or unspecified
-}
-
-/**
- * Check if error is retryable based on policy
- */
-export function isRetryable(errorType: DeliveryAttempt['errorType'], policy: RetryPolicy): boolean {
-  if (!errorType) return false;
-  return !policy.permanentErrors.has(errorType);
-}
-
 import type { PersistedRuntimeEvent } from '../event-store/types';
+import { EVENT_PAYLOAD_VERSIONS } from '../event-store/types';
 
 // Utility functions (standalone exports)
 export function matchesTopic(event: PersistedRuntimeEvent, subscription: SubscriberConfig): boolean {
@@ -122,7 +100,7 @@ export class InMemoryOutboxRepository {
 
     const now = new Date();
     const claim: BoundedClaim = {
-      claimId: `claim_${Date.now()}_${Math.random().toString(36).substring(7)}`,
+      claimId: `claim_${Date.now()}_${Date.now().toString(36)}`,
       worktreeKey,
       ownerId,
       fencingToken,
@@ -168,7 +146,7 @@ export class InMemoryOutboxRepository {
         await this.simulateDelivery(message);
         success = true;
       } catch (error: any) {
-        errorType = classifyError(error);
+        errorType = classifyErrorFromPort(error);
         errorMessage = error.message;
         success = false;
       }
@@ -328,7 +306,7 @@ export class InMemoryOutboxRepository {
             messages.push({
               messageId: event.eventId,
               eventType: event.eventType,
-              payloadVersion: '1', // Would come from payload version in real implementation
+              payloadVersion: EVENT_PAYLOAD_VERSIONS.CURRENT,
               payloadHash: event.payloadHash,
               aggregateId: event.aggregateId,
               globalSequence: event.globalSequence,
@@ -361,9 +339,36 @@ export class InMemoryOutboxRepository {
     }
     // Success
   }
+
+  /**
+   * Public test helper to clear repository state
+   */
+  public clearForTesting(): void {
+    this.records.byId.clear();
+    this.records.byAggregate.clear();
+    this.claims.active.clear();
+    this.claims.byOwner.clear();
+    this.offsets.offsets.clear();
+    this.deadLetters.records.clear();
+  }
+
+  /**
+   * Public test helper to retrieve active claims (read-only)
+   */
+  public getClaimsForTesting(): Map<string, BoundedClaim> {
+    return new Map(this.claims.active);
+  }
+
+  /**
+   * Public test helper to retrieve offsets (read-only)
+   */
+  public getOffsetsForTesting(): Map<string, ConsumerOffset> {
+    return new Map(this.offsets.offsets);
+  }
 }
 
-// Test helpers
+// Test helper functions (deprecated - use repository public methods instead)
+// These wrappers exist only for backwards compatibility
 export function clearOutboxRepository(repo: InMemoryOutboxRepository): void {
   repo['records'].byId.clear();
   repo['records'].byAggregate.clear();

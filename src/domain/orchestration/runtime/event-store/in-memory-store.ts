@@ -5,7 +5,7 @@
  * with strict concurrency and duplicate handling
  */
 
-import { UncommittedRuntimeEvent, PersistedRuntimeEvent } from './types';
+import { UncommittedRuntimeEvent, PersistedRuntimeEvent, EVENT_PAYLOAD_VERSIONS, EventIdGenerator } from './types';
 import {
   RuntimeEventStorePort,
   AppendResult,
@@ -39,14 +39,6 @@ async function computePayloadHash(payload: unknown): Promise<string> {
 }
 
 /**
- * Create typed event object based on event type
- */
-function createEventObject(eventType: string, payload: unknown): unknown {
-  // Return payload as-is since it's already typed at call site
-  return payload;
-}
-
-/**
  * Global sequence counter (monotonic across all streams)
  */
 class GlobalSequenceCounter {
@@ -59,6 +51,13 @@ class GlobalSequenceCounter {
   current(): number {
     return this.nextSequence - 1;
   }
+}
+
+/**
+ * Default event ID generator using deterministic timestamp + random component
+ */
+function defaultEventIdGenerator(): string {
+  return `evt_${Date.now()}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 9)}`;
 }
 
 /**
@@ -90,6 +89,15 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     'RunStartedExecution', 'RunCompletedExecution',
     'RunVerified', 'RunCompleted', 'RunFailed', 'RunCancelled', 'RunRecovered'
   ]);
+
+  /**
+   * Optional injected event ID generator (useful for deterministic tests)
+   */
+  private readonly eventIdGenerator: EventIdGenerator;
+
+  constructor(eventIdGenerator?: EventIdGenerator) {
+    this.eventIdGenerator = eventIdGenerator ?? defaultEventIdGenerator;
+  }
 
   /**
    * Validate whether an append would succeed before attempting it
@@ -156,7 +164,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
     }
 
     // Generate append ID for rollback tracking
-    const appendId = `append_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const appendId = `append_${Date.now()}_${Date.now().toString(36)}`;
 
     // Check for duplicates
     for (const event of events) {
@@ -182,7 +190,7 @@ export class InMemoryRuntimeEventStore implements RuntimeEventStorePort {
 
       // Compute hashes
       const payloadHash = await computePayloadHash(uncommitted.payload ?? {});
-      const eventId = uncommitted.eventId ?? `evt_${aggregateId}_${aggregateVersion}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+      const eventId = uncommitted.eventId ?? this.eventIdGenerator();
       
       // Create persisted event with all required fields
       const persisted: PersistedRuntimeEvent = {

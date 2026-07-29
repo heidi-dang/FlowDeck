@@ -1,4 +1,9 @@
-export const EVENT_PAYLOAD_VERSIONS = { CURRENT: 1 } as const;
+export const EVENT_PAYLOAD_VERSIONS = { CURRENT: '1.0' as const };
+
+/**
+ * Typed event identifier provider
+ */
+export type EventIdGenerator = () => string;
 
 /**
  * Uncommitted event (generic payload to be serialized)
