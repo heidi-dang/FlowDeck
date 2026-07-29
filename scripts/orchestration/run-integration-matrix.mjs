@@ -111,6 +111,12 @@ const worktreePath = join(tmpdir(), `flowdeck-orchestration-integration-${runId}
 console.log(`Creating worktree at ${worktreePath}...`);
 execGit(`worktree add --detach "${worktreePath}" "${shas.base}"`);
 
+// Configure git user ident in worktree to avoid empty ident error in CI
+try {
+  execGit('config user.name "FlowDeck Integration Bot"', { cwd: worktreePath });
+  execGit('config user.email "bot@flowdeck.dev"', { cwd: worktreePath });
+} catch {}
+
 // 4. Write ownership marker
 const marker = {
   runId,
