@@ -43,8 +43,13 @@ console.log('Fetching remote branches...');
 execGit('fetch origin --prune');
 
 function resolveSha(ref) {
-  if (ref === 'base' && process.env.BASE_SHA) {
-    return process.env.BASE_SHA;
+  if (ref === 'base') {
+    if (process.env.BASE_SHA) return process.env.BASE_SHA;
+    try {
+      return execGit(`rev-parse origin/feat/orchestration-final-integration`);
+    } catch {
+      return 'bc116721b27346871e6de575daf2738a1c6f624e';
+    }
   }
   try {
     let sha;
