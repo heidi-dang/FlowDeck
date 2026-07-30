@@ -1,5 +1,6 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
-import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from "fs"
+import { writeFileSync, existsSync, readdirSync, mkdirSync } from "fs"
+import { readFile, stat } from "fs/promises"
 import { join } from "path"
 
 const CODEBASE_DIR = ".codebase"
@@ -20,14 +21,25 @@ function listCodebaseFiles(directory: string): string[] {
 
 async function readCodebaseContext(dir: string, files: string[]): Promise<Record<string, string | { error: string }>> {
   const results: Record<string, string | { error: string }> = {}
-  for (const file of files) {
-    const filePath = codebaseFilePath(dir, file)
-    if (!existsSync(filePath)) {
-      results[file] = { error: `File not found: ${file}` }
-      continue
-    }
-    results[file] = readFileSync(filePath, "utf-8")
-  }
+  await Promise.all(
+    files.map(async (file) => {
+      const filePath = codebaseFilePath(dir, file)
+      try {
+        const fileStat = await stat(filePath)
+        if (fileStat.isDirectory()) {
+          results[file] = { error: `Is a directory: ${file}` }
+          return
+        }
+        results[file] = await readFile(filePath, "utf-8")
+      } catch (error: any) {
+        if (error.code === "ENOENT") {
+          results[file] = { error: `File not found: ${file}` }
+        } else {
+          results[file] = { error: error.message }
+        }
+      }
+    })
+  )
   return results
 }
 
