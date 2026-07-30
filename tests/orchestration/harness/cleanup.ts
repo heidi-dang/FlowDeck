@@ -143,15 +143,15 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     const shmPath = dbPath + "-shm";
 
     for (const f of [dbPath, walPath, shmPath]) {
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 5; i++) {
         if (!existsSync(f)) break;
-        try { await rm(f, { force: true }); break; } catch { if (i < 3) await new Promise((r) => setTimeout(r, 100)); }
+        try { await rm(f, { force: true }); break; } catch { if (i < 4) await new Promise((r) => setTimeout(r, 150)); }
       }
     }
 
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 5; i++) {
       if (!existsSync(dir)) break;
-      try { await rm(dir, { recursive: true, force: true }); break; } catch { if (i < 3) await new Promise((r) => setTimeout(r, 100)); }
+      try { await rm(dir, { recursive: true, force: true }); break; } catch { if (i < 4) await new Promise((r) => setTimeout(r, 150)); }
     }
 
     if (existsSync(dbPath)) {
