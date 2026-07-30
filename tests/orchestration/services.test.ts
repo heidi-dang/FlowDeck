@@ -235,13 +235,13 @@ describe("Orchestration Services", () => {
 
   // ── RunService ────────────────────────────────────────────────────────
   describe("RunService", () => {
-    it("should create a run with queued status", async () => {
+    it("should create a run with pending status (QUEUED canonicalized to PENDING)", async () => {
       const run = await runService.createRun({
         runType: "test-run",
         correlationId: "corr-1",
       });
       expect(run.id).toBeDefined();
-      expect(run.status).toBe(RunStatus.QUEUED);
+      expect(run.status).toBe(RunStatus.PENDING);
       expect(run.runType).toBe("test-run");
       expect(run.correlationId).toBe("corr-1");
     });

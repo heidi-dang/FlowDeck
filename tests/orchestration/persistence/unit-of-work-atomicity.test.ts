@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { SqliteUnitOfWork } from "../../../src/orchestration/persistence/unit-of-work";
+import { deterministicCleanup } from "../harness/cleanup";
 
 describe("SqliteUnitOfWork Atomicity", () => {
   let tempDir: string;
@@ -21,12 +22,7 @@ describe("SqliteUnitOfWork Atomicity", () => {
   });
 
   afterEach(() => {
-    try {
-      db.close();
-    } catch {}
-    try {
-      rmSync(tempDir, { recursive: true, force: true });
-    } catch {}
+    deterministicCleanup({ db, dir: tempDir });
   });
 
   it("commits multiple operations atomically on success", async () => {

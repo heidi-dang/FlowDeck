@@ -44,6 +44,8 @@ export const ErrorCodes = {
   COMPLETION_DECISION_IMMUTABLE: { code: "COMPLETION_DECISION_IMMUTABLE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   VERIFICATION_RESULT_IMMUTABLE: { code: "VERIFICATION_RESULT_IMMUTABLE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   RUN_STATUS_TRANSITION_INVALID: { code: "RUN_STATUS_TRANSITION_INVALID", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
+  ASSIGNMENT_RESULT_PERSISTENCE_NOT_CONFIGURED: { code: "ASSIGNMENT_RESULT_PERSISTENCE_NOT_CONFIGURED", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },
+  ASSIGNMENT_METADATA_PERSISTENCE_NOT_CONFIGURED: { code: "ASSIGNMENT_METADATA_PERSISTENCE_NOT_CONFIGURED", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },
 } as const;
 
 export interface OrchestrationErrorOptions {

@@ -3,7 +3,7 @@
  * Uses actual repository interfaces with correct schema FK setup.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { unlinkSync, existsSync } from "fs"
+import { mkdtempSync, unlinkSync, existsSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { Database } from "bun:sqlite"
@@ -13,17 +13,14 @@ import { createTransactionManager } from "../../src/orchestration/persistence/tr
 import { EventsRepository } from "../../src/orchestration/persistence/repositories/event"
 import { TaskRunsRepository } from "../../src/orchestration/persistence/repositories/task-run"
 import { WorktreesRepository } from "../../src/orchestration/persistence/repositories/worktree"
-
-let dbCounter = 0
-const DB_PATH = () => { dbCounter++; return join(tmpdir(), `fd-e2e-orch-test-${dbCounter}.db`) }
+import { deterministicCleanup } from "./harness/cleanup"
 
 /** Bootstrap FK parent rows needed by task_runs. */
 
-let currentDbPath = ""
+let tempDir = ""
 
 function freshDb(): Database {
-  const path = DB_PATH()
-  currentDbPath = path
+  const path = join(tempDir, "test.db")
   const sidecars = [path + "-wal", path + "-shm", path]
   for (const p of sidecars) {
     if (existsSync(p)) {
@@ -55,6 +52,7 @@ describe("E2E Orchestration Pipeline", () => {
   let workRepo: WorktreesRepository
 
   beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "e2e-"))
     db = freshDb()
     tx = createTransactionManager(db)
     eventsRepo = new EventsRepository(db, tx)
@@ -65,15 +63,7 @@ describe("E2E Orchestration Pipeline", () => {
 
   afterEach(() => {
     closeAllConnections()
-    if (db) {
-      try { db.close() } catch {}
-    }
-    if (currentDbPath && existsSync(currentDbPath)) {
-      for (const ext of ["-wal", "-shm", ""]) {
-        const f = currentDbPath.replace(/\.db$/, ext)
-        if (existsSync(f)) try { unlinkSync(f) } catch {}
-      }
-    }
+    deterministicCleanup({ db, dir: tempDir })
   })
 
   /* ─── Run lifecycle ─── */

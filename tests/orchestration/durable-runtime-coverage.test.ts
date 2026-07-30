@@ -11,10 +11,11 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdtempSync, rmSync } from "fs"
+import { mkdtempSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 import { randomUUID } from "crypto"
+import { deterministicCleanup } from "./harness/cleanup"
 
 import { SCHEMA_V_0_2_6 } from "../../src/orchestration/persistence/migrations/schema-embed"
 import { createTransactionManager } from "../../src/orchestration/persistence/transaction-manager"
@@ -79,10 +80,7 @@ function createTempDb(): TempDb {
 }
 
 function destroyTempDb(t: TempDb): void {
-  // Skip db.close() - it can hang on Windows waiting for pending transactions
-  // instead, rely on OS cleanup of the temp directory
-  // WAL/SHM files are automatically cleaned up when directory is removed
-  try { rmSync(t.dir, { recursive: true, force: true }) } catch { /* ok */ }
+  deterministicCleanup({ db: t.db, dir: t.dir })
 }
 
 function seedRunParents(db: Database, contractId = "contract-default"): void {
@@ -279,11 +277,14 @@ describe("SqliteRunRepository", () => {
     expect(found!.status).toBe(RunStatus.CANCELLED)
   })
 
-  it("QUEUED round-trips correctly", async () => {
-    const run = await repo.create({ ...makeRun("run-queued"), status: RunStatus.QUEUED })
-    expect(run.status).toBe(RunStatus.QUEUED)
+  it("QUEUED is canonicalized to PENDING at API boundary", async () => {
+    // QUEUED is a deprecated input alias. When passed to create, it maps to
+    // CREATED phase and reads back as PENDING — identical to PENDING input.
+    const _run = await repo.create({ ...makeRun("run-queued"), status: RunStatus.QUEUED })
+    // Repository create returns the input run unchanged (QUEUED), but persisted phase is CREATED
+    // The canonical status is PENDING — see mapRunStatusToTaskRunState and mapTaskRunStateToRunStatus
     const found = await repo.findById("run-queued")
-    expect(found!.status).toBe(RunStatus.PENDING) // QUEUED maps to CREATED phase, reads back as PENDING
+    expect(found!.status).toBe(RunStatus.PENDING)
   })
 
   it("findMany and count with PENDING filter", async () => {

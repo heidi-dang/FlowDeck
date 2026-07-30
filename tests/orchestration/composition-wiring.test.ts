@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdtempSync, rmSync, existsSync } from "fs"
+import { mkdtempSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 import { randomUUID } from "crypto"
@@ -22,6 +22,7 @@ import { SCHEMA_V_0_2_6 } from "../../src/orchestration/persistence/migrations/s
 import { RunService } from "../../src/orchestration/services/run-service"
 import { ExecutionRegistry } from "../../src/orchestration/services/execution-registry"
 import { SqliteUnitOfWork } from "../../src/orchestration/persistence/unit-of-work"
+import { deterministicCleanup } from "./harness/cleanup"
 
 let tmpDir: string
 let db: Database
@@ -60,34 +61,7 @@ beforeAll(() => {
 })
 
 afterAll(() => {
-  // Runtime outboxWorker may have a running interval — stop it
-  if (runtime) {
-    runtime.outboxWorker.stop()
-  }
-  if (db) {
-    try {
-      db.exec("PRAGMA wal_checkpoint(FULL)")
-    } catch {}
-    try {
-      db.close()
-    } catch {
-      // Already closed — ignore
-    }
-  }
-  // On Windows, WAL/SHM files may still be locked briefly after close
-  if (tmpDir && existsSync(tmpDir)) {
-    try {
-      const walFile = join(tmpDir, "test.db-wal")
-      const shmFile = join(tmpDir, "test.db-shm")
-      try { rmSync(walFile, { force: true }) } catch {}
-      try { rmSync(shmFile, { force: true }) } catch {}
-    } catch {}
-    try {
-      rmSync(tmpDir, { recursive: true, force: true })
-    } catch {
-      // On Windows the WAL/SHM files may still be locked briefly after close
-    }
-  }
+  deterministicCleanup({ db, dir: tmpDir, outboxWorker: runtime?.outboxWorker, executionRegistry: runtime?.executionRegistry })
 })
 
 // ── Test suite ─────────────────────────────────────────────────────────────

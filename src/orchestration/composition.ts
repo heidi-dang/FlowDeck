@@ -241,8 +241,6 @@ export class SqliteContractRepo implements IContractRepository {
         // No fields to update, return existing as-is
         return existing;
       }
-      // Add updated_at timestamp
-      sets.push("created_at = datetime('now')");
       values.push(id);
       const sql = `UPDATE task_contracts SET ${sets.join(", ")} WHERE contract_id = ?`;
       const result = this.db.prepare(sql).run(...values);
@@ -309,6 +307,19 @@ export class SqliteAssignmentRepo implements IAssignmentRepository {
   async update(id: string, input: Partial<Assignment>): Promise<Assignment | null> {
     const existing = await this.findById(id);
     if (!existing) return null;
+    // Validate all fields before entering transaction
+    if (input.result !== undefined) {
+      throw OrchestrationError.fromCode(ErrorCodes.ASSIGNMENT_RESULT_PERSISTENCE_NOT_CONFIGURED, {
+        message: "Assignment result persistence requires a schema migration. The current schema has no column for storing assignment results.",
+        details: { assignmentId: id },
+      });
+    }
+    if (input.metadata !== undefined) {
+      throw OrchestrationError.fromCode(ErrorCodes.ASSIGNMENT_METADATA_PERSISTENCE_NOT_CONFIGURED, {
+        message: "Assignment metadata persistence requires a schema migration. The current schema has no column for storing assignment metadata.",
+        details: { assignmentId: id },
+      });
+    }
     return this.tx.write(() => {
       const sets: string[] = [];
       const values: (string | number)[] = [];
@@ -325,20 +336,10 @@ export class SqliteAssignmentRepo implements IAssignmentRepository {
         sets.push("description = ?");
         values.push(input.role);
       }
-      if (input.result !== undefined) {
-        // result is stored in error_message for now (TODO: proper result field)
-        sets.push("error_message = ?");
-        values.push(JSON.stringify(input.result));
-      }
-      if (input.metadata !== undefined) {
-        // metadata stored alongside (TODO: proper metadata field)
-      }
       if (sets.length === 0) {
         // No fields to update, return existing as-is
         return existing;
       }
-      // Add updated timestamp
-      sets.push("created_at = datetime('now')");
       values.push(id);
       const sql = `UPDATE assignments SET ${sets.join(", ")} WHERE id = ?`;
       const result = this.db.prepare(sql).run(...values);
@@ -382,7 +383,7 @@ export class SqliteAssignmentRepo implements IAssignmentRepository {
   }
 }
 
-class SqliteCompletionRepo implements ICompletionRepository {
+export class SqliteCompletionRepo implements ICompletionRepository {
   constructor(
     private readonly adapter: SqliteCompletionRepoAdapter,
     private readonly db: Database,
@@ -466,6 +467,7 @@ class SqliteVerificationRepo implements IVerificationRepository {
       if (input.status === 'passed' || input.status === 'failed' || input.status === 'skipped') {
         sets.push("completed_at = datetime('now')");
       }
+      values.push(id);
       const sql = `UPDATE verification_results SET ${sets.join(", ")} WHERE id = ?`;
       const result = this.db.prepare(sql).run(...values);
       if (result.changes === 0) {
@@ -490,15 +492,15 @@ class SqliteVerificationRepo implements IVerificationRepository {
   async findById(id: string): Promise<VerificationResult | null> {
     const row = this.db.prepare("SELECT * FROM verification_results WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
-    return { id: row.id as string, runId: row.run_id as string, status: row.status as VerificationResult["status"], checkType: row.verification_type as string, correlationId: row.run_id as string, createdAt: row.created_at as string, updatedAt: row.created_at as string };
+    return { id: row.id as string, runId: row.run_id as string, status: row.status as VerificationResult["status"], checkType: row.verification_type as string, correlationId: row.run_id as string, createdAt: row.started_at as string, updatedAt: row.started_at as string };
   }
 
   async findMany(_filter: Partial<VerificationResult>, pagination: PagePaginationRequest): Promise<PaginatedResult<VerificationResult>> {
     const limit = pagination.limit ?? 20;
     const offset = ((pagination.page ?? 1) - 1) * limit;
     const countRow = this.db.prepare("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number };
-    const rows = this.db.prepare("SELECT * FROM verification_results ORDER BY created_at DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
-    return { items: rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.created_at }) as unknown as VerificationResult), total: countRow.c, page: pagination.page ?? 1, limit };
+    const rows = this.db.prepare("SELECT * FROM verification_results ORDER BY started_at DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
+    return { items: rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.started_at }) as unknown as VerificationResult), total: countRow.c, page: pagination.page ?? 1, limit };
   }
 
   async count(): Promise<number> {
@@ -507,8 +509,8 @@ class SqliteVerificationRepo implements IVerificationRepository {
   }
 
   async findByRunId(runId: string): Promise<VerificationResult[]> {
-    const rows = this.db.prepare("SELECT * FROM verification_results WHERE run_id = ? ORDER BY created_at DESC").all(runId) as Record<string, unknown>[];
-    return rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.created_at }) as unknown as VerificationResult);
+    const rows = this.db.prepare("SELECT * FROM verification_results WHERE run_id = ? ORDER BY started_at DESC").all(runId) as Record<string, unknown>[];
+    return rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.started_at }) as unknown as VerificationResult);
   }
 }
 

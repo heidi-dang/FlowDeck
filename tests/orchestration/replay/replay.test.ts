@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { deterministicCleanup } from "../harness/cleanup";
 
 describe('Replay Harness Validation', () => {
   let db: Database;
@@ -10,7 +11,7 @@ describe('Replay Harness Validation', () => {
   });
 
   afterEach(() => {
-    db.close();
+    deterministicCleanup({ db });
   });
 
   it('Empty stream', () => {

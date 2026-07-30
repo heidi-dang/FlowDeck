@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Database } from "bun:sqlite";
@@ -7,6 +7,7 @@ import { createTransactionManager } from "@/orchestration/persistence/transactio
 import { SqliteOutboxRepository } from "@/orchestration/persistence/adapters/sqlite-outbox-repository";
 import { OutboxStatus as OS } from "@/orchestration/types/outbox";
 import type { OutboxEntry } from "@/orchestration/types/outbox";
+import { deterministicCleanup } from "../harness/cleanup";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -14,7 +15,7 @@ let tmpDir = "";
 
 function clean(): void {
   if (tmpDir) {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
+    deterministicCleanup({ dir: tmpDir });
     tmpDir = "";
   }
 }
@@ -83,8 +84,7 @@ describe("SqliteOutboxRepository", () => {
   });
 
   afterEach(() => {
-    try { db.close(); } catch { /* ok */ }
-    clean();
+    deterministicCleanup({ db, dir: tmpDir });
   });
 
   describe("create", () => {

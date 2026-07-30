@@ -1,15 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { existsSync, mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { deterministicCleanup } from '../harness/cleanup';
 
 let tempDir = '';
-let DB_PATH = '';
 let connections: Database[] = [];
 
 function createConnection() {
-  const db = new Database(DB_PATH);
+  const db = new Database(join(tempDir, 'cleanup_test.db'));
   connections.push(db);
   return db;
 }
@@ -17,25 +17,18 @@ function createConnection() {
 describe('Resource Cleanup Validation', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'clean-test-'));
-    DB_PATH = join(tempDir, 'cleanup_test.db');
     const setupDb = createConnection();
     setupDb.exec(`CREATE TABLE events (id TEXT)`);
+    setupDb.close();
+    connections = [];
   });
 
   afterEach(() => {
-    for (const db of connections) {
-      try {
-        db.close();
-      } catch {
-        // ignore if already closed
-      }
+    for (const conn of connections) {
+      try { conn.close(); } catch { /* already closed */ }
     }
     connections = [];
-    try {
-      if (tempDir && existsSync(tempDir)) {
-        rmSync(tempDir, { recursive: true, force: true });
-      }
-    } catch {}
+    deterministicCleanup({ dir: tempDir });
   });
 
   it('handles already closed connection gracefully', () => {
@@ -48,8 +41,6 @@ describe('Resource Cleanup Validation', () => {
   it('cleans up even if assertion fails', () => {
     createConnection();
     createConnection();
-    // if we put expect(false).toBe(true) it would fail the suite, 
-    // but we can manually verify logic
-    expect(connections.length).toBe(3); // 1 from beforeEach, 2 from here
+    expect(connections.length).toBe(2); // 2 created in test body
   });
 });
