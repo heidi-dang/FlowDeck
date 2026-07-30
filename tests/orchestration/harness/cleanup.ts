@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
-import { rmSync, existsSync } from "fs";
+import { existsSync } from "fs";
+import { rm } from "node:fs/promises";
 import { join } from "path";
 
 export interface StoppableWorker {
@@ -86,34 +87,38 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     const remaining = executionRegistry.getActiveRunIds();
     if (remaining.length > 0) {
       failures.push(new Error(`[execution-leak] ${remaining.length} active run(s) remain: ${remaining.join(", ")}`));
-    }
-
-    try {
-      executionRegistry.clear();
-    } catch (error) {
-      failures.push(normalizeError(error, "registry-clear"));
+    } else {
+      try {
+        executionRegistry.clear();
+      } catch (error) {
+        failures.push(normalizeError(error, "registry-clear"));
+      }
     }
   }
 
   // Stage 3: WAL checkpoint (non-blocking)
   if (dbInstance && !(owned?.closed)) {
     try {
-      const row = dbInstance.query("PRAGMA wal_checkpoint(PASSIVE)").get() as {
-        busy: number;
-        log: number;
-        checkpointed: number;
-      } | undefined;
-      if (row && typeof row === "object") {
-        if (row.busy > 0) {
-          failures.push(new Error(`[wal-checkpoint] ${row.busy} reader(s) still busy after PASSIVE checkpoint`));
-        }
-        const uncheckpointed = row.log - row.checkpointed;
-        if (uncheckpointed > 0) {
-          failures.push(new Error(`[wal-checkpoint] ${uncheckpointed} frame(s) remain uncheckpointed`));
+      const mode = dbInstance.query("PRAGMA journal_mode").get() as { journal_mode: string } | undefined;
+      const journalMode = mode && typeof mode === "object" ? String((mode as any).journal_mode ?? "") : "";
+      if (journalMode.toUpperCase() === "WAL") {
+        const row = dbInstance.query("PRAGMA wal_checkpoint(PASSIVE)").get() as {
+          busy: number;
+          log: number;
+          checkpointed: number;
+        } | undefined;
+        if (row && typeof row === "object") {
+          if (row.busy > 0) {
+            failures.push(new Error(`[wal-checkpoint] ${row.busy} reader(s) still busy after PASSIVE checkpoint`));
+          }
+          const uncheckpointed = row.log - row.checkpointed;
+          if (uncheckpointed > 0) {
+            failures.push(new Error(`[wal-checkpoint] ${uncheckpointed} frame(s) remain uncheckpointed`));
+          }
         }
       }
-    } catch {
-      // Not all databases use WAL mode; skip diagnostics
+    } catch (error) {
+      failures.push(normalizeError(error, "wal-checkpoint"));
     }
   }
 
@@ -132,47 +137,40 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   // Wait for OS to release file handles (critical on Windows)
   await new Promise((r) => setTimeout(r, 50));
 
-  // Safe async rm wrapper: rmSync can hang on Windows locked files
-  const rmSafe = (f: string, opts: { recursive?: boolean; force?: boolean }): Promise<boolean> =>
-    new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(false), 200);
-      try {
-        rmSync(f, opts);
-        clearTimeout(timer);
-        resolve(true);
-      } catch {
-        clearTimeout(timer);
-        resolve(false);
-      }
-    });
+  const RETRY_DELAYS = [200, 400, 800];
 
-  // Stage 5: Delete database files (best-effort with retry)
-  const deleteFile = async (f: string): Promise<boolean> => {
+  const deleteWithRetry = async (f: string, opts: { recursive?: boolean; force?: boolean }): Promise<boolean> => {
     if (!existsSync(f)) return true;
-    const deadline = Date.now() + 800;
-    while (Date.now() < deadline) {
-      const ok = await rmSafe(f, { force: true });
-      if (ok) return true;
-      await new Promise((r) => setTimeout(r, 100));
+    for (const delay of RETRY_DELAYS) {
+      try {
+        await rm(f, opts);
+        return true;
+      } catch (err: any) {
+        if (err.code !== "EBUSY" && err.code !== "EPERM" && err.code !== "ENOTEMPTY") {
+          return false;
+        }
+        await new Promise((r) => setTimeout(r, delay));
+      }
     }
     return false;
   };
+
+  // Stage 5: Delete database files
   if (dir && existsSync(dir)) {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
 
     for (const f of [dbPath, walPath, shmPath]) {
-      await deleteFile(f);
+      await deleteWithRetry(f, { force: true });
     }
 
-    // Stage 6: Delete temporary directory (best-effort)
+    // Stage 6: Delete temporary directory
     if (existsSync(dir)) {
-      const deadline = Date.now() + 800;
-      let ok = false;
-      while (Date.now() < deadline && !ok) {
-        ok = await rmSafe(dir, { recursive: true, force: true });
-        if (!ok) await new Promise((r) => setTimeout(r, 100));
+      for (const delay of RETRY_DELAYS) {
+        const ok = await deleteWithRetry(dir, { recursive: true, force: true });
+        if (ok) break;
+        await new Promise((r) => setTimeout(r, delay));
       }
     }
 

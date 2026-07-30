@@ -85,16 +85,32 @@ describe("Cleanup lifecycle", () => {
 });
 
 describe("Active reader handling", () => {
-  it("cleanup fails visibly when an unowned reader holds WAL open", async () => {
+  it("cleanup does not hang and either succeeds or fails visibly", async () => {
     const { dir, db, path } = createTempDbDir();
     const reader = new Database(path);
+    reader.exec("BEGIN");
     reader.exec("SELECT * FROM t");
 
-    let _caught: AggregateError | null = null;
+    let caught: AggregateError | null = null;
     try {
       await deterministicCleanup({ db, dir });
     } catch (e) {
-      _caught = e instanceof AggregateError ? e : null;
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    // On Linux the PASSIVE checkpoint does not block, so cleanup may succeed.
+    // On Windows the reader may hold file locks, producing AggregateError.
+    if (caught) {
+      expect(caught).toBeInstanceOf(AggregateError);
+      const hasCleanupFailure = caught.errors.some(
+        (e) =>
+          e.message.includes("wal-checkpoint") ||
+          e.message.includes("busy") ||
+          e.message.includes("DB_FILE_LEAK") ||
+          e.message.includes("WAL_FILE_LEAK") ||
+          e.message.includes("SHM_FILE_LEAK"),
+      );
+      expect(hasCleanupFailure).toBe(true);
     }
 
     reader.close();
