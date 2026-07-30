@@ -137,11 +137,9 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   // Wait for OS to release file handles (critical on Windows)
   await new Promise((r) => setTimeout(r, 50));
 
-  const RETRY_DELAYS = [200, 400, 800];
-
-  const deleteWithRetry = async (f: string, opts: { recursive?: boolean; force?: boolean }): Promise<boolean> => {
+  const deleteWithRetry = async (f: string, opts: { recursive?: boolean; force?: boolean }, deadline: number): Promise<boolean> => {
     if (!existsSync(f)) return true;
-    for (const delay of RETRY_DELAYS) {
+    for (;;) {
       try {
         await rm(f, opts);
         return true;
@@ -149,10 +147,10 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
         if (err.code !== "EBUSY" && err.code !== "EPERM" && err.code !== "ENOTEMPTY") {
           return false;
         }
-        await new Promise((r) => setTimeout(r, delay));
+        if (Date.now() >= deadline) return false;
+        await new Promise((r) => setTimeout(r, Math.min(200, deadline - Date.now())));
       }
     }
-    return false;
   };
 
   // Stage 5: Delete database files
@@ -160,18 +158,15 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
+    const deadline = Date.now() + 1500;
 
-    for (const f of [dbPath, walPath, shmPath]) {
-      await deleteWithRetry(f, { force: true });
-    }
+    await deleteWithRetry(dbPath, { force: true }, deadline);
+    await deleteWithRetry(walPath, { force: true }, deadline);
+    await deleteWithRetry(shmPath, { force: true }, deadline);
 
     // Stage 6: Delete temporary directory
     if (existsSync(dir)) {
-      for (const delay of RETRY_DELAYS) {
-        const ok = await deleteWithRetry(dir, { recursive: true, force: true });
-        if (ok) break;
-        await new Promise((r) => setTimeout(r, delay));
-      }
+      await deleteWithRetry(dir, { recursive: true, force: true }, deadline);
     }
 
     // Stage 7: Verify final state
