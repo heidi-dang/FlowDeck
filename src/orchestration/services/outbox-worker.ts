@@ -1,13 +1,22 @@
 /**
- * Outbox worker — polls pending outbox entries, reconstructs events,
+ * Outbox worker — claims pending outbox entries, reconstructs events,
  * publishes through the event bus, and marks delivered/failed.
- * Malformed entries are moved to dead-letter state (failed).
+ *
+ * Features:
+ * - Claim-based batch processing (atomic claimNextBatch)
+ * - Malformed JSON detection (skips entries with decode errors, moves to FAILED after exhaustion)
+ * - Idempotent delivery (checks already-delivered via idempotency key)
+ * - Observable errors via optional logger
  */
 
 import type { IOutboxRepository, IEventBus } from "./ports";
 import { OutboxStatus } from "../types/outbox";
 import type { OrchestrationEvent } from "../types/events";
 import { EVENT_VERSION } from "../types/events";
+
+export interface Logger {
+  error(message: string): void;
+}
 
 export class OutboxWorker {
   private isProcessing = false;
@@ -17,9 +26,10 @@ export class OutboxWorker {
     private readonly outboxRepo: IOutboxRepository,
     private readonly eventBus: IEventBus,
     private readonly batchSize: number = 20,
+    private readonly logger?: Logger,
   ) {}
 
-  /** Process a single batch of pending outbox entries */
+  /** Process a single batch of claimed outbox entries */
   async processBatch(): Promise<{ processed: number; failed: number }> {
     if (this.isProcessing) return { processed: 0, failed: 0 };
     this.isProcessing = true;
@@ -28,11 +38,36 @@ export class OutboxWorker {
     let failed = 0;
 
     try {
-      const pendingEntries = await this.outboxRepo.findPending();
+      // 1. Claim a batch atomically
+      const claimedEntries = await this.outboxRepo.claimNextBatch(this.batchSize);
 
-      for (const entry of pendingEntries) {
+      for (const entry of claimedEntries) {
         try {
-          // Validate persisted JSON before event delivery
+          // 2. Idempotency check — skip if already delivered
+          if (entry.status === OutboxStatus.DELIVERED) {
+            processed++;
+            continue;
+          }
+
+          // 3. Malformed JSON detection — never publish a malformed entry
+          if (entry.lastError && isDecodeError(entry.lastError)) {
+            failed++;
+            const attemptCount = (entry.attemptCount ?? 0) + 1;
+            const maxRetries = entry.maxRetries ?? 3;
+
+            if (attemptCount >= maxRetries) {
+              await this.outboxRepo.markFailed(entry.id, attemptCount, entry.lastError);
+            } else {
+              // Increment attempt count, keep as pending for retry detection
+              await this.outboxRepo.update(entry.id, {
+                attemptCount,
+                lastError: entry.lastError,
+              });
+            }
+            continue;
+          }
+
+          // 4. Validate and parse payload
           const payload = typeof entry.payload === "string"
             ? JSON.parse(entry.payload)
             : entry.payload;
@@ -41,7 +76,7 @@ export class OutboxWorker {
             id: entry.eventId,
             type: entry.eventType,
             eventVersion: EVENT_VERSION,
-            timestamp: entry.createdAt,
+            timestamp: new Date().toISOString(),
             correlationId: entry.correlationId,
             causationId: entry.causationId ?? entry.correlationId,
             aggregateId: entry.aggregateId ?? "",
@@ -50,26 +85,27 @@ export class OutboxWorker {
             metadata: {},
           };
 
+          // 5. Publish event through the bus
           await this.eventBus.publish(event);
 
-          await this.outboxRepo.update(entry.id, {
-            status: OutboxStatus.DELIVERED,
-            deliveredAt: new Date().toISOString(),
-          });
+          // 6. Mark delivered with idempotency key
+          await this.outboxRepo.markDelivered(entry.id, entry.correlationId);
           processed++;
         } catch (err) {
           failed++;
           const attemptCount = (entry.attemptCount ?? 0) + 1;
           const maxRetries = entry.maxRetries ?? 3;
-          // Move to failed (dead-letter) state after exhausting retries
-          const newStatus = attemptCount >= maxRetries ? OutboxStatus.FAILED : OutboxStatus.PENDING;
+          const errorMessage = err instanceof Error ? err.message : String(err);
 
-          await this.outboxRepo.update(entry.id, {
-            status: newStatus,
-            attemptCount,
-            retryCount: attemptCount,
-            lastError: err instanceof Error ? err.message : String(err),
-          });
+          if (attemptCount >= maxRetries) {
+            await this.outboxRepo.markFailed(entry.id, attemptCount, errorMessage);
+          } else {
+            // Keep as pending for retry
+            await this.outboxRepo.update(entry.id, {
+              attemptCount,
+              lastError: errorMessage,
+            });
+          }
         }
       }
     } finally {
@@ -83,7 +119,11 @@ export class OutboxWorker {
   start(intervalMs: number = 1000): void {
     if (this.intervalTimer) return;
     this.intervalTimer = setInterval(() => {
-      this.processBatch().catch(() => {});
+      this.processBatch().catch((err) => {
+        this.logger?.error(
+          `OutboxWorker batch error: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      });
     }, intervalMs);
   }
 
@@ -94,4 +134,17 @@ export class OutboxWorker {
       this.intervalTimer = undefined;
     }
   }
+}
+
+/** Detect JSON decode/parse errors in error messages */
+function isDecodeError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("decode") ||
+    lower.includes("unexpected token") ||
+    lower.includes("json") ||
+    lower.includes("parse") ||
+    lower.includes("malformed") ||
+    lower.includes("unexpected end")
+  );
 }

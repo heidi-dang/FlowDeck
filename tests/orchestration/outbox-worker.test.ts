@@ -23,6 +23,28 @@ class MockOutboxRepo implements IOutboxRepository {
     return Array.from(this.entries.values()).filter(e => e.status === OutboxStatus.PENDING);
   }
   async count(_filter?: any) { return this.entries.size; }
+
+  async claimNextBatch(batchSize: number) {
+    return Array.from(this.entries.values())
+      .filter(e => e.status === OutboxStatus.PENDING)
+      .slice(0, batchSize);
+  }
+
+  async markDelivered(id: string, _idempotencyKey: string) {
+    const entry = this.entries.get(id);
+    if (entry) {
+      entry.status = OutboxStatus.DELIVERED;
+    }
+  }
+
+  async markFailed(id: string, attemptCount: number, lastError: string) {
+    const entry = this.entries.get(id);
+    if (entry) {
+      entry.status = OutboxStatus.FAILED;
+      entry.attemptCount = attemptCount;
+      entry.lastError = lastError;
+    }
+  }
 }
 
 class MockEventBus implements IEventBus {

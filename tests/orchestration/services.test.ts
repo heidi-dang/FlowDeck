@@ -20,8 +20,10 @@ import { StructuredLogger, LogSeverity } from "../../src/orchestration/logging";
 import type { IRunRepository, IContractRepository, IAssignmentRepository, IVerificationRepository, ICompletionRepository, IReplayRepository, IEventRepository, IOutboxRepository, IIdempotencyStore, IAuthorizationService, PaginatedResult } from "../../src/orchestration/services/ports";
 import { ExecutionRegistry } from "../../src/orchestration/services/execution-registry";
 import type { UnitOfWork } from "../../src/orchestration/persistence/unit-of-work";
+import type { TransactionalRunWriter } from "../../src/orchestration/persistence/transactional-run-writer";
+import type { Database } from "bun:sqlite";
 import type { PagePaginationRequest } from "../../src/orchestration/types/pagination";
-import type { Run, Contract, Assignment, OrchestrationEvent, OutboxEntry } from "../../src/orchestration/types";
+import type { Run, UpdateRunInput, Contract, Assignment, OrchestrationEvent, OutboxEntry } from "../../src/orchestration/types";
 import { EVENT_VERSION } from "../../src/orchestration/types/events";
 
 // Local type aliases since the modules use them as interfaces
@@ -139,6 +141,9 @@ function createMockOutboxRepo(): IOutboxRepository {
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
     findMany: vi.fn(async (_: OutboxFilter, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     findPending: vi.fn(async () => Array.from(items.values()).filter(e => e.status === "pending")),
+    claimNextBatch: vi.fn(async (batchSize: number) => Array.from(items.values()).filter(e => e.status === "pending").slice(0, batchSize)),
+    markDelivered: vi.fn(async (id: string) => { const e = items.get(id); if (e) { e.status = "delivered" as any; } }),
+    markFailed: vi.fn(async (id: string, _attemptCount: number, _lastError: string) => { const e = items.get(id); if (e) { e.status = "failed" as any; } }),
     count: vi.fn(async (filter?: any) => {
       if (filter?.status) return Array.from(items.values()).filter(e => e.status === filter.status).length;
       return items.size;
@@ -208,7 +213,15 @@ describe("Orchestration Services", () => {
     mockIdempotencyStore = createMockIdempotencyStore();
     mockAuthService = createMockAuthService();
 
-        runService = new RunService(mockRunRepo, eventBus, executionRegistry, mockUnitOfWork);
+  const mockWriter: TransactionalRunWriter = {
+    createRunWithEventAndOutbox: vi.fn((_tx: any, _db: any, run: Run) => { mockRunRepo.create(run); return run; }),
+    updateRunState: vi.fn((_tx: any, _db: any, _id: string, input: UpdateRunInput, _event: any, _outbox: any) => {
+      mockRunRepo.update(_id, input);
+      return { id: _id, status: (input.status ?? 'queued') as Run['status'], runType: 'test', correlationId: _id, stage: input.stage, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() } as Run;
+    }),
+  };
+  const mockDb = {} as Database;
+        runService = new RunService(mockRunRepo, eventBus, executionRegistry, mockUnitOfWork, mockWriter, mockDb);
     contractService = new ContractService(mockContractRepo, eventBus);
     assignmentService = new AssignmentService(mockAssignmentRepo, eventBus);
     verificationService = new VerificationService(mockVerificationRepo, eventBus);

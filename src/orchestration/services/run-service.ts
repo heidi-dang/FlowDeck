@@ -1,11 +1,15 @@
 import { randomUUID } from "crypto";
+import type { Database } from "bun:sqlite";
 import type { Run, CreateRunInput, UpdateRunInput, RunFilter } from "../types";
 import { RunStatus, isTerminalRunStatus, OrchestrationError, ErrorCodes, OrchestrationEventType, assertNever } from "../types";
 import { createEvent } from "../types/events";
+import type { OrchestrationEvent } from "../types/events";
+import type { OutboxEntry } from "../types/outbox";
 import type { IRunRepository, IEventBus, PaginatedResult } from "./ports";
 import type { PagePaginationRequest } from "../types/pagination";
 import type { ExecutionRegistry } from "./execution-registry";
 import type { UnitOfWork } from "../persistence/unit-of-work";
+import type { TransactionalRunWriter } from "../persistence/transactional-run-writer";
 
 export class RunService {
   constructor(
@@ -13,6 +17,8 @@ export class RunService {
     private readonly eventBus: IEventBus,
     private readonly executionRegistry: ExecutionRegistry,
     private readonly unitOfWork: UnitOfWork,
+    private readonly writer: TransactionalRunWriter,
+    private readonly db: Database,
   ) {}
 
   async createRun(input: CreateRunInput, correlationId?: string): Promise<Run> {
@@ -53,15 +59,25 @@ export class RunService {
       },
     );
 
-    // Atomic: persist run state inside UnitOfWork transaction
-    // Callback must be synchronous — no await inside
-    const saved = await this.unitOfWork.execute((_ctx) => {
-      this.runRepo.create(run);
-      return run;
-    });
+    const outboxEntry: OutboxEntry = {
+      id: randomUUID(),
+      eventId: event.id,
+      eventType: event.type,
+      status: "pending" as const,
+      correlationId: corrId,
+      causationId: input.causationId,
+      aggregateId: runId,
+      attemptCount: 0,
+      payload: event.data as Record<string, unknown>,
+      retryCount: 0,
+      maxRetries: 3,
+      createdAt: now,
+    };
 
-    // Publish event after successful commit
-    await this.eventBus.publish(event);
+    // Atomic: persist run, event, and outbox inside UnitOfWork transaction
+    const saved = await this.unitOfWork.execute((ctx) => {
+      return this.writer.createRunWithEventAndOutbox(ctx.tx, this.db, run, event, outboxEntry);
+    });
 
     return saved;
   }
@@ -78,17 +94,15 @@ export class RunService {
       });
     }
 
-    const updated = await this.unitOfWork.execute((_ctx) => {
-      return this.runRepo.update(id, input);
-    });
+    const now = new Date().toISOString();
 
-    if (!updated) {
-      throw OrchestrationError.fromCode(ErrorCodes.INTERNAL_ERROR, { message: `Failed to update run ${id}` });
-    }
+    // Build event + outbox for the status change
+    let event: OrchestrationEvent | undefined;
+    let outboxEntry: OutboxEntry | undefined;
 
     if (input.status) {
       const eventType = this.getStatusEventType(input.status);
-      await this.eventBus.publish(createEvent(
+      event = createEvent(
         eventType,
         {
           correlationId: existing.correlationId,
@@ -100,7 +114,59 @@ export class RunService {
           runId: id,
           data: { previousStatus: existing.status, newStatus: input.status, stage: input.stage },
         },
-      ));
+      );
+
+      outboxEntry = {
+        id: randomUUID(),
+        eventId: event.id,
+        eventType: event.type,
+        status: "pending" as const,
+        correlationId: existing.correlationId,
+        causationId: existing.correlationId,
+        aggregateId: id,
+        attemptCount: 0,
+        payload: event.data as Record<string, unknown>,
+        retryCount: 0,
+        maxRetries: 3,
+        createdAt: now,
+      };
+    }
+
+    // Atomic: update run state, insert event, insert outbox inside transaction
+    const updated = await this.unitOfWork.execute((ctx) => {
+      if (event && outboxEntry) {
+        return this.writer.updateRunState(ctx.tx, this.db, id, input, event, outboxEntry);
+      }
+      // No status change — just do a trivial update via the writer
+      return this.writer.updateRunState(ctx.tx, this.db, id, input, createEvent(
+        OrchestrationEventType.RUN_PROGRESS,
+        {
+          correlationId: existing.correlationId,
+          causationId: existing.correlationId,
+          aggregateId: id,
+          sessionId: existing.sessionId,
+          agentId: existing.agentId,
+          runId: id,
+          data: { stage: input.stage, progress: input.progress },
+        },
+      ), {
+        id: randomUUID(),
+        eventId: randomUUID(),
+        eventType: OrchestrationEventType.RUN_PROGRESS,
+        status: "pending" as const,
+        correlationId: existing.correlationId,
+        causationId: existing.correlationId,
+        aggregateId: id,
+        attemptCount: 0,
+        payload: { stage: input.stage, progress: input.progress } as Record<string, unknown>,
+        retryCount: 0,
+        maxRetries: 3,
+        createdAt: now,
+      });
+    });
+
+    if (!updated) {
+      throw OrchestrationError.fromCode(ErrorCodes.INTERNAL_ERROR, { message: `Failed to update run ${id}` });
     }
 
     return updated;
@@ -138,7 +204,7 @@ export class RunService {
       return latest;
     }
 
-    // 3. Update status to CANCELLED atomically
+    // 3. Update status to CANCELLED atomically — this goes through updateRun which uses the writer
     const cancelledRun = await this.updateRun(id, {
       status: RunStatus.CANCELLED,
       stage: "cancelled",

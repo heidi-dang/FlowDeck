@@ -4,6 +4,8 @@ import { RunService } from "../../../src/orchestration/services/run-service";
 import { RunStatus } from "../../../src/orchestration/types";
 import type { IRunRepository, IEventBus } from "../../../src/orchestration/services/ports";
 import type { UnitOfWork } from "../../../src/orchestration/persistence/unit-of-work";
+import type { TransactionalRunWriter } from "../../../src/orchestration/persistence/transactional-run-writer";
+import type { Database } from "bun:sqlite";
 
 class InMemoryRunRepo implements IRunRepository {
   private runs = new Map<string, any>();
@@ -45,7 +47,12 @@ describe("ExecutionRegistry & RunService Cancellation Lifecycle", () => {
     mockUnitOfWork = {
       execute: vi.fn(async (fn: any) => fn({ tx: {} })),
     };
-    runService = new RunService(repo, eventBus, registry, mockUnitOfWork);
+    const mockWriter: TransactionalRunWriter = {
+      createRunWithEventAndOutbox: vi.fn((_tx, _db, run) => { repo.create(run); return run; }),
+      updateRunState: vi.fn((_tx, _db, _id, _input, _event, _outbox) => { repo.update(_id, _input); return { id: _id, status: _input.status ?? "unknown", runType: "test", correlationId: _id, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; }),
+    };
+    const mockDb = {} as Database;
+    runService = new RunService(repo, eventBus, registry, mockUnitOfWork, mockWriter, mockDb);
   });
 
   it("signals AbortController and executes cleanup idempotently", async () => {
@@ -58,6 +65,8 @@ describe("ExecutionRegistry & RunService Cancellation Lifecycle", () => {
     registry.registerRun(run.id, abortController, async () => {
       cleanupCount++;
     });
+    // Resolve execution immediately since test simulates synchronous work
+    registry.resolveExecution(run.id);
 
     expect(registry.hasActiveRun(run.id)).toBe(true);
 
@@ -82,13 +91,13 @@ describe("ExecutionRegistry & RunService Cancellation Lifecycle", () => {
 
   it("handles cleanup callback failures without leaking active handles", async () => {
     const run = await runService.createRun({ runType: "test", sessionId: "s1", correlationId: "c1" });
-    const abortController = new AbortController();
 
-    registry.registerRun(run.id, abortController, () => {
+    registry.registerRun(run.id, new AbortController(), () => {
       throw new Error("Cleanup resource error");
     });
+    registry.resolveExecution(run.id);
 
-    const result = await registry.cancelRunExecution(run.id, "Testing cleanup failure");
+    const result = await registry.cancelRunExecution(run.id, "Testing cleanup failure", 100);
     expect(result.cancelled).toBe(true);
     expect(result.cleanupErrors.length).toBeGreaterThan(0);
     expect(result.cleanupErrors[0]?.message).toBe("Cleanup resource error");

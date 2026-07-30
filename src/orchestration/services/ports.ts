@@ -103,6 +103,15 @@ export interface IOutboxRepository {
   findMany(filter: OutboxFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<OutboxEntry>>;
   findPending(): Promise<OutboxEntry[]>;
   count(filter: OutboxFilter): Promise<number>;
+
+  /** Atomically claim a batch of pending entries for processing */
+  claimNextBatch(batchSize: number): Promise<OutboxEntry[]>;
+
+  /** Mark an entry as delivered with idempotency key check */
+  markDelivered(id: string, idempotencyKey: string): Promise<void>;
+
+  /** Mark an entry as failed with error details */
+  markFailed(id: string, attemptCount: number, lastError: string): Promise<void>;
 }
 
 // ── Replay repository ─────────────────────────────────────────────────────
