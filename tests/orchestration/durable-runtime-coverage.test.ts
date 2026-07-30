@@ -74,7 +74,6 @@ function createTempDb(): TempDb {
   const db = new Database(dbPath)
   db.exec(SCHEMA_V_0_2_6)
   db.exec("PRAGMA journal_mode=WAL")
-  db.exec("PRAGMA busy_timeout=5000")
   const tx = createTransactionManager(db)
   return { dir, db, tx }
 }

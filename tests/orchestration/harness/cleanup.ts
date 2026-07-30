@@ -45,12 +45,12 @@ export function deterministicCleanup(ctx: CleanupContext): void {
     }
   }
 
-  // 3. Checkpoint and close the database connection
+  // 3. Close the database connection
   if (db) {
     try {
-      db.exec("PRAGMA wal_checkpoint(FULL)");
+      db.exec("PRAGMA wal_checkpoint(PASSIVE)");
     } catch {
-      // DB may already be closed — that's fine
+      // not all databases use WAL; DB may already be closed
     }
     try {
       db.close();
