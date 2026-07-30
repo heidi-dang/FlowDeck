@@ -1,6 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync } from "fs";
-import { rm } from "node:fs/promises";
+import { rmSync, existsSync } from "fs";
 import { join } from "path";
 
 export interface StoppableWorker {
@@ -135,26 +134,26 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   }
 
   // Brief pause for OS to release file handles (Windows)
-  await new Promise((r) => setTimeout(r, 50));
+  const spin = (ms: number) => { const deadline = Date.now() + ms; while (Date.now() < deadline); };
+  spin(50);
 
-  // Delete DB/WAL/SHM files and directory. Verification catches any leaks.
-  // Retries handle brief Windows file-lock windows without risking timeout.
+  // Delete DB/WAL/SHM files and directory with retry.
+  const deleteWithRetry = (f: string, opts: { recursive?: boolean; force?: boolean }): void => {
+    if (!existsSync(f)) return;
+    for (let i = 0; i < 10; i++) {
+      try { rmSync(f, opts); return; } catch { if (i < 9) spin(50); }
+    }
+  };
+
   if (dir && existsSync(dir)) {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
 
-    for (const f of [dbPath, walPath, shmPath]) {
-      for (let i = 0; i < 4; i++) {
-        if (!existsSync(f)) break;
-        try { await rm(f, { force: true }); break; } catch { if (i < 3) await new Promise((r) => setTimeout(r, 100)); }
-      }
-    }
-
-    for (let i = 0; i < 4; i++) {
-      if (!existsSync(dir)) break;
-      try { await rm(dir, { recursive: true, force: true }); break; } catch { if (i < 3) await new Promise((r) => setTimeout(r, 100)); }
-    }
+    deleteWithRetry(dbPath, { force: true });
+    deleteWithRetry(walPath, { force: true });
+    deleteWithRetry(shmPath, { force: true });
+    deleteWithRetry(dir, { recursive: true, force: true });
 
     if (existsSync(dbPath)) {
       failures.push(new Error("[verify] DB_FILE_LEAK"));
