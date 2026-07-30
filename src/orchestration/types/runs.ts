@@ -205,7 +205,7 @@ export interface CreateRunInput {
 }
 
 export interface UpdateRunInput {
-  status?: string;
+  status?: RunStatus;
   stage?: string;
   progress?: number;
   progressPercent?: number;
@@ -219,7 +219,7 @@ export interface UpdateRunInput {
 }
 
 export interface RunFilter {
-  status?: string;
+  status?: RunStatus;
   runType?: string;
   correlationId?: string;
   tags?: string[];
@@ -269,7 +269,10 @@ export const UpdateRunInputSchema = z.object({
 });
 
 export const RunFilterSchema = z.object({
-  status: z.string().optional(),
+  status: z.enum([
+    RunStatus.QUEUED, RunStatus.PENDING, RunStatus.RUNNING, RunStatus.PAUSED,
+    RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED, RunStatus.TIMEOUT,
+  ]).optional(),
   runType: z.string().optional(),
   correlationId: z.string().optional(),
   tags: z.array(z.string()).optional(),

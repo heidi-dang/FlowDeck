@@ -66,13 +66,22 @@ afterAll(() => {
   }
   if (db) {
     try {
+      db.exec("PRAGMA wal_checkpoint(FULL)")
+    } catch {}
+    try {
       db.close()
     } catch {
       // Already closed — ignore
     }
   }
-  // Retry cleanup on Windows (EBUSY on WAL sidecars)
+  // On Windows, WAL/SHM files may still be locked briefly after close
   if (tmpDir && existsSync(tmpDir)) {
+    try {
+      const walFile = join(tmpDir, "test.db-wal")
+      const shmFile = join(tmpDir, "test.db-shm")
+      try { rmSync(walFile, { force: true }) } catch {}
+      try { rmSync(shmFile, { force: true }) } catch {}
+    } catch {}
     try {
       rmSync(tmpDir, { recursive: true, force: true })
     } catch {

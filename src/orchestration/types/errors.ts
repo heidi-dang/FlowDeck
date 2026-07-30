@@ -20,6 +20,7 @@ export const ErrorCodes = {
   INVALID_INPUT: { code: "INVALID_INPUT", category: ErrorCategory.VALIDATION, httpStatus: 400, retryable: false },
   MISSING_REQUIRED_FIELD: { code: "MISSING_REQUIRED_FIELD", category: ErrorCategory.VALIDATION, httpStatus: 400, retryable: false },
   INVALID_FORMAT: { code: "INVALID_FORMAT", category: ErrorCategory.VALIDATION, httpStatus: 400, retryable: false },
+  INVALID_RUN_STATUS: { code: "INVALID_RUN_STATUS", category: ErrorCategory.VALIDATION, httpStatus: 400, retryable: false },
   UNAUTHENTICATED: { code: "UNAUTHENTICATED", category: ErrorCategory.AUTHENTICATION, httpStatus: 401, retryable: false },
   FORBIDDEN: { code: "FORBIDDEN", category: ErrorCategory.AUTHORIZATION, httpStatus: 403, retryable: false },
   RUN_NOT_FOUND: { code: "RUN_NOT_FOUND", category: ErrorCategory.NOT_FOUND, httpStatus: 404, retryable: false },

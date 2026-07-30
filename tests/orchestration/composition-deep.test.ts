@@ -5,6 +5,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { createProductionOrchestrationRuntime } from "../../src/orchestration/composition";
 import { initializeDatabase } from "../../src/orchestration/persistence/database";
+import { OrchestrationError, ErrorCodes } from "../../src/orchestration/types/errors";
 
 describe("Production Composition Deep Integration", () => {
   let tempDir: string;
@@ -19,7 +20,17 @@ describe("Production Composition Deep Integration", () => {
 
   afterEach(() => {
     try {
+      db.exec("PRAGMA wal_checkpoint(FULL)")
+    } catch {}
+    try {
       db.close();
+    } catch {}
+    // On Windows, WAL/SHM files may still be locked briefly after close
+    try {
+      const walFile = join(tempDir, "test.db-wal")
+      const shmFile = join(tempDir, "test.db-shm")
+      try { rmSync(walFile, { force: true }) } catch {}
+      try { rmSync(shmFile, { force: true }) } catch {}
     } catch {}
     try {
       rmSync(tempDir, { recursive: true, force: true });
@@ -88,7 +99,7 @@ describe("Production Composition Deep Integration", () => {
       });
       expect(true).toBe(false);
     } catch (err: unknown) {
-      expect((err as Error).message).toContain("REPLAY_NOT_CONFIGURED");
+      expect(err as OrchestrationError).toMatchObject({ code: ErrorCodes.REPLAY_NOT_CONFIGURED });
     }
   });
 });

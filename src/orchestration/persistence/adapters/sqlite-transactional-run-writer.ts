@@ -15,24 +15,11 @@ import {
   mapRunStatusToTaskRunState,
   mapTaskRunStateToRunStatus,
   isValidPersistedPhase,
-  OrchestrationPhase,
 } from "../../types/runs";
 import type { OrchestrationEvent } from "../../types/events";
 import type { OutboxEntry } from "../../types/outbox";
 
 export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
-  /**
-   * Maps a RunStatus to a persisted OrchestrationPhase.
-   * Handles invalid statuses by falling back to CREATED phase for backward compatibility.
-   */
-  private persistStatus(status: RunStatus): OrchestrationPhase {
-    if (Object.values(RunStatus).includes(status)) {
-      return mapRunStatusToTaskRunState(status);
-    }
-    // Backward compatibility: treat unknown statuses as CREATED phase
-    return OrchestrationPhase.CREATED;
-  }
-
   createRunWithEventAndOutbox(
     tx: TransactionManager,
     db: Database,
@@ -52,7 +39,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
          VALUES (?, 'family-default', 1, 'Default Contract', 'Default contract description', 'https://github.com/heidi-dang/FlowDeck', '0000000000000000000000000000000000000000', 'system', datetime('now'))`,
       ).run(contractId);
 
-      const state = this.persistStatus(run.status);
+      const state = mapRunStatusToTaskRunState(run.status);
       db.prepare(
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, ?, ?, ?, 1, ?, ?, datetime('now'), strftime('%s','now'))`,
@@ -111,7 +98,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
     return tx.write(() => {
       // 1. Update task_runs state
       if (input.status !== undefined) {
-        const taskRunState = this.persistStatus(input.status as RunStatus);
+        const taskRunState = mapRunStatusToTaskRunState(input.status);
         db.prepare(
           `UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?`,
         ).run(taskRunState, id);

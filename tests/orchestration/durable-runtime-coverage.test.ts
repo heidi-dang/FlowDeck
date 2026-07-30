@@ -44,7 +44,8 @@ import type {
   IVerificationRepository,
   IEventRepository,
 } from "../../src/orchestration/services/ports"
-import { RunStatus } from "../../src/orchestration/types/runs"
+import { RunStatus, OrchestrationPhase } from "../../src/orchestration/types/runs"
+import { OrchestrationError, ErrorCodes } from "../../src/orchestration/types/errors"
 import {
   SqliteCompletionRepoAdapter,
   SqliteVerificationRepoAdapter,
@@ -78,7 +79,19 @@ function createTempDb(): TempDb {
 }
 
 function destroyTempDb(t: TempDb): void {
+  try {
+    // Checkpoint WAL before closing to ensure all writes are flushed
+    t.db.exec("PRAGMA wal_checkpoint(FULL)")
+  } catch { /* ok */ }
   try { t.db.close() } catch { /* ok */ }
+  // On Windows, WAL/SHM files may still be locked briefly after close
+  // Remove them manually before removing the directory
+  try {
+    const walFile = join(t.dir, "test.db-wal")
+    const shmFile = join(t.dir, "test.db-shm")
+    try { rmSync(walFile, { force: true }) } catch { /* ok */ }
+    try { rmSync(shmFile, { force: true }) } catch { /* ok */ }
+  } catch { /* ok */ }
   try { rmSync(t.dir, { recursive: true, force: true }) } catch { /* ok */ }
 }
 
@@ -98,22 +111,34 @@ function seedRunParents(db: Database, contractId = "contract-default"): void {
 function insertTaskRun(db: Database, runId: string): void {
   db.prepare(
     `INSERT OR IGNORE INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
-     VALUES (?, 'contract-default', 'simple', '_created', 1,
+     VALUES (?, 'contract-default', 'simple', ?, 1,
              '0000000000000000000000000000000000000000', 'main',
              datetime('now'), strftime('%s','now'))`,
-  ).run(runId)
+  ).run(runId, OrchestrationPhase.CREATED)
 }
 
 function makeRun(id: string): Run {
   return {
     id,
-    status: "created" as RunStatus,
+    status: RunStatus.PENDING,
     runType: "simple",
     correlationId: id,
     contractId: "contract-default",
     aggregateId: id,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+  }
+}
+
+// Seed task_runs with valid OrchestrationPhase
+function seedTaskRuns(db: Database): void {
+  for (const runId of ["run-parent-1", "run-parent-2", "run-parent-3"]) {
+    db.prepare(
+      `INSERT OR IGNORE INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
+     VALUES (?, 'contract-default', 'simple', ?, 1,
+             '0000000000000000000000000000000000000000', 'main',
+             datetime('now'), strftime('%s','now'))`,
+    ).run(runId, OrchestrationPhase.CREATED)
   }
 }
 
@@ -180,7 +205,7 @@ describe("SqliteRunRepository", () => {
     const found = await repo.findById("run-1")
     expect(found).not.toBeNull()
     expect(found!.id).toBe("run-1")
-    expect(found!.status).toBe("created" as RunStatus)
+    expect(found!.status).toBe(RunStatus.PENDING)
     expect(found!.runType).toBe("simple")
   })
 
@@ -200,8 +225,8 @@ describe("SqliteRunRepository", () => {
   it("findMany with status filter", async () => {
     await repo.create(makeRun("rf-1"))
     await repo.create(makeRun("rf-2"))
-    const result = await repo.findMany({ status: "created" as RunStatus }, { page: 1, limit: 10 })
-    const allQueued = result.items.every(r => r.status === "created" as RunStatus)
+    const result = await repo.findMany({ status: RunStatus.PENDING }, { page: 1, limit: 10 })
+    const allQueued = result.items.every(r => r.status === RunStatus.PENDING)
     expect(allQueued).toBe(true)
   })
 
@@ -212,26 +237,97 @@ describe("SqliteRunRepository", () => {
     const total = await repo.count({})
     expect(total).toBeGreaterThanOrEqual(2)
 
-    const filtered = await repo.count({ status: "created" as RunStatus })
+    const filtered = await repo.count({ status: RunStatus.PENDING })
     expect(filtered).toBeGreaterThanOrEqual(2)
 
-    const noMatch = await repo.count({ status: "running" as RunStatus })
+    // No runs with FAILED status in this test
+    const noMatch = await repo.count({ status: RunStatus.FAILED })
     expect(noMatch).toBe(0)
   })
 
   it("update with status change", async () => {
     await repo.create(makeRun("ru-1"))
-    const updated = await repo.update("ru-1", { status: "executing" as RunStatus })
+    const updated = await repo.update("ru-1", { status: RunStatus.RUNNING })
     expect(updated).not.toBeNull()
-    expect(updated!.status).toBe("executing" as RunStatus)
+    expect(updated!.status).toBe(RunStatus.RUNNING)
 
     const found = await repo.findById("ru-1")
-    expect(found!.status).toBe("executing" as RunStatus)
+    expect(found!.status).toBe(RunStatus.RUNNING)
   })
 
   it("update returns null for missing run", async () => {
-    const updated = await repo.update("nonexistent", { status: "executing" as RunStatus })
+    const updated = await repo.update("nonexistent", { status: RunStatus.RUNNING })
     expect(updated).toBeNull()
+  })
+
+  // ── Status mapping tests ───────────────────────────────────────────────
+
+  it("PENDING round-trips correctly", async () => {
+    const run = await repo.create({ ...makeRun("run-pending"), status: RunStatus.PENDING })
+    expect(run.status).toBe(RunStatus.PENDING)
+    const found = await repo.findById("run-pending")
+    expect(found!.status).toBe(RunStatus.PENDING)
+  })
+
+  it("RUNNING round-trips correctly", async () => {
+    const run = await repo.create({ ...makeRun("run-running"), status: RunStatus.PENDING })
+    const updated = await repo.update("run-running", { status: RunStatus.RUNNING })
+    expect(updated!.status).toBe(RunStatus.RUNNING)
+    const found = await repo.findById("run-running")
+    expect(found!.status).toBe(RunStatus.RUNNING)
+  })
+
+  it("COMPLETED round-trips correctly", async () => {
+    await repo.create(makeRun("run-completed"))
+    const updated = await repo.update("run-completed", { status: RunStatus.COMPLETED })
+    expect(updated!.status).toBe(RunStatus.COMPLETED)
+    const found = await repo.findById("run-completed")
+    expect(found!.status).toBe(RunStatus.COMPLETED)
+  })
+
+  it("FAILED round-trips correctly", async () => {
+    await repo.create(makeRun("run-failed"))
+    const updated = await repo.update("run-failed", { status: RunStatus.FAILED })
+    expect(updated!.status).toBe(RunStatus.FAILED)
+    const found = await repo.findById("run-failed")
+    expect(found!.status).toBe(RunStatus.FAILED)
+  })
+
+  it("CANCELLED round-trips correctly", async () => {
+    await repo.create(makeRun("run-cancelled"))
+    const updated = await repo.update("run-cancelled", { status: RunStatus.CANCELLED })
+    expect(updated!.status).toBe(RunStatus.CANCELLED)
+    const found = await repo.findById("run-cancelled")
+    expect(found!.status).toBe(RunStatus.CANCELLED)
+  })
+
+  it("QUEUED round-trips correctly", async () => {
+    const run = await repo.create({ ...makeRun("run-queued"), status: RunStatus.QUEUED })
+    expect(run.status).toBe(RunStatus.QUEUED)
+    const found = await repo.findById("run-queued")
+    expect(found!.status).toBe(RunStatus.PENDING) // QUEUED maps to CREATED phase, reads back as PENDING
+  })
+
+  it("findMany and count with PENDING filter", async () => {
+    await repo.create(makeRun("run-filter-1"))
+    await repo.create(makeRun("run-filter-2"))
+    const result = await repo.findMany({ status: RunStatus.PENDING }, { page: 1, limit: 10 })
+    expect(result.items.length).toBeGreaterThanOrEqual(2)
+    expect(result.items.every(r => r.status === RunStatus.PENDING)).toBe(true)
+    const count = await repo.count({ status: RunStatus.PENDING })
+    expect(count).toBeGreaterThanOrEqual(2)
+  })
+
+  it("PAUSED throws INVALID_RUN_STATUS", async () => {
+    await repo.create(makeRun("run-paused"))
+    await expect(repo.update("run-paused", { status: RunStatus.PAUSED }))
+      .rejects.toThrow()
+  })
+
+  it("TIMEOUT throws INVALID_RUN_STATUS", async () => {
+    await repo.create(makeRun("run-timeout"))
+    await expect(repo.update("run-timeout", { status: RunStatus.TIMEOUT }))
+      .rejects.toThrow()
   })
 })
 
@@ -698,7 +794,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown!.message).toContain("REPLAY_NOT_CONFIGURED")
+    expect(thrown).toMatchObject({ code: ErrorCodes.REPLAY_NOT_CONFIGURED })
   })
 
   it("findById throws REPLAY_NOT_CONFIGURED", async () => {
@@ -709,7 +805,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown!.message).toContain("REPLAY_NOT_CONFIGURED")
+    expect(thrown).toMatchObject({ code: ErrorCodes.REPLAY_NOT_CONFIGURED })
   })
 
   it("findMany throws REPLAY_NOT_CONFIGURED", async () => {
@@ -720,7 +816,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown!.message).toContain("REPLAY_NOT_CONFIGURED")
+    expect(thrown).toMatchObject({ code: ErrorCodes.REPLAY_NOT_CONFIGURED })
   })
 
   it("count throws REPLAY_NOT_CONFIGURED", async () => {
@@ -731,7 +827,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown!.message).toContain("REPLAY_NOT_CONFIGURED")
+    expect(thrown).toMatchObject({ code: ErrorCodes.REPLAY_NOT_CONFIGURED })
   })
 })
 
