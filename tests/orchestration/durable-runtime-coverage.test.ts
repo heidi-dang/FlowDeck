@@ -79,17 +79,9 @@ function createTempDb(): TempDb {
 }
 
 function destroyTempDb(t: TempDb): void {
-  // Aggressive cleanup: skip all potentially-hanging operations
-  // Just try to close, then manually clean up WAL files
-  try { t.db.close() } catch { /* ok */ }
-  // WAL/SHM files may still be locked briefly after close
-  // Remove them manually - force removal even if locked
-  try {
-    const walFile = join(t.dir, "test.db-wal")
-    const shmFile = join(t.dir, "test.db-shm")
-    try { rmSync(walFile, { force: true }) } catch { /* ok */ }
-    try { rmSync(shmFile, { force: true }) } catch { /* ok */ }
-  } catch { /* ok */ }
+  // Skip db.close() - it can hang on Windows waiting for pending transactions
+  // instead, rely on OS cleanup of the temp directory
+  // WAL/SHM files are automatically cleaned up when directory is removed
   try { rmSync(t.dir, { recursive: true, force: true }) } catch { /* ok */ }
 }
 
