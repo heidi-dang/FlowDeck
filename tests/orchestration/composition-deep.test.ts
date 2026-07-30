@@ -80,11 +80,15 @@ describe("Production Composition Deep Integration", () => {
     const events = await runtime.services.eventService.listEvents({}, { page: 1, limit: 10 });
     expect(events.items.length).toBeGreaterThanOrEqual(0);
 
-    // Replay service
-    const replay = await runtime.services.replayService.createReplay({
-      sourceRunId: run.id,
-      correlationId: "corr-1",
-    });
-    expect(replay.id).toBeDefined();
+    // Replay service (not configured in production — expect REPLAY_NOT_CONFIGURED)
+    try {
+      await runtime.services.replayService.createReplay({
+        sourceRunId: run.id,
+        correlationId: "corr-1",
+      });
+      expect(true).toBe(false);
+    } catch (err: unknown) {
+      expect((err as Error).message).toContain("REPLAY_NOT_CONFIGURED");
+    }
   });
 });

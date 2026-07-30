@@ -339,16 +339,19 @@ class SqliteVerificationRepo implements IVerificationRepository {
   }
 }
 
-class SqliteReplayRepo implements IReplayRepository {
-  private items = new Map<string, Replay>();
-
-  async create(r: Replay): Promise<Replay> { this.items.set(r.id, r); return r; }
-  async findById(id: string): Promise<Replay | null> { return this.items.get(id) ?? null; }
-  async findMany(pagination: PagePaginationRequest): Promise<PaginatedResult<Replay>> {
-    const vals = Array.from(this.items.values());
-    return { items: vals, total: vals.length, page: pagination.page, limit: pagination.limit };
+class UnsupportedReplayRepository implements IReplayRepository {
+  async create(_replay: Replay): Promise<Replay> {
+    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.');
   }
-  async count(): Promise<number> { return this.items.size; }
+  async findById(_id: string): Promise<Replay | null> {
+    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration.');
+  }
+  async findMany(_pagination: PagePaginationRequest): Promise<PaginatedResult<Replay>> {
+    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration.');
+  }
+  async count(): Promise<number> {
+    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration.');
+  }
 }
 
 class SqliteEventRepo implements IEventRepository {
@@ -431,7 +434,7 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
   const completionRepo = new SqliteCompletionRepo(completionAdapter, db, txManager);
   const verificationAdapter = new SqliteVerificationRepoAdapter(db, txManager);
   const verificationRepo = new SqliteVerificationRepo(verificationAdapter, db, txManager);
-  const replayRepo = new SqliteReplayRepo();
+  const replayRepo = new UnsupportedReplayRepository();
   const eventRepo = new SqliteEventRepo(eventAppender, db, txManager);
 
   const outboxWorker = new OutboxWorker(outboxRepo, eventBus);
