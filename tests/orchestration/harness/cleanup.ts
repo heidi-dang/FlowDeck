@@ -158,7 +158,7 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
-    const deadline = Date.now() + 1500;
+    const deadline = Date.now() + 2000;
 
     await deleteWithRetry(dbPath, { force: true }, deadline);
     await deleteWithRetry(walPath, { force: true }, deadline);
