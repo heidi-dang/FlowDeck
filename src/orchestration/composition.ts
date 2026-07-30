@@ -42,11 +42,9 @@ import type {
 } from "./services/ports";
 import type { Run, UpdateRunInput, RunFilter } from "./types/runs";
 import {
-  RunStatus,
   mapRunStatusToTaskRunState,
   mapTaskRunStateToRunStatus,
   isValidPersistedPhase,
-  OrchestrationPhase,
 } from "./types/runs";
 import type { Contract } from "./types/contracts";
 import type { Assignment } from "./types/assignments";

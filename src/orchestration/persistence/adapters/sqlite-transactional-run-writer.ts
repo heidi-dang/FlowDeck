@@ -11,7 +11,6 @@ import type { TransactionManager } from "../transaction-manager";
 import type { TransactionalRunWriter } from "../transactional-run-writer";
 import type { Run, UpdateRunInput } from "../../types/runs";
 import {
-  RunStatus,
   mapRunStatusToTaskRunState,
   mapTaskRunStateToRunStatus,
   isValidPersistedPhase,

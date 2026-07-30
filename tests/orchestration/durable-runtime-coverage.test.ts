@@ -45,7 +45,7 @@ import type {
   IEventRepository,
 } from "../../src/orchestration/services/ports"
 import { RunStatus, OrchestrationPhase } from "../../src/orchestration/types/runs"
-import { OrchestrationError, ErrorCodes } from "../../src/orchestration/types/errors"
+import { ErrorCodes } from "../../src/orchestration/types/errors"
 import {
   SqliteCompletionRepoAdapter,
   SqliteVerificationRepoAdapter,
@@ -127,18 +127,6 @@ function makeRun(id: string): Run {
     aggregateId: id,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
-  }
-}
-
-// Seed task_runs with valid OrchestrationPhase
-function seedTaskRuns(db: Database): void {
-  for (const runId of ["run-parent-1", "run-parent-2", "run-parent-3"]) {
-    db.prepare(
-      `INSERT OR IGNORE INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
-     VALUES (?, 'contract-default', 'simple', ?, 1,
-             '0000000000000000000000000000000000000000', 'main',
-             datetime('now'), strftime('%s','now'))`,
-    ).run(runId, OrchestrationPhase.CREATED)
   }
 }
 
@@ -270,7 +258,7 @@ describe("SqliteRunRepository", () => {
   })
 
   it("RUNNING round-trips correctly", async () => {
-    const run = await repo.create({ ...makeRun("run-running"), status: RunStatus.PENDING })
+    await repo.create({ ...makeRun("run-running"), status: RunStatus.PENDING })
     const updated = await repo.update("run-running", { status: RunStatus.RUNNING })
     expect(updated!.status).toBe(RunStatus.RUNNING)
     const found = await repo.findById("run-running")
