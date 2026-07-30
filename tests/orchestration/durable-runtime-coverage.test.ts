@@ -78,8 +78,8 @@ function createTempDb(): TempDb {
   return { dir, db, tx }
 }
 
-function destroyTempDb(t: TempDb): void {
-  deterministicCleanup({ db: t.db, dir: t.dir })
+async function destroyTempDb(t: TempDb): Promise<void> {
+  await deterministicCleanup({ db: t.db, dir: t.dir })
 }
 
 function seedRunParents(db: Database, contractId = "contract-default"): void {
@@ -171,7 +171,7 @@ describe("SqliteRunRepository", () => {
     repo = new SqliteRunRepository(adapter, tdb.db, tdb.tx)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("create and findById return correct fields", async () => {
     const _created = await repo.create(makeRun("run-1"))
@@ -322,7 +322,7 @@ describe("SqliteContractRepo", () => {
     repo = new SqliteContractRepo(adapter, tdb.db, tdb.tx)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("create and findById return correct contract", async () => {
     const _created = await repo.create(makeContract("c-1"))
@@ -379,7 +379,7 @@ describe("SqliteAssignmentRepo", () => {
     repo = new SqliteAssignmentRepo(tdb.db, tdb.tx)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("create and findById return correct assignment", async () => {
     const _created = await repo.create(makeAssignment("a-1", "run-for-assign"))
@@ -476,7 +476,7 @@ describe("SqliteCompletionRepo", () => {
     completionService = new CompletionService(completionRepo, eventBus)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("create and findById return correct completion", async () => {
     const _created = await completionService.createCompletion({
@@ -571,7 +571,7 @@ describe("SqliteVerificationRepo", () => {
     verificationService = new VerificationService(verificationRepo, eventBus)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("create and findById return correct verification", async () => {
     const _created = await verificationService.createVerification({
@@ -708,7 +708,7 @@ describe("SqliteEventRepo", () => {
     eventService = new EventService(eventRepo, outboxRepo, eventBus)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("store and findById return correct event", async () => {
     const event = makeEvent("ev-run-1", { id: "ev-1" })
@@ -833,7 +833,7 @@ describe("RunService", () => {
     runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, writer, tdb.db)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("getRun returns run", async () => {
     const run = await runService.createRun({
@@ -967,9 +967,9 @@ describe("OutboxWorker", () => {
     worker = new OutboxWorker(outboxRepo, eventBus, 20)
   })
 
-  afterEach(() => {
-    worker.stop()
-    destroyTempDb(tdb)
+  afterEach(async () => {
+    await Promise.resolve(worker.stop())
+    await destroyTempDb(tdb)
   })
 
   it("start/stop lifecycle changes internal state cleanly", () => {

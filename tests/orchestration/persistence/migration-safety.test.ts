@@ -9,16 +9,15 @@ import { deterministicCleanup } from "../harness/cleanup"
 let currentDir = ""
 let TEST_DB = ""
 
-function clean() {
+async function clean() {
   if (currentDir) {
-    deterministicCleanup({ dir: currentDir })
+    await deterministicCleanup({ dir: currentDir })
     currentDir = ""
     TEST_DB = ""
   }
 }
 
 function setupTestDb(): string {
-  clean()
   currentDir = mkdtempSync(join(tmpdir(), "fd-mig-safe-"))
   TEST_DB = join(currentDir, "test.db")
   return TEST_DB

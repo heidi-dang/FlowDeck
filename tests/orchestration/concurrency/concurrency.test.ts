@@ -25,20 +25,16 @@ describe('Concurrency Harness Validation', () => {
     connections = [];
   });
 
-  afterEach(() => {
-    for (const db of connections) {
+  afterEach(async () => {
+    for (const conn of connections) {
       try {
-        db.close();
+        conn.close();
       } catch {
         // already closed
       }
     }
     connections = [];
-    try {
-      deterministicCleanup({ dir: tempDir });
-    } catch {
-      // best-effort
-    }
+    await deterministicCleanup({ dir: tempDir });
   });
 
   it('validates the test harness barrier mechanisms on concurrent DB inserts', async () => {

@@ -60,8 +60,8 @@ beforeAll(() => {
   runtime = createProductionOrchestrationRuntime(db)
 })
 
-afterAll(() => {
-  deterministicCleanup({ db, dir: tmpDir, outboxWorker: runtime?.outboxWorker, executionRegistry: runtime?.executionRegistry })
+afterAll(async () => {
+  await deterministicCleanup({ db, dir: tmpDir, outboxWorker: runtime?.outboxWorker, executionRegistry: runtime?.executionRegistry })
 })
 
 // ── Test suite ─────────────────────────────────────────────────────────────

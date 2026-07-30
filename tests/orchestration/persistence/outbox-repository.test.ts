@@ -13,15 +13,7 @@ import { deterministicCleanup } from "../harness/cleanup";
 
 let tmpDir = "";
 
-function clean(): void {
-  if (tmpDir) {
-    deterministicCleanup({ dir: tmpDir });
-    tmpDir = "";
-  }
-}
-
 function setupDb(): Database {
-  clean();
   tmpDir = mkdtempSync(join(tmpdir(), "fd-outbox-"));
   const db = new Database(join(tmpDir, "test.db"), { create: true });
   db.exec(`
@@ -83,8 +75,8 @@ describe("SqliteOutboxRepository", () => {
     repo = new SqliteOutboxRepository(db, tx);
   });
 
-  afterEach(() => {
-    deterministicCleanup({ db, dir: tmpDir });
+  afterEach(async () => {
+    await deterministicCleanup({ db, dir: tmpDir });
   });
 
   describe("create", () => {

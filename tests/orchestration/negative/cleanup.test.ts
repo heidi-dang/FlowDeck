@@ -23,12 +23,12 @@ describe('Resource Cleanup Validation', () => {
     connections = [];
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const conn of connections) {
       try { conn.close(); } catch { /* already closed */ }
     }
     connections = [];
-    deterministicCleanup({ dir: tempDir });
+    await deterministicCleanup({ dir: tempDir });
   });
 
   it('handles already closed connection gracefully', () => {

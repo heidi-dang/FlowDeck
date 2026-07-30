@@ -10,8 +10,8 @@ describe('Replay Harness Validation', () => {
     db.exec(`CREATE TABLE events (aggregate_id TEXT, version INTEGER, payload TEXT, UNIQUE(aggregate_id, version))`);
   });
 
-  afterEach(() => {
-    deterministicCleanup({ db });
+  afterEach(async () => {
+    await deterministicCleanup({ db });
   });
 
   it('Empty stream', () => {

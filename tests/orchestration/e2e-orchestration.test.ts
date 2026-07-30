@@ -61,9 +61,9 @@ describe("E2E Orchestration Pipeline", () => {
     seed(db) // create FK parent rows
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     closeAllConnections()
-    deterministicCleanup({ db, dir: tempDir })
+    await deterministicCleanup({ db, dir: tempDir })
   })
 
   /* ─── Run lifecycle ─── */

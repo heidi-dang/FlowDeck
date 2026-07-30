@@ -21,8 +21,8 @@ describe("Production Composition Deep Integration", () => {
     db = init.db;
   });
 
-  afterEach(() => {
-    deterministicCleanup({ db, dir: tempDir, outboxWorker: runtime?.outboxWorker, executionRegistry: runtime?.executionRegistry })
+  afterEach(async () => {
+    await deterministicCleanup({ db, dir: tempDir, outboxWorker: runtime?.outboxWorker, executionRegistry: runtime?.executionRegistry })
   });
 
   it("exercises all services registered in production composition runtime", async () => {

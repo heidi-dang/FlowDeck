@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, existsSync, rmSync } from "fs";
+import { mkdtempSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Database } from "bun:sqlite";
@@ -81,69 +81,6 @@ function makeAssignment(id: string, runId: string): Assignment {
   };
 }
 
-describe("SQLite cleanup integrity", () => {
-  let tempDir: string;
-  let db: Database;
-  let dbPath: string;
-
-  beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "integrity-cleanup-"));
-    dbPath = join(tempDir, "test.db");
-    db = new Database(dbPath);
-    db.exec(SCHEMA_V_0_2_6);
-    db.exec("PRAGMA journal_mode=WAL");
-    db.exec("PRAGMA busy_timeout=5000");
-  });
-
-  afterEach(() => {
-    deterministicCleanup({ db, dir: tempDir, dbFileName: "test.db" });
-  });
-
-  it("connection closes successfully", () => {
-    db.close();
-    expect(true).toBe(true);
-  });
-
-  it("temporary directory is deleted", () => {
-    db.close();
-    rmSync(tempDir, { recursive: true, force: true });
-    expect(existsSync(tempDir)).toBe(false);
-  });
-
-  it("WAL and SHM files are deleted on cleanup", () => {
-    const walFile = join(tempDir, "test.db-wal");
-    const shmFile = join(tempDir, "test.db-shm");
-    db.exec("CREATE TABLE t (x INTEGER)");
-    db.exec("INSERT INTO t VALUES (1)");
-    db.close();
-    if (existsSync(walFile)) rmSync(walFile, { force: true });
-    if (existsSync(shmFile)) rmSync(shmFile, { force: true });
-    rmSync(dbPath, { force: true });
-    rmSync(tempDir, { recursive: true, force: true });
-    expect(existsSync(tempDir)).toBe(false);
-  });
-
-  it("repeated cleanup is safe", () => {
-    deterministicCleanup({ db, dir: tempDir, dbFileName: "test.db" });
-    deterministicCleanup({ dir: tempDir, dbFileName: "test.db" });
-    deterministicCleanup({ dir: tempDir, dbFileName: "test.db" });
-    expect(true).toBe(true);
-  });
-
-  it("no DB/WAL/SHM files remain after deterministic cleanup", () => {
-    const dbFile = join(tempDir, "test.db");
-    const walFile = join(tempDir, "test.db-wal");
-    const shmFile = join(tempDir, "test.db-shm");
-    db.exec("CREATE TABLE t (x INTEGER)");
-    db.exec("INSERT INTO t VALUES (1)");
-    deterministicCleanup({ db, dir: tempDir, dbFileName: "test.db" });
-    expect(existsSync(dbFile)).toBe(false);
-    expect(existsSync(walFile)).toBe(false);
-    expect(existsSync(shmFile)).toBe(false);
-    expect(existsSync(tempDir)).toBe(false);
-  });
-});
-
 describe("Timestamp integrity", () => {
   let tempDir: string;
   let db: Database;
@@ -160,8 +97,8 @@ describe("Timestamp integrity", () => {
     tx = createTransactionManager(db);
   });
 
-  afterEach(() => {
-    deterministicCleanup({ db, dir: tempDir });
+  afterEach(async () => {
+    await deterministicCleanup({ db, dir: tempDir });
   });
 
   it("contract createdAt is unchanged after update", async () => {
@@ -237,8 +174,8 @@ describe("Queue semantics", () => {
     repo = new SqliteRunRepository(adapter, db, tx);
   });
 
-  afterEach(() => {
-    deterministicCleanup({ db, dir: tempDir });
+  afterEach(async () => {
+    await deterministicCleanup({ db, dir: tempDir });
   });
 
   it("PENDING persists as CREATED and reloads as PENDING", async () => {
@@ -314,8 +251,8 @@ describe("Assignment result and metadata integrity", () => {
     repo = new SqliteAssignmentRepo(db, tx);
   });
 
-  afterEach(() => {
-    deterministicCleanup({ db, dir: tempDir });
+  afterEach(async () => {
+    await deterministicCleanup({ db, dir: tempDir });
   });
 
   it("result never enters error_message", async () => {

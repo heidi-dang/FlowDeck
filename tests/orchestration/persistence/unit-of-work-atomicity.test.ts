@@ -21,8 +21,8 @@ describe("SqliteUnitOfWork Atomicity", () => {
     unitOfWork = new SqliteUnitOfWork(db);
   });
 
-  afterEach(() => {
-    deterministicCleanup({ db, dir: tempDir });
+  afterEach(async () => {
+    await deterministicCleanup({ db, dir: tempDir });
   });
 
   it("commits multiple operations atomically on success", async () => {
