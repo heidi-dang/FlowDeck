@@ -134,38 +134,29 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     }
   }
 
-  // Wait for OS to release file handles (critical on Windows)
-  await new Promise((r) => setTimeout(r, 50));
-
-  const tryRemove = async (f: string, opts: { recursive?: boolean; force?: boolean }): Promise<boolean> => {
-    if (!existsSync(f)) return true;
-    try {
-      await rm(f, opts);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  // Phase retry: try all files each round with increasing gaps
-  const phases = [0, 200, 500, 1000];
-
-  // Stage 5: Delete database files
+  // Delete DB/WAL/SHM files and directory. Verification catches any leaks.
   if (dir && existsSync(dir)) {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
 
-    for (const pause of phases) {
-      if (pause > 0) await new Promise((r) => setTimeout(r, pause));
-      await tryRemove(dbPath, { force: true });
-      await tryRemove(walPath, { force: true });
-      await tryRemove(shmPath, { force: true });
-      await tryRemove(dir, { recursive: true, force: true });
-      if (!existsSync(dbPath) && !existsSync(walPath) && !existsSync(shmPath) && !existsSync(dir)) break;
-    }
+    const removeWithRetry = async (f: string, opts: { recursive?: boolean; force?: boolean }): Promise<void> => {
+      if (!existsSync(f)) return;
+      try {
+        await rm(f, opts);
+      } catch (err: any) {
+        if (err.code === "EBUSY" || err.code === "EPERM" || err.code === "ENOTEMPTY") {
+          await new Promise((r) => setTimeout(r, 300));
+          try { await rm(f, opts); } catch { /* best-effort */ }
+        }
+      }
+    };
 
-    // Stage 6: Verify final state
+    await removeWithRetry(dbPath, { force: true });
+    await removeWithRetry(walPath, { force: true });
+    await removeWithRetry(shmPath, { force: true });
+    await removeWithRetry(dir, { recursive: true, force: true });
+
     if (existsSync(dbPath)) {
       failures.push(new Error("[verify] DB_FILE_LEAK"));
     }
