@@ -38,9 +38,11 @@ export const ErrorCodes = {
   DATABASE_UNAVAILABLE: { code: "DATABASE_UNAVAILABLE", category: ErrorCategory.DEPENDENCY, httpStatus: 503, retryable: true },
   STREAM_UNAVAILABLE: { code: "STREAM_UNAVAILABLE", category: ErrorCategory.DEPENDENCY, httpStatus: 503, retryable: true },
   INTERNAL_ERROR: { code: "INTERNAL_ERROR", category: ErrorCategory.INTERNAL, httpStatus: 500, retryable: false },
-  UNEXPECTED_ERROR: { code: "UNEXPECTED_ERROR", category: ErrorCategory.INTERNAL, httpStatus: 500, retryable: false },
-  REQUEST_TIMEOUT: { code: "REQUEST_TIMEOUT", category: ErrorCategory.TIMEOUT, httpStatus: 408, retryable: true },
-  STREAM_TIMEOUT: { code: "STREAM_TIMEOUT", category: ErrorCategory.TIMEOUT, httpStatus: 408, retryable: true },
+  UNSUPPORTED_CAPABILITY: { code: "UNSUPPORTED_CAPABILITY", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },
+  REPLAY_NOT_CONFIGURED: { code: "REPLAY_NOT_CONFIGURED", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },
+  COMPLETION_DECISION_IMMUTABLE: { code: "COMPLETION_DECISION_IMMUTABLE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
+  VERIFICATION_RESULT_IMMUTABLE: { code: "VERIFICATION_RESULT_IMMUTABLE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
+  RUN_STATUS_TRANSITION_INVALID: { code: "RUN_STATUS_TRANSITION_INVALID", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
 } as const;
 
 export interface OrchestrationErrorOptions {

@@ -21,6 +21,118 @@ export function isTerminalRunStatus(status: string): boolean {
   return TERMINAL_RUN_STATUSES.has(status);
 }
 
+/**
+ * Persisted orchestration phases in task_runs.state.
+ * These are internal phases, not the public RunStatus.
+ */
+export const OrchestrationPhase = {
+  CREATED: "created",
+  PLANNING: "planning",
+  ANALYSING: "analysing",
+  DELEGATING: "delegating",
+  EXECUTING: "executing",
+  VERIFYING: "verifying",
+  RECOVERING: "recovering",
+  COMPLETED: "completed",
+  FAILED: "failed",
+  CANCELLED: "cancelled",
+} as const;
+
+export type OrchestrationPhase = (typeof OrchestrationPhase)[keyof typeof OrchestrationPhase];
+
+/**
+ * All valid persisted phases.
+ */
+export const VALID_PERSISTED_PHASES: ReadonlySet<OrchestrationPhase> = new Set([
+  OrchestrationPhase.CREATED,
+  OrchestrationPhase.PLANNING,
+  OrchestrationPhase.ANALYSING,
+  OrchestrationPhase.DELEGATING,
+  OrchestrationPhase.EXECUTING,
+  OrchestrationPhase.VERIFYING,
+  OrchestrationPhase.RECOVERING,
+  OrchestrationPhase.COMPLETED,
+  OrchestrationPhase.FAILED,
+  OrchestrationPhase.CANCELLED,
+]);
+
+/**
+ * Maps public RunStatus to persisted OrchestrationPhase.
+ * Throws if the status cannot be durably represented.
+ */
+export function mapRunStatusToTaskRunState(status: RunStatus): OrchestrationPhase {
+  switch (status) {
+    case RunStatus.QUEUED:
+      return OrchestrationPhase.CREATED;
+    case RunStatus.PENDING:
+      return OrchestrationPhase.CREATED;
+    case RunStatus.RUNNING:
+      return OrchestrationPhase.EXECUTING;
+    case RunStatus.PAUSED:
+      // paused is not a valid persisted phase - fail closed
+      throw new Error(`RUN_STATUS_TRANSITION_INVALID: RunStatus.paused cannot be durably represented as a persisted phase. Use recovery or cancellation instead.`);
+    case RunStatus.COMPLETED:
+      return OrchestrationPhase.COMPLETED;
+    case RunStatus.FAILED:
+      return OrchestrationPhase.FAILED;
+    case RunStatus.CANCELLED:
+      return OrchestrationPhase.CANCELLED;
+    case RunStatus.TIMEOUT:
+      // timeout is not a valid persisted phase - fail closed
+      throw new Error(`RUN_STATUS_TRANSITION_INVALID: RunStatus.timeout cannot be durably represented as a persisted phase. Use failure with timeout metadata instead.`);
+    default:
+      // Exhaustive check - should never reach here if all RunStatus values are handled
+      const exhaustiveCheck: never = status;
+      throw new Error(`Unhandled RunStatus: ${exhaustiveCheck}`);
+  }
+}
+
+/**
+ * Maps persisted OrchestrationPhase back to public RunStatus.
+ * Uses exhaustive switch - all valid phases must be handled.
+ */
+export function mapTaskRunStateToRunStatus(phase: string): RunStatus {
+  switch (phase) {
+    case OrchestrationPhase.CREATED:
+      return RunStatus.PENDING;
+    case OrchestrationPhase.PLANNING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.ANALYSING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.DELEGATING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.EXECUTING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.VERIFYING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.RECOVERING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.COMPLETED:
+      return RunStatus.COMPLETED;
+    case OrchestrationPhase.FAILED:
+      return RunStatus.FAILED;
+    case OrchestrationPhase.CANCELLED:
+      return RunStatus.CANCELLED;
+    default:
+      // Invalid persisted phase - fail closed
+      throw new Error(`INVALID_PERSISTED_PHASE: "${phase}" is not a valid persisted orchestration phase.`);
+  }
+}
+
+/**
+ * Validates that a string is a valid RunStatus.
+ */
+export function isValidRunStatus(status: string): status is RunStatus {
+  return Object.values(RunStatus).includes(status as RunStatus);
+}
+
+/**
+ * Validates that a string is a valid persisted phase.
+ */
+export function isValidPersistedPhase(phase: string): phase is OrchestrationPhase {
+  return VALID_PERSISTED_PHASES.has(phase as OrchestrationPhase);
+}
+
 export interface Run {
   id: string;
   status: RunStatus;

@@ -10,6 +10,12 @@ import type { Database } from "bun:sqlite";
 import type { TransactionManager } from "../transaction-manager";
 import type { TransactionalRunWriter } from "../transactional-run-writer";
 import type { Run, UpdateRunInput } from "../../types/runs";
+import {
+  RunStatus,
+  mapRunStatusToTaskRunState,
+  mapTaskRunStateToRunStatus,
+  isValidPersistedPhase,
+} from "../../types/runs";
 import type { OrchestrationEvent } from "../../types/events";
 import type { OutboxEntry } from "../../types/outbox";
 
@@ -33,7 +39,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
          VALUES (?, 'family-default', 1, 'Default Contract', 'Default contract description', 'https://github.com/heidi-dang/FlowDeck', '0000000000000000000000000000000000000000', 'system', datetime('now'))`,
       ).run(contractId);
 
-      const validStates = ['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled']; const state = validStates.includes(run.status) ? run.status : 'created';
+      const state = mapRunStatusToTaskRunState(run.status);
       db.prepare(
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, ?, ?, ?, 1, ?, ?, datetime('now'), strftime('%s','now'))`,
@@ -91,8 +97,8 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
   ): Run {
     return tx.write(() => {
       // 1. Update task_runs state
-      if (input.status) {
-        const taskRunState = ['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled'].includes(input.status) ? input.status : 'executing';
+      if (input.status !== undefined) {
+        const taskRunState = mapRunStatusToTaskRunState(input.status as RunStatus);
         db.prepare(
           `UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?`,
         ).run(taskRunState, id);
@@ -134,10 +140,13 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
       if (!row) {
         throw new Error(`Run ${id} not found after update`);
       }
+      if (!isValidPersistedPhase(row.state as string)) {
+        throw new Error(`INVALID_PERSISTED_PHASE: "${row.state}" is not a valid persisted orchestration phase.`);
+      }
       const now = new Date().toISOString();
       const updated: Run = {
         id: row.run_id as string,
-        status: (row.state as string) as Run["status"],
+        status: mapTaskRunStateToRunStatus(row.state as string),
         runType: (row.strategy as string) ?? "simple",
         correlationId: id,
         contractId: (row.contract_id as string) ?? undefined,

@@ -41,6 +41,12 @@ import type {
   PaginatedResult,
 } from "./services/ports";
 import type { Run, UpdateRunInput, RunFilter } from "./types/runs";
+import {
+  RunStatus,
+  mapRunStatusToTaskRunState,
+  mapTaskRunStateToRunStatus,
+  isValidPersistedPhase,
+} from "./types/runs";
 import type { Contract } from "./types/contracts";
 import type { Assignment } from "./types/assignments";
 import type { VerificationResult } from "./types/verification";
@@ -49,6 +55,7 @@ import type { Replay } from "./types/replay";
 import type { OrchestrationEvent, EventFilter } from "./types/events";
 import type { PagePaginationRequest } from "./types/pagination";
 import { createRouterWithControllers } from "./api/routes";
+import { OrchestrationError, ErrorCodes } from "./types/errors";
 
 export interface ProductionOrchestrationRuntime {
   db: Database;
@@ -92,7 +99,7 @@ export class SqliteRunRepository implements IRunRepository {
       this.db.prepare(
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, ?, ?, ?, 1, ?, ?, datetime('now'), strftime('%s','now'))`,
-      ).run(run.id, contractId, run.runType, ['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled'].includes(run.status) ? run.status : 'created', "0000000000000000000000000000000000000000", "main");
+      ).run(run.id, contractId, run.runType, mapRunStatusToTaskRunState(run.status), "0000000000000000000000000000000000000000", "main");
       return run;
     });
   }
@@ -101,22 +108,39 @@ export class SqliteRunRepository implements IRunRepository {
     const existing = await this.findById(id);
     if (!existing) return null;
     return this.tx.write(() => {
-      if (input.status) {
+      if (input.status !== undefined) {
+        const persistedState = mapRunStatusToTaskRunState(input.status as RunStatus);
         this.db.prepare(
-          "UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?",
-        ).run(['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled'].includes(input.status ?? '') ? input.status : 'executing', id);
+          "UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1, updated_at = datetime('now') WHERE run_id = ?",
+        ).run(persistedState, id);
       }
-      const updated = { ...existing, ...input, updatedAt: new Date().toISOString(), status: (input.status ?? existing.status) as Run["status"] };
-      return updated;
+      // Re-read the durable row to return accurate state
+      const row = this.db.prepare("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        id: row.run_id as string,
+        status: mapTaskRunStateToRunStatus(row.state as string),
+        runType: (row.strategy as string) ?? "simple",
+        correlationId: row.run_id as string,
+        contractId: row.contract_id as string,
+        aggregateId: row.run_id as string,
+        createdAt: (row.created_at as string) ?? new Date().toISOString(),
+        updatedAt: (row.created_at as string) ?? new Date().toISOString(),
+        startedAt: (row.started_at as string) ?? undefined,
+        completedAt: (row.completed_at as string) ?? undefined,
+      };
     });
   }
 
   async findById(id: string): Promise<Run | null> {
     const row = this.db.prepare("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
+    if (!isValidPersistedPhase(row.state as string)) {
+      throw new Error(`INVALID_PERSISTED_PHASE: "${row.state}" is not a valid persisted orchestration phase.`);
+    }
     return {
       id: row.run_id as string,
-      status: (row.state as string) as Run["status"],
+      status: mapTaskRunStateToRunStatus(row.state as string),
       runType: (row.strategy as string) ?? "simple",
       correlationId: row.run_id as string,
       contractId: row.contract_id as string,
@@ -131,19 +155,60 @@ export class SqliteRunRepository implements IRunRepository {
   async findMany(filter: RunFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Run>> {
     const conditions: string[] = [];
     const params: (string | number)[] = [];
-    if (filter.status) { conditions.push("state = ?"); params.push(filter.status); }
+    if (filter.status) {
+      // Map public RunStatus to persisted OrchestrationPhase
+      try {
+        const persistedPhase = mapRunStatusToTaskRunState(filter.status as RunStatus);
+        conditions.push("state = ?");
+        params.push(persistedPhase);
+      } catch {
+        // If the status cannot be mapped (e.g., paused, timeout), no rows will match
+        conditions.push("state = ?");
+        params.push("__invalid_phase__");
+      }
+    }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     const limit = pagination.limit ?? 20;
     const offset = ((pagination.page ?? 1) - 1) * limit;
     const countRow = this.db.prepare(`SELECT COUNT(*) AS c FROM task_runs ${where}`).get(...params) as { c: number };
     const rows = this.db.prepare(`SELECT * FROM task_runs ${where} ORDER BY created_ts DESC LIMIT ? OFFSET ?`).all(...params, limit, offset) as Record<string, unknown>[];
-    return { items: rows.map(r => ({ id: r.run_id, status: r.state, runType: r.strategy, correlationId: r.run_id, contractId: r.contract_id, aggregateId: r.run_id, createdAt: r.created_at, updatedAt: r.created_at }) as unknown as Run), total: countRow.c, page: pagination.page ?? 1, limit };
+    return {
+      items: rows.map(r => {
+        if (!isValidPersistedPhase(r.state as string)) {
+          throw new Error(`INVALID_PERSISTED_PHASE: "${r.state}" is not a valid persisted orchestration phase.`);
+        }
+        return {
+          id: r.run_id,
+          status: mapTaskRunStateToRunStatus(r.state as string),
+          runType: r.strategy,
+          correlationId: r.run_id,
+          contractId: r.contract_id,
+          aggregateId: r.run_id,
+          createdAt: r.created_at,
+          updatedAt: r.created_at,
+        } as unknown as Run;
+      }),
+      total: countRow.c,
+      page: pagination.page ?? 1,
+      limit,
+    };
   }
 
   async count(filter: RunFilter): Promise<number> {
     const conditions: string[] = [];
     const params: (string | number)[] = [];
-    if (filter.status) { conditions.push("state = ?"); params.push(filter.status); }
+    if (filter.status) {
+      // Map public RunStatus to persisted OrchestrationPhase
+      try {
+        const persistedPhase = mapRunStatusToTaskRunState(filter.status as RunStatus);
+        conditions.push("state = ?");
+        params.push(persistedPhase);
+      } catch {
+        // If the status cannot be mapped (e.g., paused, timeout), no rows will match
+        conditions.push("state = ?");
+        params.push("__invalid_phase__");
+      }
+    }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     const row = this.db.prepare(`SELECT COUNT(*) AS c FROM task_runs ${where}`).get(...params) as { c: number };
     return row.c;
@@ -175,8 +240,40 @@ export class SqliteContractRepo implements IContractRepository {
     const existing = await this.findById(id);
     if (!existing) return null;
     return this.tx.write(() => {
-      const updated = { ...existing, ...input, updatedAt: new Date().toISOString() };
-      return updated;
+      const sets: string[] = [];
+      const values: (string | number)[] = [];
+      if (input.name !== undefined) {
+        sets.push("title = ?");
+        values.push(input.name);
+      }
+      if (input.description !== undefined) {
+        sets.push("description = ?");
+        values.push(input.description);
+      }
+      if (sets.length === 0) {
+        // No fields to update, return existing as-is
+        return existing;
+      }
+      // Add updated_at timestamp
+      sets.push("created_at = datetime('now')");
+      values.push(id);
+      const sql = `UPDATE task_contracts SET ${sets.join(", ")} WHERE contract_id = ?`;
+      const result = this.db.prepare(sql).run(...values);
+      if (result.changes === 0) {
+        // Contract no longer exists after update attempt
+        return null;
+      }
+      // Re-read the durable row
+      const row = this.db.prepare("SELECT * FROM task_contracts WHERE contract_id = ?").get(id) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        id: row.contract_id as string,
+        name: (row.title as string) ?? row.contract_id as string,
+        status: "active" as Contract["status"],
+        correlationId: id,
+        createdAt: (row.created_at as string) ?? new Date().toISOString(),
+        updatedAt: (row.created_at as string) ?? new Date().toISOString(),
+      };
     });
   }
 
@@ -226,8 +323,55 @@ export class SqliteAssignmentRepo implements IAssignmentRepository {
     const existing = await this.findById(id);
     if (!existing) return null;
     return this.tx.write(() => {
-      const updated = { ...existing, ...input, updatedAt: new Date().toISOString() };
-      return updated;
+      const sets: string[] = [];
+      const values: (string | number)[] = [];
+      // Map input fields to assignments table columns
+      if (input.status !== undefined) {
+        sets.push("status = ?");
+        values.push(input.status);
+      }
+      if (input.agentId !== undefined) {
+        sets.push("agent_id = ?");
+        values.push(input.agentId);
+      }
+      if (input.role !== undefined) {
+        sets.push("description = ?");
+        values.push(input.role);
+      }
+      if (input.result !== undefined) {
+        // result is stored in error_message for now (TODO: proper result field)
+        sets.push("error_message = ?");
+        values.push(JSON.stringify(input.result));
+      }
+      if (input.metadata !== undefined) {
+        // metadata stored alongside (TODO: proper metadata field)
+      }
+      if (sets.length === 0) {
+        // No fields to update, return existing as-is
+        return existing;
+      }
+      // Add updated timestamp
+      sets.push("created_at = datetime('now')");
+      values.push(id);
+      const sql = `UPDATE assignments SET ${sets.join(", ")} WHERE id = ?`;
+      const result = this.db.prepare(sql).run(...values);
+      if (result.changes === 0) {
+        // Assignment no longer exists after update attempt
+        return null;
+      }
+      // Re-read the durable row
+      const row = this.db.prepare("SELECT * FROM assignments WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        id: row.id as string,
+        runId: row.run_id as string,
+        agentId: row.agent_id as string,
+        role: row.description as string,
+        status: row.status as Assignment["status"],
+        correlationId: row.run_id as string,
+        createdAt: row.created_at as string,
+        updatedAt: row.created_at as string,
+      };
     });
   }
 
@@ -267,12 +411,14 @@ class SqliteCompletionRepo implements ICompletionRepository {
     });
   }
 
-  async update(id: string, input: Partial<Completion>): Promise<Completion | null> {
-    const existing = await this.findById(id);
-    if (!existing) return null;
-    return this.tx.write(() => {
-      const updated = { ...existing, ...input, updatedAt: new Date().toISOString() };
-      return updated;
+  async update(id: string, _input: Partial<Completion>): Promise<Completion | null> {
+    // completion_decisions is append-only by design:
+    // - decision column only accepts 'pass' or 'fail' (CHECK constraint)
+    // - no mutable status, summary, outcome, or metadata columns exist
+    // - the record represents a historical decision point, not a mutable state
+    throw OrchestrationError.fromCode(ErrorCodes.COMPLETION_DECISION_IMMUTABLE, {
+      message: "Completion decisions are immutable. The completion_decisions table records historical decisions that cannot be modified.",
+      details: { completionId: id },
     });
   }
 
@@ -309,8 +455,48 @@ class SqliteVerificationRepo implements IVerificationRepository {
     const existing = await this.findById(id);
     if (!existing) return null;
     return this.tx.write(() => {
-      const updated = { ...existing, ...input, updatedAt: new Date().toISOString() };
-      return updated;
+      const sets: string[] = [];
+      const values: (string | number)[] = [];
+      // Map input fields to verification_results columns
+      if (input.status !== undefined) {
+        sets.push("status = ?");
+        values.push(input.status);
+      }
+      if (input.result !== undefined) {
+        sets.push("output_summary = ?");
+        values.push(input.result);
+      }
+      if (input.error !== undefined) {
+        sets.push("error_output = ?");
+        values.push(input.error);
+      }
+      // completed_at and duration_ms would be set when status moves to terminal
+      if (sets.length === 0) {
+        // No fields to update, return existing as-is
+        return existing;
+      }
+      // Add completed_at when moving to terminal status
+      if (input.status === 'passed' || input.status === 'failed' || input.status === 'skipped') {
+        sets.push("completed_at = datetime('now')");
+      }
+      const sql = `UPDATE verification_results SET ${sets.join(", ")} WHERE id = ?`;
+      const result = this.db.prepare(sql).run(...values);
+      if (result.changes === 0) {
+        // Verification result no longer exists after update attempt
+        return null;
+      }
+      // Re-read the durable row
+      const row = this.db.prepare("SELECT * FROM verification_results WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        id: row.id as string,
+        runId: row.run_id as string,
+        status: row.status as VerificationResult["status"],
+        checkType: row.verification_type as string,
+        correlationId: row.run_id as string,
+        createdAt: row.started_at as string,
+        updatedAt: row.completed_at as string ?? row.started_at as string,
+      };
     });
   }
 
@@ -329,7 +515,7 @@ class SqliteVerificationRepo implements IVerificationRepository {
   }
 
   async count(): Promise<number> {
-    const row = this.db.prepare("SELECT COUNT(*) AS c FROM verification_runs").get() as { c: number };
+    const row = this.db.prepare("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number };
     return row.c;
   }
 
@@ -341,16 +527,24 @@ class SqliteVerificationRepo implements IVerificationRepository {
 
 export class UnsupportedReplayRepository implements IReplayRepository {
   async create(_replay: Replay): Promise<Replay> {
-    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.');
+    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
+      message: "Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+    });
   }
   async findById(_id: string): Promise<Replay | null> {
-    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration.');
+    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
+      message: "Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+    });
   }
   async findMany(_pagination: PagePaginationRequest): Promise<PaginatedResult<Replay>> {
-    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration.');
+    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
+      message: "Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+    });
   }
   async count(): Promise<number> {
-    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration.');
+    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
+      message: "Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+    });
   }
 }
 
