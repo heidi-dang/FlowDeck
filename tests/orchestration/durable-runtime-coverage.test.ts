@@ -45,7 +45,7 @@ import type {
   IEventRepository,
 } from "../../src/orchestration/services/ports"
 import { RunStatus, OrchestrationPhase } from "../../src/orchestration/types/runs"
-import { ErrorCodes } from "../../src/orchestration/types/errors"
+import { ErrorCodes, OrchestrationError } from "../../src/orchestration/types/errors"
 import {
   SqliteCompletionRepoAdapter,
   SqliteVerificationRepoAdapter,
