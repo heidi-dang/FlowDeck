@@ -71,7 +71,7 @@ export interface ProductionOrchestrationRuntime {
 
 // ── SQLite-backed production repository implementations ────────────────
 
-class SqliteRunRepository implements IRunRepository {
+export class SqliteRunRepository implements IRunRepository {
   constructor(
     private readonly adapter: SqliteTaskRunAdapter,
     private readonly db: Database,
@@ -150,7 +150,7 @@ class SqliteRunRepository implements IRunRepository {
   }
 }
 
-class SqliteContractRepo implements IContractRepository {
+export class SqliteContractRepo implements IContractRepository {
   constructor(
     private readonly adapter: SqliteContractAdapter,
     private readonly db: Database,
@@ -207,7 +207,7 @@ class SqliteContractRepo implements IContractRepository {
   }
 }
 
-class SqliteAssignmentRepo implements IAssignmentRepository {
+export class SqliteAssignmentRepo implements IAssignmentRepository {
   constructor(
     private readonly db: Database,
     private readonly tx: TransactionManager,
@@ -246,7 +246,7 @@ class SqliteAssignmentRepo implements IAssignmentRepository {
   }
 
   async count(): Promise<number> {
-    const row = this.db.prepare("SELECT COUNT(*) AS c FROM run_assignments").get() as { c: number };
+    const row = this.db.prepare("SELECT COUNT(*) AS c FROM assignments").get() as { c: number };
     return row.c;
   }
 }
@@ -339,7 +339,7 @@ class SqliteVerificationRepo implements IVerificationRepository {
   }
 }
 
-class UnsupportedReplayRepository implements IReplayRepository {
+export class UnsupportedReplayRepository implements IReplayRepository {
   async create(_replay: Replay): Promise<Replay> {
     throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.');
   }

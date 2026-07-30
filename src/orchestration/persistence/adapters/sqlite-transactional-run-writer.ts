@@ -92,9 +92,10 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
     return tx.write(() => {
       // 1. Update task_runs state
       if (input.status) {
+        const taskRunState = ['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled'].includes(input.status) ? input.status : 'executing';
         db.prepare(
           `UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?`,
-        ).run(input.status, id);
+        ).run(taskRunState, id);
       }
 
       // 2. Insert events row
