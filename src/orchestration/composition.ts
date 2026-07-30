@@ -92,7 +92,7 @@ export class SqliteRunRepository implements IRunRepository {
       this.db.prepare(
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, ?, ?, ?, 1, ?, ?, datetime('now'), strftime('%s','now'))`,
-      ).run(run.id, contractId, run.runType, run.status, "0000000000000000000000000000000000000000", "main");
+      ).run(run.id, contractId, run.runType, ['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled'].includes(run.status) ? run.status : 'created', "0000000000000000000000000000000000000000", "main");
       return run;
     });
   }
@@ -104,7 +104,7 @@ export class SqliteRunRepository implements IRunRepository {
       if (input.status) {
         this.db.prepare(
           "UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?",
-        ).run(input.status, id);
+        ).run(['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled'].includes(input.status ?? '') ? input.status : 'executing', id);
       }
       const updated = { ...existing, ...input, updatedAt: new Date().toISOString(), status: (input.status ?? existing.status) as Run["status"] };
       return updated;
