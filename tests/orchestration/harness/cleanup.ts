@@ -122,8 +122,13 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     }
   }
 
-  // Stage 4: Close SQLite connection exactly once
+  // Stage 4: Switch to DELETE journal mode (removes WAL/SHM on close) then close
   if (dbInstance && !(owned?.closed)) {
+    try {
+      dbInstance.exec("PRAGMA journal_mode=DELETE");
+    } catch {
+      // best-effort; non-WAL databases are unaffected
+    }
     try {
       dbInstance.close();
       if (owned) {
