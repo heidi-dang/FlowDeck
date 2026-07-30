@@ -99,7 +99,7 @@ describe("Production Composition Deep Integration", () => {
       });
       expect(true).toBe(false);
     } catch (err: unknown) {
-      expect(err as OrchestrationError).toMatchObject({ code: ErrorCodes.REPLAY_NOT_CONFIGURED });
+      expect((err as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
     }
   });
 });

@@ -782,7 +782,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown).toMatchObject({ code: ErrorCodes.REPLAY_NOT_CONFIGURED })
+    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
   })
 
   it("findById throws REPLAY_NOT_CONFIGURED", async () => {
@@ -793,7 +793,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown).toMatchObject({ code: ErrorCodes.REPLAY_NOT_CONFIGURED })
+    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
   })
 
   it("findMany throws REPLAY_NOT_CONFIGURED", async () => {
@@ -804,7 +804,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown).toMatchObject({ code: ErrorCodes.REPLAY_NOT_CONFIGURED })
+    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
   })
 
   it("count throws REPLAY_NOT_CONFIGURED", async () => {
@@ -815,7 +815,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown).toMatchObject({ code: ErrorCodes.REPLAY_NOT_CONFIGURED })
+    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
   })
 })
 
