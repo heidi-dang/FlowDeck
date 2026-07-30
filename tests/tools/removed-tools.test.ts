@@ -19,7 +19,7 @@ describe("removed delegation tools", () => {
       },
     }
 
-    const result = await flowDeckPlugin.server({
+    const result = await flowDeckPlugin({
       directory: process.cwd(),
       client: mockClient,
       worktree: "",

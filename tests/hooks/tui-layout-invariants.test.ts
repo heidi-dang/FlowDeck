@@ -379,7 +379,7 @@ describe("architectural invariant — no new log-management tool introduced", ()
       serverUrl: new URL("http://localhost"),
       $: {},
     }
-    const result = await flowDeckPlugin.server(mockInput, {})
+    const result = await flowDeckPlugin(mockInput, {})
 
     const toolNames = Object.keys((result as any).tool ?? {})
 
@@ -414,7 +414,7 @@ describe("architectural invariant — no new log-management tool introduced", ()
       serverUrl: new URL("http://localhost"),
       $: {},
     }
-    const result = await flowDeckPlugin.server(mockInput, {})
+    const result = await flowDeckPlugin(mockInput, {})
 
     const toolNames = Object.keys((result as any).tool ?? {})
     expect(toolNames).not.toContain("delegate")

@@ -8,6 +8,7 @@ export interface RouterContext {
   resolveProjectPath?: (serverKey: string, projectKey: string) => string | null;
   sseManager?: SseManager;
   authToken?: string;
+  authEnabled?: boolean;
   bindHost?: string;
   opencodeClient?: unknown;
 }

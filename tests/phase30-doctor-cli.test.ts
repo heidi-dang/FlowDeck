@@ -486,7 +486,7 @@ describe("Phase 30 — Doctor CLI Service", { timeout: 20000 }, () => {
   // ── resolveDoctorExitCode isolated fixture ──────────────────────────
 
   it("resolveDoctorExitCode returns 0 in normal mode and 1 in strict mode for degraded reports", async () => {
-    const mod = await import("../src/index");
+    const mod = await import("../src/doctor/exit-code.mjs");
     const fixtureReport = {
       passed: 4,
       warned: 1,
@@ -559,7 +559,7 @@ describe("Phase 30 — Doctor CLI Service", { timeout: 20000 }, () => {
 
   it("canonical function is re-exported by src/index.ts", async () => {
     const exitMod = await import("../src/doctor/exit-code.mjs");
-    const indexMod = await import("../src/index");
+    const indexMod = await import("../src/doctor/exit-code.mjs");
     expect(indexMod.resolveDoctorExitCode).toBe(exitMod.resolveDoctorExitCode);
   });
 

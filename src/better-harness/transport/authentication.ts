@@ -13,8 +13,12 @@ function constantTimeEqual(a: string, b: string): boolean {
 }
 
 export function createAuthCheck(config: AuthConfig): (token?: string) => boolean {
-  if (!config.enabled || !config.token) {
+  if (!config.enabled) {
     return () => true;
+  }
+  if (!config.token) {
+    // Auth enabled but no token configured — reject all requests
+    return () => false;
   }
 
   const expectedToken = config.token;

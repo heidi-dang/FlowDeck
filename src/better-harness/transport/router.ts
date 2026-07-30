@@ -114,6 +114,19 @@ export async function routeRequestContext(
       return ok({ status: "ok", timestamp: new Date().toISOString() });
     }
 
+    // --- Discovery metadata ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/discovery", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const { getDiscovery } = require("../runtime/runtime-registry");
+        const authRequired = ctx.authEnabled === true;
+        return ok(getDiscovery(serverKey, projectKey, check.path, authRequired));
+      }
+    }
+
     // --- Availability ---
     {
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/availability", urlPath);

@@ -65,7 +65,7 @@ describe("Governance chain integration", () => {
     writeFileSync(join(pd, "STATE.md"), "---\nphase: 1\n---\n# State", "utf-8")
 
     client = createMockClient()
-    instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
+    instance = (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
   })
 
   afterEach(() => {
@@ -89,7 +89,7 @@ describe("Governance chain integration", () => {
         }),
         "utf-8"
       )
-      instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
+      instance = (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
 
       const sessionID = "budget-strict"
       const input = { tool: "read", sessionID, agent: "heidi", args: {} }
@@ -134,7 +134,7 @@ describe("Governance chain integration", () => {
         }),
         "utf-8"
       )
-      instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
+      instance = (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
 
       const input = { tool: "write_file", sessionID: "gov-strict", agent: "researcher", args: {} }
       await expect(
@@ -152,7 +152,7 @@ describe("Governance chain integration", () => {
         }),
         "utf-8"
       )
-      instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
+      instance = (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
 
       const input = { tool: "write_file", sessionID: "gov-advisory", agent: "researcher", args: {} }
       await expect(instance["tool.execute.before"](input, {})).resolves.toBeUndefined()
@@ -170,7 +170,7 @@ describe("Governance chain integration", () => {
         }),
         "utf-8"
       )
-      instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
+      instance = (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
 
       const input = {
         tool: "task",
@@ -195,7 +195,7 @@ describe("Governance chain integration", () => {
         }),
         "utf-8"
       )
-      instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as PluginInstance
+      instance = (await flowDeckPlugin({ directory: dir, client } as any, {})) as unknown as PluginInstance
 
       const sessionID = "loop-test"
       const input = { tool: "write", sessionID, agent: "heidi", args: { file: "a.ts", content: "x" } }
