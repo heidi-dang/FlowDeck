@@ -79,10 +79,17 @@ function createTempDb(): TempDb {
 }
 
 function destroyTempDb(t: TempDb): void {
+  // Set busy_timeout to 0 first - makes all operations fail fast instead of hanging
+  try { t.db.exec("PRAGMA busy_timeout=0") } catch { /* ok */ }
   try {
-    // Checkpoint WAL before closing to ensure all writes are flushed
-    t.db.exec("PRAGMA wal_checkpoint(FULL)")
+    // Truncate checkpoint is faster and releases WAL resources quicker
+    t.db.exec("PRAGMA wal_checkpoint(TRUNCATE)")
   } catch { /* ok */ }
+  try {
+    // Switch to delete journal mode before closing - avoids WAL locking issues on Windows
+    t.db.exec("PRAGMA journal_mode=DELETE")
+  } catch { /* ok */ }
+  // Close the database - with busy_timeout=0 this should fail fast if stuck
   try { t.db.close() } catch { /* ok */ }
   // On Windows, WAL/SHM files may still be locked briefly after close
   // Remove them manually before removing the directory
