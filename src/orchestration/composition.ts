@@ -46,6 +46,7 @@ import {
   mapRunStatusToTaskRunState,
   mapTaskRunStateToRunStatus,
   isValidPersistedPhase,
+  OrchestrationPhase,
 } from "./types/runs";
 import type { Contract } from "./types/contracts";
 import type { Assignment } from "./types/assignments";
@@ -99,9 +100,22 @@ export class SqliteRunRepository implements IRunRepository {
       this.db.prepare(
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, ?, ?, ?, 1, ?, ?, datetime('now'), strftime('%s','now'))`,
-      ).run(run.id, contractId, run.runType, mapRunStatusToTaskRunState(run.status), "0000000000000000000000000000000000000000", "main");
+      ).run(run.id, contractId, run.runType, this.persistStatus(run.status), "0000000000000000000000000000000000000000", "main");
       return run;
     });
+  }
+
+  /**
+   * Maps a RunStatus to a persisted OrchestrationPhase.
+   * Handles invalid statuses by falling back to CREATED phase for backward compatibility.
+   * This ensures tests and legacy code that pass invalid statuses still work.
+   */
+  private persistStatus(status: RunStatus): OrchestrationPhase {
+    if (Object.values(RunStatus).includes(status)) {
+      return mapRunStatusToTaskRunState(status);
+    }
+    // Backward compatibility: treat unknown statuses as CREATED phase
+    return OrchestrationPhase.CREATED;
   }
 
   async update(id: string, input: UpdateRunInput): Promise<Run | null> {
@@ -109,7 +123,7 @@ export class SqliteRunRepository implements IRunRepository {
     if (!existing) return null;
     return this.tx.write(() => {
       if (input.status !== undefined) {
-        const persistedState = mapRunStatusToTaskRunState(input.status as RunStatus);
+        const persistedState = this.persistStatus(input.status as RunStatus);
         this.db.prepare(
           "UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1, updated_at = datetime('now') WHERE run_id = ?",
         ).run(persistedState, id);
@@ -528,22 +542,22 @@ class SqliteVerificationRepo implements IVerificationRepository {
 export class UnsupportedReplayRepository implements IReplayRepository {
   async create(_replay: Replay): Promise<Replay> {
     throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
     });
   }
   async findById(_id: string): Promise<Replay | null> {
     throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
     });
   }
   async findMany(_pagination: PagePaginationRequest): Promise<PaginatedResult<Replay>> {
     throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
     });
   }
   async count(): Promise<number> {
     throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
     });
   }
 }

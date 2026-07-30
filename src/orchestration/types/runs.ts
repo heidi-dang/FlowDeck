@@ -63,7 +63,6 @@ export const VALID_PERSISTED_PHASES: ReadonlySet<OrchestrationPhase> = new Set([
 export function mapRunStatusToTaskRunState(status: RunStatus): OrchestrationPhase {
   switch (status) {
     case RunStatus.QUEUED:
-      return OrchestrationPhase.CREATED;
     case RunStatus.PENDING:
       return OrchestrationPhase.CREATED;
     case RunStatus.RUNNING:
@@ -84,6 +83,39 @@ export function mapRunStatusToTaskRunState(status: RunStatus): OrchestrationPhas
       // Exhaustive check - should never reach here if all RunStatus values are handled
       const exhaustiveCheck: never = status;
       throw new Error(`Unhandled RunStatus: ${exhaustiveCheck}`);
+  }
+}
+
+/**
+ * Maps a persisted OrchestrationPhase (or legacy "created" string) to public RunStatus.
+ * Uses exhaustive switch - all valid phases must be handled.
+ * Note: "created" is a valid persisted phase that maps to PENDING per documented policy.
+ */
+export function mapPersistedPhaseToRunStatus(phase: string): RunStatus {
+  switch (phase) {
+    case OrchestrationPhase.CREATED:
+      return RunStatus.PENDING;
+    case OrchestrationPhase.PLANNING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.ANALYSING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.DELEGATING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.EXECUTING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.VERIFYING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.RECOVERING:
+      return RunStatus.RUNNING;
+    case OrchestrationPhase.COMPLETED:
+      return RunStatus.COMPLETED;
+    case OrchestrationPhase.FAILED:
+      return RunStatus.FAILED;
+    case OrchestrationPhase.CANCELLED:
+      return RunStatus.CANCELLED;
+    default:
+      // Invalid persisted phase - fail closed
+      throw new Error(`INVALID_PERSISTED_PHASE: "${phase}" is not a valid persisted orchestration phase.`);
   }
 }
 
