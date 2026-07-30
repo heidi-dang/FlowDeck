@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { mkdirSync, rmSync, readFileSync, existsSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import flowDeckPlugin, { cleanupSessionState } from "../src/index"
+import flowDeckPluginFn, { cleanupSessionState } from "../src/index"
+// The default export is now the plugin server function directly
+// (not an { id, server } wrapper).  The test calls it the same way.
+const flowDeckPlugin = flowDeckPluginFn
 import { validateToolAccess } from "../src/services/agent-validator"
 import { auditLogPath } from "../src/services/audit-log"
 import { getAgentConfigs } from "../src/agents/index"
@@ -30,7 +33,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("allows heidi to delegate using toolOutput.args schema and records delegation.started", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const sessionID = "ses_parent_1"
     const callID = "call-task-101"
 
@@ -73,7 +76,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("emits delegation.completed with durationMs on successful after-hook matching exact OpenCode result shape", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const sessionID = "ses_parent_2"
     const callID = "call-task-102"
 
@@ -126,7 +129,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("emits delegation.failed when child session fires session.error (real OpenCode failure path)", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentSessionID = "ses_parent_3"
     const childSessionID = "ses_child_3"
     const callID = "call-task-103"
@@ -184,7 +187,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("handles two concurrent delegations independently without cross-talk on failure", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_parent_concurrent"
     const callA = "call-a-backend"
     const callB = "call-b-tester"
@@ -260,7 +263,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("allows specialist child session chat.message via parentID and blocks nested delegation by resolved caller agent", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_parent_real"
     const childID = "ses_child_real"
     const callID = "call-task-nested"
@@ -307,7 +310,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("fails closed with TASK_CALLER_UNRESOLVED in strict mode when caller cannot be resolved", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const sessionID = "ses_unknown_caller"
     const callID = "call-task-unresolved"
 
@@ -322,7 +325,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("clears sessionTaskCalls and sessionRegistry during cleanupSessionState", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const sessionID = "ses_cleanup_test"
     const callID = "call-task-clean"
 
@@ -357,7 +360,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("continues through remaining governance hooks when task call has no targetAgent", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const sessionID = "ses_integration_5"
     const callID = "call-task-105"
 
@@ -407,7 +410,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   // ── Adversarial child-session correlation tests ────────────────────
 
   it("same-agent concurrent calls emit diagnostic and leave children uncorrelated", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_same_agent_concurrent"
     const callFirst = "call-first"
     const callSecond = "call-second"
@@ -488,7 +491,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("correlates child sessions created in reverse task-call order", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_reverse_order"
     const callA = "call-a"
     const callB = "call-b"
@@ -541,7 +544,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("first child fails while second remains active — no cross-talk", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_first_fail"
     const callA = "call-fail-a"
     const callB = "call-ok-b"
@@ -599,7 +602,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("second child fails while first completes — independent tracking", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_second_fail"
     const callOk = "call-ok"
     const callFail = "call-fail"
@@ -658,7 +661,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("three concurrent calls with two sharing the same target agent", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_three_concurrent"
     const callBc1 = "call-bc1"
     const callTester = "call-tester"
@@ -742,7 +745,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("missing child agent metadata produces diagnostic without deleting active tasks", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_no_agent_meta"
 
     await pluginInstance["event"]({
@@ -788,7 +791,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("duplicate or late session.created does not double-correlate", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_dup_event"
     const callID = "call-dup"
 
@@ -823,7 +826,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   })
 
   it("session.error before correlation emits diagnostic without affecting other tasks", async () => {
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_error_before_corr"
 
     await pluginInstance["event"]({
@@ -894,7 +897,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
   it("late child error after cleanup does not affect a new session reusing similar IDs", async () => {
     // Simulate: session A completes cleanup, then a late error from session A's
     // child fires. If IDs overlap with a new session B, session B must not be affected.
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const { cleanupSessionState, sessionTaskCalls } = await import("../src/index")
     const parentOld = "ses_late_old"
     const childOld = "ses_late_child"
@@ -953,7 +956,7 @@ describe("Plugin Hook Integration — Real OpenCode Contract", () => {
     // REVERSE call order (call-second's child appears first). The dequeue
     // must detect ambiguity (length > 1) for both children, not silently
     // reassign the first queue slot to the second child.
-    const pluginInstance = (await flowDeckPlugin.server({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
+    const pluginInstance = (await flowDeckPlugin({ directory: tmpDir, client: { app: { log: async () => {} } } } as any)) as any
     const parentID = "ses_rev_same_agent"
     const callFirst = "call-first"
     const callSecond = "call-second"

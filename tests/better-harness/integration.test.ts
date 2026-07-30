@@ -148,10 +148,10 @@ describe("Authentication", () => {
     expect(check("anything")).toBe(true);
   });
 
-  it("allows all when token is null even if enabled", () => {
+  it("rejects all when token is null even if enabled", () => {
     const check = createAuthCheck({ token: null, enabled: true });
-    expect(check()).toBe(true);
-    expect(check("foo")).toBe(true);
+    expect(check()).toBe(false);
+    expect(check("foo")).toBe(false);
   });
 
   it("rejects missing token when auth enabled", () => {
@@ -183,14 +183,14 @@ describe("CORS", () => {
     expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
   });
 
-  it("falls back to default origin for unknown origins", () => {
+  it("omits Access-Control-Allow-Origin for unknown origins", () => {
     const headers = createCorsHeaders(DEFAULT_CORS_CONFIG, "https://evil.com");
-    expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
+    expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
   });
 
-  it("returns default when no origin is provided", () => {
+  it("omits Access-Control-Allow-Origin when no origin is provided", () => {
     const headers = createCorsHeaders(DEFAULT_CORS_CONFIG);
-    expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
+    expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
   });
 
   it("includes allowed methods and headers", () => {
@@ -1046,7 +1046,7 @@ describe("CORS - Custom Origins", () => {
       allowedHeaders: ["Content-Type"],
     };
     const headers = createCorsHeaders(config, "https://evil.com");
-    expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
+    expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
   });
 
   it("handles empty allowed origins", () => {
@@ -1056,7 +1056,7 @@ describe("CORS - Custom Origins", () => {
       allowedHeaders: ["Content-Type"],
     };
     const headers = createCorsHeaders(config, "https://example.com");
-    expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
+    expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
   });
 
   it("handles undefined origin with custom config", () => {
@@ -1066,7 +1066,7 @@ describe("CORS - Custom Origins", () => {
       allowedHeaders: ["Authorization"],
     };
     const headers = createCorsHeaders(config);
-    expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
+    expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
   });
 });
 
@@ -1425,7 +1425,7 @@ describe("CORS - Wildcard Origin", () => {
       allowedHeaders: ["Content-Type"],
     };
     const headers = createCorsHeaders(config, "https://notallowed.com");
-    expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
+    expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
   });
 
   it("falls back to default when origin is undefined", () => {
@@ -1435,9 +1435,9 @@ describe("CORS - Wildcard Origin", () => {
       allowedHeaders: ["*"],
     };
     const headers = createCorsHeaders(config);
-    expect(headers["Access-Control-Allow-Origin"]).toBe("http://localhost:3000");
-    expect(headers["Access-Control-Allow-Methods"]).toBe("*");
-    expect(headers["Access-Control-Allow-Headers"]).toBe("*");
+    expect(headers["Access-Control-Allow-Origin"]).toBeUndefined();
+    expect(headers["Access-Control-Allow-Methods"]).toBeUndefined();
+    expect(headers["Access-Control-Allow-Headers"]).toBeUndefined();
   });
 });
 
@@ -1661,7 +1661,7 @@ describe("HTTP Server - Request Handling", () => {
 
     const res = await fetch("http://127.0.0.1:" + port + "/health", { method: "OPTIONS" });
     expect(res.status).toBe(204);
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBeTruthy();
+    expect(res.headers.get("Vary")).toBe("Origin");
     await server.stop();
   });
 
@@ -1694,9 +1694,12 @@ describe("HTTP Server - Request Handling", () => {
     const port = await server.start();
 
     const res = await fetch("http://127.0.0.1:" + port + "/health");
-    expect(res.headers.get("Access-Control-Allow-Origin")).toBe("http://localhost:3000");
-    expect(res.headers.get("Access-Control-Allow-Methods")).toBeTruthy();
-    expect(res.headers.get("Access-Control-Allow-Headers")).toBeTruthy();
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
+    expect(res.headers.get("Vary")).toBe("Origin");
+    // Methods/headers only emitted for allowed origins
+    // (test request has no Origin header, so they are absent)
+    expect(res.headers.get("Access-Control-Allow-Methods")).toBeNull();
+    expect(res.headers.get("Access-Control-Allow-Headers")).toBeNull();
     await server.stop();
   });
 });

@@ -26,7 +26,7 @@ import {
 import { LoopDetector } from "./services/loop-detector"
 
 import { getAgentConfigs, getAgentRoutes } from "./agents/index"
-import { loadFlowDeckConfig, resolveAgentModels, type FlowDeckConfig } from "./config/index"
+import { loadFlowDeckConfig, resolveAgentModels, resolveBetterHarnessConfig, type FlowDeckConfig } from "./config/index"
 import { guardRailsHook } from "./hooks/guard-rails"
 import { OrchestratorGuard } from "./hooks/orchestrator-guard-hook"
 import { sessionStartHook } from "./hooks/session-start"
@@ -66,8 +66,8 @@ import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
 import { HarnessHttpServer } from "./better-harness/transport/http-server"
 import { SseManager } from "./better-harness/transport/sse"
 import { ProjectRegistry } from "./better-harness/runtime/project-registry"
-import type { BetterHarnessConfig } from "./config/schema"
 import type { RouterContext } from "./better-harness/runtime/router-context"
+import { canonicalize, getServerKey, opaqueProjectId, startBh } from "./better-harness/runtime/runtime-registry"
 
 // ─── Governance integration ────────────────────────────────────────────────
 import {
@@ -276,76 +276,63 @@ const plugin: Plugin = async ({ directory, client }) => {
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
   // --- Better Harness integration using shared graph ------------------------
-  let betterHarnessRuntime: HarnessRuntime | null = null
-  let betterHarnessServer: HarnessHttpServer | null = null
-  let betterHarnessSseManager: SseManager | null = null
-  let _betterHarnessCleanup: (() => void) | null = null
+  const bhConfig = resolveBetterHarnessConfig(flowdeckConfig)
 
-  const projectRegistry = new ProjectRegistry()
-  const bhConfig: BetterHarnessConfig | undefined = flowdeckConfig.betterHarness
-  if (bhConfig?.enabled) {
-    // Create runtime (it creates its own coordinator internally)
-    betterHarnessRuntime = new HarnessRuntime({
-      projectRoot: directory,
-      timeoutMs: 120_000,
-    })
+  if (bhConfig.enabled) {
+    // All resource creation is inside startBh's factory, which handles
+    // rollback.  We start it fire-and-forget — a failure logs a diagnostic
+    // but does NOT prevent the rest of FlowDeck from loading.
+    startBh(directory, async () => {
+      // 1. Canonicalize inside transaction
+      let canonicalRoot: string;
+      try { canonicalRoot = canonicalize(directory); } catch (e) {
+        throw new Error("[better-harness] Invalid project root: " + (e as Error).message);
+      }
+      const serverKey = getServerKey();
+      const projectKey = opaqueProjectId(canonicalRoot);
 
-    // Register project in registry
-    projectRegistry.register({
-      serverKey: "default",
-      projectKey: basename(directory),
-      canonicalProjectRoot: directory,
-    })
+      // 2. Create project registry and register
+      const projectRegistry = new ProjectRegistry()
+      projectRegistry.register({ serverKey, projectKey, canonicalProjectRoot: canonicalRoot });
 
-    const coordinator = betterHarnessRuntime.getCoordinator()
-    const eventBus = coordinator.getEventBus()
+      // 3-16. Create resources in order
+      const runtime = new HarnessRuntime({ projectRoot: canonicalRoot, timeoutMs: 120_000 })
+      const coordinator = runtime.getCoordinator()
+      const eventBus = coordinator.getEventBus()
+      const sseManager = new SseManager(eventBus, bhConfig.eventLogDir)
+      const routerContext: RouterContext = {
+        runtime, coordinator,
+        resolveProjectPath: (sk: string, pk: string) => projectRegistry.resolve(sk, pk),
+        sseManager, authToken: bhConfig.authToken,
+        bindHost: bhConfig.bindHost, opencodeClient: client,
+      }
+      const server = new HarnessHttpServer({
+        enabled: true, port: bhConfig.port, bindHost: bhConfig.bindHost,
+        cors: { allowedOrigins: bhConfig.corsOrigins },
+        auth: { token: bhConfig.authToken, enabled: bhConfig.authEnabled },
+        maxBodySize: bhConfig.maxBodySize,
+      })
+      server.setSseManager(sseManager)
+      server.setRouterContext(routerContext)
 
-    const eventLogDir = bhConfig.eventLogDir
-    betterHarnessSseManager = new SseManager(eventBus, eventLogDir)
-
-    // Build auth config
-    const authToken = bhConfig.authToken ?? null
-    const authEnabled = bhConfig.authEnabled ?? false
-
-    // Build router context with all dependencies
-    const routerContext: RouterContext = {
-      runtime: betterHarnessRuntime,
-      coordinator,
-      resolveProjectPath: (serverKey: string, projectKey: string) => {
-        return projectRegistry.resolve(serverKey, projectKey)
-      },
-      sseManager: betterHarnessSseManager,
-      authToken: authToken ?? undefined,
-      bindHost: bhConfig.bindHost ?? "127.0.0.1",
-      opencodeClient: client,
-    }
-
-    betterHarnessServer = new HarnessHttpServer({
-      enabled: true,
-      port: bhConfig.port ?? 0,
-      bindHost: bhConfig.bindHost ?? "127.0.0.1",
-      auth: {
-        token: authToken ?? undefined,
-        enabled: authEnabled,
-      },
-      maxBodySize: bhConfig.maxBodySize ?? 1024 * 1024,
-    })
-    betterHarnessServer.setSseManager(betterHarnessSseManager)
-    betterHarnessServer.setRouterContext(routerContext)
-
-    betterHarnessServer.start().then((port) => {
+      const port = await server.start()
       appLog("[better-harness] HTTP server started on port " + port)
+      coordinator.recoverActiveRuns()
+
+      return {
+        serverKey, projectKey, canonicalRoot,
+        state: "running" as const,
+        stop: async () => {
+          try { await server.stop(); } catch {}
+          projectRegistry.unregister(projectKey);
+        },
+        _cleanup: undefined,
+        startupError: undefined,
+        startedAt: new Date().toISOString(),
+      }
     }).catch((err: Error) => {
-      appLog("[better-harness] Failed to start HTTP server: " + err.message, "error")
+      appLog("[better-harness] Failed to start: " + err.message, "error");
     })
-
-    coordinator.recoverActiveRuns()
-
-    // Set up cleanup
-    _betterHarnessCleanup = () => {
-      betterHarnessServer?.stop().catch(() => {})
-      projectRegistry.unregister(basename(directory))
-    }
   }
 
   return {
@@ -1086,16 +1073,13 @@ export function getSessionMetricsDiagnostics(sessionID: string): {
   }
 }
 
-const flowDeckPlugin = {
-  id: "@heidi-dang/flowdeck",
-  server: plugin,
-}
+// Default export: the plugin server function (OpenCode PluginModule contract).
+// PluginModule.default and PluginModule.server must both be callable
+// functions — not an { id, server } wrapper object.
+export default plugin
 
-export default flowDeckPlugin
+// Library utilities are exported from @heidi-dang/flowdeck/api (see api.ts
+// and package.json exports map).  Do NOT add named exports here — they
+// would confuse the OpenCode plugin loader and cause
+// "Plugin export is not a function".
 
-export { AGENT_NAMES, createAgent } from "./agents/index"
-export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
-export { acquireLock, releaseLock } from "./services/async-lock"
-export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
-// resolveDoctorExitCode provenant du module canonique sans dépendances
-export { resolveDoctorExitCode } from "./doctor/exit-code.mjs"

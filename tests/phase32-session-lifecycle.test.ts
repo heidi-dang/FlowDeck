@@ -31,7 +31,7 @@ describe("Phase 32 — Terminal-Session Lifecycle Cleanup", () => {
   it("completed session removes all state", async () => {
     const sessionID = `sess-complete-${Date.now()}`
     const client = createMockClient()
-    const p: any = await flowDeckPlugin.server({ directory: TMP, client: client as any } as any, {})
+    const p: any = await flowDeckPlugin({ directory: TMP, client: client as any } as any, {})
 
     // Start session and simulate tool execution to accumulate metrics
     await p.event({ event: { type: "session.started", properties: { info: { id: sessionID } } } })
@@ -53,7 +53,7 @@ describe("Phase 32 — Terminal-Session Lifecycle Cleanup", () => {
   it("errored session removes all state", async () => {
     const sessionID = `sess-error-${Date.now()}`
     const client = createMockClient()
-    const p: any = await flowDeckPlugin.server({ directory: TMP, client: client as any } as any, {})
+    const p: any = await flowDeckPlugin({ directory: TMP, client: client as any } as any, {})
 
     await p.event({ event: { type: "session.started", properties: { info: { id: sessionID } } } })
     await toolGuardHook({ directory: TMP }, { tool: "write_file", name: "write_file", sessionID }, { args: { filePath: "src/b.ts" } })
@@ -69,7 +69,7 @@ describe("Phase 32 — Terminal-Session Lifecycle Cleanup", () => {
   it("idle session preserves nonterminal metrics", async () => {
     const sessionID = `sess-idle-${Date.now()}`
     const client = createMockClient()
-    const p: any = await flowDeckPlugin.server({ directory: TMP, client: client as any } as any, {})
+    const p: any = await flowDeckPlugin({ directory: TMP, client: client as any } as any, {})
 
     await p.event({ event: { type: "session.started", properties: { info: { id: sessionID } } } })
     recordWrite(sessionID, "src/c.ts")
@@ -108,7 +108,7 @@ describe("Phase 32 — Terminal-Session Lifecycle Cleanup", () => {
         throw new Error("Network logging failed")
       },
     })
-    const p: any = await flowDeckPlugin.server({ directory: TMP, client: client as any } as any, {})
+    const p: any = await flowDeckPlugin({ directory: TMP, client: client as any } as any, {})
 
     await p.event({ event: { type: "session.started", properties: { info: { id: sessionID } } } })
     await toolGuardHook({ directory: TMP }, { tool: "write_file", name: "write_file", sessionID }, { args: { filePath: "src/d.ts" } })
@@ -127,7 +127,7 @@ describe("Phase 32 — Terminal-Session Lifecycle Cleanup", () => {
   it("reused session ID starts from zero after terminal cleanup", async () => {
     const sessionID = `sess-reused-${Date.now()}`
     const client = createMockClient()
-    const p: any = await flowDeckPlugin.server({ directory: TMP, client: client as any } as any, {})
+    const p: any = await flowDeckPlugin({ directory: TMP, client: client as any } as any, {})
 
     // First session use
     await p.event({ event: { type: "session.started", properties: { info: { id: sessionID } } } })

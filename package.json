@@ -3,18 +3,23 @@
   "version": "0.8.0-alpha.13",
   "description": "FlowDeck — structured planning and execution workflows for OpenCode (Heidi fork)",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/plugin.js",
+  "types": "./dist/plugin.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js",
+      "default": "./dist/plugin.js"
     },
     "./server": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
+      "types": "./dist/plugin.d.ts",
+      "import": "./dist/plugin.js",
+      "default": "./dist/plugin.js"
+    },
+    "./api": {
+      "types": "./dist/api.d.ts",
+      "import": "./dist/api.js",
+      "default": "./dist/api.js"
     }
   },
   "bin": {
@@ -45,7 +50,7 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "bun build src/index.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && tsc --emitDeclarationOnly --project tsconfig.build.json && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm",
+    "build": "bun build src/plugin.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && bun build src/api.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && tsc --emitDeclarationOnly --project tsconfig.build.json && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm",
     "build:fdx": "cargo install --path crates/fdx --quiet",
     "check:fdx": "fdx --version",
     "postinstall": "node postinstall.mjs",
