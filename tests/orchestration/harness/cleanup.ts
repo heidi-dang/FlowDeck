@@ -135,17 +135,24 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   }
 
   // Delete DB/WAL/SHM files and directory. Verification catches any leaks.
-  // Each file is tried once; retries would risk test timeout on Windows.
+  // Minimal retry (3×100ms) to handle brief Windows file-lock windows without
+  // risking test timeout.
   if (dir && existsSync(dir)) {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
 
     for (const f of [dbPath, walPath, shmPath]) {
-      try { if (existsSync(f)) await rm(f, { force: true }); } catch { /* best-effort */ }
+      for (let i = 0; i < 4; i++) {
+        if (!existsSync(f)) break;
+        try { await rm(f, { force: true }); break; } catch { if (i < 3) await new Promise((r) => setTimeout(r, 100)); }
+      }
     }
 
-    try { if (existsSync(dir)) await rm(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    for (let i = 0; i < 4; i++) {
+      if (!existsSync(dir)) break;
+      try { await rm(dir, { recursive: true, force: true }); break; } catch { if (i < 3) await new Promise((r) => setTimeout(r, 100)); }
+    }
 
     if (existsSync(dbPath)) {
       failures.push(new Error("[verify] DB_FILE_LEAK"));
