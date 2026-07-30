@@ -134,24 +134,26 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     }
   }
 
+  // Brief pause for OS to release file handles (Windows)
+  await new Promise((r) => setTimeout(r, 50));
+
   // Delete DB/WAL/SHM files and directory. Verification catches any leaks.
-  // Minimal retry (3×100ms) to handle brief Windows file-lock windows without
-  // risking test timeout.
+  // Retries handle brief Windows file-lock windows without risking timeout.
   if (dir && existsSync(dir)) {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
 
     for (const f of [dbPath, walPath, shmPath]) {
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 4; i++) {
         if (!existsSync(f)) break;
-        try { await rm(f, { force: true }); break; } catch { if (i < 4) await new Promise((r) => setTimeout(r, 150)); }
+        try { await rm(f, { force: true }); break; } catch { if (i < 3) await new Promise((r) => setTimeout(r, 100)); }
       }
     }
 
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 4; i++) {
       if (!existsSync(dir)) break;
-      try { await rm(dir, { recursive: true, force: true }); break; } catch { if (i < 4) await new Promise((r) => setTimeout(r, 150)); }
+      try { await rm(dir, { recursive: true, force: true }); break; } catch { if (i < 3) await new Promise((r) => setTimeout(r, 100)); }
     }
 
     if (existsSync(dbPath)) {
