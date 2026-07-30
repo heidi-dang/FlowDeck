@@ -137,39 +137,35 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   // Wait for OS to release file handles (critical on Windows)
   await new Promise((r) => setTimeout(r, 50));
 
-  const deleteWithRetry = async (f: string, opts: { recursive?: boolean; force?: boolean }, deadline: number): Promise<boolean> => {
+  const tryRemove = async (f: string, opts: { recursive?: boolean; force?: boolean }): Promise<boolean> => {
     if (!existsSync(f)) return true;
-    for (;;) {
-      try {
-        await rm(f, opts);
-        return true;
-      } catch (err: any) {
-        if (err.code !== "EBUSY" && err.code !== "EPERM" && err.code !== "ENOTEMPTY") {
-          return false;
-        }
-        if (Date.now() >= deadline) return false;
-        await new Promise((r) => setTimeout(r, Math.min(200, deadline - Date.now())));
-      }
+    try {
+      await rm(f, opts);
+      return true;
+    } catch {
+      return false;
     }
   };
+
+  // Phase retry: try all files each round with increasing gaps
+  const phases = [0, 200, 500, 1000];
 
   // Stage 5: Delete database files
   if (dir && existsSync(dir)) {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
-    const deadline = Date.now() + 2000;
 
-    await deleteWithRetry(dbPath, { force: true }, deadline);
-    await deleteWithRetry(walPath, { force: true }, deadline);
-    await deleteWithRetry(shmPath, { force: true }, deadline);
-
-    // Stage 6: Delete temporary directory
-    if (existsSync(dir)) {
-      await deleteWithRetry(dir, { recursive: true, force: true }, deadline);
+    for (const pause of phases) {
+      if (pause > 0) await new Promise((r) => setTimeout(r, pause));
+      await tryRemove(dbPath, { force: true });
+      await tryRemove(walPath, { force: true });
+      await tryRemove(shmPath, { force: true });
+      await tryRemove(dir, { recursive: true, force: true });
+      if (!existsSync(dbPath) && !existsSync(walPath) && !existsSync(shmPath) && !existsSync(dir)) break;
     }
 
-    // Stage 7: Verify final state
+    // Stage 6: Verify final state
     if (existsSync(dbPath)) {
       failures.push(new Error("[verify] DB_FILE_LEAK"));
     }
