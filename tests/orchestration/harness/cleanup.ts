@@ -122,13 +122,8 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     }
   }
 
-  // Stage 4: Switch to DELETE journal mode (removes WAL/SHM on close) then close
+  // Stage 4: Close SQLite connection exactly once
   if (dbInstance && !(owned?.closed)) {
-    try {
-      dbInstance.exec("PRAGMA journal_mode=DELETE");
-    } catch {
-      // best-effort; non-WAL databases are unaffected
-    }
     try {
       dbInstance.close();
       if (owned) {
@@ -140,27 +135,17 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   }
 
   // Delete DB/WAL/SHM files and directory. Verification catches any leaks.
+  // Each file is tried once; retries would risk test timeout on Windows.
   if (dir && existsSync(dir)) {
     const dbPath = join(dir, fileName);
     const walPath = dbPath + "-wal";
     const shmPath = dbPath + "-shm";
 
-    const removeWithRetry = async (f: string, opts: { recursive?: boolean; force?: boolean }): Promise<void> => {
-      if (!existsSync(f)) return;
-      try {
-        await rm(f, opts);
-      } catch (err: any) {
-        if (err.code === "EBUSY" || err.code === "EPERM" || err.code === "ENOTEMPTY") {
-          await new Promise((r) => setTimeout(r, 300));
-          try { await rm(f, opts); } catch { /* best-effort */ }
-        }
-      }
-    };
+    for (const f of [dbPath, walPath, shmPath]) {
+      try { if (existsSync(f)) await rm(f, { force: true }); } catch { /* best-effort */ }
+    }
 
-    await removeWithRetry(dbPath, { force: true });
-    await removeWithRetry(walPath, { force: true });
-    await removeWithRetry(shmPath, { force: true });
-    await removeWithRetry(dir, { recursive: true, force: true });
+    try { if (existsSync(dir)) await rm(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
 
     if (existsSync(dbPath)) {
       failures.push(new Error("[verify] DB_FILE_LEAK"));
