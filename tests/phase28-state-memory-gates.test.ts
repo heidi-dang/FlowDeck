@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 // Mock the 'os' module to control homedir dynamically
-vi.mock("os", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:os")>();
+vi.mock("os", () => {
+  const original = require("node:os");
   return {
-    ...actual,
+    ...original,
     homedir: () => (globalThis as any).__mockHomedir || require("node:os").homedir(),
   };
 });
