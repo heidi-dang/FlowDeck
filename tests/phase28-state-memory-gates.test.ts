@@ -4,8 +4,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 // Mock the 'os' module to control homedir dynamically
-vi.mock("os", () => {
+vi.mock("os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>();
   return {
+    ...actual,
     homedir: () => (globalThis as any).__mockHomedir || require("node:os").homedir(),
   };
 });
@@ -20,6 +22,12 @@ vi.mock("fs", () => {
         throw new Error("Injected disk read failure");
       }
       return original.readFileSync(path, options);
+    },
+    cpSync: (src: any, dest: any, options: any) => {
+      if (typeof src === "string" && src.includes("legacy-home-err")) {
+        throw new Error("Injected disk read failure during cpSync");
+      }
+      return original.cpSync(src, dest, options);
     },
   };
 });

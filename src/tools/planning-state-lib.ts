@@ -110,6 +110,7 @@ export function planningDir(directory: string): string {
     } catch {
       try {
         if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true })
+        if (existsSync(newDir)) rmSync(newDir, { recursive: true, force: true })
       } catch {}
     }
   }
