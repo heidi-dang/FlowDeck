@@ -10,8 +10,8 @@ export interface ValidationResult {
   error: string | null;
 }
 
-const PATH_ESCAPE_PATTERN = /[&|;$\x27"()<>]|\.\./;
-const SHELL_INJECTION_PATTERN = /[&|;$\x27"()<>]/;
+const PATH_ESCAPE_PATTERN = /[&|;$\x27"()<>`]|\.\./;
+const SHELL_INJECTION_PATTERN = /[&|;$\x27"()<>`]/;
 
 function _isPathTraversalSafe(path: string): boolean {
   return !PATH_ESCAPE_PATTERN.test(path);
