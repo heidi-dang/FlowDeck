@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
-import { rmSync, existsSync } from "fs";
+import { existsSync } from "fs";
+import { rm } from "node:fs/promises";
 import { join } from "path";
 
 export interface StoppableWorker {
@@ -28,6 +29,8 @@ export interface CleanupContext {
   outboxWorker?: StoppableWorker;
   executionRegistry?: ExecutionRegistryHandle;
   executionTimeoutMs?: number;
+  /** Additional SQLite connections to close before directory removal */
+  extraConnections?: Database[];
 }
 
 export function getDbPath(dir: string, dbFileName: string = "test.db"): string {
@@ -51,7 +54,7 @@ function resolveOwned(db: Database | OwnedDatabase | undefined): { instance: Dat
 }
 
 export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
-  const { dir, dbFileName, outboxWorker, executionRegistry } = ctx;
+  const { dir, dbFileName, outboxWorker, executionRegistry, extraConnections } = ctx;
   const fileName = dbFileName ?? "test.db";
   const failures: Error[] = [];
   const { instance: dbInstance, owned } = resolveOwned(ctx.db);
@@ -82,7 +85,6 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
       }
     }
 
-    // Verify termination before clearing
     const remaining = executionRegistry.getActiveRunIds();
     if (remaining.length > 0) {
       failures.push(new Error(`[execution-leak] ${remaining.length} active run(s) remain: ${remaining.join(", ")}`));
@@ -121,52 +123,50 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     }
   }
 
-  // Stage 4: Close SQLite connection exactly once
+  // Stage 4: Close owned SQLite connection exactly once
   if (dbInstance && !(owned?.closed)) {
     try {
       dbInstance.close();
-      if (owned) {
-        owned.closed = true;
-      }
+      if (owned) owned.closed = true;
     } catch (error) {
       failures.push(normalizeError(error, "sqlite-close"));
     }
   }
 
-  // Brief pause for OS to release file handles (Windows)
-  const spin = (ms: number) => { const deadline = Date.now() + ms; while (Date.now() < deadline); };
-  spin(50);
-
-  // Delete DB/WAL/SHM files and directory with retry.
-  const deleteWithRetry = (f: string, opts: { recursive?: boolean; force?: boolean }): void => {
-    if (!existsSync(f)) return;
-    for (let i = 0; i < 10; i++) {
-      try { rmSync(f, opts); return; } catch { if (i < 9) spin(50); }
+  // Stage 5: Close extra connections
+  if (extraConnections) {
+    for (let i = 0; i < extraConnections.length; i++) {
+      const conn = extraConnections[i];
+      try { conn.close(); } catch (error) {
+        failures.push(normalizeError(error, `extra-connection-${i}`));
+      }
     }
-  };
+  }
 
+  // Stage 6: Yield event loop before filesystem removal
+  await new Promise((r) => setTimeout(r, 50));
+
+  // Stage 7: Remove the entire temporary directory asynchronously.
+  // Node.js rm() with maxRetries handles EBUSY/EPERM/ENOTEMPTY on Windows.
   if (dir && existsSync(dir)) {
+    const rmStart = Date.now();
+    try {
+      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    } catch (error: any) {
+      const elapsed = Date.now() - rmStart;
+      const code = error?.code ?? "UNKNOWN";
+      const msg = error?.message ?? String(error);
+      failures.push(new Error(
+        `[dir-remove] ${code} after ${elapsed}ms: ${msg} (path=${dir})`,
+      ));
+    }
+
+    // Stage 8: Verify final state
     const dbPath = join(dir, fileName);
-    const walPath = dbPath + "-wal";
-    const shmPath = dbPath + "-shm";
-
-    deleteWithRetry(dbPath, { force: true });
-    deleteWithRetry(walPath, { force: true });
-    deleteWithRetry(shmPath, { force: true });
-    deleteWithRetry(dir, { recursive: true, force: true });
-
-    if (existsSync(dbPath)) {
-      failures.push(new Error("[verify] DB_FILE_LEAK"));
-    }
-    if (existsSync(walPath)) {
-      failures.push(new Error("[verify] WAL_FILE_LEAK"));
-    }
-    if (existsSync(shmPath)) {
-      failures.push(new Error("[verify] SHM_FILE_LEAK"));
-    }
-    if (existsSync(dir)) {
-      failures.push(new Error("[verify] TEMP_DIRECTORY_LEAK"));
-    }
+    if (existsSync(dbPath)) failures.push(new Error(`[verify] DB_FILE_LEAK (${dbPath})`));
+    if (existsSync(dbPath + "-wal")) failures.push(new Error(`[verify] WAL_FILE_LEAK (${dbPath}-wal)`));
+    if (existsSync(dbPath + "-shm")) failures.push(new Error(`[verify] SHM_FILE_LEAK (${dbPath}-shm)`));
+    if (existsSync(dir)) failures.push(new Error(`[verify] TEMP_DIRECTORY_LEAK (${dir})`));
   }
 
   if (failures.length > 0) {

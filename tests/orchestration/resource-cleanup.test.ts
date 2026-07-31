@@ -85,11 +85,19 @@ describe("Cleanup lifecycle", () => {
 });
 
 describe("Active reader handling", () => {
-  it("cleanup does not hang and either succeeds or fails visibly", async () => {
-    const { dir, db, path } = createTempDbDir();
+  it("cleanup fails visibly when a reader holds a WAL snapshot", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const path = join(dir, "test.db");
+    const db = new Database(path);
+    db.exec("PRAGMA journal_mode=WAL");
+    db.exec("CREATE TABLE t (x INTEGER)");
+    db.exec("INSERT INTO t VALUES (1)");
+
     const reader = new Database(path);
     reader.exec("BEGIN");
-    reader.exec("SELECT * FROM t");
+    reader.query("SELECT * FROM t").all();
+    // Create a WAL frame after the reader has established its snapshot.
+    db.exec("INSERT INTO t VALUES (2)");
 
     let caught: AggregateError | null = null;
     try {
@@ -98,26 +106,23 @@ describe("Active reader handling", () => {
       caught = e instanceof AggregateError ? e : null;
     }
 
-    // On Linux the PASSIVE checkpoint does not block, so cleanup may succeed.
-    // On Windows the reader may hold file locks, producing AggregateError.
     if (caught) {
       expect(caught).toBeInstanceOf(AggregateError);
-      const hasCleanupFailure = caught.errors.some(
-        (e) =>
-          e.message.includes("wal-checkpoint") ||
-          e.message.includes("busy") ||
-          e.message.includes("DB_FILE_LEAK") ||
-          e.message.includes("WAL_FILE_LEAK") ||
-          e.message.includes("SHM_FILE_LEAK"),
-      );
-      expect(hasCleanupFailure).toBe(true);
+      expect(
+        caught.errors.some(
+          (error) =>
+            error.message.includes("wal-checkpoint") ||
+            error.message.includes("EBUSY") ||
+            error.message.includes("EPERM") ||
+            error.message.includes("FILE_LEAK"),
+        ),
+      ).toBe(true);
+    } else {
+      expect(existsSync(join(dir, "test.db"))).toBe(false);
+      expect(existsSync(join(dir, "test.db-wal"))).toBe(false);
+      expect(existsSync(join(dir, "test.db-shm"))).toBe(false);
+      expect(existsSync(dir)).toBe(false);
     }
-
-    reader.close();
-    for (const suffix of ["", "-wal", "-shm"]) {
-      try { rmSync(path + suffix, { force: true }); } catch {}
-    }
-    try { rmSync(dir, { recursive: true, force: true }); } catch {}
   });
 });
 
