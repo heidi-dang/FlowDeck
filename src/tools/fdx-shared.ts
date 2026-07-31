@@ -329,6 +329,10 @@ export function nativeSearchFallback(query: string, searchPath: string = "."): s
     const root = resolve(searchPath)
     const isIgnored = loadGitignorePatterns(root)
     const results: string[] = []
+
+    const lowerQuery = query.toLowerCase()
+    const queryRe = new RegExp(escapeRegex(query), "i")
+
     const walk = (dir: string) => {
       for (const item of readdirSync(dir)) {
         if (ALWAYS_EXCLUDED.includes(item)) continue
@@ -340,19 +344,24 @@ export function nativeSearchFallback(query: string, searchPath: string = "."): s
             walk(full)
           } else if (st.isFile()) {
             const text = readFileSync(full, "utf-8")
+
+            // Fast reject: If the file content doesn't match case-insensitively, skip it entirely
+            if (!queryRe.test(text)) continue
+
             const lines = text.split("\n")
-            lines.forEach((line, idx) => {
-              if (line.toLowerCase().includes(query.toLowerCase())) {
+            for (let idx = 0; idx < lines.length; idx++) {
+              const line = lines[idx]
+              if (line.toLowerCase().includes(lowerQuery)) {
                 results.push(`${full}:${idx + 1}:${line.trim()}`)
               }
-            })
+            }
           }
         } catch { /* ignore unreadable */ }
       }
     }
     walk(root)
     if (results.length === 0) return `[FDX Native Fallback] No matches found for "${query}"`
-    return `[FDX Native Fallback: ${results.length} matches]\n` + results.slice(0, 100).join("\n")
+    return `[FDX Native Fallback: ${results.length} matches]\n${results.join("\n")}`
   } catch (err: any) {
     return `[FDX Fallback] Search error: ${err.message}`
   }
@@ -467,61 +476,106 @@ function nativeOutlineFile(filePath: string): string {
 /**
  * Simple import-based impact fallback.
  * Scans TypeScript/JavaScript files for import/require statements matching the target files.
+ * Uses a bounded concurrency queue for deterministic, fail-safe traversal.
  */
-export async function nativeImpactFallback(files: string[], root: string = "."): Promise<string> {
+export async function nativeImpactFallback(
+  files: string[],
+  root: string = ".",
+  options: { maxConcurrency?: number } = {}
+): Promise<string> {
+  const maxConcurrency = options.maxConcurrency ?? 16
   const targetNames = new Set(files.map(f => {
     const base = f.split(/[/\\]/).pop() ?? f
     return base.replace(/\.(ts|tsx|js|jsx)$/, "")
   }))
 
   const results: Array<{ file: string; matches: string[] }> = []
-
-  const walk = async (dir: string) => {
-    let items
-    try {
-      items = await fsPromises.readdir(dir, { withFileTypes: true })
-    } catch {
-      return
-    }
-
-    const promises = items.map(async (item) => {
-      if (ALWAYS_EXCLUDED.includes(item.name)) return
-      const full = join(dir, item.name)
-
-      if (item.isDirectory()) {
-        await walk(full)
-      } else if (item.isFile() && /\.(ts|tsx|js|jsx)$/.test(item.name)) {
-        try {
-          const text = await fsPromises.readFile(full, "utf-8")
-          const matches: string[] = []
-          for (const target of targetNames) {
-            const importRe = new RegExp(
-              `(?:from\\s+['"](?:[./]*/)?${escapeRegex(target)}|require\\(\\s*['"](?:[./]*/)?${escapeRegex(target)})`,
-              "i"
-            )
-            if (importRe.test(text)) {
-              matches.push(target)
-            }
-          }
-          if (matches.length > 0) {
-            results.push({ file: full, matches })
-          }
-        } catch { /* ignore */ }
-      }
-    })
-
-    await Promise.all(promises)
-  }
-
   const resolvedRoot = resolve(root)
+
   try {
-    const st = await fsPromises.stat(resolvedRoot)
-    if (st.isDirectory()) {
-      await walk(resolvedRoot)
+    const rootStat = await fsPromises.stat(resolvedRoot)
+    if (!rootStat.isDirectory()) {
+      return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
     }
   } catch {
-    // root doesn't exist or not readable
+    return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
   }
+
+  const queue: string[] = [resolvedRoot]
+  let activeWorkers = 0
+
+  await new Promise<void>((resolvePromise) => {
+    const processQueue = async () => {
+      while (queue.length > 0 && activeWorkers < maxConcurrency) {
+        const dir = queue.shift()!
+        activeWorkers++
+
+        (async () => {
+          try {
+            const entries = await fsPromises.readdir(dir, { withFileTypes: true })
+            entries.sort((a, b) => a.name.localeCompare(b.name))
+
+            for (const item of entries) {
+              if (ALWAYS_EXCLUDED.includes(item.name)) continue
+              const full = join(dir, item.name)
+
+              let isDir = item.isDirectory()
+              let isFile = item.isFile()
+
+              if (item.isSymbolicLink()) {
+                try {
+                  const targetStat = await fsPromises.stat(full)
+                  isDir = targetStat.isDirectory()
+                  isFile = targetStat.isFile()
+                } catch {
+                  continue
+                }
+              }
+
+              if (isDir) {
+                queue.push(full)
+              } else if (isFile && /\.(ts|tsx|js|jsx)$/.test(item.name)) {
+                try {
+                  const text = await fsPromises.readFile(full, "utf-8")
+                  const matches: string[] = []
+                  for (const target of targetNames) {
+                    const importRe = new RegExp(
+                      `(?:from\\s+['"](?:[./]*/)?${escapeRegex(target)}|require\\(\\s*['"](?:[./]*/)?${escapeRegex(target)})`,
+                      "i"
+                    )
+                    if (importRe.test(text)) {
+                      matches.push(target)
+                    }
+                  }
+                  if (matches.length > 0) {
+                    matches.sort((a, b) => a.localeCompare(b))
+                    results.push({ file: full, matches })
+                  }
+                } catch { /* per-file failure isolation */ }
+              }
+            }
+          } catch {
+            /* per-directory failure isolation */
+          } finally {
+            activeWorkers--
+            if (queue.length === 0 && activeWorkers === 0) {
+              resolvePromise()
+            } else {
+              processQueue()
+            }
+          }
+        })()
+      }
+
+      if (queue.length === 0 && activeWorkers === 0) {
+        resolvePromise()
+      }
+    }
+
+    processQueue()
+  })
+
+  results.sort((a, b) => a.file.localeCompare(b.file))
 
   if (results.length === 0) {
     return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
