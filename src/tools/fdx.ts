@@ -507,7 +507,7 @@ export const fdxDecisionsTool: ToolDefinition = tool({
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeDecisionsFallback(args.action, args.topic, args.decision, args.rationale, args.made_by)
+      return nativeDecisionsFallback(args)
     }
     const cmd: string[] = ["decisions", "--topic", args.topic, "--action", args.action]
     if (args.action === "record") {
@@ -519,7 +519,7 @@ export const fdxDecisionsTool: ToolDefinition = tool({
       return runFdx(cmd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeDecisionsFallback(args.action, args.topic, args.decision, args.rationale, args.made_by)
+      return nativeDecisionsFallback(args)
     }
   },
 })

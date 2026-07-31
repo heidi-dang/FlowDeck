@@ -544,20 +544,20 @@ export async function nativeContextFallback(
   }
 }
 
-export async function nativeDecisionsFallback(
-  action: "record" | "read",
-  topic: string,
-  decision?: string,
-  rationale?: string,
-  made_by?: string,
-): Promise<string> {
-  const path = topicDecisionsPath(activeProjectDir, topic)
-  if (action === "record") {
-    const line = `- **${decision || "Decision"}**: ${rationale || ""} (By: ${made_by || "Unknown"})\n`
+export async function nativeDecisionsFallback(args: {
+  action: "record" | "read";
+  topic: string;
+  decision?: string;
+  rationale?: string;
+  made_by?: string;
+}): Promise<string> {
+  const path = topicDecisionsPath(activeProjectDir, args.topic)
+  if (args.action === "record") {
+    const line = `- **${args.decision || "Decision"}**: ${args.rationale || ""} (By: ${args.made_by || "Unknown"})\n`
     await appendWithLock(path, line)
     return `[FDX Decisions Fallback] Recorded to ${path}`
   } else {
     const res = readOrMissing(path)
-    return res.exists ? res.content : `[No decisions recorded for topic "${topic}"]`
+    return res.exists ? res.content : `[No decisions recorded for topic "${args.topic}"]`
   }
 }
