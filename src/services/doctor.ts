@@ -9,15 +9,40 @@
 import type { DiagnosticCheck, DoctorReport } from "./doctor-types"
 export type { DiagnosticCheck, DoctorReport }
 
+export class DoctorEngineLoadError extends Error {
+  constructor(message: string, public readonly cause?: unknown) {
+    super(message)
+    this.name = "DoctorEngineLoadError"
+  }
+}
+
 /** Lazily load and cache the shared engine via dynamic import */
 let engineModule: any = null
 
-export async function runDoctorChecks(directory: string): Promise<DoctorReport> {
+export async function getDoctorEngine(): Promise<any> {
   if (!engineModule) {
-    // Dynamic import at runtime — TypeScript won't resolve the .mjs path at compile time
-    engineModule = await new Function(`return import("../../scripts/doctor-engine.mjs")`)()
+    try {
+      const engineUrl = new URL(
+        "../../scripts/doctor-engine.mjs",
+        import.meta.url,
+      ).href
+      engineModule = await import(
+        /* @vite-ignore */
+        engineUrl
+      )
+    } catch (err) {
+      throw new DoctorEngineLoadError(
+        `Failed to resolve Doctor engine relative to module location (${import.meta.url}): ${err instanceof Error ? err.message : String(err)}`,
+        err,
+      )
+    }
   }
-  const result = await engineModule.runDoctorChecks(directory)
+  return engineModule
+}
+
+export async function runDoctorChecks(directory: string): Promise<DoctorReport> {
+  const engine = await getDoctorEngine()
+  const result = await engine.runDoctorChecks(directory)
   return {
     timestamp: new Date().toISOString(),
     directory,
@@ -27,3 +52,4 @@ export async function runDoctorChecks(directory: string): Promise<DoctorReport> 
     checks: result.checks,
   }
 }
+
