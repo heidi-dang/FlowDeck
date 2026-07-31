@@ -1100,3 +1100,5 @@ export { acquireLock, releaseLock } from "./services/async-lock"
 export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
 // resolveDoctorExitCode provenant du module canonique sans dépendances
 export { resolveDoctorExitCode } from "./doctor/exit-code.mjs"
+// Redaction utilities exported for consumers (logs, reports, doctor probes)
+export { redactSecrets, containsSecrets } from "./lib/secret-redaction"
