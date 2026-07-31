@@ -107,13 +107,20 @@ describe("publish.yml workflow step ordering", () => {
     expect(content).toMatch(/if \[\s*"\$TAG_VERSION"\s*!=\s*"\$PKG_VERSION"\s*\]/)
   })
 
-  it("8. registry version-availability validation exists", () => {
+  it("8. registry version-availability validation exists and is errexit-safe", () => {
     expect(stepNames).toContain("Check Registry Availability")
     // A duplicate-version publish attempt must be blocked, and lookup
     // failures must not be hidden.
     expect(content).toContain('npm view')
     expect(content).toContain("already exists")
     expect(content).not.toContain("2>/dev/null")
+    // The lookup must be errexit-safe: errexit is disabled ONLY around the
+    // npm view assignment (set +e ... set -e) so the expected E404 "version
+    // not found" exit code can be inspected instead of aborting the step.
+    expect(content).toMatch(/set \+e/)
+    expect(content).toMatch(/set -e/)
+    expect(content).toMatch(/No match found for version/)
+    expect(content).toMatch(/LOOKUP_EXIT=\$\?/)
   })
 
   it("9. npm provenance remains enabled", () => {
