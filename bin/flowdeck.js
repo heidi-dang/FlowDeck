@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// bin/flowdeck.js — FlowDeck CLI (Heidi fork)
+// bin/flowdeck.js — FlowDeck CLI
 // Full installer, verifier, doctor, config manager, and uninstaller
 //
 // Usage:
@@ -7,10 +7,10 @@
 //   flowdeck install --project    Install in project .opencode/
 //   flowdeck install --local-repo Install from local checkout
 //   flowdeck update               Update plugin registration
-//   flowdeck verify               Verify fork identity and registration
+//   flowdeck verify               Verify package identity and registration
 //   flowdeck doctor               Run comprehensive diagnostics
 //   flowdeck config validate      Validate JSON/JSONC configuration
-//   flowdeck migrate              Migrate from upstream to fork identity
+//   flowdeck migrate              Migrate configuration from upstream
 //   flowdeck rollback             Rollback from backup
 //   flowdeck uninstall            Remove plugin registration
 //   flowdeck dry-run              Show what would be done
@@ -46,8 +46,8 @@ const command = args[0] || "install";
 // ─── Help ──────────────────────────────────────────────────────────────
 if (command === "--help" || command === "-h" || command === "help") {
   console.log(`
-FlowDeck v${PKG_VERSION} — Heidi fork
-Structured planning and execution workflows for OpenCode
+FlowDeck v${PKG_VERSION}
+Production-grade multi-agent orchestration for OpenCode
 
 Usage:
   flowdeck install              Install plugin in opencode.json
@@ -55,10 +55,10 @@ Usage:
   flowdeck install --local-repo Install from local checkout
   flowdeck clean-install        Atomic clean reinstall with rollback
   flowdeck update               Update plugin registration
-  flowdeck verify               Verify fork identity and registration
+  flowdeck verify               Verify package identity and registration
   flowdeck doctor               Run comprehensive diagnostics
   flowdeck config validate      Validate JSON/JSONC configuration
-  flowdeck migrate              Migrate from upstream to fork identity
+  flowdeck migrate              Migrate configuration from upstream
   flowdeck rollback             Rollback from backup
   flowdeck uninstall            Remove plugin registration
   flowdeck dry-run              Show what would be done
@@ -509,7 +509,7 @@ async function cmdConfigValidate() {
       console.log(`  Plugin entries: ${data.plugin.length}`);
       const forkRef = data.plugin.filter(p => String(p).includes("heidi-dang"));
       const upstreamRef = data.plugin.filter(p => String(p).includes("dv.nghiem"));
-      if (forkRef.length > 0) console.log(`  ✓ Fork identity present: ${forkRef.join(", ")}`);
+      if (forkRef.length > 0) console.log(`  ✓ FlowDeck reference present: ${forkRef.join(", ")}`);
       if (upstreamRef.length > 0) console.log(`  ⚠ Upstream reference present: ${upstreamRef.join(", ")}`);
     }
     if (data.default_agent) console.log(`  Default agent: ${data.default_agent}`);
