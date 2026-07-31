@@ -147,23 +147,22 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   await new Promise((r) => setTimeout(r, 50));
 
   // Stage 7: Remove each file individually with async rm + retry.
-  // Per-file retry is used because a single locked WAL/SHM file would block
-  // an entire recursive directory removal. Verification catches any leaks.
+  // Files are retried against a shared deadline so total cleanup time
+  // stays within the test timeout even when multiple files are locked.
+  const sharedDeadline = Date.now() + 2000;
   const removeFile = async (f: string, opts: { recursive?: boolean; force?: boolean }): Promise<void> => {
     if (!existsSync(f)) return;
-    const startTime = Date.now();
-    const deadline = startTime + 2000;
-    for (let attempt = 1; Date.now() < deadline; attempt++) {
+    for (let attempt = 1; Date.now() < sharedDeadline; attempt++) {
       try {
         await rm(f, opts);
         return;
       } catch (err: any) {
         if (err.code !== "EBUSY" && err.code !== "EPERM" && err.code !== "ENOTEMPTY") {
-          failures.push(new Error(`[file-remove] ${err.code ?? "UNKNOWN"} after ${Date.now() - startTime}ms (attempt=${attempt}, path=${f}): ${err.message ?? err}`));
+          failures.push(normalizeError(err, `file-remove-${attempt}`));
           return;
         }
-        if (Date.now() >= deadline) {
-          failures.push(new Error(`[file-remove] ${err.code ?? "UNKNOWN"} after ${Date.now() - startTime}ms (attempt=${attempt}, path=${f}): ${err.message ?? err}`));
+        if (Date.now() >= sharedDeadline) {
+          failures.push(new Error(`[file-remove] ${err.code} after 2000ms (attempt=${attempt}, path=${f}): ${err.message}`));
           return;
         }
         await new Promise((r) => setTimeout(r, 200));
