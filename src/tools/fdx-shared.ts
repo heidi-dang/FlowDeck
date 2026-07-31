@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync, readdirSync, statSync } from "fs"
+import { existsSync, readFileSync, readdirSync, statSync, promises as fsPromises } from "fs"
 import { join, resolve } from "path"
 import {
   topicContextPath,
@@ -467,7 +467,7 @@ function nativeOutlineFile(filePath: string): string {
  * Simple import-based impact fallback.
  * Scans TypeScript/JavaScript files for import/require statements matching the target files.
  */
-export function nativeImpactFallback(files: string[], root: string = "."): string {
+export async function nativeImpactFallback(files: string[], root: string = "."): Promise<string> {
   const targetNames = new Set(files.map(f => {
     const base = f.split(/[/\\]/).pop() ?? f
     return base.replace(/\.(ts|tsx|js|jsx)$/, "")
@@ -475,16 +475,23 @@ export function nativeImpactFallback(files: string[], root: string = "."): strin
 
   const results: Array<{ file: string; matches: string[] }> = []
 
-  const walk = (dir: string) => {
-    for (const item of readdirSync(dir)) {
-      if (ALWAYS_EXCLUDED.includes(item)) continue
-      const full = join(dir, item)
-      try {
-        const st = statSync(full)
-        if (st.isDirectory()) {
-          walk(full)
-        } else if (st.isFile() && /\.(ts|tsx|js|jsx)$/.test(item)) {
-          const text = readFileSync(full, "utf-8")
+  const walk = async (dir: string) => {
+    let items
+    try {
+      items = await fsPromises.readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+
+    const promises = items.map(async (item) => {
+      if (ALWAYS_EXCLUDED.includes(item.name)) return
+      const full = join(dir, item.name)
+
+      if (item.isDirectory()) {
+        await walk(full)
+      } else if (item.isFile() && /\.(ts|tsx|js|jsx)$/.test(item.name)) {
+        try {
+          const text = await fsPromises.readFile(full, "utf-8")
           const matches: string[] = []
           for (const target of targetNames) {
             const importRe = new RegExp(
@@ -498,14 +505,21 @@ export function nativeImpactFallback(files: string[], root: string = "."): strin
           if (matches.length > 0) {
             results.push({ file: full, matches })
           }
-        }
-      } catch { /* ignore */ }
-    }
+        } catch { /* ignore */ }
+      }
+    })
+
+    await Promise.all(promises)
   }
 
   const resolvedRoot = resolve(root)
-  if (existsSync(resolvedRoot)) {
-    walk(resolvedRoot)
+  try {
+    const st = await fsPromises.stat(resolvedRoot)
+    if (st.isDirectory()) {
+      await walk(resolvedRoot)
+    }
+  } catch {
+    // root doesn't exist or not readable
   }
 
   if (results.length === 0) {
