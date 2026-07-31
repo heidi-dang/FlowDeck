@@ -91,8 +91,10 @@ describe("Timestamp integrity", () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "integrity-ts-"));
     db = new Database(join(tempDir, "test.db"));
-    db.exec(SCHEMA_V_0_2_6);
     db.exec("PRAGMA journal_mode=WAL");
+    db.exec("BEGIN");
+    db.exec(SCHEMA_V_0_2_6);
+    db.exec("COMMIT");
     db.exec("PRAGMA busy_timeout=5000");
     tx = createTransactionManager(db);
   });
@@ -165,8 +167,10 @@ describe("Queue semantics", () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "integrity-q-"));
     db = new Database(join(tempDir, "test.db"));
-    db.exec(SCHEMA_V_0_2_6);
     db.exec("PRAGMA journal_mode=WAL");
+    db.exec("BEGIN");
+    db.exec(SCHEMA_V_0_2_6);
+    db.exec("COMMIT");
     db.exec("PRAGMA busy_timeout=5000");
     tx = createTransactionManager(db);
     seedParents(db);
@@ -241,8 +245,10 @@ describe("Assignment result and metadata integrity", () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "integrity-a-"));
     db = new Database(join(tempDir, "test.db"));
-    db.exec(SCHEMA_V_0_2_6);
     db.exec("PRAGMA journal_mode=WAL");
+    db.exec("BEGIN");
+    db.exec(SCHEMA_V_0_2_6);
+    db.exec("COMMIT");
     db.exec("PRAGMA busy_timeout=5000");
     tx = createTransactionManager(db);
     seedParents(db);

@@ -26,15 +26,9 @@ describe('Concurrency Harness Validation', () => {
   });
 
   afterEach(async () => {
-    for (const conn of connections) {
-      try {
-        conn.close();
-      } catch {
-        // already closed
-      }
-    }
+    const conns = connections;
     connections = [];
-    await deterministicCleanup({ dir: tempDir });
+    await deterministicCleanup({ dir: tempDir, extraConnections: conns });
   });
 
   it('validates the test harness barrier mechanisms on concurrent DB inserts', async () => {
@@ -43,7 +37,7 @@ describe('Concurrency Harness Validation', () => {
 
     const p1 = (async () => {
       try {
-        conn1.prepare('INSERT INTO events (aggregate_id, version) VALUES (?, ?)').run('a1', 1);
+        conn1.query('INSERT INTO events (aggregate_id, version) VALUES (?, ?)').run('a1', 1);
         return 'success';
       } catch (e: any) {
         return e.message;
@@ -52,7 +46,7 @@ describe('Concurrency Harness Validation', () => {
 
     const p2 = (async () => {
       try {
-        conn2.prepare('INSERT INTO events (aggregate_id, version) VALUES (?, ?)').run('a1', 1);
+        conn2.query('INSERT INTO events (aggregate_id, version) VALUES (?, ?)').run('a1', 1);
         return 'success';
       } catch (e: any) {
         return e.code || e.message;

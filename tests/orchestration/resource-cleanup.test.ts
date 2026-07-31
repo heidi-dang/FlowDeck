@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "fs";
 import { rm } from "node:fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
@@ -195,6 +195,10 @@ describe("Active reader handling", () => {
     // primary was already closed by the failure phase above).
     reader.exec("ROLLBACK");
     reader.close(true);
+    // On Windows the failure-phase rm cannot remove a dir whose -shm/-wal
+    // files are held by the open reader, so the dir survives. Clear any
+    // leftovers deterministically before recreating it.
+    rmSync(dir, { recursive: true, force: true });
     mkdirSync(dir);
     const fresh = new Database(path);
     fresh.exec("PRAGMA journal_mode=WAL");

@@ -54,7 +54,9 @@ beforeAll(() => {
   db = new Database(dbPath, { create: true })
   db.query("PRAGMA journal_mode = WAL").run()
   db.query("PRAGMA foreign_keys = ON").run()
+  db.exec("BEGIN")
   db.exec(SCHEMA_V_0_2_6)
+  db.exec("COMMIT")
 
   seedParents()
   runtime = createProductionOrchestrationRuntime(db)

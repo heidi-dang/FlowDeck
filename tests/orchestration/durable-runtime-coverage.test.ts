@@ -72,8 +72,10 @@ function createTempDb(): TempDb {
   const dir = mkdtempSync(join(tmpdir(), "durable-cov-"))
   const dbPath = join(dir, "test.db")
   const db = new Database(dbPath)
-  db.exec(SCHEMA_V_0_2_6)
   db.exec("PRAGMA journal_mode=WAL")
+  db.exec("BEGIN")
+  db.exec(SCHEMA_V_0_2_6)
+  db.exec("COMMIT")
   const tx = createTransactionManager(db)
   return { dir, db, tx }
 }
