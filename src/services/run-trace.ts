@@ -74,9 +74,11 @@ function saveAllTraces(dir: string, traces: RunTrace[]): void {
 export function endTrace(
   dir: string,
   run_id: string,
-  status: Exclude<RunStatus, "running">,
-  outcome?: string,
-  error?: string
+  options: {
+    status: Exclude<RunStatus, "running">
+    outcome?: string
+    error?: string
+  }
 ): void {
   const traces = loadAllTraces(dir)
   const idx = traces.findLastIndex(t => t.run_id === run_id)
@@ -84,9 +86,9 @@ export function endTrace(
   traces[idx] = {
     ...traces[idx],
     ended_at: new Date().toISOString(),
-    status,
-    ...(outcome ? { outcome } : {}),
-    ...(error ? { error } : {}),
+    status: options.status,
+    ...(options.outcome ? { outcome: options.outcome } : {}),
+    ...(options.error ? { error: options.error } : {}),
   }
   saveAllTraces(dir, traces)
 }
