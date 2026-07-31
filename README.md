@@ -8,7 +8,7 @@
 
 | Status | |
 |---|---|
-| **Version** | v1.0.2 |
+| **Version** | v1.0.3 |
 | **License** | [MIT](LICENSE) |
 | **OpenCode** | >= 1.4.0 |
 | **Node.js** | >= 20.0.0 |
