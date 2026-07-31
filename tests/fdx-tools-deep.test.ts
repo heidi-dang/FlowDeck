@@ -77,6 +77,62 @@ describe("FDX Tools & Shared Infrastructure Deep Unit Tests", () => {
     }
   })
 
+  it("nativeSearchFallback matches exact parity for edge cases and generated corpus", () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "fdx-search-parity-"))
+    try {
+      writeFileSync(join(tempDir, "meta.txt"), "Line with [regex].*+?^${}()|\\\\ special chars\nAnother line")
+      writeFileSync(join(tempDir, "unicode.txt"), "Greeting: 你好世界 🚀\nMiXeD cAsE STriNG")
+      writeFileSync(join(tempDir, "multi.txt"), "First line\nSecond line")
+      const largeContent = Array.from({ length: 500 }, (_, i) => `Row ${i}: value-${i}`).join("\n")
+      writeFileSync(join(tempDir, "large.txt"), largeContent)
+      writeFileSync(join(tempDir, "binary.bin"), Buffer.from([0x00, 0x01, 0x02, 0xff, 0xfe]))
+
+      const baselineSearch = (query: string, searchPath: string): string => {
+        const root = join(searchPath)
+        const lowerQuery = query.toLowerCase()
+        const results: string[] = []
+        const walk = (dir: string) => {
+          for (const item of require("fs").readdirSync(dir)) {
+            const full = join(dir, item)
+            const st = require("fs").statSync(full)
+            if (st.isDirectory()) walk(full)
+            else if (st.isFile()) {
+              try {
+                const text = require("fs").readFileSync(full, "utf-8")
+                const lines = text.split("\n")
+                lines.forEach((line: string, idx: number) => {
+                  if (line.toLowerCase().includes(lowerQuery)) {
+                    results.push(`${full}:${idx + 1}:${line.trim()}`)
+                  }
+                })
+              } catch {}
+            }
+          }
+        }
+        walk(root)
+        if (results.length === 0) return `[FDX Native Fallback] No matches found for "${query}"`
+        return `[FDX Native Fallback: ${results.length} matches]\n${results.join("\n")}`
+      }
+
+      const testQueries = [
+        "[regex].*+?^${}()|\\\\",
+        "MiXeD cAsE",
+        "你好世界 🚀",
+        "value-250",
+        "Row 98",
+        "nonexistent_query_xyz",
+      ]
+
+      for (const q of testQueries) {
+        const optimized = nativeSearchFallback(q, tempDir)
+        const expected = baselineSearch(q, tempDir)
+        expect(optimized).toBe(expected)
+      }
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+
   it("nativeGitFallback executes read-only git command", () => {
     const res = nativeGitFallback(["status", "--short"])
     expect(typeof res).toBe("string")
