@@ -22,13 +22,29 @@ jobs:
           cache: "npm"
           cache-dependency-path: package-lock.json
 
+      # Pinned: the tag-triggered publish runs on a fresh checkout, so a
+      # floating Bun version could change test behaviour between releases.
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
 
       - name: Install Dependencies
         run: npm ci
 
       - name: Typecheck
         run: npm run typecheck
+
+      # Fail hard when the tag and package version disagree — a v1.0.2 tag
+      # must always publish @heidi-dang/flowdeck@1.0.2.
+      - name: Validate Tag/Version Alignment
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "FAIL: git tag $GITHUB_REF_NAME does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+          echo "Tag/version alignment verified: $GITHUB_REF_NAME == v$PKG_VERSION"
 
       - name: Build Package
         run: npm run build
@@ -47,6 +63,44 @@ jobs:
             }
             console.log('Package identity verified: @heidi-dang/flowdeck v' + pkg.version);
           "
+          echo "Validating package contents (npm pack --dry-run --json)..."
+          node -e "
+            const { execFileSync } = require('child_process');
+            const out = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf-8' }))[0];
+            const paths = out.files.map(f => f.path);
+            const required = ['install.sh', 'dist/index.js', 'bin/flowdeck.js', 'postinstall.mjs', 'src/doctor/cli.mjs'];
+            const missing = required.filter(r => !paths.some(p => p === r || p.startsWith(r + '/')));
+            if (missing.length > 0) {
+              console.error('FAIL: required runtime files missing from package:', missing.join(', '));
+              process.exit(1);
+            }
+            const forbidden = ['tsconfig.json', 'uninstall.sh', '.gitignore', 'target', 'coverage', '.env', '.npmrc', 'bun.lock'];
+            const bad = paths.filter(p => forbidden.some(f => p === f || p.startsWith(f + '/')) || /\\.(tgz|tmp|log)$/.test(p));
+            if (bad.length > 0) {
+              console.error('FAIL: development caches, secrets, or build artifacts present in package:', bad.join(', '));
+              process.exit(1);
+            }
+            console.log('Package contents verified: ' + out.files.length + ' files, ' + out.size + ' bytes');
+          "
+
+      # Never attempt a duplicate-version publish. A registry lookup failure
+      # must fail the workflow — do not hide it, do not publish blindly.
+      - name: Check Registry Availability
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          LOOKUP_OUTPUT="$(npm view "@heidi-dang/flowdeck@${PKG_VERSION}" version 2>&1)"
+          LOOKUP_EXIT=$?
+          if [ "$LOOKUP_EXIT" -eq 0 ]; then
+            echo "FAIL: @heidi-dang/flowdeck@${PKG_VERSION} already exists on the registry"
+            exit 1
+          fi
+          # npm view exits 1 with E404 only when the version does not exist.
+          if ! echo "$LOOKUP_OUTPUT" | grep -q "E404"; then
+            echo "FAIL: registry lookup for ${PKG_VERSION} failed unexpectedly:"
+            echo "$LOOKUP_OUTPUT"
+            exit 1
+          fi
+          echo "Registry availability verified: @heidi-dang/flowdeck@${PKG_VERSION} is not published"
 
       - name: Publish to npm
         run: npm publish --provenance --access public
