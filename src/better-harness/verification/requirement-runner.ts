@@ -2,7 +2,7 @@
  * Production requirement runner for the Better Harness verification pipeline.
  *
  * All requirement execution flows through the canonical structured command boundary:
- *   ValidationRequirement → validateCommandRequirement → execFileSync (shell:false)
+ *   ValidationRequirement → validateCommandRequirement → process adapter
  *
  * No execSync, exec, or shell invocation is used here.
  * Legacy bare string requirements are adapted through parseLegacyRequirementString,
@@ -11,6 +11,7 @@
 import {
   executeValidatedCommandSync,
   parseLegacyRequirementString,
+  type CommandExecutionStatus,
   type ValidationRequirement,
 } from "../../services/command-boundary"
 
@@ -22,7 +23,8 @@ export interface RequirementResult {
   passed: boolean
   output: string
   error?: string
-  exitCode?: number
+  exitCode?: number | null
+  status: CommandExecutionStatus | "parse_rejected" | "authorization_rejected"
 }
 
 /**
@@ -45,13 +47,13 @@ export function runRequirements(
       try {
         structured = parseLegacyRequirementString(req)
       } catch (parseErr: any) {
-        // Reject at parse time — nothing is spawned
         return {
           requirement: req,
           passed: false,
           output: "",
           error: `Legacy requirement rejected: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`,
-          exitCode: 1,
+          exitCode: null,
+          status: "parse_rejected",
         }
       }
     } else {
@@ -60,23 +62,45 @@ export function runRequirements(
 
     try {
       const res = executeValidatedCommandSync(structured, cwd)
+
+      if (res.status === "success") {
+        return {
+          requirement: req,
+          passed: true,
+          output: res.stdout.trim(),
+          exitCode: 0,
+          status: "success",
+        }
+      }
+
+      if (res.status === "nonzero_exit") {
+        return {
+          requirement: req,
+          passed: false,
+          output: res.stdout.trim(),
+          error: res.stderr.trim() || `Process exited with code ${res.exitCode}`,
+          exitCode: res.exitCode,
+          status: "nonzero_exit",
+        }
+      }
+
+      // Timeout, max_buffer_exceeded, executable_not_found
       return {
         requirement: req,
-        passed: res.exitCode === 0,
-        output: res.stdout.trim(),
-        error: res.exitCode !== 0
-          ? (res.stderr.trim() || `Process exited with code ${res.exitCode}`)
-          : undefined,
-        exitCode: res.exitCode,
+        passed: false,
+        output: res.stdout ? res.stdout.trim() : "",
+        error: res.message,
+        exitCode: null,
+        status: res.status,
       }
     } catch (execErr: any) {
-      // Validation rejection from validateCommandRequirement — nothing was spawned
       return {
         requirement: req,
         passed: false,
         output: "",
         error: `Requirement rejected: ${execErr instanceof Error ? execErr.message : String(execErr)}`,
-        exitCode: 1,
+        exitCode: null,
+        status: "authorization_rejected",
       }
     }
   })

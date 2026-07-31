@@ -5,6 +5,37 @@ const execFileAsync = promisify(execFile)
 
 export type AllowedValidationExecutable = "npm" | "bun" | "git" | "oxlint" | "tsc" | "node"
 
+export type CommandExecutionStatus =
+  | "success"
+  | "timeout"
+  | "max_buffer_exceeded"
+  | "executable_not_found"
+  | "nonzero_exit"
+
+export type CommandExecutionResult =
+  | {
+      status: "success"
+      exitCode: 0
+      stdout: string
+      stderr: string
+      signal: null
+    }
+  | {
+      status: "nonzero_exit"
+      exitCode: number
+      stdout: string
+      stderr: string
+      signal: NodeJS.Signals | null
+    }
+  | {
+      status: "timeout" | "max_buffer_exceeded" | "executable_not_found"
+      exitCode: null
+      stdout: string
+      stderr: string
+      signal: NodeJS.Signals | null
+      message: string
+    }
+
 export interface ValidationRequirement {
   executable: AllowedValidationExecutable
   args: string[]
@@ -12,11 +43,16 @@ export interface ValidationRequirement {
   maxBuffer?: number
 }
 
-export interface CommandExecutionResult {
-  stdout: string
-  stderr: string
-  exitCode: number
+export interface ProcessAdapterInput {
+  executable: string
+  args: string[]
+  cwd: string
+  timeoutMs: number
+  maxBuffer: number
 }
+
+export type ProcessAdapterSync = (input: ProcessAdapterInput) => CommandExecutionResult
+export type ProcessAdapterAsync = (input: ProcessAdapterInput) => Promise<CommandExecutionResult>
 
 export const DEFAULT_TIMEOUT_MS = 10_000
 export const MIN_TIMEOUT_MS = 100
@@ -60,6 +96,144 @@ const APPROVED_BUN_RUN_SCRIPTS = new Set([
   "typecheck",
   "build",
 ])
+
+let activeSyncAdapter: ProcessAdapterSync | null = null
+let activeAsyncAdapter: ProcessAdapterAsync | null = null
+let adapterInvocationCount = 0
+
+export function getAdapterInvocationCount(): number {
+  return adapterInvocationCount
+}
+
+export function resetAdapterInvocationCount(): void {
+  adapterInvocationCount = 0
+}
+
+export function setTestProcessAdapters(
+  syncAdapter: ProcessAdapterSync | null = null,
+  asyncAdapter: ProcessAdapterAsync | null = null
+): void {
+  activeSyncAdapter = syncAdapter
+  activeAsyncAdapter = asyncAdapter
+}
+
+/**
+ * Classifies child process execution errors into discriminated result states.
+ */
+export function classifyChildProcessError(err: any): CommandExecutionResult {
+  const stdout = err.stdout ? String(err.stdout) : ""
+  const stderr = err.stderr ? String(err.stderr) : ""
+  const signal = err.signal ? (err.signal as NodeJS.Signals) : null
+
+  // 1. Executable missing
+  if (err.code === "ENOENT") {
+    return {
+      status: "executable_not_found",
+      exitCode: null,
+      stdout,
+      stderr,
+      signal,
+      message: `Executable "${err.path ?? "binary"}" not found on system path.`,
+    }
+  }
+
+  // 2. Output buffer limit exceeded
+  if (
+    err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ||
+    err.code === "ENOBUFS" ||
+    (typeof err.message === "string" && err.message.includes("maxBuffer"))
+  ) {
+    return {
+      status: "max_buffer_exceeded",
+      exitCode: null,
+      stdout: stdout.slice(0, MAX_MAX_BUFFER),
+      stderr: stderr.slice(0, MAX_MAX_BUFFER),
+      signal,
+      message: "Command stdout/stderr output exceeded configured maxBuffer limit.",
+    }
+  }
+
+  // 3. Timeout limit exceeded
+  if (
+    err.code === "ETIMEDOUT" ||
+    err.killed === true ||
+    (typeof err.message === "string" &&
+      (err.message.includes("timed out") || err.message.includes("ETIMEDOUT")))
+  ) {
+    return {
+      status: "timeout",
+      exitCode: null,
+      stdout,
+      stderr,
+      signal: signal ?? "SIGTERM",
+      message: "Command execution timed out.",
+    }
+  }
+
+  // 4. Ordinary non-zero exit code
+  const exitCode =
+    typeof err.status === "number"
+      ? err.status
+      : typeof err.code === "number"
+      ? err.code
+      : 1
+  return {
+    status: "nonzero_exit",
+    exitCode,
+    stdout,
+    stderr,
+    signal,
+  }
+}
+
+/**
+ * Canonical synchronous process execution adapter (shell: false).
+ */
+export function defaultProcessAdapterSync(input: ProcessAdapterInput): CommandExecutionResult {
+  try {
+    const stdout = execFileSync(input.executable, input.args, {
+      cwd: input.cwd,
+      timeout: input.timeoutMs,
+      maxBuffer: input.maxBuffer,
+      shell: false,
+      encoding: "utf-8",
+    })
+    return {
+      status: "success",
+      exitCode: 0,
+      stdout: String(stdout),
+      stderr: "",
+      signal: null,
+    }
+  } catch (err: any) {
+    return classifyChildProcessError(err)
+  }
+}
+
+/**
+ * Canonical asynchronous process execution adapter (shell: false).
+ */
+export async function defaultProcessAdapterAsync(
+  input: ProcessAdapterInput
+): Promise<CommandExecutionResult> {
+  try {
+    const { stdout, stderr } = await execFileAsync(input.executable, input.args, {
+      cwd: input.cwd,
+      timeout: input.timeoutMs,
+      maxBuffer: input.maxBuffer,
+      shell: false,
+    })
+    return {
+      status: "success",
+      exitCode: 0,
+      stdout: stdout.toString(),
+      stderr: stderr.toString(),
+      signal: null,
+    }
+  } catch (err: any) {
+    return classifyChildProcessError(err)
+  }
+}
 
 /**
  * Validates timeout and maxBuffer values against hard bounds.
@@ -329,7 +503,7 @@ export function validateCommandRequirement(req: ValidationRequirement): void {
 }
 
 /**
- * Safely executes a validated command asynchronously using execFile (without shell invocation).
+ * Safely executes a validated command asynchronously using the canonical process adapter.
  */
 export async function executeValidatedCommand(
   req: ValidationRequirement,
@@ -341,29 +515,25 @@ export async function executeValidatedCommand(
     req.maxBuffer
   )
 
-  try {
-    const { stdout, stderr } = await execFileAsync(req.executable, req.args, {
-      cwd,
-      timeout,
-      maxBuffer: buffer,
-      shell: false,
-    })
-    return {
-      stdout: stdout.toString(),
-      stderr: stderr.toString(),
-      exitCode: 0,
-    }
-  } catch (err: any) {
-    return {
-      stdout: err.stdout ? err.stdout.toString() : "",
-      stderr: err.stderr ? err.stderr.toString() : (err.message ?? String(err)),
-      exitCode: typeof err.code === "number" ? err.code : 1,
-    }
+  adapterInvocationCount++
+
+  const input: ProcessAdapterInput = {
+    executable: req.executable,
+    args: req.args,
+    cwd,
+    timeoutMs: timeout,
+    maxBuffer: buffer,
   }
+
+  if (activeAsyncAdapter) {
+    return activeAsyncAdapter(input)
+  }
+
+  return defaultProcessAdapterAsync(input)
 }
 
 /**
- * Safely executes a validated command synchronously using execFileSync (without shell invocation).
+ * Safely executes a validated command synchronously using the canonical process adapter.
  */
 export function executeValidatedCommandSync(
   req: ValidationRequirement,
@@ -375,26 +545,21 @@ export function executeValidatedCommandSync(
     req.maxBuffer
   )
 
-  try {
-    const stdout = execFileSync(req.executable, req.args, {
-      cwd,
-      timeout,
-      maxBuffer: buffer,
-      shell: false,
-      encoding: "utf-8",
-    })
-    return {
-      stdout: String(stdout),
-      stderr: "",
-      exitCode: 0,
-    }
-  } catch (err: any) {
-    return {
-      stdout: err.stdout ? String(err.stdout) : "",
-      stderr: err.stderr ? String(err.stderr) : (err.message ?? String(err)),
-      exitCode: typeof err.status === "number" ? err.status : 1,
-    }
+  adapterInvocationCount++
+
+  const input: ProcessAdapterInput = {
+    executable: req.executable,
+    args: req.args,
+    cwd,
+    timeoutMs: timeout,
+    maxBuffer: buffer,
   }
+
+  if (activeSyncAdapter) {
+    return activeSyncAdapter(input)
+  }
+
+  return defaultProcessAdapterSync(input)
 }
 
 /**

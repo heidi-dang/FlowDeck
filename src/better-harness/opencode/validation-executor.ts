@@ -2,7 +2,7 @@
  * OpenCode validation executor for the Better Harness pipeline.
  *
  * All validation execution flows through the canonical structured command boundary:
- *   ValidationRequirement → validateCommandRequirement → execFileSync (shell:false)
+ *   ValidationRequirement → validateCommandRequirement → process adapter
  *
  * No execSync, exec, or shell invocation is used here.
  * Incoming legacy command strings are adapted through parseLegacyRequirementString,
@@ -18,6 +18,7 @@
 import {
   executeValidatedCommandSync,
   parseLegacyRequirementString,
+  type CommandExecutionStatus,
   type ValidationRequirement,
 } from "../../services/command-boundary"
 
@@ -31,6 +32,7 @@ export interface ValidationResult {
   durationMs: number
   passed: boolean
   error: string | null
+  status: CommandExecutionStatus | "parse_rejected" | "authorization_rejected"
 }
 
 /**
@@ -66,6 +68,7 @@ export function executeValidation(
       durationMs,
       passed: false,
       error: `Command rejected: ${msg}`,
+      status: "parse_rejected",
     }
   }
 
@@ -79,16 +82,42 @@ export function executeValidation(
     const res = executeValidatedCommandSync(req, cwd)
     const durationMs = Date.now() - startTime
 
+    if (res.status === "success") {
+      return {
+        command,
+        exitCode: 0,
+        stdout: res.stdout,
+        stderr: res.stderr,
+        durationMs,
+        passed: true,
+        error: null,
+        status: "success",
+      }
+    }
+
+    if (res.status === "nonzero_exit") {
+      return {
+        command,
+        exitCode: res.exitCode,
+        stdout: res.stdout,
+        stderr: res.stderr,
+        durationMs,
+        passed: false,
+        error: res.stderr.trim() || `Process exited with code ${res.exitCode}`,
+        status: "nonzero_exit",
+      }
+    }
+
+    // Timeout, max_buffer_exceeded, executable_not_found
     return {
       command,
-      exitCode: res.exitCode,
+      exitCode: null,
       stdout: res.stdout,
       stderr: res.stderr,
       durationMs,
-      passed: res.exitCode === 0,
-      error: res.exitCode !== 0
-        ? (res.stderr.trim() || `Process exited with code ${res.exitCode}`)
-        : null,
+      passed: false,
+      error: res.message,
+      status: res.status,
     }
   } catch (execErr: any) {
     const durationMs = Date.now() - startTime
@@ -101,6 +130,7 @@ export function executeValidation(
       durationMs,
       passed: false,
       error: `Command rejected: ${msg}`,
+      status: "authorization_rejected",
     }
   }
 }
