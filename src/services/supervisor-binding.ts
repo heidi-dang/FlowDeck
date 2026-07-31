@@ -362,14 +362,21 @@ function computeConfidence(
 
 // ─── Decision resolution ──────────────────────────────────────────────────────
 
-function resolveDecision(
-  exists: boolean,
-  policyResult: PolicyCheckResult,
-  confidenceScore: number,
-  threshold: number,
-  ctx: SupervisorContext,
-  clarificationQuestion?: string,
-): { decision: SupervisorDecisionKind; approvalStatus: SupervisorDecision["approvalStatus"]; clarificationQuestion?: string } {
+function resolveDecision({
+  exists,
+  policyResult,
+  confidenceScore,
+  threshold,
+  ctx,
+  clarificationQuestion,
+}: {
+  exists: boolean
+  policyResult: PolicyCheckResult
+  confidenceScore: number
+  threshold: number
+  ctx: SupervisorContext
+  clarificationQuestion?: string
+}): { decision: SupervisorDecisionKind; approvalStatus: SupervisorDecision["approvalStatus"]; clarificationQuestion?: string } {
   if (!exists) {
     return { decision: "block", approvalStatus: "denied" }
   }
@@ -470,14 +477,14 @@ export function runSupervisorReview(
       : checkAgentPolicy(targetName, ctx)
 
   const confidenceScore = computeConfidence(exists, policyResult, ctx)
-  const { decision, approvalStatus, clarificationQuestion: escalationQuestion } = resolveDecision(
+  const { decision, approvalStatus, clarificationQuestion: escalationQuestion } = resolveDecision({
     exists,
     policyResult,
     confidenceScore,
-    config.confidenceThreshold,
+    threshold: config.confidenceThreshold,
     ctx,
     clarificationQuestion,
-  )
+  })
 
   const reasons = policyResult.reasons.length > 0
     ? policyResult.reasons
