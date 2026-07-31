@@ -38,8 +38,8 @@ export interface ValidationResult {
  *
  * The command is parsed into a ValidationRequirement before any process is created.
  * If parsing fails for any reason (unsupported executable, shell syntax, dangerous flag,
- * NUL byte, path traversal, etc.) the result reflects the rejection without spawning
- * any process.
+ * NUL byte, path traversal, operation rejection, etc.) the result reflects the rejection
+ * without spawning any process.
  *
  * @param command  Bare command string, e.g. "npm test" or "git status --short"
  * @param cwd      Working directory for execution
@@ -52,9 +52,9 @@ export function executeValidation(
 ): ValidationResult {
   const startTime = Date.now()
 
-  let req: ValidationRequirement
+  let parsed: ValidationRequirement
   try {
-    req = parseLegacyRequirementString(command)
+    parsed = parseLegacyRequirementString(command)
   } catch (parseErr: any) {
     const durationMs = Date.now() - startTime
     const msg = parseErr instanceof Error ? parseErr.message : String(parseErr)
@@ -69,20 +69,38 @@ export function executeValidation(
     }
   }
 
-  req.timeoutMs = timeoutMs
+  // Immutable construction — final complete requirement includes caller-specified timeout
+  const req: ValidationRequirement = {
+    ...parsed,
+    timeoutMs,
+  }
 
-  const res = executeValidatedCommandSync(req, cwd)
-  const durationMs = Date.now() - startTime
+  try {
+    const res = executeValidatedCommandSync(req, cwd)
+    const durationMs = Date.now() - startTime
 
-  return {
-    command,
-    exitCode: res.exitCode,
-    stdout: res.stdout,
-    stderr: res.stderr,
-    durationMs,
-    passed: res.exitCode === 0,
-    error: res.exitCode !== 0
-      ? (res.stderr.trim() || `Process exited with code ${res.exitCode}`)
-      : null,
+    return {
+      command,
+      exitCode: res.exitCode,
+      stdout: res.stdout,
+      stderr: res.stderr,
+      durationMs,
+      passed: res.exitCode === 0,
+      error: res.exitCode !== 0
+        ? (res.stderr.trim() || `Process exited with code ${res.exitCode}`)
+        : null,
+    }
+  } catch (execErr: any) {
+    const durationMs = Date.now() - startTime
+    const msg = execErr instanceof Error ? execErr.message : String(execErr)
+    return {
+      command,
+      exitCode: null,
+      stdout: "",
+      stderr: "",
+      durationMs,
+      passed: false,
+      error: `Command rejected: ${msg}`,
+    }
   }
 }

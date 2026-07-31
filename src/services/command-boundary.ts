@@ -18,6 +18,14 @@ export interface CommandExecutionResult {
   exitCode: number
 }
 
+export const DEFAULT_TIMEOUT_MS = 10_000
+export const MIN_TIMEOUT_MS = 100
+export const MAX_TIMEOUT_MS = 120_000
+
+export const DEFAULT_MAX_BUFFER = 5 * 1024 * 1024 // 5 MB
+export const MIN_MAX_BUFFER = 1024 // 1 KB
+export const MAX_MAX_BUFFER = 16 * 1024 * 1024 // 16 MB
+
 const ALLOWED_EXECUTABLES: Set<AllowedValidationExecutable> = new Set([
   "npm",
   "bun",
@@ -27,10 +35,6 @@ const ALLOWED_EXECUTABLES: Set<AllowedValidationExecutable> = new Set([
   "node",
 ])
 
-/**
- * Flags that could cause the executed process to eval, import, or shell out.
- * Applies across all executables unless specifically permitted.
- */
 const DANGEROUS_FLAGS = new Set([
   "--eval",
   "-e",
@@ -43,20 +47,218 @@ const DANGEROUS_FLAGS = new Set([
   "--config",
 ])
 
-/**
- * Git subcommands permitted for read-only validation use.
- * Write subcommands (add, commit, push, reset, merge, etc.) are not allowed.
- */
-const ALLOWED_GIT_SUBCOMMANDS = new Set([
-  "status",
-  "diff",
-  "log",
-  "rev-parse",
-  "show",
-  "branch",
-  "tag",
-  "ls-files",
+const APPROVED_NPM_RUN_SCRIPTS = new Set([
+  "lint",
+  "typecheck",
+  "build",
+  "validate:docs",
+  "test:coverage",
 ])
+
+const APPROVED_BUN_RUN_SCRIPTS = new Set([
+  "lint",
+  "typecheck",
+  "build",
+])
+
+/**
+ * Validates timeout and maxBuffer values against hard bounds.
+ */
+export function validateResourceLimits(
+  timeoutMs?: number,
+  maxBuffer?: number
+): { timeoutMs: number; maxBuffer: number } {
+  const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS
+  if (
+    typeof timeout !== "number" ||
+    !Number.isFinite(timeout) ||
+    !Number.isInteger(timeout) ||
+    timeout < MIN_TIMEOUT_MS ||
+    timeout > MAX_TIMEOUT_MS
+  ) {
+    throw new Error(
+      `Invalid timeoutMs "${timeoutMs}". Must be an integer between ${MIN_TIMEOUT_MS} and ${MAX_TIMEOUT_MS} ms.`
+    )
+  }
+
+  const buffer = maxBuffer ?? DEFAULT_MAX_BUFFER
+  if (
+    typeof buffer !== "number" ||
+    !Number.isFinite(buffer) ||
+    !Number.isInteger(buffer) ||
+    buffer < MIN_MAX_BUFFER ||
+    buffer > MAX_MAX_BUFFER
+  ) {
+    throw new Error(
+      `Invalid maxBuffer "${maxBuffer}". Must be an integer between ${MIN_MAX_BUFFER} and ${MAX_MAX_BUFFER} bytes.`
+    )
+  }
+
+  return { timeoutMs: timeout, maxBuffer: buffer }
+}
+
+/**
+ * Validates git operations to ensure only read-only subcommands and safe argument forms are permitted.
+ */
+export function validateGitRequirement(args: string[]): void {
+  const subcommand = args[0]
+  if (!subcommand) {
+    throw new Error('Git subcommand is required (e.g. "git status").')
+  }
+
+  const subArgs = args.slice(1)
+
+  switch (subcommand) {
+    case "status": {
+      if (subArgs.length === 0) return
+      if (subArgs.length === 1 && (subArgs[0] === "--short" || subArgs[0] === "--porcelain")) return
+      throw new Error(`Git status operation with arguments [${subArgs.join(", ")}] is not allowed.`)
+    }
+    case "diff": {
+      if (subArgs.length === 0) return
+      if (subArgs.length === 1 && (subArgs[0] === "--stat" || subArgs[0] === "--name-only")) return
+      if (subArgs.length <= 2 && subArgs.every((a) => /^[a-zA-Z0-9_.~^-]+$/.test(a) && !a.startsWith("-"))) return
+      throw new Error(`Git diff operation with arguments [${subArgs.join(", ")}] is not allowed.`)
+    }
+    case "log": {
+      if (subArgs.length === 0) return
+      if (subArgs.length === 1 && subArgs[0] === "--oneline") return
+      if (subArgs.length === 2 && subArgs[0] === "-n" && /^\d+$/.test(subArgs[1])) return
+      throw new Error(`Git log operation with arguments [${subArgs.join(", ")}] is not allowed.`)
+    }
+    case "rev-parse": {
+      if (subArgs.length === 1 && (subArgs[0] === "HEAD" || subArgs[0] === "--show-toplevel")) return
+      throw new Error(`Git rev-parse operation with arguments [${subArgs.join(", ")}] is not allowed.`)
+    }
+    case "show": {
+      if (subArgs.length === 0 || (subArgs.length === 1 && subArgs[0] === "HEAD")) return
+      throw new Error(`Git show operation with arguments [${subArgs.join(", ")}] is not allowed.`)
+    }
+    case "ls-files": {
+      if (subArgs.length === 0) return
+      throw new Error(`Git ls-files operation with arguments [${subArgs.join(", ")}] is not allowed.`)
+    }
+    case "branch": {
+      if (subArgs.length === 1 && (subArgs[0] === "--show-current" || subArgs[0] === "--list" || subArgs[0] === "-l")) return
+      throw new Error(`Git branch operation with arguments [${subArgs.join(", ")}] is not allowed. Only read-only branch queries are permitted.`)
+    }
+    case "tag": {
+      if (subArgs.length === 1 && (subArgs[0] === "--list" || subArgs[0] === "-l")) return
+      throw new Error(`Git tag operation with arguments [${subArgs.join(", ")}] is not allowed. Only read-only tag queries are permitted.`)
+    }
+    default: {
+      throw new Error(`Git subcommand "${subcommand}" is not allowed in validation boundary.`)
+    }
+  }
+}
+
+/**
+ * Validates npm operations to ensure only approved non-mutating validation commands are permitted.
+ */
+export function validateNpmRequirement(args: string[]): void {
+  if (args.length === 0) {
+    throw new Error('npm requirement requires arguments (e.g. "npm --version" or "npm test").')
+  }
+
+  const primary = args[0]
+
+  if (primary === "--version" || primary === "-v") {
+    if (args.length === 1) return
+    throw new Error(`npm --version does not accept additional arguments.`)
+  }
+
+  if (primary === "test") {
+    if (args.length === 1) return
+    throw new Error(`npm test does not accept additional arguments in validation boundary.`)
+  }
+
+  if (primary === "run") {
+    if (args.length === 2 && APPROVED_NPM_RUN_SCRIPTS.has(args[1])) return
+    throw new Error(
+      `npm run script "${args[1] ?? ""}" is not allowed. Approved scripts: ${Array.from(APPROVED_NPM_RUN_SCRIPTS).join(", ")}.`
+    )
+  }
+
+  throw new Error(`npm command "npm ${args.join(" ")}" is not allowed in validation boundary. Mutating and arbitrary npm commands are rejected.`)
+}
+
+/**
+ * Validates bun operations to ensure only approved non-mutating validation commands are permitted.
+ */
+export function validateBunRequirement(args: string[]): void {
+  if (args.length === 0) {
+    throw new Error('bun requirement requires arguments (e.g. "bun --version" or "bun test").')
+  }
+
+  const primary = args[0]
+
+  if (primary === "--version" || primary === "-v") {
+    if (args.length === 1) return
+    throw new Error(`bun --version does not accept additional arguments.`)
+  }
+
+  if (primary === "test") {
+    if (args.length === 1) return
+    if (args.length === 2) {
+      const testPath = args[1]
+      if (/^[/\\]|[a-zA-Z]:/.test(testPath) || testPath.includes("..")) {
+        throw new Error(`bun test path "${testPath}" must be a safe repository-relative path without traversal.`)
+      }
+      if (
+        testPath.startsWith("tests/") ||
+        /\.(?:test|spec)\.(?:ts|js)$/.test(testPath)
+      ) {
+        return
+      }
+      throw new Error(`bun test path "${testPath}" is not in an approved test location.`)
+    }
+    throw new Error(`bun test does not accept arbitrary flags or extra arguments in validation boundary.`)
+  }
+
+  if (primary === "run") {
+    if (args.length === 2 && APPROVED_BUN_RUN_SCRIPTS.has(args[1])) return
+    throw new Error(
+      `bun run script "${args[1] ?? ""}" is not allowed. Approved scripts: ${Array.from(APPROVED_BUN_RUN_SCRIPTS).join(", ")}.`
+    )
+  }
+
+  throw new Error(`bun command "bun ${args.join(" ")}" is not allowed in validation boundary. Mutating and arbitrary bun commands are rejected.`)
+}
+
+/**
+ * Validates node operations to permit ONLY version queries.
+ */
+export function validateNodeRequirement(args: string[]): void {
+  if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
+    return
+  }
+  throw new Error(`Node requirement allows only "node --version" or "node -v". Arbitrary script execution is rejected.`)
+}
+
+/**
+ * Validates tsc operations to permit ONLY approved validation flags.
+ */
+export function validateTscRequirement(args: string[]): void {
+  if (args.length === 1 && args[0] === "--noEmit") {
+    return
+  }
+  throw new Error(`tsc requirement allows only "tsc --noEmit".`)
+}
+
+/**
+ * Validates oxlint operations to permit ONLY approved validation flags and safe targets.
+ */
+export function validateOxlintRequirement(args: string[]): void {
+  if (args.length === 0) return
+  if (args.length === 1 && args[0] === "--deny-warnings") return
+  if (args.length === 1 || (args.length === 2 && args[0] === "--deny-warnings")) {
+    const target = args[args.length - 1]
+    if (!target.startsWith("-") && !/^[/\\]|[a-zA-Z]:/.test(target) && !target.includes("..")) {
+      return
+    }
+  }
+  throw new Error(`oxlint requirement allows only "oxlint --deny-warnings" or safe relative targets.`)
+}
 
 /**
  * Validates a structured ValidationRequirement against strict security boundaries.
@@ -76,63 +278,74 @@ export function validateCommandRequirement(req: ValidationRequirement): void {
     throw new Error(`Executable "${executable}" contains invalid path separators or characters.`)
   }
 
-  // 3. Validate every argument
+  // 3. Resource limit validation
+  validateResourceLimits(req.timeoutMs, req.maxBuffer)
+
+  // 4. Check args for NUL bytes, shell escape metacharacters, or dangerous flags
   for (const arg of args) {
     if (typeof arg !== "string") {
       throw new Error(`Invalid non-string argument: ${String(arg)}`)
     }
 
-    // Reject NUL bytes
     if (arg.includes(String.fromCharCode(0))) {
       throw new Error("Command argument contains illegal NUL byte.")
     }
 
-    // Reject shell metacharacters: backtick, $, (, ), <, >, &, |, ;, newlines
     if (/[`$()<>&|;\n\r]/.test(arg)) {
       throw new Error(`Command argument contains forbidden shell metacharacter: ${arg}`)
     }
 
-    // Reject path traversal in arguments
     if (/(?:^|[/\\])\.\.(?:[/\\]|$)/.test(arg) || arg === "..") {
       throw new Error(`Command argument contains path traversal: ${arg}`)
     }
 
-    // Reject dangerous flags (both --flag and --flag=value forms)
     const flagName = arg.split("=")[0]
     if (DANGEROUS_FLAGS.has(arg) || DANGEROUS_FLAGS.has(flagName)) {
       throw new Error(`Dangerous command flag rejected: ${arg}`)
     }
   }
 
-  // 4. Restrict git to approved read-only subcommands
-  if (executable === "git") {
-    const subcommand = args[0]
-    if (!subcommand || !ALLOWED_GIT_SUBCOMMANDS.has(subcommand)) {
-      throw new Error(
-        `Git subcommand "${subcommand ?? "(none)"}" is not allowed in validation boundary.`
-      )
-    }
+  // 5. Operation-level policies per executable
+  switch (executable) {
+    case "git":
+      validateGitRequirement(args)
+      break
+    case "npm":
+      validateNpmRequirement(args)
+      break
+    case "bun":
+      validateBunRequirement(args)
+      break
+    case "node":
+      validateNodeRequirement(args)
+      break
+    case "tsc":
+      validateTscRequirement(args)
+      break
+    case "oxlint":
+      validateOxlintRequirement(args)
+      break
   }
 }
 
 /**
- * Executes a validated command asynchronously using execFile (shell: false).
- * This is the preferred production execution path.
+ * Safely executes a validated command asynchronously using execFile (without shell invocation).
  */
 export async function executeValidatedCommand(
   req: ValidationRequirement,
   cwd: string = process.cwd()
 ): Promise<CommandExecutionResult> {
   validateCommandRequirement(req)
-
-  const timeout = req.timeoutMs ?? 10_000
-  const maxBuffer = req.maxBuffer ?? 5 * 1024 * 1024 // 5 MB
+  const { timeoutMs: timeout, maxBuffer: buffer } = validateResourceLimits(
+    req.timeoutMs,
+    req.maxBuffer
+  )
 
   try {
     const { stdout, stderr } = await execFileAsync(req.executable, req.args, {
       cwd,
       timeout,
-      maxBuffer,
+      maxBuffer: buffer,
       shell: false,
     })
     return {
@@ -150,24 +363,23 @@ export async function executeValidatedCommand(
 }
 
 /**
- * Executes a validated command synchronously using execFileSync (shell: false).
- * Use only when the call site cannot be made asynchronous.
- * Does NOT use execSync — arguments are passed as an array, never shell-interpolated.
+ * Safely executes a validated command synchronously using execFileSync (without shell invocation).
  */
 export function executeValidatedCommandSync(
   req: ValidationRequirement,
   cwd: string = process.cwd()
 ): CommandExecutionResult {
   validateCommandRequirement(req)
-
-  const timeout = req.timeoutMs ?? 10_000
-  const maxBuffer = req.maxBuffer ?? 5 * 1024 * 1024 // 5 MB
+  const { timeoutMs: timeout, maxBuffer: buffer } = validateResourceLimits(
+    req.timeoutMs,
+    req.maxBuffer
+  )
 
   try {
     const stdout = execFileSync(req.executable, req.args, {
       cwd,
       timeout,
-      maxBuffer,
+      maxBuffer: buffer,
       shell: false,
       encoding: "utf-8",
     })
@@ -187,24 +399,6 @@ export function executeValidatedCommandSync(
 
 /**
  * Parses a legacy bare command string into a ValidationRequirement.
- *
- * Supports ONLY explicitly approved command forms. Rejects:
- *   - pipes, redirects, semicolons, ampersands
- *   - command substitution ($(...), `...`)
- *   - environment assignment (FOO=bar ...)
- *   - unknown executables
- *   - empty commands
- *   - absolute or Windows paths
- *   - quoted arguments containing metacharacters
- *   - any compound invocation (sh -c, cmd.exe, powershell)
- *
- * Approved examples:
- *   "npm test"
- *   "npm run typecheck"
- *   "bun test tests/example.test.ts"
- *   "git status --short"
- *   "tsc --noEmit"
- *   "oxlint --deny-warnings"
  */
 export function parseLegacyRequirementString(raw: string): ValidationRequirement {
   const trimmed = raw.trim()
@@ -213,28 +407,22 @@ export function parseLegacyRequirementString(raw: string): ValidationRequirement
     throw new Error("Requirement string is empty.")
   }
 
-  // Reject shell metacharacters before any splitting
   if (/[|&;<>$`\n\r]/.test(trimmed)) {
-    throw new Error(
-      `Requirement string contains forbidden shell syntax: "${trimmed}"`
-    )
+    throw new Error(`Requirement string contains forbidden shell syntax: "${trimmed}"`)
   }
 
-  // Reject environment variable assignment prefix (e.g. "FOO=bar npm test")
   if (/^\s*[A-Za-z_][A-Za-z0-9_]*=/.test(trimmed)) {
     throw new Error(
       `Requirement string starts with an environment assignment, which is not allowed: "${trimmed}"`
     )
   }
 
-  // Simple whitespace split — no shell quoting is supported; quoted args are rejected
   const parts = trimmed.split(/\s+/).filter(Boolean)
 
   if (parts.length === 0) {
     throw new Error("Requirement string produced no tokens after splitting.")
   }
 
-  // Reject any token that contains quote characters (no shell quoting allowed)
   for (const part of parts) {
     if (/["']/.test(part)) {
       throw new Error(
@@ -246,18 +434,12 @@ export function parseLegacyRequirementString(raw: string): ValidationRequirement
   const rawExecutable = parts[0]
   const args = parts.slice(1)
 
-  // Reject absolute paths and Windows paths in the executable position
   if (/^[/\\]/.test(rawExecutable) || /^[A-Za-z]:/.test(rawExecutable)) {
-    throw new Error(
-      `Requirement string executable "${rawExecutable}" must not be an absolute path.`
-    )
+    throw new Error(`Requirement string executable "${rawExecutable}" must not be an absolute path.`)
   }
 
-  // Reject path traversal in executable
   if (rawExecutable.includes("..") || rawExecutable.includes("/") || rawExecutable.includes("\\")) {
-    throw new Error(
-      `Requirement string executable "${rawExecutable}" must be a plain basename.`
-    )
+    throw new Error(`Requirement string executable "${rawExecutable}" must be a plain basename.`)
   }
 
   const ALLOWED_MAP: Partial<Record<string, AllowedValidationExecutable>> = {
@@ -271,12 +453,9 @@ export function parseLegacyRequirementString(raw: string): ValidationRequirement
 
   const executable = ALLOWED_MAP[rawExecutable]
   if (!executable) {
-    throw new Error(
-      `Executable "${rawExecutable}" is not in the legacy migration allowlist.`
-    )
+    throw new Error(`Executable "${rawExecutable}" is not in the legacy migration allowlist.`)
   }
 
-  // Perform the same arg validation the structured validator does
   const req: ValidationRequirement = { executable, args }
   validateCommandRequirement(req)
 
