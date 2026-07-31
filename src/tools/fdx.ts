@@ -194,7 +194,7 @@ export const fdxImpactTool: ToolDefinition = tool({
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeImpactFallback(args.files, args.root)
+      return await nativeImpactFallback(args.files, args.root)
     }
     const cmd: string[] = ["impact", ...args.files]
     if (args.depth !== undefined) cmd.push("--depth", String(args.depth))
@@ -205,7 +205,7 @@ export const fdxImpactTool: ToolDefinition = tool({
       return runFdx(cmd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeImpactFallback(args.files, args.root)
+      return await nativeImpactFallback(args.files, args.root)
     }
   },
 })
