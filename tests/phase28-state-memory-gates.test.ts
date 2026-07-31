@@ -21,6 +21,12 @@ vi.mock("fs", () => {
       }
       return original.readFileSync(path, options);
     },
+    cpSync: (src: any, dest: any, options: any) => {
+      if (typeof src === "string" && src.includes("legacy-home-err")) {
+        throw new Error("Injected disk read failure");
+      }
+      return original.cpSync(src, dest, options);
+    },
   };
 });
 
