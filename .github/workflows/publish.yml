@@ -30,11 +30,11 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Run Tests
-        run: npm test
-
       - name: Build Package
         run: npm run build
+
+      - name: Run Tests
+        run: npm test
 
       - name: Validate Package
         run: |
