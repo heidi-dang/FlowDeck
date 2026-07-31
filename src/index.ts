@@ -1095,6 +1095,7 @@ export default flowDeckPlugin
 
 export { AGENT_NAMES, createAgent } from "./agents/index"
 export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
+export type { ValidateDelegationDepthOptions } from "./services/governance-wiring"
 export { acquireLock, releaseLock } from "./services/async-lock"
 export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
 // resolveDoctorExitCode provenant du module canonique sans dépendances

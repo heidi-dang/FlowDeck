@@ -333,29 +333,25 @@ function resolveAgentId(name: string, specialistAgents: Set<string>): string {
   return canonical
 }
 
-/**
- * Verify delegation is valid using canonical agent IDs.
- *
- * Returns typed error codes:
- * - SELF_DELEGATION_BLOCKED: source === target (by canonical ID)
- * - SPECIALIST_CANNOT_DELEGATE: source agent has no delegation rights
- * - DEPTH_LIMIT_EXCEEDED: max depth reached
- * - MISSING_TARGET_AGENT: no target provided
- * - TARGET_NOT_FOUND: target is not a known specialist
- *
- * maxDepth is configurable (default 1). Specialists cannot delegate.
- * No agent can delegate to itself. Missing target is blocked (not
- * silently resolved to the current agent).
- */
-export function validateDelegationDepth(
-  delegatingAgent: string,
-  targetAgent: string,
-  currentDepth: number,
-  specialistAgents: Set<string>,
-  maxDepth: number = 1,
+export interface ValidateDelegationDepthOptions {
+  delegatingAgent: string
+  targetAgent: string
+  currentDepth: number
+  specialistAgents: Set<string> | readonly string[]
+  maxDepth?: number
+}
+
+function buildValidateDelegationDepth(
+  options: ValidateDelegationDepthOptions
 ): DelegationResult {
+  const { delegatingAgent, targetAgent, currentDepth } = options
+  const maxDepth = options.maxDepth ?? 1
+  const specialistSet = options.specialistAgents instanceof Set
+    ? options.specialistAgents
+    : new Set(options.specialistAgents)
+
   // Specialists cannot delegate
-  if (specialistAgents.has(delegatingAgent)) {
+  if (specialistSet.has(delegatingAgent)) {
     return {
       allowed: false,
       errorCode: "SPECIALIST_CANNOT_DELEGATE",
@@ -373,8 +369,8 @@ export function validateDelegationDepth(
   }
 
   // Resolve to canonical IDs for comparison
-  const sourceId = resolveAgentId(delegatingAgent, specialistAgents)
-  const targetId = resolveAgentId(targetAgent, specialistAgents)
+  const sourceId = resolveAgentId(delegatingAgent, specialistSet)
+  const targetId = resolveAgentId(targetAgent, specialistSet)
 
   // Self-delegation (by canonical ID)
   if (sourceId === targetId) {
@@ -386,7 +382,7 @@ export function validateDelegationDepth(
   }
 
   // Target must be a known specialist
-  if (!specialistAgents.has(targetId)) {
+  if (!specialistSet.has(targetId)) {
     return {
       allowed: false,
       errorCode: "TARGET_NOT_FOUND",
@@ -405,3 +401,37 @@ export function validateDelegationDepth(
 
   return { allowed: true }
 }
+
+export function validateDelegationDepth(
+  options: ValidateDelegationDepthOptions
+): DelegationResult
+
+export function validateDelegationDepth(
+  delegatingAgent: string,
+  targetAgent: string,
+  currentDepth: number,
+  specialistAgents: Set<string> | readonly string[],
+  maxDepth?: number
+): DelegationResult
+
+export function validateDelegationDepth(
+  optionsOrDelegatingAgent: ValidateDelegationDepthOptions | string,
+  targetAgent?: string,
+  currentDepth?: number,
+  specialistAgents?: Set<string> | readonly string[],
+  maxDepth?: number
+): DelegationResult {
+  const options: ValidateDelegationDepthOptions =
+    typeof optionsOrDelegatingAgent === "string"
+      ? {
+          delegatingAgent: optionsOrDelegatingAgent,
+          targetAgent: targetAgent ?? "",
+          currentDepth: currentDepth ?? 0,
+          specialistAgents: specialistAgents ?? new Set<string>(),
+          maxDepth: maxDepth ?? 1,
+        }
+      : optionsOrDelegatingAgent
+
+  return buildValidateDelegationDepth(options)
+}
+
