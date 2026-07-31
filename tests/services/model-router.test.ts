@@ -7,7 +7,7 @@
  * - filterAgentsForStage: returns only relevant agents per stage
  * - computePromptSlimmingStats: saving_pct is > 0 for known stages
  */
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import {
   classifyTaskComplexity,
   getTierForAgent,

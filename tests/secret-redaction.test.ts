@@ -5,7 +5,7 @@
  * All test tokens are synthetic and not real credentials.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { redactSecrets, containsSecrets } from "../src/lib/secret-redaction"
 
 describe("redactSecrets", () => {

@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync, readdirSync, statSync } from "fs"
+import { existsSync, readFileSync, readdirSync, statSync, promises as fsPromises } from "fs"
 import { join, resolve } from "path"
 import {
   topicContextPath,
@@ -329,6 +329,10 @@ export function nativeSearchFallback(query: string, searchPath: string = "."): s
     const root = resolve(searchPath)
     const isIgnored = loadGitignorePatterns(root)
     const results: string[] = []
+
+    const lowerQuery = query.toLowerCase()
+    const queryRe = new RegExp(escapeRegex(query), "i")
+
     const walk = (dir: string) => {
       for (const item of readdirSync(dir)) {
         if (ALWAYS_EXCLUDED.includes(item)) continue
@@ -340,19 +344,24 @@ export function nativeSearchFallback(query: string, searchPath: string = "."): s
             walk(full)
           } else if (st.isFile()) {
             const text = readFileSync(full, "utf-8")
+
+            // Fast reject: If the file content doesn't match case-insensitively, skip it entirely
+            if (!queryRe.test(text)) continue
+
             const lines = text.split("\n")
-            lines.forEach((line, idx) => {
-              if (line.toLowerCase().includes(query.toLowerCase())) {
+            for (let idx = 0; idx < lines.length; idx++) {
+              const line = lines[idx]
+              if (line.toLowerCase().includes(lowerQuery)) {
                 results.push(`${full}:${idx + 1}:${line.trim()}`)
               }
-            })
+            }
           }
         } catch { /* ignore unreadable */ }
       }
     }
     walk(root)
     if (results.length === 0) return `[FDX Native Fallback] No matches found for "${query}"`
-    return `[FDX Native Fallback: ${results.length} matches]\n` + results.slice(0, 100).join("\n")
+    return `[FDX Native Fallback: ${results.length} matches]\n${results.join("\n")}`
   } catch (err: any) {
     return `[FDX Fallback] Search error: ${err.message}`
   }
@@ -452,6 +461,7 @@ function nativeOutlineFile(filePath: string): string {
         const name = m[m.length - 1] // last capture group is the name
         const kindStr = kind.startsWith("$") ? m[parseInt(kind[1])] || kind : kind
         symbols.push({ kind: kindStr, name, line: lineNumber })
+        if (m.index === re.lastIndex) re.lastIndex++
       }
     }
     if (symbols.length === 0) return ""
@@ -466,47 +476,106 @@ function nativeOutlineFile(filePath: string): string {
 /**
  * Simple import-based impact fallback.
  * Scans TypeScript/JavaScript files for import/require statements matching the target files.
+ * Uses a bounded concurrency queue for deterministic, fail-safe traversal.
  */
-export function nativeImpactFallback(files: string[], root: string = "."): string {
+export async function nativeImpactFallback(
+  files: string[],
+  root: string = ".",
+  options: { maxConcurrency?: number } = {}
+): Promise<string> {
+  const maxConcurrency = options.maxConcurrency ?? 16
   const targetNames = new Set(files.map(f => {
     const base = f.split(/[/\\]/).pop() ?? f
     return base.replace(/\.(ts|tsx|js|jsx)$/, "")
   }))
 
   const results: Array<{ file: string; matches: string[] }> = []
+  const resolvedRoot = resolve(root)
 
-  const walk = (dir: string) => {
-    for (const item of readdirSync(dir)) {
-      if (ALWAYS_EXCLUDED.includes(item)) continue
-      const full = join(dir, item)
-      try {
-        const st = statSync(full)
-        if (st.isDirectory()) {
-          walk(full)
-        } else if (st.isFile() && /\.(ts|tsx|js|jsx)$/.test(item)) {
-          const text = readFileSync(full, "utf-8")
-          const matches: string[] = []
-          for (const target of targetNames) {
-            const importRe = new RegExp(
-              `(?:from\\s+['"](?:[./]*/)?${escapeRegex(target)}|require\\(\\s*['"](?:[./]*/)?${escapeRegex(target)})`,
-              "i"
-            )
-            if (importRe.test(text)) {
-              matches.push(target)
+  try {
+    const rootStat = await fsPromises.stat(resolvedRoot)
+    if (!rootStat.isDirectory()) {
+      return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
+    }
+  } catch {
+    return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
+  }
+
+  const queue: string[] = [resolvedRoot]
+  let activeWorkers = 0
+
+  await new Promise<void>((resolvePromise) => {
+    const processQueue = async () => {
+      while (queue.length > 0 && activeWorkers < maxConcurrency) {
+        const dir = queue.shift()!
+        activeWorkers++
+
+        (async () => {
+          try {
+            const entries = await fsPromises.readdir(dir, { withFileTypes: true })
+            entries.sort((a, b) => a.name.localeCompare(b.name))
+
+            for (const item of entries) {
+              if (ALWAYS_EXCLUDED.includes(item.name)) continue
+              const full = join(dir, item.name)
+
+              let isDir = item.isDirectory()
+              let isFile = item.isFile()
+
+              if (item.isSymbolicLink()) {
+                try {
+                  const targetStat = await fsPromises.stat(full)
+                  isDir = targetStat.isDirectory()
+                  isFile = targetStat.isFile()
+                } catch {
+                  continue
+                }
+              }
+
+              if (isDir) {
+                queue.push(full)
+              } else if (isFile && /\.(ts|tsx|js|jsx)$/.test(item.name)) {
+                try {
+                  const text = await fsPromises.readFile(full, "utf-8")
+                  const matches: string[] = []
+                  for (const target of targetNames) {
+                    const importRe = new RegExp(
+                      `(?:from\\s+['"](?:[./]*/)?${escapeRegex(target)}|require\\(\\s*['"](?:[./]*/)?${escapeRegex(target)})`,
+                      "i"
+                    )
+                    if (importRe.test(text)) {
+                      matches.push(target)
+                    }
+                  }
+                  if (matches.length > 0) {
+                    matches.sort((a, b) => a.localeCompare(b))
+                    results.push({ file: full, matches })
+                  }
+                } catch { /* per-file failure isolation */ }
+              }
+            }
+          } catch {
+            /* per-directory failure isolation */
+          } finally {
+            activeWorkers--
+            if (queue.length === 0 && activeWorkers === 0) {
+              resolvePromise()
+            } else {
+              processQueue()
             }
           }
-          if (matches.length > 0) {
-            results.push({ file: full, matches })
-          }
-        }
-      } catch { /* ignore */ }
-    }
-  }
+        })()
+      }
 
-  const resolvedRoot = resolve(root)
-  if (existsSync(resolvedRoot)) {
-    walk(resolvedRoot)
-  }
+      if (queue.length === 0 && activeWorkers === 0) {
+        resolvePromise()
+      }
+    }
+
+    processQueue()
+  })
+
+  results.sort((a, b) => a.file.localeCompare(b.file))
 
   if (results.length === 0) {
     return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
@@ -523,41 +592,42 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-export async function nativeContextFallback(
-  action: "append" | "read" | "clear",
-  topic: string,
-  agent?: string,
-  stage?: string,
-  summary?: string,
-): Promise<string> {
-  const path = topicContextPath(activeProjectDir, topic)
-  if (action === "append") {
-    const line = `### ${agent || "Agent"} (${stage || "Stage"})\n${summary || ""}\n`
+export async function nativeContextFallback(args: {
+  action: "append" | "read" | "clear"
+  topic: string
+  agent?: string
+  stage?: string
+  summary?: string
+}): Promise<string> {
+  const path = topicContextPath(activeProjectDir, args.topic)
+  if (args.action === "append") {
+    const line = `### ${args.agent || "Agent"} (${args.stage || "Stage"})\n${args.summary || ""}\n`
     await appendWithLock(path, line)
     return `[FDX Context Fallback] Appended to ${path}`
-  } else if (action === "read") {
+  } else if (args.action === "read") {
     const res = readOrMissing(path)
-    return res.exists ? res.content : `[No context logged for topic "${topic}"]`
+    return res.exists ? res.content : `[No context logged for topic "${args.topic}"]`
   } else {
     await clearFileWithLock(path)
-    return `[Context cleared for topic "${topic}"]`
+    return `[Context cleared for topic "${args.topic}"]`
   }
 }
 
-export async function nativeDecisionsFallback(
-  action: "record" | "read",
-  topic: string,
-  decision?: string,
-  rationale?: string,
-  made_by?: string,
-): Promise<string> {
-  const path = topicDecisionsPath(activeProjectDir, topic)
-  if (action === "record") {
-    const line = `- **${decision || "Decision"}**: ${rationale || ""} (By: ${made_by || "Unknown"})\n`
+export async function nativeDecisionsFallback(args: {
+  action: "record" | "read"
+  topic: string
+  decision?: string
+  rationale?: string
+  made_by?: string
+}): Promise<string> {
+  const path = topicDecisionsPath(activeProjectDir, args.topic)
+  if (args.action === "record") {
+    const line = `- **${args.decision || "Decision"}**: ${args.rationale || ""} (By: ${args.made_by || "Unknown"})\n`
     await appendWithLock(path, line)
     return `[FDX Decisions Fallback] Recorded to ${path}`
   } else {
     const res = readOrMissing(path)
-    return res.exists ? res.content : `[No decisions recorded for topic "${topic}"]`
+    return res.exists ? res.content : `[No decisions recorded for topic "${args.topic}"]`
   }
 }
+

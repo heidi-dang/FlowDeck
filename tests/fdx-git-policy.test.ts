@@ -5,7 +5,7 @@
  * binary correctly permit read-only git operations and reject all mutating commands and flags.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { execFileSync } from "child_process"
 import { join } from "path"
 import { existsSync, mkdtempSync, rmSync } from "fs"

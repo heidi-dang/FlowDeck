@@ -11,7 +11,7 @@
  * - Generic (non-command) idle notification fires only when edits exist
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { NotificationController, normalizeCommandName, type NotifyLevel } from "@/hooks/notifications"
 
 // ── Stub ───────────────────────────────────────────────────────────────────

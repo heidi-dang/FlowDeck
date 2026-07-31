@@ -8,6 +8,22 @@ export function parseLcov(lcovContent?: string): {
   displayPercentage: number
   fileCount: number
 }
+export function evaluateProcessResult(proc: any, tempDir: string, threshold: number): {
+  status: number
+  rawPercentage: number
+  displayPercentage: number
+  coveredLines: number
+  totalLines: number
+  fileCount: number
+}
+export function runCoverageCheckWithRunner(thresholdRaw?: string | number, runner?: any): {
+  status: number
+  rawPercentage: number
+  displayPercentage: number
+  coveredLines: number
+  totalLines: number
+  fileCount: number
+}
 export function runCoverageCheck(thresholdRaw?: string | number): {
   status: number
   rawPercentage: number

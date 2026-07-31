@@ -8,7 +8,7 @@
  * - getAgentConfigs marks orchestrator as primary, others as subagent
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import {
   AGENT_NAMES,
   createAgent,

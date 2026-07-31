@@ -50,7 +50,7 @@
     "check:fdx": "fdx --version",
     "postinstall": "node postinstall.mjs",
     "prepublishOnly": "bun run clean && bun run build",
-    "test": "bun test",
+    "test": "bun test --path-ignore-patterns=\"**/orchestration/persistence/**\"",
     "test:fdx-parity": "node scripts/verify-fdx-parity.mjs",
     "test:coverage": "node scripts/check-coverage.mjs",
     "typecheck": "tsc --noEmit",
@@ -66,7 +66,29 @@
     "install:clean": "node bin/flowdeck.js clean-install",
     "better-harness:serve": "node bin/better-harness.js",
     "standalone:start": "bun run src/better-harness/testing/standalone-server-cli.ts",
-    "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\""
+    "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\"",
+    "test:persistence": "node src/orchestration/persistence/__tests__/run-tests.mjs && node src/orchestration/persistence/__tests__/phase1-2-tests.mjs && node src/orchestration/persistence/__tests__/phase1-3-tests.mjs && node src/orchestration/persistence/__tests__/phase1-4-tests.mjs && node src/orchestration/persistence/__tests__/phase1-5-retry.mjs",
+    "test:persistence:node": "node src/orchestration/persistence/__tests__/run-tests.mjs",
+    "check:schema-generated": "node scripts/check-schema-generated.mjs",
+    "generate:schema": "node -e \"const fs=require(\"fs\"),crypto=require(\"crypto\");const sql=fs.readFileSync(\"schema-v0.2.6.sql\",\"utf-8\");const c=crypto.createHash(\"sha256\").update(sql,\"utf-8\").digest(\"hex\");fs.writeFileSync(\"src/orchestration/persistence/migrations/schema-embed.ts\",\"// Auto-generated from schema-v0.2.6.sql - DO NOT EDIT\\n// Regenerate: npm run generate:schema\\n// Canonical checksum: \"+c+\"\\n\\nexport const SCHEMA_V_0_2_6 = \\`\"+sql.replace(/\\`/g,\"\\\\\\`\")+\"\\`;\\nexport const SCHEMA_CHECKSUM = \\\"\"+c+\"\\\";\\n\");console.log(\"Generated, checksum:\"+c);\"",
+    "typecheck:dev2-compat": "echo \"Dev 2 compatibility check requires types from dev2/orchestration-contract-domain (SHA ffff758). Run with: tsc -p tsconfig.dev2-compat.json\" && tsc -p tsconfig.dev2-compat.json --noEmit 2>&1 | head -5",
+    "test:orchestration:framework": "bun test tests/orchestration/compliance tests/orchestration/harness tests/orchestration/fake tests/orchestration/runtime.test.ts",
+    "test:orchestration:matrix": "node scripts/generate-orchestration-compliance.mjs",
+    "test:orchestration:compliance": "node scripts/generate-orchestration-compliance.mjs",
+    "test:orchestration:port-discovery": "bun test tests/orchestration/compliance/port-discovery.test.ts",
+    "test:orchestration:negative": "bun test tests/orchestration/negative",
+    "test:orchestration:replay": "bun test tests/orchestration/replay",
+    "test:orchestration:concurrency": "bun test tests/orchestration/concurrency",
+    "test:orchestration:faults": "bun test tests/orchestration/fault",
+    "test:orchestration:fault-injection": "bun test tests/orchestration/fault",
+    "test:orchestration:integration": "node scripts/orchestration/run-integration-matrix.mjs",
+    "test:orchestration:integration:all": "node scripts/orchestration/run-integration-matrix.mjs --profile all",
+    "verify:orchestration:schema": "bun run scripts/orchestration/verify-schema.mjs",
+    "validate:orchestration:artifacts": "node scripts/orchestration/validate-artifacts.mjs",
+    "report:orchestration:compatibility": "node scripts/generate-orchestration-compliance.mjs",
+    "report:orchestration:provenance": "node scripts/generate-orchestration-provenance.mjs",
+    "report:orchestration:repair-handoff": "node scripts/orchestration/generate-repair-handoff.mjs",
+    "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:matrix && npm run test:orchestration:port-discovery && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults && npm run test:orchestration:integration && npm run verify:orchestration:schema"
   },
   "keywords": [
     "opencode",
@@ -95,7 +117,7 @@
     "required": "^0.1.0"
   },
   "engines": {
-    "node": ">=18.0.0",
+    "node": ">=20.0.0",
     "opencode": ">=1.4.0"
   },
   "dependencies": {

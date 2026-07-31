@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { inspectDiff } from "../../src/better-harness/verification/diff-inspector";
 import { detectRegressions } from "../../src/better-harness/verification/regression-detector";
 import { generateLearningProposal } from "../../src/better-harness/verification/learning-capture";

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "bun:test"
 import { execFileSync } from "node:child_process"
 import { mkdirSync, rmSync, existsSync, writeFileSync } from "fs"
 import { tmpdir } from "os"

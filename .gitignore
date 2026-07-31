@@ -157,3 +157,9 @@ fd-worktrees/
 
 # Incremental TypeScript build cache (pre-push fast typecheck)
 .cache/
+.flowdeck/
+
+# SQLite databases generated during tests
+*.db
+*.db-wal
+*.db-shm

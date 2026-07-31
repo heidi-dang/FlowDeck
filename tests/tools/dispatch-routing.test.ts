@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it } from "bun:test"
 import { classifyUiTaskType, isTaskType, isUiHeavyTask, normalizeTaskType } from "@/lib/task-routing"
 
 describe("task-routing UI classification", () => {

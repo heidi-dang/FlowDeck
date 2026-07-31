@@ -6,7 +6,7 @@ const PROFILES: Record<string, DoctorProfile> = {
     description: "Minimal FlowDeck installation — only essential components",
     enabledMcps: ["context7", "grep_app", "sequentialThinking"],
     enabledHooks: ["chat.message", "tool.execute.before", "tool.execute.after", "guardRailsHook"],
-    runtimeRequirements: ["node >= 18", "npm", "git"],
+    runtimeRequirements: ["node >= 20", "npm", "git"],
     recommendedSettings: {
       governance: { mode: "strict" },
       default_agent: "heidi",
@@ -25,7 +25,7 @@ const PROFILES: Record<string, DoctorProfile> = {
       "sessionStartHook", "sessionEventsHook", "commandRefGuard",
       "patchTrust", "todoHook", "fileTracker", "contextWindowMonitor",
     ],
-    runtimeRequirements: ["node >= 18", "npm", "bun >= 1.0", "git"],
+    runtimeRequirements: ["node >= 20", "npm", "bun >= 1.0", "git"],
     recommendedSettings: {
       governance: { mode: "strict" },
       default_agent: "heidi",
@@ -48,7 +48,7 @@ const PROFILES: Record<string, DoctorProfile> = {
       "patchTrust", "notifications", "todoHook", "fileTracker",
       "contextWindowMonitor", "shellEnvHook",
     ],
-    runtimeRequirements: ["node >= 18", "npm", "bun >= 1.0", "git"],
+    runtimeRequirements: ["node >= 20", "npm", "bun >= 1.0", "git"],
     recommendedSettings: {
       governance: { mode: "strict" },
       default_agent: "heidi",
@@ -65,7 +65,7 @@ const PROFILES: Record<string, DoctorProfile> = {
       "tool.execute.before", "tool.execute.after",
       "guardRailsHook",
     ],
-    runtimeRequirements: ["node >= 18", "npm"],
+    runtimeRequirements: ["node >= 20", "npm"],
     recommendedSettings: {
       governance: { mode: "strict" },
       default_agent: "heidi",
@@ -79,7 +79,7 @@ const PROFILES: Record<string, DoctorProfile> = {
       "tool.execute.before", "tool.execute.after",
       "guardRailsHook", "sessionEventsHook",
     ],
-    runtimeRequirements: ["node >= 18", "npm", "bun >= 1.0", "git"],
+    runtimeRequirements: ["node >= 20", "npm", "bun >= 1.0", "git"],
     recommendedSettings: {
       governance: { mode: "strict" },
       default_agent: "heidi",

@@ -2,34 +2,53 @@
  * Runtime environment checks.
  */
 
-import { execFileSync } from "child_process"
+import { execFile } from "child_process"
+import { promisify } from "util"
 import type { CheckResult } from "../types"
 
-function tryExec(cmd: string, args: string[] = []): string | null {
+const execFileAsync = promisify(execFile)
+
+async function tryExec(cmd: string, args: string[] = []): Promise<string | null> {
   try {
-    return execFileSync(cmd, args, {
+    const { stdout } = await execFileAsync(cmd, args, {
       encoding: "utf-8",
-      timeout: 2000,
+      timeout: 1500,
       shell: process.platform === "win32",
-    }).trim()
-  } catch { return null }
+      windowsHide: true,
+    })
+    return stdout.trim()
+  } catch {
+    return null
+  }
 }
 
-function tryVersion(cmd: string): string | null {
-  const out = tryExec(cmd, ["--version"])
+async function tryVersion(cmd: string): Promise<string | null> {
+  const out = await tryExec(cmd, ["--version"])
   return out?.split("\n")[0]?.trim() ?? null
 }
 
 export async function runRuntimeChecks(_directory: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
-  const nodeVer = tryVersion("node")
-  const npmVer = tryVersion("npm")
-  const bunVer = tryVersion("bun")
-  const gitVer = tryVersion("git")
-  const rustcVer = tryVersion("rustc")
-  tryVersion("cargo")
-  const pyVer = tryVersion("python3")
-  const dockerVer = tryVersion("docker")
+
+  const [
+    nodeVer,
+    npmVer,
+    bunVer,
+    gitVer,
+    rustcVer,
+    _cargoVer,
+    pyVer,
+    dockerVer,
+  ] = await Promise.all([
+    tryVersion("node"),
+    tryVersion("npm"),
+    tryVersion("bun"),
+    tryVersion("git"),
+    tryVersion("rustc"),
+    tryVersion("cargo"),
+    tryVersion("python3"),
+    tryVersion("docker"),
+  ])
 
   // OS
   checks.push({
@@ -97,7 +116,7 @@ export async function runRuntimeChecks(_directory: string): Promise<CheckResult[
   }
 
   // WSL detection
-  const isWSL = process.platform === "linux" && (tryExec("cat", ["/proc/version"]) || "").toLowerCase().includes("microsoft")
+  const isWSL = process.platform === "linux" && ((await tryExec("cat", ["/proc/version"])) || "").toLowerCase().includes("microsoft")
   checks.push({
     id: "runtime.wsl",
     title: "WSL2",

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "bun:test"
 import * as childProcess from "child_process"
 import type { SpawnSyncReturns } from "child_process"
 import { createFlowDeckMcps, buildFlowDeckMcpsWithMeta } from "@/mcp/index"

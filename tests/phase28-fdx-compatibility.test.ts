@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { runDoctorChecks, testFdxVersionCompatibility } from "../scripts/doctor-engine.mjs";
 
 describe("Phase 28 — FDX Version Compatibility Gates", () => {
@@ -11,7 +11,7 @@ describe("Phase 28 — FDX Version Compatibility Gates", () => {
     const report = await runDoctorChecks(process.cwd());
     const fdxCheck = report.checks.find((c: { id: string }) => c.id === "fdx.version");
     expect(fdxCheck).toBeDefined();
-    expect(["pass", "warn", "fail"]).toContain(fdxCheck?.status);
+    expect(["pass", "warn", "fail"]).toContain(fdxCheck!.status);
   });
 
   it("passes for compatible version fdx 0.1.0", () => {

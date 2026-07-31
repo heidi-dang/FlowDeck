@@ -23,7 +23,7 @@ export interface WorkspaceSnapshot {
 
 function safeExec(cmd: string, cwd: string): string {
   try {
-    return execSync(cmd, { cwd, encoding: "utf-8", timeout: 5000 }).trim();
+    return execSync(cmd, { cwd, encoding: "utf-8", timeout: 5000, stdio: ["pipe", "pipe", "ignore"] }).trim();
   } catch {
     return "";
   }

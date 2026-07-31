@@ -5,7 +5,7 @@
  * requiring the full OpenCode plugin entry point, using ephemeral ports and
  * temporary directories.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { launchStandaloneServer, type StandaloneServerMeta } from "../../src/better-harness/testing/standalone-launcher";
 
 const LIFECYCLE_TIMEOUT = 30_000;

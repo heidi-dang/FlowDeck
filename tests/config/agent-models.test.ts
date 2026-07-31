@@ -10,7 +10,7 @@
  * - parseModelSpec converts provider/model strings to SDK model shape
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"

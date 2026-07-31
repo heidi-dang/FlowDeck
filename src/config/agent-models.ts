@@ -13,6 +13,9 @@ export interface AgentModelConfig {
 
 export const DEFAULT_CONFIG: FlowDeckConfig = {
   agentModels: {},
+  betterHarness: {
+    enabled: true,
+  },
   maxDelegationDepth: 1,
   maxWritesPerAgent: 15,
 }

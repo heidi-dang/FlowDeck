@@ -10,7 +10,7 @@
  * - Legacy contract regression: named exports do NOT cause scanner rejection
  */
 
-import { describe, it, expect, vi } from "vitest"
+import { describe, it, expect, vi } from "bun:test"
 import { mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"

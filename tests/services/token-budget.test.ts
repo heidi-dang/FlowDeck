@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { buildTokenBudget, estimateTokensFromBytes } from "../../src/services/token-budget"
 
 describe("token-budget", () => {

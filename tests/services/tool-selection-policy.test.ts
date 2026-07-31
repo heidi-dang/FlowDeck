@@ -14,7 +14,7 @@
  *  - notes include unavailability reasons for fallback diagnostics
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import {
   selectToolFamily,
   shouldActivateTokenOptimization,

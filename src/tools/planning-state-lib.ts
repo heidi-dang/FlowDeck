@@ -1,6 +1,6 @@
 import { join, dirname, resolve, basename } from "path"
 import { homedir } from "os"
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, realpathSync, rmSync, renameSync } from "fs"
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, realpathSync, rmSync, renameSync, cpSync } from "fs"
 import { createHash } from "crypto"
 import { withLock } from "../services/async-lock"
 
@@ -31,7 +31,7 @@ export function normalizePathForId(directory: string): string {
     dir = dir[0].toUpperCase() + dir.slice(1)
   }
   let resolved = resolve(dir).replace(/\\/g, "/")
-  if (existsSync(resolved)) {
+  if (!dir.startsWith("//") && !dir.startsWith("\\\\") && existsSync(resolved)) {
     try {
       resolved = realpathSync(resolved).replace(/\\/g, "/")
     } catch {}
@@ -50,13 +50,9 @@ export function normalizePathForId(directory: string): string {
   return resolved
 }
 
-
-
 /**
- * Generate a stable project identifier from canonical repository root.
- *
- * Format: `<basename>-<short-hash>` where short-hash is the first 8 chars
- * of a SHA-256 hash of the normalized directory path.
+ * Generate stable project ID from directory path.
+ * Format: `<dirname>-<8-char-sha256-hash>`
  */
 export function generateProjectId(directory: string): string {
   const normPath = normalizePathForId(directory)
@@ -66,18 +62,7 @@ export function generateProjectId(directory: string): string {
 }
 
 function copyDirRecursiveSync(src: string, dest: string): void {
-  if (!existsSync(dest)) mkdirSync(dest, { recursive: true })
-  const entries = readdirSync(src)
-  for (const entry of entries) {
-    const srcPath = join(src, entry)
-    const destPath = join(dest, entry)
-    const st = statSync(srcPath)
-    if (st.isDirectory()) {
-      copyDirRecursiveSync(srcPath, destPath)
-    } else {
-      writeFileSync(destPath, readFileSync(srcPath))
-    }
-  }
+  cpSync(src, dest, { recursive: true, dereference: false })
 }
 
 /**
@@ -104,8 +89,12 @@ export function planningDir(directory: string): string {
     const ts = Date.now()
     const tmpDir = join(root, `${id}.tmp.${ts}`)
     try {
-      mkdirSync(tmpDir, { recursive: true })
       copyDirRecursiveSync(legacyDir, tmpDir)
+
+      const tmpStateFile = join(tmpDir, "STATE.md")
+      if (!existsSync(tmpStateFile)) {
+        throw new Error("Migration validation failed: STATE.md missing in destination")
+      }
 
       if (!existsSync(newDir)) {
         renameSync(tmpDir, newDir)
@@ -119,9 +108,9 @@ export function planningDir(directory: string): string {
         renameSync(legacyDir, backupDir)
       } catch {}
     } catch {
-      try {
-        if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true })
-      } catch {}
+      if (existsSync(tmpDir)) {
+        try { rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+      }
     }
   }
 
@@ -287,11 +276,23 @@ export function resolveActiveTopic(
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue
       if (RESERVED_PLANNING_ENTRIES.has(entry.name)) continue
+
       const dir = join(root, entry.name)
       const hasArtifact = [PLAN_FILE, TASK_FILE].some(f => existsSync(join(dir, f)))
       if (!hasArtifact) continue
-      const mtimeMs = statSync(dir).mtimeMs
-      if (!newest || mtimeMs > newest.mtimeMs) newest = { slug: entry.name, mtimeMs }
+
+      try {
+        const mtimeMs = statSync(dir).mtimeMs
+        if (
+          !newest ||
+          mtimeMs > newest.mtimeMs ||
+          (mtimeMs === newest.mtimeMs && entry.name.localeCompare(newest.slug) < 0)
+        ) {
+          newest = { slug: entry.name, mtimeMs }
+        }
+      } catch {
+        continue
+      }
     }
   } catch {
     return null

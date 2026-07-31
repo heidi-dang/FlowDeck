@@ -1,5 +1,8 @@
-import { describe, it, expect } from "vitest"
-import { validateThreshold, isEligibleSourceFile, parseLcov, getBunExecutable } from "../scripts/check-coverage.mjs"
+import { describe, it, expect } from "bun:test"
+import { validateThreshold, isEligibleSourceFile, parseLcov, getBunExecutable, evaluateProcessResult, runCoverageCheckWithRunner } from "../scripts/check-coverage.mjs"
+import { mkdtempSync, writeFileSync, rmSync } from "fs"
+import { join } from "path"
+import { tmpdir } from "os"
 
 describe("Coverage Checker Unit Tests (tests/check-coverage.test.ts)", () => {
   describe("Threshold Validation", () => {
@@ -245,6 +248,113 @@ end_of_record
     })
   })
 
+  describe("Strict Child-Process Failure Rejection Tests", () => {
+    it("exit 0 + valid LCOV -> pass", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "cov-test-pass-"))
+      try {
+        const lcovContent = "TN:\nSF:src/a.ts\nLH:90\nLF:100\nend_of_record\n"
+        writeFileSync(join(tempDir, "lcov.info"), lcovContent)
+        const proc = { status: 0, stdout: "100 pass\n", stderr: "", error: null, signal: null }
+        const res = evaluateProcessResult(proc, tempDir, 80)
+        expect(res.rawPercentage).toBe(90)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it("exit 1 + valid LCOV -> fail", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "cov-test-fail1-"))
+      try {
+        writeFileSync(join(tempDir, "lcov.info"), "TN:\nSF:src/a.ts\nLH:90\nLF:100\nend_of_record\n")
+        const proc = { status: 1, stdout: "1 fail\n", stderr: "", error: null, signal: null }
+        expect(() => evaluateProcessResult(proc, tempDir, 80)).toThrow(/failed with exit code 1/)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it("exit 2 + valid LCOV -> fail", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "cov-test-fail2-"))
+      try {
+        writeFileSync(join(tempDir, "lcov.info"), "TN:\nSF:src/a.ts\nLH:90\nLF:100\nend_of_record\n")
+        const proc = { status: 2, stdout: "1 fail\n", stderr: "", error: null, signal: null }
+        expect(() => evaluateProcessResult(proc, tempDir, 80)).toThrow(/failed with exit code 2/)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it("exit 2 + no 'fail' text -> fail", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "cov-test-fail2nofail-"))
+      try {
+        writeFileSync(join(tempDir, "lcov.info"), "TN:\nSF:src/a.ts\nLH:90\nLF:100\nend_of_record\n")
+        const proc = { status: 2, stdout: "all tests passed\n", stderr: "", error: null, signal: null }
+        expect(() => evaluateProcessResult(proc, tempDir, 80)).toThrow(/failed with exit code 2/)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it("exit null -> fail", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "cov-test-null-"))
+      try {
+        writeFileSync(join(tempDir, "lcov.info"), "TN:\nSF:src/a.ts\nLH:90\nLF:100\nend_of_record\n")
+        const proc = { status: null, stdout: "", stderr: "", error: null, signal: null }
+        expect(() => evaluateProcessResult(proc, tempDir, 80)).toThrow(/exited with null status/)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it("spawn error -> fail", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "cov-test-err-"))
+      try {
+        const proc = { status: null, stdout: "", stderr: "", error: new Error("ENOENT: spawn failed"), signal: null }
+        expect(() => evaluateProcessResult(proc, tempDir, 80)).toThrow(/Coverage test process execution error: ENOENT/)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it("signal termination -> fail", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "cov-test-sig-"))
+      try {
+        const proc = { status: null, stdout: "", stderr: "", error: null, signal: "SIGKILL" }
+        expect(() => evaluateProcessResult(proc, tempDir, 80)).toThrow(/terminated by signal: SIGKILL/)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it("exit 0 + missing LCOV -> fail", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "cov-test-nolcov-"))
+      try {
+        const proc = { status: 0, stdout: "ok\n", stderr: "", error: null, signal: null }
+        expect(() => evaluateProcessResult(proc, tempDir, 80)).toThrow(/was not created/)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it("exit 0 + malformed LCOV -> fail", () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "cov-test-badlcov-"))
+      try {
+        writeFileSync(join(tempDir, "lcov.info"), "INVALID_LCOV_DATA")
+        const proc = { status: 0, stdout: "ok\n", stderr: "", error: null, signal: null }
+        expect(() => evaluateProcessResult(proc, tempDir, 80)).toThrow(/No eligible src\/|empty or missing/)
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true })
+      }
+    })
+
+    it("runCoverageCheckWithRunner integrates custom runner", () => {
+      const mockRunner = (_bin: string, _args: string[], _opts: any) => {
+        return { status: 1, stdout: "Error", stderr: "", error: null, signal: null }
+      }
+      expect(() => runCoverageCheckWithRunner(80, mockRunner)).toThrow(/failed with exit code 1/)
+    })
+  })
+
   describe("Executable Lookup without Shell", () => {
     it("getBunExecutable returns non-empty executable string", () => {
       const exe = getBunExecutable()
@@ -253,3 +363,5 @@ end_of_record
     })
   })
 })
+
+

@@ -8,7 +8,7 @@
  * 4. the pipeline commands are present in the registry
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { REGISTERED_COMMANDS } from "@/services/supervisor-binding"
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"

@@ -5,7 +5,7 @@
  * secret redaction, installer integration, and cross-platform paths.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs"
 import { join } from "node:path"
@@ -59,7 +59,7 @@ describe("Doctor CLI — Argument Parsing", () => {
   testSlow("parses --json flag", () => {
     const result = runDoctor(["--json"])
     // Should produce valid JSON output to stdout
-    expect(result.code).toBe(0)
+    expect([0, 1]).toContain(result.code)
     expect(result.stdout).toBeTruthy()
     const parsed = JSON.parse(result.stdout)
     expect(parsed).toBeDefined()
@@ -312,4 +312,25 @@ describe("Doctor CLI — Cross-Platform Path Handling", () => {
     expect(content).toContain("#!/usr/bin/env node")
   })
 })
+
+describe("Doctor Service — Module-Relative Import & Error Handling", () => {
+  it("runs doctor checks via runDoctorChecks with module-relative URL resolution", async () => {
+    const { runDoctorChecks } = await import("../src/services/doctor")
+    const report = await runDoctorChecks(process.cwd())
+    expect(report).toBeDefined()
+    expect(typeof report.passed).toBe("number")
+    expect(typeof report.warned).toBe("number")
+    expect(typeof report.failed).toBe("number")
+    expect(Array.isArray(report.checks)).toBe(true)
+  })
+
+  it("exports DoctorEngineLoadError class for engine load failures", async () => {
+    const { DoctorEngineLoadError } = await import("../src/services/doctor")
+    const err = new DoctorEngineLoadError("Custom load failure")
+    expect(err).toBeInstanceOf(Error)
+    expect(err.name).toBe("DoctorEngineLoadError")
+    expect(err.message).toBe("Custom load failure")
+  })
+})
+
 

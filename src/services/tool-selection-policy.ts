@@ -72,13 +72,14 @@ function defaultFamily(reason: string): ToolFamily {
   return { family: "default", mcp: null, preferred: false, reason }
 }
 
-function mcpFamily(
-  family: string,
-  mcp: McpName,
-  preferred: boolean,
-  reason: string,
-  preferredButUnavailable?: McpName,
-): ToolFamily {
+function mcpFamily(options: {
+  family: string
+  mcp: McpName
+  preferred: boolean
+  reason: string
+  preferredButUnavailable?: McpName
+}): ToolFamily {
+  const { family, mcp, preferred, reason, preferredButUnavailable } = options
   const f: ToolFamily = { family, mcp, preferred, reason }
   if (preferredButUnavailable !== undefined) f.preferredButUnavailable = preferredButUnavailable
   return f
@@ -115,16 +116,16 @@ export function selectToolFamily(input: SelectionInput): SelectionOutput {
     case "code_graph_understanding": {
       // Preferred: codegraph. Fallback: grep_app (search), then default.
       if (codegraph && codegraph.available && codegraphReady) {
-        const primary = mcpFamily("codegraph", "codegraph", true, "codegraph available and indexed/fresh")
+        const primary = mcpFamily({ family: "codegraph", mcp: "codegraph", preferred: true, reason: "codegraph available and indexed/fresh" })
         chain.push(primary)
-        if (grepApp?.available) chain.push(mcpFamily("code_text_search", "grep_app", false, "fallback search when codegraph is preferred"))
+        if (grepApp?.available) chain.push(mcpFamily({ family: "code_text_search", mcp: "grep_app", preferred: false, reason: "fallback search when codegraph is preferred" }))
         chain.push(defaultFamily("read/grep when no specialized tool is available"))
         return { primary, fallbacks: chain.slice(1), chain, notes }
       }
       if (codegraph && !codegraph.available) {
         recordUnavailable(codegraph, "codegraph")
         if (grepApp?.available) {
-          const primary = mcpFamily("code_text_search", "grep_app", true, "grep_app: codegraph unavailable, prefer pattern search")
+          const primary = mcpFamily({ family: "code_text_search", mcp: "grep_app", preferred: true, reason: "grep_app: codegraph unavailable, prefer pattern search" })
           chain.push(primary)
           const fb = defaultFamily("read/grep when grep_app is not available")
           chain.push(fb)
@@ -142,7 +143,7 @@ export function selectToolFamily(input: SelectionInput): SelectionOutput {
         notes.push("codegraph: disabled via FLOWDECK_DISABLE_MCP")
       }
       if (grepApp?.available) {
-        const primary = mcpFamily("code_text_search", "grep_app", true, "grep_app: codegraph not registered, prefer pattern search")
+        const primary = mcpFamily({ family: "code_text_search", mcp: "grep_app", preferred: true, reason: "grep_app: codegraph not registered, prefer pattern search" })
         chain.push(primary)
         const fb = defaultFamily("read/grep when grep_app is not available")
         chain.push(fb)
@@ -156,7 +157,7 @@ export function selectToolFamily(input: SelectionInput): SelectionOutput {
     case "token_sensitive_reading": {
       // Preferred: token-optimizer. Fallback: default read.
       if (tokenSensitive && tokenOpt?.available) {
-        const primary = mcpFamily("token-optimizer", "tokenOptimizer", true, "token-sensitive reading and token-optimizer is available")
+        const primary = mcpFamily({ family: "token-optimizer", mcp: "tokenOptimizer", preferred: true, reason: "token-sensitive reading and token-optimizer is available" })
         chain.push(primary)
         const fb = defaultFamily("read when token-optimizer not available")
         chain.push(fb)
@@ -179,25 +180,25 @@ export function selectToolFamily(input: SelectionInput): SelectionOutput {
     case "web_research": {
       // Preferred: websearch (exa). Fallbacks (in order): grep_app, context7, default.
       if (websearch?.available) {
-        const primary = mcpFamily("websearch", "websearch", true, "websearch (exa) available for open-ended research")
+        const primary = mcpFamily({ family: "websearch", mcp: "websearch", preferred: true, reason: "websearch (exa) available for open-ended research" })
         chain.push(primary)
-        if (grepApp?.available) chain.push(mcpFamily("code_text_search", "grep_app", false, "fallback code search"))
-        if (context7?.available) chain.push(mcpFamily("library_docs", "context7", false, "fallback library docs"))
+        if (grepApp?.available) chain.push(mcpFamily({ family: "code_text_search", mcp: "grep_app", preferred: false, reason: "fallback code search" }))
+        if (context7?.available) chain.push(mcpFamily({ family: "library_docs", mcp: "context7", preferred: false, reason: "fallback library docs" }))
         const fb = defaultFamily("read when no web/research tool is available")
         chain.push(fb)
         return { primary, fallbacks: chain.slice(1), chain, notes }
       }
       if (websearch && !websearch.available) recordUnavailable(websearch, "websearch")
       if (grepApp?.available) {
-        const primary = mcpFamily("code_text_search", "grep_app", true, "websearch unavailable; grep_app provides code search")
+        const primary = mcpFamily({ family: "code_text_search", mcp: "grep_app", preferred: true, reason: "websearch unavailable; grep_app provides code search" })
         chain.push(primary)
-        if (context7?.available) chain.push(mcpFamily("library_docs", "context7", false, "fallback library docs after grep_app"))
+        if (context7?.available) chain.push(mcpFamily({ family: "library_docs", mcp: "context7", preferred: false, reason: "fallback library docs after grep_app" }))
         const fb = defaultFamily("read when grep_app not available")
         chain.push(fb)
         return { primary, fallbacks: chain.slice(1), chain, notes }
       }
       if (context7?.available) {
-        const primary = mcpFamily("library_docs", "context7", true, "websearch and grep_app unavailable; context7 as last-resort research fallback")
+        const primary = mcpFamily({ family: "library_docs", mcp: "context7", preferred: true, reason: "websearch and grep_app unavailable; context7 as last-resort research fallback" })
         chain.push(primary)
         const fb = defaultFamily("read when no research tool is available")
         chain.push(fb)
@@ -210,7 +211,7 @@ export function selectToolFamily(input: SelectionInput): SelectionOutput {
 
     case "library_docs": {
       if (context7?.available) {
-        const primary = mcpFamily("library_docs", "context7", true, "context7 available for library docs")
+        const primary = mcpFamily({ family: "library_docs", mcp: "context7", preferred: true, reason: "context7 available for library docs" })
         chain.push(primary)
         const fb = defaultFamily("read when context7 not available")
         chain.push(fb)
@@ -224,7 +225,7 @@ export function selectToolFamily(input: SelectionInput): SelectionOutput {
 
     case "code_text_search": {
       if (grepApp?.available) {
-        const primary = mcpFamily("code_text_search", "grep_app", true, "grep_app available for code search")
+        const primary = mcpFamily({ family: "code_text_search", mcp: "grep_app", preferred: true, reason: "grep_app available for code search" })
         chain.push(primary)
         const fb = defaultFamily("grep when grep_app not available")
         chain.push(fb)
@@ -255,10 +256,10 @@ export function shouldActivateTokenOptimization(estimatedTokens: number, thresho
   const tokenOpt = findAvailability(availability, "tokenOptimizer")
   if (!tokenOpt?.available) return null
   if (estimatedTokens < threshold) return null
-  return mcpFamily(
-    "token-optimizer",
-    "tokenOptimizer",
-    true,
-    `estimated ${estimatedTokens} tokens >= threshold ${threshold}`,
-  )
+  return mcpFamily({
+    family: "token-optimizer",
+    mcp: "tokenOptimizer",
+    preferred: true,
+    reason: `estimated ${estimatedTokens} tokens >= threshold ${threshold}`,
+  })
 }

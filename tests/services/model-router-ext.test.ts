@@ -5,7 +5,7 @@
  * - getOutputFormatHint: cheap → JSON directive, standard/expensive → empty
  * - hint is a string (can be prepended to prompt)
  */
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { getOutputFormatHint } from "@/services/model-router"
 
 describe("getOutputFormatHint", () => {

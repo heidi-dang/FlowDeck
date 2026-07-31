@@ -13,7 +13,7 @@
  * - Identity anti-fabrication marker
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import type { FlowDeckConfig } from "../src/config/schema"
 import {
   enforceRuntimeAgent,

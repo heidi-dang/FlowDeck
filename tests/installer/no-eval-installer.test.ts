@@ -5,7 +5,7 @@
  * uses bash arrays, and supports curl-pipe --help.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import { readFileSync, existsSync } from "fs"
 import { join } from "path"
 

@@ -4,7 +4,7 @@ Install FlowDeck from a local Git checkout. This method is designed for contribu
 
 ## Prerequisites
 
-- Node.js >= 18.0.0
+- Node.js >= 20.0.0
 - npm
 - Git
 - OpenCode >= 1.4.0

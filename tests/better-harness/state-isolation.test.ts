@@ -4,7 +4,7 @@
  * Proves that the standalone launcher writes all persistence into its
  * temporary state directory and never leaks files to ~/.flowdeck/state/.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "bun:test";
 import { existsSync, readdirSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";

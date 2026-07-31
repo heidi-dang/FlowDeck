@@ -12,8 +12,8 @@
  * Tests also confirm no new tool was introduced to work around the issue.
  */
 
-import { describe, it, expect, vi, afterEach } from "vitest"
-import { mkdirSync, writeFileSync, rmSync } from "fs"
+import { describe, it, expect, vi, afterEach } from "bun:test"
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "fs"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"
 import { tmpdir } from "os"
@@ -370,8 +370,9 @@ describe("architectural invariant — no new log-management tool introduced", ()
         abort: vi.fn(),
       },
     }
+    const testDir = mkdtempSync(join(tmpdir(), "no-new-tool-test-"))
     const mockInput: any = {
-      directory: join(tmpdir(), "no-new-tool-test"),
+      directory: testDir,
       client: mockClient,
       worktree: "",
       project: {},
@@ -379,20 +380,23 @@ describe("architectural invariant — no new log-management tool introduced", ()
       serverUrl: new URL("http://localhost"),
       $: {},
     }
-    const result = await flowDeckPlugin.server(mockInput, {})
+    try {
+      const result = await flowDeckPlugin.server(mockInput, {})
+      const toolNames = Object.keys((result as any).tool ?? {})
 
-    const toolNames = Object.keys((result as any).tool ?? {})
-
-    // Verify the tool set does not contain any new log/tui-management tool
-    const suspectTools = toolNames.filter(
-      (t) =>
-        t.includes("log") ||
-        t.includes("tui") ||
-        t.includes("layout") ||
-        t.includes("console") ||
-        t.includes("activity-reporter"),
-    )
-    expect(suspectTools).toHaveLength(0)
+      // Verify the tool set does not contain any new log/tui-management tool
+      const suspectTools = toolNames.filter(
+        (t) =>
+          t.includes("log") ||
+          t.includes("tui") ||
+          t.includes("layout") ||
+          t.includes("console") ||
+          t.includes("activity-reporter"),
+      )
+      expect(suspectTools).toHaveLength(0)
+    } finally {
+      rmSync(testDir, { recursive: true, force: true })
+    }
   })
 
   it("removed run-pipeline tool stays absent", async () => {
@@ -405,8 +409,9 @@ describe("architectural invariant — no new log-management tool introduced", ()
         abort: vi.fn(),
       },
     }
+    const testDir = mkdtempSync(join(tmpdir(), "tool-present-test-"))
     const mockInput: any = {
-      directory: join(tmpdir(), "tool-present-test"),
+      directory: testDir,
       client: mockClient,
       worktree: "",
       project: {},
@@ -414,10 +419,13 @@ describe("architectural invariant — no new log-management tool introduced", ()
       serverUrl: new URL("http://localhost"),
       $: {},
     }
-    const result = await flowDeckPlugin.server(mockInput, {})
-
-    const toolNames = Object.keys((result as any).tool ?? {})
-    expect(toolNames).not.toContain("delegate")
-    expect(toolNames).not.toContain("run-pipeline")
+    try {
+      const result = await flowDeckPlugin.server(mockInput, {})
+      const toolNames = Object.keys((result as any).tool ?? {})
+      expect(toolNames).not.toContain("delegate")
+      expect(toolNames).not.toContain("run-pipeline")
+    } finally {
+      rmSync(testDir, { recursive: true, force: true })
+    }
   })
 })

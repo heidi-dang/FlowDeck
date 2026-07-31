@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import os from "os";
 import { createRepairSession } from "../../src/better-harness/opencode/repair-session";
 import { buildRepairPrompt } from "../../src/better-harness/opencode/repair-prompt";
@@ -28,6 +28,140 @@ describe("Repair Session", () => {
     expect(result.error).toBeTruthy();
     expect(result.prompt).toContain("Missing config");
     expect(result.prompt).toContain("src/rules/");
+  });
+});
+
+describe("generateRestrictedRepairPrompt", () => {
+  it("supports options-object call and positional call producing identical output", async () => {
+    const { generateRestrictedRepairPrompt } = await import(
+      "../../src/better-harness/opencode/repair-session"
+    );
+
+    const cause = "Missing config";
+    const evidence = ["Config file not found", "Entry missing"];
+    const expectedOutput = "Config should exist";
+    const allowedPaths = ["src/config/"];
+    const validationRequirements = ["npm test"];
+    const acceptanceCriteria = ["Tests pass"];
+
+    const promptPositional = generateRestrictedRepairPrompt(
+      cause,
+      evidence,
+      expectedOutput,
+      allowedPaths,
+      validationRequirements,
+      acceptanceCriteria,
+    );
+
+    const promptOptions = generateRestrictedRepairPrompt({
+      cause,
+      evidence,
+      expectedOutput,
+      allowedPaths,
+      validationRequirements,
+      acceptanceCriteria,
+    });
+
+    expect(promptPositional).toBe(promptOptions);
+  });
+
+  it("preserves section headings and ordering", async () => {
+    const { generateRestrictedRepairPrompt } = await import(
+      "../../src/better-harness/opencode/repair-session"
+    );
+
+    const prompt = generateRestrictedRepairPrompt({
+      cause: "Root cause",
+      evidence: ["ev1"],
+      expectedOutput: "exp",
+      allowedPaths: ["path1"],
+      validationRequirements: ["val1"],
+      acceptanceCriteria: ["acc1"],
+    });
+
+    const causeIdx = prompt.indexOf("## Cause");
+    const evidenceIdx = prompt.indexOf("## Evidence");
+    const expectedIdx = prompt.indexOf("## Expected Output");
+    const prohibitedIdx = prompt.indexOf("## Prohibited Changes");
+    const validationIdx = prompt.indexOf("## Validation Requirements");
+    const acceptanceIdx = prompt.indexOf("## Acceptance Criteria");
+
+    expect(causeIdx).toBeGreaterThan(-1);
+    expect(evidenceIdx).toBeGreaterThan(causeIdx);
+    expect(expectedIdx).toBeGreaterThan(evidenceIdx);
+    expect(prohibitedIdx).toBeGreaterThan(expectedIdx);
+    expect(validationIdx).toBeGreaterThan(prohibitedIdx);
+    expect(acceptanceIdx).toBeGreaterThan(validationIdx);
+  });
+
+  it("handles empty arrays and empty strings properly", async () => {
+    const { generateRestrictedRepairPrompt } = await import(
+      "../../src/better-harness/opencode/repair-session"
+    );
+
+    const prompt = generateRestrictedRepairPrompt({
+      cause: "",
+      evidence: [],
+      expectedOutput: "",
+      allowedPaths: [],
+      validationRequirements: [],
+      acceptanceCriteria: [],
+    });
+
+    expect(prompt).toContain("## Cause\n\n");
+    expect(prompt).toContain("## Evidence\n\n");
+    expect(prompt).toContain("## Expected Output\n\n");
+    expect(prompt).toContain("You are restricted to the following paths: \n");
+  });
+
+  it("does not mutate input arrays", async () => {
+    const { generateRestrictedRepairPrompt } = await import(
+      "../../src/better-harness/opencode/repair-session"
+    );
+
+    const evidence = ["ev1", "ev2"];
+    const allowedPaths = ["path1"];
+    const validationRequirements = ["val1"];
+    const acceptanceCriteria = ["acc1"];
+
+    const evidenceCopy = [...evidence];
+    const allowedPathsCopy = [...allowedPaths];
+    const validationRequirementsCopy = [...validationRequirements];
+    const acceptanceCriteriaCopy = [...acceptanceCriteria];
+
+    generateRestrictedRepairPrompt({
+      cause: "cause",
+      evidence,
+      expectedOutput: "exp",
+      allowedPaths,
+      validationRequirements,
+      acceptanceCriteria,
+    });
+
+    expect(evidence).toEqual(evidenceCopy);
+    expect(allowedPaths).toEqual(allowedPathsCopy);
+    expect(validationRequirements).toEqual(validationRequirementsCopy);
+    expect(acceptanceCriteria).toEqual(acceptanceCriteriaCopy);
+  });
+
+  it("is deterministic across multiple invocations", async () => {
+    const { generateRestrictedRepairPrompt } = await import(
+      "../../src/better-harness/opencode/repair-session"
+    );
+
+    const opts = {
+      cause: "cause",
+      evidence: ["e1"],
+      expectedOutput: "output",
+      allowedPaths: ["src/"],
+      validationRequirements: ["v1"],
+      acceptanceCriteria: ["a1"],
+    };
+
+    const run1 = generateRestrictedRepairPrompt(opts);
+    const run2 = generateRestrictedRepairPrompt(opts);
+
+    expect(run1).toBe(run2);
   });
 });
 
@@ -84,13 +218,14 @@ describe("Validation Executor", () => {
   it("rejects shell injection patterns", () => {
     const result = executeValidation("ls; rm -rf /", os.tmpdir());
     expect(result.passed).toBe(false);
-    expect(result.error).toContain("shell injection");
+    expect(result.error).toContain("Command rejected");
   });
 
   it("rejects path traversal", () => {
+    // echo is not a permitted executable, so it is rejected at parse time
     const result = executeValidation("echo ..", os.tmpdir());
     expect(result.passed).toBe(false);
-    expect(result.error).toContain("shell injection");
+    expect(result.error).toContain("Command rejected");
   });
 
   it("returns validation result for simple commands", () => {

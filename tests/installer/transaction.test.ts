@@ -8,7 +8,7 @@
  * - Lock contention
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, copyFileSync, readdirSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"

@@ -5,7 +5,7 @@
  * executable-based classification for all shell syntax.
  */
 
-import { describe, it, expect } from "vitest"
+import { describe, it, expect } from "bun:test"
 import {
   extractExecutable,
   classifyCommand,

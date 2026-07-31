@@ -11,7 +11,7 @@
  * - Cache invalidation: rule selection reflects a manifest mtime change.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "bun:test"
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, utimesSync, readFileSync } from "fs"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"

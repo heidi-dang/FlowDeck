@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "bun:test";
 import { generateEvidenceFingerprint } from "../../src/better-harness/evidence/evidence-fingerprint";
 import { normalizeEvidence } from "../../src/better-harness/evidence/evidence-normalizer";
 import { deduplicateEvidence } from "../../src/better-harness/evidence/evidence-deduplicator";

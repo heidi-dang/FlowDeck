@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "bun:test";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -20,6 +20,12 @@ vi.mock("fs", () => {
         throw new Error("Injected disk read failure");
       }
       return original.readFileSync(path, options);
+    },
+    cpSync: (src: any, dest: any, options: any) => {
+      if (typeof src === "string" && src.includes("legacy-home-err")) {
+        throw new Error("Injected disk read failure");
+      }
+      return original.cpSync(src, dest, options);
     },
   };
 });

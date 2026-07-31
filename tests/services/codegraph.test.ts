@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "bun:test"
 import { existsSync, mkdirSync, rmSync } from "fs"
 import { join } from "path"
 import * as childProcess from "child_process"
