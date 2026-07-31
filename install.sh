@@ -18,7 +18,7 @@ KEEP_BACKUP=false; VERBOSE=false; PROJECT_FLAG=""; LOCAL_REPO=""
 
 # Doctor flags
 DOCTOR_MODE=false; STRICT_MODE=false; APPLY_RECOMMENDED=false
-NON_INTERACTIVE=false; PROFILE="recommended-dev"
+NON_INTERACTIVE=false; PROFILE="recommended-dev"; DOCTOR_PROFILE=""
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 info()  { echo -e "${BLUE}[INFO]${NC}  $*"; }

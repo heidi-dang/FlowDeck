@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-07-31
+
+### Fixed
+
+- **Streamed installer unbound variable**: the v1.0.0 installer referenced `DOCTOR_PROFILE` at the pre-install doctor gate under `set -euo pipefail` without initialising it, aborting every plain `curl ... | bash` install with `DOCTOR_PROFILE: unbound variable`. `DOCTOR_PROFILE=""` is now initialised alongside the other doctor flags.
+- **Packaged Doctor false failures**: the Doctor validated repository-only artefacts (`tsconfig.json`, `uninstall.sh`, `.gitignore`) that are not shipped in the npm tarball, reporting errors on healthy npm/packed installs. A new environment classifier (`classifyDoctorEnvironment`) marks those checks `skipped` on npm/packed layouts while keeping them active on source checkouts.
+- **Secret-redaction check made behavioural**: `security.secret_redaction` now imports `redactSecrets` from the packaged bundle (`dist/index.js`) or the source module and asserts a synthetic token is redacted, instead of reporting a hardcoded pass.
+
+### Added
+
+- `tests/doctor-packed.test.ts` (14 tests): packed/npm layout classification, repo-only check skipping, behavioural redaction probe, honest error reporting, and the exit-code contract (0 healthy / 1 failure / 2 engine-invocation failure).
+- `tests/installer/streamed-installer.test.ts` (3 tests): streams the real `install.sh` through `bash -s` with stubbed `node`/`npm`, proving no unbound-variable abort and that the pre-install doctor gate is reached.
+- CI: packed tarball doctor gate (audits the extracted tarball layout, not the repo checkout); packed CLI doctor exit checks tightened from `-gt 1` to `-ne 0`.
+
 ## [1.0.0] - 2026-07-31
 
 ### Highlights

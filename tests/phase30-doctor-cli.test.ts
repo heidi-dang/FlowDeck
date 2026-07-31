@@ -1,10 +1,26 @@
 import { describe, it, expect } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const CLI_PATH = join(process.cwd(), "bin", "flowdeck.js");
+
+/**
+ * Isolated HOME with a valid OpenCode user config.
+ *
+ * The `--apply-recommended` auto-fix for `config.opencode_user` runs a real
+ * installer when no user config exists (slow, and it mutates the runner's
+ * HOME). Pre-creating a valid config makes the check pass so the auto-fix
+ * does not trigger — these tests only verify the flag is accepted.
+ */
+function makeIsolatedHome(): string {
+  const home = join(tmpdir(), `fd-phase30-home-${Date.now()}-${Math.random().toString(36).slice(2)}`)
+  const opencodeDir = join(home, ".config", "opencode")
+  mkdirSync(opencodeDir, { recursive: true })
+  writeFileSync(join(opencodeDir, "opencode.json"), "{}")
+  return home
+}
 
 /**
  * Run the CLI and return exit code + output (uses spawnSync to capture both stdout and stderr).
@@ -167,15 +183,28 @@ describe("Phase 30 — Doctor CLI Service", () => {
 
   it("--apply-recommended runs without error", () => {
     // This test verifies the flag is accepted and doesn't crash
-    const res = runCli(["doctor", "--apply-recommended"]);
-    expect([0, 1]).toContain(res.code);
+    const home = makeIsolatedHome()
+    try {
+      // Isolated HOME with a valid user config: the config.opencode_user
+      // auto-fix would otherwise run a real installer (slow, side-effecting).
+      const res = runCli(["doctor", "--apply-recommended"], { HOME: home, USERPROFILE: home });
+      expect([0, 1]).toContain(res.code);
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   });
 
   it("--apply-recommended is idempotent (repeatable)", () => {
-    const res1 = runCli(["doctor", "--apply-recommended"]);
-    const res2 = runCli(["doctor", "--apply-recommended"]);
-    // Both runs should succeed or fail consistently
-    expect(res1.code).toBe(res2.code);
+    const home = makeIsolatedHome()
+    try {
+      const env = { HOME: home, USERPROFILE: home };
+      const res1 = runCli(["doctor", "--apply-recommended"], env);
+      const res2 = runCli(["doctor", "--apply-recommended"], env);
+      // Both runs should succeed or fail consistently
+      expect(res1.code).toBe(res2.code);
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   });
 
   // ── Profile selection ───────────────────────────────────────────────

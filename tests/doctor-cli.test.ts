@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs"
+import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
@@ -25,14 +25,14 @@ function getSpawnEnv(): Record<string, string> {
   return env
 }
 
-function runDoctor(args: string[] = []): { code: number; stdout: string; stderr: string } {
+function runDoctor(args: string[] = [], envOverrides: Record<string, string> = {}): { code: number; stdout: string; stderr: string } {
   try {
     const result = spawnSync("node", [CLI_PATH, ...args], {
       cwd: PKG_ROOT,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 30000,
-      env: getSpawnEnv(),
+      env: { ...getSpawnEnv(), ...envOverrides },
     })
 
     return {
@@ -49,6 +49,22 @@ function makeTempConfig(): string {
   const dir = join(tmpdir(), `fd-doctor-test-${Date.now()}-${Math.random().toString(36).slice(2)}`)
   mkdirSync(dir, { recursive: true })
   return dir
+}
+
+/**
+ * Isolated HOME with a valid OpenCode user config.
+ *
+ * The `--apply-recommended` auto-fix for `config.opencode_user` runs a real
+ * installer when no user config exists (slow, and it mutates the runner's
+ * HOME). Pre-creating a valid config makes the check pass so the auto-fix
+ * does not trigger — these tests only verify the flag is accepted.
+ */
+function makeIsolatedHome(): string {
+  const home = makeTempConfig()
+  const opencodeDir = join(home, ".config", "opencode")
+  mkdirSync(opencodeDir, { recursive: true })
+  writeFileSync(join(opencodeDir, "opencode.json"), "{}")
+  return home
 }
 
 // ─── Tests ─────────────────────────────────────────────────────────────
@@ -86,9 +102,16 @@ describe("Doctor CLI — Argument Parsing", () => {
   })
 
   testSlow("parses --apply-recommended flag", () => {
-    const result = runDoctor(["--apply-recommended"])
-    expect(result.code).toBeGreaterThanOrEqual(0)
-    expect(result.code).toBeLessThanOrEqual(1)
+    const home = makeIsolatedHome()
+    try {
+      // Isolated HOME with a valid user config: the config.opencode_user
+      // auto-fix would otherwise run a real installer (slow, side-effecting).
+      const result = runDoctor(["--apply-recommended"], { HOME: home, USERPROFILE: home })
+      expect(result.code).toBeGreaterThanOrEqual(0)
+      expect(result.code).toBeLessThanOrEqual(1)
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 
   testSlow("parses --non-interactive flag", () => {

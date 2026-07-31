@@ -415,7 +415,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       const isSubagent = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
 
       const variant = input.variant
-      const pkgVersion = "1.0.0"
+      const pkgVersion = "1.0.1"
       const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
       const result = enforceRuntimeAgent({
         sessionID,
@@ -1100,3 +1100,5 @@ export { acquireLock, releaseLock } from "./services/async-lock"
 export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
 // resolveDoctorExitCode provenant du module canonique sans dépendances
 export { resolveDoctorExitCode } from "./doctor/exit-code.mjs"
+// Redaction utilities exported for consumers (logs, reports, doctor probes)
+export { redactSecrets, containsSecrets } from "./lib/secret-redaction"

@@ -2,21 +2,40 @@ import { existsSync, readFileSync } from "fs"
 import { join } from "path"
 import type { CheckResult } from "../types"
 import { safeParseConfig } from "../../../scripts/config-mutator.mjs"
+import { classifyDoctorEnvironment, isRepoLikeEnvironment } from "../environment"
 
+// repoOnly files exist in source checkouts but are not shipped in the npm
+// tarball (see package.json "files"). They must not fail a healthy packed install.
 const CONFIG_FILES = [
-  { name: "package.json", path: "package.json", severity: "high" },
-  { name: "tsconfig.json", path: "tsconfig.json", severity: "medium" },
-  { name: "install.sh", path: "install.sh", severity: "medium" },
-  { name: "uninstall.sh", path: "uninstall.sh", severity: "low" },
-  { name: ".gitignore", path: ".gitignore", severity: "medium" },
+  { name: "package.json", path: "package.json", severity: "high", repoOnly: false },
+  { name: "tsconfig.json", path: "tsconfig.json", severity: "medium", repoOnly: true },
+  { name: "install.sh", path: "install.sh", severity: "medium", repoOnly: false },
+  { name: "uninstall.sh", path: "uninstall.sh", severity: "low", repoOnly: true },
 ]
 
 export async function runConfigurationChecks(directory: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
+  const env = classifyDoctorEnvironment(directory)
+  const repoOnly = isRepoLikeEnvironment(env)
 
   for (const file of CONFIG_FILES) {
     const fullPath = join(directory, file.path)
     const exists = existsSync(fullPath)
+
+    if (file.repoOnly && !repoOnly) {
+      checks.push({
+        id: `config.${file.name}`,
+        title: `Config: ${file.name}`,
+        category: "configuration",
+        severity: file.severity as "high" | "medium" | "low",
+        status: "skipped",
+        detected: exists ? "present" : "missing",
+        expected: `${file.path} at repository root`,
+        recommendation: `Not applicable to ${env} installs — repository-only file`,
+        autoFixAvailable: false,
+      })
+      continue
+    }
 
     checks.push({
       id: `config.${file.name}`,
