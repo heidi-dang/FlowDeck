@@ -287,11 +287,23 @@ export function resolveActiveTopic(
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue
       if (RESERVED_PLANNING_ENTRIES.has(entry.name)) continue
+
       const dir = join(root, entry.name)
       const hasArtifact = [PLAN_FILE, TASK_FILE].some(f => existsSync(join(dir, f)))
       if (!hasArtifact) continue
-      const mtimeMs = statSync(dir).mtimeMs
-      if (!newest || mtimeMs > newest.mtimeMs) newest = { slug: entry.name, mtimeMs }
+
+      try {
+        const mtimeMs = statSync(dir).mtimeMs
+        if (
+          !newest ||
+          mtimeMs > newest.mtimeMs ||
+          (mtimeMs === newest.mtimeMs && entry.name.localeCompare(newest.slug) < 0)
+        ) {
+          newest = { slug: entry.name, mtimeMs }
+        }
+      } catch {
+        continue
+      }
     }
   } catch {
     return null
