@@ -170,7 +170,7 @@ describe("E2E: Full Lifecycle", () => {
       evidence: [],
       recommendedVehicle: "script" as const,
       allowedPaths: ["package.json"],
-      validationRequirements: ["echo ok"],
+      validationRequirements: ["node --version"],
       acceptanceCriteria: ["Done"],
       firstSeenAt: "",
       lastSeenAt: "",

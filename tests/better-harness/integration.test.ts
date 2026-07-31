@@ -342,21 +342,37 @@ describe("Finding Verifier", () => {
 
 // ─── Requirement Runner ──────────────────────────────────────────
 describe("Requirement Runner", () => {
-  it("passes for successful commands", () => {
+  it("passes for successful legacy string command", () => {
     const results = runRequirements(["node --version"], process.cwd());
     expect(results).toHaveLength(1);
     expect(results[0].passed).toBe(true);
     expect(results[0].output).toContain("v");
   });
 
-  it("fails for failing commands", () => {
+  it("rejects unsafe legacy string before spawning", () => {
     const results = runRequirements(["node -e \"process.exit(1)\""], process.cwd());
     expect(results).toHaveLength(1);
     expect(results[0].passed).toBe(false);
+    expect(results[0].error).toBeTruthy();
   });
 
-  it("runs multiple requirements", () => {
-    const results = runRequirements(["node --version", "node -e \"console.log('ok')\""], process.cwd());
+  it("accepts structured ValidationRequirement directly", () => {
+    const results = runRequirements(
+      [{ executable: "node", args: ["--version"] }],
+      process.cwd()
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0].passed).toBe(true);
+  });
+
+  it("runs multiple requirements and collects all results", () => {
+    const results = runRequirements(
+      [
+        { executable: "node", args: ["--version"] },
+        { executable: "node", args: ["-v"] },
+      ],
+      process.cwd()
+    );
     expect(results).toHaveLength(2);
     expect(results.every((r) => r.passed)).toBe(true);
   });
@@ -885,10 +901,10 @@ describe("Workspace Snapshot Edge Cases", () => {
 
 // ─── Validation Executor Error Path ──────────────────────────
 describe("Validation Executor Error Path", () => {
-  it("handles non-Error throwables", async () => {
+  it("rejects unsafe command string before spawning", async () => {
     const { executeValidation } = await import("../../src/better-harness/opencode/validation-executor");
-    // Trigger a timeout which causes execSync to throw
-    const result = executeValidation("node -e \"setTimeout(() => {}, 10000)\"" , process.cwd(), 1);
+    // node -e "..." contains double quotes — rejected by parseLegacyRequirementString
+    const result = executeValidation('node -e "setTimeout(() => {}, 10000)"', process.cwd(), 1);
     expect(result.passed).toBe(false);
     expect(result.error).toBeTruthy();
   });
@@ -1316,31 +1332,31 @@ describe("Validation Executor - Safety & Error Paths", () => {
   it("rejects commands with shell injection patterns (semicolon)", () => {
     const result = executeValidation("echo hello; rm -rf /", process.cwd(), 5000);
     expect(result.passed).toBe(false);
-    expect(result.error).toContain("shell injection");
+    expect(result.error).toContain("Command rejected");
   });
 
   it("rejects commands with shell injection patterns (ampersand)", () => {
     const result = executeValidation("echo hello & ls", process.cwd(), 5000);
     expect(result.passed).toBe(false);
-    expect(result.error).toContain("shell injection");
+    expect(result.error).toContain("Command rejected");
   });
 
   it("rejects commands with shell injection patterns (pipe)", () => {
     const result = executeValidation("echo hello | ls", process.cwd(), 5000);
     expect(result.passed).toBe(false);
-    expect(result.error).toContain("shell injection");
+    expect(result.error).toContain("Command rejected");
   });
 
-  it("rejects commands with path traversal (dot dot)", () => {
+  it("rejects commands with unknown executable (path traversal)", () => {
     const result = executeValidation("../malicious/script.sh", process.cwd(), 5000);
     expect(result.passed).toBe(false);
-    expect(result.error).toContain("shell injection");
+    expect(result.error).toContain("Command rejected");
   });
 
-  it("returns non-zero exit code for failed command", () => {
+  it("rejects command string with quoted args before spawning", () => {
+    // node -e "process.exit(42)" has double-quotes — rejected as unsafe
     const result = executeValidation('node -e "process.exit(42)"', process.cwd(), 5000);
     expect(result.passed).toBe(false);
-    // On Windows exitCode may be null via execSync, just verify it failed
     expect(result.error).toBeTruthy();
   });
 
@@ -1358,9 +1374,11 @@ describe("Validation Executor - Safety & Error Paths", () => {
     expect(result.error).toBeNull();
   });
 
-  it("triggers timeout for long-running command", () => {
+  it("rejects command with quoted args (timeout payload)", () => {
+    // node -e "..." is rejected before spawn by the quote check
     const result = executeValidation('node -e "setTimeout(() => {}, 10000)"', process.cwd(), 1);
     expect(result.passed).toBe(false);
+    expect(result.error).toBeTruthy();
   });
 });
 

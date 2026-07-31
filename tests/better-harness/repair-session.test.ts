@@ -218,13 +218,14 @@ describe("Validation Executor", () => {
   it("rejects shell injection patterns", () => {
     const result = executeValidation("ls; rm -rf /", os.tmpdir());
     expect(result.passed).toBe(false);
-    expect(result.error).toContain("shell injection");
+    expect(result.error).toContain("Command rejected");
   });
 
   it("rejects path traversal", () => {
+    // echo is not a permitted executable, so it is rejected at parse time
     const result = executeValidation("echo ..", os.tmpdir());
     expect(result.passed).toBe(false);
-    expect(result.error).toContain("shell injection");
+    expect(result.error).toContain("Command rejected");
   });
 
   it("returns validation result for simple commands", () => {
