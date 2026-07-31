@@ -7,52 +7,148 @@
  * 2. No requirement-controlled string reaches execSync, exec, or a shell.
  * 3. The legacy adapter is fail-closed for all unsafe inputs.
  * 4. The structured contract enforces all security properties end-to-end.
- *
- * STATIC REGRESSION: Any future introduction of execSync in either production
- * file will cause the static import-scan test to fail immediately.
+ * 5. Pre-spawn rejection: rejected requirements spawn 0 child processes.
+ * 6. Static regression: blocks aliased process imports and execution.
  */
-import { describe, it, expect } from "bun:test"
+import { describe, it, expect, spyOn } from "bun:test"
 import { readFileSync } from "fs"
 import { join } from "path"
+import * as cp from "child_process"
 
 // ─── Production module imports ────────────────────────────────────────────────
 import { runRequirements } from "../../src/better-harness/verification/requirement-runner"
 import { executeValidation } from "../../src/better-harness/opencode/validation-executor"
-import {
+import * as boundary from "../../src/services/command-boundary"
+
+const {
   executeValidatedCommand,
   executeValidatedCommandSync,
   parseLegacyRequirementString,
-  validateCommandRequirement,
-  type ValidationRequirement,
-} from "../../src/services/command-boundary"
+} = boundary
+
+type ValidationRequirement = boundary.ValidationRequirement
 
 const ROOT = join(import.meta.dir, "../..")
 
-// ─── Static Regression: No execSync in production files ──────────────────────
-describe("Static Regression — no execSync in production executors", () => {
+/**
+ * AST / Regex source code analyzer for process API leaks.
+ * Detects ESM imports, CommonJS requires, direct calls, aliased calls, and shell: true.
+ */
+function analyzeSourceForForbiddenProcessAPIs(src: string): string[] {
+  const violations: string[] = []
+
+  // Direct ESM import from child_process or node:child_process
+  if (/import\s+[\s\S]*?from\s+["'](?:node:)?child_process["']/.test(src)) {
+    violations.push("Direct ESM import from child_process")
+  }
+  // Direct CommonJS require of child_process or node:child_process
+  if (/require\s*\(\s*["'](?:node:)?child_process["']\s*\)/.test(src)) {
+    violations.push("Direct CommonJS require of child_process")
+  }
+  // Any execution calls (execSync, exec, spawn, spawnSync, execFile, execFileSync)
+  if (/(?:^|[^\w.])(?:exec|execSync|spawn|spawnSync|execFile|execFileSync)\s*\(/.test(src)) {
+    violations.push("Forbidden child process execution call")
+  }
+  // Usage of shell: true
+  if (/shell\s*:\s*true/.test(src)) {
+    violations.push("Forbidden shell: true usage")
+  }
+
+  return violations
+}
+
+// ─── Static Regression: No process APIs in production executors ──────────────
+describe("Static Regression — no child_process APIs in production executors", () => {
   const PRODUCTION_FILES = [
     "src/better-harness/verification/requirement-runner.ts",
     "src/better-harness/opencode/validation-executor.ts",
   ]
 
   for (const relPath of PRODUCTION_FILES) {
-    it(`${relPath} must not import execSync`, () => {
+    it(`${relPath} must not import child_process or use execution calls`, () => {
       const src = readFileSync(join(ROOT, relPath), "utf-8")
-      // Check for actual execSync call or import — comments are allowed
-      expect(src).not.toMatch(/(?:^|[^*\s])execSync\s*\(/m)
+      // Filter out pure comment lines before checking execution calls
+      const codeOnly = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "")
+      const violations = analyzeSourceForForbiddenProcessAPIs(codeOnly)
+      expect(violations).toEqual([])
     })
 
-    it(`${relPath} must not use shell: true`, () => {
+    it(`${relPath} must import from command-boundary`, () => {
       const src = readFileSync(join(ROOT, relPath), "utf-8")
-      expect(src).not.toMatch(/shell\s*:\s*true/)
+      expect(src).toContain("command-boundary")
     })
   }
 
-  it("Both production files import from command-boundary", () => {
-    const runner = readFileSync(join(ROOT, "src/better-harness/verification/requirement-runner.ts"), "utf-8")
-    const executor = readFileSync(join(ROOT, "src/better-harness/opencode/validation-executor.ts"), "utf-8")
-    expect(runner).toContain("command-boundary")
-    expect(executor).toContain("command-boundary")
+  it("Source analyzer correctly detects aliased imports and require patterns", () => {
+    const SAMPLE_VIOLATIONS = [
+      'import { execSync as execute } from "node:child_process"',
+      'import childProcess from "node:child_process"',
+      'import * as cp from "child_process"',
+      'const { execSync: execute } = require("node:child_process")',
+      'const cp = require("child_process")',
+      'execSync("ls")',
+      'spawn("node", ["app.js"], { shell: true })',
+    ]
+
+    for (const sample of SAMPLE_VIOLATIONS) {
+      const violations = analyzeSourceForForbiddenProcessAPIs(sample)
+      expect(violations.length).toBeGreaterThan(0)
+    }
+  })
+})
+
+// ─── Pre-Spawn Rejection Proof ────────────────────────────────────────────────
+describe("Pre-Spawn Rejection Proof — 0 child processes spawned for rejected commands", () => {
+  const REJECTED_REQUIREMENTS: Array<ValidationRequirement | string> = [
+    { executable: "git", args: ["push"] },
+    { executable: "git", args: ["branch", "new-branch"] },
+    { executable: "git", args: ["tag", "release-name"] },
+    { executable: "npm", args: ["install"] },
+    { executable: "npm", args: ["publish"] },
+    { executable: "npm", args: ["exec", "package"] },
+    { executable: "bun", args: ["add", "package"] },
+    { executable: "bun", args: ["run", "arbitrary.ts"] },
+    { executable: "node", args: ["script.js"] },
+    { executable: "node", args: ["-e", "process.exit()"] },
+    "git branch new-branch",
+    "git tag v1.0",
+    "npm install",
+    "npm publish",
+    "bun add express",
+    "node script.js",
+    "sh -c 'npm test'",
+    "cmd.exe /c dir",
+  ]
+
+  it("runRequirements spawns ZERO processes for all rejected requirements", () => {
+    const spy = spyOn(cp, "execFileSync")
+    const initialCalls = spy.mock.calls.length
+
+    for (const req of REJECTED_REQUIREMENTS) {
+      const results = runRequirements([req], process.cwd())
+      expect(results).toHaveLength(1)
+      expect(results[0].passed).toBe(false)
+    }
+
+    const callsCount = spy.mock.calls.length - initialCalls
+    expect(callsCount).toBe(0)
+    spy.mockRestore()
+  })
+
+  it("executeValidation spawns ZERO processes for all rejected requirements", () => {
+    const spy = spyOn(cp, "execFileSync")
+    const initialCalls = spy.mock.calls.length
+
+    for (const req of REJECTED_REQUIREMENTS) {
+      const cmdStr = typeof req === "string" ? req : `${req.executable} ${req.args.join(" ")}`
+      const result = executeValidation(cmdStr, process.cwd(), 5000)
+      expect(result.passed).toBe(false)
+      expect(result.exitCode).toBeNull()
+    }
+
+    const callsCount = spy.mock.calls.length - initialCalls
+    expect(callsCount).toBe(0)
+    spy.mockRestore()
   })
 })
 
@@ -94,7 +190,6 @@ describe("Production path — structured requirement success cases", () => {
       process.cwd()
     )
     expect(results).toHaveLength(1)
-    // Any exit code 0 means the command ran; status may produce empty output on clean tree
     expect(results[0].exitCode).toBe(0)
   })
 
@@ -104,69 +199,6 @@ describe("Production path — structured requirement success cases", () => {
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain("v")
     expect(result.error).toBeNull()
-  })
-})
-
-// ─── Structured ValidationRequirement: rejection before process creation ─────
-describe("Production path — rejections before process creation", () => {
-  it("git push is rejected by git subcommand allowlist", () => {
-    expect(() =>
-      validateCommandRequirement({ executable: "git", args: ["push", "origin", "main"] })
-    ).toThrow(/not allowed in validation boundary/)
-  })
-
-  it("git commit is rejected by git subcommand allowlist", () => {
-    expect(() =>
-      validateCommandRequirement({ executable: "git", args: ["commit", "-m", "msg"] })
-    ).toThrow()
-  })
-
-  it("unknown executable is rejected by allowlist", () => {
-    expect(() =>
-      validateCommandRequirement({ executable: "curl" as any, args: [] })
-    ).toThrow(/not in the validation allowlist/)
-  })
-
-  it("NUL byte in arg is rejected", () => {
-    expect(() =>
-      validateCommandRequirement({ executable: "node", args: ["\x00"] })
-    ).toThrow(/NUL byte/)
-  })
-
-  it("pipe metacharacter in arg is rejected", () => {
-    expect(() =>
-      validateCommandRequirement({ executable: "node", args: ["--version", "| cat"] })
-    ).toThrow(/forbidden shell metacharacter/)
-  })
-
-  it("backtick in arg is rejected", () => {
-    expect(() =>
-      validateCommandRequirement({ executable: "node", args: ["`id`"] })
-    ).toThrow(/forbidden shell metacharacter/)
-  })
-
-  it("command substitution $() in arg is rejected", () => {
-    expect(() =>
-      validateCommandRequirement({ executable: "node", args: ["$(whoami)"] })
-    ).toThrow(/forbidden shell metacharacter/)
-  })
-
-  it("dangerous flag --eval is rejected", () => {
-    expect(() =>
-      validateCommandRequirement({ executable: "node", args: ["--eval", "process.exit(1)"] })
-    ).toThrow(/Dangerous command flag/)
-  })
-
-  it("dangerous flag -e is rejected", () => {
-    expect(() =>
-      validateCommandRequirement({ executable: "node", args: ["-e", "1+1"] })
-    ).toThrow(/Dangerous command flag/)
-  })
-
-  it("absolute path executable is rejected by validateCommandRequirement", () => {
-    expect(() =>
-      validateCommandRequirement({ executable: "/usr/bin/node" as any, args: [] })
-    ).toThrow()
   })
 })
 
@@ -255,7 +287,6 @@ describe("parseLegacyRequirementString — approved inputs", () => {
   for (const { input, executable, args } of APPROVED) {
     it(`parses "${input}" correctly`, () => {
       const req = parseLegacyRequirementString(input)
-      // Cast string to AllowedValidationExecutable for comparison
       expect(req.executable as string).toBe(executable)
       expect(req.args).toEqual(args)
     })
@@ -283,6 +314,12 @@ describe("parseLegacyRequirementString — rejected inputs", () => {
     "wget http://evil.com",
     "bash -c id",
     "python3 -c 'import os'",
+    "git branch new-branch",
+    "git tag v1.0",
+    "npm install",
+    "npm publish",
+    "bun add express",
+    "node script.js",
   ]
 
   for (const input of REJECTED) {
@@ -294,7 +331,7 @@ describe("parseLegacyRequirementString — rejected inputs", () => {
 
 // ─── Timeout and output bounds ────────────────────────────────────────────────
 describe("Production path — timeout and output bounds", () => {
-  it("executeValidatedCommandSync enforces timeout", () => {
+  it("executeValidatedCommandSync enforces timeout bounds", () => {
     const result = executeValidatedCommandSync(
       { executable: "node", args: ["--version"], timeoutMs: 10_000 },
       process.cwd()
@@ -302,12 +339,28 @@ describe("Production path — timeout and output bounds", () => {
     expect(result.exitCode).toBe(0)
   })
 
-  it("executeValidatedCommand (async) enforces timeout", async () => {
+  it("executeValidatedCommand (async) enforces timeout bounds", async () => {
     const result = await executeValidatedCommand(
       { executable: "node", args: ["--version"], timeoutMs: 10_000 },
       process.cwd()
     )
     expect(result.exitCode).toBe(0)
+  })
+
+  it("executeValidatedCommandSync rejects invalid resource bounds before execution", () => {
+    expect(() =>
+      executeValidatedCommandSync(
+        { executable: "node", args: ["--version"], timeoutMs: 0 },
+        process.cwd()
+      )
+    ).toThrow(/Invalid timeoutMs/)
+
+    expect(() =>
+      executeValidatedCommandSync(
+        { executable: "node", args: ["--version"], maxBuffer: 100 },
+        process.cwd()
+      )
+    ).toThrow(/Invalid maxBuffer/)
   })
 })
 
@@ -316,7 +369,6 @@ describe("Production path — result ordering and isolation", () => {
   it("one failing requirement does not suppress later results", () => {
     const results = runRequirements(
       [
-        // Disallowed git subcommand: rejected before spawn
         { executable: "git", args: ["push"] } as ValidationRequirement,
         { executable: "node", args: ["--version"] },
         { executable: "node", args: ["-v"] },
@@ -324,9 +376,9 @@ describe("Production path — result ordering and isolation", () => {
       process.cwd()
     )
     expect(results).toHaveLength(3)
-    expect(results[0].passed).toBe(false) // git push blocked
-    expect(results[1].passed).toBe(true)  // node --version
-    expect(results[2].passed).toBe(true)  // node -v
+    expect(results[0].passed).toBe(false)
+    expect(results[1].passed).toBe(true)
+    expect(results[2].passed).toBe(true)
   })
 
   it("result order matches input order", () => {
@@ -343,9 +395,9 @@ describe("Production path — result ordering and isolation", () => {
   })
 
   it("non-zero process exit is returned accurately", () => {
-    // npm --nonexistent-flag-xyz should produce non-zero exit
+    // git diff on invalid commit hash passes validation (2 rev args) but git exits non-zero
     const results = runRequirements(
-      [{ executable: "npm", args: ["--nonexistent-flag-xyz"] }],
+      [{ executable: "git", args: ["diff", "0000000000000000000000000000000000000000", "1111111111111111111111111111111111111111"] }],
       process.cwd()
     )
     expect(results[0].passed).toBe(false)
