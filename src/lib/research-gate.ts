@@ -238,14 +238,25 @@ export async function runResearchGate(
       // Prior topics already planned in this project
       const planningPath = planningDir(dir)
       if (existsSync(planningPath)) {
-        const { readdirSync } = await import("fs")
+        const { readdir, access } = await import("fs/promises")
         try {
-          for (const entry of readdirSync(planningPath, { withFileTypes: true })) {
-            if (!entry.isDirectory()) continue
-            const taskFile = join(planningPath, entry.name, "task.md")
-            if (existsSync(taskFile)) {
-              filesExplored.push(taskFile)
-              findings.push(`${entry.name}/task.md: prior requirements loaded`)
+          const entries = await readdir(planningPath, { withFileTypes: true })
+          const checks = await Promise.all(
+            entries.map(async (entry) => {
+              if (!entry.isDirectory()) return null
+              const taskFile = join(planningPath, entry.name, "task.md")
+              try {
+                await access(taskFile)
+                return { taskFile, name: entry.name }
+              } catch {
+                return null
+              }
+            })
+          )
+          for (const check of checks) {
+            if (check) {
+              filesExplored.push(check.taskFile)
+              findings.push(`${check.name}/task.md: prior requirements loaded`)
             }
           }
         } catch { /* ignore */ }
