@@ -83,10 +83,22 @@ describe("FDX Tools & Shared Infrastructure Deep Unit Tests", () => {
   })
 
   it("nativeContextFallback & nativeDecisionsFallback append topic notes", async () => {
-    const ctxRes = await nativeContextFallback("append", "auth", "dev4", "execute", "Note about auth JWT")
+    const ctxRes = await nativeContextFallback({
+      action: "append",
+      topic: "auth",
+      agent: "dev4",
+      stage: "execute",
+      summary: "Note about auth JWT",
+    })
     expect(ctxRes).toBeDefined()
 
-    const decRes = await nativeDecisionsFallback("record", "auth", "Use RS256", "Security", "dev4")
+    const decRes = await nativeDecisionsFallback({
+      action: "record",
+      topic: "auth",
+      decision: "Use RS256",
+      rationale: "Security",
+      made_by: "dev4",
+    })
     expect(decRes).toBeDefined()
   })
 
