@@ -231,10 +231,10 @@ export async function runDoctorChecks(directory) {
     const distMod = await import(distPath)
     if (distMod && typeof distMod.validateDelegationDepth === "function") {
       const specialists = new Set(["architect", "coder"])
-      const c1 = distMod.validateDelegationDepth("heidi", "architect", 0, specialists, 1) // allowed
-      const c2 = distMod.validateDelegationDepth("heidi", "architect", 1, specialists, 1) // blocked
-      const c3 = distMod.validateDelegationDepth("architect", "coder", 0, specialists, 1) // blocked
-      const c4 = distMod.validateDelegationDepth("heidi", "heidi", 0, specialists, 1) // blocked
+      const c1 = distMod.validateDelegationDepth({ delegatingAgent: "heidi", targetAgent: "architect", currentDepth: 0, specialistAgents: specialists, maxDepth: 1 }) // allowed
+      const c2 = distMod.validateDelegationDepth({ delegatingAgent: "heidi", targetAgent: "architect", currentDepth: 1, specialistAgents: specialists, maxDepth: 1 }) // blocked
+      const c3 = distMod.validateDelegationDepth({ delegatingAgent: "architect", targetAgent: "coder", currentDepth: 0, specialistAgents: specialists, maxDepth: 1 }) // blocked
+      const c4 = distMod.validateDelegationDepth({ delegatingAgent: "heidi", targetAgent: "heidi", currentDepth: 0, specialistAgents: specialists, maxDepth: 1 }) // blocked
 
       if (c1?.allowed === true && c2?.allowed === false && c3?.allowed === false && c4?.allowed === false) {
         depthEnforced = true
