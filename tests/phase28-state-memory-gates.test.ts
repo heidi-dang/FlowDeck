@@ -1,17 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
+import { mock } from "bun:test";
+
 // Mock the 'os' module to control homedir dynamically
-vi.mock("os", () => {
+mock.module("node:os", () => {
   return {
     homedir: () => (globalThis as any).__mockHomedir || require("node:os").homedir(),
   };
 });
 
 // Mock the 'fs' module to inject read errors for interrupted migration recovery testing
-vi.mock("fs", () => {
+mock.module("node:fs", () => {
   const original = require("node:fs");
   return {
     ...original,
@@ -20,6 +22,12 @@ vi.mock("fs", () => {
         throw new Error("Injected disk read failure");
       }
       return original.readFileSync(path, options);
+    },
+    cpSync: (src: string, dest: string, opts: any) => {
+      if (typeof src === "string" && src.includes("legacy-home-err")) {
+        throw new Error("Injected disk read failure (cpSync)");
+      }
+      return original.cpSync(src, dest, opts);
     },
   };
 });
