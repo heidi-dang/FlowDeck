@@ -347,13 +347,21 @@ function resolveAgentId(name: string, specialistAgents: Set<string>): string {
  * No agent can delegate to itself. Missing target is blocked (not
  * silently resolved to the current agent).
  */
-export function validateDelegationDepth(
-  delegatingAgent: string,
-  targetAgent: string,
-  currentDepth: number,
-  specialistAgents: Set<string>,
-  maxDepth: number = 1,
-): DelegationResult {
+export interface ValidateDelegationDepthOptions {
+  delegatingAgent: string
+  targetAgent: string
+  currentDepth: number
+  specialistAgents: Set<string>
+  maxDepth?: number
+}
+
+export function validateDelegationDepth({
+  delegatingAgent,
+  targetAgent,
+  currentDepth,
+  specialistAgents,
+  maxDepth = 1,
+}: ValidateDelegationDepthOptions): DelegationResult {
   // Specialists cannot delegate
   if (specialistAgents.has(delegatingAgent)) {
     return {

@@ -559,13 +559,13 @@ const plugin: Plugin = async ({ directory, client }) => {
           const isChildSession = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
           const currentDepth = isChildSession ? (sessionMeta?.depth && sessionMeta.depth > 0 ? sessionMeta.depth : 1) : (isSpecialistCaller ? 1 : 0)
 
-          const depthResult = validateDelegationDepth(
-            invocation.callerAgent,
+          const depthResult = validateDelegationDepth({
+            delegatingAgent: invocation.callerAgent,
             targetAgent,
             currentDepth,
-            specialistAgentSet,
+            specialistAgents: specialistAgentSet,
             maxDepth,
-          )
+          })
           if (!depthResult.allowed) {
             const errorCode = depthResult.errorCode ?? "DELEGATION_BLOCKED"
             const isTerminal = errorCode === "SELF_DELEGATION_BLOCKED" || errorCode === "MISSING_TARGET_AGENT"
