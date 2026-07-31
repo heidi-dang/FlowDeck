@@ -1,5 +1,6 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 import { readFileSync, writeFileSync } from "fs"
+import { isAbsolute, join } from "path"
 import { createHash } from "crypto"
 
 export const hashEditTool: ToolDefinition = tool({
@@ -11,7 +12,7 @@ export const hashEditTool: ToolDefinition = tool({
     replacementContent: tool.schema.string(),
   },
   async execute(args, context) {
-    const fullPath = args.filePath.startsWith("/") ? args.filePath : `${context.directory}/${args.filePath}`
+    const fullPath = isAbsolute(args.filePath) ? args.filePath : join(context.directory, args.filePath)
     let content: string
     try {
       content = readFileSync(fullPath, "utf-8")

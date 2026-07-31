@@ -173,6 +173,37 @@ export async function createRepairSession(
   }
 }
 
+export interface RestrictedRepairPromptOptions {
+  cause: string;
+  evidence: string[];
+  expectedOutput: string;
+  allowedPaths: string[];
+  validationRequirements: string[];
+  acceptanceCriteria: string[];
+}
+
+function buildRestrictedRepairPrompt(
+  options: RestrictedRepairPromptOptions,
+): string {
+  return "## Cause\n" +
+options.cause + "\n\n" +
+"## Evidence\n" +
+options.evidence.map((e) => "- " + e).join("\n") + "\n\n" +
+"## Expected Output\n" +
+options.expectedOutput + "\n\n" +
+"## Prohibited Changes\n" +
+"You are restricted to the following paths: " + options.allowedPaths.join(", ") + "\n" +
+"Do NOT modify files outside these paths.\n\n" +
+"## Validation Requirements\n" +
+options.validationRequirements.map((v, i) => (i + 1) + ". " + v).join("\n") + "\n\n" +
+"## Acceptance Criteria\n" +
+options.acceptanceCriteria.map((a, i) => (i + 1) + ". " + a).join("\n") + "\n";
+}
+
+export function generateRestrictedRepairPrompt(
+  options: RestrictedRepairPromptOptions,
+): string;
+
 export function generateRestrictedRepairPrompt(
   cause: string,
   evidence: string[],
@@ -180,18 +211,30 @@ export function generateRestrictedRepairPrompt(
   allowedPaths: string[],
   validationRequirements: string[],
   acceptanceCriteria: string[],
+): string;
+
+export function generateRestrictedRepairPrompt(
+  optionsOrCause: RestrictedRepairPromptOptions | string,
+  evidence?: string[],
+  expectedOutput?: string,
+  allowedPaths?: string[],
+  validationRequirements?: string[],
+  acceptanceCriteria?: string[],
 ): string {
-  return "## Cause\n" +
-cause + "\n\n" +
-"## Evidence\n" +
-evidence.map((e) => "- " + e).join("\n") + "\n\n" +
-"## Expected Output\n" +
-expectedOutput + "\n\n" +
-"## Prohibited Changes\n" +
-"You are restricted to the following paths: " + allowedPaths.join(", ") + "\n" +
-"Do NOT modify files outside these paths.\n\n" +
-"## Validation Requirements\n" +
-validationRequirements.map((v, i) => (i + 1) + ". " + v).join("\n") + "\n\n" +
-"## Acceptance Criteria\n" +
-acceptanceCriteria.map((a, i) => (i + 1) + ". " + a).join("\n") + "\n";
+  const options: RestrictedRepairPromptOptions =
+    typeof optionsOrCause === "string"
+      ? {
+          cause: optionsOrCause,
+          evidence: evidence ?? [],
+          expectedOutput: expectedOutput ?? "",
+          allowedPaths: allowedPaths ?? [],
+          validationRequirements:
+            validationRequirements ?? [],
+          acceptanceCriteria:
+            acceptanceCriteria ?? [],
+        }
+      : optionsOrCause;
+
+  return buildRestrictedRepairPrompt(options);
 }
+

@@ -176,4 +176,15 @@ describe("PR Monitor Deep Unit Tests", () => {
     const server = new GitHubWebhookServer()
     expect(server).toBeDefined()
   })
+
+  it("PrMonitorService uses logWrite instead of raw console.log", () => {
+    const serviceSource = require("fs").readFileSync(
+      require("path").join(process.cwd(), "src/services/pr-monitor/pr-monitor-service.ts"),
+      "utf-8"
+    )
+    expect(serviceSource).toContain('import { logWrite } from "../../lib/logger"')
+    expect(serviceSource).toContain('logWrite(process.cwd(), "info", "pr-monitor"')
+    expect(serviceSource).not.toContain("console.log(")
+  })
 })
+
