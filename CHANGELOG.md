@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.3] - 2026-07-31
+
+### Fixed
+
+- **npm registry availability check under `bash -e`**: the v1.0.2 release was blocked because the `Check Registry Availability` step in `publish.yml` ran `LOOKUP_OUTPUT="$(npm view ...)"` under GitHub Actions' default `bash -e` (errexit). When npm returns E404 for an unpublished version — the expected state for a first publish — the command substitution exits non-zero and bash terminated the step before `LOOKUP_EXIT=$?` could be captured. The step now scopes `set +e`/`set -e` strictly around the `npm view` assignment and classifies outcomes explicitly: exit 0 (already published) fails, genuine npm E404 "No match found for version" continues to publish, and every other outcome (authentication, network, DNS, timeout, SSL, malformed, unexpected npm errors) fails the workflow.
+
+### Added
+
+- `tests/release-registry-check.test.ts` (9 tests): behavioural coverage executing the exact extracted `Check Registry Availability` step body from `publish.yml` under `bash -e` with a mocked `npm` binary — unpublished E404 continues, published version blocks, auth/network/DNS/timeout/unexpected errors all stop, plus errexit and command-substitution regressions. The suite fails against the v1.0.2 workflow (0/9) and passes against v1.0.3 (9/9).
+- `tests/publish-workflow-order.test.ts`: invariant 8 strengthened to require `set +e`/`set -e` scoping, `LOOKUP_EXIT` capture, and the E404 "No match found for version" classification.
+
+### Compatibility
+
+- No runtime configuration migration is required. No user-facing runtime changes are included; this is a release-pipeline integrity release. v1.0.0 and v1.0.1 remain immutable; the v1.0.2 tag is preserved and was never published to npm.
+
 ## [1.0.2] - 2026-07-31
 
 ### Fixed
