@@ -1,6 +1,6 @@
 import { join, dirname, resolve, basename } from "path"
 import { homedir } from "os"
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, realpathSync, rmSync, renameSync } from "fs"
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, realpathSync, rmSync, renameSync, cpSync } from "fs"
 import { createHash } from "crypto"
 import { withLock } from "../services/async-lock"
 
@@ -66,18 +66,7 @@ export function generateProjectId(directory: string): string {
 }
 
 function copyDirRecursiveSync(src: string, dest: string): void {
-  if (!existsSync(dest)) mkdirSync(dest, { recursive: true })
-  const entries = readdirSync(src)
-  for (const entry of entries) {
-    const srcPath = join(src, entry)
-    const destPath = join(dest, entry)
-    const st = statSync(srcPath)
-    if (st.isDirectory()) {
-      copyDirRecursiveSync(srcPath, destPath)
-    } else {
-      writeFileSync(destPath, readFileSync(srcPath))
-    }
-  }
+  cpSync(src, dest, { recursive: true })
 }
 
 /**
