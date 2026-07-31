@@ -58,6 +58,8 @@ jobs:
         with:
           bun-version: "1.3.14"
       - run: npm ci
+      - name: Build (dist required by packed-layout tests)
+        run: npm run build
       - name: Coverage check (unit tests)
         run: bun test tests/check-coverage.test.ts
       - run: node scripts/check-coverage.mjs
