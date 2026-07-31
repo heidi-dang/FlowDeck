@@ -1,7 +1,7 @@
 {
   "name": "@heidi-dang/flowdeck",
-  "version": "0.8.0-alpha.13",
-  "description": "FlowDeck — structured planning and execution workflows for OpenCode (Heidi fork)",
+  "version": "1.0.0",
+  "description": "FlowDeck — production-grade multi-agent orchestration, governance, CI repair, and code intelligence for OpenCode",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -92,11 +92,15 @@
   },
   "keywords": [
     "opencode",
-    "plugin",
-    "ai",
+    "multi-agent",
+    "orchestration",
     "workflow",
-    "planning",
-    "heidi"
+    "governance",
+    "code-intelligence",
+    "ci-repair",
+    "automation",
+    "fdx",
+    "plugin"
   ],
   "author": "Heidi Dang",
   "license": "MIT",
