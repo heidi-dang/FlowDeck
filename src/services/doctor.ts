@@ -15,7 +15,8 @@ let engineModule: any = null
 export async function runDoctorChecks(directory: string): Promise<DoctorReport> {
   if (!engineModule) {
     // Dynamic import at runtime — TypeScript won't resolve the .mjs path at compile time
-    engineModule = await new Function(`return import("../../scripts/doctor-engine.mjs")`)()
+    const enginePath = "../../scripts/doctor-engine.mjs"
+    engineModule = await import(/* @vite-ignore */ enginePath)
   }
   const result = await engineModule.runDoctorChecks(directory)
   return {
