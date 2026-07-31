@@ -146,26 +146,46 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
   // Stage 6: Yield event loop before filesystem removal
   await new Promise((r) => setTimeout(r, 50));
 
-  // Stage 7: Remove the entire temporary directory asynchronously.
-  // Node.js rm() with maxRetries handles EBUSY/EPERM/ENOTEMPTY on Windows.
-  if (dir && existsSync(dir)) {
-    const rmStart = Date.now();
-    try {
-      await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
-    } catch (error: any) {
-      const elapsed = Date.now() - rmStart;
-      const code = error?.code ?? "UNKNOWN";
-      const msg = error?.message ?? String(error);
-      failures.push(new Error(
-        `[dir-remove] ${code} after ${elapsed}ms: ${msg} (path=${dir})`,
-      ));
+  // Stage 7: Remove each file individually with async rm + retry.
+  // Per-file retry is used because a single locked WAL/SHM file would block
+  // an entire recursive directory removal. Verification catches any leaks.
+  const removeFile = async (f: string, opts: { recursive?: boolean; force?: boolean }): Promise<void> => {
+    if (!existsSync(f)) return;
+    const startTime = Date.now();
+    const deadline = startTime + 2000;
+    for (let attempt = 1; Date.now() < deadline; attempt++) {
+      try {
+        await rm(f, opts);
+        return;
+      } catch (err: any) {
+        if (err.code !== "EBUSY" && err.code !== "EPERM" && err.code !== "ENOTEMPTY") {
+          failures.push(new Error(`[file-remove] ${err.code ?? "UNKNOWN"} after ${Date.now() - startTime}ms (attempt=${attempt}, path=${f}): ${err.message ?? err}`));
+          return;
+        }
+        if (Date.now() >= deadline) {
+          failures.push(new Error(`[file-remove] ${err.code ?? "UNKNOWN"} after ${Date.now() - startTime}ms (attempt=${attempt}, path=${f}): ${err.message ?? err}`));
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      }
     }
+  };
+
+  if (dir && existsSync(dir)) {
+    const dbPath = join(dir, fileName);
+    const walPath = dbPath + "-wal";
+    const shmPath = dbPath + "-shm";
+
+    const rmOpts = { force: true } as const;
+    await removeFile(dbPath, rmOpts);
+    await removeFile(walPath, rmOpts);
+    await removeFile(shmPath, rmOpts);
+    await removeFile(dir, { ...rmOpts, recursive: true });
 
     // Stage 8: Verify final state
-    const dbPath = join(dir, fileName);
     if (existsSync(dbPath)) failures.push(new Error(`[verify] DB_FILE_LEAK (${dbPath})`));
-    if (existsSync(dbPath + "-wal")) failures.push(new Error(`[verify] WAL_FILE_LEAK (${dbPath}-wal)`));
-    if (existsSync(dbPath + "-shm")) failures.push(new Error(`[verify] SHM_FILE_LEAK (${dbPath}-shm)`));
+    if (existsSync(walPath)) failures.push(new Error(`[verify] WAL_FILE_LEAK (${walPath})`));
+    if (existsSync(shmPath)) failures.push(new Error(`[verify] SHM_FILE_LEAK (${shmPath})`));
     if (existsSync(dir)) failures.push(new Error(`[verify] TEMP_DIRECTORY_LEAK (${dir})`));
   }
 
