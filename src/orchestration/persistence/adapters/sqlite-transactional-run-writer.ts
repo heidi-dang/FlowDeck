@@ -29,17 +29,17 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
     return tx.write(() => {
       // 1. Insert task_runs row
       const contractId = run.contractId ?? "contract-default";
-      db.prepare(
+      db.query(
         `INSERT OR IGNORE INTO contract_families (family_id, name, description, created_by, created_at)
          VALUES ('family-default', 'Default Family', 'Default contract family', 'system', datetime('now'))`,
       ).run();
-      db.prepare(
+      db.query(
         `INSERT OR IGNORE INTO task_contracts (contract_id, family_id, version, title, description, repo_url, repo_sha, created_by, created_at)
          VALUES (?, 'family-default', 1, 'Default Contract', 'Default contract description', 'https://github.com/heidi-dang/FlowDeck', '0000000000000000000000000000000000000000', 'system', datetime('now'))`,
       ).run(contractId);
 
       const state = mapRunStatusToTaskRunState(run.status);
-      db.prepare(
+      db.query(
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, ?, ?, ?, 1, ?, ?, datetime('now'), strftime('%s','now'))`,
       ).run(
@@ -54,7 +54,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
       // 2. Insert events row
       const eventData = JSON.stringify(event.data ?? {});
       const eventMeta = JSON.stringify(event.metadata ?? {});
-      db.prepare(
+      db.query(
         `INSERT INTO events (event_id, event_type, event_version, causation_id, correlation_id, aggregate_type, aggregate_id, aggregate_version, timestamp, data, metadata, created_ts)
          VALUES (?, ?, 1, ?, ?, 'task_run', ?, ?, datetime('now'), ?, ?, strftime('%s','now'))`,
       ).run(
@@ -70,7 +70,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
 
       // 3. Insert event_outbox row
       const outboxData = JSON.stringify(outboxEntry.payload ?? {});
-      db.prepare(
+      db.query(
         `INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, retry_count, idempotency_key, source_component, created_ts)
          VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, 'orchestration', strftime('%s','now'))`,
       ).run(
@@ -98,7 +98,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
       // 1. Update task_runs state
       if (input.status !== undefined) {
         const taskRunState = mapRunStatusToTaskRunState(input.status);
-        db.prepare(
+        db.query(
           `UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?`,
         ).run(taskRunState, id);
       }
@@ -106,7 +106,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
       // 2. Insert events row
       const eventData = JSON.stringify(event.data ?? {});
       const eventMeta = JSON.stringify(event.metadata ?? {});
-      db.prepare(
+      db.query(
         `INSERT INTO events (event_id, event_type, event_version, causation_id, correlation_id, aggregate_type, aggregate_id, aggregate_version, timestamp, data, metadata, created_ts)
          VALUES (?, ?, 1, ?, ?, 'task_run', ?, (SELECT COALESCE(MAX(aggregate_version), 0) + 1 FROM events WHERE aggregate_type = 'task_run' AND aggregate_id = ?), datetime('now'), ?, ?, strftime('%s','now'))`,
       ).run(
@@ -122,7 +122,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
 
       // 3. Insert event_outbox row
       const outboxData = JSON.stringify(outboxEntry.payload ?? {});
-      db.prepare(
+      db.query(
         `INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, retry_count, idempotency_key, source_component, created_ts)
          VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, 'orchestration', strftime('%s','now'))`,
       ).run(
@@ -135,7 +135,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
       );
 
       // 4. Read back the updated run
-      const row = db.prepare("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined;
+      const row = db.query("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined;
       if (!row) {
         throw new Error(`Run ${id} not found after update`);
       }

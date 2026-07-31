@@ -83,11 +83,11 @@ async function destroyTempDb(t: TempDb): Promise<void> {
 }
 
 function seedRunParents(db: Database, contractId = "contract-default"): void {
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO contract_families (family_id, name, description, created_by, created_at)
      VALUES ('family-default', 'Default Family', 'Default contract family', 'system', datetime('now'))`,
   ).run()
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO task_contracts (contract_id, family_id, version, title, description, repo_url, repo_sha, created_by, created_at)
      VALUES (?, 'family-default', 1, 'Default Contract', 'Default contract description',
              'https://github.com/heidi-dang/FlowDeck',
@@ -96,7 +96,7 @@ function seedRunParents(db: Database, contractId = "contract-default"): void {
 }
 
 function insertTaskRun(db: Database, runId: string): void {
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
      VALUES (?, 'contract-default', 'simple', ?, 1,
              '0000000000000000000000000000000000000000', 'main',
@@ -525,7 +525,7 @@ describe("SqliteVerificationRepo", () => {
 
     const verificationRepo: IVerificationRepository = {
       create: async (v: VerificationResult) => {
-        tdb.db.prepare(
+        tdb.db.query(
           "INSERT INTO verification_results (id, run_id, verification_type, status, target_sha, started_at) VALUES (?, ?, ?, ?, '0000000000000000000000000000000000000000', datetime('now'))",
         ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending")
         return v
@@ -561,7 +561,7 @@ describe("SqliteVerificationRepo", () => {
         }))
       },
       findMany: async (_filter: Partial<VerificationResult>, pagination: PagePaginationRequest) => {
-        const countRow = tdb.db.prepare("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number }
+        const countRow = tdb.db.query("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number }
         const limit = pagination.limit ?? 20
         return { items: [], total: countRow.c, page: pagination.page ?? 1, limit }
       },
@@ -632,14 +632,14 @@ describe("SqliteEventRepo", () => {
       store: async (e: OrchestrationEvent) => {
         const eventData = JSON.stringify(e.data ?? {})
         const eventMeta = JSON.stringify(e.metadata ?? {})
-        tdb.db.prepare(
+        tdb.db.query(
           `INSERT INTO events (event_id, event_type, event_version, causation_id, correlation_id, aggregate_type, aggregate_id, aggregate_version, timestamp, data, metadata, created_ts)
            VALUES (?, ?, 1, ?, ?, 'orchestration', ?, ?, datetime('now'), ?, ?, strftime('%s','now'))`,
         ).run(e.id, e.type, e.causationId ?? null, e.correlationId, e.aggregateId ?? "", e.aggregateVersion ?? 100, eventData, eventMeta)
         return e
       },
       findById: async (id: string) => {
-        const row = tdb.db.prepare("SELECT * FROM events WHERE event_id = ?").get(id) as Record<string, unknown> | undefined
+        const row = tdb.db.query("SELECT * FROM events WHERE event_id = ?").get(id) as Record<string, unknown> | undefined
         if (!row) return null
         const eventDataRaw = (row.data as string) ?? "{}"
         let eventData: Record<string, unknown> = {}
@@ -663,8 +663,8 @@ describe("SqliteEventRepo", () => {
       findMany: async (_filter: Partial<OrchestrationEvent>, pagination: PagePaginationRequest) => {
         const limit = pagination.limit ?? 20
         const offset = ((pagination.page ?? 1) - 1) * limit
-        const countRow = tdb.db.prepare("SELECT COUNT(*) AS c FROM events").get() as { c: number }
-        const rows = tdb.db.prepare("SELECT * FROM events ORDER BY created_ts DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[]
+        const countRow = tdb.db.query("SELECT COUNT(*) AS c FROM events").get() as { c: number }
+        const rows = tdb.db.query("SELECT * FROM events ORDER BY created_ts DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[]
         return {
           items: rows.map(r => {
             const d: OrchestrationEvent = {
@@ -686,7 +686,7 @@ describe("SqliteEventRepo", () => {
         }
       },
       findByRunId: async (runId: string) => {
-        const rows = tdb.db.prepare("SELECT * FROM events WHERE aggregate_id = ? ORDER BY created_ts DESC").all(runId) as Record<string, unknown>[]
+        const rows = tdb.db.query("SELECT * FROM events WHERE aggregate_id = ? ORDER BY created_ts DESC").all(runId) as Record<string, unknown>[]
         return rows.map(r => ({
           id: r.event_id as string,
           type: r.event_type as string,
@@ -700,7 +700,7 @@ describe("SqliteEventRepo", () => {
         })) as OrchestrationEvent[]
       },
       count: async () => {
-        const row = tdb.db.prepare("SELECT COUNT(*) AS c FROM events").get() as { c: number }
+        const row = tdb.db.query("SELECT COUNT(*) AS c FROM events").get() as { c: number }
         return row.c
       },
     }
@@ -894,7 +894,7 @@ describe("RunService", () => {
       correlationId: "corr-pause",
     })
     // Directly set state in DB to "executing" (valid task_runs state)
-    tdb.db.prepare("UPDATE task_runs SET state = 'executing' WHERE run_id = ?").run(run.id)
+    tdb.db.query("UPDATE task_runs SET state = 'executing' WHERE run_id = ?").run(run.id)
 
     // pauseRun checks existing.status !== RunStatus.RUNNING ("running"),
     // but the DB state is "executing". The pauseRun code path is still exercised.

@@ -26,7 +26,7 @@ export interface AppliedMigration {
 
 function getApplied(db: Database): Map<number, AppliedMigration> {
   try {
-    const rows = db.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all() as AppliedMigration[]
+    const rows = db.query("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all() as AppliedMigration[]
     return new Map(rows.map(r => [r.version, r]))
   } catch {
     return new Map()
@@ -35,7 +35,7 @@ function getApplied(db: Database): Map<number, AppliedMigration> {
 
 export function getCurrentVersion(db: Database): number {
   try {
-    const row = db.prepare("SELECT COALESCE(MAX(version), 0) AS v FROM schema_migrations").get() as { v: number }
+    const row = db.query("SELECT COALESCE(MAX(version), 0) AS v FROM schema_migrations").get() as { v: number }
     return row.v
   } catch {
     return 0
@@ -60,7 +60,7 @@ export function runMigrations(db: Database): void {
     try {
       db.exec("BEGIN IMMEDIATE")
       db.exec(migration.sql)
-      db.prepare(
+      db.query(
         `INSERT INTO schema_migrations (version, name, applied_at, checksum, duration_ms)
          VALUES (?, ?, datetime('now'), ?, ?)`
       ).run(migration.version, migration.name, migration.checksum, Date.now() - start)

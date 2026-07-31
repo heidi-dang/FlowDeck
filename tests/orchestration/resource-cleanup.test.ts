@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, existsSync, rmSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from "fs";
+import { rm } from "node:fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { deterministicCleanup } from "./harness/cleanup";
@@ -26,7 +27,7 @@ function dbExists(dir: string): boolean {
 }
 
 describe("Cleanup lifecycle", () => {
-  it("normal cleanup deletes all files and closes SQLite", async () => {
+  it("normal cleanup strict-closes SQLite and deletes all files", async () => {
     const { dir, db, path } = createTempDbDir();
     db.exec("INSERT INTO t VALUES (2)");
 
@@ -37,7 +38,7 @@ describe("Cleanup lifecycle", () => {
     expect(() => db.exec("SELECT 1")).toThrow();
   });
 
-  it("normal cleanup with outbox worker stops the worker", async () => {
+  it("cleanup with outbox worker stops the worker", async () => {
     const { dir, db } = createTempDbDir();
     let workerStopped = false;
     const worker: StoppableWorker = {
@@ -49,7 +50,7 @@ describe("Cleanup lifecycle", () => {
     expect(workerStopped).toBe(true);
   });
 
-  it("normal cleanup with execution registry cancels active executions", async () => {
+  it("cleanup with execution registry cancels active executions", async () => {
     const { dir, db } = createTempDbDir();
     const registry = new ExecutionRegistry();
     const handle = registry.registerRun("run-1");
@@ -70,7 +71,7 @@ describe("Cleanup lifecycle", () => {
     expect(existsSync(dir)).toBe(false);
   });
 
-  it("idempotent call with OwnedDatabase marks closed", async () => {
+  it("idempotent call with OwnedDatabase marks closed exactly once", async () => {
     const { dir, db } = createTempDbDir();
     const owned: OwnedDatabase = { db, closed: false };
 
@@ -82,10 +83,87 @@ describe("Cleanup lifecycle", () => {
     await deterministicCleanup({ db: owned, dir });
     expect(owned.closed).toBe(true);
   });
+
+  it("partial setup: empty context and dir-only context are no-ops", async () => {
+    await deterministicCleanup({});
+    await deterministicCleanup({ dir: undefined });
+  });
+});
+
+describe("Strict closure", () => {
+  it("strict close succeeds on a clean connection", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const db = new Database(join(dir, "test.db"));
+    db.exec("CREATE TABLE t (x INTEGER)");
+
+    await deterministicCleanup({ db, dir });
+
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("strict close detects an unfinalized pending statement", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const path = join(dir, "test.db");
+    const db = new Database(path);
+    db.exec("CREATE TABLE t (x INTEGER)");
+    // A held, never-finalized statement must make strict close fail visibly.
+    const pending = db.prepare("SELECT * FROM t");
+    void pending;
+
+    let caught: AggregateError | null = null;
+    try {
+      await deterministicCleanup({ db, dir });
+    } catch (e) {
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(caught!.errors.some((error) => error.message.includes("sqlite-strict-close-primary"))).toBe(true);
+
+    pending.finalize();
+    try { await deterministicCleanup({ dir }); } catch {}
+  });
+
+  it("extra connections are strict-closed before file removal", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const path = join(dir, "test.db");
+    const db = new Database(path);
+    db.exec("CREATE TABLE t (x INTEGER)");
+    const secondary = new Database(path);
+    secondary.query("SELECT 1").get();
+
+    await deterministicCleanup({ db, dir, extraConnections: [secondary] });
+
+    expect(existsSync(dir)).toBe(false);
+    expect(() => secondary.query("SELECT 1").get()).toThrow();
+  });
+
+  it("strict close failure on an extra connection is fail-visible", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const path = join(dir, "test.db");
+    const db = new Database(path);
+    db.exec("CREATE TABLE t (x INTEGER)");
+    const secondary = new Database(path);
+    const pending = secondary.prepare("SELECT * FROM t");
+    void pending;
+
+    let caught: AggregateError | null = null;
+    try {
+      await deterministicCleanup({ db, dir, extraConnections: [secondary] });
+    } catch (e) {
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(caught!.errors.some((error) => error.message.includes("sqlite-strict-close-extra-0"))).toBe(true);
+
+    pending.finalize();
+    try { await deterministicCleanup({ dir }); } catch {}
+  });
 });
 
 describe("Active reader handling", () => {
-  it("cleanup fails visibly when a reader holds a WAL snapshot", async () => {
+  it("reader holding a WAL snapshot fails cleanup visibly; rollback+close then succeeds", async () => {
     const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
     const path = join(dir, "test.db");
     const db = new Database(path);
@@ -106,23 +184,27 @@ describe("Active reader handling", () => {
       caught = e instanceof AggregateError ? e : null;
     }
 
-    if (caught) {
-      expect(caught).toBeInstanceOf(AggregateError);
-      expect(
-        caught.errors.some(
-          (error) =>
-            error.message.includes("wal-checkpoint") ||
-            error.message.includes("EBUSY") ||
-            error.message.includes("EPERM") ||
-            error.message.includes("FILE_LEAK"),
-        ),
-      ).toBe(true);
-    } else {
-      expect(existsSync(join(dir, "test.db"))).toBe(false);
-      expect(existsSync(join(dir, "test.db-wal"))).toBe(false);
-      expect(existsSync(join(dir, "test.db-shm"))).toBe(false);
-      expect(existsSync(dir)).toBe(false);
-    }
+    // Failure phase: the checkpoint must observe the active reader.
+    expect(caught).not.toBeNull();
+    expect(
+      caught!.errors.some((error) => error.message.includes("wal-checkpoint")),
+    ).toBe(true);
+
+    // Post-close success phase: rollback + strict close the reader, then a
+    // fresh WAL connection shuts down cleanly and cleanup succeeds (the
+    // primary was already closed by the failure phase above).
+    reader.exec("ROLLBACK");
+    reader.close(true);
+    mkdirSync(dir);
+    const fresh = new Database(path);
+    fresh.exec("PRAGMA journal_mode=WAL");
+    fresh.exec("CREATE TABLE t (x INTEGER)");
+    await deterministicCleanup({ db: fresh, dir });
+
+    expect(existsSync(join(dir, "test.db"))).toBe(false);
+    expect(existsSync(join(dir, "test.db-wal"))).toBe(false);
+    expect(existsSync(join(dir, "test.db-shm"))).toBe(false);
+    expect(existsSync(dir)).toBe(false);
   });
 });
 
@@ -199,6 +281,126 @@ describe("Execution cancellation", () => {
     // Files should still be cleaned up despite the timeout
     expect(existsSync(dir)).toBe(false);
   });
+
+  it("execution timeout retains the run id in the recorded error", async () => {
+    const { dir, db } = createTempDbDir();
+    const registry = new ExecutionRegistry();
+    const runId = "timeout-id-retained";
+    registry.registerRun(runId);
+    const handle = registry.getHandle(runId)!;
+    handle.executionPromise = new Promise<void>(() => {});
+
+    let caught: AggregateError | null = null;
+    try {
+      await deterministicCleanup({ db, dir, executionRegistry: registry as any, executionTimeoutMs: 300 });
+    } catch (e) {
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(
+      caught!.errors.some((e) => e.message.includes("timed out") && e.message.includes(runId)),
+    ).toBe(true);
+  });
+});
+
+describe("Registry guard", () => {
+  it("throws when execution handles remain after cancel", async () => {
+    const { dir, db } = createTempDbDir();
+    const registry = new ExecutionRegistry();
+
+    const handle = registry.registerRun("stuck-run");
+    handle.executionPromise = new Promise<void>(() => {});
+    // also register a second handle that can be cancelled
+    const handle2 = registry.registerRun("ok-run");
+    handle2.executionPromise = Promise.resolve();
+
+    let caught: AggregateError | null = null;
+    try {
+      await deterministicCleanup({
+        db, dir,
+        executionRegistry: registry as any,
+        executionTimeoutMs: 500,
+      });
+    } catch (e) {
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    expect(caught).not.toBeNull();
+    const leakMsgs = caught!.errors.filter((e) => e.message.includes("execution-leak"));
+    expect(leakMsgs.length).toBeGreaterThanOrEqual(1);
+
+    for (const suffix of ["", "-wal", "-shm"]) {
+      try { await import("node:fs/promises").then(({ rm }) => rm(join(dir, "test.db") + suffix, { force: true })); } catch {}
+    }
+    try { await import("node:fs/promises").then(({ rm }) => rm(dir, { recursive: true, force: true })); } catch {}
+  });
+});
+
+describe("Retry independence and error retention", () => {
+  it("a blocked target fails with full diagnostics without starving other targets", async () => {
+    // Make the primary db "file" a non-empty directory. Non-recursive rm of a
+    // directory deterministically fails, but the enclosing temp dir must still
+    // be removed by its own bounded retry budget.
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const dbPath = join(dir, "test.db");
+    mkdirSync(dbPath);
+    writeFileSync(join(dbPath, "inner.txt"), "x");
+    const db = new Database(join(dir, "other.db"));
+    db.exec("CREATE TABLE t (x INTEGER)");
+
+    let caught: AggregateError | null = null;
+    try {
+      await deterministicCleanup({ db, dir });
+    } catch (e) {
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    expect(caught).not.toBeNull();
+    const removal = caught!.errors.find((e) => e.message.includes("[file-remove]"));
+    expect(removal).toBeDefined();
+    expect(removal!.message).toContain(`target=${dbPath}`);
+    expect(removal!.message).toMatch(/code=/);
+    expect(removal!.message).toMatch(/errno=/);
+    expect(removal!.message).toMatch(/syscall=/);
+    expect(removal!.message).toMatch(/elapsed=/);
+    // Independent per-target retry: the enclosing dir is still removed.
+    expect(existsSync(dir)).toBe(false);
+  });
+
+  it("leak errors are supplemented with removal details, not replaced", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const dbPath = join(dir, "test.db");
+    mkdirSync(dbPath);
+    writeFileSync(join(dbPath, "inner.txt"), "x");
+    const db = new Database(join(dir, "other.db"));
+    db.exec("CREATE TABLE t (x INTEGER)");
+
+    let caught: AggregateError | null = null;
+    try {
+      await deterministicCleanup({ db, dir });
+    } catch (e) {
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    expect(caught).not.toBeNull();
+    expect(
+      caught!.errors.some((e) => e.message.includes("[file-remove]")),
+    ).toBe(true);
+  });
+
+  it("recursive directory removal leaves no trace", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const nested = join(dir, "a", "b", "c");
+    mkdirSync(nested, { recursive: true });
+    writeFileSync(join(nested, "file.txt"), "x");
+    const db = new Database(join(dir, "test.db"));
+    db.exec("CREATE TABLE t (x INTEGER)");
+
+    await deterministicCleanup({ db, dir });
+
+    expect(existsSync(dir)).toBe(false);
+  });
 });
 
 describe("AggregateError reporting", () => {
@@ -220,9 +422,9 @@ describe("AggregateError reporting", () => {
     expect(caught!.errors.length).toBe(1);
 
     for (const suffix of ["", "-wal", "-shm"]) {
-      try { rmSync(join(dir, "test.db") + suffix, { force: true }); } catch {}
+      try { await import("node:fs/promises").then(({ rm }) => rm(join(dir, "test.db") + suffix, { force: true })); } catch {}
     }
-    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    try { await import("node:fs/promises").then(({ rm }) => rm(dir, { recursive: true, force: true })); } catch {}
   });
 
   it("multiple failures produce AggregateError with >=2 errors", async () => {
@@ -255,9 +457,9 @@ describe("AggregateError reporting", () => {
     expect(caught!.message).toBe("ORCHESTRATION_CLEANUP_FAILED");
 
     for (const suffix of ["", "-wal", "-shm"]) {
-      try { rmSync(join(dir, "test.db") + suffix, { force: true }); } catch {}
+      try { await import("node:fs/promises").then(({ rm }) => rm(join(dir, "test.db") + suffix, { force: true })); } catch {}
     }
-    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    try { await import("node:fs/promises").then(({ rm }) => rm(dir, { recursive: true, force: true })); } catch {}
   });
 });
 
@@ -282,35 +484,33 @@ describe("Handle-leak verification", () => {
     expect(dbExists(dir)).toBe(false);
     expect(walExists(dir)).toBe(false);
   });
+});
 
-  it("throws when execution handles remain after cancel", async () => {
-    const { dir, db } = createTempDbDir();
-    const registry = new ExecutionRegistry();
+describe("Path handling", () => {
+  it("cleanup works with a temp dir containing spaces", async () => {
+    const base = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const dir = join(base, "spaced dir");
+    mkdirSync(dir);
+    const db = new Database(join(dir, "test.db"));
+    db.exec("CREATE TABLE t (x INTEGER)");
 
-    const handle = registry.registerRun("stuck-run");
-    handle.executionPromise = new Promise<void>(() => {});
-    // also register a second handle that can be cancelled
-    const handle2 = registry.registerRun("ok-run");
-    handle2.executionPromise = Promise.resolve();
+    await deterministicCleanup({ db, dir });
 
-    let caught: AggregateError | null = null;
-    try {
-      await deterministicCleanup({
-        db, dir,
-        executionRegistry: registry as any,
-        executionTimeoutMs: 500,
-      });
-    } catch (e) {
-      caught = e instanceof AggregateError ? e : null;
-    }
+    expect(existsSync(dir)).toBe(false);
+    await rm(base, { recursive: true, force: true });
+  });
 
-    expect(caught).not.toBeNull();
-    const leakMsgs = caught!.errors.filter((e) => e.message.includes("execution-leak"));
-    expect(leakMsgs.length).toBeGreaterThanOrEqual(1);
+  it("cleanup with a custom db file name removes all sidecar files", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const db = new Database(join(dir, "custom.sqlite"));
+    db.exec("CREATE TABLE t (x INTEGER)");
+    db.exec("PRAGMA journal_mode=WAL");
 
-    for (const suffix of ["", "-wal", "-shm"]) {
-      try { rmSync(join(dir, "test.db") + suffix, { force: true }); } catch {}
-    }
-    try { rmSync(dir, { recursive: true, force: true }); } catch {}
+    await deterministicCleanup({ db, dir, dbFileName: "custom.sqlite" });
+
+    expect(existsSync(join(dir, "custom.sqlite"))).toBe(false);
+    expect(existsSync(join(dir, "custom.sqlite-wal"))).toBe(false);
+    expect(existsSync(join(dir, "custom.sqlite-shm"))).toBe(false);
+    expect(existsSync(dir)).toBe(false);
   });
 });

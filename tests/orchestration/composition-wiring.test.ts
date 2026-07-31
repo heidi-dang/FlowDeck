@@ -33,16 +33,16 @@ function seedParents(): void {
   const familyId = "fam-comp-test"
   const contractId = "contract-default"
 
-  db.prepare(
+  db.query(
     "INSERT OR IGNORE INTO contract_families (family_id, name, description, created_by, created_at) VALUES (?, 'Comp Test Family', 'Test', 'test', datetime('now'))",
   ).run(familyId)
 
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO task_contracts (contract_id, family_id, version, title, description, in_scope, out_of_scope, payload_hash, repo_url, repo_sha, created_by, created_at)
      VALUES (?, ?, 1, 'Comp Test', 'Test', '[]', '[]', 'hash', 'https://example.com/repo', 'sha1', 'test', datetime('now'))`,
   ).run(contractId, familyId)
 
-  db.prepare(
+  db.query(
     "INSERT OR IGNORE INTO repositories (repository_id, url, canonical_path, created_at) VALUES ('repo-1', 'https://example.com/repo', '/tmp/repo', datetime('now'))",
   ).run()
 }
@@ -52,8 +52,8 @@ beforeAll(() => {
   const dbPath = join(tmpDir, "test.db")
 
   db = new Database(dbPath, { create: true })
-  db.prepare("PRAGMA journal_mode = WAL").run()
-  db.prepare("PRAGMA foreign_keys = ON").run()
+  db.query("PRAGMA journal_mode = WAL").run()
+  db.query("PRAGMA foreign_keys = ON").run()
   db.exec(SCHEMA_V_0_2_6)
 
   seedParents()
@@ -107,18 +107,18 @@ describe("ProductionOrchestrationRuntime composition wiring", () => {
 
     // Temporarily disable FK so we can write to event_outbox without
     // requiring a matching events row (the FK is on event_id).
-    db.prepare("PRAGMA foreign_keys = OFF").run()
+    db.query("PRAGMA foreign_keys = OFF").run()
     try {
-      db.prepare(
+      db.query(
         `INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, retry_count, idempotency_key, source_component, created_ts)
          VALUES (?, ?, 'test.type', 'agg-1', '{}', 'pending', 0, ?, 'orchestration', strftime('%s','now'))`,
       ).run(outboxId, eventId, "ik-" + outboxId)
     } finally {
-      db.prepare("PRAGMA foreign_keys = ON").run()
+      db.query("PRAGMA foreign_keys = ON").run()
     }
 
     const row = db
-      .prepare("SELECT id, event_id, status FROM event_outbox WHERE id = ?")
+      .query("SELECT id, event_id, status FROM event_outbox WHERE id = ?")
       .get(outboxId) as { id: string; event_id: string; status: string } | undefined
 
     expect(row).not.toBeUndefined()
@@ -135,19 +135,19 @@ describe("ProductionOrchestrationRuntime composition wiring", () => {
     // Use the runtime's unitOfWork for the atomic operation
     await runtime.unitOfWork.execute(() => {
       // Insert run with state='created' — the only valid initial state per CHECK constraint
-      db.prepare(
+      db.query(
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, 'contract-default', 'simple', 'created', 1, '0000000000000000000000000000000000000000', 'main', datetime('now'), strftime('%s','now'))`,
       ).run(runId)
 
       // Insert event
-      db.prepare(
+      db.query(
         `INSERT INTO events (event_id, event_type, event_version, correlation_id, aggregate_type, aggregate_id, aggregate_version, timestamp, data, metadata, created_ts)
          VALUES (?, 'run.created', 1, ?, 'run', ?, 1, datetime('now'), '{}', '{}', strftime('%s','now'))`,
       ).run(eventId, "corr-" + runId, runId)
 
       // Insert outbox entry with pending status
-      db.prepare(
+      db.query(
         `INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, idempotency_key, source_component, created_ts)
          VALUES (?, ?, 'run.created', ?, '{}', 'pending', ?, 'orchestrator', strftime('%s','now'))`,
       ).run(outboxId, eventId, runId, "ik-" + outboxId)
@@ -155,7 +155,7 @@ describe("ProductionOrchestrationRuntime composition wiring", () => {
 
     // Verify state row
     const runRow = db
-      .prepare("SELECT run_id, state FROM task_runs WHERE run_id = ?")
+      .query("SELECT run_id, state FROM task_runs WHERE run_id = ?")
       .get(runId) as { run_id: string; state: string } | undefined
     expect(runRow).toBeDefined()
     expect(runRow!.run_id).toBe(runId)
@@ -163,7 +163,7 @@ describe("ProductionOrchestrationRuntime composition wiring", () => {
 
     // Verify event row
     const eventRow = db
-      .prepare("SELECT event_id, event_type FROM events WHERE event_id = ?")
+      .query("SELECT event_id, event_type FROM events WHERE event_id = ?")
       .get(eventId) as { event_id: string; event_type: string } | undefined
     expect(eventRow).toBeDefined()
     expect(eventRow!.event_id).toBe(eventId)
@@ -171,7 +171,7 @@ describe("ProductionOrchestrationRuntime composition wiring", () => {
 
     // Verify outbox row
     const outboxRow = db
-      .prepare("SELECT id, event_id, status FROM event_outbox WHERE id = ?")
+      .query("SELECT id, event_id, status FROM event_outbox WHERE id = ?")
       .get(outboxId) as { id: string; event_id: string; status: string } | undefined
     expect(outboxRow).toBeDefined()
     expect(outboxRow!.id).toBe(outboxId)
@@ -187,19 +187,19 @@ describe("ProductionOrchestrationRuntime composition wiring", () => {
     // Atomic mutation through the runtime's unitOfWork
     await runtime.unitOfWork.execute(() => {
       // Create a run with valid initial state
-      db.prepare(
+      db.query(
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, 'contract-default', 'simple', 'created', 1, '0000000000000000000000000000000000000000', 'main', datetime('now'), strftime('%s','now'))`,
       ).run(runId)
 
       // Create corresponding event
-      db.prepare(
+      db.query(
         `INSERT INTO events (event_id, event_type, event_version, correlation_id, aggregate_type, aggregate_id, aggregate_version, timestamp, data, metadata, created_ts)
          VALUES (?, 'run.created', 1, ?, 'run', ?, 1, datetime('now'), '{}', '{}', strftime('%s','now'))`,
       ).run(eventId, "corr-" + runId, runId)
 
       // Create outbox entry — status MUST be 'pending'
-      db.prepare(
+      db.query(
         `INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, idempotency_key, source_component, created_ts)
          VALUES (?, ?, 'run.created', ?, '{}', 'pending', ?, 'orchestrator', strftime('%s','now'))`,
       ).run(outboxId, eventId, runId, "ik-" + outboxId)
@@ -207,7 +207,7 @@ describe("ProductionOrchestrationRuntime composition wiring", () => {
 
     // Verify the outbox entry has pending status
     const outboxRows = db
-      .prepare("SELECT id, event_id, status FROM event_outbox WHERE event_id = ?")
+      .query("SELECT id, event_id, status FROM event_outbox WHERE event_id = ?")
       .all(eventId) as Array<{ id: string; event_id: string; status: string }>
 
     expect(outboxRows.length).toBeGreaterThanOrEqual(1)

@@ -73,7 +73,7 @@ export function validateSchema(db: Database): SchemaDiagnostics {
   const version = getCurrentVersion(db)
 
   const tables = new Set(
-    (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name!='sqlite_sequence'").all() as { name: string }[]).map(r => r.name)
+    (db.query("SELECT name FROM sqlite_master WHERE type='table' AND name!='sqlite_sequence'").all() as { name: string }[]).map(r => r.name)
   )
   for (const t of REQUIRED_TABLES) {
     if (!tables.has(t)) {
@@ -83,7 +83,7 @@ export function validateSchema(db: Database): SchemaDiagnostics {
   }
 
   const triggers = new Set(
-    (db.prepare("SELECT name FROM sqlite_master WHERE type='trigger'").all() as { name: string }[]).map(r => r.name)
+    (db.query("SELECT name FROM sqlite_master WHERE type='trigger'").all() as { name: string }[]).map(r => r.name)
   )
   for (const t of REQUIRED_TRIGGERS) {
     if (!triggers.has(t)) {
@@ -93,7 +93,7 @@ export function validateSchema(db: Database): SchemaDiagnostics {
   }
 
   try {
-    const fk = db.prepare("PRAGMA foreign_key_check").all() as { table: string; rowid: number; parent: string }[]
+    const fk = db.query("PRAGMA foreign_key_check").all() as { table: string; rowid: number; parent: string }[]
     for (const r of fk) {
       const d = `FK violation: table=${r.table} rowid=${r.rowid} parent=${r.parent}`
       machine.fkViolations.push(d)
@@ -105,7 +105,7 @@ export function validateSchema(db: Database): SchemaDiagnostics {
   }
 
   try {
-    const i = db.prepare("PRAGMA integrity_check").get() as { integrity_check: string }
+    const i = db.query("PRAGMA integrity_check").get() as { integrity_check: string }
     if (i.integrity_check !== "ok") {
       machine.integrityErrors.push(i.integrity_check)
       items.push({ object: "database", detail: `Integrity check: ${i.integrity_check}`, severity: "error", recovery: RECOVERY_MAP.integrity })
@@ -119,7 +119,7 @@ export function validateSchema(db: Database): SchemaDiagnostics {
     version,
     tableCount: tables.size,
     triggerCount: triggers.size,
-    indexCount: (db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]).length,
+    indexCount: (db.query("SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]).length,
     items,
     machine,
   }

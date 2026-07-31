@@ -22,11 +22,11 @@ import type { Contract } from "../../../src/orchestration/types/contracts";
 import type { Assignment } from "../../../src/orchestration/types/assignments";
 
 function seedParents(db: Database, contractId = "contract-default"): void {
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO contract_families (family_id, name, description, created_by, created_at)
      VALUES ('family-default', 'Default Family', 'Default contract family', 'system', datetime('now'))`,
   ).run();
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO task_contracts (contract_id, family_id, version, title, description, repo_url, repo_sha, created_by, created_at)
      VALUES (?, 'family-default', 1, 'Default Contract', 'Default contract description',
              'https://github.com/heidi-dang/FlowDeck',
@@ -35,7 +35,7 @@ function seedParents(db: Database, contractId = "contract-default"): void {
 }
 
 function insertTaskRun(db: Database, runId: string): void {
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
      VALUES (?, 'contract-default', 'simple', ?, 1,
              '0000000000000000000000000000000000000000', 'main',
@@ -126,7 +126,7 @@ describe("Timestamp integrity", () => {
     const adapter = new SqliteContractAdapter(db, tx);
     repo = new SqliteContractRepo(adapter, db, tx);
     await repo.create(makeContract("ct-reopen"));
-    const originalRow = db.prepare("SELECT created_at FROM task_contracts WHERE contract_id = ?").get("ct-reopen") as { created_at: string };
+    const originalRow = db.query("SELECT created_at FROM task_contracts WHERE contract_id = ?").get("ct-reopen") as { created_at: string };
     const originalCreatedAt = originalRow.created_at;
     db.close();
     db = new Database(join(tempDir, "test.db"));
@@ -143,7 +143,7 @@ describe("Timestamp integrity", () => {
     insertTaskRun(db, "run-ts-reopen");
     assignmentRepo = new SqliteAssignmentRepo(db, tx);
     await assignmentRepo.create(makeAssignment("a-reopen", "run-ts-reopen"));
-    const originalRow = db.prepare("SELECT created_at FROM assignments WHERE id = ?").get("a-reopen") as { created_at: string };
+    const originalRow = db.query("SELECT created_at FROM assignments WHERE id = ?").get("a-reopen") as { created_at: string };
     const originalCreatedAt = originalRow.created_at;
     db.close();
     db = new Database(join(tempDir, "test.db"));
@@ -183,7 +183,7 @@ describe("Queue semantics", () => {
     expect(_run.status).toBe(RunStatus.PENDING);
     const found = await repo.findById("q-pending");
     expect(found!.status).toBe(RunStatus.PENDING);
-    const row = db.prepare("SELECT state FROM task_runs WHERE run_id = ?").get("q-pending") as { state: string };
+    const row = db.query("SELECT state FROM task_runs WHERE run_id = ?").get("q-pending") as { state: string };
     expect(row.state).toBe(OrchestrationPhase.CREATED);
   });
 
@@ -265,7 +265,7 @@ describe("Assignment result and metadata integrity", () => {
       expect(e.code).toBe(ErrorCodes.ASSIGNMENT_RESULT_PERSISTENCE_NOT_CONFIGURED.code);
     }
     expect(caught).toBe(true);
-    const row = db.prepare("SELECT error_message FROM assignments WHERE id = ?").get("a-res-1") as { error_message: string | null };
+    const row = db.query("SELECT error_message FROM assignments WHERE id = ?").get("a-res-1") as { error_message: string | null };
     expect(row.error_message).toBeNull();
   });
 
@@ -311,7 +311,7 @@ describe("Assignment result and metadata integrity", () => {
 
   it("error_message remains reserved for real failures", async () => {
     await repo.create(makeAssignment("a-err-1", runId));
-    const row = db.prepare("SELECT error_message FROM assignments WHERE id = ?").get("a-err-1") as { error_message: string | null };
+    const row = db.query("SELECT error_message FROM assignments WHERE id = ?").get("a-err-1") as { error_message: string | null };
     expect(row.error_message).toBeNull();
   });
 
