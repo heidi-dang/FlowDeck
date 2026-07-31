@@ -16,6 +16,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync } from "fs"
+import { stat } from "fs/promises"
 import { join } from "path"
 import {
   statePath,
@@ -254,11 +255,22 @@ export async function runResearchGate(
     }
     case "review": {
       if (activeTopic) {
-        for (const artifact of ["task.md", "architecture.md", "affect.md", "plan.md"]) {
-          const file = join(topicDir(dir, activeTopic), artifact)
-          if (existsSync(file)) {
-            filesExplored.push(file)
-            findings.push(`${artifact}: loaded for topic ${activeTopic}`)
+        const artifacts = ["task.md", "architecture.md", "affect.md", "plan.md"]
+        const results = await Promise.all(
+          artifacts.map(async (artifact) => {
+            const file = join(topicDir(dir, activeTopic), artifact)
+            try {
+              await stat(file)
+              return { file, artifact }
+            } catch {
+              return null
+            }
+          })
+        )
+        for (const res of results) {
+          if (res) {
+            filesExplored.push(res.file)
+            findings.push(`${res.artifact}: loaded for topic ${activeTopic}`)
           }
         }
       }
