@@ -1,10 +1,14 @@
-import { describe, it, expect } from "bun:test"
+import { describe, it, expect, beforeEach } from "bun:test"
 import {
   validateCommandRequirement,
   validateResourceLimits,
   executeValidatedCommand,
   executeValidatedCommandSync,
   parseLegacyRequirementString,
+  classifyChildProcessError,
+  getAdapterInvocationCount,
+  resetAdapterInvocationCount,
+  setTestProcessAdapters,
   DEFAULT_TIMEOUT_MS,
   MIN_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
@@ -15,6 +19,11 @@ import {
 } from "../../src/services/command-boundary"
 
 describe("Command Boundary Security & Validation", () => {
+  beforeEach(() => {
+    resetAdapterInvocationCount()
+    setTestProcessAdapters(null, null)
+  })
+
   it("allows valid executables and arguments", () => {
     const req: ValidationRequirement = {
       executable: "git",
@@ -93,6 +102,7 @@ describe("Command Boundary Security & Validation", () => {
     }
 
     const res = await executeValidatedCommand(req)
+    expect(res.status).toBe("success")
     expect(res.exitCode).toBe(0)
     expect(typeof res.stdout).toBe("string")
   })
@@ -104,8 +114,84 @@ describe("Command Boundary Security & Validation", () => {
     }
 
     const res = executeValidatedCommandSync(req)
+    expect(res.status).toBe("success")
     expect(res.exitCode).toBe(0)
     expect(res.stdout).toContain("v")
+  })
+})
+
+describe("Discriminated Error Classification", () => {
+  it("classifies ENOENT as executable_not_found", () => {
+    const err = { code: "ENOENT", path: "nonexistent-bin" }
+    const res = classifyChildProcessError(err)
+    expect(res.status).toBe("executable_not_found")
+    expect(res.exitCode).toBeNull()
+    if (res.status === "executable_not_found") {
+      expect(res.message).toContain("not found")
+    }
+  })
+
+  it("classifies ERR_CHILD_PROCESS_STDIO_MAXBUFFER as max_buffer_exceeded", () => {
+    const err = { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", stdout: "truncated" }
+    const res = classifyChildProcessError(err)
+    expect(res.status).toBe("max_buffer_exceeded")
+    expect(res.exitCode).toBeNull()
+    if (res.status === "max_buffer_exceeded") {
+      expect(res.message).toContain("maxBuffer limit")
+    }
+  })
+
+  it("classifies ETIMEDOUT as timeout", () => {
+    const err = { code: "ETIMEDOUT", killed: true }
+    const res = classifyChildProcessError(err)
+    expect(res.status).toBe("timeout")
+    expect(res.exitCode).toBeNull()
+    if (res.status === "timeout") {
+      expect(res.message).toContain("timed out")
+    }
+  })
+
+  it("classifies numeric exit status as nonzero_exit", () => {
+    const err = { status: 42, stdout: "", stderr: "failed" }
+    const res = classifyChildProcessError(err)
+    expect(res.status).toBe("nonzero_exit")
+    expect(res.exitCode).toBe(42)
+  })
+})
+
+describe("Process Adapter Seam & Tracking", () => {
+  beforeEach(() => {
+    resetAdapterInvocationCount()
+    setTestProcessAdapters(null, null)
+  })
+
+  it("tracks adapter invocation count for valid execution", () => {
+    expect(getAdapterInvocationCount()).toBe(0)
+    executeValidatedCommandSync({ executable: "node", args: ["--version"] })
+    expect(getAdapterInvocationCount()).toBe(1)
+  })
+
+  it("does NOT invoke adapter when validation fails", () => {
+    expect(getAdapterInvocationCount()).toBe(0)
+    expect(() =>
+      executeValidatedCommandSync({ executable: "git", args: ["push"] })
+    ).toThrow()
+    expect(getAdapterInvocationCount()).toBe(0)
+  })
+
+  it("uses custom test process adapter when registered", () => {
+    setTestProcessAdapters((input) => ({
+      status: "success",
+      exitCode: 0,
+      stdout: `mocked:${input.executable}`,
+      stderr: "",
+      signal: null,
+    }))
+
+    const res = executeValidatedCommandSync({ executable: "node", args: ["--version"] })
+    expect(res.status).toBe("success")
+    expect(res.stdout).toBe("mocked:node")
+    setTestProcessAdapters(null, null)
   })
 })
 

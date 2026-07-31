@@ -7,13 +7,13 @@
  * 2. No requirement-controlled string reaches execSync, exec, or a shell.
  * 3. The legacy adapter is fail-closed for all unsafe inputs.
  * 4. The structured contract enforces all security properties end-to-end.
- * 5. Pre-spawn rejection: rejected requirements spawn 0 child processes.
+ * 5. Pre-spawn rejection: rejected requirements spawn 0 child processes (proven via adapter seam).
  * 6. Static regression: blocks aliased process imports and execution.
+ * 7. Real runtime adapter tests: timeout, maxBuffer overflow, executable-not-found, and non-zero exit.
  */
-import { describe, it, expect, spyOn } from "bun:test"
+import { describe, it, expect, beforeEach } from "bun:test"
 import { readFileSync } from "fs"
 import { join } from "path"
-import * as cp from "child_process"
 
 // ─── Production module imports ────────────────────────────────────────────────
 import { runRequirements } from "../../src/better-harness/verification/requirement-runner"
@@ -24,6 +24,11 @@ const {
   executeValidatedCommand,
   executeValidatedCommandSync,
   parseLegacyRequirementString,
+  defaultProcessAdapterSync,
+  defaultProcessAdapterAsync,
+  getAdapterInvocationCount,
+  resetAdapterInvocationCount,
+  setTestProcessAdapters,
 } = boundary
 
 type ValidationRequirement = boundary.ValidationRequirement
@@ -31,7 +36,7 @@ type ValidationRequirement = boundary.ValidationRequirement
 const ROOT = join(import.meta.dir, "../..")
 
 /**
- * AST / Regex source code analyzer for process API leaks.
+ * Source code analyzer for process API leaks.
  * Detects ESM imports, CommonJS requires, direct calls, aliased calls, and shell: true.
  */
 function analyzeSourceForForbiddenProcessAPIs(src: string): string[] {
@@ -67,7 +72,7 @@ describe("Static Regression — no child_process APIs in production executors", 
   for (const relPath of PRODUCTION_FILES) {
     it(`${relPath} must not import child_process or use execution calls`, () => {
       const src = readFileSync(join(ROOT, relPath), "utf-8")
-      // Filter out pure comment lines before checking execution calls
+      // Filter out comments before checking
       const codeOnly = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "")
       const violations = analyzeSourceForForbiddenProcessAPIs(codeOnly)
       expect(violations).toEqual([])
@@ -97,8 +102,13 @@ describe("Static Regression — no child_process APIs in production executors", 
   })
 })
 
-// ─── Pre-Spawn Rejection Proof ────────────────────────────────────────────────
-describe("Pre-Spawn Rejection Proof — 0 child processes spawned for rejected commands", () => {
+// ─── Pre-Spawn Rejection Proof (Adapter Seam) ─────────────────────────────────
+describe("Pre-Spawn Rejection Proof — 0 adapter invocations for rejected commands", () => {
+  beforeEach(() => {
+    resetAdapterInvocationCount()
+    setTestProcessAdapters(null, null)
+  })
+
   const REJECTED_REQUIREMENTS: Array<ValidationRequirement | string> = [
     { executable: "git", args: ["push"] },
     { executable: "git", args: ["branch", "new-branch"] },
@@ -120,35 +130,114 @@ describe("Pre-Spawn Rejection Proof — 0 child processes spawned for rejected c
     "cmd.exe /c dir",
   ]
 
-  it("runRequirements spawns ZERO processes for all rejected requirements", () => {
-    const spy = spyOn(cp, "execFileSync")
-    const initialCalls = spy.mock.calls.length
+  it("runRequirements invokes adapter ZERO times for all rejected requirements", () => {
+    resetAdapterInvocationCount()
 
     for (const req of REJECTED_REQUIREMENTS) {
       const results = runRequirements([req], process.cwd())
       expect(results).toHaveLength(1)
       expect(results[0].passed).toBe(false)
+      expect(results[0].status).toMatch(/rejected/)
     }
 
-    const callsCount = spy.mock.calls.length - initialCalls
-    expect(callsCount).toBe(0)
-    spy.mockRestore()
+    expect(getAdapterInvocationCount()).toBe(0)
   })
 
-  it("executeValidation spawns ZERO processes for all rejected requirements", () => {
-    const spy = spyOn(cp, "execFileSync")
-    const initialCalls = spy.mock.calls.length
+  it("executeValidation invokes adapter ZERO times for all rejected requirements", () => {
+    resetAdapterInvocationCount()
 
     for (const req of REJECTED_REQUIREMENTS) {
       const cmdStr = typeof req === "string" ? req : `${req.executable} ${req.args.join(" ")}`
       const result = executeValidation(cmdStr, process.cwd(), 5000)
       expect(result.passed).toBe(false)
       expect(result.exitCode).toBeNull()
+      expect(result.status).toMatch(/rejected/)
     }
 
-    const callsCount = spy.mock.calls.length - initialCalls
-    expect(callsCount).toBe(0)
-    spy.mockRestore()
+    expect(getAdapterInvocationCount()).toBe(0)
+  })
+})
+
+// ─── Real Runtime Process Adapter Tests ───────────────────────────────────────
+describe("Real Runtime Adapter Enforcement (Timeout, Buffer Overflow, missing binary, non-zero exit)", () => {
+  it("terminates long-running process and reports status: timeout", () => {
+    // Run inline Node script via process.execPath (adapter level, not public req) that sleeps for 5000ms
+    const start = Date.now()
+    const res = defaultProcessAdapterSync({
+      executable: process.execPath,
+      args: ["-e", "setTimeout(() => {}, 5000)"],
+      cwd: process.cwd(),
+      timeoutMs: 200,
+      maxBuffer: 1024 * 1024,
+    })
+
+    const duration = Date.now() - start
+    expect(duration).toBeLessThan(2000)
+    expect(res.status).toBe("timeout")
+    expect(res.exitCode).toBeNull()
+    if (res.status === "timeout") {
+      expect(res.message).toContain("timed out")
+    }
+  })
+
+  it("async process adapter terminates long-running process on timeout", async () => {
+    const start = Date.now()
+    const res = await defaultProcessAdapterAsync({
+      executable: process.execPath,
+      args: ["-e", "setTimeout(() => {}, 5000)"],
+      cwd: process.cwd(),
+      timeoutMs: 200,
+      maxBuffer: 1024 * 1024,
+    })
+
+    const duration = Date.now() - start
+    expect(duration).toBeLessThan(2000)
+    expect(res.status).toBe("timeout")
+    expect(res.exitCode).toBeNull()
+  })
+
+  it("safely handles maxBuffer overflow and reports status: max_buffer_exceeded", () => {
+    // Process writes > 50,000 bytes when maxBuffer is 2048
+    const res = defaultProcessAdapterSync({
+      executable: process.execPath,
+      args: ["-e", 'process.stdout.write("x".repeat(100000))'],
+      cwd: process.cwd(),
+      timeoutMs: 5000,
+      maxBuffer: 2048,
+    })
+
+    expect(res.status).toBe("max_buffer_exceeded")
+    expect(res.exitCode).toBeNull()
+    if (res.status === "max_buffer_exceeded") {
+      expect(res.message).toContain("maxBuffer limit")
+    }
+  })
+
+  it("reports executable_not_found for missing binaries", () => {
+    const res = defaultProcessAdapterSync({
+      executable: "nonexistent-bin-xyz-99999",
+      args: [],
+      cwd: process.cwd(),
+      timeoutMs: 5000,
+      maxBuffer: 1024 * 1024,
+    })
+
+    expect(res.status).toBe("executable_not_found")
+    expect(res.exitCode).toBeNull()
+    if (res.status === "executable_not_found") {
+      expect(res.message).toContain("not found")
+    }
+  })
+
+  it("preserves non-zero exit code accurately and classifies as nonzero_exit", () => {
+    const res = executeValidatedCommandSync(
+      { executable: "git", args: ["diff", "0000000000000000000000000000000000000000", "1111111111111111111111111111111111111111"] },
+      process.cwd()
+    )
+
+    expect(res.status).toBe("nonzero_exit")
+    expect(res.exitCode).not.toBe(0)
+    expect(res.exitCode).toBeGreaterThan(0)
   })
 })
 
@@ -161,6 +250,7 @@ describe("Production path — structured requirement success cases", () => {
     )
     expect(results).toHaveLength(1)
     expect(results[0].passed).toBe(true)
+    expect(results[0].status).toBe("success")
     expect(results[0].output).toMatch(/\d+\.\d+/)
   })
 
@@ -171,6 +261,7 @@ describe("Production path — structured requirement success cases", () => {
     )
     expect(results).toHaveLength(1)
     expect(results[0].passed).toBe(true)
+    expect(results[0].status).toBe("success")
     expect(results[0].output).toMatch(/\d+/)
   })
 
@@ -181,6 +272,7 @@ describe("Production path — structured requirement success cases", () => {
     )
     expect(results).toHaveLength(1)
     expect(results[0].passed).toBe(true)
+    expect(results[0].status).toBe("success")
     expect(results[0].output).toContain("v")
   })
 
@@ -190,12 +282,14 @@ describe("Production path — structured requirement success cases", () => {
       process.cwd()
     )
     expect(results).toHaveLength(1)
+    expect(results[0].status).toBe("success")
     expect(results[0].exitCode).toBe(0)
   })
 
   it("node --version succeeds through executeValidation with legacy string", () => {
     const result = executeValidation("node --version", process.cwd(), 5000)
     expect(result.passed).toBe(true)
+    expect(result.status).toBe("success")
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain("v")
     expect(result.error).toBeNull()
@@ -207,66 +301,77 @@ describe("Production path — injection rejection through executeValidation", ()
   it("pipe payload is rejected before process creation", () => {
     const result = executeValidation("npm test | tee output", process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toContain("Command rejected")
   })
 
   it("semicolon chaining is rejected before process creation", () => {
     const result = executeValidation("bun test; rm -rf .", process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toContain("Command rejected")
   })
 
   it("redirect is rejected before process creation", () => {
     const result = executeValidation("git status > /tmp/out", process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toContain("Command rejected")
   })
 
   it("backtick substitution is rejected before process creation", () => {
     const result = executeValidation("npm `whoami`", process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toContain("Command rejected")
   })
 
   it("command substitution $() is rejected before process creation", () => {
     const result = executeValidation("npm $(id)", process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toContain("Command rejected")
   })
 
   it("Windows cmd.exe is rejected", () => {
     const result = executeValidation("cmd.exe /c npm test", process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toBeTruthy()
   })
 
   it("powershell is rejected", () => {
     const result = executeValidation("powershell -Command npm test", process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toBeTruthy()
   })
 
   it("sh -c is rejected", () => {
     const result = executeValidation('sh -c "npm test"', process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toBeTruthy()
   })
 
   it("environment assignment is rejected", () => {
     const result = executeValidation("FOO=bar npm test", process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toContain("Command rejected")
   })
 
   it("empty string is rejected", () => {
     const result = executeValidation("", process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toBeTruthy()
   })
 
   it("absolute Windows path is rejected", () => {
     const result = executeValidation("C:\\Windows\\system32\\cmd.exe /c dir", process.cwd(), 5000)
     expect(result.passed).toBe(false)
+    expect(result.status).toBe("parse_rejected")
     expect(result.error).toBeTruthy()
   })
 })
@@ -336,6 +441,7 @@ describe("Production path — timeout and output bounds", () => {
       { executable: "node", args: ["--version"], timeoutMs: 10_000 },
       process.cwd()
     )
+    expect(result.status).toBe("success")
     expect(result.exitCode).toBe(0)
   })
 
@@ -344,6 +450,7 @@ describe("Production path — timeout and output bounds", () => {
       { executable: "node", args: ["--version"], timeoutMs: 10_000 },
       process.cwd()
     )
+    expect(result.status).toBe("success")
     expect(result.exitCode).toBe(0)
   })
 
@@ -377,8 +484,11 @@ describe("Production path — result ordering and isolation", () => {
     )
     expect(results).toHaveLength(3)
     expect(results[0].passed).toBe(false)
+    expect(results[0].status).toBe("authorization_rejected")
     expect(results[1].passed).toBe(true)
+    expect(results[1].status).toBe("success")
     expect(results[2].passed).toBe(true)
+    expect(results[2].status).toBe("success")
   })
 
   it("result order matches input order", () => {
@@ -391,16 +501,17 @@ describe("Production path — result ordering and isolation", () => {
     expect(results).toHaveLength(3)
     for (let i = 0; i < 3; i++) {
       expect(results[i].passed).toBe(true)
+      expect(results[i].status).toBe("success")
     }
   })
 
   it("non-zero process exit is returned accurately", () => {
-    // git diff on invalid commit hash passes validation (2 rev args) but git exits non-zero
     const results = runRequirements(
       [{ executable: "git", args: ["diff", "0000000000000000000000000000000000000000", "1111111111111111111111111111111111111111"] }],
       process.cwd()
     )
     expect(results[0].passed).toBe(false)
+    expect(results[0].status).toBe("nonzero_exit")
     expect(results[0].exitCode).not.toBe(0)
   })
 })
