@@ -238,14 +238,19 @@ export async function runResearchGate(
       // Prior topics already planned in this project
       const planningPath = planningDir(dir)
       if (existsSync(planningPath)) {
-        const { readdirSync } = await import("fs")
+        const { readdir, access } = await import("fs/promises")
         try {
-          for (const entry of readdirSync(planningPath, { withFileTypes: true })) {
+          const entries = await readdir(planningPath, { withFileTypes: true })
+          entries.sort((a, b) => a.name.localeCompare(b.name))
+          for (const entry of entries) {
             if (!entry.isDirectory()) continue
             const taskFile = join(planningPath, entry.name, "task.md")
-            if (existsSync(taskFile)) {
+            try {
+              await access(taskFile)
               filesExplored.push(taskFile)
               findings.push(`${entry.name}/task.md: prior requirements loaded`)
+            } catch {
+              /* ignore */
             }
           }
         } catch { /* ignore */ }
@@ -254,11 +259,23 @@ export async function runResearchGate(
     }
     case "review": {
       if (activeTopic) {
-        for (const artifact of ["task.md", "architecture.md", "affect.md", "plan.md"]) {
-          const file = join(topicDir(dir, activeTopic), artifact)
-          if (existsSync(file)) {
-            filesExplored.push(file)
-            findings.push(`${artifact}: loaded for topic ${activeTopic}`)
+        const { stat } = await import("fs/promises")
+        const artifacts = ["task.md", "architecture.md", "affect.md", "plan.md"]
+        const results = await Promise.all(
+          artifacts.map(async (artifact) => {
+            const file = join(topicDir(dir, activeTopic), artifact)
+            try {
+              await stat(file)
+              return { file, artifact }
+            } catch {
+              return null
+            }
+          })
+        )
+        for (const res of results) {
+          if (res) {
+            filesExplored.push(res.file)
+            findings.push(`${res.artifact}: loaded for topic ${activeTopic}`)
           }
         }
       }
