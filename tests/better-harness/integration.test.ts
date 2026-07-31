@@ -120,7 +120,7 @@ describe("ProjectRegistry", () => {
     });
     const resolved = reg.resolve("sk_test", "pk_test");
     expect(resolved).toBeTruthy();
-    expect(resolved?.toLowerCase()).toContain("flowdeck");
+    expect(resolved?.toLowerCase()).toContain(process.cwd().toLowerCase());
   });
 
   it("returns null for unknown project", () => {

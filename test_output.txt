@@ -1,0 +1,195 @@
+bun test v1.2.14 (6a363a38)
+
+tests/better-harness/integration.test.ts:
+(skip) EventBus > subscribes and emits events
+(skip) EventBus > handles multiple subscribers
+(skip) EventBus > does not crash on handler error
+(skip) EventBus > ignores unsubscribed event types
+(skip) RunCancellation > cancels a run
+(skip) RunCancellation > returns false for already cancelled runs
+(skip) RunCancellation > clears cancellation
+(skip) RunCancellation > returns false for unregistered run
+(skip) ProjectRegistry > registers and resolves a project
+(skip) ProjectRegistry > returns null for unknown project
+(skip) ProjectRegistry > unregisters a project
+(skip) Authentication > allows all when auth is disabled
+(skip) Authentication > allows all when token is null even if enabled
+(skip) Authentication > rejects missing token when auth enabled
+(skip) Authentication > accepts correct token
+(skip) Authentication > rejects incorrect token
+(skip) Authentication > constant-time comparison rejects different lengths
+(skip) CORS > includes origin from allowlist
+(skip) CORS > falls back to default origin for unknown origins
+(skip) CORS > returns default when no origin is provided
+(skip) CORS > includes allowed methods and headers
+(skip) CORS > matches additional allowed origins
+(skip) RequestContext > sets and gets request context
+(skip) RequestContext > clears request context
+(skip) RequestContext > returns null when no context is set
+(skip) Route Matching > health endpoint returns ok
+(skip) Route Matching > returns 404 for unknown routes
+(skip) Route Matching > handles errors gracefully
+(skip) Route Matching > rejects invalid project key
+(skip) Router > routeRequest delegates correctly
+(skip) Router > availability returns valid response
+(skip) Finding Verifier > marks as fixed when diff allowed and requirements pass
+(skip) Finding Verifier > marks as pending when diff has violations
+(skip) Finding Verifier > marks as pending when requirements fail
+(skip) Requirement Runner > passes for successful commands
+(skip) Requirement Runner > fails for failing commands
+(skip) Requirement Runner > runs multiple requirements
+(skip) Diff Inspector Edge Cases > detects disallowed path
+(skip) Diff Inspector Edge Cases > handles empty allowed paths
+(skip) Diff Inspector Edge Cases > handles deleted files
+(skip) Persistence - Finding Store > saves and loads finding index
+(skip) Persistence - Finding Store > getActiveFindings filters out fixed and ignored
+(skip) Persistence - Finding Store > getActiveFindings returns empty array when no index
+(skip) Persistence - Report Store > saves and loads a report
+(skip) Persistence - Report Store > lists reports
+(skip) Persistence - Report Store > throws for invalid report
+(skip) Persistence - Report Store > returns null for invalid report data on load
+(skip) Persistence - Report Store > listReports returns empty for non-existent dir
+(skip) Persistence - Run Store > lists runs
+(skip) Persistence - Run Store > listRuns returns empty for non-existent dir
+(skip) Persistence - Run Store > throws for invalid run status
+(skip) Persistence - Ignored Finding Store > checks if finding is ignored
+(skip) Persistence - Ignored Finding Store > returns empty array for non-existent project
+(skip) Persistence - Repair Session Store > lists repair sessions
+(skip) Persistence - Repair Session Store > listRepairSessions returns empty for non-existent dir
+(skip) Persistence - Harness Store Edge Cases > readJsonFile quarantines corrupt records
+(skip) Runtime Registry > exports all expected modules
+(skip) RunCoordinator > starts as not active
+(skip) RunCoordinator > enqueues a run and returns active state
+(skip) RunCoordinator > fails to enqueue when active run exists
+(skip) RunCoordinator > cancels an active run
+(skip) RunCoordinator > cancelRun succeeds for any run id
+(skip) RunCoordinator > has an event bus
+(skip) HarnessRuntime > constructs with config
+(skip) HarnessRuntime > enqueues a run
+(skip) HarnessRuntime > returns status without active run
+(skip) HarnessRuntime > subscribes to events
+(skip) HarnessRuntime > cancel returns false when no active run
+(skip) HarnessRuntime > run() calls enqueueRun with full mode
+(skip) HarnessRuntime > getRun returns null for unknown run
+(skip) SSE Manager > constructs without event log dir
+(skip) SSE Manager > constructs with event log dir
+(skip) SSE Manager > adds and removes client
+(skip) SSE Manager > broadcasts events to clients
+(skip) SSE Manager > handles client disconnect gracefully
+(skip) SSE Manager > filters events by projectKey
+(skip) Router - Report Endpoints > report endpoint returns 404 when no reports exist
+(skip) Router - Report Endpoints > history endpoint returns empty array when no reports exist
+(skip) Router - Report Endpoints > current run returns ok with null when no active run
+(skip) Router - Report Endpoints > start run returns bad request for invalid body
+(skip) Router - Report Endpoints > get run returns 404 for nonexistent run
+(skip) Router - Report Endpoints > SSE route returns 501 when no SSE manager
+(skip) Router - Report Endpoints > findings/ignore returns bad request for invalid body
+(skip) Router - Report Endpoints > findings/plan-fix returns bad request for invalid body
+(skip) Router - Report Endpoints > findings/verify returns bad request for invalid body
+(skip) Router - Report Endpoints > repair session returns 404 for nonexistent
+(skip) HTTP Server > start returns 0 when disabled
+(skip) HTTP Server > stop resolves when server is null
+(skip) Repair Session Edge Cases > generateRestrictedRepairPrompt produces correct format
+(skip) Project Identity Edge Cases > works with non-existent directory (fallback)
+(skip) Workspace Snapshot Edge Cases > detectPackageManager returns unknown for empty dir
+(skip) Validation Executor Error Path > handles non-Error throwables
+(skip) RunCoordinator Recovery > recoverActiveRuns does not throw
+(skip) HarnessHttpServer > returns 0 when disabled
+(skip) HarnessHttpServer > starts and stops on loopback
+(skip) HarnessHttpServer > fails to start on invalid host
+(skip) HarnessHttpServer > stop on non-running server resolves
+(skip) Router > returns 404 for unknown route
+(skip) Router > rejects path traversal in project key
+(skip) Router > rejects project key with slashes
+(skip) Router > rejects invalid JSON body on start run
+(skip) Router > rejects missing findingIds on plan-fix
+(skip) SseManager > allows removing non-existent client
+(skip) SseManager > broadcasts to multiple clients
+(skip) SseManager > handles Last-Event-ID replay without match
+(skip) HarnessRuntime > getStatus returns inactive when no run
+(skip) HTTP Server - Custom Config > accepts custom maxBodySize
+(skip) HTTP Server - Custom Config > accepts custom timeoutMs
+(skip) HTTP Server - Custom Config > configures custom maxBodySize in constructor
+(skip) CORS - Custom Origins > matches custom single origin
+(skip) CORS - Custom Origins > falls back for unmatched custom origin
+(skip) CORS - Custom Origins > handles empty allowed origins
+(skip) CORS - Custom Origins > handles undefined origin with custom config
+(skip) Authentication - Constant-Time > rejects tokens with different length
+(skip) Authentication - Constant-Time > rejects tokens with same length but different content
+(skip) Authentication - Constant-Time > accepts exact match with same length
+(skip) Authentication - Constant-Time > rejects empty string when token expected
+(skip) Authentication - Constant-Time > rejects undefined when token expected
+(skip) SseManager - Heartbeat > removes client clears heartbeat interval
+(skip) SseManager - Heartbeat > handles multiple add/remove cycles
+(skip) SseManager - Heartbeat > disconnected client send does not crash
+(skip) RouterContext > constructs and passes through properties
+(skip) RouterContext > works with sseManager included
+(skip) RouterContext > handles null resolveProjectPath
+(skip) buildRepairPrompt > generates prompt with evidence
+(skip) buildRepairPrompt > generates prompt without evidence
+(skip) buildRepairPrompt > includes previous attempts count
+(skip) getFlowDeckStateDir > returns path with .flowdeck/state
+(skip) getFlowDeckStateDir > atomicWriteFile creates and writes a file
+(skip) getFlowDeckStateDir > readJsonFile returns null for missing file
+(skip) Validation Executor - Safety & Error Paths > rejects commands with shell injection patterns (semicolon)
+(skip) Validation Executor - Safety & Error Paths > rejects commands with shell injection patterns (ampersand)
+(skip) Validation Executor - Safety & Error Paths > rejects commands with shell injection patterns (pipe)
+(skip) Validation Executor - Safety & Error Paths > rejects commands with path traversal (dot dot)
+(skip) Validation Executor - Safety & Error Paths > returns non-zero exit code for failed command
+(skip) Validation Executor - Safety & Error Paths > handles empty command string
+(skip) Validation Executor - Safety & Error Paths > returns success for valid command
+(skip) Validation Executor - Safety & Error Paths > triggers timeout for long-running command
+(skip) HTTP Server - SSE Manager & Timeout > setSseManager stores the SSE manager
+(skip) HTTP Server - SSE Manager & Timeout > setRouterContext stores the router context
+(skip) HTTP Server - SSE Manager & Timeout > applies custom timeout configuration
+(skip) HTTP Server - SSE Manager & Timeout > uses default timeout when not specified
+(skip) CORS - Wildcard Origin > matches exact origin from allowed list
+(skip) CORS - Wildcard Origin > falls back to default for origin not in allowed list
+(skip) CORS - Wildcard Origin > falls back to default when origin is undefined
+(skip) Persistence - Complete Coverage > loadRun returns null for non-existent run
+(skip) Persistence - Complete Coverage > loadReport returns null for non-existent report
+(skip) Persistence - Complete Coverage > loadFindingIndex returns null for non-existent project
+(skip) Persistence - Complete Coverage > loadRepairSession returns null for non-existent session
+(skip) Persistence - Complete Coverage > saveRun with valid status then loadRun retrieves same data
+(skip) Persistence - Complete Coverage > saveFindingIndex then loadFindingIndex returns same data
+(skip) Persistence - Complete Coverage > isFindingIgnored returns false for non-ignored finding
+(skip) Persistence - Complete Coverage > listReports returns empty for project with no reports
+(skip) Coverage Check Script > validateThreshold returns 80 for undefined
+(skip) Coverage Check Script > validateThreshold throws for empty string
+(skip) Coverage Check Script > validateThreshold throws for whitespace-only string
+(skip) Coverage Check Script > validateThreshold throws for NaN
+(skip) Coverage Check Script > validateThreshold throws for negative number
+(skip) Coverage Check Script > validateThreshold throws for >100
+(skip) Coverage Check Script > validateThreshold returns parsed value for valid input
+(skip) Coverage Check Script > isEligibleSourceFile returns false for null/undefined
+(skip) Coverage Check Script > isEligibleSourceFile returns false for non-src paths
+(skip) Coverage Check Script > isEligibleSourceFile returns true for valid src paths
+(skip) Coverage Check Script > parseLcov throws for empty content
+(skip) Coverage Check Script > parseLcov throws for incomplete records
+(skip) Coverage Check Script > parseLcov throws for duplicate LH/LF fields
+(skip) Coverage Check Script > parseLcov throws for invalid numeric values
+(skip) Coverage Check Script > parseLcov throws for negative values
+(skip) Coverage Check Script > parseLcov throws when LH > LF
+(skip) Coverage Check Script > parseLcov calculates weighted aggregate correctly
+(skip) HTTP Server - Request Handling > handles health check GET request
+(skip) HTTP Server - Request Handling > returns 404 for unknown route via HTTP
+(skip) HTTP Server - Request Handling > handles CORS preflight OPTIONS request
+(skip) HTTP Server - Request Handling > rejects request body exceeding maxBodySize
+(skip) HTTP Server - Request Handling > includes CORS headers in response
+(skip) HTTP Server - Startup Edge Cases > server with undefined bindHost defaults to 127.0.0.1
+(skip) Persistence - Catch Blocks > listReports catch block when reports path is a file
+(skip) Persistence - Catch Blocks > listRuns catch block when runs path is a file
+(skip) Persistence - Catch Blocks > listRepairSessions catch block when sessions path is a file
+(skip) Coverage Check Script - Edge Cases > validateThreshold throws for boolean value
+(skip) Coverage Check Script - Edge Cases > validateThreshold throws for object value
+(skip) Coverage Check Script - Edge Cases > validateThreshold throws for array value
+(skip) Coverage Check Script - Edge Cases > isEligibleSourceFile handles path with /src/ embedded
+(skip) Coverage Check Script - Edge Cases > isEligibleSourceFile handles non-src paths with src substring
+(skip) Coverage Check Script - Edge Cases > parseLcov throws for non-eligible-only records
+(skip) Coverage Check Script - Edge Cases > parseLcov throws when fileCount is 0
+(skip) Coverage Check Script - Edge Cases > isEligibleSourceFile filters dist, d.ts, node_modules correctly
+
+ 0 pass
+ 187 skip
+ 0 fail
+Ran 187 tests across 1 files. [135.00ms]
