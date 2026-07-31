@@ -282,21 +282,31 @@ export function resolveActiveTopic(
   const root = planningDir(directory)
   if (!existsSync(root)) return null
 
-  let newest: { slug: string; mtimeMs: number } | null = null
   try {
-    for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const entries = readdirSync(root, { withFileTypes: true })
+    const stats: { slug: string; mtimeMs: number }[] = []
+
+    for (const entry of entries) {
       if (!entry.isDirectory()) continue
       if (RESERVED_PLANNING_ENTRIES.has(entry.name)) continue
-      const dir = join(root, entry.name)
-      const hasArtifact = [PLAN_FILE, TASK_FILE].some(f => existsSync(join(dir, f)))
-      if (!hasArtifact) continue
-      const mtimeMs = statSync(dir).mtimeMs
-      if (!newest || mtimeMs > newest.mtimeMs) newest = { slug: entry.name, mtimeMs }
+      stats.push({
+        slug: entry.name,
+        mtimeMs: statSync(join(root, entry.name)).mtimeMs
+      })
+    }
+
+    stats.sort((a, b) => b.mtimeMs - a.mtimeMs)
+
+    for (let i = 0; i < stats.length; i++) {
+      const dir = join(root, stats[i].slug)
+      if (existsSync(join(dir, PLAN_FILE)) || existsSync(join(dir, TASK_FILE))) {
+        return stats[i].slug
+      }
     }
   } catch {
     return null
   }
-  return newest?.slug ?? null
+  return null
 }
 
 export interface ResolvedPlan {
