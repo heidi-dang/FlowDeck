@@ -523,41 +523,41 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
-export async function nativeContextFallback(
-  action: "append" | "read" | "clear",
-  topic: string,
-  agent?: string,
-  stage?: string,
-  summary?: string,
-): Promise<string> {
-  const path = topicContextPath(activeProjectDir, topic)
-  if (action === "append") {
-    const line = `### ${agent || "Agent"} (${stage || "Stage"})\n${summary || ""}\n`
+export async function nativeContextFallback(args: {
+  action: "append" | "read" | "clear"
+  topic: string
+  agent?: string
+  stage?: string
+  summary?: string
+}): Promise<string> {
+  const path = topicContextPath(activeProjectDir, args.topic)
+  if (args.action === "append") {
+    const line = `### ${args.agent || "Agent"} (${args.stage || "Stage"})\n${args.summary || ""}\n`
     await appendWithLock(path, line)
     return `[FDX Context Fallback] Appended to ${path}`
-  } else if (action === "read") {
+  } else if (args.action === "read") {
     const res = readOrMissing(path)
-    return res.exists ? res.content : `[No context logged for topic "${topic}"]`
+    return res.exists ? res.content : `[No context logged for topic "${args.topic}"]`
   } else {
     await clearFileWithLock(path)
-    return `[Context cleared for topic "${topic}"]`
+    return `[Context cleared for topic "${args.topic}"]`
   }
 }
 
-export async function nativeDecisionsFallback(
-  action: "record" | "read",
-  topic: string,
-  decision?: string,
-  rationale?: string,
-  made_by?: string,
-): Promise<string> {
-  const path = topicDecisionsPath(activeProjectDir, topic)
-  if (action === "record") {
-    const line = `- **${decision || "Decision"}**: ${rationale || ""} (By: ${made_by || "Unknown"})\n`
+export async function nativeDecisionsFallback(args: {
+  action: "record" | "read"
+  topic: string
+  decision?: string
+  rationale?: string
+  made_by?: string
+}): Promise<string> {
+  const path = topicDecisionsPath(activeProjectDir, args.topic)
+  if (args.action === "record") {
+    const line = `- **${args.decision || "Decision"}**: ${args.rationale || ""} (By: ${args.made_by || "Unknown"})\n`
     await appendWithLock(path, line)
     return `[FDX Decisions Fallback] Recorded to ${path}`
   } else {
     const res = readOrMissing(path)
-    return res.exists ? res.content : `[No decisions recorded for topic "${topic}"]`
+    return res.exists ? res.content : `[No decisions recorded for topic "${args.topic}"]`
   }
 }
