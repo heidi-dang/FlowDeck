@@ -7,6 +7,7 @@
  *   3. stop() — gracefully shuts down
  */
 
+import { logWrite } from "../../lib/logger"
 import { GitHubClient } from "./github-client"
 import { GitHubWebhookServer } from "./github-webhook-server"
 import { RepairOrchestrator } from "./repair-orchestrator"
@@ -61,7 +62,7 @@ export class PrMonitorService {
       })
       try {
         const port = await this.webhookServer.start()
-        console.log(`[pr-monitor] webhook server listening on port ${port}`)
+        logWrite(process.cwd(), "info", "pr-monitor", `webhook server listening on port ${port}`)
       } catch (err) {
         return { ok: false, action: "start", message: `Webhook server failed: ${err}` }
       }
