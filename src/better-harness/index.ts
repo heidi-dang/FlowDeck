@@ -81,6 +81,7 @@ export type { SessionRecord, SessionEvent } from "./opencode/session-reader";
 export { analyzeSessions } from "./opencode/session-analyzer";
 export type { SessionAnalysis } from "./opencode/session-analyzer";
 export { createRepairSession, generateRestrictedRepairPrompt } from "./opencode/repair-session";
+export type { RestrictedRepairPromptOptions } from "./opencode/repair-session";
 export { buildRepairPrompt } from "./opencode/repair-prompt";
 export type { RepairPromptConfig } from "./opencode/repair-prompt";
 export { executeValidation } from "./opencode/validation-executor";
