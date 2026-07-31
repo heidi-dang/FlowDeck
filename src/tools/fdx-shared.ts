@@ -329,6 +329,11 @@ export function nativeSearchFallback(query: string, searchPath: string = "."): s
     const root = resolve(searchPath)
     const isIgnored = loadGitignorePatterns(root)
     const results: string[] = []
+
+    // Pre-compute lowercased query and compiled regex for fast skipping
+    const lowerQuery = query.toLowerCase()
+    const queryRe = new RegExp(escapeRegex(query), "i")
+
     const walk = (dir: string) => {
       for (const item of readdirSync(dir)) {
         if (ALWAYS_EXCLUDED.includes(item)) continue
@@ -340,12 +345,17 @@ export function nativeSearchFallback(query: string, searchPath: string = "."): s
             walk(full)
           } else if (st.isFile()) {
             const text = readFileSync(full, "utf-8")
+
+            // Fast reject: If the file content doesn't match case-insensitively, skip it entirely
+            if (!queryRe.test(text)) continue
+
             const lines = text.split("\n")
-            lines.forEach((line, idx) => {
-              if (line.toLowerCase().includes(query.toLowerCase())) {
+            for (let idx = 0; idx < lines.length; idx++) {
+              const line = lines[idx]
+              if (line.toLowerCase().includes(lowerQuery)) {
                 results.push(`${full}:${idx + 1}:${line.trim()}`)
               }
-            })
+            }
           }
         } catch { /* ignore unreadable */ }
       }
