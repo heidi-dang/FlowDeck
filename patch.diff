@@ -1,0 +1,19 @@
+--- src/services/pr-monitor/pr-monitor-service.ts
++++ src/services/pr-monitor/pr-monitor-service.ts
+@@ -14,6 +14,7 @@
+   PrMonitorToolResponse,
+ } from "./types"
+ import { DEFAULT_PR_MONITOR_CONFIG } from "./types"
++import { logWrite } from "../../lib/logger"
+
+ export class PrMonitorService {
+   private running = false
+@@ -52,7 +53,7 @@
+       })
+       try {
+         const port = await this.webhookServer.start()
+-        console.log(`[pr-monitor] webhook server listening on port ${port}`)
++        logWrite(process.cwd(), "info", "pr-monitor", `webhook server listening on port ${port}`)
+       } catch (err) {
+         return { ok: false, action: "start", message: `Webhook server failed: ${err}` }
+       }
