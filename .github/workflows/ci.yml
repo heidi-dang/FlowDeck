@@ -114,6 +114,43 @@ jobs:
           echo "PASS: tarball contents verified clean"
           rm -f "$PACKAGE" /tmp/tarball-files.txt
 
+      - name: Packed tarball doctor gate (extracted layout, not repo checkout)
+        run: |
+          set -e
+          cd "$GITHUB_WORKSPACE"
+          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
+          TMP_ROOT=$(mktemp -d)
+          tar xzf "$PACKAGE" -C "$TMP_ROOT"
+          cd "$TMP_ROOT/package"
+          # Audit the packed layout itself: repo-only checks must be skipped,
+          # not fail, and a healthy package must exit 0.
+          set +e
+          node src/doctor/cli.mjs --json --non-interactive --profile recommended-dev > "$TMP_ROOT/doctor.json" 2>&1
+          DOCTOR_EXIT=$?
+          set -e
+          if [ "$DOCTOR_EXIT" -ne 0 ]; then
+            echo "FAIL: packed doctor exited $DOCTOR_EXIT (expected 0)"
+            cat "$TMP_ROOT/doctor.json"
+            exit "$DOCTOR_EXIT"
+          fi
+          node -e "
+            const r = require('$TMP_ROOT/doctor.json');
+            const errors = r.checks.filter(c => c.status === 'error');
+            const skipped = r.checks.filter(c => c.status === 'skipped').map(c => c.id);
+            if (errors.length > 0) {
+              console.error('FAIL: packed doctor reported errors:', errors.map(e => e.id).join(', '));
+              process.exit(1);
+            }
+            const expected = ['config.tsconfig.json', 'config.uninstall.sh', 'security.gitignore'];
+            const missing = expected.filter(id => !skipped.includes(id));
+            if (missing.length > 0) {
+              console.error('FAIL: repo-only checks not skipped on packed layout:', missing.join(', '));
+              process.exit(1);
+            }
+            console.log('PASS: packed doctor exit 0, zero errors, repo-only checks skipped (' + skipped.join(', ') + ')');
+          "
+          rm -f "$GITHUB_WORKSPACE/$PACKAGE"
+
       - name: Packed package full CLI execution (isolated HOME)
         run: |
           set -e
@@ -139,8 +176,8 @@ jobs:
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck doctor
           DOCTOR_EXIT=$?
           set -e
-          if [ "$DOCTOR_EXIT" -gt 1 ]; then
-            echo "FAIL: doctor exited with status $DOCTOR_EXIT (expected 0 or 1)"
+          if [ "$DOCTOR_EXIT" -ne 0 ]; then
+            echo "FAIL: doctor exited with status $DOCTOR_EXIT (expected 0)"
             exit "$DOCTOR_EXIT"
           fi
           echo "PASS: doctor (exit code $DOCTOR_EXIT)"
@@ -447,8 +484,8 @@ jobs:
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck doctor
           DOCTOR_EXIT=$?
           set -e
-          if [ "$DOCTOR_EXIT" -gt 1 ]; then
-            echo "FAIL: doctor exited with status $DOCTOR_EXIT (expected 0 or 1)"
+          if [ "$DOCTOR_EXIT" -ne 0 ]; then
+            echo "FAIL: doctor exited with status $DOCTOR_EXIT (expected 0)"
             exit "$DOCTOR_EXIT"
           fi
           echo "PASS: doctor (exit code $DOCTOR_EXIT)"
