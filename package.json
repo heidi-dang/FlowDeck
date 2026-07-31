@@ -1,6 +1,6 @@
 {
   "name": "@heidi-dang/flowdeck",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "FlowDeck — production-grade multi-agent orchestration, governance, CI repair, and code intelligence for OpenCode",
   "type": "module",
   "main": "./dist/index.js",
