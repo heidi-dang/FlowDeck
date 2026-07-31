@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] - 2026-07-31
+
+### Fixed
+
+- **Tag-triggered publish workflow build order**: the v1.0.1 publish workflow ran `npm test` before `npm run build`. On a fresh tag checkout no `dist/index.js` exists, so the packed-doctor tests hard-failed and the v1.0.1 tag never published. The publish workflow now builds before running tests, matching `ci.yml` ordering.
+
+### Changed
+
+- **Bun pinned to 1.3.14** in the publish workflow: the tag-triggered publish runs on a fresh checkout, so a floating Bun version could change test behaviour between releases.
+- **Tag/version alignment validation**: the publish workflow fails when the git tag and `package.json` version disagree (a `v1.0.2` tag must always publish `@heidi-dang/flowdeck@1.0.2`).
+- **Registry availability validation**: the publish workflow checks that the target version is not already published and fails on registry lookup errors instead of masking them.
+- **Package content validation**: `npm pack --dry-run --json` verifies package identity, version, required runtime files, and the absence of development caches, secrets, test output, and Rust `target/` directories before publication.
+- **npm provenance preserved**: `npm publish --provenance --access public` with least-privilege permissions (`contents: read`, `id-token: write`).
+
+### Added
+
+- `tests/publish-workflow-order.test.ts` expanded to 11 invariants: dependency-install-before-build, typecheck-before-publish, build-before-test, tests-before-publish, package-validation-before-publish, Bun 1.3.14 pin, tag/version alignment, registry availability check, npm provenance, version-tag-only triggering, and no `|| true` masking. The suite fails against the v1.0.1 workflow and passes against v1.0.2.
+
+### Compatibility
+
+- No runtime configuration migration is required. No user-facing runtime changes are included in this release; it is a release-pipeline integrity release.
+
 ## [1.0.1] - 2026-07-31
 
 ### Fixed
