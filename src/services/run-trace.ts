@@ -52,7 +52,7 @@ export function startTrace(
   return trace
 }
 
-export function loadAllTraces(dir: string): RunTrace[] {
+function loadAllTraces(dir: string): RunTrace[] {
   const p = runsPath(dir)
   if (!existsSync(p)) return []
   try {

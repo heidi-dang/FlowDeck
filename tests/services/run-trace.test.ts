@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { mkdtempSync, rmSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
-import { startTrace, endTrace, loadAllTraces } from "../../src/services/run-trace"
+import { startTrace, endTrace, loadTraces } from "../../src/services/run-trace"
 
 describe("run-trace endTrace dual signature parity", () => {
   let tempDir1: string
@@ -31,8 +31,8 @@ describe("run-trace endTrace dual signature parity", () => {
     // Call legacy positional signature
     endTrace(tempDir2, trace2.run_id, "complete", "Success")
 
-    const traces1 = loadAllTraces(tempDir1)
-    const traces2 = loadAllTraces(tempDir2)
+    const traces1 = loadTraces(tempDir1)
+    const traces2 = loadTraces(tempDir2)
 
     expect(traces1.length).toBe(1)
     expect(traces2.length).toBe(1)
@@ -58,8 +58,8 @@ describe("run-trace endTrace dual signature parity", () => {
 
     endTrace(tempDir2, trace2.run_id, "failed", "Build Error", "Compilation failed on line 42")
 
-    const t1 = loadAllTraces(tempDir1)[0]
-    const t2 = loadAllTraces(tempDir2)[0]
+    const t1 = loadTraces(tempDir1)[0]
+    const t2 = loadTraces(tempDir2)[0]
 
     expect(t1.status).toBe("failed")
     expect(t2.status).toBe("failed")
