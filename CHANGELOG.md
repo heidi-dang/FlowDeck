@@ -5,6 +5,51 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] - 2026-07-31
+
+### Highlights
+
+FlowDeck 1.0 marks the first stable production release of FlowDeck: a governed multi-agent orchestration, code-intelligence, and CI lifecycle platform built for OpenCode. This release stabilizes the orchestration runtime, hardens the security and governance layers, and ships the Rust-native FDX code intelligence CLI with full TypeScript fallbacks.
+
+### Added
+
+- **13 specialized agents**: `heidi` as the default primary agent plus 12 specialist agents (`orchestrator`, `planner`, `architect`, `researcher`, `mapper`, `backend-coder`, `frontend-coder`, `devops`, `tester`, `reviewer`, `security-auditor`, `debug-specialist`), governed by the Heidi Primary Execution Policy with depth-1 delegation and `task:deny` on delegates.
+- **61 validated skills** in `src/skills/`, each with the required YAML frontmatter and validated SKILL.md structure.
+- **8 slash commands** implementing the orchestration pipeline: `/fd-task`, `/fd-review`, `/fd-execute`, `/fd-verify`, `/fd-done`, `/fd-status`, `/fd-resume`, `/fd-checkpoint`.
+- **28 registered tools** including the 17-tool FDX family (`fdx-read`, `fdx-search`, `fdx-grep`, `fdx-batch`, `fdx-impact`, `fdx-outline`, `fdx-diff`, `fdx-git`, `fdx-ls`, `fdx-tree`, `fdx-test`, `fdx-lint`, `fdx-context`, `fdx-decisions`, `fdx-worktree`, `fdx-validate`, `fdx-pr-monitor`).
+- **FDX Rust-native CLI** (`crates/fdx/`) with 14 subcommands, tree-sitter AST parsing across 5 languages, and a dual-AST symbol diff engine.
+- **PR Monitor auto-repair**: event-driven CI failure detection, root-cause classification, bounded automated repair with a circuit breaker, SHA-based dedup, fork-PR protection, and prohibited-path enforcement.
+- **Durable orchestration runtime**: SQLite-backed event persistence, transactional outbox delivery, optimistic concurrency (unit-of-work + versioned writers), replay-safe completion, and deterministic resource cleanup.
+- **Command boundary with typed outcomes**: `timeout`, `max_buffer_exceeded`, `executable_not_found`, `parse_rejected`, `authorization_rejected` — with hard-validated resource limits before process spawn.
+- **GitHub Actions matrix CI**: 3 OS × 3 Node.js versions, coverage gate (80%), lint/typecheck with zero warnings, docs/skills validation, orchestration integration and schema checks, and FDX Rust gates.
+
+### Changed
+
+- Product description updated to reflect production-grade multi-agent orchestration, governance, CI repair, and code intelligence for OpenCode.
+- Package version stabilized at `1.0.0`; internal `pkgVersion` moved to `1.0.0`.
+
+### Security
+
+- Zero vulnerabilities across production and full dependency audits.
+- Executable allowlist enforced with `shell: false` on all subprocess invocations; NUL-byte rejection, argument-count and length caps.
+- Git read-only policy blocks mutating subcommands at the validation layer.
+- Governance decisions (block/warn/approve) recorded as structured audit events.
+
+### Reliability
+
+- 3,189 tests passing (0 failures) across 153 files; 81.31% weighted aggregate line coverage.
+- Full suite verified on Linux, macOS, and Windows; zero typecheck and lint errors.
+- FDX native/TypeScript parity verified end-to-end; Rust gates (fmt, clippy, tests) pass.
+
+### Compatibility
+
+- **No configuration migration required** from any `0.8.0-alpha.x` release. The configuration schema is backward-compatible; existing plugin registrations, `default_agent`, and JSONC comments are preserved by the installer.
+- Node.js >= 20.0.0, OpenCode >= 1.4.0, Linux/macOS/Windows supported. Rust toolchain optional (required only for the native FDX CLI; TypeScript fallbacks ship in the package).
+
+### Migration
+
+Upgrade with `npx @heidi-dang/flowdeck install` (or `curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash`), then run `npx flowdeck doctor` to verify the environment. No manual configuration changes are required.
+
 ## [0.8.0] - 2026-07-26
 
 ### Added
