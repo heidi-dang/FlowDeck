@@ -52,7 +52,7 @@ export function startTrace(
   return trace
 }
 
-function loadAllTraces(dir: string): RunTrace[] {
+export function loadAllTraces(dir: string): RunTrace[] {
   const p = runsPath(dir)
   if (!existsSync(p)) return []
   try {
@@ -71,22 +71,51 @@ function saveAllTraces(dir: string, traces: RunTrace[]): void {
   writeFileSync(p, traces.map(t => JSON.stringify(t)).join("\n") + "\n", "utf-8")
 }
 
+export interface EndTraceOptions {
+  status: Exclude<RunStatus, "running">
+  outcome?: string
+  error?: string
+}
+
+export function endTrace(
+  dir: string,
+  run_id: string,
+  options: EndTraceOptions
+): void
+
 export function endTrace(
   dir: string,
   run_id: string,
   status: Exclude<RunStatus, "running">,
   outcome?: string,
   error?: string
+): void
+
+export function endTrace(
+  dir: string,
+  run_id: string,
+  optionsOrStatus: EndTraceOptions | Exclude<RunStatus, "running">,
+  outcome?: string,
+  error?: string
 ): void {
+  const opts: EndTraceOptions =
+    typeof optionsOrStatus === "object" && optionsOrStatus !== null
+      ? optionsOrStatus
+      : {
+          status: optionsOrStatus as Exclude<RunStatus, "running">,
+          outcome,
+          error,
+        }
+
   const traces = loadAllTraces(dir)
   const idx = traces.findLastIndex(t => t.run_id === run_id)
   if (idx === -1) return
   traces[idx] = {
     ...traces[idx],
     ended_at: new Date().toISOString(),
-    status,
-    ...(outcome ? { outcome } : {}),
-    ...(error ? { error } : {}),
+    status: opts.status,
+    ...(opts.outcome ? { outcome: opts.outcome } : {}),
+    ...(opts.error ? { error: opts.error } : {}),
   }
   saveAllTraces(dir, traces)
 }
