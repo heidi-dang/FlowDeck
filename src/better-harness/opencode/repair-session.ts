@@ -173,25 +173,29 @@ export async function createRepairSession(
   }
 }
 
+export interface RestrictedRepairPromptOptions {
+  cause: string;
+  evidence: string[];
+  expectedOutput: string;
+  allowedPaths: string[];
+  validationRequirements: string[];
+  acceptanceCriteria: string[];
+}
+
 export function generateRestrictedRepairPrompt(
-  cause: string,
-  evidence: string[],
-  expectedOutput: string,
-  allowedPaths: string[],
-  validationRequirements: string[],
-  acceptanceCriteria: string[],
+  options: RestrictedRepairPromptOptions,
 ): string {
   return "## Cause\n" +
-cause + "\n\n" +
+options.cause + "\n\n" +
 "## Evidence\n" +
-evidence.map((e) => "- " + e).join("\n") + "\n\n" +
+options.evidence.map((e) => "- " + e).join("\n") + "\n\n" +
 "## Expected Output\n" +
-expectedOutput + "\n\n" +
+options.expectedOutput + "\n\n" +
 "## Prohibited Changes\n" +
-"You are restricted to the following paths: " + allowedPaths.join(", ") + "\n" +
+"You are restricted to the following paths: " + options.allowedPaths.join(", ") + "\n" +
 "Do NOT modify files outside these paths.\n\n" +
 "## Validation Requirements\n" +
-validationRequirements.map((v, i) => (i + 1) + ". " + v).join("\n") + "\n\n" +
+options.validationRequirements.map((v, i) => (i + 1) + ". " + v).join("\n") + "\n\n" +
 "## Acceptance Criteria\n" +
-acceptanceCriteria.map((a, i) => (i + 1) + ". " + a).join("\n") + "\n";
+options.acceptanceCriteria.map((a, i) => (i + 1) + ". " + a).join("\n") + "\n";
 }

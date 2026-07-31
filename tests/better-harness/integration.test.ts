@@ -840,14 +840,14 @@ describe("HTTP Server", () => {
 describe("Repair Session Edge Cases", () => {
   it("generateRestrictedRepairPrompt produces correct format", async () => {
     const { generateRestrictedRepairPrompt } = await import("../../src/better-harness/opencode/repair-session");
-    const prompt = generateRestrictedRepairPrompt(
-      "Missing config",
-      ["Config file not found"],
-      "Config should exist",
-      ["src/config/"],
-      ["npm test"],
-      ["Tests pass"],
-    );
+    const prompt = generateRestrictedRepairPrompt({
+      cause: "Missing config",
+      evidence: ["Config file not found"],
+      expectedOutput: "Config should exist",
+      allowedPaths: ["src/config/"],
+      validationRequirements: ["npm test"],
+      acceptanceCriteria: ["Tests pass"],
+    });
     expect(prompt).toContain("## Cause");
     expect(prompt).toContain("Missing config");
     expect(prompt).toContain("## Evidence");
