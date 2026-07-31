@@ -313,3 +313,24 @@ describe("Doctor CLI — Cross-Platform Path Handling", () => {
   })
 })
 
+describe("Doctor Service — Module-Relative Import & Error Handling", () => {
+  it("runs doctor checks via runDoctorChecks with module-relative URL resolution", async () => {
+    const { runDoctorChecks } = await import("../src/services/doctor")
+    const report = await runDoctorChecks(process.cwd())
+    expect(report).toBeDefined()
+    expect(typeof report.passed).toBe("number")
+    expect(typeof report.warned).toBe("number")
+    expect(typeof report.failed).toBe("number")
+    expect(Array.isArray(report.checks)).toBe(true)
+  })
+
+  it("exports DoctorEngineLoadError class for engine load failures", async () => {
+    const { DoctorEngineLoadError } = await import("../src/services/doctor")
+    const err = new DoctorEngineLoadError("Custom load failure")
+    expect(err).toBeInstanceOf(Error)
+    expect(err.name).toBe("DoctorEngineLoadError")
+    expect(err.message).toBe("Custom load failure")
+  })
+})
+
+
