@@ -26,9 +26,13 @@ export class RunService {
     const runId = randomUUID();
     const corrId = correlationId ?? input.correlationId ?? randomUUID();
 
+    // Canonicalize QUEUED to PENDING at the API boundary.
+    // QUEUED is a deprecated input alias only — the domain and repository layers
+    // receive and produce only PENDING for the initial non-terminal status.
+    const canonicalStatus = RunStatus.PENDING;
     const run: Run = {
       id: runId,
-      status: RunStatus.QUEUED,
+      status: canonicalStatus,
       runType: input.runType,
       correlationId: corrId,
       causationId: input.causationId,

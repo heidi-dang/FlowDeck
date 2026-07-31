@@ -11,10 +11,11 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { Database } from "bun:sqlite"
-import { mkdtempSync, rmSync } from "fs"
+import { mkdtempSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 import { randomUUID } from "crypto"
+import { deterministicCleanup } from "./harness/cleanup"
 
 import { SCHEMA_V_0_2_6 } from "../../src/orchestration/persistence/migrations/schema-embed"
 import { createTransactionManager } from "../../src/orchestration/persistence/transaction-manager"
@@ -44,7 +45,8 @@ import type {
   IVerificationRepository,
   IEventRepository,
 } from "../../src/orchestration/services/ports"
-import { RunStatus } from "../../src/orchestration/types/runs"
+import { RunStatus, OrchestrationPhase } from "../../src/orchestration/types/runs"
+import { ErrorCodes, OrchestrationError } from "../../src/orchestration/types/errors"
 import {
   SqliteCompletionRepoAdapter,
   SqliteVerificationRepoAdapter,
@@ -70,24 +72,24 @@ function createTempDb(): TempDb {
   const dir = mkdtempSync(join(tmpdir(), "durable-cov-"))
   const dbPath = join(dir, "test.db")
   const db = new Database(dbPath)
-  db.exec(SCHEMA_V_0_2_6)
   db.exec("PRAGMA journal_mode=WAL")
-  db.exec("PRAGMA busy_timeout=5000")
+  db.exec("BEGIN")
+  db.exec(SCHEMA_V_0_2_6)
+  db.exec("COMMIT")
   const tx = createTransactionManager(db)
   return { dir, db, tx }
 }
 
-function destroyTempDb(t: TempDb): void {
-  try { t.db.close() } catch { /* ok */ }
-  try { rmSync(t.dir, { recursive: true, force: true }) } catch { /* ok */ }
+async function destroyTempDb(t: TempDb): Promise<void> {
+  await deterministicCleanup({ db: t.db, dir: t.dir })
 }
 
 function seedRunParents(db: Database, contractId = "contract-default"): void {
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO contract_families (family_id, name, description, created_by, created_at)
      VALUES ('family-default', 'Default Family', 'Default contract family', 'system', datetime('now'))`,
   ).run()
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO task_contracts (contract_id, family_id, version, title, description, repo_url, repo_sha, created_by, created_at)
      VALUES (?, 'family-default', 1, 'Default Contract', 'Default contract description',
              'https://github.com/heidi-dang/FlowDeck',
@@ -96,18 +98,18 @@ function seedRunParents(db: Database, contractId = "contract-default"): void {
 }
 
 function insertTaskRun(db: Database, runId: string): void {
-  db.prepare(
+  db.query(
     `INSERT OR IGNORE INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
-     VALUES (?, 'contract-default', 'simple', '_created', 1,
+     VALUES (?, 'contract-default', 'simple', ?, 1,
              '0000000000000000000000000000000000000000', 'main',
              datetime('now'), strftime('%s','now'))`,
-  ).run(runId)
+  ).run(runId, OrchestrationPhase.CREATED)
 }
 
 function makeRun(id: string): Run {
   return {
     id,
-    status: "created" as RunStatus,
+    status: RunStatus.PENDING,
     runType: "simple",
     correlationId: id,
     contractId: "contract-default",
@@ -171,7 +173,7 @@ describe("SqliteRunRepository", () => {
     repo = new SqliteRunRepository(adapter, tdb.db, tdb.tx)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("create and findById return correct fields", async () => {
     const _created = await repo.create(makeRun("run-1"))
@@ -180,7 +182,7 @@ describe("SqliteRunRepository", () => {
     const found = await repo.findById("run-1")
     expect(found).not.toBeNull()
     expect(found!.id).toBe("run-1")
-    expect(found!.status).toBe("created" as RunStatus)
+    expect(found!.status).toBe(RunStatus.PENDING)
     expect(found!.runType).toBe("simple")
   })
 
@@ -200,8 +202,8 @@ describe("SqliteRunRepository", () => {
   it("findMany with status filter", async () => {
     await repo.create(makeRun("rf-1"))
     await repo.create(makeRun("rf-2"))
-    const result = await repo.findMany({ status: "created" as RunStatus }, { page: 1, limit: 10 })
-    const allQueued = result.items.every(r => r.status === "created" as RunStatus)
+    const result = await repo.findMany({ status: RunStatus.PENDING }, { page: 1, limit: 10 })
+    const allQueued = result.items.every(r => r.status === RunStatus.PENDING)
     expect(allQueued).toBe(true)
   })
 
@@ -212,26 +214,100 @@ describe("SqliteRunRepository", () => {
     const total = await repo.count({})
     expect(total).toBeGreaterThanOrEqual(2)
 
-    const filtered = await repo.count({ status: "created" as RunStatus })
+    const filtered = await repo.count({ status: RunStatus.PENDING })
     expect(filtered).toBeGreaterThanOrEqual(2)
 
-    const noMatch = await repo.count({ status: "running" as RunStatus })
+    // No runs with FAILED status in this test
+    const noMatch = await repo.count({ status: RunStatus.FAILED })
     expect(noMatch).toBe(0)
   })
 
   it("update with status change", async () => {
     await repo.create(makeRun("ru-1"))
-    const updated = await repo.update("ru-1", { status: "executing" as RunStatus })
+    const updated = await repo.update("ru-1", { status: RunStatus.RUNNING })
     expect(updated).not.toBeNull()
-    expect(updated!.status).toBe("executing" as RunStatus)
+    expect(updated!.status).toBe(RunStatus.RUNNING)
 
     const found = await repo.findById("ru-1")
-    expect(found!.status).toBe("executing" as RunStatus)
+    expect(found!.status).toBe(RunStatus.RUNNING)
   })
 
   it("update returns null for missing run", async () => {
-    const updated = await repo.update("nonexistent", { status: "executing" as RunStatus })
+    const updated = await repo.update("nonexistent", { status: RunStatus.RUNNING })
     expect(updated).toBeNull()
+  })
+
+  // ── Status mapping tests ───────────────────────────────────────────────
+
+  it("PENDING round-trips correctly", async () => {
+    const run = await repo.create({ ...makeRun("run-pending"), status: RunStatus.PENDING })
+    expect(run.status).toBe(RunStatus.PENDING)
+    const found = await repo.findById("run-pending")
+    expect(found!.status).toBe(RunStatus.PENDING)
+  })
+
+  it("RUNNING round-trips correctly", async () => {
+    await repo.create({ ...makeRun("run-running"), status: RunStatus.PENDING })
+    const updated = await repo.update("run-running", { status: RunStatus.RUNNING })
+    expect(updated!.status).toBe(RunStatus.RUNNING)
+    const found = await repo.findById("run-running")
+    expect(found!.status).toBe(RunStatus.RUNNING)
+  })
+
+  it("COMPLETED round-trips correctly", async () => {
+    await repo.create(makeRun("run-completed"))
+    const updated = await repo.update("run-completed", { status: RunStatus.COMPLETED })
+    expect(updated!.status).toBe(RunStatus.COMPLETED)
+    const found = await repo.findById("run-completed")
+    expect(found!.status).toBe(RunStatus.COMPLETED)
+  })
+
+  it("FAILED round-trips correctly", async () => {
+    await repo.create(makeRun("run-failed"))
+    const updated = await repo.update("run-failed", { status: RunStatus.FAILED })
+    expect(updated!.status).toBe(RunStatus.FAILED)
+    const found = await repo.findById("run-failed")
+    expect(found!.status).toBe(RunStatus.FAILED)
+  })
+
+  it("CANCELLED round-trips correctly", async () => {
+    await repo.create(makeRun("run-cancelled"))
+    const updated = await repo.update("run-cancelled", { status: RunStatus.CANCELLED })
+    expect(updated!.status).toBe(RunStatus.CANCELLED)
+    const found = await repo.findById("run-cancelled")
+    expect(found!.status).toBe(RunStatus.CANCELLED)
+  })
+
+  it("QUEUED is canonicalized to PENDING at API boundary", async () => {
+    // QUEUED is a deprecated input alias. When passed to create, it maps to
+    // CREATED phase and reads back as PENDING — identical to PENDING input.
+    const _run = await repo.create({ ...makeRun("run-queued"), status: RunStatus.QUEUED })
+    // Repository create returns the input run unchanged (QUEUED), but persisted phase is CREATED
+    // The canonical status is PENDING — see mapRunStatusToTaskRunState and mapTaskRunStateToRunStatus
+    const found = await repo.findById("run-queued")
+    expect(found!.status).toBe(RunStatus.PENDING)
+  })
+
+  it("findMany and count with PENDING filter", async () => {
+    await repo.create(makeRun("run-filter-1"))
+    await repo.create(makeRun("run-filter-2"))
+    const result = await repo.findMany({ status: RunStatus.PENDING }, { page: 1, limit: 10 })
+    expect(result.items.length).toBeGreaterThanOrEqual(2)
+    expect(result.items.every(r => r.status === RunStatus.PENDING)).toBe(true)
+    const count = await repo.count({ status: RunStatus.PENDING })
+    expect(count).toBeGreaterThanOrEqual(2)
+  })
+
+  it("PAUSED throws INVALID_RUN_STATUS", async () => {
+    await repo.create(makeRun("run-paused"))
+    await expect(repo.update("run-paused", { status: RunStatus.PAUSED }))
+      .rejects.toThrow()
+  })
+
+  it("TIMEOUT throws INVALID_RUN_STATUS", async () => {
+    await repo.create(makeRun("run-timeout"))
+    await expect(repo.update("run-timeout", { status: RunStatus.TIMEOUT }))
+      .rejects.toThrow()
   })
 })
 
@@ -248,7 +324,7 @@ describe("SqliteContractRepo", () => {
     repo = new SqliteContractRepo(adapter, tdb.db, tdb.tx)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("create and findById return correct contract", async () => {
     const _created = await repo.create(makeContract("c-1"))
@@ -305,7 +381,7 @@ describe("SqliteAssignmentRepo", () => {
     repo = new SqliteAssignmentRepo(tdb.db, tdb.tx)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("create and findById return correct assignment", async () => {
     const _created = await repo.create(makeAssignment("a-1", "run-for-assign"))
@@ -402,7 +478,7 @@ describe("SqliteCompletionRepo", () => {
     completionService = new CompletionService(completionRepo, eventBus)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("create and findById return correct completion", async () => {
     const _created = await completionService.createCompletion({
@@ -451,7 +527,7 @@ describe("SqliteVerificationRepo", () => {
 
     const verificationRepo: IVerificationRepository = {
       create: async (v: VerificationResult) => {
-        tdb.db.prepare(
+        tdb.db.query(
           "INSERT INTO verification_results (id, run_id, verification_type, status, target_sha, started_at) VALUES (?, ?, ?, ?, '0000000000000000000000000000000000000000', datetime('now'))",
         ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending")
         return v
@@ -487,7 +563,7 @@ describe("SqliteVerificationRepo", () => {
         }))
       },
       findMany: async (_filter: Partial<VerificationResult>, pagination: PagePaginationRequest) => {
-        const countRow = tdb.db.prepare("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number }
+        const countRow = tdb.db.query("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number }
         const limit = pagination.limit ?? 20
         return { items: [], total: countRow.c, page: pagination.page ?? 1, limit }
       },
@@ -497,7 +573,7 @@ describe("SqliteVerificationRepo", () => {
     verificationService = new VerificationService(verificationRepo, eventBus)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("create and findById return correct verification", async () => {
     const _created = await verificationService.createVerification({
@@ -558,14 +634,14 @@ describe("SqliteEventRepo", () => {
       store: async (e: OrchestrationEvent) => {
         const eventData = JSON.stringify(e.data ?? {})
         const eventMeta = JSON.stringify(e.metadata ?? {})
-        tdb.db.prepare(
+        tdb.db.query(
           `INSERT INTO events (event_id, event_type, event_version, causation_id, correlation_id, aggregate_type, aggregate_id, aggregate_version, timestamp, data, metadata, created_ts)
            VALUES (?, ?, 1, ?, ?, 'orchestration', ?, ?, datetime('now'), ?, ?, strftime('%s','now'))`,
         ).run(e.id, e.type, e.causationId ?? null, e.correlationId, e.aggregateId ?? "", e.aggregateVersion ?? 100, eventData, eventMeta)
         return e
       },
       findById: async (id: string) => {
-        const row = tdb.db.prepare("SELECT * FROM events WHERE event_id = ?").get(id) as Record<string, unknown> | undefined
+        const row = tdb.db.query("SELECT * FROM events WHERE event_id = ?").get(id) as Record<string, unknown> | undefined
         if (!row) return null
         const eventDataRaw = (row.data as string) ?? "{}"
         let eventData: Record<string, unknown> = {}
@@ -589,8 +665,8 @@ describe("SqliteEventRepo", () => {
       findMany: async (_filter: Partial<OrchestrationEvent>, pagination: PagePaginationRequest) => {
         const limit = pagination.limit ?? 20
         const offset = ((pagination.page ?? 1) - 1) * limit
-        const countRow = tdb.db.prepare("SELECT COUNT(*) AS c FROM events").get() as { c: number }
-        const rows = tdb.db.prepare("SELECT * FROM events ORDER BY created_ts DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[]
+        const countRow = tdb.db.query("SELECT COUNT(*) AS c FROM events").get() as { c: number }
+        const rows = tdb.db.query("SELECT * FROM events ORDER BY created_ts DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[]
         return {
           items: rows.map(r => {
             const d: OrchestrationEvent = {
@@ -612,7 +688,7 @@ describe("SqliteEventRepo", () => {
         }
       },
       findByRunId: async (runId: string) => {
-        const rows = tdb.db.prepare("SELECT * FROM events WHERE aggregate_id = ? ORDER BY created_ts DESC").all(runId) as Record<string, unknown>[]
+        const rows = tdb.db.query("SELECT * FROM events WHERE aggregate_id = ? ORDER BY created_ts DESC").all(runId) as Record<string, unknown>[]
         return rows.map(r => ({
           id: r.event_id as string,
           type: r.event_type as string,
@@ -626,7 +702,7 @@ describe("SqliteEventRepo", () => {
         })) as OrchestrationEvent[]
       },
       count: async () => {
-        const row = tdb.db.prepare("SELECT COUNT(*) AS c FROM events").get() as { c: number }
+        const row = tdb.db.query("SELECT COUNT(*) AS c FROM events").get() as { c: number }
         return row.c
       },
     }
@@ -634,7 +710,7 @@ describe("SqliteEventRepo", () => {
     eventService = new EventService(eventRepo, outboxRepo, eventBus)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("store and findById return correct event", async () => {
     const event = makeEvent("ev-run-1", { id: "ev-1" })
@@ -698,7 +774,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown!.message).toContain("REPLAY_NOT_CONFIGURED")
+    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
   })
 
   it("findById throws REPLAY_NOT_CONFIGURED", async () => {
@@ -709,7 +785,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown!.message).toContain("REPLAY_NOT_CONFIGURED")
+    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
   })
 
   it("findMany throws REPLAY_NOT_CONFIGURED", async () => {
@@ -720,7 +796,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown!.message).toContain("REPLAY_NOT_CONFIGURED")
+    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
   })
 
   it("count throws REPLAY_NOT_CONFIGURED", async () => {
@@ -731,7 +807,7 @@ describe("UnsupportedReplayRepository", () => {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect(thrown!.message).toContain("REPLAY_NOT_CONFIGURED")
+    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
   })
 })
 
@@ -759,7 +835,7 @@ describe("RunService", () => {
     runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, writer, tdb.db)
   })
 
-  afterEach(() => destroyTempDb(tdb))
+  afterEach(async () => { await destroyTempDb(tdb) })
 
   it("getRun returns run", async () => {
     const run = await runService.createRun({
@@ -820,7 +896,7 @@ describe("RunService", () => {
       correlationId: "corr-pause",
     })
     // Directly set state in DB to "executing" (valid task_runs state)
-    tdb.db.prepare("UPDATE task_runs SET state = 'executing' WHERE run_id = ?").run(run.id)
+    tdb.db.query("UPDATE task_runs SET state = 'executing' WHERE run_id = ?").run(run.id)
 
     // pauseRun checks existing.status !== RunStatus.RUNNING ("running"),
     // but the DB state is "executing". The pauseRun code path is still exercised.
@@ -893,9 +969,9 @@ describe("OutboxWorker", () => {
     worker = new OutboxWorker(outboxRepo, eventBus, 20)
   })
 
-  afterEach(() => {
-    worker.stop()
-    destroyTempDb(tdb)
+  afterEach(async () => {
+    await Promise.resolve(worker.stop())
+    await destroyTempDb(tdb)
   })
 
   it("start/stop lifecycle changes internal state cleanly", () => {

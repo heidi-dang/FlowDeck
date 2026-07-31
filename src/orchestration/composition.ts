@@ -41,6 +41,11 @@ import type {
   PaginatedResult,
 } from "./services/ports";
 import type { Run, UpdateRunInput, RunFilter } from "./types/runs";
+import {
+  mapRunStatusToTaskRunState,
+  mapTaskRunStateToRunStatus,
+  isValidPersistedPhase,
+} from "./types/runs";
 import type { Contract } from "./types/contracts";
 import type { Assignment } from "./types/assignments";
 import type { VerificationResult } from "./types/verification";
@@ -49,6 +54,7 @@ import type { Replay } from "./types/replay";
 import type { OrchestrationEvent, EventFilter } from "./types/events";
 import type { PagePaginationRequest } from "./types/pagination";
 import { createRouterWithControllers } from "./api/routes";
+import { OrchestrationError, ErrorCodes } from "./types/errors";
 
 export interface ProductionOrchestrationRuntime {
   db: Database;
@@ -81,18 +87,18 @@ export class SqliteRunRepository implements IRunRepository {
   async create(run: Run): Promise<Run> {
     return this.tx.write(() => {
       const contractId = run.contractId ?? "contract-default";
-      this.db.prepare(
+      this.db.query(
         `INSERT OR IGNORE INTO contract_families (family_id, name, description, created_by, created_at)
          VALUES ('family-default', 'Default Family', 'Default contract family', 'system', datetime('now'))`,
       ).run();
-      this.db.prepare(
+      this.db.query(
         `INSERT OR IGNORE INTO task_contracts (contract_id, family_id, version, title, description, repo_url, repo_sha, created_by, created_at)
          VALUES (?, 'family-default', 1, 'Default Contract', 'Default contract description', 'https://github.com/heidi-dang/FlowDeck', '0000000000000000000000000000000000000000', 'system', datetime('now'))`,
       ).run(contractId);
-      this.db.prepare(
+      this.db.query(
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, ?, ?, ?, 1, ?, ?, datetime('now'), strftime('%s','now'))`,
-      ).run(run.id, contractId, run.runType, ['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled'].includes(run.status) ? run.status : 'created', "0000000000000000000000000000000000000000", "main");
+      ).run(run.id, contractId, run.runType, mapRunStatusToTaskRunState(run.status), "0000000000000000000000000000000000000000", "main");
       return run;
     });
   }
@@ -101,22 +107,39 @@ export class SqliteRunRepository implements IRunRepository {
     const existing = await this.findById(id);
     if (!existing) return null;
     return this.tx.write(() => {
-      if (input.status) {
-        this.db.prepare(
+      if (input.status !== undefined) {
+        const persistedState = mapRunStatusToTaskRunState(input.status);
+        this.db.query(
           "UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?",
-        ).run(['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled'].includes(input.status ?? '') ? input.status : 'executing', id);
+        ).run(persistedState, id);
       }
-      const updated = { ...existing, ...input, updatedAt: new Date().toISOString(), status: (input.status ?? existing.status) as Run["status"] };
-      return updated;
+      // Re-read the durable row to return accurate state
+      const row = this.db.query("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        id: row.run_id as string,
+        status: mapTaskRunStateToRunStatus(row.state as string),
+        runType: (row.strategy as string) ?? "simple",
+        correlationId: row.run_id as string,
+        contractId: row.contract_id as string,
+        aggregateId: row.run_id as string,
+        createdAt: (row.created_at as string) ?? new Date().toISOString(),
+        updatedAt: (row.created_at as string) ?? new Date().toISOString(),
+        startedAt: (row.started_at as string) ?? undefined,
+        completedAt: (row.completed_at as string) ?? undefined,
+      };
     });
   }
 
   async findById(id: string): Promise<Run | null> {
-    const row = this.db.prepare("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined;
+    const row = this.db.query("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
+    if (!isValidPersistedPhase(row.state as string)) {
+      throw new Error(`INVALID_PERSISTED_PHASE: "${row.state}" is not a valid persisted orchestration phase.`);
+    }
     return {
       id: row.run_id as string,
-      status: (row.state as string) as Run["status"],
+      status: mapTaskRunStateToRunStatus(row.state as string),
       runType: (row.strategy as string) ?? "simple",
       correlationId: row.run_id as string,
       contractId: row.contract_id as string,
@@ -131,21 +154,50 @@ export class SqliteRunRepository implements IRunRepository {
   async findMany(filter: RunFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Run>> {
     const conditions: string[] = [];
     const params: (string | number)[] = [];
-    if (filter.status) { conditions.push("state = ?"); params.push(filter.status); }
+    if (filter.status) {
+      // Map public RunStatus to persisted OrchestrationPhase - throws on invalid status
+      const persistedPhase = mapRunStatusToTaskRunState(filter.status);
+      conditions.push("state = ?");
+      params.push(persistedPhase);
+    }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
     const limit = pagination.limit ?? 20;
     const offset = ((pagination.page ?? 1) - 1) * limit;
-    const countRow = this.db.prepare(`SELECT COUNT(*) AS c FROM task_runs ${where}`).get(...params) as { c: number };
-    const rows = this.db.prepare(`SELECT * FROM task_runs ${where} ORDER BY created_ts DESC LIMIT ? OFFSET ?`).all(...params, limit, offset) as Record<string, unknown>[];
-    return { items: rows.map(r => ({ id: r.run_id, status: r.state, runType: r.strategy, correlationId: r.run_id, contractId: r.contract_id, aggregateId: r.run_id, createdAt: r.created_at, updatedAt: r.created_at }) as unknown as Run), total: countRow.c, page: pagination.page ?? 1, limit };
+    const countRow = this.db.query(`SELECT COUNT(*) AS c FROM task_runs ${where}`).get(...params) as { c: number };
+    const rows = this.db.query(`SELECT * FROM task_runs ${where} ORDER BY created_ts DESC LIMIT ? OFFSET ?`).all(...params, limit, offset) as Record<string, unknown>[];
+    return {
+      items: rows.map(r => {
+        if (!isValidPersistedPhase(r.state as string)) {
+          throw new Error(`INVALID_PERSISTED_PHASE: "${r.state}" is not a valid persisted orchestration phase.`);
+        }
+        return {
+          id: r.run_id,
+          status: mapTaskRunStateToRunStatus(r.state as string),
+          runType: r.strategy,
+          correlationId: r.run_id,
+          contractId: r.contract_id,
+          aggregateId: r.run_id,
+          createdAt: r.created_at,
+          updatedAt: r.created_at,
+        } as unknown as Run;
+      }),
+      total: countRow.c,
+      page: pagination.page ?? 1,
+      limit,
+    };
   }
 
   async count(filter: RunFilter): Promise<number> {
     const conditions: string[] = [];
     const params: (string | number)[] = [];
-    if (filter.status) { conditions.push("state = ?"); params.push(filter.status); }
+    if (filter.status) {
+      // Map public RunStatus to persisted OrchestrationPhase - throws on invalid status
+      const persistedPhase = mapRunStatusToTaskRunState(filter.status);
+      conditions.push("state = ?");
+      params.push(persistedPhase);
+    }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-    const row = this.db.prepare(`SELECT COUNT(*) AS c FROM task_runs ${where}`).get(...params) as { c: number };
+    const row = this.db.query(`SELECT COUNT(*) AS c FROM task_runs ${where}`).get(...params) as { c: number };
     return row.c;
   }
 }
@@ -159,11 +211,11 @@ export class SqliteContractRepo implements IContractRepository {
 
   async create(contract: Contract): Promise<Contract> {
     return this.tx.write(() => {
-      this.db.prepare(
+      this.db.query(
         `INSERT OR IGNORE INTO contract_families (family_id, name, description, created_by, created_at)
          VALUES ('family-default', 'Default Family', 'Default contract family', 'system', datetime('now'))`,
       ).run();
-      this.db.prepare(
+      this.db.query(
         `INSERT INTO task_contracts (contract_id, family_id, version, title, description, repo_url, repo_sha, created_by, created_at)
          VALUES (?, 'family-default', 1, ?, ?, 'https://github.com/heidi-dang/FlowDeck', '0000000000000000000000000000000000000000', 'system', datetime('now'))`,
       ).run(contract.id, contract.name, contract.description ?? "");
@@ -175,13 +227,43 @@ export class SqliteContractRepo implements IContractRepository {
     const existing = await this.findById(id);
     if (!existing) return null;
     return this.tx.write(() => {
-      const updated = { ...existing, ...input, updatedAt: new Date().toISOString() };
-      return updated;
+      const sets: string[] = [];
+      const values: (string | number)[] = [];
+      if (input.name !== undefined) {
+        sets.push("title = ?");
+        values.push(input.name);
+      }
+      if (input.description !== undefined) {
+        sets.push("description = ?");
+        values.push(input.description);
+      }
+      if (sets.length === 0) {
+        // No fields to update, return existing as-is
+        return existing;
+      }
+      values.push(id);
+      const sql = `UPDATE task_contracts SET ${sets.join(", ")} WHERE contract_id = ?`;
+      const result = this.db.query(sql).run(...values);
+      if (result.changes === 0) {
+        // Contract no longer exists after update attempt
+        return null;
+      }
+      // Re-read the durable row
+      const row = this.db.query("SELECT * FROM task_contracts WHERE contract_id = ?").get(id) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        id: row.contract_id as string,
+        name: (row.title as string) ?? row.contract_id as string,
+        status: "active" as Contract["status"],
+        correlationId: id,
+        createdAt: (row.created_at as string) ?? new Date().toISOString(),
+        updatedAt: (row.created_at as string) ?? new Date().toISOString(),
+      };
     });
   }
 
   async findById(id: string): Promise<Contract | null> {
-    const row = this.db.prepare("SELECT * FROM task_contracts WHERE contract_id = ?").get(id) as Record<string, unknown> | undefined;
+    const row = this.db.query("SELECT * FROM task_contracts WHERE contract_id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
       id: row.contract_id as string,
@@ -196,13 +278,13 @@ export class SqliteContractRepo implements IContractRepository {
   async findMany(_filter: Partial<Contract>, pagination: PagePaginationRequest): Promise<PaginatedResult<Contract>> {
     const limit = pagination.limit ?? 20;
     const offset = ((pagination.page ?? 1) - 1) * limit;
-    const countRow = this.db.prepare("SELECT COUNT(*) AS c FROM task_contracts").get() as { c: number };
-    const rows = this.db.prepare("SELECT * FROM task_contracts ORDER BY created_at DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
+    const countRow = this.db.query("SELECT COUNT(*) AS c FROM task_contracts").get() as { c: number };
+    const rows = this.db.query("SELECT * FROM task_contracts ORDER BY created_at DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
     return { items: rows.map(r => ({ id: r.contract_id, name: r.title, status: "active", correlationId: r.contract_id, createdAt: r.created_at, updatedAt: r.created_at }) as unknown as Contract), total: countRow.c, page: pagination.page ?? 1, limit };
   }
 
   async count(): Promise<number> {
-    const row = this.db.prepare("SELECT COUNT(*) AS c FROM task_contracts").get() as { c: number };
+    const row = this.db.query("SELECT COUNT(*) AS c FROM task_contracts").get() as { c: number };
     return row.c;
   }
 }
@@ -215,7 +297,7 @@ export class SqliteAssignmentRepo implements IAssignmentRepository {
 
   async create(a: Assignment): Promise<Assignment> {
     return this.tx.write(() => {
-      this.db.prepare(
+      this.db.query(
         "INSERT INTO assignments (id, run_id, agent_id, description, status, created_by, created_at) VALUES (?, ?, ?, ?, 'pending', 'system', datetime('now'))",
       ).run(a.id, a.runId, a.agentId, a.role ?? "");
       return a;
@@ -225,14 +307,64 @@ export class SqliteAssignmentRepo implements IAssignmentRepository {
   async update(id: string, input: Partial<Assignment>): Promise<Assignment | null> {
     const existing = await this.findById(id);
     if (!existing) return null;
+    // Validate all fields before entering transaction
+    if (input.result !== undefined) {
+      throw OrchestrationError.fromCode(ErrorCodes.ASSIGNMENT_RESULT_PERSISTENCE_NOT_CONFIGURED, {
+        message: "Assignment result persistence requires a schema migration. The current schema has no column for storing assignment results.",
+        details: { assignmentId: id },
+      });
+    }
+    if (input.metadata !== undefined) {
+      throw OrchestrationError.fromCode(ErrorCodes.ASSIGNMENT_METADATA_PERSISTENCE_NOT_CONFIGURED, {
+        message: "Assignment metadata persistence requires a schema migration. The current schema has no column for storing assignment metadata.",
+        details: { assignmentId: id },
+      });
+    }
     return this.tx.write(() => {
-      const updated = { ...existing, ...input, updatedAt: new Date().toISOString() };
-      return updated;
+      const sets: string[] = [];
+      const values: (string | number)[] = [];
+      // Map input fields to assignments table columns
+      if (input.status !== undefined) {
+        sets.push("status = ?");
+        values.push(input.status);
+      }
+      if (input.agentId !== undefined) {
+        sets.push("agent_id = ?");
+        values.push(input.agentId);
+      }
+      if (input.role !== undefined) {
+        sets.push("description = ?");
+        values.push(input.role);
+      }
+      if (sets.length === 0) {
+        // No fields to update, return existing as-is
+        return existing;
+      }
+      values.push(id);
+      const sql = `UPDATE assignments SET ${sets.join(", ")} WHERE id = ?`;
+      const result = this.db.query(sql).run(...values);
+      if (result.changes === 0) {
+        // Assignment no longer exists after update attempt
+        return null;
+      }
+      // Re-read the durable row
+      const row = this.db.query("SELECT * FROM assignments WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        id: row.id as string,
+        runId: row.run_id as string,
+        agentId: row.agent_id as string,
+        role: row.description as string,
+        status: row.status as Assignment["status"],
+        correlationId: row.run_id as string,
+        createdAt: row.created_at as string,
+        updatedAt: row.created_at as string,
+      };
     });
   }
 
   async findById(id: string): Promise<Assignment | null> {
-    const row = this.db.prepare("SELECT * FROM assignments WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    const row = this.db.query("SELECT * FROM assignments WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
     return { id: row.id as string, runId: row.run_id as string, agentId: row.agent_id as string, role: row.description as string, status: row.status as Assignment["status"], correlationId: row.run_id as string, createdAt: row.created_at as string, updatedAt: row.created_at as string };
   }
@@ -240,18 +372,18 @@ export class SqliteAssignmentRepo implements IAssignmentRepository {
   async findMany(_filter: Partial<Assignment>, pagination: PagePaginationRequest): Promise<PaginatedResult<Assignment>> {
     const limit = pagination.limit ?? 20;
     const offset = ((pagination.page ?? 1) - 1) * limit;
-    const countRow = this.db.prepare("SELECT COUNT(*) AS c FROM assignments").get() as { c: number };
-    const rows = this.db.prepare("SELECT * FROM assignments ORDER BY created_at DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
+    const countRow = this.db.query("SELECT COUNT(*) AS c FROM assignments").get() as { c: number };
+    const rows = this.db.query("SELECT * FROM assignments ORDER BY created_at DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
     return { items: rows.map(r => ({ id: r.id, runId: r.run_id, agentId: r.agent_id, role: r.description, status: r.status, correlationId: r.run_id, createdAt: r.created_at, updatedAt: r.created_at }) as unknown as Assignment), total: countRow.c, page: pagination.page ?? 1, limit };
   }
 
   async count(): Promise<number> {
-    const row = this.db.prepare("SELECT COUNT(*) AS c FROM assignments").get() as { c: number };
+    const row = this.db.query("SELECT COUNT(*) AS c FROM assignments").get() as { c: number };
     return row.c;
   }
 }
 
-class SqliteCompletionRepo implements ICompletionRepository {
+export class SqliteCompletionRepo implements ICompletionRepository {
   constructor(
     private readonly adapter: SqliteCompletionRepoAdapter,
     private readonly db: Database,
@@ -260,30 +392,32 @@ class SqliteCompletionRepo implements ICompletionRepository {
 
   async create(c: Completion): Promise<Completion> {
     return this.tx.write(() => {
-      this.db.prepare(
+      this.db.query(
         "INSERT INTO completion_decisions (id, run_id, decision, sha, checks, idempotency_key, decided_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'))",
       ).run(c.id, c.runId, c.status === "completed" ? "pass" : "fail", "", JSON.stringify(c.summary ?? ""), c.correlationId);
       return c;
     });
   }
 
-  async update(id: string, input: Partial<Completion>): Promise<Completion | null> {
-    const existing = await this.findById(id);
-    if (!existing) return null;
-    return this.tx.write(() => {
-      const updated = { ...existing, ...input, updatedAt: new Date().toISOString() };
-      return updated;
+  async update(id: string, _input: Partial<Completion>): Promise<Completion | null> {
+    // completion_decisions is append-only by design:
+    // - decision column only accepts 'pass' or 'fail' (CHECK constraint)
+    // - no mutable status, summary, outcome, or metadata columns exist
+    // - the record represents a historical decision point, not a mutable state
+    throw OrchestrationError.fromCode(ErrorCodes.COMPLETION_DECISION_IMMUTABLE, {
+      message: "Completion decisions are immutable. The completion_decisions table records historical decisions that cannot be modified.",
+      details: { completionId: id },
     });
   }
 
   async findById(id: string): Promise<Completion | null> {
-    const row = this.db.prepare("SELECT * FROM completion_decisions WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    const row = this.db.query("SELECT * FROM completion_decisions WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
     return { id: row.id as string, runId: row.run_id as string, status: row.decision as unknown as Completion["status"], summary: (row.checks as string) ?? "", correlationId: row.idempotency_key as string, createdAt: row.decided_at as string, updatedAt: row.decided_at as string };
   }
 
   async findByRunId(runId: string): Promise<Completion | null> {
-    const row = this.db.prepare("SELECT * FROM completion_decisions WHERE run_id = ? ORDER BY decided_at DESC LIMIT 1").get(runId) as Record<string, unknown> | undefined;
+    const row = this.db.query("SELECT * FROM completion_decisions WHERE run_id = ? ORDER BY decided_at DESC LIMIT 1").get(runId) as Record<string, unknown> | undefined;
     if (!row) return null;
     return { id: row.id as string, runId: row.run_id as string, status: row.decision as unknown as Completion["status"], summary: (row.checks as string) ?? "", correlationId: row.idempotency_key as string, createdAt: row.decided_at as string, updatedAt: row.decided_at as string };
   }
@@ -298,7 +432,7 @@ class SqliteVerificationRepo implements IVerificationRepository {
 
   async create(v: VerificationResult): Promise<VerificationResult> {
     return this.tx.write(() => {
-      this.db.prepare(
+      this.db.query(
         "INSERT INTO verification_results (id, run_id, verification_type, status, target_sha, started_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
       ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending", "0000000000000000000000000000000000000000");
       return v;
@@ -309,48 +443,97 @@ class SqliteVerificationRepo implements IVerificationRepository {
     const existing = await this.findById(id);
     if (!existing) return null;
     return this.tx.write(() => {
-      const updated = { ...existing, ...input, updatedAt: new Date().toISOString() };
-      return updated;
+      const sets: string[] = [];
+      const values: (string | number)[] = [];
+      // Map input fields to verification_results columns
+      if (input.status !== undefined) {
+        sets.push("status = ?");
+        values.push(input.status);
+      }
+      if (input.result !== undefined) {
+        sets.push("output_summary = ?");
+        values.push(input.result);
+      }
+      if (input.error !== undefined) {
+        sets.push("error_output = ?");
+        values.push(input.error);
+      }
+      // completed_at and duration_ms would be set when status moves to terminal
+      if (sets.length === 0) {
+        // No fields to update, return existing as-is
+        return existing;
+      }
+      // Add completed_at when moving to terminal status
+      if (input.status === 'passed' || input.status === 'failed' || input.status === 'skipped') {
+        sets.push("completed_at = datetime('now')");
+      }
+      values.push(id);
+      const sql = `UPDATE verification_results SET ${sets.join(", ")} WHERE id = ?`;
+      const result = this.db.query(sql).run(...values);
+      if (result.changes === 0) {
+        // Verification result no longer exists after update attempt
+        return null;
+      }
+      // Re-read the durable row
+      const row = this.db.query("SELECT * FROM verification_results WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+      if (!row) return null;
+      return {
+        id: row.id as string,
+        runId: row.run_id as string,
+        status: row.status as VerificationResult["status"],
+        checkType: row.verification_type as string,
+        correlationId: row.run_id as string,
+        createdAt: row.started_at as string,
+        updatedAt: row.completed_at as string ?? row.started_at as string,
+      };
     });
   }
 
   async findById(id: string): Promise<VerificationResult | null> {
-    const row = this.db.prepare("SELECT * FROM verification_results WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    const row = this.db.query("SELECT * FROM verification_results WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
-    return { id: row.id as string, runId: row.run_id as string, status: row.status as VerificationResult["status"], checkType: row.verification_type as string, correlationId: row.run_id as string, createdAt: row.created_at as string, updatedAt: row.created_at as string };
+    return { id: row.id as string, runId: row.run_id as string, status: row.status as VerificationResult["status"], checkType: row.verification_type as string, correlationId: row.run_id as string, createdAt: row.started_at as string, updatedAt: row.started_at as string };
   }
 
   async findMany(_filter: Partial<VerificationResult>, pagination: PagePaginationRequest): Promise<PaginatedResult<VerificationResult>> {
     const limit = pagination.limit ?? 20;
     const offset = ((pagination.page ?? 1) - 1) * limit;
-    const countRow = this.db.prepare("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number };
-    const rows = this.db.prepare("SELECT * FROM verification_results ORDER BY created_at DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
-    return { items: rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.created_at }) as unknown as VerificationResult), total: countRow.c, page: pagination.page ?? 1, limit };
+    const countRow = this.db.query("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number };
+    const rows = this.db.query("SELECT * FROM verification_results ORDER BY started_at DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
+    return { items: rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.started_at }) as unknown as VerificationResult), total: countRow.c, page: pagination.page ?? 1, limit };
   }
 
   async count(): Promise<number> {
-    const row = this.db.prepare("SELECT COUNT(*) AS c FROM verification_runs").get() as { c: number };
+    const row = this.db.query("SELECT COUNT(*) AS c FROM verification_results").get() as { c: number };
     return row.c;
   }
 
   async findByRunId(runId: string): Promise<VerificationResult[]> {
-    const rows = this.db.prepare("SELECT * FROM verification_results WHERE run_id = ? ORDER BY created_at DESC").all(runId) as Record<string, unknown>[];
-    return rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.created_at }) as unknown as VerificationResult);
+    const rows = this.db.query("SELECT * FROM verification_results WHERE run_id = ? ORDER BY started_at DESC").all(runId) as Record<string, unknown>[];
+    return rows.map(r => ({ id: r.id, runId: r.run_id, status: r.status as VerificationResult["status"], checkType: r.verification_type, correlationId: r.run_id, createdAt: r.started_at }) as unknown as VerificationResult);
   }
 }
 
 export class UnsupportedReplayRepository implements IReplayRepository {
   async create(_replay: Replay): Promise<Replay> {
-    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.');
+    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
+      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+    });
   }
   async findById(_id: string): Promise<Replay | null> {
-    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration.');
+    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
+      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+    });
   }
   async findMany(_pagination: PagePaginationRequest): Promise<PaginatedResult<Replay>> {
-    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration.');
+    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
+      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+    });
   }
   async count(): Promise<number> {
-    throw new Error('REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration.');
+    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
+      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
+    });
   }
 }
 
@@ -365,7 +548,7 @@ class SqliteEventRepo implements IEventRepository {
     return this.tx.write(() => {
       const eventData = JSON.stringify(e.data ?? {});
       const eventMeta = JSON.stringify(e.metadata ?? {});
-      this.db.prepare(
+      this.db.query(
         `INSERT INTO events (event_id, event_type, event_version, causation_id, correlation_id, aggregate_type, aggregate_id, aggregate_version, timestamp, data, metadata, created_ts)
          VALUES (?, ?, 1, ?, ?, 'orchestration', ?, ?, datetime('now'), ?, ?, strftime('%s','now'))`,
       ).run(e.id, e.type, e.causationId ?? null, e.correlationId, e.aggregateId ?? "", e.aggregateVersion ?? 1, eventData, eventMeta);
@@ -374,7 +557,7 @@ class SqliteEventRepo implements IEventRepository {
   }
 
   async findById(id: string): Promise<OrchestrationEvent | null> {
-    const row = this.db.prepare("SELECT * FROM events WHERE event_id = ?").get(id) as Record<string, unknown> | undefined;
+    const row = this.db.query("SELECT * FROM events WHERE event_id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
     return {
       id: row.event_id as string,
@@ -393,18 +576,18 @@ class SqliteEventRepo implements IEventRepository {
   async findMany(_filter: EventFilter | Partial<OrchestrationEvent>, pagination: PagePaginationRequest): Promise<PaginatedResult<OrchestrationEvent>> {
     const limit = pagination.limit ?? 20;
     const offset = ((pagination.page ?? 1) - 1) * limit;
-    const countRow = this.db.prepare("SELECT COUNT(*) AS c FROM events").get() as { c: number };
-    const rows = this.db.prepare("SELECT * FROM events ORDER BY created_ts DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
+    const countRow = this.db.query("SELECT COUNT(*) AS c FROM events").get() as { c: number };
+    const rows = this.db.query("SELECT * FROM events ORDER BY created_ts DESC LIMIT ? OFFSET ?").all(limit, offset) as Record<string, unknown>[];
     return { items: rows.map(r => ({ id: r.event_id, type: r.event_type, eventVersion: r.event_version ?? 1, timestamp: r.timestamp ?? "", correlationId: r.correlation_id ?? "", aggregateId: r.aggregate_id, aggregateVersion: r.aggregate_version, data: safeParseJSON(r.data as string), metadata: safeParseJSON(r.metadata as string) }) as unknown as OrchestrationEvent), total: countRow.c, page: pagination.page ?? 1, limit };
   }
 
   async count(): Promise<number> {
-    const row = this.db.prepare("SELECT COUNT(*) AS c FROM events").get() as { c: number };
+    const row = this.db.query("SELECT COUNT(*) AS c FROM events").get() as { c: number };
     return row.c;
   }
 
   async findByRunId(runId: string): Promise<OrchestrationEvent[]> {
-    const rows = this.db.prepare("SELECT * FROM events WHERE aggregate_id = ? ORDER BY created_ts DESC").all(runId) as Record<string, unknown>[];
+    const rows = this.db.query("SELECT * FROM events WHERE aggregate_id = ? ORDER BY created_ts DESC").all(runId) as Record<string, unknown>[];
     return rows.map(r => ({ id: r.event_id, type: r.event_type, eventVersion: r.event_version ?? 1, timestamp: r.timestamp ?? "", correlationId: r.correlation_id ?? "", aggregateId: r.aggregate_id, aggregateVersion: r.aggregate_version, data: safeParseJSON(r.data as string), metadata: safeParseJSON(r.metadata as string) }) as unknown as OrchestrationEvent);
   }
 }

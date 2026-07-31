@@ -55,19 +55,19 @@ export class SqliteOutboxRepository implements IOutboxRepository {
     return this.tx.write(() => {
       const data = typeof entry.payload === "string" ? entry.payload : JSON.stringify(entry.payload ?? {});
       this.db
-        .prepare(
+        .query(
           `INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, retry_count, idempotency_key, source_component, created_ts)
            VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, strftime('%s','now'))`,
         )
         .run(entry.id, entry.eventId, entry.eventType, entry.aggregateId ?? "", data, entry.correlationId, "orchestration");
-      const row = this.db.prepare("SELECT * FROM event_outbox WHERE id = ?").get(entry.id) as Record<string, unknown>;
+      const row = this.db.query("SELECT * FROM event_outbox WHERE id = ?").get(entry.id) as Record<string, unknown>;
       return rowToEntry(row);
     });
   }
 
   async update(id: string, input: Partial<OutboxEntry>): Promise<OutboxEntry | null> {
     return this.tx.write(() => {
-      const existing = this.db.prepare("SELECT * FROM event_outbox WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+      const existing = this.db.query("SELECT * FROM event_outbox WHERE id = ?").get(id) as Record<string, unknown> | undefined;
       if (!existing) return null;
 
       const sets: string[] = [];
@@ -80,16 +80,16 @@ export class SqliteOutboxRepository implements IOutboxRepository {
 
       if (sets.length > 0) {
         vals.push(id);
-        this.db.prepare(`UPDATE event_outbox SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+        this.db.query(`UPDATE event_outbox SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
       }
 
-      const row = this.db.prepare("SELECT * FROM event_outbox WHERE id = ?").get(id) as Record<string, unknown>;
+      const row = this.db.query("SELECT * FROM event_outbox WHERE id = ?").get(id) as Record<string, unknown>;
       return rowToEntry(row);
     });
   }
 
   async findById(id: string): Promise<OutboxEntry | null> {
-    const row = this.db.prepare("SELECT * FROM event_outbox WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+    const row = this.db.query("SELECT * FROM event_outbox WHERE id = ?").get(id) as Record<string, unknown> | undefined;
     if (!row) return null;
     return rowToEntry(row);
   }
@@ -108,9 +108,9 @@ export class SqliteOutboxRepository implements IOutboxRepository {
       const limit = pagination.limit ?? 20;
       const offset = (page - 1) * limit;
 
-      const countRow = this.db.prepare(`SELECT COUNT(*) AS c FROM event_outbox ${where}`).get(...vals) as { c: number };
+      const countRow = this.db.query(`SELECT COUNT(*) AS c FROM event_outbox ${where}`).get(...vals) as { c: number };
       const rows = this.db
-        .prepare(`SELECT * FROM event_outbox ${where} ORDER BY created_ts DESC LIMIT ? OFFSET ?`)
+        .query(`SELECT * FROM event_outbox ${where} ORDER BY created_ts DESC LIMIT ? OFFSET ?`)
         .all(...vals, limit, offset) as Record<string, unknown>[];
 
       return {
@@ -125,7 +125,7 @@ export class SqliteOutboxRepository implements IOutboxRepository {
   async findPending(): Promise<OutboxEntry[]> {
     return this.tx.read(() => {
       const rows = this.db
-        .prepare("SELECT * FROM event_outbox WHERE status = 'pending' ORDER BY created_ts ASC LIMIT 100")
+        .query("SELECT * FROM event_outbox WHERE status = 'pending' ORDER BY created_ts ASC LIMIT 100")
         .all() as Record<string, unknown>[];
       return rows.map(rowToEntry);
     });
@@ -139,7 +139,7 @@ export class SqliteOutboxRepository implements IOutboxRepository {
       if (filter.destination) { conditions.push("source_component = ?"); vals.push(filter.destination); }
       if (filter.correlationId) { conditions.push("idempotency_key = ?"); vals.push(filter.correlationId); }
       const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-      const row = this.db.prepare(`SELECT COUNT(*) AS c FROM event_outbox ${where}`).get(...vals) as { c: number };
+      const row = this.db.query(`SELECT COUNT(*) AS c FROM event_outbox ${where}`).get(...vals) as { c: number };
       return row.c;
     });
   }
@@ -147,7 +147,7 @@ export class SqliteOutboxRepository implements IOutboxRepository {
   async claimNextBatch(batchSize: number): Promise<OutboxEntry[]> {
     return this.tx.write(() => {
       const rows = this.db
-        .prepare("SELECT * FROM event_outbox WHERE status = 'pending' ORDER BY created_ts ASC LIMIT ?")
+        .query("SELECT * FROM event_outbox WHERE status = 'pending' ORDER BY created_ts ASC LIMIT ?")
         .all(batchSize) as Record<string, unknown>[];
       return rows.map(rowToEntry);
     });
@@ -157,13 +157,13 @@ export class SqliteOutboxRepository implements IOutboxRepository {
     return this.tx.write(() => {
       // Idempotency check: skip if already delivered by idempotency key
       const existing = this.db
-        .prepare("SELECT status FROM event_outbox WHERE idempotency_key = ?")
+        .query("SELECT status FROM event_outbox WHERE idempotency_key = ?")
         .get(idempotencyKey) as { status: string } | undefined;
       if (existing && existing.status === 'delivered') return;
 
       // Mark as delivered
       this.db
-        .prepare("UPDATE event_outbox SET status = 'delivered' WHERE id = ?")
+        .query("UPDATE event_outbox SET status = 'delivered' WHERE id = ?")
         .run(id);
     });
   }
@@ -171,7 +171,7 @@ export class SqliteOutboxRepository implements IOutboxRepository {
   async markFailed(id: string, attemptCount: number, lastError: string): Promise<void> {
     return this.tx.write(() => {
       this.db
-        .prepare("UPDATE event_outbox SET status = 'failed', retry_count = ?, last_error = ? WHERE id = ?")
+        .query("UPDATE event_outbox SET status = 'failed', retry_count = ?, last_error = ? WHERE id = ?")
         .run(attemptCount, lastError, id);
     });
   }
@@ -197,7 +197,7 @@ export class SqliteOutboxRepository implements IOutboxRepository {
       // Atomic claim: update only rows that are still pending, limited by
       // a subquery with ORDER BY and LIMIT to ensure FIFO ordering.
       this.db
-        .prepare(
+        .query(
           `UPDATE event_outbox
            SET status = 'delivering', last_error = ?
            WHERE id IN (
@@ -212,7 +212,7 @@ export class SqliteOutboxRepository implements IOutboxRepository {
       // Return the rows that were just claimed (identified by the claim info
       // we wrote into last_error).
       const rows = this.db
-        .prepare(
+        .query(
           "SELECT * FROM event_outbox WHERE status = 'delivering' AND last_error = ? ORDER BY created_ts ASC",
         )
         .all(claimInfo) as Record<string, unknown>[];
@@ -238,7 +238,7 @@ export class SqliteOutboxRepository implements IOutboxRepository {
   markDeliveredById(id: string, idempotencyKey: string): boolean {
     return this.tx.write(() => {
       const result = this.db
-        .prepare(
+        .query(
           "UPDATE event_outbox SET status = 'delivered' WHERE id = ? AND status = 'delivering' AND idempotency_key = ?",
         )
         .run(id, idempotencyKey);

@@ -3,7 +3,7 @@
  * Uses actual repository interfaces with correct schema FK setup.
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { unlinkSync, existsSync } from "fs"
+import { mkdtempSync, unlinkSync, existsSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { Database } from "bun:sqlite"
@@ -13,17 +13,14 @@ import { createTransactionManager } from "../../src/orchestration/persistence/tr
 import { EventsRepository } from "../../src/orchestration/persistence/repositories/event"
 import { TaskRunsRepository } from "../../src/orchestration/persistence/repositories/task-run"
 import { WorktreesRepository } from "../../src/orchestration/persistence/repositories/worktree"
-
-let dbCounter = 0
-const DB_PATH = () => { dbCounter++; return join(tmpdir(), `fd-e2e-orch-test-${dbCounter}.db`) }
+import { deterministicCleanup } from "./harness/cleanup"
 
 /** Bootstrap FK parent rows needed by task_runs. */
 
-let currentDbPath = ""
+let tempDir = ""
 
 function freshDb(): Database {
-  const path = DB_PATH()
-  currentDbPath = path
+  const path = join(tempDir, "test.db")
   const sidecars = [path + "-wal", path + "-shm", path]
   for (const p of sidecars) {
     if (existsSync(p)) {
@@ -31,8 +28,8 @@ function freshDb(): Database {
     }
   }
   const db = new Database(path, { create: true })
-  db.prepare("PRAGMA journal_mode = WAL").run()
-  db.prepare("PRAGMA foreign_keys = ON").run()
+  db.query("PRAGMA journal_mode = WAL").run()
+  db.query("PRAGMA foreign_keys = ON").run()
   runMigrations(db)
   return db
 }
@@ -40,11 +37,11 @@ function freshDb(): Database {
 /** Seed DB with default FK parents and return reusable contract/family IDs. */
 const CFG = { contract: "ct-e2e", family: "fam-e2e" }
 function seed(db: Database): void {
-  db.prepare("INSERT OR IGNORE INTO contract_families (family_id, name, description, created_by, created_at) VALUES (?, 'e2e-family', 'test', 'test', datetime('now'))").run(CFG.family)
-  db.prepare(`INSERT OR IGNORE INTO task_contracts (contract_id, family_id, version, title, description, in_scope, out_of_scope, payload_hash, repo_url, repo_sha, created_by, created_at)
+  db.query("INSERT OR IGNORE INTO contract_families (family_id, name, description, created_by, created_at) VALUES (?, 'e2e-family', 'test', 'test', datetime('now'))").run(CFG.family)
+  db.query(`INSERT OR IGNORE INTO task_contracts (contract_id, family_id, version, title, description, in_scope, out_of_scope, payload_hash, repo_url, repo_sha, created_by, created_at)
     VALUES (?, ?, 1, 'E2E', 'test', '[]', '[]', 'hash', 'https://r', 's', 'test', datetime('now'))`).run(CFG.contract, CFG.family)
-  db.prepare("INSERT OR IGNORE INTO repositories (repository_id, url, canonical_path, created_at) VALUES ('repo-1', 'https://repo', '/tmp/r', datetime('now'))").run()
-  db.prepare("INSERT OR IGNORE INTO repositories (repository_id, url, canonical_path, created_at) VALUES ('r1', 'https://r1', '/tmp/r1', datetime('now'))").run()
+  db.query("INSERT OR IGNORE INTO repositories (repository_id, url, canonical_path, created_at) VALUES ('repo-1', 'https://repo', '/tmp/r', datetime('now'))").run()
+  db.query("INSERT OR IGNORE INTO repositories (repository_id, url, canonical_path, created_at) VALUES ('r1', 'https://r1', '/tmp/r1', datetime('now'))").run()
 }
 
 describe("E2E Orchestration Pipeline", () => {
@@ -55,6 +52,7 @@ describe("E2E Orchestration Pipeline", () => {
   let workRepo: WorktreesRepository
 
   beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "e2e-"))
     db = freshDb()
     tx = createTransactionManager(db)
     eventsRepo = new EventsRepository(db, tx)
@@ -63,17 +61,9 @@ describe("E2E Orchestration Pipeline", () => {
     seed(db) // create FK parent rows
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     closeAllConnections()
-    if (db) {
-      try { db.close() } catch {}
-    }
-    if (currentDbPath && existsSync(currentDbPath)) {
-      for (const ext of ["-wal", "-shm", ""]) {
-        const f = currentDbPath.replace(/\.db$/, ext)
-        if (existsSync(f)) try { unlinkSync(f) } catch {}
-      }
-    }
+    await deterministicCleanup({ db, dir: tempDir })
   })
 
   /* ─── Run lifecycle ─── */

@@ -20,6 +20,7 @@ export const ErrorCodes = {
   INVALID_INPUT: { code: "INVALID_INPUT", category: ErrorCategory.VALIDATION, httpStatus: 400, retryable: false },
   MISSING_REQUIRED_FIELD: { code: "MISSING_REQUIRED_FIELD", category: ErrorCategory.VALIDATION, httpStatus: 400, retryable: false },
   INVALID_FORMAT: { code: "INVALID_FORMAT", category: ErrorCategory.VALIDATION, httpStatus: 400, retryable: false },
+  INVALID_RUN_STATUS: { code: "INVALID_RUN_STATUS", category: ErrorCategory.VALIDATION, httpStatus: 400, retryable: false },
   UNAUTHENTICATED: { code: "UNAUTHENTICATED", category: ErrorCategory.AUTHENTICATION, httpStatus: 401, retryable: false },
   FORBIDDEN: { code: "FORBIDDEN", category: ErrorCategory.AUTHORIZATION, httpStatus: 403, retryable: false },
   RUN_NOT_FOUND: { code: "RUN_NOT_FOUND", category: ErrorCategory.NOT_FOUND, httpStatus: 404, retryable: false },
@@ -38,9 +39,13 @@ export const ErrorCodes = {
   DATABASE_UNAVAILABLE: { code: "DATABASE_UNAVAILABLE", category: ErrorCategory.DEPENDENCY, httpStatus: 503, retryable: true },
   STREAM_UNAVAILABLE: { code: "STREAM_UNAVAILABLE", category: ErrorCategory.DEPENDENCY, httpStatus: 503, retryable: true },
   INTERNAL_ERROR: { code: "INTERNAL_ERROR", category: ErrorCategory.INTERNAL, httpStatus: 500, retryable: false },
-  UNEXPECTED_ERROR: { code: "UNEXPECTED_ERROR", category: ErrorCategory.INTERNAL, httpStatus: 500, retryable: false },
-  REQUEST_TIMEOUT: { code: "REQUEST_TIMEOUT", category: ErrorCategory.TIMEOUT, httpStatus: 408, retryable: true },
-  STREAM_TIMEOUT: { code: "STREAM_TIMEOUT", category: ErrorCategory.TIMEOUT, httpStatus: 408, retryable: true },
+  UNSUPPORTED_CAPABILITY: { code: "UNSUPPORTED_CAPABILITY", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },
+  REPLAY_NOT_CONFIGURED: { code: "REPLAY_NOT_CONFIGURED", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },
+  COMPLETION_DECISION_IMMUTABLE: { code: "COMPLETION_DECISION_IMMUTABLE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
+  VERIFICATION_RESULT_IMMUTABLE: { code: "VERIFICATION_RESULT_IMMUTABLE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
+  RUN_STATUS_TRANSITION_INVALID: { code: "RUN_STATUS_TRANSITION_INVALID", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
+  ASSIGNMENT_RESULT_PERSISTENCE_NOT_CONFIGURED: { code: "ASSIGNMENT_RESULT_PERSISTENCE_NOT_CONFIGURED", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },
+  ASSIGNMENT_METADATA_PERSISTENCE_NOT_CONFIGURED: { code: "ASSIGNMENT_METADATA_PERSISTENCE_NOT_CONFIGURED", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },
 } as const;
 
 export interface OrchestrationErrorOptions {

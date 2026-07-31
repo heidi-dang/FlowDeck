@@ -20,7 +20,7 @@ export class TaskRunsRepository extends BaseRepository {
 
   create(input: CreateTaskRunInput): TaskRunRow {
     return this.tx.write(() => {
-      this.db.prepare(`INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
+      this.db.query(`INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
         VALUES (?, ?, ?, 'created', 1, ?, ?, datetime('now'), strftime('%s','now'))`)
         .run(input.runId, input.contractId, input.strategy, input.baselineSha, input.repoBranch)
       return this.findById(input.runId)!
@@ -28,19 +28,19 @@ export class TaskRunsRepository extends BaseRepository {
   }
 
   findById(id: string): TaskRunRow | undefined {
-    const r = this.db.prepare("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined
+    const r = this.db.query("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined
     return r ? mapRow(r) : undefined
   }
 
   findByState(state: string): TaskRunRow[] {
-    return (this.db.prepare("SELECT * FROM task_runs WHERE state = ? ORDER BY created_at").all(state) as Record<string, unknown>[]).map(mapRow)
+    return (this.db.query("SELECT * FROM task_runs WHERE state = ? ORDER BY created_at").all(state) as Record<string, unknown>[]).map(mapRow)
   }
 
   updateState(runId: string, state: string, sha?: string): boolean {
     return this.tx.write(() => {
       const r = sha
-        ? this.db.prepare("UPDATE task_runs SET state = ?, current_sha = ? WHERE run_id = ?").run(state, sha, runId)
-        : this.db.prepare("UPDATE task_runs SET state = ? WHERE run_id = ?").run(state, runId)
+        ? this.db.query("UPDATE task_runs SET state = ?, current_sha = ? WHERE run_id = ?").run(state, sha, runId)
+        : this.db.query("UPDATE task_runs SET state = ? WHERE run_id = ?").run(state, runId)
       return r.changes > 0
     })
   }

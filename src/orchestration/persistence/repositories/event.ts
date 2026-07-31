@@ -25,12 +25,12 @@ export class EventsRepository extends BaseRepository {
 
   append(event: NewEventInput): EventRow {
     return this.tx.write(() => {
-      this.db.prepare(`INSERT INTO events (event_id, event_type, event_version, causation_id, correlation_id,
+      this.db.query(`INSERT INTO events (event_id, event_type, event_version, causation_id, correlation_id,
           aggregate_type, aggregate_id, aggregate_version, timestamp, data, metadata, created_ts)
         VALUES (?, ?, 1, ?, ?, ?, ?, ?, datetime('now'), ?, ?, strftime('%s','now'))`)
         .run(event.eventId, event.eventType, event.causationId ?? null, event.correlationId ?? null,
           event.aggregateType, event.aggregateId, event.aggregateVersion, event.data, event.metadata ?? '{}')
-      return mapRow(this.db.prepare("SELECT * FROM events WHERE event_id = ?").get(event.eventId) as Record<string, unknown>)
+      return mapRow(this.db.query("SELECT * FROM events WHERE event_id = ?").get(event.eventId) as Record<string, unknown>)
     })
   }
 
@@ -39,27 +39,27 @@ export class EventsRepository extends BaseRepository {
     const params: unknown[] = [fromSeq]
     if (toSeq !== undefined) { sql += " AND global_sequence <= ?"; params.push(toSeq) }
     sql += " ORDER BY global_sequence ASC"
-    return (this.db.prepare(sql).all(...(params as [number])) as Record<string, unknown>[]).map(mapRow)
+    return (this.db.query(sql).all(...(params as [number])) as Record<string, unknown>[]).map(mapRow)
   }
 
   getMaxAggregateVersion(aggregateType: string, aggregateId: string): number {
-    const r = this.db.prepare("SELECT COALESCE(MAX(aggregate_version), 0) AS v FROM events WHERE aggregate_type = ? AND aggregate_id = ?")
+    const r = this.db.query("SELECT COALESCE(MAX(aggregate_version), 0) AS v FROM events WHERE aggregate_type = ? AND aggregate_id = ?")
       .get(aggregateType, aggregateId) as { v: number }
     return r.v
   }
 
   insertOutbox(input: { id: string; eventId: string; eventType: string; aggregateId: string; data: string; idempotencyKey: string; sourceComponent: string }): OutboxRow {
     return this.tx.write(() => {
-      this.db.prepare(`INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, idempotency_key, source_component, created_ts)
+      this.db.query(`INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, idempotency_key, source_component, created_ts)
         VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, strftime('%s','now'))`)
         .run(input.id, input.eventId, input.eventType, input.aggregateId, input.data, input.idempotencyKey, input.sourceComponent)
-      return mapOutboxRow(this.db.prepare("SELECT * FROM event_outbox WHERE id = ?").get(input.id) as Record<string, unknown>)
+      return mapOutboxRow(this.db.query("SELECT * FROM event_outbox WHERE id = ?").get(input.id) as Record<string, unknown>)
     })
   }
 
   registerSubscriber(id: string, name: string, type: string, eventTypes: string): void {
     this.tx.write(() => {
-      this.db.prepare("INSERT OR IGNORE INTO event_subscribers (id, name, subscription_type, event_types, created_at, is_active) VALUES (?, ?, ?, ?, datetime('now'), 1)")
+      this.db.query("INSERT OR IGNORE INTO event_subscribers (id, name, subscription_type, event_types, created_at, is_active) VALUES (?, ?, ?, ?, datetime('now'), 1)")
         .run(id, name, type, eventTypes)
     })
   }

@@ -14,7 +14,7 @@ export class WorktreesRepository extends BaseRepository {
 
   create(input: { id: string; runId: string; repositoryId: string; path: string; branch: string; phase: number; assignmentId?: string }): WorktreeRow {
     return this.tx.write(() => {
-      this.db.prepare(`INSERT INTO worktrees (id, run_id, assignment_id, repository_id, path, branch, phase, status, created_at)
+      this.db.query(`INSERT INTO worktrees (id, run_id, assignment_id, repository_id, path, branch, phase, status, created_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 'active', datetime('now'))`)
         .run(input.id, input.runId, input.assignmentId ?? null, input.repositoryId, input.path, input.branch, input.phase)
       return this.findById(input.id)!
@@ -22,12 +22,12 @@ export class WorktreesRepository extends BaseRepository {
   }
 
   findById(id: string): WorktreeRow | undefined {
-    const r = this.db.prepare("SELECT * FROM worktrees WHERE id = ?").get(id) as Record<string, unknown> | undefined
+    const r = this.db.query("SELECT * FROM worktrees WHERE id = ?").get(id) as Record<string, unknown> | undefined
     return r ? mapRow(r) : undefined
   }
 
   findByRun(runId: string): WorktreeRow[] {
-    return (this.db.prepare("SELECT * FROM worktrees WHERE run_id = ? ORDER BY created_at").all(runId) as Record<string, unknown>[]).map(mapRow)
+    return (this.db.query("SELECT * FROM worktrees WHERE run_id = ? ORDER BY created_at").all(runId) as Record<string, unknown>[]).map(mapRow)
   }
 }
 

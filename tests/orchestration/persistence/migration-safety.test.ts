@@ -1,23 +1,23 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { mkdtempSync, rmSync } from "fs"
+import { mkdtempSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import { Database } from "bun:sqlite"
 import { runMigrations, getCurrentVersion } from "@/orchestration/persistence/migrations/migration-runner"
+import { deterministicCleanup } from "../harness/cleanup"
 
 let currentDir = ""
 let TEST_DB = ""
 
-function clean() {
+async function clean() {
   if (currentDir) {
-    try { rmSync(currentDir, { recursive: true, force: true }) } catch {}
+    await deterministicCleanup({ dir: currentDir })
     currentDir = ""
     TEST_DB = ""
   }
 }
 
 function setupTestDb(): string {
-  clean()
   currentDir = mkdtempSync(join(tmpdir(), "fd-mig-safe-"))
   TEST_DB = join(currentDir, "test.db")
   return TEST_DB

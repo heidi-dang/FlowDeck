@@ -10,6 +10,11 @@ import type { Database } from "bun:sqlite";
 import type { TransactionManager } from "../transaction-manager";
 import type { TransactionalRunWriter } from "../transactional-run-writer";
 import type { Run, UpdateRunInput } from "../../types/runs";
+import {
+  mapRunStatusToTaskRunState,
+  mapTaskRunStateToRunStatus,
+  isValidPersistedPhase,
+} from "../../types/runs";
 import type { OrchestrationEvent } from "../../types/events";
 import type { OutboxEntry } from "../../types/outbox";
 
@@ -24,17 +29,17 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
     return tx.write(() => {
       // 1. Insert task_runs row
       const contractId = run.contractId ?? "contract-default";
-      db.prepare(
+      db.query(
         `INSERT OR IGNORE INTO contract_families (family_id, name, description, created_by, created_at)
          VALUES ('family-default', 'Default Family', 'Default contract family', 'system', datetime('now'))`,
       ).run();
-      db.prepare(
+      db.query(
         `INSERT OR IGNORE INTO task_contracts (contract_id, family_id, version, title, description, repo_url, repo_sha, created_by, created_at)
          VALUES (?, 'family-default', 1, 'Default Contract', 'Default contract description', 'https://github.com/heidi-dang/FlowDeck', '0000000000000000000000000000000000000000', 'system', datetime('now'))`,
       ).run(contractId);
 
-      const validStates = ['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled']; const state = validStates.includes(run.status) ? run.status : 'created';
-      db.prepare(
+      const state = mapRunStatusToTaskRunState(run.status);
+      db.query(
         `INSERT INTO task_runs (run_id, contract_id, strategy, state, aggregate_version, baseline_sha, repo_branch, created_at, created_ts)
          VALUES (?, ?, ?, ?, 1, ?, ?, datetime('now'), strftime('%s','now'))`,
       ).run(
@@ -49,7 +54,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
       // 2. Insert events row
       const eventData = JSON.stringify(event.data ?? {});
       const eventMeta = JSON.stringify(event.metadata ?? {});
-      db.prepare(
+      db.query(
         `INSERT INTO events (event_id, event_type, event_version, causation_id, correlation_id, aggregate_type, aggregate_id, aggregate_version, timestamp, data, metadata, created_ts)
          VALUES (?, ?, 1, ?, ?, 'task_run', ?, ?, datetime('now'), ?, ?, strftime('%s','now'))`,
       ).run(
@@ -65,7 +70,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
 
       // 3. Insert event_outbox row
       const outboxData = JSON.stringify(outboxEntry.payload ?? {});
-      db.prepare(
+      db.query(
         `INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, retry_count, idempotency_key, source_component, created_ts)
          VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, 'orchestration', strftime('%s','now'))`,
       ).run(
@@ -91,9 +96,9 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
   ): Run {
     return tx.write(() => {
       // 1. Update task_runs state
-      if (input.status) {
-        const taskRunState = ['created','planning','analysing','delegating','executing','verifying','recovering','completed','failed','cancelled'].includes(input.status) ? input.status : 'executing';
-        db.prepare(
+      if (input.status !== undefined) {
+        const taskRunState = mapRunStatusToTaskRunState(input.status);
+        db.query(
           `UPDATE task_runs SET state = ?, aggregate_version = aggregate_version + 1 WHERE run_id = ?`,
         ).run(taskRunState, id);
       }
@@ -101,7 +106,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
       // 2. Insert events row
       const eventData = JSON.stringify(event.data ?? {});
       const eventMeta = JSON.stringify(event.metadata ?? {});
-      db.prepare(
+      db.query(
         `INSERT INTO events (event_id, event_type, event_version, causation_id, correlation_id, aggregate_type, aggregate_id, aggregate_version, timestamp, data, metadata, created_ts)
          VALUES (?, ?, 1, ?, ?, 'task_run', ?, (SELECT COALESCE(MAX(aggregate_version), 0) + 1 FROM events WHERE aggregate_type = 'task_run' AND aggregate_id = ?), datetime('now'), ?, ?, strftime('%s','now'))`,
       ).run(
@@ -117,7 +122,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
 
       // 3. Insert event_outbox row
       const outboxData = JSON.stringify(outboxEntry.payload ?? {});
-      db.prepare(
+      db.query(
         `INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, retry_count, idempotency_key, source_component, created_ts)
          VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, 'orchestration', strftime('%s','now'))`,
       ).run(
@@ -130,14 +135,17 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
       );
 
       // 4. Read back the updated run
-      const row = db.prepare("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined;
+      const row = db.query("SELECT * FROM task_runs WHERE run_id = ?").get(id) as Record<string, unknown> | undefined;
       if (!row) {
         throw new Error(`Run ${id} not found after update`);
+      }
+      if (!isValidPersistedPhase(row.state as string)) {
+        throw new Error(`INVALID_PERSISTED_PHASE: "${row.state}" is not a valid persisted orchestration phase.`);
       }
       const now = new Date().toISOString();
       const updated: Run = {
         id: row.run_id as string,
-        status: (row.state as string) as Run["status"],
+        status: mapTaskRunStateToRunStatus(row.state as string),
         runType: (row.strategy as string) ?? "simple",
         correlationId: id,
         contractId: (row.contract_id as string) ?? undefined,

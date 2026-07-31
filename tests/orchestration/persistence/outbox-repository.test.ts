@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Database } from "bun:sqlite";
@@ -7,20 +7,13 @@ import { createTransactionManager } from "@/orchestration/persistence/transactio
 import { SqliteOutboxRepository } from "@/orchestration/persistence/adapters/sqlite-outbox-repository";
 import { OutboxStatus as OS } from "@/orchestration/types/outbox";
 import type { OutboxEntry } from "@/orchestration/types/outbox";
+import { deterministicCleanup } from "../harness/cleanup";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
 let tmpDir = "";
 
-function clean(): void {
-  if (tmpDir) {
-    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ok */ }
-    tmpDir = "";
-  }
-}
-
 function setupDb(): Database {
-  clean();
   tmpDir = mkdtempSync(join(tmpdir(), "fd-outbox-"));
   const db = new Database(join(tmpDir, "test.db"), { create: true });
   db.exec(`
@@ -65,7 +58,7 @@ function insertRaw(
   status: string,
   _extra?: { lastError?: string },
 ): void {
-  db.prepare(
+  db.query(
     "INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, retry_count, idempotency_key, source_component, created_ts) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, strftime('%s','now'))",
   ).run(id, `evt-${id}`, "Test", `agg-${id}`, "{}", status, `corr-${id}`, "test");
 }
@@ -82,9 +75,8 @@ describe("SqliteOutboxRepository", () => {
     repo = new SqliteOutboxRepository(db, tx);
   });
 
-  afterEach(() => {
-    try { db.close(); } catch { /* ok */ }
-    clean();
+  afterEach(async () => {
+    await deterministicCleanup({ db, dir: tmpDir });
   });
 
   describe("create", () => {
@@ -100,7 +92,7 @@ describe("SqliteOutboxRepository", () => {
       expect(result.aggregateId).toBe("agg-ob-1");
 
       // Verify directly in SQLite
-      const row = db.prepare("SELECT * FROM event_outbox WHERE id = ?").get("ob-1") as Record<string, unknown>;
+      const row = db.query("SELECT * FROM event_outbox WHERE id = ?").get("ob-1") as Record<string, unknown>;
       expect(row).toBeDefined();
       expect(row.id).toBe("ob-1");
       expect(row.event_id).toBe("evt-ob-1");
@@ -112,7 +104,7 @@ describe("SqliteOutboxRepository", () => {
       const entry = makeEntry("ob-ts");
       await repo.create(entry);
 
-      const row = db.prepare("SELECT created_ts FROM event_outbox WHERE id = ?").get("ob-ts") as Record<string, unknown>;
+      const row = db.query("SELECT created_ts FROM event_outbox WHERE id = ?").get("ob-ts") as Record<string, unknown>;
       expect(row.created_ts).toBeGreaterThan(0);
     });
   });
@@ -157,7 +149,7 @@ describe("SqliteOutboxRepository", () => {
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe(OS.DELIVERED);
 
-      const row = db.prepare("SELECT status FROM event_outbox WHERE id = ?").get("ob-upd1") as Record<string, unknown>;
+      const row = db.query("SELECT status FROM event_outbox WHERE id = ?").get("ob-upd1") as Record<string, unknown>;
       expect(row.status).toBe("delivered");
     });
 
@@ -170,7 +162,7 @@ describe("SqliteOutboxRepository", () => {
       expect(updated!.status).toBe(OS.FAILED);
       expect(updated!.lastError).toBe("Connection refused");
 
-      const row = db.prepare("SELECT status, last_error FROM event_outbox WHERE id = ?").get("ob-upd2") as Record<string, unknown>;
+      const row = db.query("SELECT status, last_error FROM event_outbox WHERE id = ?").get("ob-upd2") as Record<string, unknown>;
       expect(row.status).toBe("failed");
       expect(row.last_error).toBe("Connection refused");
     });
@@ -186,7 +178,7 @@ describe("SqliteOutboxRepository", () => {
 
       expect(updated!.attemptCount).toBe(2);
 
-      const row = db.prepare("SELECT retry_count FROM event_outbox WHERE id = ?").get("ob-retry") as Record<string, unknown>;
+      const row = db.query("SELECT retry_count FROM event_outbox WHERE id = ?").get("ob-retry") as Record<string, unknown>;
       expect(row.retry_count).toBe(2);
     });
   });
@@ -262,7 +254,7 @@ describe("SqliteOutboxRepository", () => {
       const tx = createTransactionManager(db);
       try {
         await tx.write(() => {
-          db.prepare(
+          db.query(
             "INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, retry_count, idempotency_key, source_component, created_ts) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, strftime('%s','now'))",
           ).run("ob-rollback", "evt-roll", "Test", "agg-r", "{}", "corr-roll", "test");
           throw new Error("simulated failure");
@@ -271,7 +263,7 @@ describe("SqliteOutboxRepository", () => {
         // expected
       }
 
-      const row = db.prepare("SELECT COUNT(*) AS c FROM event_outbox WHERE id = 'ob-rollback'").get() as { c: number };
+      const row = db.query("SELECT COUNT(*) AS c FROM event_outbox WHERE id = 'ob-rollback'").get() as { c: number };
       expect(row.c).toBe(0);
     });
 
@@ -281,14 +273,14 @@ describe("SqliteOutboxRepository", () => {
       const tx = createTransactionManager(db);
       try {
         await tx.write(() => {
-          db.prepare("UPDATE event_outbox SET status = ? WHERE id = ?").run("delivered", "ob-roll-upd");
+          db.query("UPDATE event_outbox SET status = ? WHERE id = ?").run("delivered", "ob-roll-upd");
           throw new Error("simulated update failure");
         });
       } catch {
         // expected
       }
 
-      const row = db.prepare("SELECT status FROM event_outbox WHERE id = 'ob-roll-upd'").get() as Record<string, unknown>;
+      const row = db.query("SELECT status FROM event_outbox WHERE id = 'ob-roll-upd'").get() as Record<string, unknown>;
       expect(row.status).toBe("pending");
     });
 
@@ -300,7 +292,7 @@ describe("SqliteOutboxRepository", () => {
       const tx = createTransactionManager(db);
       try {
         await tx.write(() => {
-          db.prepare(
+          db.query(
             "INSERT INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, retry_count, idempotency_key, source_component, created_ts) VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, strftime('%s','now'))",
           ).run("ob-tx-fail", "evt-fail", "Test", "agg-f", "{}", "corr-fail", "test");
           throw new Error("outer tx failure");
@@ -310,11 +302,11 @@ describe("SqliteOutboxRepository", () => {
       }
 
       // ob-tx-safe was created in its own transaction and should exist
-      const safe = db.prepare("SELECT COUNT(*) AS c FROM event_outbox WHERE id = 'ob-tx-safe'").get() as { c: number };
+      const safe = db.query("SELECT COUNT(*) AS c FROM event_outbox WHERE id = 'ob-tx-safe'").get() as { c: number };
       expect(safe.c).toBe(1);
 
       // ob-tx-fail was inside the failed transaction and should not exist
-      const fail = db.prepare("SELECT COUNT(*) AS c FROM event_outbox WHERE id = 'ob-tx-fail'").get() as { c: number };
+      const fail = db.query("SELECT COUNT(*) AS c FROM event_outbox WHERE id = 'ob-tx-fail'").get() as { c: number };
       expect(fail.c).toBe(0);
     });
   });
