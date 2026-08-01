@@ -7,6 +7,7 @@
  * - Cancel in-flight tools and model calls
  * - Release ownership on cancellation
  * - Persist checkpoints for recovery
+ * - Track cancellation phases for force escalation and restart recovery
  */
 
 import { z } from "zod/v4";
@@ -103,6 +104,32 @@ const DEFAULT_CONFIG: CancellationServiceConfig = {
   defaultTimeoutMs: 30_000,
 };
 
+/**
+ * Cancellation phases tracked per run for restart recovery and force escalation.
+ * active → graceful_requested → force_requested → completed
+ */
+export type CancellationPhase =
+  | "active"
+  | "graceful_requested"
+  | "force_requested"
+  | "completed";
+
+/**
+ * Repository port for persisting cancellation phases (restart recovery).
+ */
+export interface CancellationPhaseRepositoryPort {
+  savePhase(runId: string, phase: CancellationPhase, details?: Record<string, unknown>): Promise<void>;
+  loadPhase(runId: string): Promise<CancellationPhaseState | null>;
+  deletePhase(runId: string): Promise<void>;
+}
+
+export interface CancellationPhaseState {
+  readonly runId: string;
+  readonly phase: CancellationPhase;
+  readonly details?: Record<string, unknown>;
+  readonly updatedAt: Date;
+}
+
 export class CancellationService {
   private tokens = new Map<string, CancellationToken>();
   private toolOwnership = new Map<string, ToolOwnership>();
@@ -112,6 +139,8 @@ export class CancellationService {
   private ownershipPort?: OwnershipPort;
   private pendingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private recoveryAttempts = new Map<string, number>();
+  private cancellationPhases = new Map<string, CancellationPhase>();
+  private phaseRepo?: CancellationPhaseRepositoryPort;
 
   constructor(
     private readonly config: CancellationServiceConfig = DEFAULT_CONFIG,
@@ -123,6 +152,41 @@ export class CancellationService {
 
   setOwnershipPort(port: OwnershipPort): void {
     this.ownershipPort = port;
+  }
+
+  /**
+   * Set the repository for persisting cancellation phases (restart recovery).
+   */
+  setPhaseRepository(repo: CancellationPhaseRepositoryPort): void {
+    this.phaseRepo = repo;
+  }
+
+  /**
+   * Get the current cancellation phase for a run.
+   * Falls back to in-memory state if no repository is configured.
+   */
+  async getCancelPhase(runId: string): Promise<CancellationPhase> {
+    if (this.phaseRepo) {
+      const state = await this.phaseRepo.loadPhase(runId);
+      if (state) return state.phase;
+    }
+    return this.cancellationPhases.get(runId) ?? "active";
+  }
+
+  /**
+   * Persist and update the cancellation phase for a run.
+   * Used internally during cancel/force escalation and by external callers
+   * that need to track cancellation lifecycle across restarts.
+   */
+  async setCancelPhase(
+    runId: string,
+    phase: CancellationPhase,
+    details?: Record<string, unknown>,
+  ): Promise<void> {
+    this.cancellationPhases.set(runId, phase);
+    if (this.phaseRepo) {
+      await this.phaseRepo.savePhase(runId, phase, details);
+    }
   }
 
   onEvent(handler: CancellationEventHandler): () => void {
@@ -158,6 +222,8 @@ export class CancellationService {
       children: new Set(),
     };
     this.tokens.set(token.id, token);
+    // Initialize phase as "active" for restart tracking
+    this.cancellationPhases.set(runId, "active");
     return token;
   }
 
@@ -215,6 +281,28 @@ export class CancellationService {
       return false;
     }
 
+    // Extract runId from root token for phase tracking
+    const isRoot = tokenId.startsWith("token:root:");
+    const runId = isRoot ? tokenId.replace(/^token:root:/, "") : "";
+
+    // Phase transition: active → graceful_requested (or force_requested if forced)
+    if (isRoot) {
+      const currentPhase = await this.getCancelPhase(runId);
+      if (options.force) {
+        await this.setCancelPhase(runId, "force_requested", {
+          reason: options.reason,
+          forced: true,
+          tokenId,
+        });
+      } else if (currentPhase === "active") {
+        await this.setCancelPhase(runId, "graceful_requested", {
+          reason: options.reason,
+          forced: false,
+          tokenId,
+        });
+      }
+    }
+
     const cancelledAt = new Date();
     const cancelledToken: CancellationToken = {
       ...token,
@@ -241,23 +329,79 @@ export class CancellationService {
 
     // Handle timeout if specified (use default if none provided)
     const timeout = options.timeout ?? this.config.defaultTimeoutMs;
-    if (timeout > 0 && !options.force) {
+    if (timeout > 0 && !options.force && isRoot) {
       const timeoutId = setTimeout(() => {
         const current = this.tokens.get(tokenId);
         if (current?.isCancelled && !this.isForcedCancellation(tokenId)) {
-          this.forceCancel(tokenId, "TIMEOUT_EXPIRED");
+          void this.escalateForce(runId, "TIMEOUT_EXPIRED");
         }
       }, timeout);
       // Store timeout ID for cleanup
       this.pendingTimeouts.set(tokenId, timeoutId);
     }
 
+    // If forced, mark phase as completed
+    if (options.force && isRoot) {
+      await this.setCancelPhase(runId, "completed", {
+        reason: options.reason,
+        forced: true,
+      });
+    }
+
     return true;
+  }
+
+  /**
+   * Force escalation: transitions graceful_requested → force_requested → completed.
+   * Called after timeout or explicit force escalation.
+   */
+  private async escalateForce(runId: string, reason: string): Promise<void> {
+    const currentPhase = await this.getCancelPhase(runId);
+    let newPhase: CancellationPhase;
+
+    if (currentPhase === "active" || currentPhase === "graceful_requested") {
+      newPhase = "force_requested";
+    } else {
+      // Already force_requested or completed — finalize
+      newPhase = "completed";
+    }
+
+    await this.setCancelPhase(runId, newPhase, {
+      reason,
+      escalated: true,
+    });
+
+    // Force-cancel the root token
+    const tokenId = `token:root:${runId}`;
+    const token = this.tokens.get(tokenId);
+    if (token && !token.isCancelled) {
+      const forcedToken: CancellationToken = {
+        ...token,
+        isCancelled: true,
+        cancelledAt: new Date(),
+        reason: `FORCED:${reason}`,
+      };
+      this.tokens.set(tokenId, forcedToken);
+    } else if (token && !this.isForcedCancellation(tokenId)) {
+      const forcedToken: CancellationToken = {
+        ...token,
+        reason: `FORCED:${reason}`,
+      };
+      this.tokens.set(tokenId, forcedToken);
+    }
+
+    this.emit({
+      type: "token.cancelled",
+      tokenId,
+      reason: `FORCED:${reason}`,
+      timestamp: new Date(),
+      children: token ? Array.from(token.children) : [],
+    });
   }
 
   private isForcedCancellation(tokenId: string): boolean {
     const token = this.tokens.get(tokenId);
-    return token?.reason === "FORCED" || false;
+    return token?.reason?.startsWith("FORCED") || false;
   }
 
   private forceCancel(tokenId: string, reason: string): void {
@@ -271,6 +415,14 @@ export class CancellationService {
       reason: `FORCED:${reason}`,
     };
     this.tokens.set(tokenId, forcedToken);
+
+    // Update cancellation phase if this is a root token
+    if (tokenId.startsWith("token:root:")) {
+      const runId = tokenId.replace(/^token:root:/, "");
+      void this.setCancelPhase(runId, "completed", {
+        reason: `FORCED:${reason}`,
+      });
+    }
   }
 
   async cancelChildren(tokenId: string): Promise<string[]> {
@@ -469,7 +621,7 @@ export class CancellationService {
    */
   dispose(): void {
     // Clear all pending timeouts
-    for (const [_tokenId, timeoutId] of this.pendingTimeouts) {
+    for (const [_, timeoutId] of this.pendingTimeouts) {
       clearTimeout(timeoutId);
     }
     this.pendingTimeouts.clear();
@@ -487,8 +639,12 @@ export class CancellationService {
     // Clear recovery attempts
     this.recoveryAttempts.clear();
 
+    // Clear cancellation phases
+    this.cancellationPhases.clear();
+
     // Clear checkpoint repo reference
     this.checkpointRepo = undefined;
     this.ownershipPort = undefined;
+    this.phaseRepo = undefined;
   }
 }

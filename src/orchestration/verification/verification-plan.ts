@@ -51,9 +51,13 @@ export interface VerificationPlan {
   readonly id: string
   readonly contractId: string
   readonly version: string
+  readonly runId: string
+  readonly targetSha: string
   readonly checks: VerificationCheck[]
   readonly preconditions: Precondition[]
   readonly artifacts: ArtifactRequirement[]
   readonly createdAt: Date
   readonly hash: string
+  readonly timeoutMs: number
+  readonly parallel: boolean
 }

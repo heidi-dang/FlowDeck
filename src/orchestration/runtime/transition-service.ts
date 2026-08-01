@@ -23,6 +23,7 @@ import type { StageStageEvent } from "./stage-events.js";
 import type {
   StateStore,
   TransitionEvent,
+  CommitTransitionParams,
 } from "./state-store.js";
 import { InMemoryStateStore } from "./state-store.js";
 
@@ -91,7 +92,7 @@ export class TransitionService {
     from: State,
     to: State,
     context: TransitionContext,
-    transitionType: TransitionType = "normal"
+    transitionType: TransitionType = "normal",
   ): boolean {
     // Check if transition is in the allowed matrix
     if (!isTransitionAllowed(from, to)) {
@@ -123,7 +124,7 @@ export class TransitionService {
     to: State,
     context: TransitionContext,
     transitionType: TransitionType = "normal",
-    expectedVersion?: number
+    expectedVersion?: number,
   ): Promise<TransitionResult> {
     // Per-run concurrency control: only one transition per run at a time
     const release = await this.acquireRunLock(runId);
@@ -147,7 +148,7 @@ export class TransitionService {
             runId,
             actualState,
             `Version conflict: expected ${expectedVersion}, got ${actualVersion}`,
-            "CONCURRENT_TRANSITION"
+            "CONCURRENT_TRANSITION",
           );
           this.eventEmitter.emit(errorEvent);
           return {
@@ -165,7 +166,7 @@ export class TransitionService {
             runId,
             actualState,
             `State mismatch: expected ${from}, got ${actualState}`,
-            "CONCURRENT_TRANSITION"
+            "CONCURRENT_TRANSITION",
           );
           this.eventEmitter.emit(errorEvent);
           return {
@@ -188,7 +189,7 @@ export class TransitionService {
           runId,
           actualState,
           `Cannot transition from terminal state: ${actualState}`,
-          "TERMINAL_STATE_VIOLATION"
+          "TERMINAL_STATE_VIOLATION",
         );
         this.eventEmitter.emit(errorEvent);
         return {
@@ -206,7 +207,7 @@ export class TransitionService {
           actualState,
           to,
           `Invalid transition: ${actualState} -> ${to}`,
-          transitionType
+          transitionType,
         );
         this.eventEmitter.emit(failedEvent);
         return {
@@ -223,7 +224,7 @@ export class TransitionService {
         actualState,
         to,
         context,
-        transitionType
+        transitionType,
       );
       if (!guardResult.allowed) {
         const failedEvent = createTransitionFailed(
@@ -231,7 +232,7 @@ export class TransitionService {
           actualState,
           to,
           guardResult.reason ?? "Guard rejected transition",
-          transitionType
+          transitionType,
         );
         this.eventEmitter.emit(failedEvent);
         return {
@@ -252,20 +253,23 @@ export class TransitionService {
         timestamp: context.timestamp ?? Date.now(),
       };
 
-      // Step 6: Persist atomically — verify version, then save state + event
-      // The store's saveState checks the expected version internally.
-      const saved = await this.stateStore.saveState(
+      // Step 6: Persist atomically — state + event in a single transaction
+      const commitParams: CommitTransitionParams = {
         runId,
-        to,
-        actualVersion
-      );
+        state: to,
+        expectedVersion: actualVersion,
+        event: transitionEvent,
+      };
 
-      if (!saved) {
+      const result = await this.stateStore.commitTransition(commitParams);
+
+      if (!result.committed) {
+        const reason = result.reason ?? "unknown";
         const errorEvent = createStateMachineError(
           runId,
           actualState,
-          `Concurrent modification: state was updated by another process`,
-          "CONCURRENT_TRANSITION"
+          `Commit failed: ${reason}`,
+          "CONCURRENT_TRANSITION",
         );
         this.eventEmitter.emit(errorEvent);
         return {
@@ -273,19 +277,25 @@ export class TransitionService {
           from: actualState,
           to,
           transitionType,
-          error: `Concurrent modification: state was updated by another process`,
+          error: `Commit failed: ${reason}`,
         };
       }
 
-      // Record the transition event (atomic with state persistence in a real
-      // transactional store; here we emit the event after commit succeeds)
-      await this.stateStore.recordEvent(runId, transitionEvent);
-
       // Step 7: Publish committed event
-      const exitEvent = createStageExited(runId, actualState, to, transitionType);
+      const exitEvent = createStageExited(
+        runId,
+        actualState,
+        to,
+        transitionType,
+      );
       this.eventEmitter.emit(exitEvent);
 
-      const enterEvent = createStageEntered(runId, to, actualState, transitionType);
+      const enterEvent = createStageEntered(
+        runId,
+        to,
+        actualState,
+        transitionType,
+      );
       this.eventEmitter.emit(enterEvent);
 
       return { success: true, from: actualState, to, transitionType };
@@ -296,7 +306,7 @@ export class TransitionService {
         runId,
         errorState,
         error instanceof Error ? error.message : "Unknown error",
-        "UNKNOWN_ERROR"
+        "UNKNOWN_ERROR",
       );
       this.eventEmitter.emit(errorEvent);
       return {

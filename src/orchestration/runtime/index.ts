@@ -70,5 +70,15 @@ export { InMemoryStateStore } from "./state-store.js";
 export type {
   RunState,
   TransitionEvent,
+  CommitTransitionParams,
+  CommitTransitionResult,
   StateStore,
+  ContextBudgetRow,
+  ContextBudgetData,
+  CancellationPhase,
+  CancellationPhaseInfo,
+  VerificationResultData,
+  EvidenceData,
+  CompletionDecisionData,
+  RecoveryAttemptData,
 } from "./state-store.js";
