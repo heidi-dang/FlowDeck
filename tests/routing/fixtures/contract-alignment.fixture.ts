@@ -72,3 +72,37 @@ export const FIXTURE_HIGH_RISK_FLOOR = 70;
 
 /** StrategyPolicy.requiredReviewers is a count (number), not a list. */
 export const FIXTURE_REQUIRED_REVIEWERS_TYPE = "number";
+
+/**
+ * Canonical executable risk taxonomy (document section 5.2/5.5) — the twelve
+ * signals that ClassificationInput, zClassificationInput, ScoreWeights,
+ * scoreRisk, ensureHighRiskMinimum, and the routing decision evidence must
+ * all represent. Every signal floors risk to HIGH_RISK_FLOOR.
+ */
+export const FIXTURE_RISK_SIGNALS = [
+  "productionImpact",
+  "releaseImpact",
+  "dataIntegrityInvolved",
+  "securitySensitive",
+  "destructiveOperations",
+  "migrationInvolved",
+  "concurrencyInvolved",
+  "authInvolved",
+  "packagePublication",
+  "infrastructureChange",
+  "rollbackDifficulty",
+  "uncertainExternalSideEffects",
+] as const;
+
+/**
+ * Canonical high-risk execution posture (document section 5.5/6.2): a
+ * high-risk task enforces every one of these.
+ */
+export const FIXTURE_HIGH_RISK_POSTURE = {
+  minRisk: 70,
+  fullVerification: true,
+  reviewStage: true,
+  minReviewers: 1,
+  approvalRequirement: "high_risk_approval",
+  modelTierFloor: "strong_reasoning",
+} as const;

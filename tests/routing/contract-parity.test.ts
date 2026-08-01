@@ -40,9 +40,12 @@ import {
   bindDecisionToSha,
   ROUTING_POLICY_VERSION,
   ROUTING_WEIGHTS_VERSION,
+  zClassificationInput,
+  HIGH_RISK_CAPABILITY_FLOOR,
+  capabilitiesAreRecognized,
   type RoutingDecisionRecord,
 } from "@/orchestration/routing/contracts"
-import { HIGH_RISK_FLOOR } from "@/orchestration/routing/scoring/scorers"
+import { HIGH_RISK_FLOOR, DEFAULT_WEIGHTS, computeTaskScores } from "@/orchestration/routing/scoring/scorers"
 import {
   FIXTURE_TASK_CLASSES,
   FIXTURE_EXECUTION_STRATEGIES,
@@ -52,6 +55,8 @@ import {
   FIXTURE_REJECTED_DELEGATION_REASONS,
   FIXTURE_HIGH_RISK_FLOOR,
   FIXTURE_REQUIRED_REVIEWERS_TYPE,
+  FIXTURE_RISK_SIGNALS,
+  FIXTURE_HIGH_RISK_POSTURE,
 } from "./fixtures/contract-alignment.fixture"
 
 const VALID_SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -149,6 +154,70 @@ describe("contract parity: doc vocabulary vs executable contracts", () => {
     expect(FIXTURE_REQUIRED_REVIEWERS_TYPE).toBe("number")
     for (const strategy of EXECUTION_STRATEGIES) {
       expect(typeof DEFAULT_STRATEGY_POLICIES[strategy].requiredReviewers).toBe("number")
+    }
+  })
+
+  it("every canonical risk signal is representable in ClassificationInput and zClassificationInput", () => {
+    for (const signal of FIXTURE_RISK_SIGNALS) {
+      // The interface field exists and the zod schema accepts it.
+      const input: Record<string, unknown> = { [signal]: signal === "productionImpact" ? 80 : true }
+      expect(zClassificationInput.safeParse(input).success, `${signal} must be accepted by zClassificationInput`).toBe(true)
+    }
+  })
+
+  it("every canonical risk signal has an executable ScoreWeights.risk weight", () => {
+    const weightKeys: Record<string, keyof typeof DEFAULT_WEIGHTS.risk> = {
+      productionImpact: "productionWeight",
+      releaseImpact: "releaseWeight",
+      dataIntegrityInvolved: "dataIntegrityWeight",
+      securitySensitive: "securityWeight",
+      destructiveOperations: "destructiveWeight",
+      migrationInvolved: "migrationWeight",
+      concurrencyInvolved: "concurrencyWeight",
+      authInvolved: "authWeight",
+      packagePublication: "packagePublicationWeight",
+      infrastructureChange: "infrastructureWeight",
+      rollbackDifficulty: "rollbackDifficultyWeight",
+      uncertainExternalSideEffects: "externalSideEffectsWeight",
+    }
+    for (const signal of FIXTURE_RISK_SIGNALS) {
+      const weight = DEFAULT_WEIGHTS.risk[weightKeys[signal]]
+      expect(typeof weight, `${signal} must have a numeric risk weight`).toBe("number")
+      expect(weight).toBeGreaterThan(0)
+    }
+  })
+
+  it("every canonical risk signal floors risk to the documented 70 via computeTaskScores", () => {
+    for (const signal of FIXTURE_RISK_SIGNALS) {
+      const input: Record<string, unknown> = signal === "productionImpact" ? { productionImpact: 70 } : { [signal]: true }
+      const scored = computeTaskScores(input as never)
+      expect(scored.scores.risk, `${signal} must floor risk to >= ${FIXTURE_HIGH_RISK_POSTURE.minRisk}`).toBeGreaterThanOrEqual(
+        FIXTURE_HIGH_RISK_POSTURE.minRisk,
+      )
+      expect(zScoredTask.safeParse(scored).success).toBe(true)
+    }
+  })
+
+  it("the canonical high-risk posture matches the executable contract", () => {
+    expect(FIXTURE_HIGH_RISK_FLOOR).toBe(FIXTURE_HIGH_RISK_POSTURE.minRisk)
+    expect(HIGH_RISK_FLOOR).toBe(FIXTURE_HIGH_RISK_POSTURE.minRisk)
+    expect(HIGH_RISK_APPROVAL_REQUIREMENT).toBe(FIXTURE_HIGH_RISK_POSTURE.approvalRequirement)
+    // The high-risk capability floor must require strong_reasoning for every member.
+    for (const capability of HIGH_RISK_CAPABILITY_FLOOR) {
+      expect(capabilitiesAreRecognized([capability])).toBe(true)
+    }
+    // Every high-risk-capable default satisfies the full posture.
+    for (const strategy of [
+      "planned_execution",
+      "parallel_implementation",
+      "root_cause_repair",
+      "audit_only",
+      "repair_and_independent_audit",
+      "recovery_resume",
+    ] as const) {
+      const policy = DEFAULT_STRATEGY_POLICIES[strategy]
+      expect(policy.modelTier).toBe(FIXTURE_HIGH_RISK_POSTURE.modelTierFloor)
+      expect(isHighRiskCompatible(policy)).toBe(true)
     }
   })
 })
