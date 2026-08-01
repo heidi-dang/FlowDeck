@@ -6,8 +6,8 @@
  */
 
 import { z } from "zod"
-import { zNonEmptyId } from "./task"
-import { getAllAgentIds, getPrimaryAgentIds } from "@/services/canonical-registry"
+import { zNonEmptyId, zMeaningfulString, isMeaningfulText } from "./task"
+import { getAllAgentIds, getPrimaryAgentIds, getSubagentIds, getAllCanonicalAgents } from "@/services/canonical-registry"
 
 /**
  * Canonical agent identities derived from the canonical agent registry
@@ -22,6 +22,74 @@ export const CANONICAL_AGENT_IDS: readonly string[] = Object.freeze(getAllAgentI
  * Specialists (`delegationPolicy: "none"`) can never be a delegating agent.
  */
 export const CANONICAL_DELEGATING_AGENT_IDS: readonly string[] = Object.freeze(getPrimaryAgentIds())
+
+/**
+ * Canonical subagent (specialist) ids derived from the canonical registry.
+ * These are the only valid delegation targets for routing decisions.
+ */
+export const CANONICAL_SUBAGENT_IDS: readonly string[] = Object.freeze(getSubagentIds())
+
+/**
+ * Canonical alias map: every primary agent id and every alias resolves to the
+ * same canonical principal. Built at module load from the canonical registry.
+ *
+ * Currently `orchestrator` is an alias of `heidi` (the canonical primary).
+ * Both resolve to `"heidi"`.  This map is used by `resolveCanonicalPrincipal`
+ * so alias-based comparisons never produce false negatives.
+ */
+export const CANONICAL_ALIAS_MAP: ReadonlyMap<string, string> = (() => {
+  const map = new Map<string, string>()
+  // Every primary agent id maps to itself.
+  for (const primary of getPrimaryAgentIds()) {
+    map.set(primary, primary)
+  }
+  // Every subagent id maps to itself.
+  for (const subagent of getSubagentIds()) {
+    map.set(subagent, subagent)
+  }
+  // Walk the canonical registry looking for alias entries.
+  // Currently only `orchestrator` (alias → heidi) exists.
+  for (const entry of getAllCanonicalAgents()) {
+    if (entry.alias) {
+      map.set(entry.id, entry.alias) // e.g. orchestrator → heidi
+    }
+  }
+  return map
+})()
+
+/**
+ * Resolves any agent id to its canonical primary identity.
+ *
+ * Normalization: trim + lowercase (matching `normalizeSpecialistId`), then
+ * alias lookup. E.g.:
+ *   "heidi"       → "heidi"
+ *   "orchestrator" → "heidi"
+ *   "backend-coder" → "backend-coder"
+ *   "unknown"     → undefined
+ *
+ * Unknown or whitespace-only ids return undefined.
+ */
+export function resolveCanonicalPrincipal(raw: string): string | undefined {
+  const normalized = raw.trim().toLowerCase()
+  if (normalized.length === 0) return undefined
+  return CANONICAL_ALIAS_MAP.get(normalized)
+}
+
+/**
+ * Returns true when `agentId` belongs to the canonical set of primary agents
+ * (heidi / orchestrator), after canonical alias resolution.
+ */
+export function isPrimaryAgent(agentId: string): boolean {
+  const resolved = resolveCanonicalPrincipal(agentId)
+  return resolved !== undefined && CANONICAL_DELEGATING_AGENT_IDS.includes(resolved)
+}
+
+/**
+ * Returns true when `agentId` is a canonical subagent (specialist).
+ */
+export function isCanonicalSubagent(agentId: string): boolean {
+  return CANONICAL_SUBAGENT_IDS.includes(agentId.trim())
+}
 
 /** Returns true when `agentId` is a canonical agent (target must exist). */
 export function isCanonicalAgent(agentId: string): boolean {
@@ -111,10 +179,12 @@ export interface SpecialistResult {
  * reason for the failure, block, or cancellation).
  */
 export function specialistResultHasRequiredEvidence(r: SpecialistResult): boolean {
+  const hasMeaningfulSummary = isMeaningfulText(r.summary)
+  const hasMeaningfulEvidence = r.evidence.some((e) => isMeaningfulText(e.detail))
   if (r.status === "completed") {
-    return r.summary.length > 0 && r.evidence.length > 0
+    return hasMeaningfulSummary && r.evidence.length > 0
   }
-  return r.summary.length > 0 || r.evidence.length > 0
+  return hasMeaningfulSummary || hasMeaningfulEvidence
 }
 
 /**
@@ -180,6 +250,31 @@ export function isValidLatencyClass(value: unknown): value is LatencyClass {
 /** Zod schema for a LatencyClass value. */
 export const zLatencyClass = z.enum(["instant", "fast", "slow"] as const)
 
+/**
+ * Returns true when `path` is a repository-relative path: not absolute
+ * (leading "/" or a Windows drive prefix or a backslash-rooted UNC path) and
+ * containing no traversal ("..") segment. Used to reject changed-file paths
+ * and ownership paths that escape the repository.
+ */
+export function isRepositoryRelativePath(path: string): boolean {
+  const trimmed = path.trim()
+  if (trimmed.length === 0) return false
+  if (trimmed.startsWith("/")) return false
+  if (/^[A-Za-z]:[\\/]/.test(trimmed)) return false
+  if (trimmed.startsWith("\\\\")) return false
+  const segments = trimmed.split(/[\\/]/)
+  return !segments.includes("..")
+}
+
+/** Zod schema: a normalized repository-relative path. */
+export const zRepositoryRelativePath = z
+  .string()
+  .trim()
+  .refine((p) => p.length > 0, { message: "path must not be empty or whitespace-only" })
+  .refine(isRepositoryRelativePath, {
+    message: "path must be a normalized repository-relative path (no absolute, drive, or traversal paths)",
+  })
+
 /** Zod schema for a CapabilityDescriptor; capability ids must be non-empty. */
 export const zCapabilityDescriptor = z.object({
   capability: zNonEmptyId,
@@ -192,41 +287,41 @@ export const zCapabilityDescriptor = z.object({
   expectedLatencyClass: zLatencyClass,
 })
 
-/** Zod schema for a FindingRef; ids must be non-empty identifiers. */
+/** Zod schema for a FindingRef; ids and summaries must be meaningful. */
 export const zFindingRef = z.object({
   id: zNonEmptyId,
-  summary: z.string(),
+  summary: zMeaningfulString,
   severity: z.enum(["info", "warning", "critical"] as const),
-  location: z.string().optional(),
+  location: z.string().trim().refine((s) => s.length > 0, { message: "location must not be empty or whitespace-only" }).optional(),
 })
 
-/** Zod schema for a ChangeRef. */
+/** Zod schema for a ChangeRef; file paths must be repo-relative. */
 export const zChangeRef = z.object({
-  file: z.string(),
+  file: zRepositoryRelativePath,
   kind: z.enum(["create", "modify", "delete"] as const),
-  symbol: z.string().optional(),
+  symbol: z.string().trim().refine((s) => s.length > 0, { message: "symbol must not be empty or whitespace-only" }).optional(),
 })
 
-/** Zod schema for an EvidenceRef; ids must be non-empty identifiers. */
+/** Zod schema for an EvidenceRef; ids and details must be meaningful. */
 export const zEvidenceRef = z.object({
   id: zNonEmptyId,
   kind: z.enum(["log", "test", "diff", "observation", "metric"] as const),
-  detail: z.string(),
+  detail: zMeaningfulString,
 })
 
 /** Zod schema for a SpecialistResult with required-evidence enforcement. */
 export const zSpecialistResult = z
   .object({
     status: z.enum(SPECIALIST_TERMINAL_STATUSES),
-    summary: z.string(),
+    summary: zMeaningfulString,
     findings: z.array(zFindingRef),
     changes: z.array(zChangeRef),
     evidence: z.array(zEvidenceRef),
-    assumptions: z.array(z.string()),
-    unresolvedRisks: z.array(z.string()),
+    assumptions: z.array(zMeaningfulString),
+    unresolvedRisks: z.array(zMeaningfulString),
     confidence: z.number().int().min(0).max(100),
-    recommendedNextAction: z.string(),
-    ownershipUsed: z.array(z.string()),
+    recommendedNextAction: zMeaningfulString,
+    ownershipUsed: z.array(zRepositoryRelativePath),
     tokens: z
       .object({
         input: z.number().int().min(0),
@@ -243,6 +338,80 @@ export const zSpecialistResult = z
         message:
           "completed results require a non-empty summary and at least one evidence entry; other terminal statuses require evidence or a non-empty summary",
       })
+    }
+    // A completed result requires a MEANINGFUL summary and at least one
+    // meaningful evidence item (whitespace-only text does not count).
+    if (r.status === "completed") {
+      if (!isMeaningfulText(r.summary)) {
+        ctx.addIssue({ code: "custom", path: ["summary"], message: "completed result requires a meaningful summary" })
+      }
+      const meaningfulEvidence = r.evidence.filter((e) => isMeaningfulText(e.detail))
+      if (meaningfulEvidence.length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["evidence"],
+          message: "completed result requires at least one meaningful evidence item",
+        })
+      }
+    }
+    // Blocked/failed requires a meaningful reason in summary or evidence.
+    if (r.status === "blocked" || r.status === "failed") {
+      const hasReason = isMeaningfulText(r.summary) || r.evidence.some((e) => isMeaningfulText(e.detail))
+      if (!hasReason) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["summary"],
+          message: `${r.status} result requires a meaningful reason in summary or evidence`,
+        })
+      }
+    }
+    // Cancelled requires a meaningful cancellation reason.
+    if (r.status === "cancelled" && !isMeaningfulText(r.summary)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["summary"],
+        message: "cancelled result requires a meaningful cancellation reason in the summary",
+      })
+    }
+    // A completed result with changes must provide evidence supporting them.
+    if (r.status === "completed" && r.changes.length > 0 && r.evidence.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["evidence"],
+        message: "completed result with changes must provide evidence supporting those changes",
+      })
+    }
+    // Duplicate ids: findings, evidence.
+    {
+      const seen = new Set<string>()
+      for (const finding of r.findings) {
+        if (seen.has(finding.id)) {
+          ctx.addIssue({ code: "custom", path: ["findings"], message: `duplicate finding id "${finding.id}"` })
+          break
+        }
+        seen.add(finding.id)
+      }
+    }
+    {
+      const seen = new Set<string>()
+      for (const evidence of r.evidence) {
+        if (seen.has(evidence.id)) {
+          ctx.addIssue({ code: "custom", path: ["evidence"], message: `duplicate evidence id "${evidence.id}"` })
+          break
+        }
+        seen.add(evidence.id)
+      }
+    }
+    // Ownership paths must be unique.
+    {
+      const seen = new Set<string>()
+      for (const path of r.ownershipUsed) {
+        if (seen.has(path)) {
+          ctx.addIssue({ code: "custom", path: ["ownershipUsed"], message: `duplicate ownership path "${path}"` })
+          break
+        }
+        seen.add(path)
+      }
     }
   })
 
@@ -289,25 +458,39 @@ export const zDelegationDecision = z
     justification: z.array(zNonEmptyString),
   })
   .superRefine((d, ctx) => {
-    // Only canonical orchestrator/delegating agents may delegate; a
-    // specialist can never be a delegating agent.
-    if (!isCanonicalDelegatingAgent(d.delegatingAgent)) {
+    // Resolve both delegating and target to canonical principal identity.
+    const delegatingPrincipal = resolveCanonicalPrincipal(d.delegatingAgent)
+    const targetPrincipal = resolveCanonicalPrincipal(d.targetAgent)
+
+    // Delegating agent must be a primary (orchestrator) id.
+    if (delegatingPrincipal === undefined || !getPrimaryAgentIds().includes(delegatingPrincipal)) {
       ctx.addIssue({
         code: "custom",
         path: ["delegatingAgent"],
-        message: `only canonical delegating agents may delegate; "${d.delegatingAgent}" is not one`,
+        message: `only canonical primary agents may delegate; "${d.delegatingAgent}" is not one`,
       })
     }
-    // Target must exist in the canonical registry.
-    if (!isCanonicalAgent(d.targetAgent)) {
+
+    // Target agent must exist as a canonical subagent (specialist).
+    if (targetPrincipal === undefined || !getSubagentIds().includes(targetPrincipal)) {
       ctx.addIssue({
         code: "custom",
         path: ["targetAgent"],
-        message: `target agent "${d.targetAgent}" does not exist in the canonical registry`,
+        message: `target agent "${d.targetAgent}" is not a canonical subagent; only specialists may be delegation targets`,
       })
     }
-    if (d.delegatingAgent === d.targetAgent) {
-      ctx.addIssue({ code: "custom", path: ["targetAgent"], message: "self-delegation is not allowed" })
+
+    // Alias-aware self-delegation check: heidi → orchestrator blocked, etc.
+    if (
+      delegatingPrincipal !== undefined &&
+      targetPrincipal !== undefined &&
+      delegatingPrincipal === targetPrincipal
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["targetAgent"],
+        message: `self-delegation is not allowed (${d.delegatingAgent} → ${d.targetAgent} both resolve to ${delegatingPrincipal})`,
+      })
     }
     if (d.allowed) {
       if (d.reason === undefined) {
