@@ -44,7 +44,7 @@ async function runStreamingBenchmark() {
   await replayService.replayToSession(replayRunId, 0, 1000, mockSession);
   const replayDuration = performance.now() - startReplay;
 
-  // 3. Benchmark: Publisher Persist-Before-Deliver
+  // 3. Benchmark: Publisher Commit and Broker Dispatch
   const pubLatencies: number[] = [];
   const pubRunId = `bench_pub_${Date.now()}`;
   const startPub = performance.now();
@@ -63,14 +63,58 @@ async function runStreamingBenchmark() {
   }
   const pubDuration = performance.now() - startPub;
 
+  // 4. Benchmark: Real Publish to Client Receipt (connected socket session)
+  const clientReceiptLatencies: number[] = [];
+  const clientRunId = `bench_client_${Date.now()}`;
+  const receiptMockSession = {
+    sendEvent: (_event: any) => {
+      const receiptTime = performance.now();
+      if ((receiptMockSession as any).currentT0) {
+        clientReceiptLatencies.push(receiptTime - (receiptMockSession as any).currentT0);
+      }
+    },
+    enqueueOrSend: (event: any) => {
+      receiptMockSession.sendEvent(event);
+    },
+  } as any;
+
+  broker.addClient(clientRunId, receiptMockSession);
+  const startClientBench = performance.now();
+  for (let i = 1; i <= 1000; i++) {
+    (receiptMockSession as any).currentT0 = performance.now();
+    publisher.publish({
+      runId: clientRunId,
+      type: 'agent.progress',
+      stage: 'execute',
+      importance: 'normal',
+      title: `Client Event ${i}`,
+      payload: { step: i },
+    });
+  }
+  const clientBenchDuration = performance.now() - startClientBench;
+
   const memPeak = process.memoryUsage().heapUsed;
 
   commitLatencies.sort((a, b) => a - b);
   pubLatencies.sort((a, b) => a - b);
+  clientReceiptLatencies.sort((a, b) => a - b);
+
+  const gitSha = require('child_process').execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
+  const branch = require('child_process').execSync("git branch --show-current", { encoding: "utf-8" }).trim();
 
   const report = {
     benchmarkSuite: 'streaming-infrastructure',
     timestamp: new Date().toISOString(),
+    gitSha,
+    branch,
+    environment: process.env.NODE_ENV || 'test',
+    runtimeVersions: {
+      bun: Bun.version,
+      node: process.version,
+    },
+    sampleCount,
+    fixture: 'SQLite StreamRepository & SseBroker',
+    warmColdState: 'warm',
     metrics: {
       sqliteCommitLatency: {
         samples: sampleCount,
@@ -79,12 +123,19 @@ async function runStreamingBenchmark() {
         p95Ms: Number(commitLatencies[Math.floor(commitLatencies.length * 0.95)].toFixed(4)),
         maxMs: Number(commitLatencies[commitLatencies.length - 1].toFixed(4)),
       },
-      publishToClientReceipt: {
+      publisherCommitAndBrokerDispatch: {
         samples: sampleCount,
         opsPerSec: Math.round((sampleCount / pubDuration) * 1000),
         medianMs: Number(pubLatencies[Math.floor(pubLatencies.length * 0.5)].toFixed(4)),
         p95Ms: Number(pubLatencies[Math.floor(pubLatencies.length * 0.95)].toFixed(4)),
         maxMs: Number(pubLatencies[pubLatencies.length - 1].toFixed(4)),
+      },
+      publishToClientReceipt: {
+        samples: 1000,
+        opsPerSec: Math.round((1000 / clientBenchDuration) * 1000),
+        medianMs: Number(clientReceiptLatencies[Math.floor(clientReceiptLatencies.length * 0.5)].toFixed(4)),
+        p95Ms: Number(clientReceiptLatencies[Math.floor(clientReceiptLatencies.length * 0.95)].toFixed(4)),
+        maxMs: Number(clientReceiptLatencies[clientReceiptLatencies.length - 1].toFixed(4)),
       },
       reconnectReplay: {
         replayedEvents: 1000,

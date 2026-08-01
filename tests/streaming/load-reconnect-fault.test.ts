@@ -132,7 +132,7 @@ describe("Task 8: Load, Reconnect, and Fault Hardening", () => {
     const repo = new StreamRepository();
     const validator = new SequenceValidator();
     const tracker = new SequenceTracker(5000);
-    const runId = "run-soak-10k";
+    const runId = `run-soak-10k-${Date.now()}`;
 
     const memBefore = process.memoryUsage().heapUsed;
     const startTime = Date.now();
@@ -141,7 +141,7 @@ describe("Task 8: Load, Reconnect, and Fault Hardening", () => {
       const isTerminal = i === 10000;
       const type = isTerminal ? "run.completed" : (i % 10 === 0 ? "metrics.updated" : "agent.progress");
       const event = createStreamEvent({
-        eventId: `evt-10k-${i}`,
+        eventId: `evt-${runId}-${i}`,
         sequence: i,
         runId,
         type,

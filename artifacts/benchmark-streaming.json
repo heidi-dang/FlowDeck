@@ -1,7 +1,7 @@
 {
   "benchmarkSuite": "streaming-infrastructure",
-  "timestamp": "2026-08-01T04:22:34.524Z",
-  "gitSha": "0625dba4dfdf7e55a9b2a4e519a54eb1c2147381",
+  "timestamp": "2026-08-01T04:57:08.876Z",
+  "gitSha": "4df5d8d9e1b04c9ebf13bb811b71312da295eed0",
   "branch": "feat/performance-sse-ui-foundation",
   "environment": "test",
   "runtimeVersions": {
@@ -14,34 +14,34 @@
   "metrics": {
     "sqliteCommitLatency": {
       "samples": 2000,
-      "opsPerSec": 9881,
-      "medianMs": 0.0928,
-      "p95Ms": 0.1536,
-      "maxMs": 3.3898
+      "opsPerSec": 10057,
+      "medianMs": 0.0905,
+      "p95Ms": 0.1427,
+      "maxMs": 3.4618
     },
     "publisherCommitAndBrokerDispatch": {
       "samples": 2000,
-      "opsPerSec": 11904,
-      "medianMs": 0.0763,
-      "p95Ms": 0.1336,
-      "maxMs": 0.83
+      "opsPerSec": 11562,
+      "medianMs": 0.0782,
+      "p95Ms": 0.1245,
+      "maxMs": 0.792
     },
     "publishToClientReceipt": {
       "samples": 1000,
-      "opsPerSec": 11999,
-      "medianMs": 0.0735,
-      "p95Ms": 0.1226,
-      "maxMs": 0.481
+      "opsPerSec": 11592,
+      "medianMs": 0.0745,
+      "p95Ms": 0.1296,
+      "maxMs": 0.5326
     },
     "reconnectReplay": {
       "replayedEvents": 1000,
-      "durationMs": 1.84,
-      "replaysPerSec": 544141
+      "durationMs": 1.94,
+      "replaysPerSec": 515711
     }
   },
   "memoryBytes": {
     "baseline": 175406,
-    "peak": 5332893,
-    "growthMb": 4.92
+    "peak": 5672023,
+    "growthMb": 5.24
   }
 }

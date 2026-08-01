@@ -125,6 +125,14 @@ export class FlowDeckStreamClient {
 
     if (msg.event === 'snapshot') {
       this.tracker.handleSnapshot();
+      try {
+        const snap = JSON.parse(msg.data);
+        if (snap && typeof snap.sequence === 'number') {
+          this.lastCommittedSequence = snap.sequence;
+        }
+      } catch { /* ignore */ }
+      this.setState('snapshot_required');
+      this.setState('live');
       return;
     }
 
@@ -153,14 +161,25 @@ export class FlowDeckStreamClient {
     }
 
     if (this.lastCommittedSequence > 0 && event.sequence > this.lastCommittedSequence + 1) {
-      // Sequence gap detected
+      // Sequence gap detected: pause direct projection, transition to recovering
+      this.setState('recovering');
       this.options.onGapDetected?.(this.lastCommittedSequence + 1, event.sequence);
+      // Initiate replay recovery from lastCommittedSequence
+      this.lastEventId = String(this.lastCommittedSequence);
+      this.scheduleReconnect();
+      return;
     }
 
     const eventId = event.eventId || msg.id || `${Date.now()}`;
     if (this.tracker.track(eventId, event.sequence)) {
       this.lastCommittedSequence = event.sequence;
+      if (this.state === 'recovering' || this.state === 'reconnecting') {
+        this.setState('replaying');
+      }
       this.options.onEvent?.(event);
+      if (this.state === 'replaying') {
+        this.setState('live');
+      }
 
       // Terminal event completion check
       if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled') {

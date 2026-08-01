@@ -48,7 +48,7 @@ describe("Durable SSE Backend Infrastructure", () => {
     };
     const session = new SseSession(mockRes as any, "client-1");
 
-    await replayService.replayToSession("run-2", 1, session);
+    await replayService.replayToSession("run-2", 1, 3, session);
     expect(sentEvents.length).toBe(2); // e2 and e3
   });
 

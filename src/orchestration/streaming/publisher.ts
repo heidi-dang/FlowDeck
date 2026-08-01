@@ -12,39 +12,40 @@ export class StreamPublisher {
   constructor(private repository: StreamRepository, private broker: SseBroker) {}
 
   /**
-   * Single canonical persist-before-deliver publication operation:
-   * 1. Allocate sequence and persist event & outbox record atomically in SQLite
-   * 2. Validate canonical event schema
-   * 3. Commit transaction
-   * 4. Broadcast committed event to live subscribers
+   * Required publication flow:
+   * 1. Normalize input
+   * 2. Pre-validate non-sequence canonical fields
+   * 3. Begin write transaction
+   * 4. Allocate sequence
+   * 5. Construct final canonical event
+   * 6. Validate complete event
+   * 7. Insert event
+   * 8. Insert outbox
+   * 9. Commit
+   * 10. Broadcast
    */
   publish(input: StreamEventInput): FlowDeckStreamEvent {
-    // Determine target sequence from repository or input
-    const targetSeq = input.sequence && input.sequence > 0 ? input.sequence : 1;
-    const rawEvent = createStreamEvent({ ...input, sequence: targetSeq } as any);
+    // 1. Normalize input
+    const unsequencedEvent = createStreamEvent({ ...input, sequence: 1 } as any);
 
-    // Atomically persist event & outbox record in SQLite (allocates true aggregate version if 1)
-    const allocatedSequence = this.repository.persistEvent(
-      rawEvent.runId,
-      rawEvent.sequence,
-      rawEvent.type,
-      rawEvent,
-      Date.now()
-    );
-
-    const committedEvent: FlowDeckStreamEvent = {
-      ...rawEvent,
-      sequence: allocatedSequence,
-    };
-
-    const validation = validateStreamEvent(committedEvent);
-    if (!validation.success || !validation.data) {
-      throw new Error(`Invalid stream event: ${validation.error || 'schema validation failed'}`);
+    // 2. Pre-validate non-sequence canonical fields
+    const preValidation = validateStreamEvent(unsequencedEvent);
+    if (!preValidation.success || !preValidation.data) {
+      throw new Error(`Pre-persistence validation failed: ${preValidation.error || 'schema validation failed'}`);
     }
 
-    // Broadcast ONLY after successful persistence & transaction commit
-    this.broker.broadcastInternal(committedEvent.runId, validation.data);
+    // 3 - 9. Execute atomic transaction in repository (validates final event inside tx)
+    const committedEvent = this.repository.persistEvent(
+      unsequencedEvent.runId,
+      input.sequence && input.sequence > 0 ? input.sequence : 0,
+      unsequencedEvent.type,
+      unsequencedEvent,
+      new Date(unsequencedEvent.occurredAt).getTime()
+    );
 
-    return validation.data;
+    // 10. Broadcast ONLY after successful persistence & transaction commit
+    this.broker.broadcastInternal(committedEvent.runId, committedEvent);
+
+    return committedEvent;
   }
 }

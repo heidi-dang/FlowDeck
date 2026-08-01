@@ -76,7 +76,7 @@ async function runUiBenchmark() {
       payload: { agentId: `agent_${i % 4}` },
     });
 
-    reduceRunStreamEvent(controller.getState(), event);
+    controller.applyEvent(event);
     const t1 = performance.now();
     renderLatencies.push(t1 - t0);
   }
@@ -89,9 +89,22 @@ async function runUiBenchmark() {
   reducerLatencies.sort((a, b) => a - b);
   renderLatencies.sort((a, b) => a - b);
 
+  const gitSha = require('child_process').execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
+  const branch = require('child_process').execSync("git branch --show-current", { encoding: "utf-8" }).trim();
+
   const report = {
     benchmarkSuite: 'ui-projection-dom-render',
     timestamp: new Date().toISOString(),
+    gitSha,
+    branch,
+    environment: process.env.NODE_ENV || 'test',
+    runtimeVersions: {
+      bun: Bun.version,
+      node: process.version,
+    },
+    sampleCount,
+    fixture: 'LiveDashboard UI Component',
+    warmColdState: 'warm',
     metrics: {
       browserEventToReducer: {
         samples: sampleCount,

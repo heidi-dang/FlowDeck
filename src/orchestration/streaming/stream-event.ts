@@ -79,3 +79,26 @@ export function isTerminalEvent(event: FlowDeckStreamEvent): boolean {
 export function isHighPriorityEvent(event: FlowDeckStreamEvent): boolean {
   return ['important', 'critical'].includes(event.importance);
 }
+
+export function normalizeEventType(rawType: string): FlowDeckEventType {
+  const validTypes = new Set<string>([
+    'run.created', 'run.started', 'run.resumed', 'run.cancelled', 'run.completed', 'run.failed',
+    'task.classifying', 'task.classified',
+    'contract.created', 'contract.activated',
+    'stage.entered', 'stage.progress', 'stage.completed', 'stage.blocked',
+    'plan.created', 'plan.updated', 'plan.drift_detected',
+    'agent.queued', 'agent.started', 'agent.progress', 'agent.completed', 'agent.failed', 'agent.cancelled',
+    'tool.queued', 'tool.started', 'tool.output', 'tool.completed', 'tool.failed', 'tool.cancelled',
+    'model.queued', 'model.started', 'model.first_token', 'model.completed', 'model.failed', 'model.cancelled',
+    'verification.started', 'verification.check_started', 'verification.check_completed', 'verification.completed',
+    'recovery.started', 'recovery.hypothesis_changed', 'recovery.completed', 'recovery.circuit_opened',
+    'evidence.created', 'approval.required', 'approval.received',
+    'metrics.updated', 'snapshot', 'heartbeat'
+  ]);
+  if (validTypes.has(rawType)) return rawType as FlowDeckEventType;
+  if (rawType.includes('start')) return 'run.started';
+  if (rawType.includes('complete')) return 'run.completed';
+  if (rawType.includes('cancel')) return 'run.cancelled';
+  if (rawType.includes('fail')) return 'run.failed';
+  return 'agent.progress';
+}
