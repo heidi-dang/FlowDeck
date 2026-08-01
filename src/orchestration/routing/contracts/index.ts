@@ -15,12 +15,12 @@ import {
   type ClassificationResult,
   type ExecutionStrategy,
   type RoutingInputEvidence,
-  type TaskScores,
+  type ScoredTask,
   zClassificationResult,
   zExecutionStrategy,
   zNonEmptyId,
   zRoutingInputEvidence,
-  zTaskScores,
+  zScoredTask,
 } from "./task"
 
 export * from "./task"
@@ -59,7 +59,7 @@ export interface RoutingDecisionRecord {
   /** True when an LLM fallback was consulted. */
   modelFallbackUsed: boolean
   classification: ClassificationResult
-  scores: TaskScores
+  scores: ScoredTask
   selectedStrategy: ExecutionStrategy
   rejectedStrategies: Array<{ strategy: ExecutionStrategy; reason: string }>
   specialistCandidates: string[]
@@ -85,7 +85,7 @@ export interface BindDecisionOptions {
   rulesApplied: string[]
   modelFallbackUsed: boolean
   classification: ClassificationResult
-  scores: TaskScores
+  scores: ScoredTask
   selectedStrategy: ExecutionStrategy
   rejectedStrategies: Array<{ strategy: ExecutionStrategy; reason: string }>
   specialistCandidates: string[]
@@ -185,7 +185,7 @@ export const zRoutingDecisionRecord = z.object({
   rulesApplied: z.array(z.string()),
   modelFallbackUsed: z.boolean(),
   classification: zClassificationResult,
-  scores: zTaskScores,
+  scores: zScoredTask,
   selectedStrategy: zExecutionStrategy,
   rejectedStrategies: z.array(
     z.object({
@@ -233,11 +233,31 @@ export function validateRoutingDecisionRecord(
 }
 
 /**
+ * Deep-freezes an object and all nested objects/arrays recursively so a
+ * bound decision record is immutable after write (document section 13).
+ */
+function deepFreezeRecord<T>(value: T): T {
+  if (value === null || typeof value !== "object") {
+    return value
+  }
+  Object.freeze(value)
+  for (const key of Object.keys(value as Record<string, unknown>)) {
+    const item = (value as Record<string, unknown>)[key]
+    if (item !== null && typeof item === "object" && !Object.isFrozen(item)) {
+      deepFreezeRecord(item)
+    }
+  }
+  return value
+}
+
+/**
  * Binds a routing decision to a repository commit (document section 13).
- * Uses the current ROUTING_POLICY_VERSION and an ISO 8601 timestamp.
+ * Uses the current ROUTING_POLICY_VERSION and an ISO 8601 timestamp. The
+ * returned record is deep-frozen: records are immutable after write, so a
+ * correction is a new record whose `supersedes` references the prior one.
  */
 export function bindDecisionToSha(options: BindDecisionOptions): RoutingDecisionRecord {
-  return {
+  const record: RoutingDecisionRecord = {
     taskId: options.taskId,
     decisionId: options.decisionId,
     repositorySha: options.repositorySha,
@@ -260,4 +280,5 @@ export function bindDecisionToSha(options: BindDecisionOptions): RoutingDecision
     ...(options.outcome !== undefined ? { outcome: options.outcome } : {}),
     ...(options.supersedes !== undefined ? { supersedes: options.supersedes } : {}),
   }
+  return deepFreezeRecord(record)
 }

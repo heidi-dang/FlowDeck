@@ -257,6 +257,17 @@ user-required specialist  recovery state
 - The LLM fallback is used only when the deterministic path yields `unknown`, and the fallback result is
   recorded with `confidence` (section 5) and provenance (section 13).
 - Inputs are normalized (case, whitespace, synonyms) before matching.
+- A read-only/mutating conflict is detected **before any rule runs**: `readOnly=true` together with
+  `mutating=true` is contradictory and always resolves to `unknown` with conflict evidence.
+- Documentation classification (rule 9) matches documentation keywords (`doc`, `documentation`, `readme`,
+  `guide`) regardless of the mutating flag, so "Update the README" classifies as `documentation` even when
+  mutating. Question markers ("explain", "how to") are **not** documentation signals; an explanatory prompt
+  classifies as `read_only_question`.
+- Fallback rule 17 maps `userRequiredSpecialist` through the routing-owned specialist allow-list
+  (`classifier/specialist-registry.ts`, projected from the canonical agent registry in section 1.3). The id
+  is normalized (trimmed, lowercased) before matching. A recognized specialist maps to its deterministic
+  class; an unrecognized id yields `unknown` with low confidence and evidence recording why the
+  deterministic path failed.
 
 ---
 
@@ -388,6 +399,15 @@ interface StrategyPolicy {
   approvalRequirements: string[];         // human approvals required, if any
 }
 ```
+
+**High-risk posture.** Section 5.5 mandates that high-risk tasks use full (or release) verification, at
+least one required reviewer, and at least one approval requirement. `isHighRiskCompatible(policy)` returns
+true exactly when `verificationLevel` is `full`/`release`, `requiredReviewers >= 1`, and
+`approvalRequirements` is non-empty. The default policies attach `HIGH_RISK_APPROVAL_REQUIREMENT` to every
+high-risk-capable strategy (planned, parallel, root-cause, audit, repair-and-audit, recovery). Direct
+strategies such as `fast_direct` (focused verification, zero reviewers, no approvals) are therefore
+incompatible with high-risk tasks. The review stage appears in every high-risk-capable strategy's
+`allowedStates`.
 
 ### 6.3 Mapping note — legacy vs canonical
 

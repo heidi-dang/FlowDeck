@@ -83,7 +83,12 @@ function makeValidRecord(): RoutingDecisionRecord {
       usedModelFallback: false,
       policyVersion: "1.0.0",
     },
-    scores: { complexity: 40, ambiguity: 30, risk: 25, confidence: 80 },
+    scores: {
+      scores: { complexity: 40, ambiguity: 30, risk: 25, confidence: 80 },
+      evidence: { complexity: [], ambiguity: [], risk: [], confidence: [] },
+      weightsVersion: ROUTING_WEIGHTS_VERSION,
+      policyVersion: "1.0.0",
+    },
     selectedStrategy: "root_cause_repair",
     rejectedStrategies: [{ strategy: "audit_only", reason: "task is mutating" }],
     specialistCandidates: ["debug-specialist"],

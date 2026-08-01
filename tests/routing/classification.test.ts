@@ -120,6 +120,16 @@ describe("deterministic rule-based task classifier", () => {
     expect(zClassificationResult.safeParse(result).success).toBe(true)
   })
 
+  it("detects the readOnly/mutating conflict before rules fire (D12)", () => {
+    // Even with signals that would otherwise win (production_incident),
+    // the readOnly && mutating conflict wins because it is detected first.
+    const result = classifyTask({ readOnly: true, mutating: true, productionImpact: 90 })
+    expect(result.taskClass).toBe("unknown")
+    expect(result.confidence).toBe(25)
+    expect(result.evidence.some((e) => e.id === "classifier.conflict.read_only_mutating")).toBe(true)
+    expect(result.evidence.some((e) => e.source === "rule.conflict_detection")).toBe(true)
+  })
+
   it("returns unknown with conflict evidence when a mutating class is selected despite readOnly=true", () => {
     const result = classifyTask({ readOnly: true, mutating: true, expectedFileCount: 1, hasTests: false })
     expect(result.taskClass).toBe("unknown")
@@ -200,18 +210,44 @@ describe("deterministic rule-based task classifier", () => {
     }
   })
 
-  it("maps userRequiredSpecialist to a class when no priority rule fires", () => {
+  it("maps a recognized userRequiredSpecialist to a class when no priority rule fires", () => {
     const cases: ReadonlyArray<{ specialist: string; expected: TaskClass }> = [
       { specialist: "security-auditor", expected: "security_review" },
       { specialist: "researcher", expected: "read_only_question" },
       { specialist: "devops", expected: "ci_failure" },
       { specialist: "tester", expected: "local_bug" },
       { specialist: "architect", expected: "cross_module_feature" },
-      { specialist: "unknown-specialist", expected: "cross_module_feature" },
     ]
     for (const { specialist, expected } of cases) {
       expectConfidentResult(classifyTask({ userRequiredSpecialist: specialist }), expected)
     }
+  })
+
+  it("normalizes a specialist id (trim, lowercase) before matching", () => {
+    expectConfidentResult(classifyTask({ userRequiredSpecialist: "  Researcher " }), "read_only_question")
+    expectConfidentResult(classifyTask({ userRequiredSpecialist: "SECURITY-AUDITOR" }), "security_review")
+  })
+
+  it("classifies an unrecognized specialist id as unknown with low confidence", () => {
+    for (const specialist of ["unknown-specialist", "not-an-agent", "heidi"]) {
+      const result = classifyTask({ userRequiredSpecialist: specialist })
+      expect(result.taskClass).toBe("unknown")
+      expect(result.confidence).toBeLessThanOrEqual(30)
+      expect(result.evidence.some((e) => e.id === "cls.unknown.1")).toBe(true)
+      expect(zClassificationResult.safeParse(result).success).toBe(true)
+    }
+  })
+
+  it("classifies a documentation prompt as documentation even when mutating (D11)", () => {
+    const result = classifyTask({ rawPrompt: "Update the README with new endpoints", mutating: true })
+    expect(result.taskClass).toBe("documentation")
+    expectConfidentResult(result, "documentation")
+  })
+
+  it("classifies an explanatory question as read_only_question, not documentation (D11)", () => {
+    const result = classifyTask({ rawPrompt: "Explain how routing works", readOnly: true })
+    expect(result.taskClass).toBe("read_only_question")
+    expectConfidentResult(result, "read_only_question")
   })
 
   it("every produced result validates against zClassificationResult", () => {

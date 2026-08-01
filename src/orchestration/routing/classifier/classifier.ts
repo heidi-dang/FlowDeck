@@ -15,7 +15,7 @@
  *   6.  ci_failure               ciContext && !buildOrPackageFailure [ADJUSTED]
  *   7.  concurrency_failure      concurrencyInvolved
  *   8.  repository_audit         explicitAuditRequest && !securitySensitive && !mutating
- *   9.  documentation            rawPrompt doc-regex && !mutating [ADJUSTED: above read_only_question]
+ *   9.  documentation            rawPrompt doc-regex [ADJUSTED: above read_only_question; no !mutating guard]
  *   10. read_only_question       readOnly && !mutating && !explicitAuditRequest && !ciContext
  *   11. recovery_resume          recoveryState
  *   12. ui_feature               uiInvolved && expectedFileCount >= 1
@@ -23,14 +23,20 @@
  *   14. local_bug                hasTests && fileCount <= 2 && !ciContext && productionImpact < 70
  *   15. performance_work         rawPrompt perf-regex && !concurrencyInvolved
  *   16. cross_module_feature     fileCount >= 3 || domainCount >= 2
- *   17. fallback                 userRequiredSpecialist mapping (else "unknown")
+ *   17. fallback                 userRequiredSpecialist mapping via canonical specialist allow-list (else "unknown")
+ *
+ * Conflict detection (readOnly && mutating) runs BEFORE every rule and before
+ * the specialist fallback (D12): a task that is simultaneously read-only and
+ * mutating is contradictory and always resolves to "unknown".
  *
  * ADJUSTED reasons: database_migration sits above ci_failure so a migration is
  * never missed when CI context is also present; documentation sits above
  * read_only_question so a documentation prompt that is also readOnly=true
- * classifies as documentation rather than as a generic read-only question.
- * Rules 1-8 still beat read_only_question, security_review still beats
- * repository_audit, and production_incident beats everything.
+ * classifies as documentation rather than as a generic read-only question;
+ * the documentation rule no longer excludes mutating tasks so "Update README"
+ * (mutating) classifies as documentation. Rules 1-8 still beat
+ * read_only_question, security_review still beats repository_audit, and
+ * production_incident beats everything.
  */
 
 import type {
@@ -40,6 +46,7 @@ import type {
   EvidenceReference,
 } from "@/orchestration/routing/contracts"
 import { TASK_CLASSES, ROUTING_POLICY_VERSION, SCORE_MIN, SCORE_MAX } from "@/orchestration/routing/contracts"
+import { normalizeSpecialistId, resolveSpecialistClass } from "./specialist-registry"
 
 /** Below this confidence a classification is downgraded to "unknown". */
 export const DEFAULT_CLASSIFICATION_THRESHOLD = 60
@@ -70,23 +77,11 @@ export const MUTATING_CLASSES: readonly TaskClass[] = [
   "recovery_resume",
 ]
 
-/** Read-only classes; mutating=true conflicts with them. */
-const READ_ONLY_CLASSES: readonly TaskClass[] = ["read_only_question", "repository_audit", "documentation"]
-
 /** Documentation-prompt detection regex (rule 9). No /g flag: stateless, deterministic. */
-const DOCUMENTATION_RE = /doc(umentation)?|readme|guide|how\s+to|explain/i
+const DOCUMENTATION_RE = /doc(umentation)?|readme|guide/i
 
 /** Performance-prompt detection regex (rule 15). No /g flag: stateless, deterministic. */
 const PERFORMANCE_RE = /perform|latency|benchmark|profil|slow|throughput/i
-
-/** userRequiredSpecialist -> TaskClass mapping used by the fallback rule. */
-const SPECIALIST_FALLBACK: Readonly<Record<string, TaskClass>> = {
-  "security-auditor": "security_review",
-  researcher: "read_only_question",
-  devops: "ci_failure",
-  tester: "local_bug",
-  architect: "cross_module_feature",
-}
 
 /** A single deterministic classification rule. */
 interface ClassificationRule {
@@ -166,9 +161,8 @@ const RULES: readonly ClassificationRule[] = [
   {
     id: "documentation",
     taskClass: "documentation",
-    predicate: (input) =>
-      typeof input.rawPrompt === "string" && DOCUMENTATION_RE.test(input.rawPrompt) && input.mutating !== true,
-    describe: () => "prompt requests documentation (matches /doc(umentation)?|readme|guide|how\\s+to|explain/i)",
+    predicate: (input) => typeof input.rawPrompt === "string" && DOCUMENTATION_RE.test(input.rawPrompt),
+    describe: () => "prompt requests documentation (matches /doc(umentation)?|readme|guide/i)",
   },
   {
     id: "read_only_question",
@@ -300,42 +294,28 @@ function computeConfidence(
   return Math.min(SCORE_MAX, Math.max(SCORE_MIN, confidence))
 }
 
-/** Fallback-rule (17) evidence; unmapped fallback stays low-evidence. */
-function fallbackEvidence(input: ClassificationInput, taskClass: TaskClass): EvidenceReference[] {
-  const specialist = input.userRequiredSpecialist
-  if (typeof specialist === "string" && specialist.length > 0) {
-    return [
-      {
-        id: `cls.${taskClass}.1`,
-        source: "rule.fallback",
-        detail: `No priority rule matched; userRequiredSpecialist "${specialist}" maps to ${taskClass}`,
-      },
-      {
-        id: `cls.${taskClass}.2`,
-        source: "rule.fallback",
-        detail: "Fallback rule 17 selected (no priority rule satisfied)",
-      },
-    ]
-  }
+/** Fallback-rule (17) evidence for a recognized canonical specialist. */
+function fallbackEvidence(input: ClassificationInput, taskClass: TaskClass, normalizedId: string): EvidenceReference[] {
   return [
     {
-      id: "cls.unknown.1",
+      id: `cls.${taskClass}.1`,
       source: "rule.fallback",
-      detail: "No priority rule matched and no userRequiredSpecialist mapping; classified as unknown",
+      detail: `No priority rule matched; userRequiredSpecialist "${input.userRequiredSpecialist}" (normalized "${normalizedId}") maps to ${taskClass}`,
+    },
+    {
+      id: `cls.${taskClass}.2`,
+      source: "rule.fallback",
+      detail: "Fallback rule 17 selected (no priority rule satisfied; specialist is in the canonical allow-list)",
     },
   ]
 }
 
 /** Evidence for a read-only/mutating conflict, with a stable id and source. */
-function conflictEvidence(winningClass: TaskClass, input: ClassificationInput): EvidenceReference {
-  const detail =
-    input.readOnly === true
-      ? `readOnly=true conflicts with mutating class "${winningClass}"`
-      : `mutating=true conflicts with read-only class "${winningClass}"`
+function conflictEvidence(): EvidenceReference {
   return {
     id: "classifier.conflict.read_only_mutating",
     source: "rule.conflict_detection",
-    detail,
+    detail: "readOnly=true and mutating=true are contradictory; classified as unknown",
   }
 }
 
@@ -360,36 +340,64 @@ function finalize(taskClass: TaskClass, evidence: EvidenceReference[], confidenc
 /**
  * Classifies `input` using the deterministic priority-ordered rule table.
  * Pure: no randomness, no Date, no model calls, no I/O.
+ *
+ * Conflict detection (readOnly && mutating) runs before every rule and
+ * before the specialist fallback: a task that is simultaneously read-only
+ * and mutating is contradictory and always resolves to "unknown".
  */
 export function classifyTask(input: ClassificationInput): ClassificationResult {
-  const satisfied = RULES.filter((rule) => rule.predicate(input))
-  const winner = satisfied[0]
-
-  // Rule 17: fallback when no priority rule matched.
-  if (winner === undefined) {
-    const specialist = input.userRequiredSpecialist
-    const mappedClass =
-      typeof specialist === "string" && specialist.length > 0
-        ? (SPECIALIST_FALLBACK[specialist] ?? "cross_module_feature")
-        : "unknown"
-    const evidence = fallbackEvidence(input, mappedClass)
-    // The fallback rule itself supports its own class (supportingRules = 1).
-    const confidence = computeConfidence(input, evidence, 1)
-    return finalize(mappedClass, evidence, confidence)
-  }
-
-  // Conflict detection: read-only/mutating contradictions never classify
-  // confidently; they resolve to "unknown" with a fixed low confidence.
-  const classIsMutating = MUTATING_CLASSES.includes(winner.taskClass)
-  const classIsReadOnly = READ_ONLY_CLASSES.includes(winner.taskClass)
-  if ((classIsMutating && input.readOnly === true) || (classIsReadOnly && input.mutating === true)) {
+  // D12: conflict detection before all rules and before specialist fallback.
+  if (input.readOnly === true && input.mutating === true) {
     return {
       taskClass: "unknown",
       confidence: 25,
-      evidence: [conflictEvidence(winner.taskClass, input)],
+      evidence: [conflictEvidence()],
       usedModelFallback: false,
       policyVersion: ROUTING_POLICY_VERSION,
     }
+  }
+
+  const satisfied = RULES.filter((rule) => rule.predicate(input))
+  const winner = satisfied[0]
+
+  // Rule 17: fallback when no priority rule matched. The specialist id is
+  // normalized (trim, lowercase) and matched against the canonical allow-list;
+  // an unrecognized specialist id yields "unknown" with low confidence and
+  // evidence explaining why the deterministic path failed (D13).
+  if (winner === undefined) {
+    const specialist = input.userRequiredSpecialist
+    if (typeof specialist === "string" && specialist.trim().length > 0) {
+      const normalizedId = normalizeSpecialistId(specialist)
+      const mappedClass = resolveSpecialistClass(normalizedId)
+      if (mappedClass !== undefined) {
+        const evidence = fallbackEvidence(input, mappedClass, normalizedId)
+        // The fallback rule itself supports its own class (supportingRules = 1).
+        const confidence = computeConfidence(input, evidence, 1)
+        return finalize(mappedClass, evidence, confidence)
+      }
+      return {
+        taskClass: "unknown",
+        confidence: 25,
+        evidence: [
+          {
+            id: "cls.unknown.1",
+            source: "rule.fallback",
+            detail: `No priority rule matched and userRequiredSpecialist "${specialist}" (normalized "${normalizedId}") is not a canonical specialist; classified as unknown`,
+          },
+        ],
+        usedModelFallback: false,
+        policyVersion: ROUTING_POLICY_VERSION,
+      }
+    }
+    const evidence = [
+      {
+        id: "cls.unknown.1",
+        source: "rule.fallback",
+        detail: "No priority rule matched and no userRequiredSpecialist; classified as unknown",
+      },
+    ]
+    const confidence = computeConfidence(input, evidence, 0)
+    return finalize("unknown", evidence, confidence)
   }
 
   const evidence = [

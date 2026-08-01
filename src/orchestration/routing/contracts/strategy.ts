@@ -21,6 +21,12 @@ export type RunStage = "task" | "review" | "execute" | "verify" | "done"
 /** Verification depth requested for a strategy. */
 export type VerificationLevel = "focused" | "standard" | "full" | "release"
 
+/**
+ * Approval requirement attached to every high-risk-capable default strategy
+ * (document section 5.5: high-risk tasks require at least one approval).
+ */
+export const HIGH_RISK_APPROVAL_REQUIREMENT = "high_risk_approval"
+
 /** Runtime posture that governs how a routed task is executed. */
 export interface StrategyPolicy {
   strategy: ExecutionStrategy
@@ -33,6 +39,21 @@ export interface StrategyPolicy {
   modelTier: ModelTier
   recoveryLimit: number
   approvalRequirements: string[]
+}
+
+/**
+ * Returns true when `policy` satisfies the section 5.5 high-risk posture:
+ * full (or release) verification, at least one required reviewer, and at
+ * least one approval requirement. Strategies that do not meet this posture
+ * (e.g. fast_direct: focused verification, zero reviewers, no approvals)
+ * are incompatible with high-risk tasks.
+ */
+export function isHighRiskCompatible(policy: StrategyPolicy): boolean {
+  return (
+    (policy.verificationLevel === "full" || policy.verificationLevel === "release") &&
+    policy.requiredReviewers >= 1 &&
+    policy.approvalRequirements.length >= 1
+  )
 }
 
 /**
@@ -93,7 +114,7 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
   },
   planned_execution: {
     strategy: "planned_execution",
-    allowedStates: ["task", "execute", "verify"],
+    allowedStates: ["task", "execute", "review", "verify"],
     maximumSpecialists: 2,
     requiredCapabilities: ["planning"],
     requiredReviewers: 1,
@@ -101,11 +122,11 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
     contextBudget: 32000,
     modelTier: "general_coding",
     recoveryLimit: 2,
-    approvalRequirements: [],
+    approvalRequirements: [HIGH_RISK_APPROVAL_REQUIREMENT],
   },
   parallel_implementation: {
     strategy: "parallel_implementation",
-    allowedStates: ["task", "execute", "verify"],
+    allowedStates: ["task", "execute", "review", "verify"],
     maximumSpecialists: 4,
     requiredCapabilities: ["planning", "ownership_leases"],
     requiredReviewers: 1,
@@ -113,11 +134,11 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
     contextBudget: 48000,
     modelTier: "general_coding",
     recoveryLimit: 2,
-    approvalRequirements: [],
+    approvalRequirements: [HIGH_RISK_APPROVAL_REQUIREMENT],
   },
   root_cause_repair: {
     strategy: "root_cause_repair",
-    allowedStates: ["execute", "verify"],
+    allowedStates: ["execute", "review", "verify"],
     maximumSpecialists: 2,
     requiredCapabilities: [],
     requiredReviewers: 1,
@@ -125,7 +146,7 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
     contextBudget: 40000,
     modelTier: "strong_reasoning",
     recoveryLimit: 3,
-    approvalRequirements: [],
+    approvalRequirements: [HIGH_RISK_APPROVAL_REQUIREMENT],
   },
   audit_only: {
     strategy: "audit_only",
@@ -137,7 +158,7 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
     contextBudget: 32000,
     modelTier: "strong_reasoning",
     recoveryLimit: 1,
-    approvalRequirements: [],
+    approvalRequirements: [HIGH_RISK_APPROVAL_REQUIREMENT],
   },
   repair_and_independent_audit: {
     strategy: "repair_and_independent_audit",
@@ -149,11 +170,11 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
     contextBudget: 56000,
     modelTier: "strong_reasoning",
     recoveryLimit: 3,
-    approvalRequirements: [],
+    approvalRequirements: [HIGH_RISK_APPROVAL_REQUIREMENT],
   },
   recovery_resume: {
     strategy: "recovery_resume",
-    allowedStates: ["task", "execute"],
+    allowedStates: ["task", "execute", "review", "verify"],
     maximumSpecialists: 2,
     requiredCapabilities: [],
     requiredReviewers: 1,
@@ -161,7 +182,7 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
     contextBudget: 24000,
     modelTier: "general_coding",
     recoveryLimit: 1,
-    approvalRequirements: [],
+    approvalRequirements: [HIGH_RISK_APPROVAL_REQUIREMENT],
   },
 } as const satisfies Record<ExecutionStrategy, StrategyPolicy>)
 
