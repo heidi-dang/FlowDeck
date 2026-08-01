@@ -107,7 +107,6 @@ async function generateSelfHostReport() {
     ).trim();
 
     const runs = JSON.parse(ciJson);
-    const codeChanges = changedFiles.filter(f => f && !f.startsWith('artifacts/') && f !== 'scripts/report-self-host.mjs');
     const matchingRuns = runs.filter((r) => r.headSha === gitSha);
 
     if (matchingRuns.length === 0) {
