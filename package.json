@@ -67,7 +67,7 @@
     "better-harness:serve": "node bin/better-harness.js",
     "standalone:start": "bun run src/better-harness/testing/standalone-server-cli.ts",
     "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\"",
-    "test:persistence": "node src/orchestration/persistence/__tests__/run-tests.mjs && node src/orchestration/persistence/__tests__/phase1-2-tests.mjs && node src/orchestration/persistence/__tests__/phase1-3-tests.mjs && node src/orchestration/persistence/__tests__/phase1-4-tests.mjs && node src/orchestration/persistence/__tests__/phase1-5-retry.mjs",
+    "test:persistence": "bun test src/orchestration/persistence/__tests__/persistence.test.ts",
     "test:persistence:node": "node src/orchestration/persistence/__tests__/run-tests.mjs",
     "check:schema-generated": "node scripts/check-schema-generated.mjs",
     "generate:schema": "node -e \"const fs=require(\"fs\"),crypto=require(\"crypto\");const sql=fs.readFileSync(\"schema-v0.2.6.sql\",\"utf-8\");const c=crypto.createHash(\"sha256\").update(sql,\"utf-8\").digest(\"hex\");fs.writeFileSync(\"src/orchestration/persistence/migrations/schema-embed.ts\",\"// Auto-generated from schema-v0.2.6.sql - DO NOT EDIT\\n// Regenerate: npm run generate:schema\\n// Canonical checksum: \"+c+\"\\n\\nexport const SCHEMA_V_0_2_6 = \\`\"+sql.replace(/\\`/g,\"\\\\\\`\")+\"\\`;\\nexport const SCHEMA_CHECKSUM = \\\"\"+c+\"\\\";\\n\");console.log(\"Generated, checksum:\"+c);\"",

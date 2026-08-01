@@ -11,12 +11,17 @@ function clean() {
 }
 const conns = new Map();
 function openConn(p, ro = false) {
-  let d = conns.get(p); if (d) return d;
-  d = new Database(p, { readonly: ro });
-  d.pragma('journal_mode = WAL'); d.pragma('foreign_keys = ON'); d.pragma('busy_timeout = 5000'); d.pragma('synchronous = NORMAL');
-  conns.set(p, d); return d;
+  const key = p + (ro ? ':ro' : ':rw');
+  let d = conns.get(key); if (d) return d;
+  d = new Database(p, { create: true, readonly: ro });
+  d.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;");
+  conns.set(key, d); return d;
 }
-function closeConn(p) { const d = conns.get(p); if (d) { d.close(); conns.delete(p); } }
+function closeConn(p) {
+  for (const k of [p + ':ro', p + ':rw', p]) {
+    const d = conns.get(k); if (d) { try { d.close(); } catch {} conns.delete(k); }
+  }
+}
 function closeAll() { for (const [,d] of conns) { d.close(); } conns.clear(); }
 
 function ok(c, m) { if (c) { pass++; console.log(`  ✅ ${m}`); } else { fail++; console.error(`  ❌ ${m}`); } }
