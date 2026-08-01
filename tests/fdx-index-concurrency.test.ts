@@ -219,17 +219,21 @@ describe("FDX index cross-process coordination (real processes)", () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
-  it("invalidate racing refresh leaves a valid index", async () => {
+  it("invalidate racing refresh leaves a recoverable index", async () => {
     const dir = makeRepo()
     refreshOnce(dir)
     await Promise.all([
       runFdxTimeout(dir, ["invalidate"], 60_000),
       runFdxTimeout(dir, ["refresh"], 60_000),
     ])
-    // Final state: refresh must have published a valid generation (or the
-    // invalidate won and a follow-up refresh works).
-    const s = status(dir)
-    expect(s.available).toBe(true)
+    // The race has two safe outcomes: refresh won (index available) or
+    // invalidate won (index intentionally cleared — the documented
+    // invalidate semantics: "a later refresh starts from a clean slate").
+    // Either way a subsequent refresh must produce a valid, available index
+    // and no temporary debris may remain.
+    const r = refreshOnce(dir)
+    expect(r.generation).toBeGreaterThanOrEqual(1)
+    expect(status(dir).available).toBe(true)
     expect(worktreeEntries(dir).some((e) => e.includes(".tmp"))).toBe(false)
     rmSync(dir, { recursive: true, force: true })
   })
