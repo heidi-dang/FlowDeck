@@ -12,10 +12,10 @@ import { createStreamEvent } from "../../src/orchestration/streaming/stream-even
 
 describe("Durable SSE Backend Infrastructure", () => {
   it("persist-before-deliver & sequence validation", () => {
-    const repo = new StreamRepository();
+    const repo = new StreamRepository(":memory:", { allowInMemory: true });
     const validator = new SequenceValidator();
     const runId = "run-1";
-    
+
     let seqCheck = validator.validate(runId, 1);
     expect(seqCheck.valid).toBe(true);
     repo.persistEvent(runId, 1, "start", {}, Date.now());
@@ -32,9 +32,9 @@ describe("Durable SSE Backend Infrastructure", () => {
   });
 
   it("replay & snapshot fallback", async () => {
-    const repo = new StreamRepository();
+    const repo = new StreamRepository(":memory:", { allowInMemory: true });
     const replayService = new StreamReplayService(repo);
-    
+
     repo.persistEvent("run-2", 1, "e1", {}, Date.now());
     repo.persistEvent("run-2", 2, "e2", {}, Date.now());
     repo.persistEvent("run-2", 3, "e3", {}, Date.now());
@@ -47,7 +47,7 @@ describe("Durable SSE Backend Infrastructure", () => {
       end: () => {}
     };
     const session = new SseSession(mockRes as any, "client-1");
-    
+
     await replayService.replayToSession("run-2", 1, session);
     expect(sentEvents.length).toBe(2); // e2 and e3
   });
@@ -62,7 +62,7 @@ describe("Durable SSE Backend Infrastructure", () => {
     };
     const session = new SseSession(mockRes as any, "client-2");
     const bp = new BackpressureController(session);
-    
+
     bp.enqueue(createStreamEvent({ eventId: '1', sequence: 1, runId: 'run-3', type: 'agent.progress', stage: 'execute', importance: 'normal', title: 'progress', payload: {} }));
     expect(sentEvents.length).toBe(1);
   });
@@ -87,9 +87,9 @@ describe("Durable SSE Backend Infrastructure", () => {
 
   it("SSE route handling", async () => {
     const broker = new SseBroker();
-    const repo = new StreamRepository();
+    const repo = new StreamRepository(":memory:", { allowInMemory: true });
     const replayService = new StreamReplayService(repo);
-    const route = createSseRoute(broker, replayService);
+    const route = createSseRoute(broker, replayService, repo);
 
     const req = {
       params: { runId: "run-5" },

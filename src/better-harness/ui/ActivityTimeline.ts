@@ -1,13 +1,15 @@
 import { UIProps } from './types';
+import { escapeHTML } from './utils';
 
 export const ActivityTimeline = ({ state }: UIProps) => {
-  const opCount = Object.keys(state.toolExecutions || {}).length;
+  const executions = Object.values(state.toolExecutions || {});
+  const opCount = executions.length;
   return `
     <div class="activity-timeline" aria-label="Activity Timeline">
       <h3>Activity Timeline (${opCount} operations)</h3>
       <div class="timeline-entries">
-        ${Object.values(state.toolExecutions || {})
-          .map((t) => `<div class="timeline-item" tabindex="0">${t.toolName}: ${t.status}</div>`)
+        ${executions
+          .map((t) => `<div class="timeline-item" tabindex="0">${escapeHTML(t.toolName)}: ${escapeHTML(t.status)}</div>`)
           .join('')}
       </div>
     </div>

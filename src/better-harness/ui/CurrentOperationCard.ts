@@ -1,9 +1,12 @@
 import { UIProps } from './types';
-    export const CurrentOperationCard = ({ state }: UIProps) => {
-      return `
-        <div class="current-operation-card" style="position: sticky; top: 0;" aria-live="assertive" role="status">
-          <h2>Current Operation</h2>
-          <p>${state.currentOperation || 'Waiting for operation...'}</p>
-        </div>
-      `;
-    };
+import { escapeHTML } from './utils';
+
+export const CurrentOperationCard = ({ state }: UIProps) => {
+  const op = state.currentOperation ? escapeHTML(state.currentOperation) : 'Idle';
+  return `
+    <div class="current-operation-card sticky-card" aria-live="assertive" aria-label="Current Operation">
+      <h2>Primary Operation</h2>
+      <p class="operation-text">${op}</p>
+    </div>
+  `;
+};

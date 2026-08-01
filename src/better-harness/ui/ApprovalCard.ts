@@ -1,5 +1,7 @@
 import { UIProps } from './types';
+import { escapeHTML } from './utils';
 
 export const ApprovalCard = ({ state }: UIProps) => {
-  return `<div class="approval-card" aria-label="Approval Status">${state.terminalState === 'cancelled' ? 'Approval Revoked' : 'No Action Required'}</div>`;
+  const label = state.terminalState === 'cancelled' ? 'Approval Revoked' : 'No Action Required';
+  return `<div class="approval-card" aria-label="Approval Status">${escapeHTML(label)}</div>`;
 };

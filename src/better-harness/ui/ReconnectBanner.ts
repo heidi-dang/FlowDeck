@@ -1,7 +1,6 @@
 import { UIProps } from './types';
+import { escapeHTML } from './utils';
 
 export const ReconnectBanner = ({ state }: UIProps) => {
-  return state.connectionState === 'reconnecting'
-    ? `<div class="reconnect-banner" aria-live="assertive">Reconnecting stream...</div>`
-    : '';
+  return `<div class="reconnect-banner" aria-label="Reconnect Status">${escapeHTML(state.connectionState)}</div>`;
 };

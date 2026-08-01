@@ -31,12 +31,7 @@ export class SseBroker {
     const runClients = this.clients.get(runId);
     if (runClients) {
       for (const session of runClients) {
-        const bp = this.backpressureControllers.get(session.clientId);
-        if (bp) {
-          bp.enqueue(event);
-        } else {
-          session.sendEvent(event);
-        }
+        session.enqueueOrSend(event);
       }
     }
   }

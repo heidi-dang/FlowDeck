@@ -1,7 +1,7 @@
 import { UIProps } from './types';
-    export const CompletionSummary = ({ state }: UIProps) => {
-      if (state.terminalState) {
-        return `<div class="completion-summary" role="alert" aria-live="assertive">Run finished with state: ${state.terminalState}</div>`;
-      }
-      return '';
-    };
+import { escapeHTML } from './utils';
+
+export const CompletionSummary = ({ state }: UIProps) => {
+  const summary = state.terminalState ? `Run Completed (${escapeHTML(state.terminalState)})` : 'Run In Progress';
+  return `<div class="completion-summary" aria-label="Completion Summary">${summary}</div>`;
+};

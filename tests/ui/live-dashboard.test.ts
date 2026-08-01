@@ -61,7 +61,7 @@ describe('Live Dashboard UI Components', () => {
     const html = CurrentOperationCard({ state: dummyState });
     expect(html).toContain('Generating plan');
     expect(html).toContain('aria-live="assertive"');
-    expect(html).toContain('position: sticky');
+    expect(html).toContain('sticky-card');
   });
 
   it('AgentActivityGrid should render agents with keyboard focusability', () => {
