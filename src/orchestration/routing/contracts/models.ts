@@ -163,7 +163,7 @@ export const zModelSelectionDecision = z
     provider: z.string().optional(),
     model: z.string().optional(),
     confidence: z.number().min(0).max(100),
-    reasonCodes: z.array(z.string()),
+    reasonCodes: z.array(zNonEmptyId).min(1, "reasonCodes must be non-empty"),
     fallbackTiers: z.array(zModelTier),
     timeoutPolicy: zTimeoutPolicy,
     capabilityFloor: z.array(zNonEmptyId),

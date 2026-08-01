@@ -23,6 +23,7 @@ import {
   zWorkNodeType,
   zWorkNode,
   zLatencyClass,
+  zCapabilityDescriptor,
   specialistResultHasRequiredEvidence,
   // type-only imports (agents.ts)
   SpecialistResult,
@@ -311,7 +312,7 @@ describe("routing contracts: unknown fields are stripped", () => {
     const result = zModelSelectionDecision.safeParse({
       tier: "small_fast",
       confidence: 60,
-      reasonCodes: [],
+      reasonCodes: ["simple"],
       fallbackTiers: [],
       timeoutPolicy: { queueMs: 0, firstTokenMs: 0, totalMs: 0 },
       capabilityFloor: [],
@@ -319,6 +320,65 @@ describe("routing contracts: unknown fields are stripped", () => {
     });
     expect(result.success).toBe(true);
     expect("bogusKey" in (result.data as Record<string, unknown>)).toBe(false);
+  });
+});
+
+describe("routing contracts: identifier strictness across contracts", () => {
+  const validNode = {
+    id: "n1",
+    type: "implement",
+    dependencies: ["n0"],
+    fileOwnership: ["src/a.ts"],
+    requiredCapabilities: ["planning"],
+    estimatedTokens: 1000,
+    estimatedDurationMs: 5000,
+    priority: 1,
+  };
+
+  it("rejects empty and whitespace-only WorkNode ids", () => {
+    expect(zWorkNode.safeParse({ ...validNode, id: "" }).success).toBe(false);
+    expect(zWorkNode.safeParse({ ...validNode, id: "   " }).success).toBe(false);
+  });
+
+  it("rejects empty and whitespace-only WorkNode dependency ids", () => {
+    expect(zWorkNode.safeParse({ ...validNode, dependencies: ["n0", ""] }).success).toBe(false);
+    expect(zWorkNode.safeParse({ ...validNode, dependencies: ["n0", "  "] }).success).toBe(false);
+  });
+
+  it("rejects empty and whitespace-only capability and ownership ids", () => {
+    expect(zWorkNode.safeParse({ ...validNode, requiredCapabilities: ["planning", ""] }).success).toBe(false);
+    expect(zWorkNode.safeParse({ ...validNode, fileOwnership: ["src/a.ts", " "] }).success).toBe(false);
+  });
+
+  it("rejects empty and whitespace-only allowed-agent and tool ids", () => {
+    const descriptor = {
+      capability: "code mutation",
+      allowedAgents: ["backend-coder"],
+      tools: ["edit"],
+      mutating: true,
+      requiresHuman: false,
+      supportsParallelism: false,
+      supportsCancellation: false,
+      expectedLatencyClass: "fast",
+    };
+    expect(zCapabilityDescriptor.safeParse({ ...descriptor, capability: "" }).success).toBe(false);
+    expect(zCapabilityDescriptor.safeParse({ ...descriptor, capability: "  " }).success).toBe(false);
+    expect(zCapabilityDescriptor.safeParse({ ...descriptor, allowedAgents: ["backend-coder", ""] }).success).toBe(false);
+    expect(zCapabilityDescriptor.safeParse({ ...descriptor, tools: ["edit", " "] }).success).toBe(false);
+  });
+
+  it("rejects empty and whitespace-only model decision reason codes", () => {
+    const decision = {
+      tier: "strong_reasoning",
+      confidence: 90,
+      reasonCodes: ["complex"],
+      fallbackTiers: ["general_coding"],
+      timeoutPolicy: { queueMs: 500, firstTokenMs: 10000, totalMs: 120000 },
+      capabilityFloor: ["GitHub inspection"],
+    };
+    expect(zModelSelectionDecision.safeParse({ ...decision, reasonCodes: [] }).success).toBe(false);
+    expect(zModelSelectionDecision.safeParse({ ...decision, reasonCodes: ["", "complex"] }).success).toBe(false);
+    expect(zModelSelectionDecision.safeParse({ ...decision, reasonCodes: ["   "] }).success).toBe(false);
   });
 });
 

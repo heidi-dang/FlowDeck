@@ -183,8 +183,8 @@ export const zLatencyClass = z.enum(["instant", "fast", "slow"] as const)
 /** Zod schema for a CapabilityDescriptor; capability ids must be non-empty. */
 export const zCapabilityDescriptor = z.object({
   capability: zNonEmptyId,
-  allowedAgents: z.array(z.string()),
-  tools: z.array(z.string()),
+  allowedAgents: z.array(zNonEmptyId),
+  tools: z.array(zNonEmptyId),
   mutating: z.boolean(),
   requiresHuman: z.boolean(),
   supportsParallelism: z.boolean(),
@@ -356,13 +356,13 @@ export const zDelegationDecision = z
 /** Zod schema for a WorkNodeType value. */
 export const zWorkNodeType = z.enum(["inspect", "implement", "verify", "review"] as const)
 
-/** Zod schema for a WorkNode. */
+/** Zod schema for a WorkNode; every identifier must be non-empty. */
 export const zWorkNode = z.object({
-  id: z.string(),
+  id: zNonEmptyId,
   type: zWorkNodeType,
-  dependencies: z.array(z.string()),
-  fileOwnership: z.array(z.string()),
-  requiredCapabilities: z.array(z.string()),
+  dependencies: z.array(zNonEmptyId),
+  fileOwnership: z.array(zNonEmptyId),
+  requiredCapabilities: z.array(zNonEmptyId),
   estimatedTokens: z.number().min(0),
   estimatedDurationMs: z.number().min(0),
   priority: z.number().int(),
