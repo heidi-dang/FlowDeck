@@ -1,0 +1,227 @@
+/**
+ * Routing contract: agent capability and delegation records.
+ *
+ * Describes what specialists can do (capabilities), the shape of results
+ * they return, and the nodes of a routed work graph.
+ */
+
+import { z } from "zod"
+
+/** Expected latency class of a capability's tools. */
+export type LatencyClass = "instant" | "fast" | "slow"
+
+/** Statuses that end a specialist result; no further work is expected. */
+export const SPECIALIST_TERMINAL_STATUSES = [
+  "completed",
+  "blocked",
+  "failed",
+  "cancelled",
+] as const
+
+/** Terminal status of a specialist result. */
+export type SpecialistStatus = (typeof SPECIALIST_TERMINAL_STATUSES)[number]
+
+/** Declares a capability a specialist agent may provide. */
+export interface CapabilityDescriptor {
+  capability: string
+  allowedAgents: string[]
+  tools: string[]
+  mutating: boolean
+  requiresHuman: boolean
+  supportsParallelism: boolean
+  supportsCancellation: boolean
+  expectedLatencyClass: LatencyClass
+}
+
+/** A single finding surfaced by a specialist. */
+export interface FindingRef {
+  id: string
+  summary: string
+  severity: "info" | "warning" | "critical"
+  location?: string
+}
+
+/** A file-level change claimed by a specialist result. */
+export interface ChangeRef {
+  file: string
+  kind: "create" | "modify" | "delete"
+  symbol?: string
+}
+
+/** A piece of evidence backing a specialist result. */
+export interface EvidenceRef {
+  id: string
+  kind: "log" | "test" | "diff" | "observation" | "metric"
+  detail: string
+}
+
+/** Result returned by a specialist after executing an assigned node. */
+export interface SpecialistResult {
+  status: SpecialistStatus
+  summary: string
+  findings: FindingRef[]
+  changes: ChangeRef[]
+  evidence: EvidenceRef[]
+  assumptions: string[]
+  unresolvedRisks: string[]
+  confidence: number
+  recommendedNextAction: string
+  ownershipUsed: string[]
+  tokens?: { input: number; output: number }
+  durationMs?: number
+}
+
+/**
+ * Returns true when `r` satisfies its assignment: a completed result must
+ * carry a non-empty summary and at least one piece of evidence; any other
+ * terminal status is accepted as-is.
+ */
+export function specialistResultHasRequiredEvidence(r: SpecialistResult): boolean {
+  return r.status !== "completed" || (r.summary.length > 0 && r.evidence.length > 0)
+}
+
+/** Why the router delegated (or refused to delegate) a node. */
+export type DelegationReason =
+  | "explicit_user_request"
+  | "independent_ownership"
+  | "specialist_expertise"
+  | "independent_audit"
+  | "direct_discovery_failed"
+  | "multi_domain"
+  | "rejected_trivial"
+  | "rejected_overlap"
+  | "rejected_no_advantage"
+  | "rejected_cost"
+
+/** The router's delegation verdict for a node. */
+export interface DelegationDecision {
+  allowed: boolean
+  reason: DelegationReason
+  specialist?: string
+  requiredCapabilities: string[]
+  estimatedBenefitMs: number
+  estimatedTokenCost: number
+  overlapRisk: number
+  confidence: number
+}
+
+/** The kind of work a work node represents. */
+export type WorkNodeType = "inspect" | "implement" | "verify" | "review"
+
+/** A node in the routed work graph. */
+export interface WorkNode {
+  id: string
+  type: WorkNodeType
+  dependencies: string[]
+  fileOwnership: string[]
+  requiredCapabilities: string[]
+  estimatedTokens: number
+  estimatedDurationMs: number
+  priority: number
+}
+
+/** Returns true when `value` is a valid latency class. */
+export function isValidLatencyClass(value: unknown): value is LatencyClass {
+  return value === "instant" || value === "fast" || value === "slow"
+}
+
+/** Zod schema for a LatencyClass value. */
+export const zLatencyClass = z.enum(["instant", "fast", "slow"] as const)
+
+/** Zod schema for a CapabilityDescriptor. */
+export const zCapabilityDescriptor = z.object({
+  capability: z.string(),
+  allowedAgents: z.array(z.string()),
+  tools: z.array(z.string()),
+  mutating: z.boolean(),
+  requiresHuman: z.boolean(),
+  supportsParallelism: z.boolean(),
+  supportsCancellation: z.boolean(),
+  expectedLatencyClass: zLatencyClass,
+})
+
+/** Zod schema for a FindingRef. */
+export const zFindingRef = z.object({
+  id: z.string(),
+  summary: z.string(),
+  severity: z.enum(["info", "warning", "critical"] as const),
+  location: z.string().optional(),
+})
+
+/** Zod schema for a ChangeRef. */
+export const zChangeRef = z.object({
+  file: z.string(),
+  kind: z.enum(["create", "modify", "delete"] as const),
+  symbol: z.string().optional(),
+})
+
+/** Zod schema for an EvidenceRef. */
+export const zEvidenceRef = z.object({
+  id: z.string(),
+  kind: z.enum(["log", "test", "diff", "observation", "metric"] as const),
+  detail: z.string(),
+})
+
+/** Zod schema for a SpecialistResult. */
+export const zSpecialistResult = z.object({
+  status: z.enum(SPECIALIST_TERMINAL_STATUSES),
+  summary: z.string(),
+  findings: z.array(zFindingRef),
+  changes: z.array(zChangeRef),
+  evidence: z.array(zEvidenceRef),
+  assumptions: z.array(z.string()),
+  unresolvedRisks: z.array(z.string()),
+  confidence: z.number().int().min(0).max(100),
+  recommendedNextAction: z.string(),
+  ownershipUsed: z.array(z.string()),
+  tokens: z
+    .object({
+      input: z.number().int().min(0),
+      output: z.number().int().min(0),
+    })
+    .optional(),
+  durationMs: z.number().int().min(0).optional(),
+})
+
+/** Zod schema for a DelegationReason value. */
+export const zDelegationReason = z.enum(
+  [
+    "explicit_user_request",
+    "independent_ownership",
+    "specialist_expertise",
+    "independent_audit",
+    "direct_discovery_failed",
+    "multi_domain",
+    "rejected_trivial",
+    "rejected_overlap",
+    "rejected_no_advantage",
+    "rejected_cost",
+  ] as const,
+)
+
+/** Zod schema for a DelegationDecision. */
+export const zDelegationDecision = z.object({
+  allowed: z.boolean(),
+  reason: zDelegationReason,
+  specialist: z.string().optional(),
+  requiredCapabilities: z.array(z.string()),
+  estimatedBenefitMs: z.number().int().min(0),
+  estimatedTokenCost: z.number().min(0),
+  overlapRisk: z.number().int().min(0).max(100),
+  confidence: z.number().int().min(0).max(100),
+})
+
+/** Zod schema for a WorkNodeType value. */
+export const zWorkNodeType = z.enum(["inspect", "implement", "verify", "review"] as const)
+
+/** Zod schema for a WorkNode. */
+export const zWorkNode = z.object({
+  id: z.string(),
+  type: zWorkNodeType,
+  dependencies: z.array(z.string()),
+  fileOwnership: z.array(z.string()),
+  requiredCapabilities: z.array(z.string()),
+  estimatedTokens: z.number().min(0),
+  estimatedDurationMs: z.number().min(0),
+  priority: z.number().int(),
+})
