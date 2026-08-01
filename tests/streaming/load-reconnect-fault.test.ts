@@ -129,7 +129,7 @@ describe("Task 8: Load, Reconnect, and Fault Hardening", () => {
   });
 
   it("should handle sustained 10,000 event streaming load with stable memory footprint", () => {
-    const repo = new StreamRepository();
+    const repo = new StreamRepository(":memory:", { allowInMemory: true });
     const validator = new SequenceValidator();
     const tracker = new SequenceTracker(5000);
     const runId = `run-soak-10k-${Date.now()}`;
