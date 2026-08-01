@@ -177,21 +177,37 @@ The only valid generation is never mutated in place.
 ## Corruption handling
 
 On detection (manifest parse error, schema mismatch, checksum mismatch,
-missing component):
+missing component, malformed component, identity mismatch, count mismatch):
 
 1. the corrupt generation is moved to `quarantine/` with a diagnostic marker
    (`QUARANTINE.txt` retaining the reason);
-2. the most recent valid generation (if any) is activated;
-3. if `CURRENT` pointed at the quarantined generation, it is repointed to the
-   surviving generation;
+2. the loader scans remaining generations newest-to-oldest and selects the
+   newest FULLY valid generation — a malformed component is never converted
+   into an empty/default collection (fail-closed);
+3. `CURRENT` is atomically repaired to the surviving generation (a stale,
+   missing, or malformed pointer is handled);
 4. a later refresh rebuilds the affected layer (or the whole tree-derived
    index) safely;
 5. while rebuilding, clients fall back to one-shot/TypeScript behaviour via
-   the existing fallback ladder — corrupt index data is never returned.
+   the existing fallback ladder — corrupt index data is never returned;
+6. interrupted publication (a complete generation whose pointer was never
+   updated) is detected and the pointer is repointed.
 
-Unsupported **future** schemas are rejected (never read as valid); compatible
-older schemas are migrated explicitly; when migration is impossible the
-generation is rebuilt.
+Unsupported **future** schemas are left in place for the newer binary and
+never read as valid; legacy identity state is migrated (see below); when
+migration is impossible the generation is rebuilt.
+
+## Identity verification and migration (Task 3D)
+
+- Repository and worktree identity segments use the full SHA-256 digest
+  (256 bits). Every load verifies the manifest's identity (ids, root hash,
+  canonical roots) against the expected identity, so a hash collision or
+  incorrect directory selection cannot silently load another repository's
+  state.
+- Legacy 64-bit identity state directories are detected, ownership is
+  verified, and the state is migrated (manifests rewritten to the current
+  identity) or preserved as quarantine evidence; generations from different
+  repositories are never mixed.
 
 ## Incremental detection
 
@@ -307,6 +323,31 @@ the previous generation remains valid until a new one publishes.
 - No global lock across unrelated repositories (per-service locks; the
   process-wide registry is a lookup map only).
 
+### Cross-process writer coordination (Task 3D)
+
+- All writers (CLI vs CLI, CLI vs daemon, daemon vs daemon, rebuild vs
+  refresh, invalidate vs refresh) serialize on a repository/worktree-scoped
+  OS file lock (`index.lock`, flock / LockFileEx) with bounded acquisition
+  and PID owner evidence. The OS releases the lock on process death, so a
+  stale lock can never block and a live owner's lock is never deleted.
+- Generation conflicts are detected under the lock: a racing writer that
+  already published the same or a newer generation is rejected
+  (`AlreadyExists`) and reloads the winner's generation — never clobbering
+  it. Builds run in unique per-process temporary directories so racing
+  builders never corrupt each other's partial state.
+- Readers never take the lock: they read CURRENT plus a fully-published
+  generation, both atomic.
+
+### Windows-safe publication
+
+- CURRENT is replaced via a temporary pointer + atomic rename with bounded
+  retry for temporarily held file handles. A reader observes either the
+  previous valid generation or the new complete generation — never a
+  missing, partial, or corrupt pointer state.
+- Existing validated final generation directories are reused rather than
+  renamed over (POSIX `rename` semantics are not assumed).
+- Abandoned temporary pointer files are cleaned by every refresh.
+
 ## Query bounds
 
 - All query results are bounded (`--limit`, default 100, hard cap 1000).
@@ -344,21 +385,26 @@ the previous generation remains valid until a new one publishes.
 
 ## Performance budgets
 
-Declared budgets (120-file synthetic fixture, verified by
-`benchmark:fdx-index`; regressions fail the gate):
+Declared budgets (medium frozen fixture ~400 files, verified by
+`node scripts/bench-fdx-index.mjs`; the workflow runs on the exact SHA
+against a committed baseline and fails on material regression — no
+`--skip-budgets` / `--allow-dirty` for closure evidence):
 
 | Path | Budget (p95) |
 |---|---|
 | Cold full build | ≤ 30 s |
-| Warm persisted load | ≤ 500 ms |
-| No-change refresh | ≤ 1.5 s |
-| One-file edit refresh | ≤ 3 s |
-| Symbol lookup | ≤ 200 ms |
-| Reverse-dependency lookup | ≤ 200 ms |
-| Tests-for lookup | ≤ 200 ms |
+| Warm persisted load | ≤ 1 s |
+| No-change refresh | ≤ 2.5 s |
+| One-file edit refresh | ≤ 5 s |
+| Multi-file edit refresh | ≤ 8 s |
+| Symbol lookup | ≤ 500 ms |
+| Reverse-dependency lookup | ≤ 500 ms |
+| Tests-for lookup | ≤ 500 ms |
 
-Benchmark artifacts are bound to the exact implementation SHA; dirty-source
-runs are rejected unless explicitly overridden and labeled.
+The benchmark measures the fdx process RSS (not Node harness memory) and
+records OS, architecture, CPU, memory, Rust/Node/bun versions, the full
+40-char commit SHA, and a per-profile frozen-fixture SHA. Small, medium,
+and large fixtures provide scale evidence.
 
 ## Operational diagnostics
 
