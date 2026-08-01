@@ -1,0 +1,30 @@
+{
+  "benchmarkSuite": "streaming-infrastructure",
+  "timestamp": "2026-08-01T03:44:29.979Z",
+  "metrics": {
+    "sqliteCommitLatency": {
+      "samples": 2000,
+      "opsPerSec": 13254,
+      "medianMs": 0.0687,
+      "p95Ms": 0.1278,
+      "maxMs": 0.6503
+    },
+    "publishToClientReceipt": {
+      "samples": 2000,
+      "opsPerSec": 11159,
+      "medianMs": 0.0838,
+      "p95Ms": 0.1204,
+      "maxMs": 2.5328
+    },
+    "reconnectReplay": {
+      "replayedEvents": 1000,
+      "durationMs": 1.28,
+      "replaysPerSec": 782432
+    }
+  },
+  "memoryBytes": {
+    "baseline": 175406,
+    "peak": 175406,
+    "growthMb": 0
+  }
+}

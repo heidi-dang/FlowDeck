@@ -1,14 +1,18 @@
 import { ConnectionState } from './connection-state';
 import { SSEParser, SSEMessage } from './sse-parser';
 import { SequenceTracker } from './sequence-tracker';
+import type { FlowDeckStreamEvent } from './stream-event';
+import { validateStreamEvent } from './stream-event-schema';
 
 export interface StreamClientOptions {
   url: string;
   headers?: Record<string, string>;
   abortSignal?: AbortSignal;
   onStateChange?: (state: ConnectionState) => void;
-  onEvent?: (event: SSEMessage) => void;
+  onEvent?: (event: FlowDeckStreamEvent) => void;
+  onRawMessage?: (msg: SSEMessage) => void;
   onError?: (error: Error) => void;
+  onGapDetected?: (expected: number, received: number) => void;
   reconnectBaseMs?: number;
   reconnectMaxMs?: number;
 }
@@ -19,16 +23,18 @@ export class FlowDeckStreamClient {
   private parser: SSEParser;
   private tracker: SequenceTracker;
   private lastEventId?: string;
+  private lastCommittedSequence = 0;
   private reconnectAttempts: number = 0;
+  private reconnectTimer?: any;
   private internalAbortController?: AbortController;
   private userAbortHandler?: () => void;
   private isExplicitlyAborted = false;
 
   constructor(options: StreamClientOptions) {
     this.options = {
-      reconnectBaseMs: 1000,
-      reconnectMaxMs: 30000,
-      ...options
+      reconnectBaseMs: 500,
+      reconnectMaxMs: 10000,
+      ...options,
     };
     this.parser = new SSEParser();
     this.tracker = new SequenceTracker();
@@ -60,7 +66,7 @@ export class FlowDeckStreamClient {
 
     const headers: Record<string, string> = {
       'Accept': 'text/event-stream',
-      ...this.options.headers
+      ...this.options.headers,
     };
 
     if (this.lastEventId) {
@@ -70,38 +76,41 @@ export class FlowDeckStreamClient {
     try {
       const response = await fetch(this.options.url, {
         headers,
-        signal: this.internalAbortController.signal
+        signal: this.internalAbortController.signal,
       });
 
       if (!response.ok) {
         throw new Error(`HTTP error ${response.status}`);
       }
-      
+
       this.reconnectAttempts = 0;
       this.setState('live');
 
       if (!response.body) {
-        throw new Error("No response body");
+        throw new Error('No response body');
       }
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
 
       while (true) {
+        if (this.isExplicitlyAborted) break;
         const { done, value } = await reader.read();
         if (done) break;
 
         const chunk = decoder.decode(value, { stream: true });
         this.parser.parseChunk(chunk, (msg) => this.handleMessage(msg));
       }
-      
-      this.setState('completed');
+
+      if (!this.isExplicitlyAborted) {
+        this.setState('completed');
+      }
     } catch (err: any) {
       if (err.name === 'AbortError' || this.isExplicitlyAborted) {
         this.setState('cancelled');
         return;
       }
-      
+
       this.options.onError?.(err);
       this.scheduleReconnect();
     }
@@ -112,32 +121,73 @@ export class FlowDeckStreamClient {
       this.lastEventId = msg.id;
     }
 
+    this.options.onRawMessage?.(msg);
+
     if (msg.event === 'snapshot') {
       this.tracker.handleSnapshot();
+      return;
     }
 
-    const eventId = msg.id || `${Date.now()}-${Math.random()}`;
-    const seqMatches = msg.data.match(/"seq":\s*(\d+)/);
-    const seq = seqMatches ? parseInt(seqMatches[1], 10) : undefined;
-    
-    if (this.tracker.track(eventId, seq)) {
-      this.options.onEvent?.(msg);
+    let parsedData: any = null;
+    try {
+      parsedData = JSON.parse(msg.data);
+    } catch {
+      return;
+    }
+
+    // Validate canonical schema version and envelope
+    if (!parsedData || typeof parsedData !== 'object') return;
+    if (parsedData.schemaVersion !== 1 && parsedData.schemaVersion !== undefined) return;
+
+    const validation = validateStreamEvent(parsedData);
+    if (!validation.success || !validation.data) {
+      return;
+    }
+
+    const event: FlowDeckStreamEvent = validation.data;
+
+    // Sequence & Gap checking
+    if (this.lastCommittedSequence > 0 && event.sequence <= this.lastCommittedSequence) {
+      // Duplicate or regression sequence — ignore
+      return;
+    }
+
+    if (this.lastCommittedSequence > 0 && event.sequence > this.lastCommittedSequence + 1) {
+      // Sequence gap detected
+      this.options.onGapDetected?.(this.lastCommittedSequence + 1, event.sequence);
+    }
+
+    const eventId = event.eventId || msg.id || `${Date.now()}`;
+    if (this.tracker.track(eventId, event.sequence)) {
+      this.lastCommittedSequence = event.sequence;
+      this.options.onEvent?.(event);
+
+      // Terminal event completion check
+      if (event.type === 'run.completed' || event.type === 'run.failed' || event.type === 'run.cancelled') {
+        this.setState(event.type === 'run.completed' ? 'completed' : (event.type === 'run.cancelled' ? 'cancelled' : 'failed'));
+      }
     }
   }
 
   private scheduleReconnect() {
+    if (this.isExplicitlyAborted) return;
     this.setState('reconnecting');
+
     const delay = Math.min(
       this.options.reconnectMaxMs!,
       this.options.reconnectBaseMs! * Math.pow(2, this.reconnectAttempts)
     );
     const jitter = delay * 0.1 * Math.random();
     const finalDelay = delay + jitter;
-    
+
     this.reconnectAttempts++;
-    
-    setTimeout(() => {
-      if (this.state === 'reconnecting') {
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+    }
+
+    this.reconnectTimer = setTimeout(() => {
+      if (this.state === 'reconnecting' && !this.isExplicitlyAborted) {
         this.connect();
       }
     }, finalDelay);
@@ -145,10 +195,18 @@ export class FlowDeckStreamClient {
 
   public abort() {
     this.isExplicitlyAborted = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
     this.internalAbortController?.abort();
     if (this.userAbortHandler && this.options.abortSignal) {
       this.options.abortSignal.removeEventListener('abort', this.userAbortHandler);
     }
     this.setState('cancelled');
+  }
+
+  public getState(): ConnectionState {
+    return this.state;
   }
 }

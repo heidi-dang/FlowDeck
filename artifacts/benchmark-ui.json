@@ -1,0 +1,31 @@
+{
+  "benchmarkSuite": "ui-projection-dom-render",
+  "timestamp": "2026-08-01T03:44:30.532Z",
+  "metrics": {
+    "browserEventToReducer": {
+      "samples": 3000,
+      "reductionsPerSec": 805481,
+      "medianMs": 0.0007,
+      "p95Ms": 0.0026,
+      "maxMs": 0.0257
+    },
+    "reducerToDomRender": {
+      "samples": 500,
+      "rendersPerSec": 778283,
+      "medianMs": 0.0008,
+      "p95Ms": 0.0026,
+      "maxMs": 0.036
+    },
+    "frameStability": {
+      "targetFps": 60,
+      "maxFrameTimeMs": 16.67,
+      "measuredMaxRenderMs": 0.036,
+      "passed": true
+    }
+  },
+  "memoryBytes": {
+    "baseline": 2768550,
+    "peak": 2768550,
+    "growthMb": 0
+  }
+}

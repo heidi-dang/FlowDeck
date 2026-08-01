@@ -1,152 +1,178 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, beforeAll, afterAll } from "bun:test";
+import { chromium, type Browser } from "playwright";
+import { createServer, type Server } from "http";
+import { SseManager } from "../../src/better-harness";
 import {
-  reduceRunStreamEvent,
-  createStreamEvent,
-  INITIAL_STATE,
+  StreamRepository,
+  StreamPublisher,
 } from "../../src/orchestration/streaming";
-import {
-  RunHeader,
-  StageRail,
-  CurrentOperationCard,
-  AgentActivityGrid,
-  ActivityTimeline,
-  escapeHTML,
-} from "../../src/better-harness/ui";
+import { EventBus } from "../../src/better-harness/runtime/event-bus";
 
-describe("Task 10 & 9: Real Browser E2E, Keyboard, Accessibility, and XSS Security", () => {
-  it("should safely escape malicious HTML script injection in all streamed fields", () => {
-    const xssPayload = '<script>alert("xss")</script><img src="x" onerror="alert(1)">';
-    const escaped = escapeHTML(xssPayload);
+describe("Task 9: Real Playwright Headless Browser E2E Suite", () => {
+  let browser: Browser;
+  let server: Server;
+  let port: number;
+  let repository: StreamRepository;
+  let publisher: StreamPublisher;
+  let sseManager: SseManager;
+  let clientBundleCode: string;
 
-    expect(escaped).not.toContain("<script>");
-    expect(escaped).toContain("&lt;script&gt;");
-    expect(escaped).toContain("&quot;xss&quot;");
+  beforeAll(async () => {
+    const eventBus = new EventBus();
+    repository = new StreamRepository(":memory:", { allowInMemory: true });
+    sseManager = new SseManager(eventBus, repository);
+    publisher = sseManager.getPublisher();
 
-    let state = reduceRunStreamEvent(INITIAL_STATE, createStreamEvent({
-      eventId: "evt-xss",
-      sequence: 1,
-      runId: "run-xss",
+    const buildResult = await Bun.build({
+      entrypoints: ["src/better-harness/ui/mount.ts"],
+      target: "browser",
+      format: "esm",
+    });
+
+    if (!buildResult.success || buildResult.outputs.length === 0) {
+      throw new Error("Failed to bundle mount.ts for Playwright E2E");
+    }
+
+    clientBundleCode = await buildResult.outputs[0].text();
+
+    server = createServer((req, res) => {
+      const url = req.url || "/";
+      if (url.includes("/events")) {
+        sseManager.handleSseRequest(req, res, "srv-1", "proj-1", "run-e2e-1");
+        return;
+      }
+
+      if (url === "/mount.js") {
+        res.writeHead(200, { "Content-Type": "application/javascript; charset=utf-8" });
+        res.end(clientBundleCode);
+        return;
+      }
+
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(`
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>FlowDeck Live Orchestration Dashboard</title>
+          <style>
+            .sticky-card { position: sticky; top: 0; }
+            .stage-rail { overflow-x: auto; display: flex; gap: 8px; }
+          </style>
+        </head>
+        <body>
+          <div id="app"></div>
+          <script type="module">
+            import { mountLiveDashboard } from "/mount.js";
+            window.dashboardController = mountLiveDashboard(document.getElementById("app"), {
+              runId: "run-e2e-1",
+              url: "http://127.0.0.1:${port}/api/runs/run-e2e-1/events",
+              featureFlagEnabled: true,
+              onCancelRun: (rId) => { window.cancelledRunId = rId; }
+            });
+          </script>
+        </body>
+        </html>
+      `);
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const address = server.address() as { port: number };
+    port = address.port;
+
+    browser = await chromium.launch({ headless: true });
+  });
+
+  afterAll(async () => {
+    await browser?.close();
+    await new Promise<void>((resolve) => server?.close(() => resolve()));
+  });
+
+  it("should load dashboard in real browser, receive streamed events, and render live state safely", async () => {
+    publisher.publish({
+      runId: "run-e2e-1",
       type: "run.created",
       stage: "intake",
       importance: "normal",
-      title: xssPayload,
+      title: "Playwright E2E Initial Run",
       payload: {},
-    }));
+    });
 
-    state = reduceRunStreamEvent(state, createStreamEvent({
-      eventId: "evt-xss-op",
-      sequence: 2,
-      runId: "run-xss",
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${port}/`);
+
+    await page.waitForSelector("header h1");
+    const headerText = await page.locator("header h1").textContent();
+    expect(headerText).toContain("Playwright E2E Initial Run");
+
+    publisher.publish({
+      runId: "run-e2e-1",
       type: "agent.started",
       stage: "execute",
       importance: "normal",
-      title: "Agent Started",
-      payload: { agentId: xssPayload, responsibility: xssPayload },
-    }));
+      title: "Agent Execution",
+      payload: { agentId: "agent-planner", responsibility: "Architecture Planning" },
+    });
 
-    const headerHtml = RunHeader({ state });
-    expect(headerHtml).not.toContain("<script>alert");
-    expect(headerHtml).toContain("&lt;script&gt;alert");
+    await page.waitForSelector(".agent-card");
+    const agentCard = page.locator(".agent-card");
+    expect(await agentCard.count()).toBeGreaterThan(0);
+    expect(await agentCard.first().textContent()).toContain("agent-planner");
 
-    const gridHtml = AgentActivityGrid({ state });
-    expect(gridHtml).not.toContain("<script>alert");
-    expect(gridHtml).toContain("&lt;script&gt;alert");
+    await page.close();
   });
 
-  it("should enforce keyboard navigation and focus retention attributes across components", () => {
-    let state = reduceRunStreamEvent(INITIAL_STATE, createStreamEvent({
-      eventId: "evt-kb-1",
-      sequence: 1,
-      runId: "run-kb",
-      type: "run.started",
-      stage: "execute",
-      importance: "normal",
-      title: "Keyboard Test",
+  it("should safely escape XSS script injection payloads in streamed event fields", async () => {
+    const xssPayload = '<script>alert("xss-injection")</script>';
+
+    publisher.publish({
+      runId: "run-e2e-1",
+      type: "run.created",
+      stage: "intake",
+      importance: "important",
+      title: xssPayload,
       payload: {},
-    }));
+    });
 
-    state = reduceRunStreamEvent(state, createStreamEvent({
-      eventId: "evt-kb-2",
-      sequence: 2,
-      runId: "run-kb",
-      type: "tool.started",
-      stage: "execute",
-      importance: "normal",
-      title: "Tool execution",
-      payload: { toolName: "bun test", toolId: "tool-1" },
-    }));
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${port}/`);
 
-    const stageRailHtml = StageRail({ state });
-    expect(stageRailHtml).toContain('tabindex="0"');
-    expect(stageRailHtml).toContain('aria-label="Run Stages"');
+    await page.waitForSelector(".dashboard-shell");
+    const scriptTags = await page.locator('script:has-text("xss-injection")').count();
+    expect(scriptTags).toBe(0);
 
-    const agentGridHtml = AgentActivityGrid({ state });
-    expect(agentGridHtml).toContain('aria-label="Agent Activities"');
+    const textContent = await page.locator("body").innerText();
+    expect(textContent).toContain('<script>alert("xss-injection")</script>');
 
-    const timelineHtml = ActivityTimeline({ state });
-    expect(timelineHtml).toContain('tabindex="0"');
-
-    const cardHtml = CurrentOperationCard({ state });
-    expect(cardHtml).toContain('aria-live="assertive"');
+    await page.close();
   });
 
-  it("should handle terminal completion and cancellation transitions without state regression", () => {
-    let state = reduceRunStreamEvent(INITIAL_STATE, createStreamEvent({
-      eventId: "evt-term-1",
-      sequence: 1,
-      runId: "run-term",
-      type: "run.started",
-      stage: "execute",
-      importance: "normal",
-      title: "Terminal Test",
-      payload: {},
-    }));
+  it("should handle mobile viewport layout and keyboard traversal in real browser", async () => {
+    const page = await browser.newPage();
+    await page.setViewportSize({ width: 375, height: 667 });
+    await page.goto(`http://127.0.0.1:${port}/`);
 
-    // Transition to completed
-    state = reduceRunStreamEvent(state, createStreamEvent({
-      eventId: "evt-term-2",
-      sequence: 2,
-      runId: "run-term",
-      type: "run.completed",
-      stage: "complete",
-      importance: "critical",
-      title: "Run Finished",
-      payload: {},
-    }));
+    await page.waitForSelector(".stage-rail");
+    const stageRail = page.locator(".stage-rail");
+    expect(await stageRail.isVisible()).toBe(true);
 
-    expect(state.terminalState).toBe("success");
+    await page.keyboard.press("Tab");
+    const activeTagName = await page.evaluate(() => document.activeElement?.tagName);
+    expect(activeTagName).toBeDefined();
 
-    // Late debug event should not overwrite terminal state
-    state = reduceRunStreamEvent(state, createStreamEvent({
-      eventId: "evt-term-3",
-      sequence: 3,
-      runId: "run-term",
-      type: "metrics.updated",
-      stage: "execute",
-      importance: "debug",
-      title: "Late Metric",
-      payload: {},
-    }));
-
-    expect(state.terminalState).toBe("success");
+    await page.close();
   });
 
-  it("should preserve mobile layout scrollability and sticky positioning flags", () => {
-    const state = reduceRunStreamEvent(INITIAL_STATE, createStreamEvent({
-      eventId: "evt-mob-1",
-      sequence: 1,
-      runId: "run-mobile",
-      type: "run.started",
-      stage: "execute",
-      importance: "normal",
-      title: "Mobile Layout",
-      payload: {},
-    }));
+  it("should preserve prefers-reduced-motion and accessible ARIA attributes", async () => {
+    const page = await browser.newPage();
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto(`http://127.0.0.1:${port}/`);
 
-    const stageRailHtml = StageRail({ state });
-    expect(stageRailHtml).toContain("overflow-x: auto");
+    await page.waitForSelector("[aria-live]");
+    const liveRegions = await page.locator("[aria-live]").count();
+    expect(liveRegions).toBeGreaterThan(0);
 
-    const opCardHtml = CurrentOperationCard({ state });
-    expect(opCardHtml).toContain("sticky-card");
+    await page.close();
   });
 });

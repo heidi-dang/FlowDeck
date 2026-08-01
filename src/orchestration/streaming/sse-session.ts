@@ -25,15 +25,26 @@ export class SseSession {
 
   flushBuffer() {
     this.buffering = false;
+    // Sort buffered events by sequence before flushing
+    this.buffer.sort((a, b) => a.sequence - b.sequence);
+
+    // Deduplicate any buffered events <= highWatermark
+    const uniqueEvents = new Map<number, FlowDeckStreamEvent>();
     for (const evt of this.buffer) {
+      if (evt.sequence > this.highWatermark && !uniqueEvents.has(evt.sequence)) {
+        uniqueEvents.set(evt.sequence, evt);
+      }
+    }
+
+    for (const evt of uniqueEvents.values()) {
       this.sendEvent(evt);
     }
     this.buffer = [];
   }
 
   sendEvent(event: FlowDeckStreamEvent) {
-    const rawData = event.payload || (event as any).data || {};
-    const data = typeof rawData === 'string' ? rawData : JSON.stringify(rawData);
+    // Send full canonical FlowDeckStreamEvent in data: payload
+    const data = JSON.stringify(event);
     const message = `id: ${event.sequence}\nevent: ${event.type}\ndata: ${data}\n\n`;
     try {
       this.res.write(message);

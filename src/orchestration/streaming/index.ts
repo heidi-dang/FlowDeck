@@ -22,3 +22,4 @@ export * from "./connection-state";
 export * from "./sse-parser";
 export * from "./sequence-tracker";
 export * from "./projection";
+export * from "./publisher";

@@ -99,6 +99,7 @@
     "test:accessibility": "bun test tests/ui/live-dashboard.test.ts",
     "benchmark:streaming": "bun scripts/benchmarks/benchmark-streaming.ts",
     "benchmark:ui": "bun scripts/benchmarks/benchmark-ui.ts",
+    "test:production-integration": "bun test tests/better-harness/production-server-integration.test.ts",
     "report:self-host": "node scripts/report-self-host.mjs"
   },
   "keywords": [
@@ -142,9 +143,12 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
+    "axe-core": "^4.12.1",
     "bun-types": "^1.3.14",
     "ejs": "^6.0.1",
+    "happy-dom": "^20.11.1",
     "oxlint": "^1.75.0",
+    "playwright": "^1.62.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },

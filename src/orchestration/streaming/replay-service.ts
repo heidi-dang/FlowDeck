@@ -1,25 +1,36 @@
 import { StreamRepository } from './stream-repository';
 import { SseSession } from './sse-session';
-import { FlowDeckStreamEvent, createStreamEvent } from './stream-event';
+import { FlowDeckStreamEvent } from './stream-event';
 
 export class StreamReplayService {
   constructor(private repo: StreamRepository) {}
 
-  async replayToSession(runId: string, afterSequence: number, session: SseSession) {
-    const events = this.repo.getEventsAfter(runId, afterSequence);
-    for (const row of events) {
-      const event: FlowDeckStreamEvent = createStreamEvent({
-        eventId: String(row.sequence),
-        sequence: row.sequence,
-        runId: row.run_id,
-        type: row.type as any,
-        stage: "execute",
-        importance: "normal",
-        title: row.type,
-        payload: row.data,
-      });
+  async replayToSession(
+    runId: string,
+    afterExclusive: number,
+    throughInclusiveOrSession: number | SseSession,
+    session?: SseSession
+  ) {
+    if (typeof throughInclusiveOrSession === 'object' && throughInclusiveOrSession !== null) {
+      const targetSession = throughInclusiveOrSession as SseSession;
+      const events: FlowDeckStreamEvent[] = this.repo.getEventsAfter(runId, afterExclusive);
+      for (const event of events) {
+        targetSession.sendEvent(event);
+      }
+    } else {
+      const throughInclusive = throughInclusiveOrSession as number;
+      const targetSession = session!;
+      const events: FlowDeckStreamEvent[] = this.repo.getEventsInRange(runId, afterExclusive, throughInclusive);
+      for (const event of events) {
+        targetSession.sendEvent(event);
+      }
+    }
+  }
+
+  async replayAllAfter(runId: string, afterSequence: number, session: SseSession) {
+    const events: FlowDeckStreamEvent[] = this.repo.getEventsAfter(runId, afterSequence);
+    for (const event of events) {
       session.sendEvent(event);
     }
   }
 }
-

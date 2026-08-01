@@ -27,13 +27,26 @@ export class SseBroker {
     this.backpressureControllers.delete(clientId);
   }
 
-  broadcast(runId: string, event: FlowDeckStreamEvent) {
+  /**
+   * Internal broadcast used exclusively by StreamPublisher after successful atomic commit.
+   */
+  broadcastInternal(runId: string, event: FlowDeckStreamEvent) {
     const runClients = this.clients.get(runId);
     if (runClients) {
       for (const session of runClients) {
         session.enqueueOrSend(event);
       }
     }
+  }
+
+  /**
+   * Test-only broadcast adapter for direct synthetic event injection in test environments.
+   */
+  broadcastTestOnly(runId: string, event: FlowDeckStreamEvent) {
+    if (process.env.NODE_ENV !== 'test') {
+      throw new Error('broadcastTestOnly is forbidden in production. Use StreamPublisher.publish() to enforce persist-before-deliver.');
+    }
+    this.broadcastInternal(runId, event);
   }
 
   hasClients(runId: string): boolean {

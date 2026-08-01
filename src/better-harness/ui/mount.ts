@@ -1,0 +1,111 @@
+/// <reference lib="dom" />
+
+import { RunHeader } from './RunHeader';
+import { StageRail } from './StageRail';
+import { CurrentOperationCard } from './CurrentOperationCard';
+import { ActivityTimeline } from './ActivityTimeline';
+import { AgentActivityGrid } from './AgentActivityGrid';
+import { ToolExecutionGroup } from './ToolExecutionGroup';
+import { VerificationPanel } from './VerificationPanel';
+import { EvidenceDrawer } from './EvidenceDrawer';
+import { RunMetricsBar } from './RunMetricsBar';
+import { ConnectionHealthIndicator } from './ConnectionHealthIndicator';
+import { ReconnectBanner } from './ReconnectBanner';
+import { CompletionSummary } from './CompletionSummary';
+import { FlowDeckStreamClient } from '../../orchestration/streaming/browser-client';
+import { reduceRunStreamEvent, INITIAL_STATE, RunProjectionState } from '../../orchestration/streaming/projection';
+import type { FlowDeckStreamEvent } from '../../orchestration/streaming/stream-event';
+
+export interface DashboardMountOptions {
+  runId: string;
+  url?: string;
+  headers?: Record<string, string>;
+  onCancelRun?: (runId: string) => void;
+  featureFlagEnabled?: boolean;
+}
+
+export interface DashboardController {
+  getState: () => RunProjectionState;
+  destroy: () => void;
+}
+
+export function mountLiveDashboard(
+  container: HTMLElement,
+  options: DashboardMountOptions
+): DashboardController {
+  let state: RunProjectionState = { ...INITIAL_STATE, runId: options.runId };
+  const sseUrl = options.url || `/api/runs/${options.runId}/events`;
+
+  container.innerHTML = '';
+  container.className = 'flowdeck-live-dashboard';
+
+  const render = () => {
+    container.innerHTML = `
+      ${ReconnectBanner({ state })}
+      ${ConnectionHealthIndicator({ state })}
+      ${RunHeader({ state, onCancel: options.onCancelRun ? () => options.onCancelRun!(options.runId) : undefined })}
+      <main class="dashboard-shell" role="main">
+        ${StageRail({ state })}
+        ${CurrentOperationCard({ state })}
+        <div class="dashboard-grid">
+          ${AgentActivityGrid({ state })}
+          ${ToolExecutionGroup({ state })}
+        </div>
+        ${ActivityTimeline({ state })}
+        ${VerificationPanel({ state })}
+        ${EvidenceDrawer({ state })}
+        ${RunMetricsBar({ state })}
+        ${CompletionSummary({ state })}
+      </main>
+    `;
+  };
+
+  // Safe Event Delegation registered ONCE on container root
+  const handleClick = (e: Event) => {
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    const cancelBtn = target.closest('[data-action="cancel-run"]');
+    if (cancelBtn) {
+      if (options.onCancelRun && options.runId) {
+        options.onCancelRun(options.runId);
+      }
+    }
+  };
+
+  container.addEventListener('click', handleClick);
+
+  // Instantiate Browser SSE Client
+  const client = new FlowDeckStreamClient({
+    url: sseUrl,
+    headers: options.headers,
+    onStateChange: (connState) => {
+      state = { ...state, connectionState: connState };
+      render();
+    },
+    onEvent: (event: FlowDeckStreamEvent) => {
+      state = reduceRunStreamEvent(state, event);
+      render();
+    },
+    onError: (err) => {
+      state = { ...state, errors: [...state.errors, err.message] };
+      render();
+    },
+  });
+
+  // Initial render
+  render();
+
+  // Start SSE stream if feature flag enabled
+  if (options.featureFlagEnabled !== false) {
+    client.start();
+  }
+
+  return {
+    getState: () => state,
+    destroy: () => {
+      client.abort();
+      container.removeEventListener('click', handleClick);
+      container.innerHTML = '';
+    },
+  };
+}
