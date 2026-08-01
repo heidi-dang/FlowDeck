@@ -566,10 +566,11 @@ impl IndexService {
         Ok(Arc::new(self.load_generation(&manifest)?))
     }
 
-    /// Invalidate the index (drop the in-memory snapshot; persist nothing
-    /// new). A later refresh rebuilds.
+    /// Invalidate the index: drop the in-memory snapshot AND the persisted
+    /// generations, so the next refresh starts from a clean slate.
     pub fn invalidate(&self) {
         *self.snapshot.write().unwrap() = None;
+        let _ = self.store.clear_persisted();
     }
 
     /// Force a full rebuild.

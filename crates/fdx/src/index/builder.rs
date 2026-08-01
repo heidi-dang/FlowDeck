@@ -92,7 +92,7 @@ pub fn build_files(
     walk.add_custom_ignore_filename(".fdignore");
     walk.overrides(ignored.clone());
     walk.git_ignore(true);
-    walk.hidden(false);
+    walk.hidden(true);
     walk.follow_links(false);
     walk.max_depth(Some(64));
     let mut count = 0usize;
@@ -113,6 +113,14 @@ pub fn build_files(
         };
         let rel_str = normalize_rel_path(rel);
         if rel_str.is_empty() {
+            continue;
+        }
+        // Never index the git metadata directory or VCS internals.
+        if rel_str.starts_with(".git/")
+            || rel_str == ".git"
+            || rel_str.starts_with(".hg/")
+            || rel_str.starts_with(".svn/")
+        {
             continue;
         }
         let meta = file_meta_from_entry(

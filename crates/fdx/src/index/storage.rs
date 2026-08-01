@@ -123,6 +123,21 @@ impl GenerationStore {
         gens
     }
 
+    /// Remove every persisted generation and the CURRENT pointer (used by
+    /// `index.invalidate` so a later refresh starts from a clean slate).
+    pub fn clear_persisted(&self) -> std::io::Result<()> {
+        for gen in self.persisted_generations() {
+            let _ = std::fs::remove_dir_all(self.generation_path(gen));
+        }
+        let ptr = current_pointer(&self.worktree);
+        match std::fs::remove_file(&ptr) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e),
+        }
+        Ok(())
+    }
+
     /// Load and validate the current generation (or the newest valid one).
     ///
     /// Returns the outcome; corrupt generations are quarantined. This is a

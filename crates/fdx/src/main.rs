@@ -358,6 +358,39 @@ enum Commands {
         #[arg(long)]
         made_by: Option<String>,
     },
+
+    /// Persistent repository index (Task 3)
+    ///
+    /// One-shot counterpart of the fdxd index commands: status | refresh |
+    /// invalidate | rebuild | files.query | symbols.query |
+    /// dependencies.query | testsFor.query | gitState.query
+    ///
+    /// Example: fdx index status
+    /// Example: fdx index symbols.query --query greet
+    Index {
+        /// Index subcommand (see above)
+        subcommand: String,
+
+        /// Query text (files.query / symbols.query)
+        #[arg(long)]
+        query: Option<String>,
+
+        /// File argument (dependencies.query / testsFor.query)
+        #[arg(long)]
+        file: Option<String>,
+
+        /// Force a full rebuild (refresh)
+        #[arg(long)]
+        full: bool,
+
+        /// Limit results (query commands)
+        #[arg(long, default_value = "100")]
+        limit: usize,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -1054,6 +1087,88 @@ fn main() {
                 Ok(s) => println!("{}", s),
                 Err(e) => {
                     eprintln!("{}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::Index {
+            subcommand,
+            query,
+            file,
+            full,
+            limit,
+            cwd,
+        } => {
+            // One-shot counterpart of the fdxd index commands. Uses the SAME
+            // production handlers (index::handle_index_command) so daemon and
+            // one-shot results are semantically equivalent.
+            let worktree = cwd
+                .clone()
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+            // The production handler dispatches on the full command name
+            // ("index.status", "files.query", ...). Map the CLI subcommand to
+            // the full command name so daemon and one-shot paths are identical.
+            let (command, short) = match subcommand.as_str() {
+                "status" => ("index.status", "status"),
+                "refresh" => ("index.refresh", "refresh"),
+                "invalidate" => ("index.invalidate", "invalidate"),
+                "rebuild" => ("index.rebuild", "rebuild"),
+                "files.query" => ("files.query", "query"),
+                "symbols.query" => ("symbols.query", "query"),
+                "dependencies.query" => ("dependencies.query", "query"),
+                "testsFor.query" => ("testsFor.query", "query"),
+                "gitState.query" => ("gitState.query", "query"),
+                other => {
+                    eprintln!(
+                        "Error: unknown index subcommand '{}'. Expected one of: status, refresh, invalidate, rebuild, files.query, symbols.query, dependencies.query, testsFor.query, gitState.query",
+                        other
+                    );
+                    process::exit(2);
+                }
+            };
+
+            // Build argv in the shape handle_index_command expects:
+            //   <arg> [--limit N]   (the command name is passed separately)
+            let mut argv: Vec<String> = Vec::new();
+            match short {
+                "refresh" => {
+                    if full {
+                        argv.push("--full".to_string());
+                    }
+                }
+                "query" => {
+                    if command == "files.query" || command == "symbols.query" {
+                        if let Some(q) = &query {
+                            argv.push(q.clone());
+                        }
+                    } else if let Some(f) = &file {
+                        argv.push(f.clone());
+                    }
+                }
+                _ => {}
+            }
+            if limit != 100 {
+                argv.push("--limit".to_string());
+                argv.push(limit.to_string());
+            }
+
+            let result =
+                fdx::index::handle_index_command(command, &argv, Some(&worktree.to_string_lossy()));
+            match result {
+                Some(value) => {
+                    // Structured JSON output, consistent with fdx --format json.
+                    match serde_json::to_string_pretty(&value) {
+                        Ok(s) => println!("{}", s),
+                        Err(e) => {
+                            eprintln!("Error: failed to serialize index result: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                None => {
+                    eprintln!("Error: index command '{}' failed", subcommand);
                     process::exit(1);
                 }
             }
