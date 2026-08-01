@@ -28,7 +28,53 @@ import type {
   ContextBudgetRow,
   CancellationPhase,
   CancellationPhaseInfo,
+  ContractRecord,
+  CreateRunParams,
+  CreateRunResult,
+  LoadedRun,
+  CircuitBreakerRow,
 } from "./state-store.js";
+
+/** Raw row shape of the `contracts` table. */
+interface ContractDbRow {
+  contract_id: string;
+  hash: string;
+  version: string;
+  objective: string;
+  requirements: string;
+  acceptance_criteria: string;
+  constraints: string;
+  exclusions: string;
+  required_evidence: string;
+  required_verification: string;
+  starting_sha: string;
+  allowed_mutation_scope: string;
+  approval_gates: string;
+  created_at: string;
+  activated_at: string | null;
+  status: string;
+}
+
+function rowToContractRecord(r: ContractDbRow): ContractRecord {
+  return {
+    contractId: r.contract_id,
+    hash: r.hash,
+    version: r.version,
+    objective: r.objective,
+    requirements: r.requirements,
+    acceptanceCriteria: r.acceptance_criteria,
+    constraints: r.constraints,
+    exclusions: r.exclusions,
+    requiredEvidence: r.required_evidence,
+    requiredVerification: r.required_verification,
+    startingSha: r.starting_sha,
+    allowedMutationScope: r.allowed_mutation_scope,
+    approvalGates: r.approval_gates,
+    createdAt: r.created_at,
+    activatedAt: r.activated_at ?? undefined,
+    status: r.status,
+  };
+}
 
 /**
  * Table schemas for the runtime state store. All tables are scoped
@@ -46,7 +92,7 @@ const SCHEMA_SQL: string[] = [
 
   `CREATE TABLE IF NOT EXISTS transition_events (
     run_id TEXT NOT NULL,
-    seq INTEGER GENERATED ALWAYS AS IDENTITY,
+    seq INTEGER NOT NULL,
     from_state TEXT NOT NULL,
     to_state TEXT NOT NULL,
     transition_type TEXT NOT NULL,
@@ -223,6 +269,58 @@ export function initRuntimeSchema(db: Database): void {
   }
 }
 
+/** Current schema version for the runtime state store. */
+export const RUNTIME_SCHEMA_VERSION = 2;
+
+/** Read the current PRAGMA user_version. */
+export function getSchemaVersion(db: Database): number {
+  const r = db.query("PRAGMA user_version").get() as {
+    user_version: number;
+  };
+  return r.user_version;
+}
+
+/**
+ * Migrate a database to the current runtime schema version.
+ *
+ * v1: original schema (transition_events.seq was `INTEGER GENERATED ALWAYS
+ *     AS IDENTITY`, which is invalid SQLite syntax and could not create the
+ *     table).
+ * v2: transition_events.seq is a plain INTEGER, sequenced per-run in
+ *     application code inside the same transaction.
+ *
+ * The migration drops a broken `transition_events` table if present and
+ * recreates it with the corrected schema. Transition events are append-only
+ * audit data and are safely rebuilt from future commits; a broken table
+ * could not have accepted inserts anyway.
+ */
+export function migrateRuntimeSchema(db: Database): void {
+  let version = getSchemaVersion(db);
+  if (version >= RUNTIME_SCHEMA_VERSION) return;
+
+  if (version < 1) {
+    initRuntimeSchema(db);
+    version = 1;
+    db.exec("PRAGMA user_version = 1");
+  }
+
+  if (version < 2) {
+    const hasEvents = db
+      .query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='transition_events'",
+      )
+      .get();
+    if (hasEvents) {
+      db.exec("DROP TABLE transition_events");
+    }
+    const eventsSql = SCHEMA_SQL.find((sql) =>
+      sql.includes("transition_events"),
+    );
+    if (eventsSql) db.exec(eventsSql);
+    db.exec("PRAGMA user_version = 2");
+  }
+}
+
 /**
  * SQLite-backed implementation of StateStore.
  *
@@ -237,6 +335,7 @@ export class SqliteStateStore implements StateStore {
     if (!hasRuntimeSchema(db)) {
       initRuntimeSchema(db);
     }
+    migrateRuntimeSchema(db);
   }
 
   async loadState(runId: string): Promise<RunState | null> {
@@ -263,9 +362,9 @@ export class SqliteStateStore implements StateStore {
         // 1. Read current state with optimistic lock check
         const current = this.db
           .query(
-            `SELECT version FROM run_states WHERE run_id = ?`,
+            `SELECT version, metadata FROM run_states WHERE run_id = ?`,
           )
-          .get(params.runId) as { version: number } | undefined;
+          .get(params.runId) as { version: number; metadata: string } | undefined;
 
         if (!current) {
           return { committed: false, reason: "run_not_found" as const };
@@ -278,6 +377,11 @@ export class SqliteStateStore implements StateStore {
         const newVersion = current.version + 1;
         const now = new Date().toISOString();
 
+        const metadataJson =
+          params.metadata !== undefined
+            ? JSON.stringify(params.metadata)
+            : (current.metadata ?? "{}");
+
         // 2. Update state row (version bump is the CAS)
         this.db
           .query(
@@ -289,7 +393,7 @@ export class SqliteStateStore implements StateStore {
             params.state,
             newVersion,
             now,
-            params.metadata ? JSON.stringify(params.metadata) : "{}",
+            metadataJson,
             params.runId,
             params.expectedVersion,
           );
@@ -307,15 +411,23 @@ export class SqliteStateStore implements StateStore {
           return { committed: false, reason: "version_conflict" as const };
         }
 
-        // 3. Insert the transition event atomically
+        // 3. Insert the transition event atomically.
+        //    seq is computed per-run inside the same transaction.
+        const nextSeq = this.db
+          .query(
+            `SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq
+             FROM transition_events WHERE run_id = ?`,
+          )
+          .get(params.runId) as { next_seq: number };
         this.db
           .query(
             `INSERT INTO transition_events
-             (run_id, from_state, to_state, transition_type, timestamp)
-             VALUES (?, ?, ?, ?, ?)`,
+             (run_id, seq, from_state, to_state, transition_type, timestamp)
+             VALUES (?, ?, ?, ?, ?, ?)`,
           )
           .run(
             params.runId,
+            nextSeq.next_seq,
             params.event.from,
             params.event.to,
             params.event.transitionType,
@@ -366,14 +478,21 @@ export class SqliteStateStore implements StateStore {
     runId: string,
     event: TransitionEvent,
   ): Promise<void> {
+    const nextSeq = this.db
+      .query(
+        `SELECT COALESCE(MAX(seq), -1) + 1 AS next_seq
+         FROM transition_events WHERE run_id = ?`,
+      )
+      .get(runId) as { next_seq: number };
     this.db
       .query(
         `INSERT INTO transition_events
-         (run_id, from_state, to_state, transition_type, timestamp)
-         VALUES (?, ?, ?, ?, ?)`,
+         (run_id, seq, from_state, to_state, transition_type, timestamp)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
       .run(
         runId,
+        nextSeq.next_seq,
         event.from,
         event.to,
         event.transitionType,
@@ -382,6 +501,312 @@ export class SqliteStateStore implements StateStore {
   }
 
   // ── Runtime convenience persistence methods ────────────────────────────
+
+  async createRun(params: CreateRunParams): Promise<CreateRunResult> {
+    try {
+      return this.db.transaction(() => {
+        const existing = this.db
+          .query(`SELECT run_id FROM run_states WHERE run_id = ?`)
+          .get(params.runId);
+        if (existing) {
+          return { committed: false, version: 0, reason: "run_exists" as const };
+        }
+
+        const now = new Date().toISOString();
+
+        // 1. Contract
+        this.db
+          .query(
+            `INSERT OR IGNORE INTO contracts (
+               contract_id, hash, version, objective,
+               requirements, acceptance_criteria, constraints, exclusions,
+               required_evidence, required_verification, starting_sha,
+               allowed_mutation_scope, approval_gates,
+               created_at, activated_at, status
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            params.contract.contractId,
+            params.contract.hash,
+            params.contract.version,
+            params.contract.objective,
+            params.contract.requirements,
+            params.contract.acceptanceCriteria,
+            params.contract.constraints,
+            params.contract.exclusions,
+            params.contract.requiredEvidence,
+            params.contract.requiredVerification,
+            params.contract.startingSha,
+            params.contract.allowedMutationScope,
+            params.contract.approvalGates,
+            params.contract.createdAt,
+            params.contract.activatedAt ?? null,
+            params.contract.status,
+          );
+
+        // 2. Run state row (version 0)
+        this.db
+          .query(
+            `INSERT INTO run_states (run_id, state, version, last_updated, metadata)
+             VALUES (?, ?, 0, ?, '{}')`,
+          )
+          .run(params.runId, params.initialState, now);
+
+        // 3. Run-to-contract association (after run_states exists for FK)
+        this.db
+          .query(
+            `INSERT OR IGNORE INTO run_contract_associations
+             (run_id, contract_id, associated_at) VALUES (?, ?, ?)`,
+          )
+          .run(params.runId, params.contract.contractId, now);
+
+        // 3. Creation event (seq 0)
+        if (params.creationEvent) {
+          this.db
+            .query(
+              `INSERT INTO transition_events
+               (run_id, seq, from_state, to_state, transition_type, timestamp)
+               VALUES (?, 0, ?, ?, ?, ?)`,
+            )
+            .run(
+              params.runId,
+              params.creationEvent.from,
+              params.creationEvent.to,
+              params.creationEvent.transitionType,
+              params.creationEvent.timestamp,
+            );
+        }
+
+        // 4. Context budget (if provided)
+        if (params.budget) {
+          this.db
+            .query(
+              `INSERT OR IGNORE INTO context_budgets (
+                 run_id, total_budget, mandatory_cost, high_value_cost,
+                 optional_cost, remaining_budget, is_over_budget,
+                 truncation_needed, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            )
+            .run(
+              params.runId,
+              params.budget.totalBudget,
+              params.budget.mandatoryCost,
+              params.budget.highValueCost,
+              params.budget.optionalCost,
+              params.budget.remainingBudget,
+              params.budget.isOverBudget ? 1 : 0,
+              params.budget.truncationNeeded,
+              now,
+            );
+        }
+
+        return { committed: true, version: 0 };
+      })();
+    } catch {
+      return { committed: false, version: 0, reason: "error" };
+    }
+  }
+
+  async saveContract(contract: ContractRecord): Promise<void> {
+    this.db
+      .query(
+        `INSERT OR REPLACE INTO contracts (
+           contract_id, hash, version, objective,
+           requirements, acceptance_criteria, constraints, exclusions,
+           required_evidence, required_verification, starting_sha,
+           allowed_mutation_scope, approval_gates,
+           created_at, activated_at, status
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        contract.contractId,
+        contract.hash,
+        contract.version,
+        contract.objective,
+        contract.requirements,
+        contract.acceptanceCriteria,
+        contract.constraints,
+        contract.exclusions,
+        contract.requiredEvidence,
+        contract.requiredVerification,
+        contract.startingSha,
+        contract.allowedMutationScope,
+        contract.approvalGates,
+        contract.createdAt,
+        contract.activatedAt ?? null,
+        contract.status,
+      );
+  }
+
+  async loadContract(contractId: string): Promise<ContractRecord | null> {
+    const r = this.db
+      .query(`SELECT * FROM contracts WHERE contract_id = ?`)
+      .get(contractId) as ContractDbRow | undefined;
+    return r ? rowToContractRecord(r) : null;
+  }
+
+  async loadContractForRun(runId: string): Promise<ContractRecord | null> {
+    const r = this.db
+      .query(
+        `SELECT c.* FROM contracts c
+         JOIN run_contract_associations rca ON rca.contract_id = c.contract_id
+         WHERE rca.run_id = ?`,
+      )
+      .get(runId) as ContractDbRow | undefined;
+    return r ? rowToContractRecord(r) : null;
+  }
+
+  async loadEvents(runId: string): Promise<readonly TransitionEvent[]> {
+    const rows = this.db
+      .query(
+        `SELECT run_id, from_state, to_state, transition_type, timestamp
+         FROM transition_events WHERE run_id = ? ORDER BY seq ASC`,
+      )
+      .all(runId) as {
+      run_id: string;
+      from_state: string;
+      to_state: string;
+      transition_type: string;
+      timestamp: number;
+    }[];
+    return rows.map((r) => ({
+      runId: r.run_id,
+      from: r.from_state as State,
+      to: r.to_state as State,
+      transitionType: r.transition_type as TransitionEvent["transitionType"],
+      timestamp: r.timestamp,
+    }));
+  }
+
+  async loadRecoveryAttempts(runId: string): Promise<readonly RecoveryAttemptData[]> {
+    const rows = this.db
+      .query(
+        `SELECT id, run_id, attempt_number, previous_state, failure_reason,
+                error_key, action
+         FROM recovery_attempts WHERE run_id = ? ORDER BY attempt_number ASC`,
+      )
+      .all(runId) as {
+      id: string;
+      run_id: string;
+      attempt_number: number;
+      previous_state: string;
+      failure_reason: string;
+      error_key: string;
+      action: string;
+    }[];
+    return rows.map((r) => ({
+      id: r.id,
+      runId: r.run_id,
+      attemptNumber: r.attempt_number,
+      previousState: r.previous_state as State,
+      failureReason: r.failure_reason,
+      errorKey: r.error_key,
+      action: r.action,
+    }));
+  }
+
+  async loadCircuitBreaker(name: string): Promise<CircuitBreakerRow | null> {
+    const r = this.db
+      .query(`SELECT * FROM circuit_breakers WHERE name = ?`)
+      .get(name) as CircuitBreakerRow | undefined;
+    return r ?? null;
+  }
+
+  async loadVerificationResults(runId: string): Promise<readonly VerificationResultData[]> {
+    const rows = this.db
+      .query(
+        `SELECT run_id, check_id, rule_id, status, target_sha, evidence_ids
+         FROM verification_results WHERE run_id = ?`,
+      )
+      .all(runId) as {
+      run_id: string;
+      check_id: string;
+      rule_id: string;
+      status: string;
+      target_sha: string;
+      evidence_ids: string;
+    }[];
+    return rows.map((r) => ({
+      checkId: r.check_id,
+      ruleId: r.rule_id,
+      status: r.status,
+      targetSha: r.target_sha,
+      evidenceIds: JSON.parse(r.evidence_ids) as string[],
+    }));
+  }
+
+  async loadEvidence(runId: string): Promise<readonly EvidenceData[]> {
+    const rows = this.db
+      .query(
+        `SELECT evidence_id, run_id, evidence_type, content_hash, sha, file_path
+         FROM evidence WHERE run_id = ?`,
+      )
+      .all(runId) as {
+      evidence_id: string;
+      run_id: string;
+      evidence_type: string;
+      content_hash: string;
+      sha: string;
+      file_path: string | null;
+    }[];
+    return rows.map((r) => ({
+      id: r.evidence_id,
+      runId: r.run_id,
+      type: r.evidence_type,
+      contentHash: r.content_hash,
+      sha: r.sha,
+      filePath: r.file_path ?? undefined,
+    }));
+  }
+
+  async loadCompletionDecision(runId: string): Promise<CompletionDecisionData | null> {
+    const r = this.db
+      .query(
+        `SELECT id, run_id, decision, sha, checks, idempotency_key
+         FROM completion_decisions WHERE run_id = ?`,
+      )
+      .get(runId) as {
+      id: string;
+      run_id: string;
+      decision: string;
+      sha: string;
+      checks: string;
+      idempotency_key: string;
+    } | undefined;
+    if (!r) return null;
+    return {
+      id: r.id,
+      runId: r.run_id,
+      decision: r.decision,
+      sha: r.sha,
+      checks: r.checks,
+      idempotencyKey: r.idempotency_key,
+    };
+  }
+
+  async loadRun(runId: string): Promise<LoadedRun | null> {
+    const state = await this.loadState(runId);
+    const contract = await this.loadContractForRun(runId);
+    if (!state && !contract) return null;
+
+    const circuitBreakerRows = this.db
+      .query(`SELECT * FROM circuit_breakers`)
+      .all() as CircuitBreakerRow[];
+
+    return {
+      runId,
+      state,
+      contract,
+      events: await this.loadEvents(runId),
+      recoveryAttempts: await this.loadRecoveryAttempts(runId),
+      circuitBreakers: circuitBreakerRows,
+      cancellationPhase: await this.loadCancellationPhase(runId),
+      budget: await this.loadContextBudget(runId),
+      verificationResults: await this.loadVerificationResults(runId),
+      evidence: await this.loadEvidence(runId),
+      completionDecision: await this.loadCompletionDecision(runId),
+    };
+  }
 
   async initializeRun(runId: string, state: State): Promise<void> {
     this.db
@@ -547,13 +972,14 @@ export class SqliteStateStore implements StateStore {
     phase: CancellationPhase,
     details?: Record<string, unknown>,
   ): Promise<void> {
+    const jsonStr = JSON.stringify(details ?? {});
     this.db
       .query(
         `UPDATE run_states
-         SET metadata = json_set(metadata, '$.cancellationPhase', ?, '$.cancellationDetails', ?)
+         SET metadata = json_set(metadata, '$.cancellationPhase', ?, '$.cancellationDetails', json(?))
          WHERE run_id = ?`,
       )
-      .run(phase, JSON.stringify(details ?? {}), runId);
+      .run(phase, jsonStr, runId);
   }
 
   async loadCancellationPhase(runId: string): Promise<CancellationPhaseInfo | null> {
@@ -568,9 +994,17 @@ export class SqliteStateStore implements StateStore {
       const parsed = JSON.parse(r.metadata) as Record<string, unknown>;
       const phase = parsed.cancellationPhase as string | undefined;
       if (!phase) return null;
+      let details = parsed.cancellationDetails;
+      if (typeof details === "string") {
+        try {
+          details = JSON.parse(details);
+        } catch {
+          // ignore
+        }
+      }
       return {
         phase: phase as CancellationPhase,
-        details: parsed.cancellationDetails as Record<string, unknown> | undefined,
+        details: (details as Record<string, unknown>) ?? undefined,
       };
     } catch {
       return null;
@@ -593,5 +1027,39 @@ export function createInMemoryStateStore(): SqliteStateStore {
   };
   const db = new Database(":memory:");
   initRuntimeSchema(db);
+  return new SqliteStateStore(db);
+}
+
+/**
+ * Open a production on-disk SQLite StateStore.
+ *
+ * Fails hard (throws) if the database cannot be opened, created, or
+ * migrated. There is intentionally NO fallback to an in-memory store —
+ * production persistence must never silently degrade.
+ *
+ * @param dbPath Path to the SQLite database file.
+ * @throws If the database file cannot be opened or the schema migration fails.
+ */
+export function openSqliteStateStore(dbPath: string): SqliteStateStore {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Database } = require("bun:sqlite") as {
+    Database: typeof import("bun:sqlite").Database;
+  };
+  if (!dbPath || dbPath.trim() === "") {
+    throw new Error(
+      "Runtime persistence: dbPath is required for production runtime",
+    );
+  }
+  const db = new Database(dbPath);
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec("PRAGMA foreign_keys = ON");
+  try {
+    migrateRuntimeSchema(db);
+  } catch (err) {
+    db.close();
+    throw new Error(
+      `Runtime persistence: failed to initialize database at ${dbPath}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   return new SqliteStateStore(db);
 }

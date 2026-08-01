@@ -1,0 +1,50 @@
+{
+  "baselineSha": "5809fcf1230ff349ff0d7f5b53ed75403f44573b",
+  "timestamp": "2026-08-01T14:00:15.987Z",
+  "candidateDir": "/home/shacker/Desktop/flowdeck-trae",
+  "baselineDir": null,
+  "mode": "candidate-only",
+  "metrics": {
+    "runtimeInit": {
+      "meanMs": 1.236,
+      "medianMs": 1.123,
+      "p95Ms": 1.543,
+      "minMs": 1.085,
+      "maxMs": 2.682,
+      "iterations": 20
+    },
+    "commitTransition": {
+      "meanMs": 0.019,
+      "medianMs": 0.015,
+      "p95Ms": 0.03,
+      "minMs": 0.011,
+      "maxMs": 0.189,
+      "iterations": 100
+    },
+    "loadRunAfterRestart": {
+      "meanMs": 0.283,
+      "medianMs": 0.228,
+      "p95Ms": 0.786,
+      "minMs": 0.202,
+      "maxMs": 0.786,
+      "iterations": 10
+    },
+    "completePath": {
+      "meanMs": 0.064,
+      "medianMs": 0.066,
+      "p95Ms": 0.078,
+      "minMs": 0.054,
+      "maxMs": 0.078,
+      "iterations": 10
+    },
+    "cancellationPhase": {
+      "meanMs": 0.033,
+      "medianMs": 0.032,
+      "p95Ms": 0.045,
+      "minMs": 0.028,
+      "maxMs": 0.045,
+      "iterations": 10
+    }
+  },
+  "comparison": null
+}

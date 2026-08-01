@@ -41,6 +41,16 @@ const MANDATORY_SUITES = [
     pattern: 'tests/orchestration/',
     description: 'Orchestration framework tests',
   },
+  {
+    name: 'Runtime Persistence',
+    pattern: 'tests/runtime-persistence/',
+    description: 'Restart safety, atomicity, cancellation persistence, SQLite migration tests',
+  },
+  {
+    name: 'Phase 8 CI Production Gates',
+    pattern: 'tests/phase8-ci-production-gates/',
+    description: 'CI production gate and benchmark artifact verification',
+  },
 ];
 
 function resolveBunExecutable() {
@@ -99,7 +109,37 @@ async function main() {
   console.log('\n' + '='.repeat(60));
   console.log('Production Verification Gate');
   console.log('='.repeat(60));
-  console.log(`\nRunning ${MANDATORY_SUITES.length} mandatory suites:`);
+
+  // Step 1: Code quality & build checks
+  console.log('\n[1/5] Running static analysis & build gates...');
+  try {
+    console.log('  -> Running lint...');
+    execSync('npm run lint', { cwd: root, stdio: 'inherit' });
+
+    console.log('  -> Running typecheck...');
+    execSync('npm run typecheck', { cwd: root, stdio: 'inherit' });
+
+    console.log('  -> Running build...');
+    execSync('npm run build', { cwd: root, stdio: 'inherit' });
+    console.log('✓ Static analysis and build passed');
+  } catch {
+    console.error('✗ Static analysis or build gate FAILED');
+    process.exit(1);
+  }
+
+  // Step 2: Runtime benchmark artifact generation
+  console.log('\n[2/5] Running runtime benchmark execution...');
+  try {
+    const bunBin = resolveBunExecutable();
+    execSync(`"${bunBin}" scripts/benchmark-runtime.ts`, { cwd: root, stdio: 'inherit' });
+    console.log('✓ Benchmark execution and artifact generation passed');
+  } catch {
+    console.error('✗ Benchmark execution FAILED');
+    process.exit(1);
+  }
+
+  // Step 3: Mandatory test suites
+  console.log('\n[3/5] Checking mandatory test suites:');
   for (const suite of MANDATORY_SUITES) {
     const exists = checkSuiteExists(suite);
     console.log(`  ${exists ? '✓' : '✗'} ${suite.name}`);
@@ -132,8 +172,22 @@ async function main() {
     }
   }
 
-  console.log('\n' + '='.repeat(60));
-  console.log('Verification Summary');
+  // Step 4: Security & Package validation
+  console.log('\n[4/5] Running dependency audit & package validation...');
+  try {
+    console.log('  -> Running npm audit...');
+    execSync('npm audit --omit=dev', { cwd: root, stdio: 'inherit' });
+
+    console.log('  -> Running npm pack dry-run...');
+    execSync('npm pack --dry-run', { cwd: root, stdio: 'inherit' });
+    console.log('✓ Security audit and package validation passed');
+  } catch {
+    console.error('✗ Dependency audit or package validation FAILED');
+    process.exit(1);
+  }
+
+  // Step 5: Final Summary
+  console.log('\n[5/5] Final Verification Summary');
   console.log('='.repeat(60));
   console.log(`Total suites: ${totalSuites}`);
   console.log(`Passed: ${passedSuites}`);
@@ -158,7 +212,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log('\n✓ All mandatory production suites passed');
+  console.log('\n✓ All mandatory production gates passed');
   process.exit(0);
 }
 

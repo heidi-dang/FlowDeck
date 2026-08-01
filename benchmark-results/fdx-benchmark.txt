@@ -1,0 +1,26 @@
+=== FDX Performance Benchmark Report ===
+Baseline: 5809fcf1230ff349ff0d7f5b53ed75403f44573b
+Generated: 2026-08-01T03:23:31.616Z
+
+Results:
+
+Iteration | Native (ms) | Fallback (ms) | Speedup | Parity
+----------|-------------|---------------|---------|--------
+        1 |       31.05 |         91.05 |    2.93 | Yes
+        2 |       30.23 |         90.55 |    3.00 | Yes
+        1 |       30.15 |         90.78 |    3.01 | Yes
+        2 |       30.26 |         90.36 |    2.99 | Yes
+
+Aggregate Statistics:
+  Average Native Duration: 30.42ms
+  Average Fallback Duration: 90.69ms
+  Average Speedup Ratio: 2.98x
+  Parity Maintenance Rate: 100.0%
+
+Parity Threshold: 90%
+Status: PASS
+
+Baseline vs Milestone Comparison:
+  Baseline Avg Speedup: 2.98x
+  Milestone Avg Speedup: 2.99x
+  Speedup Delta: +0.3%

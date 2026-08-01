@@ -1,0 +1,14 @@
+=== Runtime Benchmark Report ===
+Baseline SHA: 5809fcf1230ff349ff0d7f5b53ed75403f44573b
+Generated: 2026-08-01T14:00:15.987Z
+Candidate: /home/shacker/Desktop/flowdeck-trae
+Baseline: (none — candidate only)
+Mode: candidate-only
+
+Metric                     | Mean (ms) | Median (ms) | p95 (ms) | Iterations
+---------------------------|-----------|-------------|----------|-----------
+ runtimeInit                |     1.236 |       1.123 |    1.543 |         20
+ commitTransition           |     0.019 |       0.015 |     0.03 |        100
+ loadRunAfterRestart        |     0.283 |       0.228 |    0.786 |         10
+ completePath               |     0.064 |       0.066 |    0.078 |         10
+ cancellationPhase          |     0.033 |       0.032 |    0.045 |         10

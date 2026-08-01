@@ -4,6 +4,7 @@
  */
 
 import type { State, TransitionType } from "./states.js";
+export type { State, TransitionType };
 
 export interface RunState {
   readonly runId: string;
@@ -100,6 +101,72 @@ export interface ContextBudgetRow {
   readonly updated_at: string;
 }
 
+/** Row shape of the circuit_breakers table. */
+export interface CircuitBreakerRow {
+  readonly name: string;
+  readonly state: string;
+  readonly failure_count: number;
+  readonly last_failure_at: string | null;
+  readonly last_state_change_at: string;
+  readonly total_successes: number;
+  readonly total_failures: number;
+  readonly half_open_successes: number;
+  readonly half_open_attempts: number;
+}
+
+/**
+ * Serialized contract record matching the `contracts` table.
+ * Nested structures are stored as JSON strings.
+ */
+export interface ContractRecord {
+  readonly contractId: string;
+  readonly hash: string;
+  readonly version: string;
+  readonly objective: string;
+  readonly requirements: string;
+  readonly acceptanceCriteria: string;
+  readonly constraints: string;
+  readonly exclusions: string;
+  readonly requiredEvidence: string;
+  readonly requiredVerification: string;
+  readonly startingSha: string;
+  readonly allowedMutationScope: string;
+  readonly approvalGates: string;
+  readonly createdAt: string;
+  readonly activatedAt?: string;
+  readonly status: string;
+}
+
+/** Parameters for atomically creating a run (state + contract + event + budget). */
+export interface CreateRunParams {
+  readonly runId: string;
+  readonly initialState: State;
+  readonly contract: ContractRecord;
+  readonly creationEvent?: TransitionEvent;
+  readonly budget?: ContextBudgetData;
+}
+
+export interface CreateRunResult {
+  readonly committed: boolean;
+  readonly version: number;
+  readonly reason?: "run_exists" | "error";
+}
+
+/** Full reconstruction of a run's durable state (restart safety). */
+export interface LoadedRun {
+  readonly runId: string;
+  readonly state: RunState | null;
+  readonly contract: ContractRecord | null;
+  readonly events: readonly TransitionEvent[];
+  readonly recoveryAttempts: readonly RecoveryAttemptData[];
+  readonly circuitBreakers: readonly CircuitBreakerRow[];
+  readonly cancellationPhase: CancellationPhaseInfo | null;
+  readonly budget: ContextBudgetRow | null;
+  readonly verificationResults: readonly VerificationResultData[];
+  readonly evidence: readonly EvidenceData[];
+  readonly completionDecision: CompletionDecisionData | null;
+}
+
 export type CancellationPhase =
   | "active"
   | "graceful_requested"
@@ -140,6 +207,66 @@ export interface StateStore {
   recordEvent(runId: string, event: TransitionEvent): Promise<void>;
 
   // ── Runtime convenience persistence methods ──────────────────────────────
+
+  /**
+   * Atomically create a run: inserts the run state row, contract,
+   * run↔contract association, creation event, and context budget in a
+   * single transaction. All-or-nothing — no partial writes.
+   */
+  createRun(params: CreateRunParams): Promise<CreateRunResult>;
+
+  /**
+   * Persist a contract. Survives restart.
+   */
+  saveContract(contract: ContractRecord): Promise<void>;
+
+  /**
+   * Load a contract by ID. Returns null if not found.
+   */
+  loadContract(contractId: string): Promise<ContractRecord | null>;
+
+  /**
+   * Load the contract associated with a run (via run_contract_associations).
+   */
+  loadContractForRun(runId: string): Promise<ContractRecord | null>;
+
+  /**
+   * Load all transition events for a run, ordered by sequence.
+   */
+  loadEvents(runId: string): Promise<readonly TransitionEvent[]>;
+
+  /**
+   * Load all persisted recovery attempts for a run.
+   */
+  loadRecoveryAttempts(runId: string): Promise<readonly RecoveryAttemptData[]>;
+
+  /**
+   * Load a persisted circuit breaker by name. Returns null if never saved.
+   */
+  loadCircuitBreaker(name: string): Promise<CircuitBreakerRow | null>;
+
+  /**
+   * Load verification results persisted for a run.
+   */
+  loadVerificationResults(runId: string): Promise<readonly VerificationResultData[]>;
+
+  /**
+   * Load evidence persisted for a run.
+   */
+  loadEvidence(runId: string): Promise<readonly EvidenceData[]>;
+
+  /**
+   * Load the persisted completion decision for a run.
+   */
+  loadCompletionDecision(runId: string): Promise<CompletionDecisionData | null>;
+
+  /**
+   * Fully reconstruct a run's durable state (state, contract, events,
+   * recovery attempts, circuit breakers, cancellation phase, budget,
+   * verification results, evidence, completion decision). Returns null
+   * if the run does not exist.
+   */
+  loadRun(runId: string): Promise<LoadedRun | null>;
 
   initializeRun(runId: string, state: State): Promise<void>;
 
@@ -189,6 +316,13 @@ export class InMemoryStateStore implements StateStore {
   private readonly events: Map<string, TransitionEvent[]> = new Map();
   private readonly budgets: Map<string, ContextBudgetData> = new Map();
   private readonly phases: Map<string, CancellationPhaseInfo> = new Map();
+  private readonly contracts: Map<string, ContractRecord> = new Map();
+  private readonly runContractLinks: Map<string, string> = new Map();
+  private readonly verificationResults: Map<string, VerificationResultData[]> = new Map();
+  private readonly evidenceItems: Map<string, EvidenceData[]> = new Map();
+  private readonly completionDecisions: Map<string, CompletionDecisionData> = new Map();
+  private readonly recoveryAttempts: Map<string, RecoveryAttemptData[]> = new Map();
+  private readonly circuitBreakers: Map<string, CircuitBreakerRow> = new Map();
 
   async loadState(runId: string): Promise<RunState | null> {
     return this.states.get(runId) ?? null;
@@ -246,32 +380,135 @@ export class InMemoryStateStore implements StateStore {
 
   // ── Runtime convenience persistence methods (no-ops for in-memory) ────────
 
+  async createRun(params: CreateRunParams): Promise<CreateRunResult> {
+    if (this.states.has(params.runId)) {
+      return { committed: false, version: 0, reason: "run_exists" };
+    }
+    this.states.set(params.runId, {
+      runId: params.runId,
+      state: params.initialState,
+      version: 0,
+      lastUpdated: new Date(),
+    });
+    if (params.contract) {
+      this.contracts.set(params.contract.contractId, params.contract);
+      this.runContractLinks.set(params.runId, params.contract.contractId);
+    }
+    if (params.creationEvent) {
+      this.events.set(params.runId, [params.creationEvent]);
+    }
+    if (params.budget) {
+      this.budgets.set(params.runId, params.budget);
+    }
+    return { committed: true, version: 0 };
+  }
+
+  async saveContract(contract: ContractRecord): Promise<void> {
+    this.contracts.set(contract.contractId, contract);
+  }
+
+  async loadContract(contractId: string): Promise<ContractRecord | null> {
+    return this.contracts.get(contractId) ?? null;
+  }
+
+  async loadContractForRun(runId: string): Promise<ContractRecord | null> {
+    const contractId = this.runContractLinks.get(runId);
+    if (!contractId) return null;
+    return this.contracts.get(contractId) ?? null;
+  }
+
+  async loadEvents(runId: string): Promise<readonly TransitionEvent[]> {
+    return [...(this.events.get(runId) ?? [])];
+  }
+
+  async loadRecoveryAttempts(runId: string): Promise<readonly RecoveryAttemptData[]> {
+    return [...(this.recoveryAttempts.get(runId) ?? [])];
+  }
+
+  async loadCircuitBreaker(name: string): Promise<CircuitBreakerRow | null> {
+    return this.circuitBreakers.get(name) ?? null;
+  }
+
+  async loadVerificationResults(runId: string): Promise<readonly VerificationResultData[]> {
+    return [...(this.verificationResults.get(runId) ?? [])];
+  }
+
+  async loadEvidence(runId: string): Promise<readonly EvidenceData[]> {
+    return [...(this.evidenceItems.get(runId) ?? [])];
+  }
+
+  async loadCompletionDecision(runId: string): Promise<CompletionDecisionData | null> {
+    return this.completionDecisions.get(runId) ?? null;
+  }
+
+  async loadRun(runId: string): Promise<LoadedRun | null> {
+    const state = this.states.get(runId) ?? null;
+    if (!state && !this.runContractLinks.has(runId)) return null;
+    const contract = await this.loadContractForRun(runId);
+    return {
+      runId,
+      state,
+      contract,
+      events: await this.loadEvents(runId),
+      recoveryAttempts: await this.loadRecoveryAttempts(runId),
+      circuitBreakers: [...this.circuitBreakers.values()],
+      cancellationPhase: this.phases.get(runId) ?? null,
+      budget: await this.loadContextBudget(runId),
+      verificationResults: await this.loadVerificationResults(runId),
+      evidence: await this.loadEvidence(runId),
+      completionDecision: this.completionDecisions.get(runId) ?? null,
+    };
+  }
+
   async initializeRun(_runId: string, _state: State): Promise<void> {
     // In-memory: state is created lazily on first saveState/commitTransition
   }
 
-  async associateContract(_runId: string, _contractId: string): Promise<void> {
-    // In-memory: associations tracked via runContracts map in orchestrator
+  async associateContract(runId: string, contractId: string): Promise<void> {
+    this.runContractLinks.set(runId, contractId);
   }
 
-  async saveVerificationResult(_runId: string, _result: VerificationResultData): Promise<void> {
-    // No-op for in-memory store
+  async saveVerificationResult(runId: string, result: VerificationResultData): Promise<void> {
+    const existing = this.verificationResults.get(runId) ?? [];
+    this.verificationResults.set(runId, [
+      ...existing.filter((r) => r.checkId !== result.checkId),
+      result,
+    ]);
   }
 
-  async saveEvidence(_evidence: EvidenceData): Promise<void> {
-    // No-op for in-memory store
+  async saveEvidence(evidence: EvidenceData): Promise<void> {
+    const existing = this.evidenceItems.get(evidence.runId) ?? [];
+    this.evidenceItems.set(evidence.runId, [
+      ...existing.filter((e) => e.id !== evidence.id),
+      evidence,
+    ]);
   }
 
-  async saveCompletionDecision(_decision: CompletionDecisionData): Promise<void> {
-    // No-op for in-memory store
+  async saveCompletionDecision(decision: CompletionDecisionData): Promise<void> {
+    this.completionDecisions.set(decision.runId, decision);
   }
 
-  async recordRecoveryAttempt(_attempt: RecoveryAttemptData): Promise<void> {
-    // No-op for in-memory store
+  async recordRecoveryAttempt(attempt: RecoveryAttemptData): Promise<void> {
+    const existing = this.recoveryAttempts.get(attempt.runId) ?? [];
+    this.recoveryAttempts.set(attempt.runId, [...existing, attempt]);
   }
 
-  async saveCircuitBreaker(_name: string, _state: Record<string, unknown>): Promise<void> {
-    // No-op for in-memory store
+  async saveCircuitBreaker(name: string, state: Record<string, unknown>): Promise<void> {
+    this.circuitBreakers.set(name, {
+      name,
+      state: String(state.state ?? "closed"),
+      failure_count: Number(state.failureCount ?? 0),
+      last_failure_at: state.lastFailureAt
+        ? new Date(state.lastFailureAt as Date).toISOString()
+        : null,
+      last_state_change_at: new Date(
+        (state.lastStateChangeAt as Date) ?? new Date(),
+      ).toISOString(),
+      total_successes: Number(state.totalSuccesses ?? 0),
+      total_failures: Number(state.totalFailures ?? 0),
+      half_open_successes: Number(state.halfOpenSuccesses ?? 0),
+      half_open_attempts: Number(state.halfOpenAttempts ?? 0),
+    });
   }
 
   async saveContextBudget(runId: string, budget: ContextBudgetData): Promise<void> {

@@ -66,6 +66,7 @@ export {
 export type { TransitionResult, TransitionServiceOptions } from "./transition-service.js";
 
 export { InMemoryStateStore } from "./state-store.js";
+export { SqliteStateStore, createInMemoryStateStore, openSqliteStateStore, migrateRuntimeSchema, getSchemaVersion, RUNTIME_SCHEMA_VERSION, hasRuntimeSchema, initRuntimeSchema, enableFaultInjection, disableFaultInjection, VersionConflictError } from "./sqlite-state-store.js";
 
 export type {
   RunState,
@@ -81,4 +82,9 @@ export type {
   EvidenceData,
   CompletionDecisionData,
   RecoveryAttemptData,
+  ContractRecord,
+  CreateRunParams,
+  CreateRunResult,
+  LoadedRun,
+  CircuitBreakerRow,
 } from "./state-store.js";

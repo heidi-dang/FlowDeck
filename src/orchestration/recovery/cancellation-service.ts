@@ -212,7 +212,7 @@ export class CancellationService {
     }
   }
 
-  // ── Token management ──────────────────────────────────────────────────────
+  // ── Token management ──────────────────────────────────────────────
 
   createRootToken(runId: string): CancellationToken {
     const token: CancellationToken = {
@@ -268,7 +268,7 @@ export class CancellationService {
     return this.tokens.get(tokenId);
   }
 
-  // ── Cancellation operations ──────────────────────────────────────────────
+  // ── Cancellation operations ──────────────────────────────────────
 
   async cancel(tokenId: string, options: CancellationOptions = {}): Promise<boolean> {
     const token = this.tokens.get(tokenId);
@@ -340,8 +340,13 @@ export class CancellationService {
       this.pendingTimeouts.set(tokenId, timeoutId);
     }
 
-    // If forced, mark phase as completed
+    // If forced, mark phase as completed and clear any pending escalation timeout
     if (options.force && isRoot) {
+      const timeoutId = this.pendingTimeouts.get(tokenId);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        this.pendingTimeouts.delete(tokenId);
+      }
       await this.setCancelPhase(runId, "completed", {
         reason: options.reason,
         forced: true,
@@ -357,19 +362,14 @@ export class CancellationService {
    */
   private async escalateForce(runId: string, reason: string): Promise<void> {
     const currentPhase = await this.getCancelPhase(runId);
-    let newPhase: CancellationPhase;
 
+    // Record the escalation phase (graceful_requested → force_requested)
     if (currentPhase === "active" || currentPhase === "graceful_requested") {
-      newPhase = "force_requested";
-    } else {
-      // Already force_requested or completed — finalize
-      newPhase = "completed";
+      await this.setCancelPhase(runId, "force_requested", {
+        reason,
+        escalated: true,
+      });
     }
-
-    await this.setCancelPhase(runId, newPhase, {
-      reason,
-      escalated: true,
-    });
 
     // Force-cancel the root token
     const tokenId = `token:root:${runId}`;
@@ -390,6 +390,25 @@ export class CancellationService {
       this.tokens.set(tokenId, forcedToken);
     }
 
+    // Cancel all children recursively
+    await this.cancelChildren(tokenId);
+
+    // Release owned tools and model calls
+    await this.releaseOwnershipForToken(tokenId);
+
+    // Release pending timeout for the token
+    const timeoutId = this.pendingTimeouts.get(tokenId);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      this.pendingTimeouts.delete(tokenId);
+    }
+
+    // Persist final phase as completed
+    await this.setCancelPhase(runId, "completed", {
+      reason,
+      escalated: true,
+    });
+
     this.emit({
       type: "token.cancelled",
       tokenId,
@@ -404,7 +423,7 @@ export class CancellationService {
     return token?.reason?.startsWith("FORCED") || false;
   }
 
-  private forceCancel(tokenId: string, reason: string): void {
+  private async forceCancel(tokenId: string, reason: string): Promise<void> {
     const token = this.tokens.get(tokenId);
     if (!token || token.isCancelled) return;
 
@@ -415,6 +434,19 @@ export class CancellationService {
       reason: `FORCED:${reason}`,
     };
     this.tokens.set(tokenId, forcedToken);
+
+    // Cancel all children recursively
+    await this.cancelChildren(tokenId);
+
+    // Release owned tools and model calls
+    await this.releaseOwnershipForToken(tokenId);
+
+    // Release pending timeout for the token
+    const timeoutId = this.pendingTimeouts.get(tokenId);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      this.pendingTimeouts.delete(tokenId);
+    }
 
     // Update cancellation phase if this is a root token
     if (tokenId.startsWith("token:root:")) {
@@ -483,7 +515,7 @@ export class CancellationService {
     return true;
   }
 
-  // ── Ownership tracking ────────────────────────────────────────────────────
+  // ── Ownership tracking ────────────────────────────────────────────
 
   acquireToolOwnership(toolId: string, tokenId: string): void {
     const token = this.tokens.get(tokenId);
@@ -529,7 +561,7 @@ export class CancellationService {
     }
   }
 
-  // ── Checkpoint persistence ────────────────────────────────────────────────
+  // ── Checkpoint persistence ────────────────────────────────────────
 
   async saveCheckpoint(checkpoint: Checkpoint): Promise<void> {
     if (!this.checkpointRepo) {
@@ -564,7 +596,7 @@ export class CancellationService {
     };
   }
 
-  // ── Recovery state ───────────────────────────────────────────────────────
+  // ── Recovery state ────────────────────────────────────────────────
 
   async buildRecoveryState(
     runId: string,
@@ -600,7 +632,21 @@ export class CancellationService {
     this.recoveryAttempts.set(runId, current + 1);
   }
 
-  // ── Serialization ─────────────────────────────────────────────────────────
+  /**
+   * Returns the current in-memory recovery attempt count for a run.
+   */
+  getRecoveryAttemptCount(runId: string): number {
+    return this.recoveryAttempts.get(runId) ?? 0;
+  }
+
+  /**
+   * Seeds the in-memory recoveryAttempts map from persisted state (used on restart).
+   */
+  restoreRecoveryAttempts(runId: string, count: number): void {
+    this.recoveryAttempts.set(runId, count);
+  }
+
+  // ── Serialization ─────────────────────────────────────────────────
 
   serializeToken(tokenId: string): SerializedCancellationToken | null {
     const token = this.tokens.get(tokenId);
@@ -613,7 +659,7 @@ export class CancellationService {
     this.tokens.set(token.id, token);
   }
 
-  // ── Cleanup ───────────────────────────────────────────────────────────────
+  // ── Cleanup ───────────────────────────────────────────────────────────
 
   /**
    * Dispose of all resources held by this service.

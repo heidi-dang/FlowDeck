@@ -169,6 +169,22 @@ export class CircuitBreaker {
     this.halfOpenSuccesses = data.halfOpenSuccesses;
     this.halfOpenAttempts = data.halfOpenAttempts;
   }
+
+  /**
+   * Deserialize a circuit breaker instance from persisted state.
+   * On restore, half-open state is re-evaluated: if the reset timeout
+   * has already elapsed, the breaker is moved to half_open so it can
+   * accept a test request immediately after restart.
+   */
+  static deserialize(
+    data: SerializedCircuitBreaker,
+    config?: CircuitBreakerConfig,
+  ): CircuitBreaker {
+    const breaker = new CircuitBreaker(config);
+    breaker.restore(data);
+    breaker.evaluateStateTransition();
+    return breaker;
+  }
 }
 
 export class CircuitBreakerRegistry {
