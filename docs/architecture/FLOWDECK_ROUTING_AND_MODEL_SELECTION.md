@@ -259,10 +259,14 @@ user-required specialist  recovery state
 - Inputs are normalized (case, whitespace, synonyms) before matching.
 - A read-only/mutating conflict is detected **before any rule runs**: `readOnly=true` together with
   `mutating=true` is contradictory and always resolves to `unknown` with conflict evidence.
-- Documentation classification (rule 9) matches documentation keywords (`doc`, `documentation`, `readme`,
-  `guide`) regardless of the mutating flag, so "Update the README" classifies as `documentation` even when
-  mutating. Question markers ("explain", "how to") are **not** documentation signals; an explanatory prompt
-  classifies as `read_only_question`.
+- Documentation classification (rule 9) uses bounded word-boundary matching for the terms `doc`, `docs`,
+  `documentation`, `README`, `user guide`, and `developer guide`. Substring look-alikes are deliberately
+  **not** documentation signals: "doctor", "Docker", "dock", "document database", and "guided execution"
+  never classify as `documentation`. The rule applies regardless of the mutating flag, so "Update the
+  README" classifies as `documentation` even when mutating; `documentation` is part of the canonical
+  `MUTATING_CLASSES` set, and a read-only documentation inspection remains distinguishable from a
+  documentation mutation via the `readOnly`/`mutating` input flags. Question markers ("explain", "how to")
+  are **not** documentation signals; an explanatory prompt classifies as `read_only_question`.
 - Fallback rule 17 maps `userRequiredSpecialist` through the routing-owned specialist allow-list
   (`classifier/specialist-registry.ts`, projected from the canonical agent registry in section 1.3). The id
   is normalized (trimmed, lowercased) before matching. A recognized specialist maps to its deterministic

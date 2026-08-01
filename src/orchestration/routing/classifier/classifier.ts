@@ -75,10 +75,19 @@ export const MUTATING_CLASSES: readonly TaskClass[] = [
   "release_failure",
   "production_incident",
   "recovery_resume",
+  "documentation",
 ]
 
-/** Documentation-prompt detection regex (rule 9). No /g flag: stateless, deterministic. */
-const DOCUMENTATION_RE = /doc(umentation)?|readme|guide/i
+/**
+ * Bounded documentation-term matching (rule 9). A prompt is documentation
+ * when it contains a recognized documentation term delimited by word
+ * boundaries: doc, docs, documentation, README, user guide, developer
+ * guide. Substring accidents are avoided: "doctor", "Docker", "dock",
+ * "document database", and "guided execution" do NOT match. Case-insensitive
+ * and stateless (no /g flag).
+ */
+const DOCUMENTATION_TERMS = ["doc", "docs", "documentation", "readme", "user guide", "developer guide"]
+const DOCUMENTATION_RE = new RegExp(`(^|[^a-z0-9])(?:${DOCUMENTATION_TERMS.join("|")})(?=$|[^a-z0-9])`, "i")
 
 /** Performance-prompt detection regex (rule 15). No /g flag: stateless, deterministic. */
 const PERFORMANCE_RE = /perform|latency|benchmark|profil|slow|throughput/i
@@ -162,7 +171,8 @@ const RULES: readonly ClassificationRule[] = [
     id: "documentation",
     taskClass: "documentation",
     predicate: (input) => typeof input.rawPrompt === "string" && DOCUMENTATION_RE.test(input.rawPrompt),
-    describe: () => "prompt requests documentation (matches /doc(umentation)?|readme|guide/i)",
+    describe: () =>
+      "prompt requests documentation (matches bounded doc terms: doc, docs, documentation, readme, user guide, developer guide)",
   },
   {
     id: "read_only_question",

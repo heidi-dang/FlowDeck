@@ -79,6 +79,7 @@ describe("deterministic rule-based task classifier", () => {
       "release_failure",
       "production_incident",
       "recovery_resume",
+      "documentation",
     ])
   })
 
@@ -248,6 +249,50 @@ describe("deterministic rule-based task classifier", () => {
     const result = classifyTask({ rawPrompt: "Explain how routing works", readOnly: true })
     expect(result.taskClass).toBe("read_only_question")
     expectConfidentResult(result, "read_only_question")
+  })
+
+  it("classifies documentation terms as documentation (positive table)", () => {
+    const positivePrompts: string[] = [
+      "write documentation for the API",
+      "update the README",
+      "add docs for the CLI",
+      "create a user guide",
+      "write a developer guide",
+      "review the doc comments",
+    ]
+    for (const prompt of positivePrompts) {
+      expect(classifyTask({ rawPrompt: prompt }).taskClass, `"${prompt}"`).toBe("documentation")
+    }
+  })
+
+  it("does not classify documentation look-alike terms as documentation (negative table)", () => {
+    const negativePrompts: string[] = [
+      "fix the doctor service crash",
+      "build a Docker image for the service",
+      "dock the window to the side",
+      "query the document database",
+      "guided execution of the pipeline",
+      "convert the document to PDF",
+    ]
+    for (const prompt of negativePrompts) {
+      const result = classifyTask({ rawPrompt: prompt })
+      expect(result.taskClass, `"${prompt}" must not classify as documentation`).not.toBe("documentation")
+    }
+  })
+
+  it("keeps documentation read-only inspection distinguishable from a documentation mutation", () => {
+    // A mutating documentation edit classifies as documentation.
+    const mutation = classifyTask({ rawPrompt: "update the README with new endpoints", mutating: true })
+    expect(mutation.taskClass).toBe("documentation")
+
+    // A read-only documentation inspection classifies as documentation too,
+    // but the readOnly flag is preserved for downstream mutation inference.
+    const inspection = classifyTask({ rawPrompt: "review the README for accuracy", readOnly: true })
+    expect(inspection.taskClass).toBe("documentation")
+
+    // The canonical MUTATING_CLASSES set includes documentation, so a
+    // documentation class alone no longer implies a non-mutating task.
+    expect(MUTATING_CLASSES).toContain("documentation")
   })
 
   it("every produced result validates against zClassificationResult", () => {
