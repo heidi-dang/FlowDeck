@@ -19,7 +19,7 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readdirSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -219,7 +219,7 @@ function deleteFile() {
   const p = join(fixture, "del-tmp.ts")
   writeFileSync(p, "export const d = 1;\n")
   git(["add", p], fixture)
-  const r1 = JSON.parse(fdx(fixture, ["refresh"]))
+  fdx(fixture, ["refresh"])
   git(["rm", "-q", "--cached", "del-tmp.ts"], fixture)
   rmSync(p)
   const r2 = JSON.parse(fdx(fixture, ["refresh"]))
@@ -240,9 +240,9 @@ function residentMemoryMB() {
     const r = spawnSync("${BINARY}", ["index", "refresh", "--cwd", "${fixture}"], {
       env: { ...process.env, FDX_INDEX_DIR: "${STATE_DIR}" }, encoding: "utf-8"
     });
-    console.log(r.status, r.stdout, r.stderr);
+    void r;
   `
-  const out = execFileSync("node", ["-e", script], { encoding: "utf-8" })
+  execFileSync("node", ["-e", script], { encoding: "utf-8" })
   // Approximate RSS by running node with max-old-space measurement is not
   // portable; use the parent process RSS via /proc when available.
   try {
