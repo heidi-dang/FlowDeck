@@ -26,6 +26,7 @@ export interface DashboardMountOptions {
 
 export interface DashboardController {
   getState: () => RunProjectionState;
+  applyEvent: (event: FlowDeckStreamEvent) => void;
   destroy: () => void;
 }
 
@@ -40,6 +41,12 @@ export function mountLiveDashboard(
   container.className = 'flowdeck-live-dashboard';
 
   const render = () => {
+    // Capture focused element identity before DOM replacement
+    const doc = typeof document !== 'undefined' ? document : null;
+    const activeEl = doc?.activeElement as HTMLElement | null;
+    const activeId = activeEl?.id || null;
+    const activeDataAction = activeEl?.getAttribute?.('data-action') || null;
+
     container.innerHTML = `
       ${ReconnectBanner({ state })}
       ${ConnectionHealthIndicator({ state })}
@@ -58,6 +65,19 @@ export function mountLiveDashboard(
         ${CompletionSummary({ state })}
       </main>
     `;
+
+    // Restore focus to the equivalent element after render
+    try {
+      if (activeId) {
+        const restored = container.querySelector(`#${CSS.escape(activeId)}`) as HTMLElement | null;
+        restored?.focus?.();
+      } else if (activeDataAction) {
+        const restored = container.querySelector(`[data-action="${activeDataAction}"]`) as HTMLElement | null;
+        restored?.focus?.();
+      }
+    } catch {
+      // CSS.escape unavailable or element not found — focus loss is acceptable
+    }
   };
 
   // Safe Event Delegation registered ONCE on container root
@@ -102,6 +122,10 @@ export function mountLiveDashboard(
 
   return {
     getState: () => state,
+    applyEvent: (event: FlowDeckStreamEvent) => {
+      state = reduceRunStreamEvent(state, event);
+      render();
+    },
     destroy: () => {
       client.abort();
       container.removeEventListener('click', handleClick);

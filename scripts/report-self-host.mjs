@@ -61,50 +61,91 @@ async function generateSelfHostReport() {
     process.exit(1);
   }
 
+  // Enforce: benchmark artifact SHA must be present and match exact git HEAD
+  if (!streamingBench.gitSha) {
+    console.error('FAIL: streaming benchmark artifact missing gitSha field. Regenerate with: npm run benchmark:streaming');
+    process.exit(1);
+  }
+  if (streamingBench.gitSha !== gitSha) {
+    console.error(`FAIL: streaming benchmark SHA (${streamingBench.gitSha}) differs from git HEAD SHA (${gitSha}). Regenerate with: npm run benchmark:streaming`);
+    process.exit(1);
+  }
+  if (!uiBench.gitSha) {
+    console.error('FAIL: UI benchmark artifact missing gitSha field. Regenerate with: npm run benchmark:ui');
+    process.exit(1);
+  }
+  if (uiBench.gitSha !== gitSha) {
+    console.error(`FAIL: UI benchmark SHA (${uiBench.gitSha}) differs from git HEAD SHA (${gitSha}). Regenerate with: npm run benchmark:ui`);
+    process.exit(1);
+  }
+
   // 3. Inspect GitHub CI Runs for Exact SHA dynamically using gh CLI
   let ciRunDetails = null;
+  const allowPending = process.argv.includes("--allow-pending-remote");
   try {
     const ciJson = execSync(
-      `gh run list --branch ${branch} --limit 3 --json databaseId,headSha,status,conclusion,workflowName`,
+      `gh run list --branch ${branch} --limit 10 --json databaseId,headSha,status,conclusion,workflowName`,
       { encoding: "utf-8" }
     ).trim();
 
     const runs = JSON.parse(ciJson);
-    const matchingRun = runs.find((r) => r.headSha === gitSha);
+    const matchingRuns = runs.filter((r) => r.headSha === gitSha);
 
-    if (!matchingRun) {
-      console.warn(`WARNING: No remote GitHub CI run found matching exact HEAD SHA ${gitSha} on branch ${branch}.`);
-      ciRunDetails = { status: "PENDING_REMOTE_PUSH", matchingSha: gitSha };
-    } else {
-      ciRunDetails = {
-        runId: matchingRun.databaseId,
-        headSha: matchingRun.headSha,
-        workflow: matchingRun.workflowName,
-        status: matchingRun.status,
-        conclusion: matchingRun.conclusion,
-      };
-
-      if (matchingRun.conclusion === "failure") {
-        console.error(`FAIL: CI run ${matchingRun.databaseId} for SHA ${gitSha} failed on GitHub.`);
+    if (matchingRuns.length === 0) {
+      if (!allowPending) {
+        console.error(`FAIL: No remote GitHub CI runs found matching exact HEAD SHA ${gitSha} on branch ${branch}.`);
         process.exit(1);
       }
+      ciRunDetails = { status: "PENDING_REMOTE_PUSH", matchingSha: gitSha };
+    } else {
+      // Require both mandatory workflows to be present and succeeded
+      const MANDATORY_WORKFLOWS = ['CI Production Gates', 'Orchestration Validation'];
+      for (const wf of MANDATORY_WORKFLOWS) {
+        const run = matchingRuns.find(r => r.workflowName === wf);
+        if (!run) {
+          if (!allowPending) {
+            console.error(`FAIL: Mandatory workflow '${wf}' not found for SHA ${gitSha}.`);
+            process.exit(1);
+          }
+        } else if (run.conclusion === 'failure' || run.conclusion === 'cancelled' || run.conclusion === 'timed_out' || run.conclusion === 'action_required') {
+          console.error(`FAIL: Mandatory workflow '${wf}' (run ${run.databaseId}) concluded '${run.conclusion}' for SHA ${gitSha}.`);
+          process.exit(1);
+        } else if ((run.status === 'in_progress' || run.status === 'queued') && !allowPending) {
+          console.error(`FAIL: Mandatory workflow '${wf}' (run ${run.databaseId}) is still '${run.status}' for SHA ${gitSha}.`);
+          process.exit(1);
+        }
+      }
+
+      const failedRun = matchingRuns.find(r => r.conclusion === "failure" || r.conclusion === "cancelled");
+      if (failedRun) {
+        console.error(`FAIL: Remote CI run ${failedRun.databaseId} (${failedRun.workflowName}) for SHA ${gitSha} failed on GitHub (${failedRun.conclusion}).`);
+        process.exit(1);
+      }
+
+      ciRunDetails = matchingRuns.map(r => ({
+        runId: r.databaseId,
+        headSha: r.headSha,
+        workflow: r.workflowName,
+        status: r.status,
+        conclusion: r.conclusion,
+      }));
     }
-  } catch {
+  } catch (err) {
+    if (!allowPending) {
+      console.error("FAIL: Could not verify remote GitHub CI status via gh CLI:", err.message);
+      process.exit(1);
+    }
     ciRunDetails = { status: "UNCHECKED_LOCAL_ONLY", headSha: gitSha };
   }
 
-  // 4. Verify Production SSE & Dashboard Wiring dynamically by checking code exports
-  const sseFile = readFileSync(resolve(cwd, "src/better-harness/transport/sse.ts"), "utf-8");
-  const hasV2Wiring = sseFile.includes("StreamRepository") && sseFile.includes("StreamPublisher");
-  if (!hasV2Wiring) {
-    console.error("FAIL: Better Harness SSE transport is missing canonical SSE v2 wiring!");
-    process.exit(1);
-  }
-
-  const mountFile = readFileSync(resolve(cwd, "src/better-harness/ui/mount.ts"), "utf-8");
-  const hasMountFunc = mountFile.includes("mountLiveDashboard");
-  if (!hasMountFunc) {
-    console.error("FAIL: Live Orchestration Dashboard mount function is missing!");
+  // 4. Verify Production Integration, Accessibility, Browser E2E, and Load Tests
+  try {
+    execSync("bun test tests/better-harness/production-server-integration.test.ts", { stdio: "pipe" });
+    execSync("bun test tests/ui/accessibility.test.ts", { stdio: "pipe" });
+    execSync("bun test tests/ui/browser-e2e.test.ts", { stdio: "pipe" });
+    execSync("bun test tests/streaming/http-sse-load-soak.test.ts", { stdio: "pipe" });
+  } catch (err) {
+    console.error("FAIL: Required production gate tests failed execution:", err.message);
     process.exit(1);
   }
 
@@ -124,17 +165,12 @@ async function generateSelfHostReport() {
       arch: process.arch,
       version: pkg.version,
     },
-    productionWiringValidation: {
-      unifiedSseArchitecture: hasV2Wiring ? "VERIFIED_CANONICAL_SQLITE_V2" : "FAILED",
-      mountedLiveDashboard: hasMountFunc ? "VERIFIED_MOUNTED_DOM_CONTROLLER" : "FAILED",
-      sqliteSchemaVersion: "0.2.6",
-      persistBeforeDeliverEnforced: true,
-      highWatermarkHandoffEnforced: true,
-    },
+    productionWiringVerified: 'ALL_GATE_TESTS_PASSED',
     benchmarkEvidence: {
       streaming: {
         file: "artifacts/benchmark-streaming.json",
         sqliteCommitOpsPerSec: commitOps,
+        publisherCommitAndDispatchMs: streamingBench.metrics?.publisherCommitAndBrokerDispatch?.medianMs,
         publishLatencyMedianMs: streamingBench.metrics?.publishToClientReceipt?.medianMs,
         reconnectReplaysPerSec: streamingBench.metrics?.reconnectReplay?.replaysPerSec,
       },
