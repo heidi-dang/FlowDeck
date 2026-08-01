@@ -40,6 +40,12 @@ describe("Task 11: Delivery-Aware Real HTTP SSE Load & Soak Gate", () => {
     const receiptLatencies: number[] = [];
 
     // 2. Connect clients and parse SSE events with publication-to-receipt latency tracking
+    const connectedClients = new Set<number>();
+    let signalConnected: () => void;
+    const allConnected = new Promise<void>((resolve) => {
+      signalConnected = resolve;
+    });
+
     const clientPromises = controllers.map(async (controller, clientIdx) => {
       const response = await fetch(`http://127.0.0.1:${port}/api/runs/${runId}/events`, {
         signal: controller.signal,
@@ -52,6 +58,7 @@ describe("Task 11: Delivery-Aware Real HTTP SSE Load & Soak Gate", () => {
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let hasConnected = false;
 
       try {
         while (true) {
@@ -61,6 +68,14 @@ describe("Task 11: Delivery-Aware Real HTTP SSE Load & Soak Gate", () => {
           const receiptTime = performance.now();
           const text = decoder.decode(value, { stream: true });
           buffer += text;
+
+          if (!hasConnected && buffer.includes(": connected")) {
+            hasConnected = true;
+            connectedClients.add(clientIdx);
+            if (connectedClients.size === clientCount) {
+              signalConnected();
+            }
+          }
 
           const parts = buffer.split("\n\n");
           buffer = parts.pop() || "";
@@ -92,6 +107,9 @@ describe("Task 11: Delivery-Aware Real HTTP SSE Load & Soak Gate", () => {
         /* aborted on completion */
       }
     });
+
+    // Wait until all clients have established active connections before publishing
+    await allConnected;
 
     // 3. Emit 500 events via StreamPublisher with precise timestamp recording
     const t0 = performance.now();
