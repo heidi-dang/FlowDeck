@@ -15,4 +15,3 @@ export * from "./logging";
 export * from "./tracing";
 export * from "./diagnostics";
 export * from "./telemetry";
-export * from "./routing";

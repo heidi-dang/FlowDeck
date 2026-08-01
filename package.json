@@ -93,7 +93,6 @@
     "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:matrix && npm run test:orchestration:port-discovery && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults && npm run test:orchestration:integration && npm run verify:orchestration:schema",
     "benchmark:flowdeck": "bun run scripts/benchmark-flowdeck.ts",
     "benchmark:context": "bun run scripts/benchmark-context.ts",
-    "benchmark:fdx": "bun run scripts/benchmark-fdx.ts",
     "benchmark:orchestration": "bun run scripts/benchmark-orchestration.ts"
   },
   "keywords": [

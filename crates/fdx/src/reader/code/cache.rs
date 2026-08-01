@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use tree_sitter::Tree;
 
-#[derive(Debug)]
 pub struct AstCache {
     cache: DashMap<PathBuf, (SystemTime, Tree)>,
 }
@@ -27,10 +26,6 @@ impl AstCache {
 
     pub fn insert(&self, path: PathBuf, mtime: SystemTime, tree: Tree) {
         self.cache.insert(path, (mtime, tree));
-    }
-
-    pub fn len(&self) -> usize {
-        self.cache.len()
     }
 }
 

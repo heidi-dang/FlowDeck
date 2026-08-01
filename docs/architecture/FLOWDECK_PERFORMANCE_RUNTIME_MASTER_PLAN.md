@@ -72,14 +72,13 @@ Dev 1 owns all work related to streaming, live UI, and client-side orchestration
 
 ## 4. Dev 2 Runtime/Performance Ownership
 
-Dev 2 owns all work related to runtime correctness, context efficiency, model routing, tool performance, and analytics.
+Dev 2 owns all work related to runtime correctness, context efficiency, tool performance, and analytics. Model routing and FDX daemon work are DEPENDENCY OWNED BY DEV 4 and DEV 3 respectively.
 
 ### 4.1 Source Ownership
 
 | Path | Description |
 |---|---|
 | `src/orchestration/telemetry/**` | Event recording, telemetry pipeline, metric aggregation |
-| `src/orchestration/routing/**` | Model routing, strategy selection, capability registry |
 | `src/orchestration/context/**` | Token budgets, manifest, deduplication, compaction |
 | `src/orchestration/runtime/**` | State machine, run lifecycle, session management |
 | `src/orchestration/recovery/**` | Interruption handling, checkpointing, resume |
@@ -87,9 +86,12 @@ Dev 2 owns all work related to runtime correctness, context efficiency, model ro
 | `src/orchestration/verification/**` | Contract verification, evidence collection |
 | `src/orchestration/contracts/**` | Contract families, versions, activation policy |
 | `src/tools/**` | Tool metadata, scheduling, batching, caching |
-| `crates/fdx/**` | Approved FDX performance work (daemon, warm indexes) |
 | `scripts/benchmark-*` | Performance benchmarking scripts |
 | `scripts/report-self-host*` | Self-host reporting scripts |
+
+**Note:** The following were removed in Dev 3/Dev 4 overlap cleanup and are now DEPENDENCY OWNED BY respective developers:
+- `src/orchestration/routing/**` — DEPENDENCY OWNED BY DEV 4
+- `crates/fdx/**` — DEPENDENCY OWNED BY DEV 3 (FDX daemon/index)
 
 ### 4.2 Test Ownership
 
@@ -210,6 +212,8 @@ All shared interfaces are **versioned**, **runtime-validated**, and **framework-
 
 **Goal:** Implement classifier, strategy selection, capability registry, delegation, and scheduler.
 
+**Status:** DEPENDENCY OWNED BY DEV 4 — routing and scheduling intelligence is owned by Dev 4.
+
 | Milestone | Deliverable |
 |---|---|
 | 3.1 | Task type classifier routes incoming tasks to appropriate `ExecutionStrategy` |
@@ -226,6 +230,8 @@ All shared interfaces are **versioned**, **runtime-validated**, and **framework-
 
 **Goal:** Implement capability tiers, routing policy, provider health, and structured outputs.
 
+**Status:** DEPENDENCY OWNED BY DEV 4.
+
 | Milestone | Deliverable |
 |---|---|
 | 4.1 | Model capability tiers defined (reasoning, speed, cost, context window, tool use) |
@@ -241,6 +247,8 @@ All shared interfaces are **versioned**, **runtime-validated**, and **framework-
 ### Wave 5: FDX and Tool Performance
 
 **Goal:** Optimize FDX daemon, warm indexes, tool batching, caching, and scheduling.
+
+**Status:** DEPENDENCY OWNED BY DEV 3 — FDX daemon and index optimization is owned by Dev 3.
 
 | Milestone | Deliverable |
 |---|---|
@@ -540,3 +548,4 @@ Rollback is a single `git reset --hard` to the previous SHA plus a fresh deploym
 | Date | Author | Change |
 |---|---|---|
 | 2026-08-01 | Dev 2 | Initial publication |
+| 2026-08-01 | Dev 2 | Dev 3/Dev 4 overlap removal: marked routing (Dev 4), model routing (Dev 4), FDX daemon/index (Dev 3) as dependencies; removed orphaned routing directory |

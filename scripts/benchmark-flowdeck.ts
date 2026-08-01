@@ -16,7 +16,6 @@ import { cancellationScenario } from '../tests/performance/scenarios/cancellatio
 import { recoveryScenario } from '../tests/performance/scenarios/recovery';
 import { staleShaRejectionScenario } from '../tests/performance/scenarios/stale-sha-rejection';
 import { parallelOwnershipConflictScenario } from '../tests/performance/scenarios/parallel-ownership-conflict';
-import { fdxNativeFallbackParityScenario } from '../tests/performance/scenarios/fdx-native-fallback-parity';
 
 const BASELINE_SHA = '5809fcf1230ff349ff0d7f5b53ed75403f44573b';
 const OUTPUT_DIR = 'benchmark-results';
@@ -125,7 +124,6 @@ async function main() {
   runner.registerScenario(recoveryScenario);
   runner.registerScenario(staleShaRejectionScenario);
   runner.registerScenario(parallelOwnershipConflictScenario);
-  runner.registerScenario(fdxNativeFallbackParityScenario);
 
   const iterations = parseInt(process.argv[2] || '3', 10);
   const candidateSha = process.argv[3];
