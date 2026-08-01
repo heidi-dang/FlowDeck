@@ -35,8 +35,26 @@ export interface StrategyPolicy {
   approvalRequirements: string[]
 }
 
+/**
+ * Deep-freezes an object and all nested objects/arrays recursively.
+ * Returns the frozen object.
+ */
+function deepFreeze<T>(obj: T): T {
+  if (obj === null || typeof obj !== "object") {
+    return obj
+  }
+  Object.freeze(obj)
+  for (const key of Object.keys(obj)) {
+    const value = (obj as Record<string, unknown>)[key]
+    if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+      deepFreeze(value)
+    }
+  }
+  return obj
+}
+
 /** Deterministic default policies, one per canonical execution strategy. */
-export const DEFAULT_STRATEGY_POLICIES: Record<ExecutionStrategy, StrategyPolicy> = {
+export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
   fast_direct: {
     strategy: "fast_direct",
     allowedStates: ["execute"],
@@ -145,14 +163,14 @@ export const DEFAULT_STRATEGY_POLICIES: Record<ExecutionStrategy, StrategyPolicy
     recoveryLimit: 1,
     approvalRequirements: [],
   },
-}
+} as const satisfies Record<ExecutionStrategy, StrategyPolicy>)
 
 /**
- * Returns the policy for `strategy`.
- * A shallow copy is returned so callers cannot mutate the shared defaults.
+ * Returns a deep clone of the policy for `strategy` so callers can safely
+ * mutate their copy without affecting the frozen defaults.
  */
 export function getStrategyPolicy(strategy: ExecutionStrategy): StrategyPolicy {
-  return { ...DEFAULT_STRATEGY_POLICIES[strategy] }
+  return JSON.parse(JSON.stringify(DEFAULT_STRATEGY_POLICIES[strategy]))
 }
 
 /** Zod schema for a RunStage value. */

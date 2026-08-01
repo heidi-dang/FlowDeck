@@ -26,6 +26,9 @@ import {
   parseCanonicalJson,
   zClassificationResult,
   zScoredTask,
+  zStrategyPolicy,
+  DEFAULT_STRATEGY_POLICIES,
+  getStrategyPolicy,
   type ClassificationInput,
   type ClassificationResult,
 } from "@/orchestration/routing/contracts";
@@ -163,3 +166,32 @@ describe("routing consistency: serialization round-trip", () => {
     }
   });
 });
+
+describe("routing consistency: strategy policies deep-frozen (D13)", () => {
+  it("DEFAULT_STRATEGY_POLICIES is deeply frozen", () => {
+    expect(Object.isFrozen(DEFAULT_STRATEGY_POLICIES)).toBe(true)
+    for (const policy of Object.values(DEFAULT_STRATEGY_POLICIES)) {
+      expect(Object.isFrozen(policy)).toBe(true)
+      expect(Object.isFrozen(policy.allowedStates)).toBe(true)
+      expect(Object.isFrozen(policy.requiredCapabilities)).toBe(true)
+      expect(Object.isFrozen(policy.approvalRequirements)).toBe(true)
+    }
+  })
+
+  it("getStrategyPolicy returns a mutable deep clone", () => {
+    const policy = getStrategyPolicy("fast_direct")
+    expect(Object.isFrozen(policy)).toBe(false)
+    expect(Object.isFrozen(policy.allowedStates)).toBe(false)
+
+    // Mutating the clone should not affect the frozen original
+    policy.allowedStates.push("review")
+    const original = DEFAULT_STRATEGY_POLICIES.fast_direct
+    expect(original.allowedStates).not.toContain("review")
+  })
+
+  it("strategy policies validate via zStrategyPolicy", () => {
+    for (const policy of Object.values(DEFAULT_STRATEGY_POLICIES)) {
+      expect(zStrategyPolicy.safeParse(policy).success).toBe(true)
+    }
+  })
+})

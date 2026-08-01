@@ -20,7 +20,9 @@ import {
 import {
   zTaskScores,
   zScoredTask,
+  zTaskScoresArray,
   isScoreInRange,
+  areScoresInRange,
   SCORE_MIN,
   SCORE_MAX,
   type ClassificationInput,
@@ -240,6 +242,25 @@ describe("deterministic routing scorers", () => {
     expect(
       zScoredTask.safeParse({ ...validScoredTask, scores: { ...validScoredTask.scores, risk: 150 } }).success,
     ).toBe(false)
+  })
+
+  it("validates arrays of scores via areScoresInRange and zTaskScoresArray (D11)", () => {
+    expect(areScoresInRange([0, 50, 100])).toBe(true)
+    expect(areScoresInRange([10, 20, 30, 40])).toBe(true)
+    expect(areScoresInRange([-1, 50, 100])).toBe(false)
+    expect(areScoresInRange([0, 50, 101])).toBe(false)
+    expect(areScoresInRange([0, NaN, 100])).toBe(false)
+    expect(areScoresInRange([])).toBe(true)
+
+    expect(zTaskScoresArray.safeParse([
+      { complexity: 10, ambiguity: 10, risk: 10, confidence: 10 },
+      { complexity: 20, ambiguity: 20, risk: 20, confidence: 20 },
+    ]).success).toBe(true)
+
+    expect(zTaskScoresArray.safeParse([
+      { complexity: 10, ambiguity: 10, risk: 10, confidence: 10 },
+      { complexity: 150, ambiguity: 10, risk: 10, confidence: 10 }, // out of range
+    ]).success).toBe(false)
   })
 
   it("assertScoreRange throws for out-of-range scores", () => {
