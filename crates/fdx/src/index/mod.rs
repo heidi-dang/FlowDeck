@@ -21,6 +21,7 @@
 //! - shutdown waits for in-flight refresh (or abandons safely);
 //! - no global lock across unrelated repositories (per-service locks).
 
+pub mod boundary;
 pub mod builder;
 pub mod components;
 pub mod identity;
@@ -40,7 +41,9 @@ use crate::index::manifest::{
 };
 use crate::index::paths::index_state_root;
 use crate::index::refresh::{compute_change_set, Refresher};
-use crate::index::storage::{ready_components, GenerationStore, LoadOutcome};
+use crate::index::storage::{
+    ready_components, update_component_counts, GenerationStore, LoadOutcome,
+};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -183,7 +186,7 @@ impl IndexService {
     }
 
     /// Load a persisted generation into memory (warm startup). Best effort:
-    /// returns false when nothing valid exists.
+    /// returns false when nothing valid exists or a strict load fails.
     pub fn load_persisted(&self) -> std::io::Result<bool> {
         match self.store.load() {
             LoadOutcome::Loaded(manifest) => {
@@ -198,75 +201,71 @@ impl IndexService {
     }
 
     /// Load the component files of one persisted generation into memory.
+    ///
+    /// Strict: any component that fails to parse is an error propagated to
+    /// the caller — a malformed persisted component is NEVER converted into
+    /// an empty/default collection (the generation was already validated by
+    /// the storage layer; this re-parse is fail-closed against corruption
+    /// between validation and load).
     fn load_generation(&self, manifest: &FdxIndexManifest) -> std::io::Result<IndexSnapshot> {
         let dir = self.store.generation_path(manifest.generation);
-        let files = load_component::<Vec<FileMeta>>(&dir, "files.json")
-            .map(|rows| {
-                let mut c = FilesComponent::default();
-                for r in rows {
-                    c.files.insert(r.path.clone(), r);
-                }
-                c
-            })
-            .unwrap_or_default();
-        let symbols = load_component::<Vec<SymbolMeta>>(&dir, "symbols.json")
-            .map(|rows| {
-                let mut c = SymbolsComponent::default();
-                for r in rows {
-                    c.insert(r);
-                }
-                c
-            })
-            .unwrap_or_default();
-        let deps = load_component::<Vec<DependencyEdge>>(&dir, "dependencies.json")
-            .map(|rows| {
-                let mut c = DependenciesComponent::default();
-                for r in rows {
-                    let file = r.from_file.clone();
-                    if r.unresolved || r.to_file.is_empty() {
-                        c.unresolved.insert(file);
-                        continue;
-                    }
-                    c.forward.entry(file.clone()).or_default().push(r.clone());
-                    c.reverse.entry(r.to_file.clone()).or_default().push(file);
-                }
-                c
-            })
-            .unwrap_or_default();
-        let tests = load_component::<Vec<TestMappingRow>>(&dir, "test-mapping.json")
-            .map(|rows| {
-                let mut c = TestMappingComponent::default();
-                for r in rows {
-                    c.insert(r);
-                }
-                c
-            })
-            .unwrap_or_default();
-        let git_state = load_component::<GitStateSnapshot>(&dir, "git-state.json")
-            .map(|s| GitStateComponent { snapshot: s })
-            .unwrap_or_default();
-        let cache = load_component::<Vec<ContentCacheEntry>>(&dir, "content-cache.json")
-            .map(|rows| {
-                let mut c = ContentCacheComponent::default();
-                for r in rows {
-                    c.by_path.insert(r.path.clone(), r.key.clone());
-                    c.entries.insert(r.key.clone(), r.clone());
-                    c.total_bytes += r.size;
-                    c.order.push((r.key.clone(), r.access_order));
-                    c.next_order = c.next_order.max(r.access_order + 1);
-                }
-                c
-            })
-            .unwrap_or_default();
+        let files = load_component::<Vec<FileMeta>>(&dir, "files.json")?;
+        let symbols = load_component::<Vec<SymbolMeta>>(&dir, "symbols.json")?;
+        let deps = load_component::<Vec<DependencyEdge>>(&dir, "dependencies.json")?;
+        let tests = load_component::<Vec<TestMappingRow>>(&dir, "test-mapping.json")?;
+        let git_state = load_component::<GitStateSnapshot>(&dir, "git-state.json")?;
+        let cache = load_component::<Vec<ContentCacheEntry>>(&dir, "content-cache.json")?;
+
+        let mut files_c = FilesComponent::default();
+        for r in files {
+            files_c.files.insert(r.path.clone(), r);
+        }
+        let mut symbols_c = SymbolsComponent::default();
+        for r in symbols {
+            symbols_c.insert(r);
+        }
+        let mut deps_c = DependenciesComponent::default();
+        for r in deps {
+            let file = r.from_file.clone();
+            if r.unresolved || r.to_file.is_empty() {
+                deps_c.unresolved.insert(file);
+                continue;
+            }
+            deps_c
+                .forward
+                .entry(file.clone())
+                .or_default()
+                .push(r.clone());
+            deps_c
+                .reverse
+                .entry(r.to_file.clone())
+                .or_default()
+                .push(file);
+        }
+        let mut tests_c = TestMappingComponent::default();
+        for r in tests {
+            tests_c.insert(r);
+        }
+        let git_state_c = GitStateComponent {
+            snapshot: git_state,
+        };
+        let mut cache_c = ContentCacheComponent::default();
+        for r in cache {
+            cache_c.by_path.insert(r.path.clone(), r.key.clone());
+            cache_c.entries.insert(r.key.clone(), r.clone());
+            cache_c.total_bytes += r.size;
+            cache_c.order.push((r.key.clone(), r.access_order));
+            cache_c.next_order = cache_c.next_order.max(r.access_order + 1);
+        }
 
         Ok(IndexSnapshot {
             manifest: manifest.clone(),
-            files: Arc::new(files),
-            symbols: Arc::new(symbols),
-            dependencies: Arc::new(deps),
-            tests: Arc::new(tests),
-            git_state: Arc::new(git_state),
-            cache: Arc::new(cache),
+            files: Arc::new(files_c),
+            symbols: Arc::new(symbols_c),
+            dependencies: Arc::new(deps_c),
+            tests: Arc::new(tests_c),
+            git_state: Arc::new(git_state_c),
+            cache: Arc::new(cache_c),
         })
     }
 
@@ -315,35 +314,68 @@ impl IndexService {
         }
     }
 
-    /// Refresh the index. Coalesces concurrent refreshes: if another refresh
-    /// holds the writer lock, wait for it and return the already-produced
-    /// generation. Returns the new snapshot.
+    /// Refresh the index. Coalesces concurrent refreshes (in-process mutex)
+    /// AND coordinates with other processes (CLI vs CLI, CLI vs daemon,
+    /// daemon vs daemon): the storage layer serializes the critical
+    /// publication section (rename + CURRENT) on a worktree-scoped file
+    /// lock, and a generation conflict (another process published first) is
+    /// resolved by loading the winner's generation.
+    ///
+    /// The persisted state is loaded with full recovery; a no-change fast
+    /// path reuses the newest valid generation (including one just published
+    /// by another process); otherwise a new generation is built and
+    /// published. Readers never observe a partial generation: the in-memory
+    /// snapshot is swapped only after the persisted generation is fully
+    /// validated and published.
     pub fn refresh(&self, full: bool) -> std::io::Result<Arc<IndexSnapshot>> {
         let _guard = self.refresh_lock.lock().unwrap();
-        let current = self.snapshot();
-        let next_gen = current.as_ref().map(|s| s.generation() + 1).unwrap_or(1);
+        let root = PathBuf::from(&self.identity.worktree_root);
 
-        // If a persisted generation already matches the current HEAD + dirty
-        // fingerprint and no refresh was forced, reuse it (no-change path).
+        // Load with recovery: validates the persisted state, quarantines
+        // corrupt generations, repairs CURRENT.
+        let persisted = self.store.load();
+
+        // No-change fast path against the *persisted* generation (another
+        // process may have already refreshed for this exact state).
         if !full {
-            if let Some(snap) = &current {
-                let head = git_head_sha(Path::new(&self.identity.worktree_root));
-                if snap.manifest.head_sha == head
-                    && snap.manifest.dirty_fingerprint
-                        == dirty_fingerprint(Path::new(&self.identity.worktree_root))
-                {
+            if let LoadOutcome::Loaded(m) = &persisted {
+                let head = git_head_sha(&root);
+                let dirty = dirty_fingerprint(&root);
+                if m.head_sha == head && m.dirty_fingerprint == dirty {
                     // Even on no-change, clean up stale tmp dirs from any
                     // previously interrupted write.
                     self.store.cleanup_stale_tmp();
-                    return Ok(snap.clone());
+                    let snap = self.load_generation(m)?;
+                    *self.snapshot.write().unwrap() = Some(Arc::new(snap.clone()));
+                    return Ok(Arc::new(snap));
                 }
             }
         }
 
-        let rebuilt = match &current {
-            None => self.build_full(next_gen)?,
-            Some(prev) if full => self.build_full(next_gen)?,
-            Some(prev) => self.refresh_incremental(next_gen, prev)?,
+        let next_gen = match &persisted {
+            LoadOutcome::Loaded(m) => m.generation + 1,
+            _ => 1,
+        };
+
+        let rebuilt = match &persisted {
+            LoadOutcome::Loaded(m) if !full => {
+                let prev = Arc::new(self.load_generation(m)?);
+                self.refresh_incremental(next_gen, &prev)
+            }
+            _ => self.build_full(next_gen),
+        };
+
+        let rebuilt = match rebuilt {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Another process published this generation first. Load the
+                // winner's snapshot instead of failing.
+                match self.store.load() {
+                    LoadOutcome::Loaded(m) => Arc::new(self.load_generation(&m)?),
+                    _ => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
         };
 
         *self.snapshot.write().unwrap() = Some(rebuilt.clone());
@@ -423,6 +455,14 @@ impl IndexService {
                         &Vec::<ContentCacheEntry>::new(),
                     )?;
 
+                    update_component_counts(
+                        &mut m,
+                        files.files.len(),
+                        symbols.by_id.len(),
+                        dep_rows.len(),
+                        test_rows.len(),
+                        0,
+                    );
                     ready_components(
                         &mut m,
                         &[
@@ -504,6 +544,10 @@ impl IndexService {
                         symbols = symbols_new;
                         deps = deps_new;
                         tests = tests_new;
+                        // The git-state snapshot must be rebuilt with the new
+                        // generation too (previously this stayed stale,
+                        // violating manifest/git-state consistency).
+                        git_state = next_git.clone();
                     } else {
                         refresher.apply(
                             &cs,
@@ -552,6 +596,14 @@ impl IndexService {
                         &cache.entries.values().cloned().collect::<Vec<_>>(),
                     )?;
 
+                    update_component_counts(
+                        &mut m,
+                        files.files.len(),
+                        symbols.by_id.len(),
+                        dep_rows.len(),
+                        test_rows.len(),
+                        cache.entries.len(),
+                    );
                     ready_components(
                         &mut m,
                         &[
@@ -571,16 +623,34 @@ impl IndexService {
 
     /// Invalidate the index: drop the in-memory snapshot AND the persisted
     /// generations, so the next refresh starts from a clean slate.
+    /// Serializes with other writers via the cross-process lock.
     pub fn invalidate(&self) {
+        let _guard = self.refresh_lock.lock().unwrap();
+        let _writer = self.store.writer_lock();
         *self.snapshot.write().unwrap() = None;
         let _ = self.store.clear_persisted();
     }
 
-    /// Force a full rebuild.
+    /// Force a full rebuild. Serializes with other writers via the
+    /// cross-process lock (held inside publish for the critical section).
     pub fn rebuild(&self) -> std::io::Result<Arc<IndexSnapshot>> {
         let _guard = self.refresh_lock.lock().unwrap();
-        let next_gen = self.snapshot().map(|s| s.generation() + 1).unwrap_or(1);
-        let rebuilt = self.build_full(next_gen)?;
+        // Recover/load the persisted state so the next generation continues
+        // from the newest valid one.
+        let persisted = self.store.load();
+        let next_gen = match &persisted {
+            LoadOutcome::Loaded(m) => m.generation + 1,
+            _ => 1,
+        };
+        let rebuilt = self.build_full(next_gen);
+        let rebuilt = match rebuilt {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => match self.store.load() {
+                LoadOutcome::Loaded(m) => Arc::new(self.load_generation(&m)?),
+                _ => return Err(e),
+            },
+            Err(e) => return Err(e),
+        };
         *self.snapshot.write().unwrap() = Some(rebuilt.clone());
         Ok(rebuilt)
     }
@@ -610,7 +680,8 @@ fn default_overrides() -> ignore::overrides::Override {
         .unwrap_or_else(|_| ignore::overrides::Override::empty())
 }
 
-/// Load a component file as JSON rows (best effort).
+/// Load a component file as JSON rows (strict; errors propagate so a
+/// malformed persisted component fails the whole generation load).
 fn load_component<T: serde::de::DeserializeOwned>(dir: &Path, name: &str) -> std::io::Result<T> {
     let file = dir.join(name);
     let text = std::fs::read_to_string(&file)?;
@@ -1075,6 +1146,48 @@ mod tests {
         let snap = svc.refresh(false).unwrap();
         assert!(!snap.files.files.contains_key("main.rs"));
         assert!(!snap.symbols.by_name.contains_key("main"));
+    }
+
+    #[test]
+    fn renamed_file_reresolves_dependant_edges() {
+        // Regression: renaming a module that others import must re-resolve
+        // the dependants' edges — no dangling edge to the old path may be
+        // published (strict load validation rejects dangling edges).
+        let repo = tempfile::tempdir().unwrap();
+        make_repo(repo.path());
+        // lib.ts is imported by lib.test.ts; rename lib.ts.
+        git(repo.path(), &["mv", "lib.ts", "renamed.ts"]);
+        let state = tempfile::tempdir().unwrap();
+        let svc = IndexService::open(repo.path(), &opts(state.path())).unwrap();
+        svc.refresh(false).unwrap();
+        let snap = svc.refresh(false).unwrap();
+        assert!(snap.files.files.contains_key("renamed.ts"));
+        assert!(!snap.files.files.contains_key("lib.ts"));
+        // No edge may reference the removed file.
+        for edges in snap.dependencies.forward.values() {
+            for e in edges {
+                assert_ne!(e.to_file, "lib.ts", "dangling edge to renamed file");
+            }
+        }
+    }
+
+    #[test]
+    fn deleted_file_reresolves_dependant_edges() {
+        let repo = tempfile::tempdir().unwrap();
+        make_repo(repo.path());
+        // lib.test.ts imports ./lib; delete lib.ts.
+        std::fs::remove_file(repo.path().join("lib.ts")).unwrap();
+        git(repo.path(), &["add", "-A"]);
+        git(repo.path(), &["commit", "-qm", "delete lib"]);
+        let state = tempfile::tempdir().unwrap();
+        let svc = IndexService::open(repo.path(), &opts(state.path())).unwrap();
+        svc.refresh(false).unwrap();
+        let snap = svc.refresh(false).unwrap();
+        for edges in snap.dependencies.forward.values() {
+            for e in edges {
+                assert_ne!(e.to_file, "lib.ts", "dangling edge to deleted file");
+            }
+        }
     }
 
     #[test]

@@ -5,6 +5,7 @@
 //! per-file update paths. All functions are deterministic: given the same
 //! input tree, they produce the same output ordering.
 
+use crate::index::boundary::{check_file_boundary, verify_post_read, BoundaryVerdict};
 use crate::index::components::{
     DependenciesComponent, FilesComponent, GitStateComponent, SymbolsComponent,
     TestMappingComponent,
@@ -115,6 +116,14 @@ pub fn build_files(
         if rel_str.is_empty() {
             continue;
         }
+        // Repository boundary enforcement: reject symlinks that escape
+        // the canonical repository root and broken/unresolvable entries.
+        match check_file_boundary(abs, root) {
+            BoundaryVerdict::Allow | BoundaryVerdict::AllowSymlink => {}
+            BoundaryVerdict::SymlinkEscape(_) | BoundaryVerdict::Unresolvable => {
+                continue;
+            }
+        }
         // Never index the git metadata directory or VCS internals.
         if rel_str.starts_with(".git/")
             || rel_str == ".git"
@@ -125,6 +134,7 @@ pub fn build_files(
         }
         let meta = file_meta_from_entry(
             abs,
+            root,
             &rel_str,
             is_test_path(&rel_str),
             is_generated_path(&rel_str),
@@ -138,8 +148,13 @@ pub fn build_files(
 }
 
 /// Compute a `FileMeta` for one file path.
+///
+/// `root` is required for the post-read TOCTOU check: after reading content,
+/// we verify the file still resolves within `root` so a race that swaps a
+/// regular file with an external symlink before read cannot leak content.
 fn file_meta_from_entry(
     abs: &Path,
+    root: &Path,
     rel: &str,
     is_test: bool,
     is_generated: bool,
@@ -185,9 +200,16 @@ fn file_meta_from_entry(
     let content_hash = if is_binary {
         String::new()
     } else {
-        std::fs::read(abs)
-            .map(|b| sha256_hex(&b).chars().take(16).collect())
-            .unwrap_or_default()
+        // TOCTOU guard: read content, then verify the path still resolves
+        // inside root. A symlink swap that occurred between the walk and
+        // the read cannot leak external content because we re-validate.
+        match std::fs::read(abs) {
+            Ok(bytes) if verify_post_read(abs, root) => {
+                sha256_hex(&bytes).chars().take(16).collect()
+            }
+            Ok(_) => String::new(),
+            Err(_) => String::new(),
+        }
     };
     FileMeta {
         path: rel.to_string(),
@@ -621,26 +643,31 @@ pub fn build_git_state(
         snap.untracked_files.sort_unstable();
         return GitStateComponent { snapshot: snap };
     }
-    // Tracked changes from git status --porcelain.
+    // Tracked changes from git status --porcelain=v1 -z (NUL-delimited).
+    // The NUL-delimited format safely handles special-character paths
+    // (spaces, quotes, tabs, newlines, Unicode). Never parse human-oriented
+    // quoted output.
     if let Ok(out) = std::process::Command::new("git")
-        .args(["status", "--porcelain=v1", "--no-renames"])
+        .args(["status", "--porcelain=v1", "-z", "--no-renames"])
         .current_dir(root)
         .output()
     {
-        let text = String::from_utf8_lossy(&out.stdout);
+        let stdout = &out.stdout;
         let mut changed = BTreeSet::new();
         let mut deleted = BTreeSet::new();
         let mut untracked = BTreeSet::new();
-        for line in text.lines() {
-            if line.len() < 4 {
+
+        // NUL-delimited: each record is "<XY> <path>\0"
+        for record in stdout.split(|b| *b == 0) {
+            if record.len() < 4 {
                 continue;
             }
-            let (status, path) = (&line[0..2], line[3..].trim());
-            let path = path.trim_matches('"');
+            let status_str = std::str::from_utf8(&record[0..2]).unwrap_or("");
+            let path = std::str::from_utf8(&record[3..]).unwrap_or("").trim();
             if path.is_empty() {
                 continue;
             }
-            match status {
+            match status_str {
                 "??" => {
                     untracked.insert(path.to_string());
                 }

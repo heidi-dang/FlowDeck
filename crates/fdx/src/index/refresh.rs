@@ -188,6 +188,16 @@ impl Refresher {
             return stats;
         }
 
+        // 0. Capture dependants of files that will be removed (deleted or
+        //    renamed) BEFORE their edges are dropped, so their imports can be
+        //    re-resolved afterwards (no dangling edges may survive).
+        let mut reindex_dependants: BTreeSet<String> = BTreeSet::new();
+        for f in cs.deleted.iter().chain(cs.renamed.iter().map(|(o, _)| o)) {
+            for d in deps.dependants_of(f) {
+                reindex_dependants.insert(d);
+            }
+        }
+
         // 1. Deletions: remove from every layer.
         for f in &cs.deleted {
             files.files.remove(f);
@@ -235,7 +245,7 @@ impl Refresher {
                 cache.invalidate_path(rel);
                 continue;
             }
-            let meta = file_meta(rel, &abs, self.generation);
+            let meta = file_meta(rel, &abs, self.generation, &self.root);
             let language = meta.language.clone();
             files.files.insert(rel.clone(), meta);
             stats.files_reindexed += 1;
@@ -288,6 +298,29 @@ impl Refresher {
         for rel in &cs.changed {
             cache.invalidate_path(rel);
             stats.cache_invalidated += 1;
+        }
+
+        // 5b. Re-resolve dependants of removed/renamed files: their imports
+        //     may now point at the deleted file (dangling) or the renamed
+        //     target. No stale edge may survive into the published
+        //     generation (strict load validation rejects dangling edges).
+        for rel in &reindex_dependants {
+            if files.files.contains_key(rel) {
+                if let Ok(content) = std::fs::read_to_string(self.root.join(rel)) {
+                    let language = files
+                        .files
+                        .get(rel)
+                        .map(|m| m.language.clone())
+                        .unwrap_or_default();
+                    let mut edges = build_dependencies_for_file(rel, &content, self.generation);
+                    resolve_edges(rel, &mut edges, files, &language);
+                    deps.replace_file(rel, edges);
+                    stats.deps_reindexed += 1;
+                }
+            } else {
+                // Dependant itself was removed in this pass; its edges are
+                // already gone via deps.remove_file.
+            }
         }
 
         // 6. Persist the fresh git snapshot.
@@ -361,7 +394,11 @@ impl Refresher {
 }
 
 /// Compute a `FileMeta` for a file during incremental refresh.
-fn file_meta(rel: &str, abs: &Path, generation: u64) -> FileMeta {
+///
+/// `root` is required for the TOCTOU re-validation after content read: a
+/// file could have been replaced with an external symlink between the
+/// change-set detection and the refresh read. We re-verify before hashing.
+fn file_meta(rel: &str, abs: &Path, generation: u64, root: &Path) -> FileMeta {
     let is_test = rel.to_lowercase().contains("_test")
         || rel.to_lowercase().contains(".test.")
         || rel.to_lowercase().contains(".spec.")
@@ -419,9 +456,14 @@ fn file_meta(rel: &str, abs: &Path, generation: u64) -> FileMeta {
     let content_hash = if is_binary {
         String::new()
     } else {
-        std::fs::read(abs)
-            .map(|b| sha256_hex(&b).chars().take(16).collect())
-            .unwrap_or_default()
+        // TOCTOU guard: re-validate post-read.
+        match std::fs::read(abs) {
+            Ok(bytes) if crate::index::boundary::verify_post_read(abs, root) => {
+                sha256_hex(&bytes).chars().take(16).collect()
+            }
+            Ok(_) => String::new(),
+            Err(_) => String::new(),
+        }
     };
     FileMeta {
         path: rel.to_string(),
