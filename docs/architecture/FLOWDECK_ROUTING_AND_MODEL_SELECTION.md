@@ -323,19 +323,22 @@ decision record's `inputEvidence` (section 13) and are distinct from score evide
 
 ### 5.5 High-risk minimum rules
 
-Any task satisfying **any** of the following gets a `risk >= 70` floor and triggers the high-risk capability
-floor (sections 10, 12) plus mandatory review:
+Any task carrying **any** of the following nine executable risk signals gets a `risk >= 70` floor
+(`HIGH_RISK_FLOOR = 70`) and triggers the high-risk capability floor (sections 10, 12) plus mandatory
+review:
 
-- touches production data or a live production system
-- touches authentication or authorization
-- performs destructive operations (delete, force-push, drop, purge)
-- is a database migration
-- publishes a package or mutates a registry
-- involves concurrent writers to the same ownership domain
-- is a security review or security fix
-- has uncertain external side effects with no rollback path
+- `productionImpact >= 70` — touches production data or a live production system
+- `releaseImpact === true` — release impact
+- `securitySensitive === true` — security sensitivity
+- `migrationInvolved === true` — database migration
+- `concurrencyInvolved === true` — concurrency involvement
+- `needsIndependentReview === true` — independent review required
+- destructive prompt pattern — performs destructive operations (delete, force-push, drop, purge)
+- auth prompt pattern — touches authentication or authorization
+- `expectedFileCount >= 3` — blast radius of three or more files
 
-For high-risk tasks: verification level is at least `full` (section 6), required reviewers are non-empty,
+These nine signals correspond exactly to the scorer's risk signal set (section 5.2). For high-risk tasks:
+verification level is at least `full` (section 6), required reviewers are non-empty,
 `approvalRequirements` apply, and the model tier may never be silently downgraded below the capability floor
 (section 12).
 
@@ -665,7 +668,7 @@ interface RoutingDecisionRecord {
   modelFallbackUsed: boolean;             // true if an LLM fallback was consulted
 
   classification: ClassificationResult;   // task class + evidence + fallback flag + policy version
-  scores: { complexity: number; ambiguity: number; risk: number; confidence: number };
+  scores: ScoredTask;                     // scores + per-dimension evidence + weightsVersion + policyVersion
 
   taskClass: TaskClass;
   selectedStrategy: ExecutionStrategy;

@@ -23,6 +23,9 @@ import {
   type ClassificationInput,
   type EvidenceReference,
   type TaskScores,
+  type ScoredTask,
+  ROUTING_WEIGHTS_VERSION,
+  ROUTING_POLICY_VERSION,
 } from "@/orchestration/routing/contracts"
 
 /** Relative weight of every deterministic scoring signal. */
@@ -141,17 +144,8 @@ export interface ScoredDimension {
   evidence: EvidenceReference[]
 }
 
-/** Minimum risk that forces the high-risk floor (productionImpact >= 70). */
-export const HIGH_RISK_MIN_RISK = 60
-
-/**
- * Complexity floor associated with high-risk tasks. Reserved for downstream
- * policy; the scorers themselves do not alter complexity.
- */
-export const MIN_HIGH_RISK_COMPLEXITY = 40
-
-/** Secondary floor applied when any high-risk signal is present. */
-const SECONDARY_HIGH_RISK_FLOOR = 50
+/** Universal floor for tasks carrying any high-risk signal. */
+export const HIGH_RISK_FLOOR = 70
 
 /** Fixed ambiguity contribution when the raw prompt is absent. */
 const WEAK_SIGNAL_NO_TARGET = 15
@@ -456,11 +450,13 @@ export function scoreRisk(input: ClassificationInput, weights: ScoreWeights = DE
 }
 
 /**
- * Applies the high-risk minimum rule, which is never bypassed. A production
- * impact of >= 70 floors risk to HIGH_RISK_MIN_RISK; security sensitivity,
- * migration involvement, or release impact floor risk to the secondary
- * floor. Each floor that actually raises the score adds a
- * "score.risk.high_risk_minimum" evidence entry.
+ * Applies the universal high-risk floor. Any task carrying at least one of
+ * the nine high-risk signals (productionImpact >= 70, releaseImpact,
+ * securitySensitive, migrationInvolved, concurrencyInvolved,
+ * needsIndependentReview, destructive prompt, auth prompt, blast radius >= 3)
+ * floors risk to HIGH_RISK_FLOOR (70). The floor only applies when it raises
+ * the risk score. A "score.risk.high_risk_minimum" evidence entry with
+ * reason code HIGH_RISK_FLOOR is added when the floor takes effect.
  */
 export function ensureHighRiskMinimum(
   input: ClassificationInput,
@@ -470,25 +466,34 @@ export function ensureHighRiskMinimum(
   let updatedRisk = risk
   const updatedEvidence = [...evidence]
 
-  if (input.productionImpact !== undefined && input.productionImpact >= 70) {
-    if (updatedRisk < HIGH_RISK_MIN_RISK) {
-      updatedRisk = HIGH_RISK_MIN_RISK
-      updatedEvidence.push({
-        id: "score.risk.high_risk_minimum",
-        source: "scoring.risk",
-        detail: `production impact ${input.productionImpact} >= 70 floors risk to ${HIGH_RISK_MIN_RISK}`,
-      })
-    }
-  }
+  const hasProductionImpact = input.productionImpact !== undefined && input.productionImpact >= 70
+  const hasReleaseImpact = input.releaseImpact === true
+  const hasSecuritySensitive = input.securitySensitive === true
+  const hasMigrationInvolved = input.migrationInvolved === true
+  const hasConcurrencyInvolved = input.concurrencyInvolved === true
+  const hasIndependentReview = input.needsIndependentReview === true
+  const hasDestructivePrompt = input.rawPrompt !== undefined && DESTRUCTIVE_PATTERN.test(input.rawPrompt)
+  const hasAuthPrompt = input.rawPrompt !== undefined && SENSITIVE_PATTERN.test(input.rawPrompt)
+  const hasBlastRadius = (input.expectedFileCount ?? 0) >= 3
 
-  const hasHighRiskSignal = input.securitySensitive === true || input.migrationInvolved === true || input.releaseImpact === true
+  const hasHighRiskSignal =
+    hasProductionImpact ||
+    hasReleaseImpact ||
+    hasSecuritySensitive ||
+    hasMigrationInvolved ||
+    hasConcurrencyInvolved ||
+    hasIndependentReview ||
+    hasDestructivePrompt ||
+    hasAuthPrompt ||
+    hasBlastRadius
+
   if (hasHighRiskSignal) {
-    if (updatedRisk < SECONDARY_HIGH_RISK_FLOOR) {
-      updatedRisk = SECONDARY_HIGH_RISK_FLOOR
+    if (updatedRisk < HIGH_RISK_FLOOR) {
+      updatedRisk = HIGH_RISK_FLOOR
       updatedEvidence.push({
         id: "score.risk.high_risk_minimum",
         source: "scoring.risk",
-        detail: `high-risk signal floors risk to ${SECONDARY_HIGH_RISK_FLOOR}`,
+        detail: `high-risk signal floors risk to ${HIGH_RISK_FLOOR}`,
       })
     }
   }
@@ -497,14 +502,11 @@ export function ensureHighRiskMinimum(
 }
 
 /**
- * Computes the full TaskScores for an input: complexity, ambiguity, risk
- * (after the high-risk minimum), and confidence. Confidence starts at 100,
- * subtracts the ambiguity, and further subtracts half of the uncovered
- * evidence mass (evidenceCoverage = min(100, totalEvidence * 25)). Every
- * score is clamped and asserted in range before returning, so the result
- * always satisfies zTaskScores.
+ * Computes the full ScoredTask for an input: complexity, ambiguity, risk
+ * (after the high-risk minimum), and confidence, plus per-dimension evidence
+ * and the policy/weights versions that produced them.
  */
-export function computeTaskScores(input: ClassificationInput, weights: ScoreWeights = DEFAULT_WEIGHTS): TaskScores {
+export function computeTaskScores(input: ClassificationInput, weights: ScoreWeights = DEFAULT_WEIGHTS): ScoredTask {
   const complexityDimension = scoreComplexity(input, weights)
   const ambiguityDimension = scoreAmbiguity(input, weights)
   const riskDimension = scoreRisk(input, weights)
@@ -520,6 +522,20 @@ export function computeTaskScores(input: ClassificationInput, weights: ScoreWeig
   const confidence = clampScore(100 - (ambiguityDimension.score + 0.5 * (100 - evidenceCoverage)))
   assertScoreRange(confidence)
 
+  // Build confidence evidence
+  const confidenceEvidence: EvidenceReference[] = [
+    {
+      id: "score.confidence.ambiguity",
+      source: "scoring.confidence",
+      detail: `ambiguity ${ambiguityDimension.score} reduces confidence`,
+    },
+    {
+      id: "score.confidence.evidence_coverage",
+      source: "scoring.confidence",
+      detail: `evidence coverage ${evidenceCoverage} (from ${totalEvidence} evidence items) adjusts confidence`,
+    },
+  ]
+
   const scores: TaskScores = {
     complexity: complexityDimension.score,
     ambiguity: ambiguityDimension.score,
@@ -530,5 +546,16 @@ export function computeTaskScores(input: ClassificationInput, weights: ScoreWeig
   if (!parsed.success) {
     throw new Error(`computed task scores out of range: ${parsed.error.message}`)
   }
-  return scores
+
+  return {
+    scores,
+    evidence: {
+      complexity: complexityDimension.evidence,
+      ambiguity: ambiguityDimension.evidence,
+      risk: flooredRisk.evidence,
+      confidence: confidenceEvidence,
+    },
+    weightsVersion: ROUTING_WEIGHTS_VERSION,
+    policyVersion: ROUTING_POLICY_VERSION,
+  }
 }

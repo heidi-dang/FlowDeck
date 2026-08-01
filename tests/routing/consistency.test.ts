@@ -25,7 +25,7 @@ import {
   canonicalJson,
   parseCanonicalJson,
   zClassificationResult,
-  zTaskScores,
+  zScoredTask,
   type ClassificationInput,
   type ClassificationResult,
 } from "@/orchestration/routing/contracts";
@@ -99,10 +99,10 @@ describe("routing consistency: classification across repeated runs", () => {
 });
 
 describe("routing consistency: scores across repeated runs", () => {
-  it("computes identical TaskScores across five runs for every fixture", () => {
+  it("computes identical ScoredTask across five runs for every fixture", () => {
     for (const fixture of FIXTURES) {
       const first = computeTaskScores(fixture.input, DEFAULT_WEIGHTS);
-      const parsed = zTaskScores.safeParse(first);
+      const parsed = zScoredTask.safeParse(first);
       expect(parsed.success).toBe(true);
       for (let i = 0; i < RUNS; i++) {
         expect(computeTaskScores(fixture.input, DEFAULT_WEIGHTS)).toEqual(first);
@@ -137,10 +137,10 @@ describe("routing consistency: serialization round-trip", () => {
     }
     const revived = parseCanonicalJson<{
       classification: ClassificationResult;
-      scores: { complexity: number; ambiguity: number; risk: number; confidence: number };
+      scores: { scores: { complexity: number; ambiguity: number; risk: number; confidence: number } };
     }>(json);
     expect(revived.classification.taskClass).toBe("concurrency_failure");
-    expect(revived.scores.risk).toBe(payload.scores.risk);
+    expect(revived.scores.scores.risk).toBe(payload.scores.scores.risk);
   });
 
   it("marks confident classifications as not needing a model fallback, consistently", () => {

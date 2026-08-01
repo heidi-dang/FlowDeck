@@ -19,6 +19,7 @@ import {
 } from "@/orchestration/routing/scoring/scorers"
 import {
   zTaskScores,
+  zScoredTask,
   isScoreInRange,
   SCORE_MIN,
   SCORE_MAX,
@@ -28,15 +29,16 @@ import {
 describe("deterministic routing scorers", () => {
   it("scores a minimal input as zero across every dimension", () => {
     const input: ClassificationInput = { ambiguityLevel: 0, expectedFileCount: 0 }
-    const scores = computeTaskScores(input)
+    const scored = computeTaskScores(input)
 
-    expect(scores.complexity).toBe(0)
-    expect(scores.ambiguity).toBe(0)
-    expect(scores.risk).toBe(0)
-    for (const score of [scores.complexity, scores.ambiguity, scores.risk, scores.confidence]) {
+    expect(scored.scores.complexity).toBe(0)
+    expect(scored.scores.ambiguity).toBe(0)
+    expect(scored.scores.risk).toBe(0)
+    for (const score of [scored.scores.complexity, scored.scores.ambiguity, scored.scores.risk, scored.scores.confidence]) {
       expect(isScoreInRange(score)).toBe(true)
     }
-    expect(zTaskScores.safeParse(scores).success).toBe(true)
+    expect(zTaskScores.safeParse(scored.scores).success).toBe(true)
+    expect(zScoredTask.safeParse(scored).success).toBe(true)
   })
 
   it("scores zero ambiguity when ambiguityLevel is explicitly zero with full signal coverage", () => {
@@ -65,15 +67,16 @@ describe("deterministic routing scorers", () => {
       releaseImpact: true,
       needsIndependentReview: true,
     }
-    const scores = computeTaskScores(input)
+    const scored = computeTaskScores(input)
 
-    expect(scores.complexity).toBe(100)
-    expect(scores.risk).toBe(100)
-    for (const score of [scores.complexity, scores.ambiguity, scores.risk, scores.confidence]) {
+    expect(scored.scores.complexity).toBe(100)
+    expect(scored.scores.risk).toBe(100)
+    for (const score of [scored.scores.complexity, scored.scores.ambiguity, scored.scores.risk, scored.scores.confidence]) {
       expect(score).toBeLessThanOrEqual(SCORE_MAX)
       expect(score).toBeGreaterThanOrEqual(SCORE_MIN)
     }
-    expect(zTaskScores.safeParse(scores).success).toBe(true)
+    expect(zTaskScores.safeParse(scored.scores).success).toBe(true)
+    expect(zScoredTask.safeParse(scored).success).toBe(true)
   })
 
   it("keeps every dimension within SCORE_MIN..SCORE_MAX for boundary inputs", () => {
@@ -103,17 +106,18 @@ describe("deterministic routing scorers", () => {
     ]
 
     for (const input of inputs) {
-      const scores = computeTaskScores(input)
-      for (const score of [scores.complexity, scores.ambiguity, scores.risk, scores.confidence]) {
+      const scored = computeTaskScores(input)
+      for (const score of [scored.scores.complexity, scored.scores.ambiguity, scored.scores.risk, scored.scores.confidence]) {
         expect(isScoreInRange(score)).toBe(true)
         expect(score).toBeGreaterThanOrEqual(SCORE_MIN)
         expect(score).toBeLessThanOrEqual(SCORE_MAX)
       }
-      expect(zTaskScores.safeParse(scores).success).toBe(true)
+      expect(zTaskScores.safeParse(scored.scores).success).toBe(true)
+      expect(zScoredTask.safeParse(scored).success).toBe(true)
     }
   })
 
-  it("produces identical TaskScores across ten repeated calls", () => {
+  it("produces identical ScoredTask across ten repeated calls", () => {
     const input: ClassificationInput = {
       productionImpact: 65,
       securitySensitive: true,
@@ -132,15 +136,20 @@ describe("deterministic routing scorers", () => {
   })
 
   it("enforces the high-risk minimum floor", () => {
-    expect(computeTaskScores({ productionImpact: 90 }).risk).toBeGreaterThanOrEqual(60)
-    expect(computeTaskScores({ securitySensitive: true }).risk).toBeGreaterThanOrEqual(50)
-    expect(computeTaskScores({ migrationInvolved: true }).risk).toBeGreaterThanOrEqual(50)
-    expect(computeTaskScores({ releaseImpact: true }).risk).toBeGreaterThanOrEqual(50)
+    expect(computeTaskScores({ productionImpact: 90 }).scores.risk).toBeGreaterThanOrEqual(70)
+    expect(computeTaskScores({ securitySensitive: true }).scores.risk).toBeGreaterThanOrEqual(70)
+    expect(computeTaskScores({ migrationInvolved: true }).scores.risk).toBeGreaterThanOrEqual(70)
+    expect(computeTaskScores({ releaseImpact: true }).scores.risk).toBeGreaterThanOrEqual(70)
+    expect(computeTaskScores({ concurrencyInvolved: true }).scores.risk).toBeGreaterThanOrEqual(70)
+    expect(computeTaskScores({ needsIndependentReview: true }).scores.risk).toBeGreaterThanOrEqual(70)
+    expect(computeTaskScores({ rawPrompt: "delete the database" }).scores.risk).toBeGreaterThanOrEqual(70)
+    expect(computeTaskScores({ rawPrompt: "auth token secret" }).scores.risk).toBeGreaterThanOrEqual(70)
+    expect(computeTaskScores({ expectedFileCount: 3 }).scores.risk).toBeGreaterThanOrEqual(70)
   })
 
   it("applies the high-risk floor only when it raises the risk", () => {
     const raised = ensureHighRiskMinimum({ productionImpact: 90 }, 30, [])
-    expect(raised.risk).toBe(60)
+    expect(raised.risk).toBe(70)
     expect(raised.evidence.some((e) => e.id === "score.risk.high_risk_minimum")).toBe(true)
 
     const untouched = ensureHighRiskMinimum({ productionImpact: 90 }, 90, [])
@@ -169,8 +178,8 @@ describe("deterministic routing scorers", () => {
     const input: ClassificationInput = { ambiguityLevel: 100 }
     expect(scoreAmbiguity(input).score).toBeGreaterThanOrEqual(80)
 
-    const scores = computeTaskScores(input)
-    expect(scores.confidence).toBeLessThan(50)
+    const scored = computeTaskScores(input)
+    expect(scored.scores.confidence).toBeLessThan(50)
   })
 
   it("attaches evidence to every non-zero score", () => {
@@ -196,6 +205,41 @@ describe("deterministic routing scorers", () => {
     expect(zTaskScores.safeParse({ complexity: -1, ambiguity: 0, risk: 0, confidence: 0 }).success).toBe(false)
     expect(zTaskScores.safeParse({ complexity: 1.5, ambiguity: 0, risk: 0, confidence: 0 }).success).toBe(false)
     expect(zTaskScores.safeParse({ complexity: 10, ambiguity: 10, risk: 10, confidence: 10 }).success).toBe(true)
+  })
+
+  it("validates ScoredTask shape via zScoredTask", () => {
+    const validScoredTask = {
+      scores: { complexity: 10, ambiguity: 10, risk: 10, confidence: 10 },
+      evidence: {
+        complexity: [{ id: "e1", source: "s", detail: "d" }],
+        ambiguity: [],
+        risk: [],
+        confidence: [],
+      },
+      weightsVersion: "1.0.0",
+      policyVersion: "1.0.0",
+    }
+    expect(zScoredTask.safeParse(validScoredTask).success).toBe(true)
+
+    // missing evidence.confidence
+    expect(
+      zScoredTask.safeParse({ ...validScoredTask, evidence: { ...validScoredTask.evidence, confidence: undefined } }).success,
+    ).toBe(false)
+
+    // missing weightsVersion
+    expect(
+      zScoredTask.safeParse({ ...validScoredTask, weightsVersion: undefined }).success,
+    ).toBe(false)
+
+    // missing policyVersion
+    expect(
+      zScoredTask.safeParse({ ...validScoredTask, policyVersion: undefined }).success,
+    ).toBe(false)
+
+    // invalid score in nested scores
+    expect(
+      zScoredTask.safeParse({ ...validScoredTask, scores: { ...validScoredTask.scores, risk: 150 } }).success,
+    ).toBe(false)
   })
 
   it("assertScoreRange throws for out-of-range scores", () => {

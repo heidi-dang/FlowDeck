@@ -186,11 +186,40 @@ export const zTaskScores = z.object({
   confidence: z.number().int().min(SCORE_MIN).max(SCORE_MAX),
 })
 
+/**
+ * Complete scoring-domain object carrying scores, per-dimension evidence,
+ * and the policy/weights versions that produced them.
+ */
+export interface ScoredTask {
+  scores: TaskScores
+  evidence: {
+    complexity: EvidenceReference[]
+    ambiguity: EvidenceReference[]
+    risk: EvidenceReference[]
+    confidence: EvidenceReference[]
+  }
+  weightsVersion: string
+  policyVersion: string
+}
+
 /** Zod schema for an EvidenceReference; ids must be non-empty identifiers. */
 export const zEvidenceReference = z.object({
   id: zNonEmptyId,
   source: z.string(),
   detail: z.string(),
+})
+
+/** Zod schema for ScoredTask. */
+export const zScoredTask = z.object({
+  scores: zTaskScores,
+  evidence: z.object({
+    complexity: z.array(zEvidenceReference),
+    ambiguity: z.array(zEvidenceReference),
+    risk: z.array(zEvidenceReference),
+    confidence: z.array(zEvidenceReference),
+  }),
+  weightsVersion: z.string(),
+  policyVersion: z.string(),
 })
 
 /** Zod schema for a RoutingInputEvidence entry. */
