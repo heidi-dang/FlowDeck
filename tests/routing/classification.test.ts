@@ -25,6 +25,14 @@ import {
   type ClassificationResult,
   type TaskClass,
 } from "@/orchestration/routing/contracts"
+import {
+  CANONICAL_SPECIALIST_IDS,
+  SPECIALIST_TASK_CLASS,
+  normalizeSpecialistId,
+  resolveSpecialistClass,
+  specialistMappingComplete,
+} from "@/orchestration/routing/classifier/specialist-registry"
+import { getSubagentIds, getPrimaryAgentIds } from "@/services/canonical-registry"
 
 /** One fixture per canonical class (except "unknown", covered separately). */
 const CLASS_FIXTURES: ReadonlyArray<{ input: ClassificationInput; expected: TaskClass }> = [
@@ -237,6 +245,37 @@ describe("deterministic rule-based task classifier", () => {
       expect(result.evidence.some((e) => e.id === "cls.unknown.1")).toBe(true)
       expect(zClassificationResult.safeParse(result).success).toBe(true)
     }
+  })
+
+  it("derives specialist identities from the canonical registry (no manual duplicate)", () => {
+    // The allow-list is the canonical registry's subagent set, not a copy.
+    expect(CANONICAL_SPECIALIST_IDS).toEqual(getSubagentIds())
+    expect([...CANONICAL_SPECIALIST_IDS].sort()).toEqual([...new Set(CANONICAL_SPECIALIST_IDS)].sort())
+  })
+
+  it("every canonical specialist maps to a deterministic task class (registry parity)", () => {
+    expect(specialistMappingComplete()).toBe(true)
+    for (const id of CANONICAL_SPECIALIST_IDS) {
+      expect(SPECIALIST_TASK_CLASS[id], `specialist "${id}" must have a task-class mapping`).toBeDefined()
+      const result = classifyTask({ userRequiredSpecialist: id })
+      expect(result.taskClass).toBe(SPECIALIST_TASK_CLASS[id])
+      expect(zClassificationResult.safeParse(result).success).toBe(true)
+    }
+  })
+
+  it("orchestrator aliases (heidi/orchestrator) are primaries, not specialists", () => {
+    // Neither primary id may be a specialist or map to a class.
+    for (const primary of getPrimaryAgentIds()) {
+      expect(CANONICAL_SPECIALIST_IDS).not.toContain(primary)
+      expect(resolveSpecialistClass(normalizeSpecialistId(primary))).toBeUndefined()
+    }
+  })
+
+  it("normalization is deterministic and idempotent", () => {
+    for (const raw of ["  Researcher ", "RESEARCHER", " researcher ", "ReSeArChEr"]) {
+      expect(normalizeSpecialistId(raw)).toBe("researcher")
+    }
+    expect(normalizeSpecialistId(normalizeSpecialistId("  SECURITY-AUDITOR  "))).toBe("security-auditor")
   })
 
   it("classifies a documentation prompt as documentation even when mutating (D11)", () => {

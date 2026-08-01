@@ -2,30 +2,28 @@
  * Routing-owned specialist allow-list projection.
  *
  * Rule 17 (classifier fallback) maps `userRequiredSpecialist` to a task
- * class ONLY when the id is a canonical specialist. This module is the
- * routing domain's own projection of the canonical agent registry (document
- * section 1.3); it is deliberately independent of src/services so the
- * routing layer never depends on the services layer. The allow-list
- * distinguishes a recognized specialist (deterministic class mapping) from
- * an unrecognized id (classified as "unknown" with low confidence).
+ * class ONLY when the id is a canonical specialist. The set of valid
+ * specialist identities is DERIVED from the canonical agent registry
+ * (`src/services/canonical-registry.ts` `getSubagentIds()`), which is the
+ * single authoritative agent list — this module never maintains a second
+ * manually synchronized specialist ID list. Registry additions/removals
+ * automatically change the derived allow-list, and the parity test fails
+ * until a task-class mapping is provided for every canonical specialist.
+ *
+ * The orchestrator aliases (heidi/orchestrator) are primary agents, not
+ * specialists, and are therefore excluded by construction. Task-class
+ * mapping stays routing-owned; only valid identities are derived.
  */
 
+import { getSubagentIds } from "@/services/canonical-registry"
 import type { TaskClass } from "@/orchestration/routing/contracts"
 
-/** Canonical specialist ids, projected from the canonical agent registry. */
-export const CANONICAL_SPECIALIST_IDS: readonly string[] = [
-  "planner",
-  "architect",
-  "researcher",
-  "mapper",
-  "backend-coder",
-  "frontend-coder",
-  "devops",
-  "tester",
-  "reviewer",
-  "security-auditor",
-  "debug-specialist",
-]
+/**
+ * Canonical specialist ids, projected from the canonical agent registry.
+ * Readonly snapshot at load; parity tests assert it stays in sync with the
+ * registry so additions/removals cannot silently go unmapped.
+ */
+export const CANONICAL_SPECIALIST_IDS: readonly string[] = Object.freeze(getSubagentIds())
 
 /**
  * Deterministic specialist -> TaskClass mapping used by fallback rule 17.
@@ -48,7 +46,8 @@ export const SPECIALIST_TASK_CLASS: Readonly<Record<string, TaskClass>> = {
 
 /**
  * Normalizes a raw specialist reference (trim, lowercase) before matching,
- * per document section 4.2 normalization rules.
+ * per document section 4.2 normalization rules. Deterministic and
+ * idempotent.
  */
 export function normalizeSpecialistId(raw: string): string {
   return raw.trim().toLowerCase()
@@ -60,4 +59,13 @@ export function normalizeSpecialistId(raw: string): string {
  */
 export function resolveSpecialistClass(normalizedId: string): TaskClass | undefined {
   return SPECIALIST_TASK_CLASS[normalizedId]
+}
+
+/**
+ * Returns true when every canonical specialist id has a task-class mapping.
+ * A registry addition without a mapping (or a mapping for a removed id)
+ * makes this false, failing the parity test until reconciled.
+ */
+export function specialistMappingComplete(): boolean {
+  return CANONICAL_SPECIALIST_IDS.every((id) => SPECIALIST_TASK_CLASS[id] !== undefined)
 }
