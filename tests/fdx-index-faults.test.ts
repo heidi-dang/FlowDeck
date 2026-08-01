@@ -28,9 +28,32 @@ import { execFileSync, execSync } from "node:child_process"
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { createHash } from "node:crypto"
 
 const ROOT = resolve(import.meta.dirname, "..")
 const BIN_NAME = process.platform === "win32" ? "fdx.exe" : "fdx"
+
+/**
+ * Normalize path for hashing (case-insensitive on Windows/macOS).
+ */
+function normalize(p: string): string {
+  if (process.platform === "win32" || process.platform === "darwin") return p.toLowerCase()
+  return p
+}
+
+/**
+ * Rust-compatible short_segment: hashes each part with null separator,
+ * returns first 8 bytes (16 hex chars).
+ */
+function shortSegment(parts: string[]): string {
+  const hasher = createHash("sha256")
+  for (const part of parts) {
+    hasher.update(part)
+    hasher.update("\0")
+  }
+  const digest = hasher.digest()
+  return digest.toString("hex").slice(0, 16)
+}
 
 function findBinary(name: string): string | null {
   for (const c of [join(ROOT, "target", "debug", name), join(ROOT, "crates", "fdx", "target", "debug", name)]) {
@@ -96,27 +119,41 @@ function parseJson(s: string): any {
   return JSON.parse(s)
 }
 
-/** Locate the worktree state dir for a repo (by listing fdx-index/<repo>/<wt>/). */
-function worktreeStateDir(): string {
-  const repoRoot = join(stateRoot, "fdx-index")
-  const repoEntries = readdirSync(repoRoot)
-  // Find the dir that contains a CURRENT file (there is only one worktree per
-  // fresh repo fixture).
-  for (const repoId of repoEntries) {
-    const repoDir = join(repoRoot, repoId)
-    for (const wtId of readdirSync(repoDir)) {
-      const wtDir = join(repoDir, wtId)
-      if (existsSync(join(wtDir, "CURRENT"))) return wtDir
-    }
-  }
-  throw new Error(`no worktree state dir found under ${repoRoot}`)
+/**
+ * Compute repository and worktree identity for a given directory.
+ * Mirrors the Rust `discover_identity` logic.
+ */
+function computeIdentity(dir: string): { repositoryId: string; worktreeId: string } {
+  // Find git repo root
+  try {
+    execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: dir, encoding: "utf-8" })
+  } catch {}
+  // Find git common dir (shared .git for linked worktrees)
+  let gitCommonDir: string | null = null
+  try {
+    gitCommonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf-8" }).trim()
+  } catch {}
+
+  // Canonical repo root: common dir if it exists (linked worktrees), else repo root
+  const canonicalRepoRoot = gitCommonDir || resolve(dir)
+
+  const repoRootHash = shortSegment(["repo", normalize(canonicalRepoRoot)])
+  const worktreeHash = shortSegment(["worktree", normalize(dir)])
+
+  return { repositoryId: repoRootHash, worktreeId: worktreeHash }
+}
+
+/** Get the worktree state directory for a specific repo directory. */
+function worktreeStateDir(dir: string): string {
+  const { repositoryId, worktreeId } = computeIdentity(dir)
+  return join(stateRoot, "fdx-index", repositoryId, worktreeId)
 }
 
 describe("FDX index fault and corruption recovery", () => {
   it("interrupted generation write is cleaned on next refresh", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir()
+    const wt = worktreeStateDir(dir)
     // Simulate an interrupted write: a partial tmp dir with a manifest.
     const partial = join(wt, "gen-99.tmp")
     mkdirSync(partial, { recursive: true })
@@ -133,7 +170,7 @@ describe("FDX index fault and corruption recovery", () => {
     const dir = makeRepo()
     refreshOnce(dir)
     const g1 = status(dir).generation
-    const wt = worktreeStateDir()
+    const wt = worktreeStateDir(dir)
     // A tmp dir that looks like it could publish but has no manifest.
     const partial = join(wt, "gen-5.tmp")
     mkdirSync(partial, { recursive: true })
@@ -146,7 +183,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("corrupt manifest quarantines the generation and retains the prior valid one", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir()
+    const wt = worktreeStateDir(dir)
     // Corrupt the current generation's manifest.
     const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
     expect(gens.length).toBeGreaterThan(0)
@@ -167,7 +204,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("corrupt component is detected by checksum and quarantined", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir()
+    const wt = worktreeStateDir(dir)
     const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
     const genDir = join(wt, gens[gens.length - 1])
     // Tamper with a component file (files.json) so the checksum no longer
@@ -183,7 +220,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("invalid CURRENT pointer falls back to scanning generations", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir()
+    const wt = worktreeStateDir(dir)
     // Write a garbage CURRENT pointer.
     writeFileSync(join(wt, "CURRENT"), "not-a-number")
     // Refresh must still work (it detects no valid current and rebuilds).
@@ -195,7 +232,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("unsupported future schema is rejected, not read as valid", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir()
+    const wt = worktreeStateDir(dir)
     const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
     const genDir = join(wt, gens[gens.length - 1])
     // Bump the manifest's schema_version to a future value.
@@ -212,7 +249,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("stale temporary generations are cleaned after a successful refresh", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir()
+    const wt = worktreeStateDir(dir)
     mkdirSync(join(wt, "gen-77.tmp"), { recursive: true })
     writeFileSync(join(wt, "gen-77.tmp/x"), "y")
     refreshOnce(dir)
@@ -223,7 +260,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("quarantine evidence is retained on disk", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir()
+    const wt = worktreeStateDir(dir)
     const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
     const genDir = join(wt, gens[gens.length - 1])
     writeFileSync(join(genDir, "manifest.json"), "{broken")
@@ -237,7 +274,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("previous valid generation is retained across a corrupt publish", () => {
     const dir = makeRepo()
     refreshOnce(dir) // gen 1
-    const wt = worktreeStateDir()
+    const wt = worktreeStateDir(dir)
     // Create a corrupt gen 2 by hand (manifest with bad checksum).
     const gen2 = join(wt, "gen-2")
     mkdirSync(gen2, { recursive: true })
@@ -290,7 +327,7 @@ describe("FDX index fault and corruption recovery", () => {
     refreshOnce(dir)
     // The CLI exits after each command — a "shutdown" after a refresh. Check
     // no .tmp dirs remain in the state dir.
-    const wt = worktreeStateDir()
+    const wt = worktreeStateDir(dir)
     const entries = readdirSync(wt)
     expect(entries.some((e) => e.endsWith(".tmp"))).toBe(false)
     rmSync(dir, { recursive: true, force: true })
