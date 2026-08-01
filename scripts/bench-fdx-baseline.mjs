@@ -13,7 +13,7 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync, statSync } from "node:fs"
+import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 
 const ROOT = resolve(import.meta.dirname, "..")
@@ -63,7 +63,7 @@ const report = {
 {
   const samples = []
   for (let i = 0; i < ITER; i++) {
-    try { samples.push(run(BINARY, ["--version"]).ms) } catch (e) { samples.push(-1) }
+    try { samples.push(run(BINARY, ["--version"]).ms) } catch { samples.push(-1) }
   }
   report.commands["version-startup"] = summary(samples.filter(s => s >= 0))
 }
@@ -90,7 +90,7 @@ for (const [name, args] of Object.entries(fixtures)) {
       const r = run(BINARY, args)
       lat.push(r.ms)
       sizes.push(r.bytes)
-    } catch (e) {
+    } catch {
       lat.push(-1)
     }
   }
@@ -101,21 +101,24 @@ for (const [name, args] of Object.entries(fixtures)) {
   }
 }
 
-// TypeScript fallback representative path: nativeReadFallback via a small
-// inline script that imports fdx-shared and invokes the fallback directly.
+// TypeScript fallback representative path: nativeReadFallback measured
+// IN-PROCESS via bun (the dist bundle exports fdx-shared through index.js,
+// so a direct dist/tools import is unavailable). This matches how the TS
+// fallbacks actually run: in the opencode runtime, no process spawn.
 try {
   const fallbackScript = `
-    const { nativeReadFallback } = await import(${JSON.stringify(join(ROOT, "dist", "tools", "fdx-shared.js"))})
-    const r = nativeReadFallback(${JSON.stringify(join(ROOT, "src/tools/fdx-shared.ts"))}, 30, 1)
-    process.stdout.write(r)
+    const { nativeReadFallback } = await import(${JSON.stringify(join(ROOT, "src/tools/fdx-shared.ts"))})
+    const samples = []
+    for (let i = 0; i < ${ITER}; i++) {
+      const t0 = performance.now()
+      nativeReadFallback(${JSON.stringify(join(ROOT, "src/tools/fdx-shared.ts"))}, 30, 1)
+      samples.push(performance.now() - t0)
+    }
+    console.log(JSON.stringify(samples))
   `
-  const lat = []
-  for (let i = 0; i < ITER; i++) {
-    const start = process.hrtime.bigint()
-    execFileSync(process.execPath, ["--input-type=module", "-e", fallbackScript], { encoding: "utf-8", shell: false, stdio: ["pipe", "pipe", "pipe"] })
-    lat.push(Number(process.hrtime.bigint() - start) / 1e6)
-  }
-  report.commands["ts-fallback-read"] = summary(lat)
+  const out = execFileSync(process.env.BUN_BIN || "bun", ["-e", fallbackScript], { encoding: "utf-8", shell: false, stdio: ["pipe", "pipe", "pipe"] }).trim()
+  const samples = JSON.parse(out)
+  report.commands["ts-fallback-read"] = summary(samples)
 } catch (e) {
   report.commands["ts-fallback-read"] = { error: String(e).slice(0, 200) }
 }
