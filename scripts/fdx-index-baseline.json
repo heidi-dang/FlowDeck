@@ -1,0 +1,358 @@
+{
+  "benchmarkSuite": "fdx-index",
+  "benchmarkVersion": "2.0.0",
+  "gitSha": "63ca8bb57c1f202159bda4b49ad3bc67d3d6e756",
+  "branch": "feat/fdx-performance-indexing",
+  "dirty": false,
+  "timestamp": "2026-08-01T14:10:40.791Z",
+  "platform": "linux",
+  "architecture": "x64",
+  "cpu": "Intel(R) Core(TM) i9-9900K CPU @ 3.60GHz",
+  "memoryBytes": "8340983808",
+  "nodeVersion": "v24.18.1",
+  "bunVersion": "1.3.14",
+  "rustVersion": "unknown",
+  "fdxVersion": "fdx 0.1.0",
+  "indexSchemaVersion": 2,
+  "binaryPath": "/home/heidi/flowdeck/target/release/fdx",
+  "fixtures": {
+    "small": {
+      "profile": "small",
+      "spec": {
+        "modules": 30,
+        "testEvery": 2,
+        "lines": 6
+      },
+      "fileCount": 46,
+      "fixtureSha": "e7cac8a2901ab102d1ad04e632d8e1099e258e7c47d663161fd9105c60b8c493"
+    },
+    "medium": {
+      "profile": "medium",
+      "spec": {
+        "modules": 300,
+        "testEvery": 3,
+        "lines": 10
+      },
+      "fileCount": 401,
+      "fixtureSha": "5e6fc4b614fa91aedd476532f649030c7fe7cbdb88f65f34e9fcb1e60d1ab2ae"
+    },
+    "large": {
+      "profile": "large",
+      "spec": {
+        "modules": 1500,
+        "testEvery": 4,
+        "lines": 16
+      },
+      "fileCount": 1876,
+      "fixtureSha": "0ea6839cf1e2e0af969b5627f39941eb4019229f1d21bee6fe251179068b498d"
+    }
+  },
+  "profiles": {
+    "small": {
+      "coldFullBuild": {
+        "n": 3,
+        "median": 24.63,
+        "p95": 26.2,
+        "p99": 26.2,
+        "minimum": 23.36,
+        "maximum": 26.2,
+        "mean": 24.73
+      },
+      "warmPersistedLoad": {
+        "n": 5,
+        "median": 5.66,
+        "p95": 6.45,
+        "p99": 6.45,
+        "minimum": 5.57,
+        "maximum": 6.45,
+        "mean": 5.88
+      },
+      "noChangeRefresh": {
+        "n": 5,
+        "median": 10.3,
+        "p95": 10.49,
+        "p99": 10.49,
+        "minimum": 10.07,
+        "maximum": 10.49,
+        "mean": 10.3
+      },
+      "oneFileEditRefresh": {
+        "n": 3,
+        "median": 17.12,
+        "p95": 17.13,
+        "p99": 17.13,
+        "minimum": 16.51,
+        "maximum": 17.13,
+        "mean": 16.92
+      },
+      "multiFileEditRefresh": {
+        "n": 3,
+        "median": 42.01,
+        "p95": 42.5,
+        "p99": 42.5,
+        "minimum": 39.87,
+        "maximum": 42.5,
+        "mean": 41.46
+      },
+      "fileCreationRefresh": {
+        "n": 3,
+        "median": 32,
+        "p95": 32.12,
+        "p99": 32.12,
+        "minimum": 31.77,
+        "maximum": 32.12,
+        "mean": 31.96
+      },
+      "renameRefresh": {
+        "n": 3,
+        "median": 15.48,
+        "p95": 15.75,
+        "p99": 15.75,
+        "minimum": 14.62,
+        "maximum": 15.75,
+        "mean": 15.28
+      },
+      "deletionRefresh": {
+        "n": 3,
+        "median": 64.19,
+        "p95": 67.93,
+        "p99": 67.93,
+        "minimum": 63.12,
+        "maximum": 67.93,
+        "mean": 65.08
+      },
+      "symbolLookup": {
+        "n": 5,
+        "median": 6.33,
+        "p95": 7.13,
+        "p99": 7.13,
+        "minimum": 5.47,
+        "maximum": 7.13,
+        "mean": 6.32
+      },
+      "reverseDependencyLookup": {
+        "n": 5,
+        "median": 5.59,
+        "p95": 5.69,
+        "p99": 5.69,
+        "minimum": 5.4,
+        "maximum": 5.69,
+        "mean": 5.57
+      },
+      "testsForLookup": {
+        "n": 5,
+        "median": 5.42,
+        "p95": 6.12,
+        "p99": 6.12,
+        "minimum": 5.24,
+        "maximum": 6.12,
+        "mean": 5.63
+      }
+    },
+    "medium": {
+      "coldFullBuild": {
+        "n": 3,
+        "median": 123.95,
+        "p95": 127.87,
+        "p99": 127.87,
+        "minimum": 123.85,
+        "maximum": 127.87,
+        "mean": 125.22
+      },
+      "warmPersistedLoad": {
+        "n": 5,
+        "median": 19.35,
+        "p95": 19.9,
+        "p99": 19.9,
+        "minimum": 18.3,
+        "maximum": 19.9,
+        "mean": 19.12
+      },
+      "noChangeRefresh": {
+        "n": 5,
+        "median": 37.05,
+        "p95": 38.39,
+        "p99": 38.39,
+        "minimum": 36.33,
+        "maximum": 38.39,
+        "mean": 37.16
+      },
+      "oneFileEditRefresh": {
+        "n": 3,
+        "median": 43.92,
+        "p95": 47.31,
+        "p99": 47.31,
+        "minimum": 42.47,
+        "maximum": 47.31,
+        "mean": 44.57
+      },
+      "multiFileEditRefresh": {
+        "n": 3,
+        "median": 63.63,
+        "p95": 64.01,
+        "p99": 64.01,
+        "minimum": 63.08,
+        "maximum": 64.01,
+        "mean": 63.57
+      },
+      "fileCreationRefresh": {
+        "n": 3,
+        "median": 87.09,
+        "p95": 87.65,
+        "p99": 87.65,
+        "minimum": 86.99,
+        "maximum": 87.65,
+        "mean": 87.25
+      },
+      "renameRefresh": {
+        "n": 3,
+        "median": 43.18,
+        "p95": 43.49,
+        "p99": 43.49,
+        "minimum": 43.05,
+        "maximum": 43.49,
+        "mean": 43.24
+      },
+      "deletionRefresh": {
+        "n": 3,
+        "median": 183.77,
+        "p95": 185.37,
+        "p99": 185.37,
+        "minimum": 181.72,
+        "maximum": 185.37,
+        "mean": 183.62
+      },
+      "symbolLookup": {
+        "n": 5,
+        "median": 20.18,
+        "p95": 20.47,
+        "p99": 20.47,
+        "minimum": 19.44,
+        "maximum": 20.47,
+        "mean": 19.96
+      },
+      "reverseDependencyLookup": {
+        "n": 5,
+        "median": 19.74,
+        "p95": 20.09,
+        "p99": 20.09,
+        "minimum": 19.04,
+        "maximum": 20.09,
+        "mean": 19.66
+      },
+      "testsForLookup": {
+        "n": 5,
+        "median": 19.38,
+        "p95": 20,
+        "p99": 20,
+        "minimum": 19.21,
+        "maximum": 20,
+        "mean": 19.5
+      }
+    },
+    "large": {
+      "coldFullBuild": {
+        "n": 3,
+        "median": 835.81,
+        "p95": 838.92,
+        "p99": 838.92,
+        "minimum": 814.97,
+        "maximum": 838.92,
+        "mean": 829.9
+      },
+      "warmPersistedLoad": {
+        "n": 5,
+        "median": 105.52,
+        "p95": 106.66,
+        "p99": 106.66,
+        "minimum": 104.49,
+        "maximum": 106.66,
+        "mean": 105.59
+      },
+      "noChangeRefresh": {
+        "n": 5,
+        "median": 220.33,
+        "p95": 222.12,
+        "p99": 222.12,
+        "minimum": 217.9,
+        "maximum": 222.12,
+        "mean": 219.86
+      },
+      "oneFileEditRefresh": {
+        "n": 3,
+        "median": 228.43,
+        "p95": 228.92,
+        "p99": 228.92,
+        "minimum": 227.08,
+        "maximum": 228.92,
+        "mean": 228.14
+      },
+      "multiFileEditRefresh": {
+        "n": 3,
+        "median": 249.57,
+        "p95": 258.48,
+        "p99": 258.48,
+        "minimum": 248.01,
+        "maximum": 258.48,
+        "mean": 252.02
+      },
+      "fileCreationRefresh": {
+        "n": 3,
+        "median": 462.68,
+        "p95": 465.28,
+        "p99": 465.28,
+        "minimum": 459.15,
+        "maximum": 465.28,
+        "mean": 462.37
+      },
+      "renameRefresh": {
+        "n": 3,
+        "median": 227.35,
+        "p95": 228.96,
+        "p99": 228.96,
+        "minimum": 223.25,
+        "maximum": 228.96,
+        "mean": 226.52
+      },
+      "deletionRefresh": {
+        "n": 3,
+        "median": 988.01,
+        "p95": 1012.46,
+        "p99": 1012.46,
+        "minimum": 984.72,
+        "maximum": 1012.46,
+        "mean": 995.06
+      },
+      "symbolLookup": {
+        "n": 5,
+        "median": 108.52,
+        "p95": 109.52,
+        "p99": 109.52,
+        "minimum": 107.61,
+        "maximum": 109.52,
+        "mean": 108.64
+      },
+      "reverseDependencyLookup": {
+        "n": 5,
+        "median": 104.29,
+        "p95": 110.85,
+        "p99": 110.85,
+        "minimum": 103.29,
+        "maximum": 110.85,
+        "mean": 105.51
+      },
+      "testsForLookup": {
+        "n": 5,
+        "median": 105.3,
+        "p95": 106.81,
+        "p99": 106.81,
+        "minimum": 103.36,
+        "maximum": 106.81,
+        "mean": 104.9
+      }
+    }
+  },
+  "fdxProcessRssKB": 10556,
+  "fdxProcessRssUnit": "kB (sampled /proc/<pid>/statm or ps -o rss= on the fdx process)",
+  "persistedIndexSizeBytes": 18860042
+}
