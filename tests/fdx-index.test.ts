@@ -333,7 +333,7 @@ describe("FDX index incremental refresh (real binary)", () => {
     // Simulate an event that a watcher would have missed: a file created
     // while the index was idle, then a fresh refresh reconciles it.
     writeFileSync(join(dir, "late.ts"), "export class Late {}\n")
-    const r = refresh(dir)
+    refresh(dir)
     const syms = parseJson(fdxIndex(dir, ["symbols.query", "--query", "Late"]))
     expect(syms.some((s: any) => s.name === "Late")).toBe(true)
     rmSync(dir, { recursive: true, force: true })

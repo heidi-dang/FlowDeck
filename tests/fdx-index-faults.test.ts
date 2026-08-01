@@ -97,7 +97,7 @@ function parseJson(s: string): any {
 }
 
 /** Locate the worktree state dir for a repo (by listing fdx-index/<repo>/<wt>/). */
-function worktreeStateDir(dir: string): string {
+function worktreeStateDir(): string {
   const repoRoot = join(stateRoot, "fdx-index")
   const repoEntries = readdirSync(repoRoot)
   // Find the dir that contains a CURRENT file (there is only one worktree per
@@ -116,7 +116,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("interrupted generation write is cleaned on next refresh", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir(dir)
+    const wt = worktreeStateDir()
     // Simulate an interrupted write: a partial tmp dir with a manifest.
     const partial = join(wt, "gen-99.tmp")
     mkdirSync(partial, { recursive: true })
@@ -133,7 +133,7 @@ describe("FDX index fault and corruption recovery", () => {
     const dir = makeRepo()
     refreshOnce(dir)
     const g1 = status(dir).generation
-    const wt = worktreeStateDir(dir)
+    const wt = worktreeStateDir()
     // A tmp dir that looks like it could publish but has no manifest.
     const partial = join(wt, "gen-5.tmp")
     mkdirSync(partial, { recursive: true })
@@ -146,7 +146,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("corrupt manifest quarantines the generation and retains the prior valid one", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir(dir)
+    const wt = worktreeStateDir()
     // Corrupt the current generation's manifest.
     const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
     expect(gens.length).toBeGreaterThan(0)
@@ -167,7 +167,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("corrupt component is detected by checksum and quarantined", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir(dir)
+    const wt = worktreeStateDir()
     const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
     const genDir = join(wt, gens[gens.length - 1])
     // Tamper with a component file (files.json) so the checksum no longer
@@ -183,7 +183,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("invalid CURRENT pointer falls back to scanning generations", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir(dir)
+    const wt = worktreeStateDir()
     // Write a garbage CURRENT pointer.
     writeFileSync(join(wt, "CURRENT"), "not-a-number")
     // Refresh must still work (it detects no valid current and rebuilds).
@@ -195,7 +195,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("unsupported future schema is rejected, not read as valid", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir(dir)
+    const wt = worktreeStateDir()
     const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
     const genDir = join(wt, gens[gens.length - 1])
     // Bump the manifest's schema_version to a future value.
@@ -212,7 +212,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("stale temporary generations are cleaned after a successful refresh", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir(dir)
+    const wt = worktreeStateDir()
     mkdirSync(join(wt, "gen-77.tmp"), { recursive: true })
     writeFileSync(join(wt, "gen-77.tmp/x"), "y")
     refreshOnce(dir)
@@ -223,7 +223,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("quarantine evidence is retained on disk", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir(dir)
+    const wt = worktreeStateDir()
     const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
     const genDir = join(wt, gens[gens.length - 1])
     writeFileSync(join(genDir, "manifest.json"), "{broken")
@@ -237,7 +237,7 @@ describe("FDX index fault and corruption recovery", () => {
   it("previous valid generation is retained across a corrupt publish", () => {
     const dir = makeRepo()
     refreshOnce(dir) // gen 1
-    const wt = worktreeStateDir(dir)
+    const wt = worktreeStateDir()
     // Create a corrupt gen 2 by hand (manifest with bad checksum).
     const gen2 = join(wt, "gen-2")
     mkdirSync(gen2, { recursive: true })
@@ -290,7 +290,7 @@ describe("FDX index fault and corruption recovery", () => {
     refreshOnce(dir)
     // The CLI exits after each command — a "shutdown" after a refresh. Check
     // no .tmp dirs remain in the state dir.
-    const wt = worktreeStateDir(dir)
+    const wt = worktreeStateDir()
     const entries = readdirSync(wt)
     expect(entries.some((e) => e.endsWith(".tmp"))).toBe(false)
     rmSync(dir, { recursive: true, force: true })
