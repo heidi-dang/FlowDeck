@@ -50,7 +50,7 @@
     "check:fdx": "fdx --version",
     "postinstall": "node postinstall.mjs",
     "prepublishOnly": "bun run clean && bun run build",
-    "test": "bun test --path-ignore-patterns=\"**/orchestration/persistence/**\"",
+    "test": "bun test --timeout 60000 --path-ignore-patterns=\"**/orchestration/persistence/**\"",
     "test:fdx-parity": "node scripts/verify-fdx-parity.mjs",
     "test:fdx-protocol": "bun test tests/fdx-protocol.test.ts",
     "test:fdx-daemon": "bun test tests/fdx-daemon.test.ts",

@@ -25,7 +25,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { execFileSync, execSync, spawn } from "node:child_process"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { createHash } from "node:crypto"
@@ -33,19 +33,6 @@ import { createHash } from "node:crypto"
 const ROOT = resolve(import.meta.dirname, "..")
 const BIN_NAME = process.platform === "win32" ? "fdx.exe" : "fdx"
 const FDXD_NAME = process.platform === "win32" ? "fdxd.exe" : "fdxd"
-
-/**
- * Rust-compatible identity segment: full SHA-256 digest over the parts with
- * null separators (mirrors `identity_hash`).
- */
-function shortSegment(parts: string[]): string {
-  const hasher = createHash("sha256")
-  for (const part of parts) {
-    hasher.update(part)
-    hasher.update("\0")
-  }
-  return hasher.digest().toString("hex")
-}
 
 function findBinary(name: string): string | null {
   for (const c of [join(ROOT, "target", "debug", name), join(ROOT, "crates", "fdx", "target", "debug", name)]) {
@@ -150,32 +137,17 @@ function runFdxTimeout(dir: string, args: string[], timeoutMs: number, env: Reco
   })
 }
 
-/** Compute the worktree state dir for a repo (mirrors Rust identity). */
+/**
+ * Compute the worktree state dir for a repo.
+ *
+ * Reads repository_id/worktree_id from the binary's own `index status`
+ * output instead of re-implementing Rust's path hashing — exact by
+ * construction across platforms (Rust canonicalize emits `\\?\C:\...`
+ * prefixed paths on Windows and resolves symlinks on macOS).
+ */
 function worktreeStateDir(dir: string): string {
-  let gitCommonDir: string | null = null
-  try {
-    gitCommonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf-8" }).trim()
-  } catch {}
-  // The Rust identity hashes CANONICAL (symlink-resolved) paths; realpathSync
-  // is required on macOS where /var -> /private/var.
-  const canonicalRepoRoot = canonicalize(gitCommonDir || resolve(dir))
-  const repoRootHash = shortSegment(["repo", normalize(canonicalRepoRoot)])
-  const worktreeHash = shortSegment(["worktree", normalize(canonicalize(dir))])
-  return join(stateRoot, "fdx-index", repoRootHash, worktreeHash)
-}
-
-/** Resolve symlinks (mirrors Rust `Path::canonicalize` with abs fallback). */
-function canonicalize(p: string): string {
-  try {
-    return realpathSync(p)
-  } catch {
-    return resolve(p)
-  }
-}
-
-function normalize(p: string): string {
-  if (process.platform === "win32" || process.platform === "darwin") return p.toLowerCase()
-  return p
+  const s = parseJson(fdxIndex(dir, ["status"]))
+  return join(stateRoot, "fdx-index", s.repository_id, s.worktree_id)
 }
 
 /** List state-dir entries under the worktree dir, tolerating missing dir. */

@@ -26,7 +26,6 @@ import * as fs from "node:fs"
 import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { createHash } from "node:crypto"
 
 const ROOT = resolve(import.meta.dirname, "..")
 const BIN_NAME = process.platform === "win32" ? "fdx.exe" : "fdx"
@@ -100,12 +99,7 @@ function canSymlink(): boolean {
   try {
     const probe = mkdtempSync(join(tmpdir(), "fdx-symlink-probe-"))
     try {
-      if (process.platform === "win32") {
-        // Windows requires either admin or developer mode for symlinks.
-        fs.symlinkSync(join(probe, "target.txt"), join(probe, "link.txt"))
-      } else {
-        execSync(`ln -s target.txt "${join(probe, "link.txt")}"`)
-      }
+      makeSymlink(join(probe, "target.txt"), join(probe, "link.txt"))
       rmSync(probe, { recursive: true, force: true })
       return true
     } catch {
@@ -117,6 +111,19 @@ function canSymlink(): boolean {
   }
 }
 
+/** Create a symlink (file or directory/junction) cross-platform. */
+function makeSymlink(target: string, link: string): void {
+  if (process.platform === "win32") {
+    try {
+      fs.symlinkSync(target, link, "junction")
+    } catch {
+      fs.symlinkSync(target, link)
+    }
+  } else {
+    fs.symlinkSync(target, link)
+  }
+}
+
 const SYMLINKS = canSymlink()
 
 describe("FDX index repository-boundary security (real binary)", () => {
@@ -124,16 +131,12 @@ describe("FDX index repository-boundary security (real binary)", () => {
     const dir = makeRepo()
     const outside = mkdtempSync(join(tmpdir(), "fdx-outside-"))
     writeFileSync(join(outside, "secret.txt"), "TOPSECRET-EXTERNAL-CONTENT\n")
-    if (process.platform === "win32") {
-      try {
-        fs.symlinkSync(join(outside, "secret.txt"), join(dir, "leak.ts"))
-      } catch {
-        rmSync(outside, { recursive: true, force: true })
-        rmSync(dir, { recursive: true, force: true })
-        return // no symlink support: skip, justified platform limitation
-      }
-    } else {
-      execSync(`ln -s "${join(outside, "secret.txt")}" "${join(dir, "leak.ts")}"`)
+    try {
+      makeSymlink(join(outside, "secret.txt"), join(dir, "leak.ts"))
+    } catch {
+      rmSync(outside, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+      return // no symlink support: skip, justified platform limitation
     }
     const r = refresh(dir)
     expect(r.files).toBeGreaterThanOrEqual(1)
@@ -159,16 +162,12 @@ describe("FDX index repository-boundary security (real binary)", () => {
     const dir = makeRepo()
     const outside = mkdtempSync(join(tmpdir(), "fdx-outside-dir-"))
     writeFileSync(join(outside, "leak-module.ts"), "export const leaked = 'EXTERNAL-DIR-SECRET'\n")
-    if (process.platform === "win32") {
-      try {
-        fs.symlinkSync(outside, join(dir, "extdir"), "junction")
-      } catch {
-        rmSync(outside, { recursive: true, force: true })
-        rmSync(dir, { recursive: true, force: true })
-        return
-      }
-    } else {
-      execSync(`ln -s "${outside}" "${join(dir, "extdir")}"`)
+    try {
+      makeSymlink(outside, join(dir, "extdir"))
+    } catch {
+      rmSync(outside, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+      return
     }
     const r = refresh(dir)
     expect(r.files).toBeGreaterThanOrEqual(1)
@@ -189,8 +188,8 @@ describe("FDX index repository-boundary security (real binary)", () => {
     const dir = makeRepo()
     const outside = mkdtempSync(join(tmpdir(), "fdx-outside-chain-"))
     writeFileSync(join(outside, "target.ts"), "export const chained = 'CHAIN-EXTERNAL'\n")
-    execSync(`ln -s "${join(outside, "target.ts")}" "${join(dir, "hop1.ts")}"`)
-    execSync(`ln -s "hop1.ts" "${join(dir, "hop2.ts")}"`)
+    makeSymlink(join(outside, "target.ts"), join(dir, "hop1.ts"))
+    makeSymlink(join(dir, "hop1.ts"), join(dir, "hop2.ts"))
     const r = refresh(dir)
     expect(r.files).toBeGreaterThanOrEqual(1)
     const wt = worktreeStateDir(dir)
@@ -205,7 +204,7 @@ describe("FDX index repository-boundary security (real binary)", () => {
   it("broken symlinks are skipped safely", () => {
     if (!SYMLINKS) return
     const dir = makeRepo()
-    execSync(`ln -s "missing-target-${Date.now()}" "${join(dir, "broken.ts")}"`)
+    makeSymlink(join(dir, "missing-target-" + Date.now()), join(dir, "broken.ts"))
     const r = refresh(dir)
     expect(r.files).toBeGreaterThanOrEqual(1)
     expect(status(dir).available).toBe(true)
@@ -215,8 +214,8 @@ describe("FDX index repository-boundary security (real binary)", () => {
   it("symlink loops are handled without hanging or indexing external data", () => {
     if (!SYMLINKS) return
     const dir = makeRepo()
-    execSync(`ln -s "loop-b.ts" "${join(dir, "loop-a.ts")}"`)
-    execSync(`ln -s "loop-a.ts" "${join(dir, "loop-b.ts")}"`)
+    makeSymlink(join(dir, "loop-b.ts"), join(dir, "loop-a.ts"))
+    makeSymlink(join(dir, "loop-a.ts"), join(dir, "loop-b.ts"))
     const r = refresh(dir)
     expect(r.files).toBeGreaterThanOrEqual(1)
     expect(status(dir).available).toBe(true)
@@ -227,7 +226,7 @@ describe("FDX index repository-boundary security (real binary)", () => {
     if (!SYMLINKS) return
     const dir = makeRepo()
     // Internal symlink: points at a file inside the repo.
-    execSync(`ln -s "lib.ts" "${join(dir, "lib-alias.ts")}"`)
+    makeSymlink(join(dir, "lib.ts"), join(dir, "lib-alias.ts"))
     const r = refresh(dir)
     expect(r.files).toBeGreaterThanOrEqual(1)
     expect(status(dir).available).toBe(true)
@@ -247,18 +246,13 @@ describe("FDX index repository-boundary security (real binary)", () => {
     // Refresh once to establish a valid index.
     refresh(dir)
     // Swap a tracked file for an external symlink (TOCTOU-style) and refresh.
-    if (process.platform === "win32") {
-      try {
-        rmSync(join(dir, "lib.ts"))
-        fs.symlinkSync(join(outside, "bad.ts"), join(dir, "lib.ts"))
-      } catch {
-        rmSync(outside, { recursive: true, force: true })
-        rmSync(dir, { recursive: true, force: true })
-        return
-      }
-    } else {
+    try {
       rmSync(join(dir, "lib.ts"))
-      execSync(`ln -s "${join(outside, "bad.ts")}" "${join(dir, "lib.ts")}"`)
+      makeSymlink(join(outside, "bad.ts"), join(dir, "lib.ts"))
+    } catch {
+      rmSync(outside, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+      return
     }
     refresh(dir)
     expect(status(dir).available).toBe(true)
@@ -277,16 +271,12 @@ describe("FDX index repository-boundary security (real binary)", () => {
     const dir = makeRepo()
     const outside = mkdtempSync(join(tmpdir(), "fdx-outside-3-"))
     writeFileSync(join(outside, "module.ts"), "export const three = 'SECRET-NO-ENTRY'\n")
-    if (process.platform === "win32") {
-      try {
-        fs.symlinkSync(join(outside, "module.ts"), join(dir, "module-link.ts"))
-      } catch {
-        rmSync(outside, { recursive: true, force: true })
-        rmSync(dir, { recursive: true, force: true })
-        return
-      }
-    } else {
-      execSync(`ln -s "${join(outside, "module.ts")}" "${join(dir, "module-link.ts")}"`)
+    try {
+      makeSymlink(join(outside, "module.ts"), join(dir, "module-link.ts"))
+    } catch {
+      rmSync(outside, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true })
+      return
     }
     refresh(dir)
     const wt = worktreeStateDir(dir)
@@ -304,30 +294,9 @@ describe("FDX index repository-boundary security (real binary)", () => {
 // Worktree state dir computation (mirrors Rust identity_hash).
 
 function worktreeStateDir(dir: string): string {
-  let gitCommonDir: string | null = null
-  try {
-    gitCommonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf-8" }).trim()
-  } catch {}
-  // The Rust identity hashes CANONICAL (symlink-resolved) paths; realpathSync
-  // is required on macOS where /var -> /private/var.
-  const canonicalRepoRoot = canonicalize(gitCommonDir || resolve(dir))
-  const norm = (p: string) => (process.platform === "win32" || process.platform === "darwin" ? p.toLowerCase() : p)
-  const seg = (parts: string[]) => {
-    const h = createHash("sha256")
-    for (const part of parts) {
-      h.update(part)
-      h.update("\0")
-    }
-    return h.digest().toString("hex")
-  }
-  return join(stateDir, "fdx-index", seg(["repo", norm(canonicalRepoRoot)]), seg(["worktree", norm(canonicalize(dir))]))
-}
-
-/** Resolve symlinks (mirrors Rust `Path::canonicalize` with abs fallback). */
-function canonicalize(p: string): string {
-  try {
-    return fs.realpathSync(p)
-  } catch {
-    return resolve(p)
-  }
+  // Read repository_id/worktree_id from the binary's own status output —
+  // exact by construction on every platform (Rust canonicalize emits
+  // \\?\C:\... paths on Windows and resolves symlinks on macOS).
+  const s = status(dir)
+  return join(stateDir, "fdx-index", s.repository_id, s.worktree_id)
 }

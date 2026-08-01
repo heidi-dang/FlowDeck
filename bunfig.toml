@@ -1,9 +1,0 @@
-# Bun test configuration.
-#
-# The default per-test timeout of 5s is too tight for the real-process FDX
-# index suites (they spawn native binaries, build git fixtures, and exercise
-# deterministic crash barriers). Under CI coverage instrumentation on slower
-# runners these can exceed 5s. 60s gives them headroom while still failing
-# fast on genuinely hung tests.
-[test]
-timeout = 60000

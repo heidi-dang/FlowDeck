@@ -25,35 +25,12 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { execFileSync, execSync } from "node:child_process"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { createHash } from "node:crypto"
 
 const ROOT = resolve(import.meta.dirname, "..")
 const BIN_NAME = process.platform === "win32" ? "fdx.exe" : "fdx"
-
-/**
- * Normalize path for hashing (case-insensitive on Windows/macOS).
- */
-function normalize(p: string): string {
-  if (process.platform === "win32" || process.platform === "darwin") return p.toLowerCase()
-  return p
-}
-
-/**
- * Rust-compatible identity segment: full SHA-256 digest over the parts with
- * null separators (mirrors `identity_hash` in crates/fdx/src/index/identity.rs).
- */
-function shortSegment(parts: string[]): string {
-  const hasher = createHash("sha256")
-  for (const part of parts) {
-    hasher.update(part)
-    hasher.update("\0")
-  }
-  const digest = hasher.digest()
-  return digest.toString("hex")
-}
 
 function findBinary(name: string): string | null {
   for (const c of [join(ROOT, "target", "debug", name), join(ROOT, "crates", "fdx", "target", "debug", name)]) {
@@ -123,34 +100,18 @@ function parseJson(s: string): any {
  * Compute repository and worktree identity for a given directory.
  * Mirrors the Rust `discover_identity` logic.
  */
+/**
+ * Compute repository and worktree identity for a given directory.
+ *
+ * Reads the ids directly from the binary's `index status` output rather than
+ * re-implementing Rust's path hashing. This is exact by construction across
+ * every platform: Rust `Path::canonicalize` produces `\\?\C:\...`-prefixed
+ * paths on Windows and resolves symlinks (/var -> /private/var on macOS),
+ * which no JS reimplementation can match byte-for-byte.
+ */
 function computeIdentity(dir: string): { repositoryId: string; worktreeId: string } {
-  // Find git common dir (shared .git for linked worktrees)
-  let gitCommonDir: string | null = null
-  try {
-    gitCommonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf-8" }).trim()
-  } catch {}
-
-  // Canonical repo root: common dir if it exists (linked worktrees), else
-  // the canonicalized worktree. The Rust identity hashes the CANONICAL
-  // (symlink-resolved) paths — on macOS /var is a symlink to /private/var,
-  // so realpathSync is required to match. resolve() alone would hash the
-  // un-resolved path and never find the state dir.
-  const canonicalRepoRoot = canonicalize(gitCommonDir || resolve(dir))
-  const canonicalWorktree = canonicalize(dir)
-
-  const repoRootHash = shortSegment(["repo", normalize(canonicalRepoRoot)])
-  const worktreeHash = shortSegment(["worktree", normalize(canonicalWorktree)])
-
-  return { repositoryId: repoRootHash, worktreeId: worktreeHash }
-}
-
-/** Resolve symlinks (mirrors Rust `Path::canonicalize` with abs fallback). */
-function canonicalize(p: string): string {
-  try {
-    return realpathSync(p)
-  } catch {
-    return resolve(p)
-  }
+  const s = parseJson(fdxIndex(dir, ["status"]))
+  return { repositoryId: s.repository_id, worktreeId: s.worktree_id }
 }
 
 /** Get the worktree state directory for a specific repo directory. */
