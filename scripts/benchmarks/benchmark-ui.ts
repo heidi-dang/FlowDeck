@@ -5,6 +5,7 @@
 import { reduceRunStreamEvent, createStreamEvent, INITIAL_STATE } from '../../src/orchestration/streaming';
 import { Window } from 'happy-dom';
 import { mountLiveDashboard } from '../../src/better-harness/ui/mount';
+import { createHash } from 'crypto';
 
 async function runUiBenchmark() {
   const sampleCount = 3000;
@@ -122,6 +123,9 @@ async function runUiBenchmark() {
     warmColdState: 'warm',
     metrics: {
       browserEventToReducer: {
+        // Measurement type: in-process reducer microbenchmark (no real browser, no network)
+        // Scope: reduceRunStreamEvent() pure function latency per call, in Node.js/Bun process
+        measurementType: 'in-process-reducer-microbenchmark',
         samples: sampleCount,
         reductionsPerSec: Math.round((sampleCount / reducerDuration) * 1000),
         medianMs: Number(reducerLatencies[Math.floor(reducerLatencies.length * 0.5)].toFixed(4)),
@@ -129,6 +133,9 @@ async function runUiBenchmark() {
         maxMs: Number(reducerLatencies[reducerLatencies.length - 1].toFixed(4)),
       },
       reducerToDomRender: {
+        // Measurement type: happy-dom render microbenchmark (JSDOM-like environment, NOT a real browser)
+        // Scope: mountLiveDashboard().applyEvent() → happy-dom DOM mutation. Not real browser rendering.
+        measurementType: 'happy-dom-render-microbenchmark',
         samples: renderCount,
         rendersPerSec: Math.round((renderCount / renderDuration) * 1000),
         medianMs: Number(renderLatencies[Math.floor(renderLatencies.length * 0.5)].toFixed(4)),
@@ -136,6 +143,9 @@ async function runUiBenchmark() {
         maxMs: Number(renderLatencies[renderLatencies.length - 1].toFixed(4)),
       },
       frameStability: {
+        // 60fps budget check: max happy-dom render time vs 16.67ms frame budget
+        // Scope: happy-dom microbenchmark, NOT a real browser or GPU frame time
+        measurementType: 'happy-dom-60fps-budget-check',
         targetFps: 60,
         maxFrameTimeMs: Number((1000 / 60).toFixed(2)),
         measuredMaxRenderMs: Number(renderLatencies[renderLatencies.length - 1].toFixed(4)),
@@ -149,11 +159,16 @@ async function runUiBenchmark() {
     },
   };
 
+  const reportJson = JSON.stringify(report, null, 2);
+  // Stable SHA-256 checksum of the artifact content for evidence integrity verification
+  const checksum = createHash('sha256').update(reportJson, 'utf8').digest('hex');
+  const artifactWithChecksum = { ...report, artifactChecksum: `sha256:${checksum}` };
+
   console.log('=== UI Benchmark Results ===');
-  console.log(JSON.stringify(report, null, 2));
+  console.log(JSON.stringify(artifactWithChecksum, null, 2));
 
   // Save artifact for self-host report validator
-  await Bun.write('artifacts/benchmark-ui.json', JSON.stringify(report, null, 2));
+  await Bun.write('artifacts/benchmark-ui.json', JSON.stringify(artifactWithChecksum, null, 2));
 }
 
 runUiBenchmark().catch((err) => {

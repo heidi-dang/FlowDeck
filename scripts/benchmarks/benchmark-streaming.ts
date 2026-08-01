@@ -8,6 +8,7 @@ import {
   StreamPublisher,
   StreamReplayService,
 } from '../../src/orchestration/streaming';
+import { createHash } from 'crypto';
 
 async function runStreamingBenchmark() {
   const sampleCount = 2000;
@@ -132,6 +133,9 @@ async function runStreamingBenchmark() {
     warmColdState: 'warm',
     metrics: {
       sqliteCommitLatency: {
+        // Measurement type: in-process SQLite write microbenchmark (:memory:)
+        // Scope: StreamRepository.persistEvent() latency per call, no network, no disk I/O
+        measurementType: 'in-process-sqlite-microbenchmark',
         samples: sampleCount,
         opsPerSec: Math.round((sampleCount / commitDuration) * 1000),
         medianMs: Number(commitLatencies[Math.floor(commitLatencies.length * 0.5)].toFixed(4)),
@@ -139,6 +143,9 @@ async function runStreamingBenchmark() {
         maxMs: Number(commitLatencies[commitLatencies.length - 1].toFixed(4)),
       },
       publisherCommitAndBrokerDispatch: {
+        // Measurement type: in-process StreamPublisher + SseBroker dispatch microbenchmark
+        // Scope: publish() → SQLite persist → broker.broadcast() — no network, no HTTP
+        measurementType: 'in-process-broker-dispatch-microbenchmark',
         samples: sampleCount,
         opsPerSec: Math.round((sampleCount / pubDuration) * 1000),
         medianMs: Number(pubLatencies[Math.floor(pubLatencies.length * 0.5)].toFixed(4)),
@@ -146,6 +153,9 @@ async function runStreamingBenchmark() {
         maxMs: Number(pubLatencies[pubLatencies.length - 1].toFixed(4)),
       },
       publishToClientReceipt: {
+        // Measurement type: in-process broker-to-mock-session receipt microbenchmark
+        // Scope: publish() → broker dispatch → mock session.sendEvent() callback, NO real HTTP/network
+        measurementType: 'in-process-broker-to-mock-session-microbenchmark',
         samples: 1000,
         opsPerSec: Math.round((1000 / clientBenchDuration) * 1000),
         medianMs: Number(clientReceiptLatencies[Math.floor(clientReceiptLatencies.length * 0.5)].toFixed(4)),
@@ -153,6 +163,9 @@ async function runStreamingBenchmark() {
         maxMs: Number(clientReceiptLatencies[clientReceiptLatencies.length - 1].toFixed(4)),
       },
       reconnectReplay: {
+        // Measurement type: in-process replay-service microbenchmark
+        // Scope: StreamReplayService.replayToSession() SQLite read → mock session callback, no HTTP
+        measurementType: 'in-process-replay-service-microbenchmark',
         replayedEvents: 1000,
         durationMs: Number(replayDuration.toFixed(2)),
         replaysPerSec: Math.round((1000 / replayDuration) * 1000),
@@ -165,11 +178,16 @@ async function runStreamingBenchmark() {
     },
   };
 
+  const reportJson = JSON.stringify(report, null, 2);
+  // Stable SHA-256 checksum of the artifact content for evidence integrity verification
+  const checksum = createHash('sha256').update(reportJson, 'utf8').digest('hex');
+  const artifactWithChecksum = { ...report, artifactChecksum: `sha256:${checksum}` };
+
   console.log('=== Streaming Benchmark Results ===');
-  console.log(JSON.stringify(report, null, 2));
+  console.log(JSON.stringify(artifactWithChecksum, null, 2));
 
   // Save artifact for self-host report validator
-  await Bun.write('artifacts/benchmark-streaming.json', JSON.stringify(report, null, 2));
+  await Bun.write('artifacts/benchmark-streaming.json', JSON.stringify(artifactWithChecksum, null, 2));
 }
 
 runStreamingBenchmark().catch((err) => {

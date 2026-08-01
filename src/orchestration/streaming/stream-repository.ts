@@ -2,7 +2,7 @@ import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { mkdirSync } from 'fs';
 import { join, resolve } from 'path';
-import { initializeDatabase, createTransactionManager, type TransactionManager } from '../persistence';
+import { initializeDatabase, createTransactionManager, closeConnection, type TransactionManager } from '../persistence';
 import { EventsRepository } from '../persistence/repositories/event';
 import { type FlowDeckStreamEvent, createStreamEvent, normalizeEventType } from './stream-event';
 import { validateStreamEvent } from './stream-event-schema';
@@ -208,19 +208,23 @@ export class StreamRepository {
    */
   markDelivered(eventId: string) {
     this.txManager.write(() => {
+      // event_outbox only has a status column — no delivered_at in this table
       this.db.query(`
         UPDATE event_outbox
-        SET status = 'delivered', delivered_ts = strftime('%s','now')
+        SET status = 'delivered'
         WHERE event_id = ?
       `).run(eventId);
     });
   }
 
-  close(): void {
-    try {
-      this.db.close();
-    } catch {
-      /* ignore */
+  close(dbPath?: string): void {
+    // Evict the path from the module-level connection cache BEFORE closing,
+    // so a subsequent open on the same path gets a fresh Database instance.
+    if (dbPath) {
+      try { closeConnection(dbPath); } catch { /* ignore */ }
+    } else {
+      // Best-effort: close the raw DB handle if path is not supplied
+      try { this.db.close(); } catch { /* ignore */ }
     }
   }
 
