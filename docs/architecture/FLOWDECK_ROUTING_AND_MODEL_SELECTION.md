@@ -543,24 +543,35 @@ interface DelegationDecision {
 
 ### 8.4 Hard constraints
 
-- **Delegating agents are derived from the canonical registry.** The contract's `CANONICAL_DELEGATING_AGENT_IDS`
-  is projected from `getPrimaryAgentIds()` (heidi/orchestrator, `delegationPolicy: "justified_only"`); the
+- **Canonical identity resolution.** Every delegation authorization decision is made from the **canonical
+  principal identity**, never from a raw id string. The canonical registry defines `heidi` (primary,
+  canonical id) and `orchestrator` (primary, alias of `heidi`). `resolveCanonicalPrincipal` maps every
+  agent id and alias (trimmed, lower-cased) to the canonical primary id, so `heidi` and `orchestrator`
+  resolve to the **same principal**. The raw requested ids are preserved in the decision record for
+  evidence; authorization uses the canonical identity.
+- **Delegating agents are derived from the canonical registry.** `CANONICAL_DELEGATING_AGENT_IDS` is
+  projected from `getPrimaryAgentIds()` (heidi/orchestrator, `delegationPolicy: "justified_only"`); the
   authoritative agent list is never duplicated in the routing layer.
 - **Max depth is exactly 1.** `validateDelegation` in the canonical registry already enforces this; the
   routing layer never produces a `depth > 1` decision.
-- **No self-delegation.** Any decision targeting the delegating agent is rejected (`SELF_DELEGATION_BLOCKED`
-  semantics preserved).
+- **No self-delegation — alias-aware.** Any decision whose delegating and target agents resolve to the
+  same canonical principal is rejected. This blocks `heidi → heidi`, `orchestrator → orchestrator`,
+  `heidi → orchestrator`, and `orchestrator → heidi`.
+- **No primary-to-primary delegation.** A primary agent may never target another primary agent
+  (`heidi → orchestrator` and `orchestrator → heidi` both resolve to the same orchestrator principal and
+  are rejected). Only primary → canonical-subagent delegation may pass.
+- **Targets are canonical subagents.** `targetAgent` must be a canonical subagent (specialist) id from
+  the registry; primary agents and unknown ids are rejected as targets.
 - **No specialist delegation.** Specialists (`delegationPolicy: "none"` in canonical-registry.ts) never
   delegate; the routing layer never emits a decision with a specialist as `delegatingAgent`.
-- **Target exists.** `targetAgent` must be a canonical agent id from the registry; an unknown target is
-  rejected.
 - **Allowed decisions carry evidence.** An `allowed` decision requires a non-empty allowed `reason` and
   non-empty `justification`; `rejectionReason` is forbidden.
 - **Rejected decisions carry a rejection reason.** A `rejected` decision requires `rejectionReason`;
   `reason` is forbidden. `rejected_overlap` and `rejected_cost` rejections additionally preserve
   non-empty justification evidence.
 - **No empty or whitespace-only identifiers.** `delegatingAgent`, `targetAgent`, `taskId`, and every
-  `justification` entry reject empty/whitespace-only strings.
+  `justification` entry reject empty/whitespace-only strings; unknown or whitespace-only agents resolve
+  to no principal and are rejected.
 
 ### 8.5 Budget table
 
@@ -646,6 +657,32 @@ interface ModelSelectionDecision {
 
 **Capability floor:** a selection must satisfy `capabilityFloor`. If the cheapest tier cannot satisfy it, the
 selection moves up tiers until the floor is met (section 12: never silently downgrade below the floor).
+
+### 10.4 Model fallback policy — degradation-only (deterministic)
+
+**Status: enforced by contract (`zModelSelectionDecision` / `zRoutingDecisionRecord`).**
+
+The model fallback ordering follows exactly **one** canonical policy:
+
+> **Degradation-only:** the selected tier is the strongest tier that satisfies the capability floor; every
+> fallback tier is a progressively *weaker* tier, in strictly descending rank order
+> (`strong_reasoning → general_coding → small_fast`), and every fallback tier must still satisfy the
+> capability floor.
+
+Contract invariants (all enforced at the schema boundary):
+
+- `selectedTier` must NOT appear in `fallbackTiers` (it is the primary choice, not a degraded fallback).
+- `fallbackTiers` must be unique (no duplicate tiers).
+- `fallbackTiers` must be strictly ordered strongest-first (descending `MODEL_TIER_RANK`); escalation
+  (`small_fast → general_coding`) inside a fallback list is rejected — mixed escalation/degradation
+  ordering is never permitted.
+- every fallback tier must satisfy the capability floor.
+- `totalMs > 0`, `queueMs <= totalMs`, `firstTokenMs <= totalMs` (a bounded model call).
+- provider and model are trimmed and non-empty when present; a `model` requires a `provider`.
+- capability-floor entries and reason codes are unique.
+
+The **global user-selected model remains authoritative**. Model tiers are a recommendation and telemetry
+contract only; no automatic model switching occurs unless an explicit future setting enables it.
 
 ---
 
@@ -962,6 +999,141 @@ Merge recommendation: <APPROVE / REQUEST CHANGES> <one-paragraph rationale>
 
 A task is not considered done until the report exists, the metrics in section 15 are populated for the
 campaign, and the merge recommendation is stated.
+
+---
+
+## 19. Absolute Contract Closure (PR 1)
+
+**Status: enforced by executable contracts and adversarial tests
+(`tests/routing/absolute-closure.test.ts`).**
+
+PR 1 guarantees that the exported routing contracts cannot produce mutable,
+contradictory, or ambiguous routing decisions. Every guarantee below is a
+runtime invariant enforced by a schema `superRefine`, a load-time guard, or a
+deep-freeze — not just a TypeScript `readonly` annotation.
+
+### 19.1 Immutable policy tables
+
+The following exported tables are deeply frozen at module load:
+
+| Table | Location | Change requires |
+|---|---|---|
+| `DEFAULT_WEIGHTS` | `src/orchestration/routing/scoring/scorers.ts` | `WEIGHTS_VERSION` bump |
+| `MODEL_TIER_RANK` | `src/orchestration/routing/contracts/models.ts` | `ROUTING_POLICY_VERSION` bump |
+| `CAPABILITY_TIER_FLOOR` | `src/orchestration/routing/contracts/models.ts` | `ROUTING_POLICY_VERSION` bump |
+| `SPECIALIST_TASK_CLASS` | `src/orchestration/routing/classifier/specialist-registry.ts` | `ROUTING_POLICY_VERSION` bump |
+| `DEFAULT_STRATEGY_POLICIES` | `src/orchestration/routing/contracts/strategy.ts` | `ROUTING_POLICY_VERSION` bump |
+
+- Deep-freeze (`Object.freeze` recursively, one shared `deepFreeze` utility in
+  `immutability.ts`) makes mutation attempts throw in strict mode or silently
+  leave the canonical value unchanged — either way the canonical value never
+  changes.
+- `DeepReadonly<T>` exposes recursive readonly types; no writable `Record`
+  exports remain.
+- Callers that need a mutable working copy use `cloneFrozen(...)` /
+  `structuredClone(...)`.
+- Version-policy parity fixtures in `absolute-closure.test.ts` snapshot the
+  canonical serialization of every table: a policy change that does not bump
+  the version fails the parity test.
+
+### 19.2 Canonical agent identity
+
+- `resolveCanonicalPrincipal` normalizes (trim + lowercase) and resolves every
+  agent id/alias to its canonical principal; `heidi` and `orchestrator` resolve
+  to the same principal.
+- Delegation authorization always uses canonical identity:
+  - `heidi → heidi`, `orchestrator → orchestrator`, `heidi → orchestrator`,
+    `orchestrator → heidi` are all rejected (same principal).
+  - Primary agents are never valid delegation targets; targets must be
+    canonical subagents.
+  - Specialists can never delegate.
+  - Unknown/whitespace-only agents are rejected.
+- Raw requested ids are preserved in the parsed record for evidence; only the
+  authorization decision uses canonical identity.
+
+### 19.3 Routing decision record invariants
+
+`zRoutingDecisionRecord` fails closed when any relationship is invalid:
+
+- `selectedStrategy` not in `rejectedStrategies`; rejected strategies unique
+  with meaningful reasons.
+- `selectedTier` not in `fallback`; fallback unique and strictly
+  strongest-first (degradation-only).
+- Every delegation decision uses the record `taskId`; delegation decisions
+  unique by task/delegator/target/depth; candidates are canonical subagents.
+- `classification.policyVersion` and `scores.policyVersion` equal
+  `routingPolicyVersion`; `scores.weightsVersion` equals `weightsVersion`.
+- `supersedes !== decisionId`; `rulesApplied`, input evidence, model
+  candidates, and evidence ids are unique; score evidence ids unique within a
+  dimension and across dimensions.
+- Selected tier exists in model candidates when candidates are supplied.
+- `bindDecisionToSha` canonically clones, validates, and deep-freezes the
+  record; the returned record shares no mutable identity with the caller.
+
+### 19.4 Canonical JSON
+
+`canonicalJson` (in `contracts/canonical.ts`) is deterministic (recursive
+sorted keys) with the documented rules:
+
+- `undefined` object properties are omitted (key disappears).
+- `null` object/array values are preserved distinctly.
+- `undefined` array entries are **rejected** (an array `[undefined]` can never
+  serialize like `[null]`).
+- Sparse arrays (holes, detected by index ownership) are **rejected**,
+  including nested sparse arrays.
+- Unsupported values (Map, Set, typed arrays, class instances, RegExp,
+  Promise, symbol, function, bigint, non-finite numbers) and cycles are
+  rejected.
+- Two semantically different accepted values never produce the same canonical
+  JSON.
+
+### 19.5 Evidence
+
+All evidence fields (`zEvidenceReference`, `zClassificationResult`,
+`zRoutingInputEvidence`, `zRoutingDecisionRecord`) require trimmed,
+non-empty, meaningful text (`id`, `source`, `detail`, `signal`); bare
+placeholders (`"unknown"`, `"n/a"`, …) are rejected without an explanatory
+detail. Classification evidence is non-empty and unique; routing decision
+input evidence is non-empty; score evidence ids are unique within and across
+dimensions; evidence values must pass canonical serialization.
+
+### 19.6 Model selection
+
+- Timeout invariants: `totalMs > 0`, `queueMs <= totalMs`,
+  `firstTokenMs <= totalMs`.
+- Provider/model trimmed and non-empty when present; a model requires a
+  provider.
+- Capability-floor entries and reason codes unique; unknown capabilities
+  rejected.
+- Selected tier not in fallback; fallback unique and degradation-only
+  (strongest-first); every fallback satisfies the floor.
+
+### 19.7 Specialist results
+
+- Completed results require a meaningful summary and meaningful evidence.
+- Blocked/failed results require a meaningful reason; cancelled results
+  require a cancellation reason.
+- Changed-file and ownership paths are normalized repository-relative paths
+  (absolute, drive, and traversal paths rejected) and unique.
+- Finding/evidence/ownership ids are unique; assumptions and unresolved risks
+  reject whitespace-only entries; completed results with changes carry
+  supporting evidence.
+
+### 19.8 Strategy policies
+
+`zStrategyPolicy` validates: non-empty unique stages, unique recognized
+capabilities, unique meaningful approvals, reviewer ⇒ review stage,
+non-focused verification ⇒ verify stage, `contextBudget > 0`, bounded
+`recoveryLimit`, and no contradictory high-risk/low-risk posture. Every
+default policy is validated at module load (load-time invariant in
+`strategy.ts`).
+
+### 19.9 Specialist mapping parity
+
+`SPECIALIST_TASK_CLASS` is deeply frozen and guarded at load: exactly the
+canonical subagent set is permitted as keys (two-way equality
+`canonical subagent ids === mapping keys`); stale entries for removed
+agents and primary-agent keys are rejected.
 
 ---
 
