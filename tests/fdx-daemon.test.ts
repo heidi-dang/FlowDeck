@@ -82,8 +82,30 @@ afterAll(async () => {
 
 describe("FDX daemon lifecycle", () => {
   describe("binary discovery", () => {
-    it("resolves a daemon binary path when one exists", () => {
-      expect(resolveDaemonBinaryPath()).toBeTruthy()
+    it("resolves FDX_DAEMON_BINARY_PATH when it points at a real file", () => {
+      const orig = process.env.FDX_DAEMON_BINARY_PATH
+      process.env.FDX_DAEMON_BINARY_PATH = process.execPath // a real executable
+      try {
+        expect(resolveDaemonBinaryPath()).toBe(resolve(process.execPath))
+      } finally {
+        if (orig === undefined) delete process.env.FDX_DAEMON_BINARY_PATH
+        else process.env.FDX_DAEMON_BINARY_PATH = orig
+      }
+    })
+
+    it("does not resolve a nonexistent FDX_DAEMON_BINARY_PATH", () => {
+      const orig = process.env.FDX_DAEMON_BINARY_PATH
+      process.env.FDX_DAEMON_BINARY_PATH = join(tmpdir(), "definitely-missing-fdxd-" + Date.now())
+      try {
+        // When the env path does not exist, resolution must NOT return it
+        // (it may still find a repo/global binary — that is fine and is
+        // covered by the fallback tests).
+        const resolved = resolveDaemonBinaryPath()
+        expect(resolved).not.toBe(process.env.FDX_DAEMON_BINARY_PATH)
+      } finally {
+        if (orig === undefined) delete process.env.FDX_DAEMON_BINARY_PATH
+        else process.env.FDX_DAEMON_BINARY_PATH = orig
+      }
     })
 
     it("socket path is per-project and user-scoped", () => {
