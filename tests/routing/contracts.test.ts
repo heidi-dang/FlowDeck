@@ -493,6 +493,53 @@ describe("routing contracts: deterministic serialization", () => {
     const restored = parseCanonicalJson(canonicalJson(original));
     expect(restored).toEqual(original);
   });
+
+  it("supports plain objects, arrays, strings, booleans, finite numbers, null", () => {
+    expect(canonicalJson({ s: "x", b: true, n: 1.5, z: null, arr: [1, "a", false], obj: { k: "v" } })).toBe(
+      '{"arr":[1,"a",false],"b":true,"n":1.5,"obj":{"k":"v"},"s":"x","z":null}',
+    );
+  });
+
+  it("rejects Map values instead of serializing them as {}", () => {
+    expect(() => canonicalJson(new Map([["a", 1]]))).toThrow("non-serializable value");
+    expect(() => canonicalJson({ m: new Map([["a", 1]]) })).toThrow("non-serializable value");
+  });
+
+  it("rejects Set values instead of serializing them as {}", () => {
+    expect(() => canonicalJson(new Set([1, 2]))).toThrow("non-serializable value");
+    expect(() => canonicalJson({ s: new Set([1, 2]) })).toThrow("non-serializable value");
+  });
+
+  it("rejects WeakMap and WeakSet values", () => {
+    expect(() => canonicalJson(new WeakMap())).toThrow("non-serializable value");
+    expect(() => canonicalJson(new WeakSet())).toThrow("non-serializable value");
+  });
+
+  it("rejects typed arrays", () => {
+    expect(() => canonicalJson(new Uint8Array([1, 2, 3]))).toThrow("non-serializable value");
+    expect(() => canonicalJson({ buf: new ArrayBuffer(8) })).toThrow("non-serializable value");
+  });
+
+  it("rejects class instances via the plain-object prototype check", () => {
+    class Foo {
+      x = 1;
+    }
+    expect(() => canonicalJson(new Foo())).toThrow("non-serializable value");
+    expect(() => canonicalJson({ foo: new Foo() })).toThrow("non-serializable value");
+  });
+
+  it("rejects RegExp, Promise, symbol, and function values", () => {
+    expect(() => canonicalJson(/regex/)).toThrow("non-serializable value");
+    expect(() => canonicalJson(Promise.resolve(1))).toThrow("non-serializable value");
+    expect(() => canonicalJson(Symbol("x"))).toThrow("non-serializable value");
+    expect(() => canonicalJson(() => 1)).toThrow("non-serializable value");
+  });
+
+  it("rejects non-finite numbers", () => {
+    expect(() => canonicalJson(NaN)).toThrow("non-serializable value");
+    expect(() => canonicalJson(Infinity)).toThrow("non-serializable value");
+    expect(() => canonicalJson(-Infinity)).toThrow("non-serializable value");
+  });
 });
 
 describe("routing contracts: strategy registry integrity", () => {
