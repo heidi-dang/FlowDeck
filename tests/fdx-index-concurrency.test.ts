@@ -25,7 +25,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { execFileSync, execSync, spawn } from "node:child_process"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { createHash } from "node:crypto"
@@ -178,7 +178,7 @@ describe("FDX index cross-process coordination (real processes)", () => {
   it("two CLI refreshes racing both end with a valid index", async () => {
     const dir = makeRepo()
     // Deterministic start: both children spawned before either finishes.
-    const [a, b] = await Promise.all([
+    await Promise.all([
       runFdxTimeout(dir, ["refresh"], 60_000),
       runFdxTimeout(dir, ["refresh"], 60_000),
     ])
@@ -239,7 +239,7 @@ describe("FDX index cross-process coordination (real processes)", () => {
   it("invalidate racing refresh leaves a valid index", async () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const [i, r] = await Promise.all([
+    await Promise.all([
       runFdxTimeout(dir, ["invalidate"], 60_000),
       runFdxTimeout(dir, ["refresh"], 60_000),
     ])
@@ -270,7 +270,6 @@ describe("FDX index cross-process coordination (real processes)", () => {
   it("no temporary directories or locks left after successful recovery", () => {
     const dir = makeRepo()
     refreshOnce(dir)
-    const wt = worktreeStateDir(dir)
     const entries = worktreeEntries(dir)
     expect(entries.some((e) => e.includes(".tmp"))).toBe(false)
     // The lock file may exist (advisory) but no tmp dirs, no CURRENT.tmp.

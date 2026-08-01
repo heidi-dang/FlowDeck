@@ -260,7 +260,7 @@ describe("FDX index repository-boundary security (real binary)", () => {
       rmSync(join(dir, "lib.ts"))
       execSync(`ln -s "${join(outside, "bad.ts")}" "${join(dir, "lib.ts")}"`)
     }
-    const r = refresh(dir)
+    refresh(dir)
     expect(status(dir).available).toBe(true)
     const wt = worktreeStateDir(dir)
     let externalFound = false
