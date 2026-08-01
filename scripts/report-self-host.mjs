@@ -61,25 +61,41 @@ async function generateSelfHostReport() {
     process.exit(1);
   }
 
-  // Enforce: benchmark artifact SHA must be present and an ancestor of current HEAD
-  // (artifacts are regenerated at the code commit SHA and then committed in a follow-up;
-  //  the artifact SHA will be the parent of HEAD, which is still within the campaign)
-  function requireAncestorSha(artifactSha, artifactName) {
+  // Check git working tree clean status
+  let isDirty = false;
+  try {
+    const statusOut = execSync("git status --porcelain", { encoding: "utf-8" }).trim();
+    isDirty = statusOut.length > 0;
+  } catch { /* ignore */ }
+
+  if (isDirty && !process.argv.includes("--allow-dirty")) {
+    console.error("FAIL: Working tree is dirty. Self-host report requires a clean git working tree.");
+    process.exit(1);
+  }
+
+  // Enforce: benchmark artifact SHA must match HEAD or be an ancestor with no underlying production code changes
+  function requireExactSha(artifactSha, artifactName) {
     if (!artifactSha) {
       console.error(`FAIL: ${artifactName} artifact missing gitSha field. Regenerate with: npm run ${artifactName === 'streaming' ? 'benchmark:streaming' : 'benchmark:ui'}`);
       process.exit(1);
     }
-    if (artifactSha === gitSha) return; // exact match — best case
-    // Accept if the artifact SHA is a reachable ancestor of HEAD
+    if (artifactSha === gitSha) return; // exact match
     try {
       execSync(`git merge-base --is-ancestor ${artifactSha} HEAD`, { encoding: 'utf-8' });
-    } catch {
-      console.error(`FAIL: ${artifactName} benchmark SHA (${artifactSha}) is not an ancestor of current HEAD (${gitSha}). Regenerate with: npm run ${artifactName === 'streaming' ? 'benchmark:streaming' : 'benchmark:ui'}`);
+      const changedFiles = execSync(`git diff --name-only ${artifactSha} HEAD`, { encoding: 'utf-8' }).trim().split('\n');
+      const codeChanges = changedFiles.filter(f => f && !f.startsWith('artifacts/') && f !== 'scripts/report-self-host.mjs');
+      if (codeChanges.length > 0) {
+        console.error(`FAIL: ${artifactName} benchmark SHA (${artifactSha}) has unbenchmarked code changes up to HEAD: ${codeChanges.join(', ')}.`);
+        process.exit(1);
+      }
+    } catch (err) {
+      if (err.message?.includes('unbenchmarked')) throw err;
+      console.error(`FAIL: ${artifactName} benchmark SHA (${artifactSha}) is not a valid ancestor of current HEAD (${gitSha}).`);
       process.exit(1);
     }
   }
-  requireAncestorSha(streamingBench.gitSha, 'streaming');
-  requireAncestorSha(uiBench.gitSha, 'ui');
+  requireExactSha(streamingBench.gitSha, 'streaming');
+  requireExactSha(uiBench.gitSha, 'ui');
 
   // 3. Inspect GitHub CI Runs for Exact SHA dynamically using gh CLI
   let ciRunDetails = null;
@@ -91,6 +107,7 @@ async function generateSelfHostReport() {
     ).trim();
 
     const runs = JSON.parse(ciJson);
+    const codeChanges = changedFiles.filter(f => f && !f.startsWith('artifacts/') && f !== 'scripts/report-self-host.mjs');
     const matchingRuns = runs.filter((r) => r.headSha === gitSha);
 
     if (matchingRuns.length === 0) {
@@ -160,12 +177,15 @@ async function generateSelfHostReport() {
     git: {
       branch,
       sha: gitSha,
+      dirty: isDirty,
     },
     environment: {
       nodeVersion: process.version,
       platform: process.platform,
       arch: process.arch,
       version: pkg.version,
+      cpuCount: (await import("os")).cpus().length,
+      totalMemoryMb: Math.round((await import("os")).totalmem() / (1024 * 1024)),
     },
     productionWiringVerified: 'ALL_GATE_TESTS_PASSED',
     benchmarkEvidence: {

@@ -41,11 +41,22 @@ export function mountLiveDashboard(
   container.className = 'flowdeck-live-dashboard';
 
   const render = () => {
-    // Capture focused element identity before DOM replacement
+    // Capture focused element identity, selection, and cursor position before DOM replacement
     const doc = typeof document !== 'undefined' ? document : null;
-    const activeEl = doc?.activeElement as HTMLElement | null;
+    const activeEl = doc?.activeElement as HTMLInputElement | HTMLTextAreaElement | HTMLElement | null;
     const activeId = activeEl?.id || null;
     const activeDataAction = activeEl?.getAttribute?.('data-action') || null;
+    const activeRole = activeEl?.getAttribute?.('role') || null;
+
+    // Do not restore focus if user is inside a dialog/modal/drawer that manages its own focus
+    const isInsideDialog = activeEl?.closest?.('[role="dialog"], [role="alertdialog"], .evidence-drawer.open') !== null;
+
+    let selectionStart: number | null = null;
+    let selectionEnd: number | null = null;
+    if (activeEl && ('selectionStart' in activeEl) && typeof activeEl.selectionStart === 'number') {
+      selectionStart = activeEl.selectionStart;
+      selectionEnd = activeEl.selectionEnd;
+    }
 
     container.innerHTML = `
       ${ReconnectBanner({ state })}
@@ -66,17 +77,27 @@ export function mountLiveDashboard(
       </main>
     `;
 
-    // Restore focus to the equivalent element after render
-    try {
-      if (activeId) {
-        const restored = container.querySelector(`#${CSS.escape(activeId)}`) as HTMLElement | null;
-        restored?.focus?.();
-      } else if (activeDataAction) {
-        const restored = container.querySelector(`[data-action="${activeDataAction}"]`) as HTMLElement | null;
-        restored?.focus?.();
+    // Restore focus to equivalent control unless inside a dialog
+    if (!isInsideDialog) {
+      try {
+        let restored: HTMLElement | null = null;
+        if (activeId) {
+          restored = container.querySelector(`#${CSS.escape(activeId)}`);
+        } else if (activeDataAction) {
+          restored = container.querySelector(`[data-action="${activeDataAction}"]`);
+        } else if (activeRole && activeRole !== 'body') {
+          restored = container.querySelector(`[role="${activeRole}"]`);
+        }
+
+        if (restored && typeof restored.focus === 'function') {
+          restored.focus();
+          if (selectionStart !== null && selectionEnd !== null && ('setSelectionRange' in restored)) {
+            (restored as HTMLInputElement).setSelectionRange(selectionStart, selectionEnd);
+          }
+        }
+      } catch {
+        // Fallback silently if selector escaping fails
       }
-    } catch {
-      // CSS.escape unavailable or element not found — focus loss is acceptable
     }
   };
 

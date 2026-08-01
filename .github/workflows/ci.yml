@@ -83,7 +83,7 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install chromium
       - run: npm run build
-      - run: bun test --path-ignore-patterns="**/orchestration/persistence/**" --path-ignore-patterns="**/browser-e2e*"
+      - run: bun test --path-ignore-patterns="**/orchestration/persistence/**" --path-ignore-patterns="**/browser-e2e.test.ts"
       - run: npm run test:production-integration
       - run: npm run test:accessibility
       - run: npm run test:streaming:load

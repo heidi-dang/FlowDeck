@@ -92,12 +92,27 @@ async function runUiBenchmark() {
   const gitSha = require('child_process').execSync("git rev-parse HEAD", { encoding: "utf-8" }).trim();
   const branch = require('child_process').execSync("git branch --show-current", { encoding: "utf-8" }).trim();
 
+  const statusLines = require('child_process').execSync("git status --porcelain", { encoding: "utf-8" }).trim().split('\n').filter((line: string) => line && !line.includes('artifacts/'));
+  const isDirty = statusLines.length > 0;
+  if (isDirty) {
+    console.error("FAIL: Cannot generate benchmark artifact from dirty working tree (uncommitted source code changes detected).");
+    process.exit(1);
+  }
+
   const report = {
     benchmarkSuite: 'ui-projection-dom-render',
+    benchmarkType: 'microbenchmark-reducer-and-dom-render',
     timestamp: new Date().toISOString(),
     gitSha,
+    dirty: false,
     branch,
     environment: process.env.NODE_ENV || 'test',
+    systemInfo: {
+      platform: process.platform,
+      arch: process.arch,
+      cpuCount: require('os').cpus().length,
+      totalMemoryMb: Math.round(require('os').totalmem() / (1024 * 1024)),
+    },
     runtimeVersions: {
       bun: Bun.version,
       node: process.version,

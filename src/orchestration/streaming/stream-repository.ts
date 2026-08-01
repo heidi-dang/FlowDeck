@@ -1,15 +1,15 @@
 import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { mkdirSync } from 'fs';
-import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { initializeDatabase, createTransactionManager, type TransactionManager } from '../persistence';
 import { EventsRepository } from '../persistence/repositories/event';
 import { type FlowDeckStreamEvent, createStreamEvent, normalizeEventType } from './stream-event';
 import { validateStreamEvent } from './stream-event-schema';
+import { getProjectIdentity } from '../../better-harness/workspace/project-identity';
+import { getProjectStoreDir } from '../../better-harness/persistence/harness-store';
 
-// Module-level counter for deterministic event ID generation (no Math.random)
-let _eventIdCounter = 0;
+import { randomUUID } from 'crypto';
 
 /**
  * Derive a project-isolated, absolute database path from the project root.
@@ -17,10 +17,10 @@ let _eventIdCounter = 0;
  */
 function deriveProjectDbPath(): string {
   const projectRoot = resolve(process.env.FLOWDECK_PROJECT_ROOT || process.cwd());
-  const hash = createHash('sha256').update(projectRoot, 'utf8').digest('hex').slice(0, 12);
-  const dbDir = join(tmpdir(), 'flowdeck-db');
-  mkdirSync(dbDir, { recursive: true });
-  return join(dbDir, `flowdeck-${hash}.db`);
+  const identity = getProjectIdentity(projectRoot);
+  const storeDir = getProjectStoreDir(identity.projectId);
+  mkdirSync(storeDir, { recursive: true });
+  return join(storeDir, `flowdeck-${identity.projectId}.db`);
 }
 
 /**
@@ -69,7 +69,7 @@ export class StreamRepository {
    */
   persistEvent(runId: string, sequence: number, type: string, data: any, timestamp: number): FlowDeckStreamEvent {
     return this.txManager.write(() => {
-      const eventId = (data && data.eventId) ? data.eventId : `evt_${runId}_${Date.now()}_${String(_eventIdCounter++).padStart(6, '0')}`;
+      const eventId = (data && data.eventId) ? data.eventId : `evt_${runId}_${randomUUID()}`;
 
       // 1. Check for duplicate eventId (strict idempotency check)
       const existing = this.db.query(`
