@@ -71,6 +71,11 @@ export function isScoreInRange(n: number): boolean {
   return Number.isFinite(n) && n >= SCORE_MIN && n <= SCORE_MAX
 }
 
+/** Returns true when every element in `scores` lies within the shared 0-100 score range. */
+export function areScoresInRange(scores: readonly number[]): boolean {
+  return scores.every(isScoreInRange)
+}
+
 /** Canonical execution strategies understood by the routing layer. */
 export type ExecutionStrategy =
   | "fast_direct"
@@ -185,6 +190,9 @@ export const zTaskScores = z.object({
   risk: z.number().int().min(SCORE_MIN).max(SCORE_MAX),
   confidence: z.number().int().min(SCORE_MIN).max(SCORE_MAX),
 })
+
+/** Zod schema for an array of TaskScores. */
+export const zTaskScoresArray = z.array(zTaskScores)
 
 /**
  * Complete scoring-domain object carrying scores, per-dimension evidence,
