@@ -295,7 +295,7 @@ fn run_command(command: &str, argv: &[String], cwd: Option<&str>, req_id: Option
                         .iter()
                         .map(|e| serde_json::json!({ "name": e.name, "is_dir": e.is_dir }))
                         .collect();
-                    Response::ok(None, serde_json::json!({ "entries": entries, "cached": false }))
+                    Response::ok(req_id, serde_json::json!({ "entries": entries, "cached": false }))
                 }
                 Err(e) => Response::error(req_id, err::E_INTERNAL, format!("ls failed: {e}")),
             }
