@@ -62,6 +62,7 @@
     "verify:installation:offline": "node scripts/verify-opencode-integration.mjs --offline",
     "verify:installation": "node scripts/verify-opencode-integration.mjs",
     "verify:release": "node scripts/release-alignment.mjs",
+    "verify:production": "node scripts/verify-production.mjs",
     "verify:clean-install": "node bin/flowdeck.js clean-install --verify-only",
     "install:clean": "node bin/flowdeck.js clean-install",
     "better-harness:serve": "node bin/better-harness.js",
@@ -88,7 +89,12 @@
     "report:orchestration:compatibility": "node scripts/generate-orchestration-compliance.mjs",
     "report:orchestration:provenance": "node scripts/generate-orchestration-provenance.mjs",
     "report:orchestration:repair-handoff": "node scripts/orchestration/generate-repair-handoff.mjs",
-    "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:matrix && npm run test:orchestration:port-discovery && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults && npm run test:orchestration:integration && npm run verify:orchestration:schema"
+    "report:self-host": "bun run scripts/self-host-report.mjs",
+    "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:matrix && npm run test:orchestration:port-discovery && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults && npm run test:orchestration:integration && npm run verify:orchestration:schema",
+    "benchmark:flowdeck": "bun run scripts/benchmark-flowdeck.ts",
+    "benchmark:context": "bun run scripts/benchmark-context.ts",
+    "benchmark:fdx": "bun run scripts/benchmark-fdx.ts",
+    "benchmark:orchestration": "bun run scripts/benchmark-orchestration.ts"
   },
   "keywords": [
     "opencode",
