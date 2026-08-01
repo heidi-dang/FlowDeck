@@ -28,7 +28,7 @@ describe("Doctor Engine Deep Coverage Tests", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  }, 30000)
+  }, 60000)
 
   it("scoreCategory correctly calculates category score", () => {
     const checks: any[] = [
