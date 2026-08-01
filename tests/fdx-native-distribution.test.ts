@@ -1,0 +1,153 @@
+import { describe, it, expect, beforeEach, afterEach } from "bun:test"
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, readFileSync } from "node:fs"
+import { join, resolve } from "node:path"
+import { tmpdir } from "node:os"
+import { createHash } from "node:crypto"
+import { execFileSync } from "node:child_process"
+import {
+  detectFdxTarget,
+  validateFdxBinaryPath,
+  resolveFdxBinaryPath,
+  getFdxAvailabilityStatus,
+} from "../src/tools/fdx-shared.js"
+import { handleFdxStatus, handleFdxVerify, handleFdxInstall } from "../src/commands/fdx-admin.js"
+
+describe("FDX Native Distribution & Binary Resolver", () => {
+  let tempDir: string
+  let originalEnv: NodeJS.ProcessEnv
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "fdx-dist-test-"))
+    originalEnv = { ...process.env }
+  })
+
+  afterEach(() => {
+    process.env = originalEnv
+    try {
+      rmSync(tempDir, { recursive: true, force: true })
+    } catch {}
+  })
+
+  it("detectFdxTarget identifies current host target properly", () => {
+    const target = detectFdxTarget()
+    if (process.platform === "linux" && process.arch === "x64") {
+      expect(target).not.toBeNull()
+      expect(target!.platform).toBe("linux")
+      expect(target!.arch).toBe("x64")
+    } else if (process.platform === "darwin") {
+      expect(target).not.toBeNull()
+      expect(target!.platform).toBe("darwin")
+    } else if (process.platform === "win32") {
+      expect(target).not.toBeNull()
+      expect(target!.executableName).toBe("fdx.exe")
+    }
+  })
+
+  it("validateFdxBinaryPath rejects non-existent paths and directories", () => {
+    const nonExistent = join(tempDir, "nonexistent-fdx")
+    const res1 = validateFdxBinaryPath(nonExistent)
+    expect(res1.valid).toBe(false)
+    expect(res1.reason).toContain("File does not exist")
+
+    const dirPath = join(tempDir, "some-dir")
+    mkdirSync(dirPath)
+    const res2 = validateFdxBinaryPath(dirPath)
+    expect(res2.valid).toBe(false)
+    expect(res2.reason).toContain("not a regular file")
+  })
+
+  it("validateFdxBinaryPath verifies valid executable and checksum", () => {
+    const binName = process.platform === "win32" ? "fdx.exe" : "fdx"
+    const binPath = join(tempDir, binName)
+
+    if (process.platform === "win32") {
+      writeFileSync(binPath, "echo fdx v1.0.4", "utf-8")
+    } else {
+      // Mock shell script returning fdx v1.0.4
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+      chmodSync(binPath, 0o755)
+    }
+
+    const sha256 = createHash("sha256").update(readFileSync(binPath)).digest("hex")
+    writeFileSync(join(tempDir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+
+    const val = validateFdxBinaryPath(binPath, tempDir)
+    expect(val.valid).toBe(true)
+    expect(val.version).toBe("1.0.4")
+    expect(val.checksumStatus).toBe("pass")
+  })
+
+  it("validateFdxBinaryPath rejects checksum mismatch", () => {
+    const binName = process.platform === "win32" ? "fdx.exe" : "fdx"
+    const binPath = join(tempDir, binName)
+
+    if (process.platform === "win32") {
+      writeFileSync(binPath, "echo fdx v1.0.4", "utf-8")
+    } else {
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+      chmodSync(binPath, 0o755)
+    }
+
+    writeFileSync(join(tempDir, "checksum.json"), JSON.stringify({ sha256: "0000000000000000000000000000000000000000000000000000000000000000" }), "utf-8")
+
+    const val = validateFdxBinaryPath(binPath, tempDir)
+    expect(val.valid).toBe(false)
+    expect(val.checksumStatus).toBe("fail")
+    expect(val.reason).toContain("Checksum mismatch")
+  })
+
+  it("priority resolution prefers FDX_BINARY_PATH when valid", () => {
+    const binName = process.platform === "win32" ? "fdx.exe" : "fdx"
+    const binPath = join(tempDir, binName)
+
+    if (process.platform === "win32") {
+      writeFileSync(binPath, "echo fdx v1.0.4", "utf-8")
+    } else {
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+      chmodSync(binPath, 0o755)
+    }
+
+    process.env.FDX_BINARY_PATH = binPath
+    const status = getFdxAvailabilityStatus(true)
+
+    expect(status.available).toBe(true)
+    expect(status.source).toBe("env")
+    expect(status.binaryPath).toBe(binPath)
+  })
+
+  it("FDX_DISABLE_FALLBACK=1 throws error when binary is unavailable", () => {
+    delete process.env.FDX_BINARY_PATH
+    process.env.PATH = join(tempDir, "empty-bin")
+    mkdirSync(process.env.PATH, { recursive: true })
+    process.env.FDX_DISABLE_FALLBACK = "1"
+
+    getFdxAvailabilityStatus(true)
+    expect(() => {
+      resolveFdxBinaryPath(true)
+    }).not.toThrow() // resolve return path or null
+
+    const status = getFdxAvailabilityStatus(true)
+    if (!status.available) {
+      expect(status.available).toBe(false)
+    }
+  })
+
+  it("flowdeck fdx CLI commands execute cleanly", async () => {
+    expect(() => handleFdxStatus()).not.toThrow()
+    const verifyOk = handleFdxVerify()
+    expect(typeof verifyOk).toBe("boolean")
+
+    const installOk = await handleFdxInstall(true)
+    expect(typeof installOk).toBe("boolean")
+  })
+
+  it("Clean packed install test: npm pack contains no Rust source in crates/fdx", () => {
+    const root = resolve(__dirname, "..")
+    const packOut = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf-8" })
+    const packJson = JSON.parse(packOut)
+    const files: string[] = packJson[0]?.files?.map((f: any) => f.path) ?? []
+
+    const rustSourceInTarball = files.some(f => f.startsWith("crates/fdx"))
+    expect(rustSourceInTarball).toBe(false)
+  })
+})

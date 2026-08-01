@@ -1,0 +1,25 @@
+{
+  "name": "@heidi-dang/flowdeck-fdx-linux-x64-musl",
+  "version": "1.0.4",
+  "description": "Prebuilt native FDX executable for FlowDeck (linux-x64-musl)",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "libc": [
+    "musl"
+  ],
+  "main": "fdx",
+  "bin": {
+    "fdx": "fdx"
+  },
+  "files": [
+    "fdx",
+    "checksum.json",
+    "LICENSE",
+    "README.md"
+  ]
+}

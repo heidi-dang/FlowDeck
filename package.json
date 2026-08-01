@@ -1,6 +1,6 @@
 {
   "name": "@heidi-dang/flowdeck",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "FlowDeck — production-grade multi-agent orchestration, governance, CI repair, and code intelligence for OpenCode",
   "type": "module",
   "main": "./dist/index.js",
@@ -38,8 +38,6 @@
     "docs",
     "postinstall.mjs",
     "install.sh",
-    "crates/fdx",
-    "!crates/fdx/target/**",
     "!**/*.tmp.*",
     "!**/*.bak.*"
   ],
@@ -128,6 +126,14 @@
     "@opencode-ai/plugin": "^1.17.3",
     "jsonc-parser": "^3.3.1",
     "zod": "^4.4.3"
+  },
+  "optionalDependencies": {
+    "@heidi-dang/flowdeck-fdx-linux-x64-gnu": "1.0.4",
+    "@heidi-dang/flowdeck-fdx-linux-arm64-gnu": "1.0.4",
+    "@heidi-dang/flowdeck-fdx-linux-x64-musl": "1.0.4",
+    "@heidi-dang/flowdeck-fdx-darwin-x64": "1.0.4",
+    "@heidi-dang/flowdeck-fdx-darwin-arm64": "1.0.4",
+    "@heidi-dang/flowdeck-fdx-win32-x64": "1.0.4"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

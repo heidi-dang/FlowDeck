@@ -163,3 +163,9 @@ fd-worktrees/
 *.db
 *.db-wal
 *.db-shm
+
+# Platform package compiled binary build artifacts
+packages/*/fdx
+packages/*/fdx.exe
+packages/*/checksum.json
+

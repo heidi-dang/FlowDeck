@@ -9,8 +9,11 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync, readdirSync, statSync, promises as fsPromises } from "fs"
-import { join, resolve } from "path"
+import { existsSync, readFileSync, readdirSync, statSync, accessSync, constants, promises as fsPromises } from "fs"
+import { join, resolve, dirname } from "path"
+import { createHash } from "node:crypto"
+import { homedir } from "node:os"
+import { createRequire } from "node:module"
 import {
   topicContextPath,
   topicDecisionsPath,
@@ -182,59 +185,371 @@ export function setActiveProjectDir(dir: string): void {
   activeProjectDir = dir
 }
 
-let fdxCacheKey: string | null = null
-let fdxCacheValue: { available: boolean; binary: string | null } | null = null
+export interface FdxTarget {
+  platform: NodeJS.Platform;
+  arch: string;
+  libc?: "gnu" | "musl";
+  packageName: string;
+  executableName: "fdx" | "fdx.exe";
+}
 
-export function resolveFdxBinaryPath(): string | null {
-  const envPath = process.env.FDX_BINARY_PATH
-  if (envPath) {
-    const resolved = resolve(envPath)
-    if (existsSync(resolved)) {
-      try {
-        const st = statSync(resolved)
-        if (st.isFile()) return resolved
-      } catch {}
-    }
-    return null
+export interface FdxResolutionResult {
+  available: boolean;
+  binary: string | null;
+  binaryPath: string | null;
+  message: string;
+  source: "env" | "package" | "cache" | "path" | "none";
+  target: FdxTarget | null;
+  targetSupported: boolean;
+  packagePresent: boolean;
+  binaryPresent: boolean;
+  binaryIntegrity: "pass" | "fail" | "unverified";
+  binaryVersion: string | null;
+  versionCompatible: boolean;
+  checksumStatus: "pass" | "fail" | "missing" | "unverified";
+  executionStatus: "pass" | "fail" | "unverified";
+  fallbackAvailable: boolean;
+  diagnostics: string[];
+  repairCommand?: string;
+}
+
+export function detectFdxTarget(): FdxTarget | null {
+  const platform = process.platform
+  const arch = process.arch
+
+  let libc: "gnu" | "musl" | undefined
+  if (platform === "linux") {
+    let isMusl = false
+    try {
+      if (
+        existsSync("/etc/alpine-release") ||
+        existsSync("/lib/ld-musl-x86_64.so.1") ||
+        existsSync("/lib/ld-musl-aarch64.so.1")
+      ) {
+        isMusl = true
+      } else {
+        const report: any = (process as any).report?.getReport?.()
+        if (report && report.header && report.header.glibcVersionRuntime === undefined) {
+          isMusl = true
+        }
+      }
+    } catch {}
+    libc = isMusl ? "musl" : "gnu"
+  }
+
+  if (platform === "linux" && arch === "x64" && libc === "gnu") {
+    return { platform, arch, libc, packageName: "@heidi-dang/flowdeck-fdx-linux-x64-gnu", executableName: "fdx" }
+  }
+  if (platform === "linux" && arch === "arm64" && libc === "gnu") {
+    return { platform, arch, libc, packageName: "@heidi-dang/flowdeck-fdx-linux-arm64-gnu", executableName: "fdx" }
+  }
+  if (platform === "linux" && arch === "x64" && libc === "musl") {
+    return { platform, arch, libc, packageName: "@heidi-dang/flowdeck-fdx-linux-x64-musl", executableName: "fdx" }
+  }
+  if (platform === "darwin" && arch === "x64") {
+    return { platform, arch, packageName: "@heidi-dang/flowdeck-fdx-darwin-x64", executableName: "fdx" }
+  }
+  if (platform === "darwin" && arch === "arm64") {
+    return { platform, arch, packageName: "@heidi-dang/flowdeck-fdx-darwin-arm64", executableName: "fdx" }
+  }
+  if (platform === "win32" && arch === "x64") {
+    return { platform, arch, packageName: "@heidi-dang/flowdeck-fdx-win32-x64", executableName: "fdx.exe" }
+  }
+
+  return null
+}
+
+export function getFdxCacheDir(target: FdxTarget, version = "1.0.4"): string {
+  const targetName = `${target.platform}-${target.arch}${target.libc ? `-${target.libc}` : ""}`
+  if (process.env.XDG_CACHE_HOME) {
+    return join(process.env.XDG_CACHE_HOME, "flowdeck", "fdx", version, targetName)
+  }
+  if (process.platform === "win32") {
+    return join(process.env.LOCALAPPDATA || homedir(), "flowdeck", "cache", "fdx", version, targetName)
+  }
+  return join(homedir(), ".cache", "flowdeck", "fdx", version, targetName)
+}
+
+export function validateFdxBinaryPath(binPath: string, expectedDir?: string): {
+  valid: boolean;
+  version: string | null;
+  checksumStatus: "pass" | "fail" | "missing" | "unverified";
+  reason?: string;
+} {
+  if (!existsSync(binPath)) {
+    return { valid: false, version: null, checksumStatus: "missing", reason: "File does not exist" }
   }
   try {
-    execFileSync("fdx", ["--help"], { stdio: "ignore", shell: false })
-    return "fdx"
+    const st = statSync(binPath)
+    if (!st.isFile()) {
+      return { valid: false, version: null, checksumStatus: "fail", reason: "Path is a directory or not a regular file" }
+    }
   } catch {
-    return null
+    return { valid: false, version: null, checksumStatus: "fail", reason: "Cannot stat file" }
   }
+
+  if (process.platform !== "win32") {
+    try {
+      accessSync(binPath, constants.X_OK)
+    } catch {
+      return { valid: false, version: null, checksumStatus: "fail", reason: "Missing POSIX executable permission (X_OK)" }
+    }
+  }
+
+  let checksumStatus: "pass" | "fail" | "missing" | "unverified" = "unverified"
+  const dir = expectedDir || dirname(binPath)
+  const manifestPath = join(dir, "checksum.json")
+  if (existsSync(manifestPath)) {
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"))
+      const expectedSha = manifest.sha256 || manifest.checksum
+      if (expectedSha) {
+        const fileBuf = readFileSync(binPath)
+        const actualSha = createHash("sha256").update(fileBuf).digest("hex")
+        if (actualSha !== expectedSha) {
+          return { valid: false, version: null, checksumStatus: "fail", reason: `Checksum mismatch: expected ${expectedSha}, got ${actualSha}` }
+        }
+        checksumStatus = "pass"
+      }
+    } catch {
+      return { valid: false, version: null, checksumStatus: "fail", reason: "Corrupt checksum.json manifest" }
+    }
+  }
+
+  let version: string | null = null
+  try {
+    const out = execFileSync(binPath, ["--version"], { encoding: "utf-8", timeout: 2000, shell: false })
+    const match = out.match(/fdx\s+v?([0-9]+\.[0-9]+\.[0-9]+)/i) || out.match(/v?([0-9]+\.[0-9]+\.[0-9]+)/)
+    if (match && match[1]) {
+      version = match[1]
+    }
+  } catch (err: any) {
+    return { valid: false, version: null, checksumStatus, reason: `Binary execution failed: ${err.message}` }
+  }
+
+  if (!version) {
+    return { valid: false, version: null, checksumStatus, reason: "Binary returned malformed --version output" }
+  }
+
+  return { valid: true, version, checksumStatus }
+}
+
+export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
+  const target = detectFdxTarget()
+  const diagnostics: string[] = []
+  const repairCommand = "npx flowdeck fdx repair"
+
+  // 1. Explicit FDX_BINARY_PATH
+  const envPath = process.env.FDX_BINARY_PATH
+  if (envPath) {
+    const resolvedEnv = resolve(envPath)
+    const val = validateFdxBinaryPath(resolvedEnv)
+    if (val.valid) {
+      return {
+        available: true,
+        binary: resolvedEnv,
+        binaryPath: resolvedEnv,
+        message: `FDX native binary is available at "${resolvedEnv}".`,
+        source: "env",
+        target,
+        targetSupported: target !== null,
+        packagePresent: false,
+        binaryPresent: true,
+        binaryIntegrity: "pass",
+        binaryVersion: val.version,
+        versionCompatible: true,
+        checksumStatus: val.checksumStatus,
+        executionStatus: "pass",
+        fallbackAvailable: true,
+        diagnostics: [`Using environment binary from FDX_BINARY_PATH="${resolvedEnv}"`],
+        repairCommand,
+      }
+    }
+    diagnostics.push(`FDX_BINARY_PATH set to "${envPath}" but validation failed: ${val.reason}`)
+    return {
+      available: false,
+      binary: null,
+      binaryPath: null,
+      message: `FDX_BINARY_PATH set to "${envPath}" but validation failed: ${val.reason}`,
+      source: "env",
+      target,
+      targetSupported: target !== null,
+      packagePresent: false,
+      binaryPresent: false,
+      binaryIntegrity: "fail",
+      binaryVersion: null,
+      versionCompatible: false,
+      checksumStatus: val.checksumStatus,
+      executionStatus: "fail",
+      fallbackAvailable: true,
+      diagnostics,
+      repairCommand,
+    }
+  }
+
+  // 2. Compatible FlowDeck platform package
+  if (target) {
+    const execName = target.executableName
+    const pkgName = target.packageName
+    const searchDirs: string[] = [
+      activeProjectDir,
+      process.cwd(),
+      resolve(dirname(new URL(import.meta.url).pathname), "..", ".."),
+    ]
+
+    for (const searchDir of searchDirs) {
+      let pkgDir: string | null = null
+      try {
+        const req = createRequire(join(searchDir, "package.json"))
+        const jsonPath = req.resolve(`${pkgName}/package.json`)
+        pkgDir = dirname(jsonPath)
+      } catch {
+        const candidate = join(searchDir, "node_modules", pkgName)
+        if (existsSync(candidate)) pkgDir = candidate
+        const localDev = join(searchDir, "packages", pkgName.replace("@heidi-dang/", ""))
+        if (existsSync(localDev)) pkgDir = localDev
+      }
+
+      if (pkgDir && existsSync(pkgDir)) {
+        const binPath = join(pkgDir, execName)
+        const val = validateFdxBinaryPath(binPath, pkgDir)
+        if (val.valid) {
+          return {
+            available: true,
+            binary: binPath,
+            binaryPath: binPath,
+            message: `FDX native binary is available at "${binPath}".`,
+            source: "package",
+            target,
+            targetSupported: true,
+            packagePresent: true,
+            binaryPresent: true,
+            binaryIntegrity: "pass",
+            binaryVersion: val.version,
+            versionCompatible: true,
+            checksumStatus: val.checksumStatus,
+            executionStatus: "pass",
+            fallbackAvailable: true,
+            diagnostics: [`Resolved compatible platform package binary at "${binPath}"`],
+            repairCommand,
+          }
+        }
+        diagnostics.push(`Platform package "${pkgName}" found at "${pkgDir}" but binary validation failed: ${val.reason}`)
+      }
+    }
+  } else {
+    diagnostics.push(`Platform target not supported for prebuilt binary distribution: ${process.platform}/${process.arch}`)
+  }
+
+  // 3. FlowDeck repair cache
+  if (target) {
+    const cacheDir = getFdxCacheDir(target)
+    const cacheBin = join(cacheDir, target.executableName)
+    if (existsSync(cacheBin)) {
+      const val = validateFdxBinaryPath(cacheBin, cacheDir)
+      if (val.valid) {
+        return {
+          available: true,
+          binary: cacheBin,
+          binaryPath: cacheBin,
+          message: `FDX native binary is available at "${cacheBin}".`,
+          source: "cache",
+          target,
+          targetSupported: true,
+          packagePresent: true,
+          binaryPresent: true,
+          binaryIntegrity: "pass",
+          binaryVersion: val.version,
+          versionCompatible: true,
+          checksumStatus: val.checksumStatus,
+          executionStatus: "pass",
+          fallbackAvailable: true,
+          diagnostics: [`Resolved repaired native binary from cache at "${cacheBin}"`],
+          repairCommand,
+        }
+      }
+      diagnostics.push(`Repair cache found at "${cacheBin}" but binary validation failed: ${val.reason}`)
+    }
+  }
+
+  // 4. Compatible fdx binary from system PATH
+  const pathEnv = process.env.PATH || ""
+  const pathDirs = pathEnv.split(process.platform === "win32" ? ";" : ":").filter(Boolean)
+  const execName = target ? target.executableName : (process.platform === "win32" ? "fdx.exe" : "fdx")
+
+  for (const pathDir of pathDirs) {
+    const pathBin = join(pathDir, execName)
+    if (existsSync(pathBin)) {
+      const val = validateFdxBinaryPath(pathBin)
+      if (val.valid) {
+        return {
+          available: true,
+          binary: pathBin,
+          binaryPath: pathBin,
+          message: `FDX native binary is available at "${pathBin}".`,
+          source: "path",
+          target,
+          targetSupported: target !== null,
+          packagePresent: false,
+          binaryPresent: true,
+          binaryIntegrity: "pass",
+          binaryVersion: val.version,
+          versionCompatible: true,
+          checksumStatus: val.checksumStatus,
+          executionStatus: "pass",
+          fallbackAvailable: true,
+          diagnostics: [`Resolved system PATH binary at "${pathBin}"`],
+          repairCommand,
+        }
+      }
+      diagnostics.push(`PATH candidate at "${pathBin}" rejected: ${val.reason}`)
+    }
+  }
+
+  // 5. Fallback
+  return {
+    available: false,
+    binary: null,
+    binaryPath: null,
+    message: "FDX native binary is unavailable; native TypeScript fallbacks active.",
+    source: "none",
+    target,
+    targetSupported: target !== null,
+    packagePresent: false,
+    binaryPresent: false,
+    binaryIntegrity: "fail",
+    binaryVersion: null,
+    versionCompatible: false,
+    checksumStatus: "missing",
+    executionStatus: "fail",
+    fallbackAvailable: true,
+    diagnostics,
+    repairCommand,
+  }
+}
+
+let fdxCacheKey: string | null = null
+let fdxCacheValue: FdxResolutionResult | null = null
+
+export function resolveFdxBinaryPath(forceRefresh = false): string | null {
+  const status = getFdxAvailabilityStatus(forceRefresh)
+  return status.binaryPath
 }
 
 export function checkFdxAvailability(forceRefresh = false): boolean {
   return getFdxAvailabilityStatus(forceRefresh).available
 }
 
-export function getFdxAvailabilityStatus(forceRefresh = false): {
-  available: boolean; binary: string | null; message: string
-} {
+export function getFdxAvailabilityStatus(forceRefresh = false): FdxResolutionResult {
   const currentKey = `${process.env.FDX_BINARY_PATH || ""}:${process.env.PATH || ""}`
   if (!forceRefresh && fdxCacheKey === currentKey && fdxCacheValue !== null) {
-    return {
-      available: fdxCacheValue.available,
-      binary: fdxCacheValue.binary,
-      message: fdxCacheValue.available
-        ? `FDX native binary is available at "${fdxCacheValue.binary}".`
-        : "FDX native binary is unavailable; native TypeScript fallbacks active.",
-    }
+    return fdxCacheValue
   }
 
-  const resolved = resolveFdxBinaryPath()
-  const available = resolved !== null
+  const res = resolveFdxBinaryPathDetailed()
   fdxCacheKey = currentKey
-  fdxCacheValue = { available, binary: resolved }
-
-  return {
-    available,
-    binary: resolved,
-    message: available
-      ? `FDX native binary is available at "${resolved}".`
-      : "FDX native binary is unavailable; native TypeScript fallbacks active.",
-  }
+  fdxCacheValue = res
+  return res
 }
 
 export function shouldDisableFallback(): boolean {
@@ -243,11 +558,11 @@ export function shouldDisableFallback(): boolean {
 
 function fdxBin(): string {
   const status = getFdxAvailabilityStatus()
-  if (status.available && status.binary) return status.binary
+  if (status.available && status.binaryPath) return status.binaryPath
   if (shouldDisableFallback()) {
     throw new Error(`[FDX Fallback Disabled] Native binary unavailable. FDX_BINARY_PATH="${process.env.FDX_BINARY_PATH || ""}"`)
   }
-  throw new Error("fdx not found in PATH — install it with `bun run build:fdx` or set FDX_BINARY_PATH")
+  throw new Error("fdx native binary unavailable and fallback disabled or not found — run 'flowdeck fdx repair'")
 }
 
 const FDX_TIMEOUT_MS = 30_000

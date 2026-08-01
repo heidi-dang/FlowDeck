@@ -1,0 +1,85 @@
+name: Build FDX Native Packages
+
+on:
+  push:
+    branches:
+      - main
+      - 'fix/**'
+      - 'feat/**'
+  pull_request:
+
+jobs:
+  build-binaries:
+    name: Build FDX (${{ matrix.target.name }})
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: linux-x64-gnu
+            os: ubuntu-latest
+            pkg: flowdeck-fdx-linux-x64-gnu
+            rust_target: x86_64-unknown-linux-gnu
+            binary: fdx
+          - name: linux-arm64-gnu
+            os: ubuntu-latest
+            pkg: flowdeck-fdx-linux-arm64-gnu
+            rust_target: aarch64-unknown-linux-gnu
+            binary: fdx
+          - name: linux-x64-musl
+            os: ubuntu-latest
+            pkg: flowdeck-fdx-linux-x64-musl
+            rust_target: x86_64-unknown-linux-musl
+            binary: fdx
+          - name: darwin-x64
+            os: macos-latest
+            pkg: flowdeck-fdx-darwin-x64
+            rust_target: x86_64-apple-darwin
+            binary: fdx
+          - name: darwin-arm64
+            os: macos-latest
+            pkg: flowdeck-fdx-darwin-arm64
+            rust_target: aarch64-apple-darwin
+            binary: fdx
+          - name: win32-x64
+            os: windows-latest
+            pkg: flowdeck-fdx-win32-x64
+            rust_target: x86_64-pc-windows-msvc
+            binary: fdx.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.rust_target }}
+
+      - name: Build FDX Binary
+        run: cargo build --manifest-path crates/fdx/Cargo.toml --release --locked --target ${{ matrix.target.rust_target }}
+
+      - name: Populate Package
+        shell: bash
+        run: |
+          mkdir -p packages/${{ matrix.target.pkg }}
+          cp target/${{ matrix.target.rust_target }}/release/${{ matrix.target.binary }} packages/${{ matrix.target.pkg }}/
+          cd packages/${{ matrix.target.pkg }}
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            SHA=$(certutil -hashfile ${{ matrix.target.binary }} SHA256 | grep -v "hash" | tr -d '\r\n ')
+          else
+            SHA=$(shasum -a 256 ${{ matrix.target.binary }} | awk '{print $1}')
+          fi
+          echo "{\"packageName\":\"@heidi-dang/${{ matrix.target.pkg }}\",\"sha256\":\"$SHA\",\"builtAt\":\"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"}" > checksum.json
+          cp ../../LICENSE . || true
+
+      - name: Test Packed Tarball
+        shell: bash
+        run: |
+          cd packages/${{ matrix.target.pkg }}
+          npm pack --dry-run
+
+      - name: Upload Package Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target.pkg }}
+          path: packages/${{ matrix.target.pkg }}/

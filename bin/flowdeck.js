@@ -221,6 +221,29 @@ async function cmdInstall() {
     console.log(`  Config: ${configDir}`);
     console.log(`  Source: ${checkoutPath}`);
   }
+
+  // Verify native FDX availability after plugin registration
+  try {
+    const { getFdxAvailabilityStatus, detectFdxTarget } = await import("../src/tools/fdx-shared.js");
+    const target = detectFdxTarget();
+    const fdxStatus = getFdxAvailabilityStatus(true);
+
+    console.log(`\n── Native FDX Status ──`);
+    if (!target) {
+      console.log(`  ℹ Target platform ${process.platform}/${process.arch}: Native FDX prebuilt package not targeted.`);
+      console.log(`  ✓ TypeScript fallback mode active.`);
+    } else if (fdxStatus.available && fdxStatus.binaryPath) {
+      console.log(`  ✓ Native FDX binary resolved: ${fdxStatus.binaryPath}`);
+      console.log(`  ✓ Source: ${fdxStatus.source} (v${fdxStatus.binaryVersion || "1.0.4"})`);
+    } else {
+      console.log(`  ⚠ Native FDX binary not resolved for target ${target.platform}/${target.arch}${target.libc ? `-${target.libc}` : ""}`);
+      console.log(`  To install/repair native FDX, run: flowdeck fdx repair`);
+      const profile = process.env.FLOWDECK_PROFILE || "recommended-dev";
+      if (profile !== "minimal") {
+        console.log(`  ⚠ Profile "${profile}" expects native FDX performance.`);
+      }
+    }
+  } catch {}
 }
 
 async function cmdUpdate() {
@@ -902,6 +925,27 @@ async function cmdDryRun() {
   console.log(`Dry run complete. Use: flowdeck install`);
 }
 
+async function cmdFdx() {
+  const sub = args[1] || "status";
+  const { handleFdxStatus, handleFdxInstall, handleFdxVerify } = await import("../src/commands/fdx-admin.js");
+  if (sub === "status") {
+    handleFdxStatus();
+  } else if (sub === "install") {
+    const ok = await handleFdxInstall(false);
+    if (!ok) process.exit(1);
+  } else if (sub === "repair") {
+    const ok = await handleFdxInstall(true);
+    if (!ok) process.exit(1);
+  } else if (sub === "verify") {
+    const ok = handleFdxVerify();
+    if (!ok) process.exit(1);
+  } else {
+    console.error(`Unknown fdx subcommand: ${sub}`);
+    console.error(`Usage: flowdeck fdx [status|install|repair|verify]`);
+    process.exit(1);
+  }
+}
+
 // ─── Dispatch ──────────────────────────────────────────────────────────
 
 const handlers = {
@@ -910,6 +954,7 @@ const handlers = {
   verify: cmdVerify,
   doctor: cmdDoctor,
   uninstall: cmdUninstall,
+  fdx: cmdFdx,
   "dry-run": cmdDryRun,
   "config validate": cmdConfigValidate,
   migrate: cmdMigrate,

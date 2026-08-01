@@ -129,5 +129,102 @@ export async function runRuntimeChecks(_directory: string): Promise<CheckResult[
     autoFixAvailable: false,
   })
 
+  // ─── FDX Native Distribution Doctor Checks ─────────────────────────────
+  const { getFdxAvailabilityStatus } = await import("../../tools/fdx-shared.js")
+  const fdxStatus = getFdxAvailabilityStatus(true)
+  const profile = process.env.FLOWDECK_PROFILE || "recommended-dev"
+  const isStrictFail = profile !== "minimal"
+
+  // 1. fdx.target-supported
+  checks.push({
+    id: "fdx.target-supported",
+    title: "FDX Platform Target Support",
+    category: "runtime",
+    severity: "info",
+    status: fdxStatus.targetSupported ? "pass" : "info",
+    detected: fdxStatus.target ? `${fdxStatus.target.platform}/${fdxStatus.target.arch}${fdxStatus.target.libc ? ` (${fdxStatus.target.libc})` : ""}` : `${process.platform}/${process.arch} (unsupported for native package)`,
+    expected: "Supported platform target",
+    recommendation: fdxStatus.targetSupported ? "OK" : "Target uses TypeScript fallback by design",
+    autoFixAvailable: false,
+  })
+
+  // 2. fdx.package-present
+  checks.push({
+    id: "fdx.package-present",
+    title: "FDX Platform Package Present",
+    category: "runtime",
+    severity: isStrictFail ? "high" : "medium",
+    status: fdxStatus.packagePresent ? "pass" : (fdxStatus.targetSupported ? (isStrictFail ? "error" : "warning") : "pass"),
+    detected: fdxStatus.packagePresent ? `Package ${fdxStatus.target?.packageName} resolved` : "Optional package missing",
+    expected: fdxStatus.target?.packageName ?? "n/a",
+    recommendation: fdxStatus.packagePresent ? "OK" : "Run 'flowdeck fdx repair' or install optionalDependencies",
+    autoFixAvailable: true,
+  })
+
+  // 3. fdx.binary-present
+  checks.push({
+    id: "fdx.binary-present",
+    title: "FDX Native Binary Present",
+    category: "runtime",
+    severity: isStrictFail ? "high" : "medium",
+    status: fdxStatus.binaryPresent ? "pass" : (fdxStatus.targetSupported ? (isStrictFail ? "error" : "warning") : "pass"),
+    detected: fdxStatus.binaryPath ? `Binary at "${fdxStatus.binaryPath}" (${fdxStatus.source})` : "No binary found",
+    expected: fdxStatus.target?.executableName ?? "fdx",
+    recommendation: fdxStatus.binaryPresent ? "OK" : "Run 'flowdeck fdx repair'",
+    autoFixAvailable: true,
+  })
+
+  // 4. fdx.binary-integrity
+  checks.push({
+    id: "fdx.binary-integrity",
+    title: "FDX Binary Checksum Integrity",
+    category: "runtime",
+    severity: "high",
+    status: fdxStatus.checksumStatus === "fail" ? "error" : "pass",
+    detected: `Checksum status: ${fdxStatus.checksumStatus}`,
+    expected: "SHA-256 matches manifest",
+    recommendation: fdxStatus.checksumStatus === "fail" ? "Corrupt binary — run 'flowdeck fdx repair'" : "OK",
+    autoFixAvailable: true,
+  })
+
+  // 5. fdx.binary-version
+  checks.push({
+    id: "fdx.binary-version",
+    title: "FDX Binary Version Compatibility",
+    category: "runtime",
+    severity: "high",
+    status: fdxStatus.versionCompatible ? "pass" : (fdxStatus.available ? "error" : (isStrictFail ? "error" : "warning")),
+    detected: fdxStatus.binaryVersion ? `v${fdxStatus.binaryVersion}` : "none",
+    expected: ">= 1.0.0",
+    recommendation: fdxStatus.versionCompatible ? "OK" : "Run 'flowdeck fdx repair'",
+    autoFixAvailable: true,
+  })
+
+  // 6. fdx.binary-execution
+  checks.push({
+    id: "fdx.binary-execution",
+    title: "FDX Native Binary Execution",
+    category: "runtime",
+    severity: isStrictFail ? "high" : "medium",
+    status: fdxStatus.executionStatus === "pass" ? "pass" : (fdxStatus.targetSupported ? (isStrictFail ? "error" : "warning") : "pass"),
+    detected: fdxStatus.executionStatus,
+    expected: "pass",
+    recommendation: fdxStatus.executionStatus === "pass" ? "OK" : "Run 'flowdeck fdx repair'",
+    autoFixAvailable: true,
+  })
+
+  // 7. fdx.fallback-available
+  checks.push({
+    id: "fdx.fallback-available",
+    title: "FDX TypeScript Fallback Availability",
+    category: "runtime",
+    severity: "info",
+    status: "pass",
+    detected: fdxStatus.available ? "Inactive (native mode active)" : "Active (TypeScript fallback mode)",
+    expected: "TypeScript fallback available for unsupported platforms or recovery",
+    recommendation: "OK",
+    autoFixAvailable: false,
+  })
+
   return checks
 }

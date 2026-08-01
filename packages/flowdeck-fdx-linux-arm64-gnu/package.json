@@ -1,0 +1,26 @@
+{
+  "name": "@heidi-dang/flowdeck-fdx-linux-arm64-gnu",
+  "version": "1.0.4",
+  "description": "Prebuilt native FDX executable for FlowDeck (linux-arm64-gnu)",
+  "license": "MIT",
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "glibc",
+    "gnu"
+  ],
+  "main": "fdx",
+  "bin": {
+    "fdx": "fdx"
+  },
+  "files": [
+    "fdx",
+    "checksum.json",
+    "LICENSE",
+    "README.md"
+  ]
+}
