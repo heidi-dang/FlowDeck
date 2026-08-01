@@ -7,6 +7,31 @@
 
 import { z } from "zod"
 import { zNonEmptyId } from "./task"
+import { getAllAgentIds, getPrimaryAgentIds } from "@/services/canonical-registry"
+
+/**
+ * Canonical agent identities derived from the canonical agent registry
+ * (single source of truth). The routing contract never duplicates the
+ * authoritative agent list; additions/removals propagate here automatically.
+ */
+export const CANONICAL_AGENT_IDS: readonly string[] = Object.freeze(getAllAgentIds())
+
+/**
+ * Canonical delegating agents: only primary orchestrator agents (heidi /
+ * orchestrator, `delegationPolicy: "justified_only"`) may delegate.
+ * Specialists (`delegationPolicy: "none"`) can never be a delegating agent.
+ */
+export const CANONICAL_DELEGATING_AGENT_IDS: readonly string[] = Object.freeze(getPrimaryAgentIds())
+
+/** Returns true when `agentId` is a canonical agent (target must exist). */
+export function isCanonicalAgent(agentId: string): boolean {
+  return CANONICAL_AGENT_IDS.includes(agentId)
+}
+
+/** Returns true when `agentId` is a canonical delegating (orchestrator) agent. */
+export function isCanonicalDelegatingAgent(agentId: string): boolean {
+  return CANONICAL_DELEGATING_AGENT_IDS.includes(agentId)
+}
 
 /**
  * Canonical capability identifier. A capability id names a concrete
@@ -243,6 +268,11 @@ export const zRejectedDelegationReason = z.enum(
   ] as const,
 )
 
+/** Rejects empty and whitespace-only justification entries. */
+const zNonEmptyString = z.string().refine((s) => s.trim().length > 0, {
+  message: "must not be empty or whitespace-only",
+})
+
 /** Zod schema for a DelegationDecision with cross-field invariant checks. */
 export const zDelegationDecision = z
   .object({
@@ -256,9 +286,26 @@ export const zDelegationDecision = z
     allowed: z.boolean(),
     reason: zDelegationReason.optional(),
     rejectionReason: zRejectedDelegationReason.optional(),
-    justification: z.array(z.string()),
+    justification: z.array(zNonEmptyString),
   })
   .superRefine((d, ctx) => {
+    // Only canonical orchestrator/delegating agents may delegate; a
+    // specialist can never be a delegating agent.
+    if (!isCanonicalDelegatingAgent(d.delegatingAgent)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["delegatingAgent"],
+        message: `only canonical delegating agents may delegate; "${d.delegatingAgent}" is not one`,
+      })
+    }
+    // Target must exist in the canonical registry.
+    if (!isCanonicalAgent(d.targetAgent)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["targetAgent"],
+        message: `target agent "${d.targetAgent}" does not exist in the canonical registry`,
+      })
+    }
     if (d.delegatingAgent === d.targetAgent) {
       ctx.addIssue({ code: "custom", path: ["targetAgent"], message: "self-delegation is not allowed" })
     }
@@ -273,6 +320,14 @@ export const zDelegationDecision = z
           message: "allowed decisions cannot carry a rejection reason",
         })
       }
+      // Allowed decisions must carry non-empty justification evidence.
+      if (d.justification.length === 0) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["justification"],
+          message: "allowed decisions require non-empty justification evidence",
+        })
+      }
     } else {
       if (d.rejectionReason === undefined) {
         ctx.addIssue({
@@ -283,6 +338,17 @@ export const zDelegationDecision = z
       }
       if (d.reason !== undefined) {
         ctx.addIssue({ code: "custom", path: ["reason"], message: "rejected decisions cannot carry an allowed reason" })
+      }
+      // Overlap/cost rejections must preserve justification evidence.
+      if (
+        (d.rejectionReason === "rejected_overlap" || d.rejectionReason === "rejected_cost") &&
+        d.justification.length === 0
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["justification"],
+          message: "rejected overlap/cost decisions require justification evidence",
+        })
       }
     }
   })

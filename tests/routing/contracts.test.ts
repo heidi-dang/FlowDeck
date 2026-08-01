@@ -45,6 +45,7 @@ import {
   bindDecisionToSha,
   type RoutingDecisionRecord,
 } from "@/orchestration/routing/contracts";
+import { getSubagentIds, getPrimaryAgentIds } from "@/services/canonical-registry";
 
 function makeValidSpecialistResult(status: SpecialistStatus = "completed"): SpecialistResult {
   return {
@@ -645,6 +646,129 @@ describe("routing contracts: delegation cross-field invariants (D7)", () => {
       justification: [],
     });
     expect(result.success).toBe(false);
+  });
+
+  it("rejects every specialist as a delegating agent", () => {
+    for (const specialist of getSubagentIds()) {
+      const result = zDelegationDecision.safeParse({
+        taskId: "task-1",
+        delegatingAgent: specialist,
+        targetAgent: "backend-coder",
+        depth: 1,
+        allowed: true,
+        reason: "specialist_expertise",
+        justification: ["specialist context"],
+      });
+      expect(result.success, `${specialist} must not be allowed to delegate`).toBe(false);
+    }
+  });
+
+  it("accepts a canonical orchestrator delegating agent", () => {
+    for (const delegating of getPrimaryAgentIds()) {
+      const result = zDelegationDecision.safeParse({
+        taskId: "task-1",
+        delegatingAgent: delegating,
+        targetAgent: "backend-coder",
+        depth: 1,
+        allowed: true,
+        reason: "specialist_expertise",
+        justification: ["backend ownership"],
+      });
+      expect(result.success, `${delegating} may delegate`).toBe(true);
+    }
+  });
+
+  it("rejects a target agent that does not exist in the canonical registry", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "not-an-agent",
+      depth: 1,
+      allowed: true,
+      reason: "specialist_expertise",
+      justification: ["context"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an allowed decision with empty justification", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "backend-coder",
+      depth: 1,
+      allowed: true,
+      reason: "specialist_expertise",
+      justification: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects whitespace-only justification entries", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "backend-coder",
+      depth: 1,
+      allowed: true,
+      reason: "specialist_expertise",
+      justification: ["   "],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects whitespace-only delegating/target agent ids", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "  ",
+      targetAgent: "backend-coder",
+      depth: 1,
+      allowed: true,
+      reason: "specialist_expertise",
+      justification: ["context"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects rejected overlap/cost decisions without justification evidence", () => {
+    for (const rejectionReason of ["rejected_overlap", "rejected_cost"]) {
+      const result = zDelegationDecision.safeParse({
+        taskId: "task-1",
+        delegatingAgent: "orchestrator",
+        targetAgent: "backend-coder",
+        depth: 1,
+        allowed: false,
+        rejectionReason,
+        justification: [],
+      });
+      expect(result.success, `${rejectionReason} must require justification`).toBe(false);
+    }
+  });
+
+  it("accepts a rejected overlap decision that preserves justification evidence", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "backend-coder",
+      depth: 1,
+      allowed: false,
+      rejectionReason: "rejected_overlap",
+      justification: ["ownership overlap detected with an active workstream"],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it("accepts a rejected trivial decision without justification (no evidence required)", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "backend-coder",
+      depth: 1,
+      allowed: false,
+      rejectionReason: "rejected_trivial",
+      justification: [],
+    });
+    expect(result.success).toBe(true);
   });
 });
 

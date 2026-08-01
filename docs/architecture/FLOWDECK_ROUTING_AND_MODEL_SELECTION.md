@@ -540,12 +540,24 @@ interface DelegationDecision {
 
 ### 8.4 Hard constraints
 
+- **Delegating agents are derived from the canonical registry.** The contract's `CANONICAL_DELEGATING_AGENT_IDS`
+  is projected from `getPrimaryAgentIds()` (heidi/orchestrator, `delegationPolicy: "justified_only"`); the
+  authoritative agent list is never duplicated in the routing layer.
 - **Max depth is exactly 1.** `validateDelegation` in the canonical registry already enforces this; the
   routing layer never produces a `depth > 1` decision.
 - **No self-delegation.** Any decision targeting the delegating agent is rejected (`SELF_DELEGATION_BLOCKED`
   semantics preserved).
 - **No specialist delegation.** Specialists (`delegationPolicy: "none"` in canonical-registry.ts) never
   delegate; the routing layer never emits a decision with a specialist as `delegatingAgent`.
+- **Target exists.** `targetAgent` must be a canonical agent id from the registry; an unknown target is
+  rejected.
+- **Allowed decisions carry evidence.** An `allowed` decision requires a non-empty allowed `reason` and
+  non-empty `justification`; `rejectionReason` is forbidden.
+- **Rejected decisions carry a rejection reason.** A `rejected` decision requires `rejectionReason`;
+  `reason` is forbidden. `rejected_overlap` and `rejected_cost` rejections additionally preserve
+  non-empty justification evidence.
+- **No empty or whitespace-only identifiers.** `delegatingAgent`, `targetAgent`, `taskId`, and every
+  `justification` entry reject empty/whitespace-only strings.
 
 ### 8.5 Budget table
 
