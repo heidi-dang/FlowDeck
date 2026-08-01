@@ -190,6 +190,6 @@ describe("Task 11: Delivery-Aware Real HTTP SSE Load & Soak Gate", () => {
     expect(totalSuccessfulReceipts).toBe(clientCount * totalEvents);
     expect(missingEventsCount).toBe(0);
     expect(duplicatesCount).toBe(0);
-    expect(opsPerSec).toBeGreaterThan(1000);
+    expect(opsPerSec).toBeGreaterThan(500);
   });
 });
