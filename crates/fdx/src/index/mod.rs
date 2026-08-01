@@ -698,6 +698,192 @@ pub fn query_git_state(snap: &IndexSnapshot) -> GitStateSnapshot {
     snap.git_state.snapshot.clone()
 }
 
+// ─── Process-wide per-worktree registry ─────────────────────────────────────
+//
+// The daemon serves multiple connections; each `query` carries a `cwd` which
+// identifies the worktree. Index services are keyed by the worktree root and
+// shared across connections, so concurrent clients on one repository share
+// one index (with per-service locks — no global lock across repos).
+
+use std::collections::HashMap;
+
+/// Registry of open index services, keyed by canonical worktree root.
+pub struct IndexRegistry {
+    services: Mutex<HashMap<String, Arc<IndexService>>>,
+    options: IndexServiceOptions,
+}
+
+impl IndexRegistry {
+    pub fn new(options: IndexServiceOptions) -> Self {
+        Self {
+            services: Mutex::new(HashMap::new()),
+            options,
+        }
+    }
+
+    /// Get or open the index service for a worktree root.
+    pub fn service_for(&self, worktree: &Path) -> std::io::Result<Arc<IndexService>> {
+        let canonical = worktree
+            .canonicalize()
+            .unwrap_or_else(|_| worktree.to_path_buf());
+        let key = canonical.to_string_lossy().into_owned();
+        {
+            let map = self.services.lock().unwrap();
+            if let Some(svc) = map.get(&key) {
+                return Ok(svc.clone());
+            }
+        }
+        let svc = Arc::new(IndexService::open(&canonical, &self.options)?);
+        let mut map = self.services.lock().unwrap();
+        // Double-checked: another thread may have opened it while we waited.
+        if let Some(existing) = map.get(&key) {
+            Ok(existing.clone())
+        } else {
+            map.insert(key, svc.clone());
+            Ok(svc)
+        }
+    }
+
+    /// Remove an idle service (used by invalidate/rebuild paths if desired).
+    #[allow(dead_code)]
+    pub fn drop_service(&self, worktree: &Path) {
+        let canonical = worktree
+            .canonicalize()
+            .unwrap_or_else(|_| worktree.to_path_buf());
+        let key = canonical.to_string_lossy().into_owned();
+        self.services.lock().unwrap().remove(&key);
+    }
+}
+
+/// The process-wide index registry (daemon-wide).
+pub static GLOBAL_INDEX_REGISTRY: once_cell::sync::Lazy<IndexRegistry> =
+    once_cell::sync::Lazy::new(|| IndexRegistry::new(IndexServiceOptions::default()));
+
+/// Handle an index command from the daemon's `run_command` dispatch.
+///
+/// `argv` mirrors the one-shot CLI argv. Supported commands:
+/// `index.status`, `index.refresh`, `index.invalidate`, `index.rebuild`,
+/// `files.query`, `symbols.query`, `dependencies.query`, `testsFor.query`,
+/// `gitState.query`.
+///
+/// Returns `None` when the command is not an index command (the caller
+/// continues normal dispatch).
+pub fn handle_index_command(
+    command: &str,
+    argv: &[String],
+    cwd: Option<&str>,
+) -> Option<serde_json::Value> {
+    let (op, _rest) = match command.split_once('.') {
+        Some((prefix, op))
+            if prefix == "index"
+                || prefix == "files"
+                || prefix == "symbols"
+                || prefix == "dependencies"
+                || prefix == "testsFor"
+                || prefix == "gitState" =>
+        {
+            (op.to_string(), command.to_string())
+        }
+        _ => return None,
+    };
+
+    // All index commands need a worktree root. `cwd` is the daemon-provided
+    // working directory; when absent we use the current dir.
+    let worktree = match cwd {
+        Some(c) => PathBuf::from(c),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+
+    // index.* commands (no per-query service state needed at dispatch).
+    match op.as_str() {
+        "status" => {
+            let svc = GLOBAL_INDEX_REGISTRY.service_for(&worktree).ok()?;
+            let status = svc.status();
+            return serde_json::to_value(&status).ok();
+        }
+        "refresh" => {
+            let force = argv.iter().any(|a| a == "--force" || a == "--full");
+            let svc = GLOBAL_INDEX_REGISTRY.service_for(&worktree).ok()?;
+            let snap = svc.refresh(force).ok()?;
+            return Some(serde_json::json!({
+                "generation": snap.generation(),
+                "headSha": snap.manifest.head_sha,
+                "files": snap.files.files.len(),
+                "symbols": snap.symbols.by_id.len(),
+                "dependencies": snap.dependencies.forward.values().map(|v| v.len()).sum::<usize>(),
+            }));
+        }
+        "invalidate" => {
+            let svc = GLOBAL_INDEX_REGISTRY.service_for(&worktree).ok()?;
+            svc.invalidate();
+            return Some(serde_json::json!({ "invalidated": true }));
+        }
+        "rebuild" => {
+            let svc = GLOBAL_INDEX_REGISTRY.service_for(&worktree).ok()?;
+            let snap = svc.rebuild().ok()?;
+            return Some(serde_json::json!({
+                "generation": snap.generation(),
+                "files": snap.files.files.len(),
+            }));
+        }
+        _ => {}
+    }
+
+    // Query commands need a loaded snapshot.
+    let svc = GLOBAL_INDEX_REGISTRY.service_for(&worktree).ok()?;
+    let snap = match svc.snapshot() {
+        Some(s) => s,
+        None => {
+            // Lazy refresh so queries work on first use.
+            svc.refresh(false).ok()?
+        }
+    };
+
+    let limit = parse_limit(argv);
+    let file = argv.first().map(|s| s.as_str()).unwrap_or("");
+
+    let value = match op.as_str() {
+        "query" if command.starts_with("files.") => {
+            let query = argv.first().map(|s| s.as_str()).unwrap_or("");
+            let rows: Vec<&FileMeta> = query_files(&snap, query, limit);
+            serde_json::to_value(&rows).ok()?
+        }
+        "query" if command.starts_with("symbols.") => {
+            let name = argv.first().map(|s| s.as_str()).unwrap_or("");
+            let rows = query_symbols(&snap, name, limit);
+            serde_json::to_value(&rows).ok()?
+        }
+        "query" if command.starts_with("dependencies.") => {
+            let rows = query_edges(&snap, file, limit);
+            serde_json::to_value(&rows).ok()?
+        }
+        "query" if command.starts_with("testsFor.") => {
+            let rows = query_tests_for(&snap, file);
+            serde_json::to_value(&rows).ok()?
+        }
+        "query" if command.starts_with("gitState.") => {
+            let state = query_git_state(&snap);
+            serde_json::to_value(&state).ok()?
+        }
+        _ => return None,
+    };
+    Some(value)
+}
+
+/// Parse a `--limit N` argument.
+fn parse_limit(argv: &[String]) -> usize {
+    for (i, a) in argv.iter().enumerate() {
+        if a == "--limit" {
+            if let Some(v) = argv.get(i + 1) {
+                if let Ok(n) = v.parse::<usize>() {
+                    return n.min(1000);
+                }
+            }
+        }
+    }
+    100
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

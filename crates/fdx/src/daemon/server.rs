@@ -39,7 +39,22 @@ pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Commands hosted in-process by the daemon. Everything else → `E_UNSUPPORTED`
 /// and the client falls back to the one-shot `fdx` spawn.
-pub const HOSTED_COMMANDS: [&str; 3] = ["version", "read", "ls"];
+pub const HOSTED_COMMANDS: [&str; 12] = [
+    "version",
+    "read",
+    "ls",
+    // Task 3: persistent index commands (negotiated via capabilities; older
+    // clients ignore them, and E_UNSUPPORTED preserves the fallback ladder).
+    "index.status",
+    "index.refresh",
+    "index.invalidate",
+    "index.rebuild",
+    "files.query",
+    "symbols.query",
+    "dependencies.query",
+    "testsFor.query",
+    "gitState.query",
+];
 
 /// Server state shared across requests.
 #[derive(Debug, Default)]
@@ -295,16 +310,27 @@ fn run_command(command: &str, argv: &[String], cwd: Option<&str>, req_id: Option
                         .iter()
                         .map(|e| serde_json::json!({ "name": e.name, "is_dir": e.is_dir }))
                         .collect();
-                    Response::ok(req_id, serde_json::json!({ "entries": entries, "cached": false }))
+                    Response::ok(
+                        req_id,
+                        serde_json::json!({ "entries": entries, "cached": false }),
+                    )
                 }
                 Err(e) => Response::error(req_id, err::E_INTERNAL, format!("ls failed: {e}")),
             }
         }
-        other => Response::error(
-            req_id,
-            err::E_UNSUPPORTED,
-            format!("command '{other}' is not hosted in the daemon yet; client should fall back to one-shot spawn"),
-        ),
+        other => {
+            // Task 3: persistent index commands (index.*, *.query). When the
+            // command is not an index command this returns None and we fall
+            // through to E_UNSUPPORTED (preserving the fallback ladder).
+            if let Some(result) = crate::index::handle_index_command(other, argv, cwd) {
+                return Response::ok(req_id, result);
+            }
+            Response::error(
+                req_id,
+                err::E_UNSUPPORTED,
+                format!("command '{other}' is not hosted in the daemon yet; client should fall back to one-shot spawn"),
+            )
+        }
     }
 }
 
@@ -525,8 +551,25 @@ mod tests {
 
     #[test]
     fn hosted_commands_surface_matches_capabilities() {
-        // Capability claims must not exceed implemented behaviour.
-        assert_eq!(HOSTED_COMMANDS, ["version", "read", "ls"]);
+        // Capability claims must not exceed implemented behaviour. Task 3
+        // adds the index commands to the negotiated set.
+        assert_eq!(
+            HOSTED_COMMANDS,
+            [
+                "version",
+                "read",
+                "ls",
+                "index.status",
+                "index.refresh",
+                "index.invalidate",
+                "index.rebuild",
+                "files.query",
+                "symbols.query",
+                "dependencies.query",
+                "testsFor.query",
+                "gitState.query",
+            ]
+        );
         let mut server = Server::new();
         let resp = handle_line(
             &mut server,
