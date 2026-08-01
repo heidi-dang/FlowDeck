@@ -89,6 +89,8 @@ enum Mode {
 #[cfg(unix)]
 fn run_unix_socket(path: &str, idle: Option<Duration>) {
     use std::os::unix::net::UnixListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Instant;
 
     // Remove a stale socket from a previous crashed daemon so we never get
@@ -118,44 +120,44 @@ fn run_unix_socket(path: &str, idle: Option<Duration>) {
     eprintln!("fdxd: listening on {path} (pid {})", std::process::id());
 
     let idle = idle.unwrap_or(transport::DEFAULT_IDLE_TIMEOUT);
-    let mut last_activity = Instant::now();
     let poll_interval = transport::POLL_INTERVAL;
 
-    // Serve one client at a time (the FlowDeck client model). Accept loop:
-    // - Idle (daemon-wide): no connection AND no traffic for `idle` -> exit.
-    // - EOF from a client: loop and accept the next client.
-    // - Shutdown from a client: remove socket, exit 0.
+    // Daemon-wide state: active connection count + last activity. The daemon
+    // exits only when NO connections are active AND it has been idle for the
+    // full idle window. Each accepted connection is served on its own thread
+    // so multiple clients (e.g. several opencode instances on one project)
+    // can share the same daemon without one blocking another.
+    let active = Arc::new(AtomicUsize::new(0));
+    let last_activity = Arc::new(Mutex::new(Instant::now()));
+
     loop {
         match listener.accept() {
             Ok((stream, _)) => {
-                last_activity = Instant::now();
-                let mut server = Server::new();
-                let mut t = transport::unix_socket(stream);
-                let outcome = server.run(&mut t, TransportKind::Unix, Some(idle));
-                match outcome {
-                    Ok(o) => {
-                        // Client asked to shut the daemon down.
-                        if o == fdx::daemon::server::RunOutcome::Shutdown {
-                            let _ = std::fs::remove_file(path);
-                            std::process::exit(0);
-                        }
-                        // Idle while a client was attached: the daemon itself
-                        // has been idle — exit rather than wait forever.
-                        if o == fdx::daemon::server::RunOutcome::Idle {
-                            let _ = std::fs::remove_file(path);
-                            std::process::exit(0);
-                        }
-                        // EOF: client disconnected; loop and accept the next.
-                        last_activity = Instant::now();
+                *last_activity.lock().unwrap() = Instant::now();
+                active.fetch_add(1, Ordering::SeqCst);
+                let path_owned = path.to_string();
+                let active_cl = Arc::clone(&active);
+                let last_activity_cl = Arc::clone(&last_activity);
+                std::thread::spawn(move || {
+                    let mut server = Server::new();
+                    let mut t = transport::unix_socket(stream);
+                    let outcome = server.run(&mut t, TransportKind::Unix, Some(idle));
+                    active_cl.fetch_sub(1, Ordering::SeqCst);
+                    *last_activity_cl.lock().unwrap() = Instant::now();
+                    // Client asked to shut the daemon down.
+                    if matches!(outcome, Ok(fdx::daemon::server::RunOutcome::Shutdown)) {
+                        let _ = std::fs::remove_file(&path_owned);
+                        std::process::exit(0);
                     }
-                    Err(e) => {
-                        eprintln!("fdxd: connection error: {e}");
-                    }
-                }
+                });
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // No pending connection. Check the daemon-wide idle budget.
-                if last_activity.elapsed() >= idle {
+                // No pending connection. Check the daemon-wide idle budget:
+                // exit only when nothing is attached AND the daemon has been
+                // idle for the full window.
+                let inactive = active.load(Ordering::SeqCst) == 0;
+                let idle_elapsed = last_activity.lock().unwrap().elapsed() >= idle;
+                if inactive && idle_elapsed {
                     let _ = std::fs::remove_file(path);
                     std::process::exit(0);
                 }
