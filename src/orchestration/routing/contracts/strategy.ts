@@ -3,56 +3,30 @@
  *
  * A strategy bundles the execution posture (how many specialists, which
  * pipeline stages, verification depth, model tier) for a routed task. The
- * canonical strategy vocabulary lives here, in the routing domain namespace;
- * it is unrelated to the legacy execution strategy in the current harness.
+ * canonical strategy vocabulary (ExecutionStrategy and its values) lives in
+ * task.ts, which is the dependency-free taxonomy hub of the contracts
+ * package, and is surfaced to consumers through the contracts barrel
+ * (index.ts); this module consumes it without re-exporting it.
  */
 
 import { z } from "zod"
 import type { ModelTier } from "./models"
 import { zModelTier } from "./models"
+import type { Capability } from "./agents"
+import { type ExecutionStrategy, zExecutionStrategy, zNonEmptyId } from "./task"
 
 /** The five pipeline stages a strategy may be allowed to operate in. */
 export type RunStage = "task" | "review" | "execute" | "verify" | "done"
 
-/** Canonical execution strategies understood by the routing layer. */
-export type ExecutionStrategy =
-  | "fast_direct"
-  | "direct_verified"
-  | "explore_then_execute"
-  | "planned_execution"
-  | "parallel_implementation"
-  | "root_cause_repair"
-  | "audit_only"
-  | "repair_and_independent_audit"
-  | "recovery_resume"
-
-/** Every canonical execution strategy, in a stable order. */
-export const EXECUTION_STRATEGIES = [
-  "fast_direct",
-  "direct_verified",
-  "explore_then_execute",
-  "planned_execution",
-  "parallel_implementation",
-  "root_cause_repair",
-  "audit_only",
-  "repair_and_independent_audit",
-  "recovery_resume",
-] as const satisfies readonly ExecutionStrategy[]
-
 /** Verification depth requested for a strategy. */
 export type VerificationLevel = "focused" | "standard" | "full" | "release"
-
-/** Returns true when `value` is one of the canonical execution strategies. */
-export function isValidExecutionStrategy(value: unknown): value is ExecutionStrategy {
-  return (EXECUTION_STRATEGIES as readonly unknown[]).includes(value)
-}
 
 /** Runtime posture that governs how a routed task is executed. */
 export interface StrategyPolicy {
   strategy: ExecutionStrategy
   allowedStates: RunStage[]
   maximumSpecialists: number
-  requiredCapabilities: string[]
+  requiredCapabilities: Capability[]
   requiredReviewers: number
   verificationLevel: VerificationLevel
   contextBudget: number
@@ -184,9 +158,6 @@ export function getStrategyPolicy(strategy: ExecutionStrategy): StrategyPolicy {
 /** Zod schema for a RunStage value. */
 export const zRunStage = z.enum(["task", "review", "execute", "verify", "done"] as const)
 
-/** Zod schema for an ExecutionStrategy value. */
-export const zExecutionStrategy = z.enum(EXECUTION_STRATEGIES)
-
 /** Zod schema for a VerificationLevel value. */
 export const zVerificationLevel = z.enum(["focused", "standard", "full", "release"] as const)
 
@@ -195,7 +166,7 @@ export const zStrategyPolicy = z.object({
   strategy: zExecutionStrategy,
   allowedStates: z.array(zRunStage),
   maximumSpecialists: z.number().int().min(0),
-  requiredCapabilities: z.array(z.string()),
+  requiredCapabilities: z.array(zNonEmptyId),
   requiredReviewers: z.number().int().min(0),
   verificationLevel: zVerificationLevel,
   contextBudget: z.number().int().min(0),

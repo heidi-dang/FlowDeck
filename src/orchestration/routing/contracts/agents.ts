@@ -6,6 +6,14 @@
  */
 
 import { z } from "zod"
+import { zNonEmptyId } from "./task"
+
+/**
+ * Canonical capability identifier. A capability id names a concrete
+ * capability from the canonical capability set (document section 7.2) that
+ * a strategy or model floor may require.
+ */
+export type Capability = string
 
 /** Expected latency class of a capability's tools. */
 export type LatencyClass = "instant" | "fast" | "slow"
@@ -23,7 +31,7 @@ export type SpecialistStatus = (typeof SPECIALIST_TERMINAL_STATUSES)[number]
 
 /** Declares a capability a specialist agent may provide. */
 export interface CapabilityDescriptor {
-  capability: string
+  capability: Capability
   allowedAgents: string[]
   tools: string[]
   mutating: boolean
@@ -74,13 +82,21 @@ export interface SpecialistResult {
 /**
  * Returns true when `r` satisfies its assignment: a completed result must
  * carry a non-empty summary and at least one piece of evidence; any other
- * terminal status is accepted as-is.
+ * terminal status must carry either evidence or a non-empty summary (the
+ * reason for the failure, block, or cancellation).
  */
 export function specialistResultHasRequiredEvidence(r: SpecialistResult): boolean {
-  return r.status !== "completed" || (r.summary.length > 0 && r.evidence.length > 0)
+  if (r.status === "completed") {
+    return r.summary.length > 0 && r.evidence.length > 0
+  }
+  return r.summary.length > 0 || r.evidence.length > 0
 }
 
-/** Why the router delegated (or refused to delegate) a node. */
+/**
+ * Why the router delegated a node. Only valid when `allowed` is true; the
+ * allowed and rejected vocabularies are split so a decision cannot carry
+ * both (document section 8.2).
+ */
 export type DelegationReason =
   | "explicit_user_request"
   | "independent_ownership"
@@ -88,21 +104,32 @@ export type DelegationReason =
   | "independent_audit"
   | "direct_discovery_failed"
   | "multi_domain"
+
+/** Why the router refused to delegate a node (document section 8.3). */
+export type RejectedDelegationReason =
   | "rejected_trivial"
   | "rejected_overlap"
   | "rejected_no_advantage"
   | "rejected_cost"
 
-/** The router's delegation verdict for a node. */
+/**
+ * The router's delegation verdict for a node (document section 8.1).
+ * Cross-field invariants enforced by zDelegationDecision:
+ * - `depth` is exactly 0 or 1 (max delegation depth is one).
+ * - the delegating agent never targets itself (no self-delegation).
+ * - an allowed decision carries `reason` and never `rejectionReason`;
+ *   a rejected decision carries `rejectionReason` and never `reason`.
+ */
 export interface DelegationDecision {
+  taskId: string
+  delegatingAgent: string
+  targetAgent: string
+  depth: number
   allowed: boolean
-  reason: DelegationReason
-  specialist?: string
-  requiredCapabilities: string[]
-  estimatedBenefitMs: number
-  estimatedTokenCost: number
-  overlapRisk: number
-  confidence: number
+  reason?: DelegationReason
+  rejectionReason?: RejectedDelegationReason
+  /** Persisted evidence for the decision. */
+  justification: string[]
 }
 
 /** The kind of work a work node represents. */
@@ -128,9 +155,9 @@ export function isValidLatencyClass(value: unknown): value is LatencyClass {
 /** Zod schema for a LatencyClass value. */
 export const zLatencyClass = z.enum(["instant", "fast", "slow"] as const)
 
-/** Zod schema for a CapabilityDescriptor. */
+/** Zod schema for a CapabilityDescriptor; capability ids must be non-empty. */
 export const zCapabilityDescriptor = z.object({
-  capability: z.string(),
+  capability: zNonEmptyId,
   allowedAgents: z.array(z.string()),
   tools: z.array(z.string()),
   mutating: z.boolean(),
@@ -140,9 +167,9 @@ export const zCapabilityDescriptor = z.object({
   expectedLatencyClass: zLatencyClass,
 })
 
-/** Zod schema for a FindingRef. */
+/** Zod schema for a FindingRef; ids must be non-empty identifiers. */
 export const zFindingRef = z.object({
-  id: z.string(),
+  id: zNonEmptyId,
   summary: z.string(),
   severity: z.enum(["info", "warning", "critical"] as const),
   location: z.string().optional(),
@@ -155,35 +182,46 @@ export const zChangeRef = z.object({
   symbol: z.string().optional(),
 })
 
-/** Zod schema for an EvidenceRef. */
+/** Zod schema for an EvidenceRef; ids must be non-empty identifiers. */
 export const zEvidenceRef = z.object({
-  id: z.string(),
+  id: zNonEmptyId,
   kind: z.enum(["log", "test", "diff", "observation", "metric"] as const),
   detail: z.string(),
 })
 
-/** Zod schema for a SpecialistResult. */
-export const zSpecialistResult = z.object({
-  status: z.enum(SPECIALIST_TERMINAL_STATUSES),
-  summary: z.string(),
-  findings: z.array(zFindingRef),
-  changes: z.array(zChangeRef),
-  evidence: z.array(zEvidenceRef),
-  assumptions: z.array(z.string()),
-  unresolvedRisks: z.array(z.string()),
-  confidence: z.number().int().min(0).max(100),
-  recommendedNextAction: z.string(),
-  ownershipUsed: z.array(z.string()),
-  tokens: z
-    .object({
-      input: z.number().int().min(0),
-      output: z.number().int().min(0),
-    })
-    .optional(),
-  durationMs: z.number().int().min(0).optional(),
-})
+/** Zod schema for a SpecialistResult with required-evidence enforcement. */
+export const zSpecialistResult = z
+  .object({
+    status: z.enum(SPECIALIST_TERMINAL_STATUSES),
+    summary: z.string(),
+    findings: z.array(zFindingRef),
+    changes: z.array(zChangeRef),
+    evidence: z.array(zEvidenceRef),
+    assumptions: z.array(z.string()),
+    unresolvedRisks: z.array(z.string()),
+    confidence: z.number().int().min(0).max(100),
+    recommendedNextAction: z.string(),
+    ownershipUsed: z.array(z.string()),
+    tokens: z
+      .object({
+        input: z.number().int().min(0),
+        output: z.number().int().min(0),
+      })
+      .optional(),
+    durationMs: z.number().int().min(0).optional(),
+  })
+  .superRefine((r, ctx) => {
+    if (!specialistResultHasRequiredEvidence(r)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["evidence"],
+        message:
+          "completed results require a non-empty summary and at least one evidence entry; other terminal statuses require evidence or a non-empty summary",
+      })
+    }
+  })
 
-/** Zod schema for a DelegationReason value. */
+/** Zod schema for an allowed DelegationReason value. */
 export const zDelegationReason = z.enum(
   [
     "explicit_user_request",
@@ -192,6 +230,12 @@ export const zDelegationReason = z.enum(
     "independent_audit",
     "direct_discovery_failed",
     "multi_domain",
+  ] as const,
+)
+
+/** Zod schema for a RejectedDelegationReason value. */
+export const zRejectedDelegationReason = z.enum(
+  [
     "rejected_trivial",
     "rejected_overlap",
     "rejected_no_advantage",
@@ -199,17 +243,49 @@ export const zDelegationReason = z.enum(
   ] as const,
 )
 
-/** Zod schema for a DelegationDecision. */
-export const zDelegationDecision = z.object({
-  allowed: z.boolean(),
-  reason: zDelegationReason,
-  specialist: z.string().optional(),
-  requiredCapabilities: z.array(z.string()),
-  estimatedBenefitMs: z.number().int().min(0),
-  estimatedTokenCost: z.number().min(0),
-  overlapRisk: z.number().int().min(0).max(100),
-  confidence: z.number().int().min(0).max(100),
-})
+/** Zod schema for a DelegationDecision with cross-field invariant checks. */
+export const zDelegationDecision = z
+  .object({
+    taskId: zNonEmptyId,
+    delegatingAgent: zNonEmptyId,
+    targetAgent: zNonEmptyId,
+    depth: z
+      .number()
+      .int()
+      .refine((d) => d === 0 || d === 1, { message: "depth must be exactly 0 or 1" }),
+    allowed: z.boolean(),
+    reason: zDelegationReason.optional(),
+    rejectionReason: zRejectedDelegationReason.optional(),
+    justification: z.array(z.string()),
+  })
+  .superRefine((d, ctx) => {
+    if (d.delegatingAgent === d.targetAgent) {
+      ctx.addIssue({ code: "custom", path: ["targetAgent"], message: "self-delegation is not allowed" })
+    }
+    if (d.allowed) {
+      if (d.reason === undefined) {
+        ctx.addIssue({ code: "custom", path: ["reason"], message: "allowed decisions require an allowed reason" })
+      }
+      if (d.rejectionReason !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["rejectionReason"],
+          message: "allowed decisions cannot carry a rejection reason",
+        })
+      }
+    } else {
+      if (d.rejectionReason === undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["rejectionReason"],
+          message: "rejected decisions require a rejection reason",
+        })
+      }
+      if (d.reason !== undefined) {
+        ctx.addIssue({ code: "custom", path: ["reason"], message: "rejected decisions cannot carry an allowed reason" })
+      }
+    }
+  })
 
 /** Zod schema for a WorkNodeType value. */
 export const zWorkNodeType = z.enum(["inspect", "implement", "verify", "review"] as const)

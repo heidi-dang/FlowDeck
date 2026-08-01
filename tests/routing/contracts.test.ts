@@ -37,11 +37,13 @@ import {
   zModelSelectionDecision,
   // index.ts
   ROUTING_POLICY_VERSION,
+  ROUTING_WEIGHTS_VERSION,
   canonicalJson,
   parseCanonicalJson,
   zRoutingDecisionRecord,
   validateRoutingDecisionRecord,
   bindDecisionToSha,
+  type RoutingDecisionRecord,
 } from "@/orchestration/routing/contracts";
 
 function makeValidSpecialistResult(status: SpecialistStatus = "completed"): SpecialistResult {
@@ -61,6 +63,46 @@ function makeValidSpecialistResult(status: SpecialistStatus = "completed"): Spec
     tokens: { input: 1000, output: 400 },
     durationMs: 1234,
   };
+}
+
+const VALID_SHA = "0123456789abcdef0123456789abcdef01234567";
+
+function makeValidRecord(): RoutingDecisionRecord {
+  return bindDecisionToSha({
+    taskId: "task-1",
+    decisionId: "dec-42",
+    repositorySha: VALID_SHA,
+    weightsVersion: ROUTING_WEIGHTS_VERSION,
+    inputEvidence: [{ signal: "expectedFileCount", value: 3, source: "prompt" }],
+    rulesApplied: ["rule:classify"],
+    modelFallbackUsed: false,
+    classification: {
+      taskClass: "local_bug",
+      confidence: 92,
+      evidence: [{ id: "e1", source: "classifier", detail: "stack trace found" }],
+      usedModelFallback: false,
+      policyVersion: "1.0.0",
+    },
+    scores: { complexity: 40, ambiguity: 30, risk: 25, confidence: 80 },
+    selectedStrategy: "root_cause_repair",
+    rejectedStrategies: [{ strategy: "audit_only", reason: "task is mutating" }],
+    specialistCandidates: ["debug-specialist"],
+    delegationDecisions: [
+      {
+        taskId: "task-1",
+        delegatingAgent: "orchestrator",
+        targetAgent: "debug-specialist",
+        depth: 1,
+        allowed: true,
+        reason: "specialist_expertise",
+        justification: ["stack trace present in prompt"],
+      },
+    ],
+    modelCandidates: [{ tier: "strong_reasoning", reason: "debugging requires strong reasoning" }],
+    selectedTier: "strong_reasoning",
+    fallback: ["general_coding", "small_fast"],
+    confidence: 90,
+  });
 }
 
 describe("routing contracts: runtime validation", () => {
@@ -98,14 +140,13 @@ describe("routing contracts: runtime validation", () => {
 
   it("accepts a valid DelegationDecision", () => {
     const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "backend-coder",
+      depth: 1,
       allowed: true,
       reason: "specialist_expertise",
-      specialist: "backend-coder",
-      requiredCapabilities: ["db"],
-      estimatedBenefitMs: 1000,
-      estimatedTokenCost: 500.5,
-      overlapRisk: 10,
-      confidence: 80,
+      justification: ["backend ownership"],
     });
     expect(result.success).toBe(true);
   });
@@ -131,37 +172,28 @@ describe("routing contracts: runtime validation", () => {
       model: "claude-opus",
       confidence: 90,
       reasonCodes: ["complex"],
-      fallbackTiers: ["general_coding"],
-      timeoutPolicy: "generous",
-      capabilityFloor: "strong_reasoning",
+      fallbackTiers: ["general_coding", "small_fast"],
+      timeoutPolicy: { queueMs: 500, firstTokenMs: 10000, totalMs: 120000 },
+      capabilityFloor: ["GitHub inspection"],
     });
     expect(result.success).toBe(true);
   });
 
   it("accepts a valid RoutingDecisionRecord", () => {
-    const record = bindDecisionToSha(
-      "dec-1",
-      "task_classification",
-      { task: "local_bug" },
-      "abc123",
-      [{ id: "e1", source: "scorer", detail: "evidence" }],
-    );
+    const record = makeValidRecord();
     const result = zRoutingDecisionRecord.safeParse(record);
     expect(result.success).toBe(true);
   });
 
   it("accepts a valid ModelRoutingInput", () => {
     const result = zModelRoutingInput.safeParse({
+      taskId: "task-1",
       taskClass: "ui_feature",
-      complexity: 50,
-      ambiguity: 30,
-      risk: 20,
-      contextTokens: 8000,
-      historicalSuccessRate: 0.85,
-      expectedOutputTokens: 2000,
-      latencyPriority: 40,
-      costPriority: 60,
-      requiredCapabilities: ["ui"],
+      scores: { complexity: 50, ambiguity: 30, risk: 20, confidence: 80 },
+      capabilityFloor: ["UI implementation"],
+      strategy: "parallel_implementation",
+      timeoutPolicy: { queueMs: 500, firstTokenMs: 10000, totalMs: 120000 },
+      providerHealth: { anthropic: 90, openai: 85 },
     });
     expect(result.success).toBe(true);
   });
@@ -270,8 +302,8 @@ describe("routing contracts: unknown fields are stripped", () => {
       confidence: 60,
       reasonCodes: [],
       fallbackTiers: [],
-      timeoutPolicy: "default",
-      capabilityFloor: "small_fast",
+      timeoutPolicy: { queueMs: 0, firstTokenMs: 0, totalMs: 0 },
+      capabilityFloor: [],
       bogusKey: true,
     });
     expect(result.success).toBe(true);
@@ -309,11 +341,29 @@ describe("routing contracts: required evidence", () => {
     expect(specialistResultHasRequiredEvidence(makeValidSpecialistResult("completed"))).toBe(true);
   });
 
-  it("returns true for non-completed terminal statuses without evidence", () => {
+  it("returns false for a non-completed terminal status with neither summary nor evidence", () => {
     for (const status of ["blocked", "failed", "cancelled"] as const) {
       const r = makeValidSpecialistResult(status);
       r.evidence = [];
       r.summary = "";
+      expect(specialistResultHasRequiredEvidence(r)).toBe(false);
+    }
+  });
+
+  it("returns true for a non-completed terminal status with evidence but no summary", () => {
+    for (const status of ["blocked", "failed", "cancelled"] as const) {
+      const r = makeValidSpecialistResult(status);
+      r.evidence = [{ id: "e1", kind: "log", detail: "reason logged" }];
+      r.summary = "";
+      expect(specialistResultHasRequiredEvidence(r)).toBe(true);
+    }
+  });
+
+  it("returns true for a non-completed terminal status with a summary but no evidence", () => {
+    for (const status of ["blocked", "failed", "cancelled"] as const) {
+      const r = makeValidSpecialistResult(status);
+      r.evidence = [];
+      r.summary = "blocked on credentials";
       expect(specialistResultHasRequiredEvidence(r)).toBe(true);
     }
   });
@@ -328,34 +378,35 @@ describe("routing contracts: policy version", () => {
 });
 
 describe("routing contracts: SHA binding (provenance)", () => {
-  const payload = { task: "local_bug", scores: { complexity: 40, risk: 10 } };
-  const evidence = [{ id: "e1", source: "scorer", detail: "evidence detail" }];
-
   it("stamps the full provenance fields on the record", () => {
-    const record = bindDecisionToSha("dec-42", "task_classification", payload, "sha-abc123", evidence);
+    const record = makeValidRecord();
+    expect(record.taskId).toBe("task-1");
     expect(record.decisionId).toBe("dec-42");
-    expect(record.kind).toBe("task_classification");
-    expect(record.payload).toEqual(payload);
-    expect(record.repositorySha).toBe("sha-abc123");
-    expect(record.policyVersion).toBe(ROUTING_POLICY_VERSION);
-    expect(record.evidence).toEqual(evidence);
+    expect(record.repositorySha).toBe(VALID_SHA);
+    expect(record.routingPolicyVersion).toBe(ROUTING_POLICY_VERSION);
+    expect(record.weightsVersion).toBe(ROUTING_WEIGHTS_VERSION);
+    expect(record.inputEvidence).toEqual([
+      { signal: "expectedFileCount", value: 3, source: "prompt" },
+    ]);
+    expect(record.selectedStrategy).toBe("root_cause_repair");
+    expect(record.selectedTier).toBe("strong_reasoning");
   });
 
   it("uses a valid ISO-8601 timestamp", () => {
-    const record = bindDecisionToSha("dec-42", "task_classification", payload, "sha-abc123", evidence);
+    const record = makeValidRecord();
     expect(typeof record.timestamp).toBe("string");
     expect(new Date(record.timestamp).toISOString()).toBe(record.timestamp);
     expect(Number.isNaN(Date.parse(record.timestamp))).toBe(false);
   });
 
   it("validateRoutingDecisionRecord accepts a bound record", () => {
-    const record = bindDecisionToSha("dec-42", "task_classification", payload, "sha-abc123", evidence);
+    const record = makeValidRecord();
     const result = validateRoutingDecisionRecord(record);
     expect(result.ok).toBe(true);
   });
 
   it("validateRoutingDecisionRecord rejects a record missing repositorySha", () => {
-    const record = bindDecisionToSha("dec-42", "task_classification", payload, "sha-abc123", evidence);
+    const record = makeValidRecord();
     const { repositorySha: _repositorySha, ...rest } = record;
     const result = validateRoutingDecisionRecord(rest);
     expect(result.ok).toBe(false);
@@ -364,22 +415,22 @@ describe("routing contracts: SHA binding (provenance)", () => {
     }
   });
 
-  it("validateRoutingDecisionRecord rejects a record with a wrong-typed evidence array", () => {
-    const record = bindDecisionToSha("dec-42", "task_classification", payload, "sha-abc123", evidence);
+  it("validateRoutingDecisionRecord rejects a record with a wrong-typed inputEvidence array", () => {
+    const record = makeValidRecord();
     const result = validateRoutingDecisionRecord({
       ...record,
-      evidence: [{ not: "evidence" }],
+      inputEvidence: [{ not: "evidence" }],
     });
     expect(result.ok).toBe(false);
     if (!result.ok) {
-      expect(result.error).toContain("evidence");
+      expect(result.error).toContain("inputEvidence");
     }
   });
 
-  it("payload round-trips through parseCanonicalJson(canonicalJson(payload))", () => {
-    const record = bindDecisionToSha("dec-42", "task_classification", payload, "sha-abc123", evidence);
-    const roundTripped = parseCanonicalJson(canonicalJson(record.payload));
-    expect(roundTripped).toEqual(payload);
+  it("record round-trips through parseCanonicalJson(canonicalJson(record))", () => {
+    const record = makeValidRecord();
+    const roundTripped = parseCanonicalJson(canonicalJson(record));
+    expect(roundTripped).toEqual(record);
   });
 });
 
@@ -518,5 +569,134 @@ describe("routing contracts: validation error quality", () => {
       expect(result.error).toContain("repositorySha");
       expect(result.error).toMatch(/repositorySha/);
     }
+  });
+});
+
+describe("routing contracts: delegation cross-field invariants (D7)", () => {
+  it("rejects an allowed decision without a reason", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "backend-coder",
+      depth: 1,
+      allowed: true,
+      justification: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a rejected decision without a rejection reason", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "backend-coder",
+      depth: 1,
+      allowed: false,
+      justification: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an allowed decision that also carries a rejection reason", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "backend-coder",
+      depth: 1,
+      allowed: true,
+      reason: "specialist_expertise",
+      rejectionReason: "rejected_trivial",
+      justification: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects self-delegation", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "orchestrator",
+      depth: 0,
+      allowed: true,
+      reason: "specialist_expertise",
+      justification: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a delegation depth above 1", () => {
+    const result = zDelegationDecision.safeParse({
+      taskId: "task-1",
+      delegatingAgent: "orchestrator",
+      targetAgent: "backend-coder",
+      depth: 2,
+      allowed: true,
+      reason: "specialist_expertise",
+      justification: [],
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+describe("routing contracts: identifier and SHA strictness (D16)", () => {
+  it("rejects empty and whitespace-only identifiers", () => {
+    expect(zRoutingDecisionRecord.safeParse({ ...makeValidRecord(), taskId: "" }).success).toBe(false);
+    expect(zRoutingDecisionRecord.safeParse({ ...makeValidRecord(), taskId: "   " }).success).toBe(false);
+    expect(zRoutingDecisionRecord.safeParse({ ...makeValidRecord(), decisionId: "" }).success).toBe(false);
+  });
+
+  it("rejects a repositorySha that is not 40-hex", () => {
+    expect(zRoutingDecisionRecord.safeParse({ ...makeValidRecord(), repositorySha: "abc123" }).success).toBe(false);
+    expect(zRoutingDecisionRecord.safeParse({ ...makeValidRecord(), repositorySha: "G".repeat(40) }).success).toBe(false);
+  });
+});
+
+describe("routing contracts: capability floor invariants (D8/D9)", () => {
+  it("rejects a selected tier below the capability floor", () => {
+    const result = zModelSelectionDecision.safeParse({
+      tier: "small_fast",
+      confidence: 60,
+      reasonCodes: [],
+      fallbackTiers: [],
+      timeoutPolicy: { queueMs: 0, firstTokenMs: 0, totalMs: 0 },
+      capabilityFloor: ["security audit"],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects duplicate fallback tiers", () => {
+    const result = zModelSelectionDecision.safeParse({
+      tier: "strong_reasoning",
+      confidence: 60,
+      reasonCodes: [],
+      fallbackTiers: ["general_coding", "general_coding"],
+      timeoutPolicy: { queueMs: 0, firstTokenMs: 0, totalMs: 0 },
+      capabilityFloor: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects fallback tiers not ordered strongest-first", () => {
+    const result = zModelSelectionDecision.safeParse({
+      tier: "strong_reasoning",
+      confidence: 60,
+      reasonCodes: [],
+      fallbackTiers: ["small_fast", "general_coding"],
+      timeoutPolicy: { queueMs: 0, firstTokenMs: 0, totalMs: 0 },
+      capabilityFloor: [],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a capability floor containing an unknown capability", () => {
+    const result = zModelSelectionDecision.safeParse({
+      tier: "strong_reasoning",
+      confidence: 60,
+      reasonCodes: [],
+      fallbackTiers: [],
+      timeoutPolicy: { queueMs: 0, firstTokenMs: 0, totalMs: 0 },
+      capabilityFloor: ["not_a_real_capability"],
+    });
+    expect(result.success).toBe(false);
   });
 });

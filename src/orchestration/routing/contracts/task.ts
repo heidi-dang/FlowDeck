@@ -1,9 +1,12 @@
 /**
- * Routing contract: task classification.
+ * Routing contract: routing taxonomy and task classification.
  *
- * This module defines the taxonomy used to classify incoming tasks before
- * routing. Every task is assigned exactly one TaskClass; scorers produce
- * 0-100 scores that feed execution-strategy and model-tier selection.
+ * This module defines the shared vocabularies of the routing layer: the task
+ * taxonomy (TaskClass), the canonical execution-strategy vocabulary, the
+ * evidence types, and the score types. It is the dependency-free hub of the
+ * contracts package — both strategy.ts and models.ts import from here, so
+ * shared vocabulary that both need at runtime (ExecutionStrategy, score and
+ * evidence types) lives in this module rather than in either consumer.
  */
 
 import { z } from "zod"
@@ -68,6 +71,41 @@ export function isScoreInRange(n: number): boolean {
   return Number.isFinite(n) && n >= SCORE_MIN && n <= SCORE_MAX
 }
 
+/** Canonical execution strategies understood by the routing layer. */
+export type ExecutionStrategy =
+  | "fast_direct"
+  | "direct_verified"
+  | "explore_then_execute"
+  | "planned_execution"
+  | "parallel_implementation"
+  | "root_cause_repair"
+  | "audit_only"
+  | "repair_and_independent_audit"
+  | "recovery_resume"
+
+/** Every canonical execution strategy, in a stable order. */
+export const EXECUTION_STRATEGIES = [
+  "fast_direct",
+  "direct_verified",
+  "explore_then_execute",
+  "planned_execution",
+  "parallel_implementation",
+  "root_cause_repair",
+  "audit_only",
+  "repair_and_independent_audit",
+  "recovery_resume",
+] as const satisfies readonly ExecutionStrategy[]
+
+/** Returns true when `value` is one of the canonical execution strategies. */
+export function isValidExecutionStrategy(value: unknown): value is ExecutionStrategy {
+  return (EXECUTION_STRATEGIES as readonly unknown[]).includes(value)
+}
+
+/** Rejects empty and whitespace-only identifier strings. */
+export const zNonEmptyId = z.string().refine((s) => s.trim().length > 0, {
+  message: "must not be empty or whitespace-only",
+})
+
 /** Scorer output: four 0-100 dimensions consumed by strategy and model selection. */
 export interface TaskScores {
   complexity: number
@@ -83,6 +121,19 @@ export interface EvidenceReference {
   source: string
   /** Human-readable description of the evidence. */
   detail: string
+}
+
+/**
+ * A raw routing input recorded at decision time. Unlike score evidence
+ * (EvidenceReference, which carries stable ids), an input evidence entry
+ * records the observed value of a signal dimension: `signal` names the input
+ * dimension, `value` is the observed value, `source` is a stable reference
+ * (file path, tool output pointer, prompt fragment index).
+ */
+export interface RoutingInputEvidence {
+  signal: string
+  value: unknown
+  source: string
 }
 
 /**
@@ -124,6 +175,9 @@ export interface ClassificationResult {
 /** Zod schema for a TaskClass value. */
 export const zTaskClass = z.enum(TASK_CLASSES)
 
+/** Zod schema for an ExecutionStrategy value. */
+export const zExecutionStrategy = z.enum(EXECUTION_STRATEGIES)
+
 /** Zod schema for TaskScores; every score is an integer within 0-100. */
 export const zTaskScores = z.object({
   complexity: z.number().int().min(SCORE_MIN).max(SCORE_MAX),
@@ -132,11 +186,18 @@ export const zTaskScores = z.object({
   confidence: z.number().int().min(SCORE_MIN).max(SCORE_MAX),
 })
 
-/** Zod schema for an EvidenceReference. */
+/** Zod schema for an EvidenceReference; ids must be non-empty identifiers. */
 export const zEvidenceReference = z.object({
-  id: z.string(),
+  id: zNonEmptyId,
   source: z.string(),
   detail: z.string(),
+})
+
+/** Zod schema for a RoutingInputEvidence entry. */
+export const zRoutingInputEvidence = z.object({
+  signal: z.string(),
+  value: z.unknown(),
+  source: z.string(),
 })
 
 /** Zod schema for ClassificationInput; every field is optional. */

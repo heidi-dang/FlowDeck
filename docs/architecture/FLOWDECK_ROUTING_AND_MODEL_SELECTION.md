@@ -311,9 +311,15 @@ Four independent scores, each on a **0–100** integer range, are computed for e
 
 ### 5.4 Evidence references
 
-Every score carries an `evidence` list. Each evidence entry is a `{ signal, value, source }` triple where
-`source` is a stable reference (file path, tool output pointer, prompt fragment index). A score with no
+Score evidence is carried as an `EvidenceReference` list. Each entry is a `{ id, source, detail }` triple
+where `id` is a stable identifier (required for supersede references and dedup), `source` is a stable code
+path or rule id that produced the evidence, and `detail` is a human-readable description. A score with no
 evidence is treated as a defect (see metric `decisions without evidence = 0`, section 15).
+
+Raw routing inputs recorded at decision time are carried separately as `RoutingInputEvidence`
+`{ signal, value, source }` triples: `signal` names the input dimension, `value` is the observed value,
+`source` is a stable reference (file path, tool output pointer, prompt fragment index). These appear in the
+decision record's `inputEvidence` (section 13) and are distinct from score evidence.
 
 ### 5.5 High-risk minimum rules
 
@@ -368,15 +374,15 @@ Each strategy carries a policy record:
 ```typescript
 interface StrategyPolicy {
   strategy: ExecutionStrategy;
-  allowedStates: string[];              // Dev 2 state-machine states where this strategy is valid
-  maximumSpecialists: number;           // cap on concurrent specialist sessions
-  requiredCapabilities: Capability[];   // capabilities that must exist before strategy starts
-  requiredReviewers: string[];          // reviewer agents required for this strategy
+  allowedStates: RunStage[];              // Dev 2 state-machine states where this strategy is valid
+  maximumSpecialists: number;             // cap on concurrent specialist sessions
+  requiredCapabilities: Capability[];     // capabilities that must exist before strategy starts
+  requiredReviewers: number;              // minimum reviewer count (0 for direct strategies, >= 1 for review-stage strategies)
   verificationLevel: "focused" | "standard" | "full" | "release";
-  contextBudget: number;                // relative budget weight for context/token use
-  modelTier: ModelTier;                 // baseline model tier (section 10)
-  recoveryLimit: number;                // max repair cycles (Dev 2 recovery interface)
-  approvalRequirements: string[];       // human approvals required, if any
+  contextBudget: number;                  // relative budget weight for context/token use
+  modelTier: ModelTier;                   // baseline model tier (section 10)
+  recoveryLimit: number;                  // max repair cycles (Dev 2 recovery interface)
+  approvalRequirements: string[];         // human approvals required, if any
 }
 ```
 
@@ -410,14 +416,14 @@ legacy path continues to operate. No legacy file is modified by Dev 4.
 
 ```typescript
 interface CapabilityDescriptor {
-  capability: string;                     // canonical capability id
+  capability: Capability;                 // canonical capability id (type Capability = string)
   allowedAgents: string[];                // agents that may perform this capability
   tools: string[];                        // tool ids required for the capability
   mutating: boolean;                      // true if capability modifies state
   requiresHuman: boolean;                 // human approval gate required
   supportsParallelism: boolean;           // may run concurrently with other work
   supportsCancellation: boolean;          // work can be cancelled mid-flight
-  expectedLatencyClass: "fast" | "medium" | "slow"; // latency budget hint
+  expectedLatencyClass: "instant" | "fast" | "slow"; // latency budget hint
 }
 ```
 
@@ -426,16 +432,16 @@ interface CapabilityDescriptor {
 | Capability | mutating | requiresHuman | supportsParallelism | supportsCancellation | expectedLatencyClass |
 |---|---|---|---|---|---|
 | `repository inspection` | false | false | true | true | fast |
-| `code mutation` | true | false | false | false | medium |
-| `GitHub inspection` | false | false | true | true | medium |
-| `CI log inspection` | false | false | true | true | medium |
+| `code mutation` | true | false | false | false | fast |
+| `GitHub inspection` | false | false | true | true | fast |
+| `CI log inspection` | false | false | true | true | fast |
 | `release operation` | true | true | false | false | slow |
 | `database migration` | true | true | false | false | slow |
 | `security audit` | false | false | true | true | slow |
-| `UI implementation` | true | false | false | false | medium |
-| `FDX index inspection` | false | false | true | true | fast |
+| `UI implementation` | true | false | false | false | fast |
+| `FDX index inspection` | false | false | true | true | instant |
 | `package publication` | true | true | false | false | slow |
-| `destructive Git` | true | true | false | false | medium |
+| `destructive Git` | true | true | false | false | fast |
 | `infrastructure change` | true | true | false | false | slow |
 
 ### 7.3 Registry derivation
@@ -529,6 +535,7 @@ Scheduling is implemented through the Dev 2 runtime interfaces; Dev 4 supplies t
 | Verification capacity reservation | `requiredReviewers` sessions reserve verification capacity before execution starts; verification is never starved by execution work. |
 | Obsolete-work cancellation | When a decision supersedes in-flight work (e.g., a new hypothesis after a failed attempt), obsolete sessions are cancelled via `supportsCancellation` capabilities. |
 | Deterministic terminal outcomes | Every scheduled session reaches a terminal state (completed, rejected, cancelled) recorded in the decision record; no session is left indeterminate. |
+| Required evidence on results | A `completed` result must carry a non-empty summary and at least one evidence entry; `failed`/`blocked`/`cancelled` results must carry either evidence or a non-empty summary (the reason). Enforced by `zSpecialistResult` (`.superRefine`). |
 
 ---
 
@@ -647,14 +654,17 @@ infrastructure. No separate decision store is introduced.
 ```typescript
 interface RoutingDecisionRecord {
   taskId: string;
+  decisionId: string;                     // stable identifier of this decision record
   timestamp: string;                      // ISO-8601
-  repositorySha: string;                  // exact SHA the decision was made against
+  repositorySha: string;                  // exact 40-hex commit SHA the decision was made against
   routingPolicyVersion: string;           // version of the routing policy tables used
+  weightsVersion: string;                 // version of the score weights used
 
-  inputEvidence: Array<{ signal: string; value: unknown; source: string }>;
+  inputEvidence: RoutingInputEvidence[];  // { signal, value, source } triples recorded at decision time
   rulesApplied: string[];                 // deterministic rule ids that fired
   modelFallbackUsed: boolean;             // true if an LLM fallback was consulted
 
+  classification: ClassificationResult;   // task class + evidence + fallback flag + policy version
   scores: { complexity: number; ambiguity: number; risk: number; confidence: number };
 
   taskClass: TaskClass;
@@ -670,13 +680,16 @@ interface RoutingDecisionRecord {
 
   confidence: number;
   outcome?: "pending" | "success" | "failed" | "superseded" | "cancelled";
+  supersedes?: string;                    // decisionId of the record this record corrects/supersedes
 }
 ```
 
 **Guarantees**
 
 - Every production routing decision produces exactly one record (`recorded decisions = 100%`, section 15).
-- Records are immutable after write; corrections are new records referencing the original.
+- `repositorySha` is the exact 40-hex commit SHA the decision was made against; short or malformed SHAs are
+  rejected.
+- Records are immutable after write; corrections are new records referencing the original via `supersedes`.
 - The record is the single source of truth for post-hoc review, shadow comparison (section 14), and rollback
   analysis (section 16).
 
