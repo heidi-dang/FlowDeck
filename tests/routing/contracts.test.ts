@@ -314,7 +314,7 @@ describe("routing contracts: unknown fields are stripped", () => {
       confidence: 60,
       reasonCodes: ["simple"],
       fallbackTiers: [],
-      timeoutPolicy: { queueMs: 0, firstTokenMs: 0, totalMs: 0 },
+      timeoutPolicy: { queueMs: 0, firstTokenMs: 0, totalMs: 1000 },
       capabilityFloor: [],
       bogusKey: true,
     });
