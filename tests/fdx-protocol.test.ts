@@ -13,7 +13,7 @@
 import { describe, it, expect, beforeAll } from "bun:test"
 import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
-import { join, resolve } from "node:path"
+import { basename, join, resolve } from "node:path"
 
 import {
   PROTOCOL_VERSION,
@@ -103,8 +103,8 @@ describe("FDX protocol v1 — TypeScript compatibility", () => {
 
     it("produces short, SUN_LEN-safe paths", () => {
       const p = daemonSocketPath("/very/long/project/path/with/many/segments/" + "x".repeat(200))
-      const basename = p.split("/").pop()!
-      expect(basename.length).toBeLessThan(60)
+      const name = basename(p)
+      expect(name.length).toBeLessThan(60)
     })
 
     it("hashString is deterministic", () => {
