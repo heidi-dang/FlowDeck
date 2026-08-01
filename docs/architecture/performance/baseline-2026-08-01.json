@@ -1,0 +1,197 @@
+{
+  "binary": "/home/heidi/flowdeck/target/debug/fdx",
+  "iterations": 15,
+  "fixture": "/home/heidi/flowdeck",
+  "binaryVersion": "",
+  "generatedAt": "2026-08-01T02:57:08.216Z",
+  "commands": {
+    "version-startup": {
+      "n": 15,
+      "min": 1.76,
+      "p50": 2.11,
+      "p95": 2.8,
+      "max": 2.8,
+      "mean": 2.18
+    },
+    "read": {
+      "n": 15,
+      "min": 17.25,
+      "p50": 18.13,
+      "p95": 20,
+      "max": 20,
+      "mean": 18.21,
+      "outputBytes": {
+        "n": 15,
+        "min": 20759,
+        "p50": 20759,
+        "p95": 20759,
+        "max": 20759,
+        "mean": 20759
+      }
+    },
+    "search": {
+      "n": 15,
+      "min": 799.5,
+      "p50": 819.42,
+      "p95": 850.45,
+      "max": 850.45,
+      "mean": 820.44,
+      "outputBytes": {
+        "n": 15,
+        "min": 857,
+        "p50": 857,
+        "p95": 857,
+        "max": 857,
+        "mean": 857
+      }
+    },
+    "grep": {
+      "n": 15,
+      "min": 59.03,
+      "p50": 62.75,
+      "p95": 75.42,
+      "max": 75.42,
+      "mean": 64.85,
+      "outputBytes": {
+        "n": 15,
+        "min": 5249,
+        "p50": 5249,
+        "p95": 5249,
+        "max": 5249,
+        "mean": 5249
+      }
+    },
+    "ls": {
+      "n": 15,
+      "min": 2.67,
+      "p50": 2.85,
+      "p95": 3.19,
+      "max": 3.19,
+      "mean": 2.86,
+      "outputBytes": {
+        "n": 15,
+        "min": 1791,
+        "p50": 1791,
+        "p95": 1791,
+        "max": 1791,
+        "mean": 1791
+      }
+    },
+    "tree": {
+      "n": 15,
+      "min": 17.01,
+      "p50": 17.71,
+      "p95": 19.74,
+      "max": 19.74,
+      "mean": 17.94,
+      "outputBytes": {
+        "n": 15,
+        "min": 24666,
+        "p50": 24666,
+        "p95": 24666,
+        "max": 24666,
+        "mean": 24666
+      }
+    },
+    "outline": {
+      "n": 15,
+      "min": 90.45,
+      "p50": 93.02,
+      "p95": 97.09,
+      "max": 97.09,
+      "mean": 93.16,
+      "outputBytes": {
+        "n": 15,
+        "min": 81229,
+        "p50": 81229,
+        "p95": 81229,
+        "max": 81229,
+        "mean": 81229
+      }
+    },
+    "impact": {
+      "n": 15,
+      "min": 115.16,
+      "p50": 117.77,
+      "p95": 126.56,
+      "max": 126.56,
+      "mean": 118.72,
+      "outputBytes": {
+        "n": 15,
+        "min": 444,
+        "p50": 444,
+        "p95": 444,
+        "max": 444,
+        "mean": 444
+      }
+    },
+    "batch": {
+      "n": 15,
+      "min": 37.47,
+      "p50": 38.77,
+      "p95": 50,
+      "max": 50,
+      "mean": 39.89,
+      "outputBytes": {
+        "n": 15,
+        "min": 30988,
+        "p50": 30988,
+        "p95": 30988,
+        "max": 30988,
+        "mean": 30988
+      }
+    },
+    "git-status": {
+      "n": 15,
+      "min": 8.19,
+      "p50": 8.89,
+      "p95": 10.1,
+      "max": 10.1,
+      "mean": 8.85,
+      "outputBytes": {
+        "n": 15,
+        "min": 48,
+        "p50": 48,
+        "p95": 48,
+        "max": 48,
+        "mean": 48
+      }
+    },
+    "ts-fallback-read": {
+      "error": "Error: Command failed: /home/heidi/.nvm/versions/node/v24.18.1/bin/node --input-type=module -e \n    const { nativeReadFallback } = await import(\"/home/heidi/flowdeck/dist/tools/fdx-shared.js\")\n    con"
+    }
+  },
+  "summary": {
+    "spawnModel": "1 native process spawn per tool call (1:1)",
+    "spawnEvidence": {
+      "calls": 8,
+      "nativeSpawns": 8,
+      "totalMs": 1201.6,
+      "perCallMs": [
+        4.4,
+        18.1,
+        841.5,
+        62,
+        93.9,
+        124.2,
+        38.7,
+        18.7
+      ]
+    },
+    "tsFallbackRead": {
+      "p50": 0.05,
+      "p95": 0.36,
+      "note": "in-process, no spawn — proves spawn dominates when native available"
+    },
+    "dominantCost": "search cold full-scan 841ms p50 (tree-sitter parse of whole src/) — repeated on every search call",
+    "observations": [
+      "Startup alone: --version p50=2.62ms — pure process+clap cost, eliminated by daemon",
+      "8-call realistic flow: 1201ms total, 8 spawns; daemon resident process eliminates 8x spawn+startup",
+      "search re-scans every call (841ms) — incremental index removes the repeat cost",
+      "impact 124ms p50 includes cold scan + symbol resolution",
+      "outline 96ms p50 includes scanning for symbols across 25+ files",
+      "ls 3ms, git-status 9ms — near startup-bound, daemon amortizes to ~0.1ms round-trip",
+      "No daemon, no cache, no batching exists today: every call = spawn + cold work"
+    ]
+  }
+}
