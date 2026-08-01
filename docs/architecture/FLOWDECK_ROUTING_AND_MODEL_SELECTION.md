@@ -268,8 +268,10 @@ user-required specialist  recovery state
   documentation mutation via the `readOnly`/`mutating` input flags. Question markers ("explain", "how to")
   are **not** documentation signals; an explanatory prompt classifies as `read_only_question`.
 - Fallback rule 17 maps `userRequiredSpecialist` through the routing-owned specialist allow-list
-  (`classifier/specialist-registry.ts`, projected from the canonical agent registry in section 1.3). The id
-  is normalized (trimmed, lowercased) before matching. A recognized specialist maps to its deterministic
+  (`classifier/specialist-registry.ts`). Specialist identities are **derived** from the canonical agent
+  registry in section 1.3 (`getSubagentIds()`); the routing layer keeps no second manually synchronized
+  agent list, and orchestrator aliases (heidi/orchestrator) are primaries by construction. The id is
+  normalized (trimmed, lowercased) before matching. A recognized specialist maps to its deterministic
   class; an unrecognized id yields `unknown` with low confidence and evidence recording why the
   deterministic path failed.
 
@@ -745,6 +747,11 @@ interface RoutingDecisionRecord {
 - Every production routing decision produces exactly one record (`recorded decisions = 100%`, section 15).
 - `repositorySha` is the exact 40-hex commit SHA the decision was made against; short or malformed SHAs are
   rejected.
+- Binding is clone-safe and fails closed. `bindDecisionToSha` constructs the candidate, canonically deep-clones
+  it (no shared mutable object identity with caller-owned arrays/objects), validates the complete record, and
+  deep-freezes only the validated clone. Caller-owned inputs are never frozen and never referenced by the
+  returned record. Invalid SHA, timestamp, version identifiers, or nested classification/score/delegation/
+  strategy/model/evidence data throw rather than producing an invalid record.
 - Records are immutable after write; corrections are new records referencing the original via `supersedes`.
 - The record is the single source of truth for post-hoc review, shadow comparison (section 14), and rollback
   analysis (section 16).
