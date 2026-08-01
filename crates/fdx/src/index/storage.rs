@@ -138,6 +138,19 @@ impl GenerationStore {
         Ok(())
     }
 
+    /// Remove stale `.tmp` generation dirs (called on refresh, including the
+    /// no-change path, so interrupted writes never accumulate).
+    pub fn cleanup_stale_tmp(&self) {
+        if let Ok(entries) = std::fs::read_dir(&self.worktree) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.ends_with(".tmp") {
+                    let _ = std::fs::remove_dir_all(entry.path());
+                }
+            }
+        }
+    }
+
     /// Load and validate the current generation (or the newest valid one).
     ///
     /// Returns the outcome; corrupt generations are quarantined. This is a

@@ -482,8 +482,13 @@ pub fn resolve_import(
     }
     for t in try_paths {
         let rel = normalize_rel_path(&t);
-        if files.files.contains_key(&rel) {
-            return Some(rel);
+        // Strip a leading "./" so the key matches the file index keys.
+        let clean = rel
+            .strip_prefix("./")
+            .unwrap_or(&rel)
+            .to_string();
+        if files.files.contains_key(&clean) {
+            return Some(clean);
         }
     }
     None

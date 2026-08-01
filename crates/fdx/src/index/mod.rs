@@ -332,6 +332,9 @@ impl IndexService {
                     && snap.manifest.dirty_fingerprint
                         == dirty_fingerprint(Path::new(&self.identity.worktree_root))
                 {
+                    // Even on no-change, clean up stale tmp dirs from any
+                    // previously interrupted write.
+                    self.store.cleanup_stale_tmp();
                     return Ok(snap.clone());
                 }
             }
