@@ -46,6 +46,9 @@ function findDaemonBinary(): string | null {
 
 let DAEMON: string | null = findDaemonBinary()
 const HAVE_DAEMON = DAEMON !== null
+// The fdxd --socket lifecycle is unix-only by design; the stdio protocol
+// tests cover the wire format on win32 instead.
+const SOCKET_SUPPORTED = process.platform !== "win32"
 
 /** Create an isolated project dir for a test group. */
 function freshProject(): string {
@@ -53,6 +56,13 @@ function freshProject(): string {
 }
 
 beforeAll(async () => {
+  // The --socket lifecycle tests are unix-only (fdxd rejects --socket on
+  // win32 by design). Don't build on win32 — the stdio protocol tests cover
+  // the wire format there; the socket lifecycle needs a unix runtime dir.
+  if (process.platform === "win32") {
+    console.warn("fdxd --socket mode is unix-only — socket lifecycle tests skipped on win32")
+    return
+  }
   if (!HAVE_DAEMON) {
     console.warn("fdxd binary not found — attempting build")
     const { execSync } = await import("node:child_process")
@@ -65,7 +75,7 @@ beforeAll(async () => {
       console.warn("fdxd build failed — lifecycle tests will skip")
     }
   }
-})
+}, 130_000)
 
 afterAll(async () => {
   await resetDaemonConnection()
@@ -117,7 +127,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("connect() is idempotent when already connected", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c = new DaemonConnection(dir)
       await c.ensureStarted()
@@ -131,7 +141,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("concurrent connect() calls share one promise", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c = new DaemonConnection(dir)
       await c.ensureStarted()
@@ -156,7 +166,7 @@ describe("FDX daemon lifecycle", () => {
 
   describe("spawn-on-demand + lifecycle", () => {
     it("starts a daemon and completes hello handshake", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c = new DaemonConnection(dir)
       await c.ensureStarted()
@@ -170,7 +180,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("reuses one compatible daemon instead of spawning per request", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c1 = new DaemonConnection(dir)
       await c1.ensureStarted()
@@ -189,7 +199,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("daemon answers ping and query version", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c = new DaemonConnection(dir)
       await c.ensureStarted()
@@ -205,7 +215,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("recovers after an unexpected daemon exit", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c = new DaemonConnection(dir)
       await c.ensureStarted()
@@ -224,7 +234,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("cancellation is acked by the daemon", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c = new DaemonConnection(dir)
       await c.ensureStarted()
@@ -240,7 +250,7 @@ describe("FDX daemon lifecycle", () => {
 
   describe("response correlation", () => {
     it("every request ID matches its response ID", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c = new DaemonConnection(dir)
       await c.ensureStarted()
@@ -271,7 +281,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("error responses carry the same ID as the request", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c = new DaemonConnection(dir)
       await c.ensureStarted()
@@ -288,7 +298,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("concurrent requests maintain correlation", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c = new DaemonConnection(dir)
       await c.ensureStarted()
@@ -315,7 +325,7 @@ describe("FDX daemon lifecycle", () => {
 
   describe("daemon startup ownership", () => {
     it("does not unlink a live socket", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const sock = daemonSocketPath(dir)
       const proc = spawn(DAEMON, ["--socket", sock, "--idle", "10"], { stdio: "ignore" })
@@ -339,7 +349,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("refuses to write to a regular file at the socket path", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const fakeSocket = join(dir, "not-a-socket")
       const { writeFileSync } = require("node:fs")
@@ -358,7 +368,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("concurrent starters converge on one daemon PID", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
       const c1 = new DaemonConnection(dir)
       const c2 = new DaemonConnection(dir)
@@ -384,7 +394,7 @@ describe("FDX daemon lifecycle", () => {
 
   describe("warm-path reuse", () => {
     it("reuses same daemon across repeated runViaDaemon calls", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
 
       const r1 = await runViaDaemon(dir, "version", [], { clientVersion: "1.0.3" })
@@ -406,7 +416,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("supports ls after version without fallback", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
 
       const r1 = await runViaDaemon(dir, "version", [], { clientVersion: "1.0.3" })
@@ -424,7 +434,7 @@ describe("FDX daemon lifecycle", () => {
 
   describe("concurrency", () => {
     it("ten concurrent runViaDaemon calls complete", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
 
       const results = await Promise.all(
@@ -443,7 +453,7 @@ describe("FDX daemon lifecycle", () => {
     })
 
     it("unsupported command falls back and next call recovers", async () => {
-      if (!DAEMON) return
+      if (!DAEMON || !SOCKET_SUPPORTED) return
       const dir = freshProject()
 
       const r1 = await runViaDaemon(dir, "version", [], { clientVersion: "1.0.3" })
