@@ -155,6 +155,9 @@ target/*
 # Worktree scratch space (test artifacts from fdx-worktree.test.ts)
 fd-worktrees/
 
+# Local CI evidence / run logs (Task 3C/3D artifacts; kept locally, never committed)
+.artifacts/
+
 # Incremental TypeScript build cache (pre-push fast typecheck)
 .cache/
 .flowdeck/
