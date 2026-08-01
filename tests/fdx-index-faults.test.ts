@@ -25,7 +25,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { execFileSync, execSync } from "node:child_process"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { createHash } from "node:crypto"
@@ -124,23 +124,33 @@ function parseJson(s: string): any {
  * Mirrors the Rust `discover_identity` logic.
  */
 function computeIdentity(dir: string): { repositoryId: string; worktreeId: string } {
-  // Find git repo root
-  try {
-    execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: dir, encoding: "utf-8" })
-  } catch {}
   // Find git common dir (shared .git for linked worktrees)
   let gitCommonDir: string | null = null
   try {
     gitCommonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf-8" }).trim()
   } catch {}
 
-  // Canonical repo root: common dir if it exists (linked worktrees), else repo root
-  const canonicalRepoRoot = gitCommonDir || resolve(dir)
+  // Canonical repo root: common dir if it exists (linked worktrees), else
+  // the canonicalized worktree. The Rust identity hashes the CANONICAL
+  // (symlink-resolved) paths — on macOS /var is a symlink to /private/var,
+  // so realpathSync is required to match. resolve() alone would hash the
+  // un-resolved path and never find the state dir.
+  const canonicalRepoRoot = canonicalize(gitCommonDir || resolve(dir))
+  const canonicalWorktree = canonicalize(dir)
 
   const repoRootHash = shortSegment(["repo", normalize(canonicalRepoRoot)])
-  const worktreeHash = shortSegment(["worktree", normalize(dir)])
+  const worktreeHash = shortSegment(["worktree", normalize(canonicalWorktree)])
 
   return { repositoryId: repoRootHash, worktreeId: worktreeHash }
+}
+
+/** Resolve symlinks (mirrors Rust `Path::canonicalize` with abs fallback). */
+function canonicalize(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return resolve(p)
+  }
 }
 
 /** Get the worktree state directory for a specific repo directory. */

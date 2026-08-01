@@ -521,6 +521,7 @@ jobs:
         run: cargo build --manifest-path crates/fdx/Cargo.toml --release
       - name: Run exact-SHA production benchmark (non-bypassable budgets)
         run: |
+          mkdir -p artifact
           node scripts/bench-fdx-index.mjs --iterations 3 --baseline scripts/fdx-index-baseline.json --out artifact/fdx-index-benchmark.json
           test -f artifact/fdx-index-benchmark.json
       - name: Verify benchmark artifact SHA matches head

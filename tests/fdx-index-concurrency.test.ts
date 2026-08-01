@@ -25,7 +25,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { execFileSync, execSync, spawn } from "node:child_process"
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { createHash } from "node:crypto"
@@ -156,10 +156,21 @@ function worktreeStateDir(dir: string): string {
   try {
     gitCommonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf-8" }).trim()
   } catch {}
-  const canonicalRepoRoot = gitCommonDir || resolve(dir)
+  // The Rust identity hashes CANONICAL (symlink-resolved) paths; realpathSync
+  // is required on macOS where /var -> /private/var.
+  const canonicalRepoRoot = canonicalize(gitCommonDir || resolve(dir))
   const repoRootHash = shortSegment(["repo", normalize(canonicalRepoRoot)])
-  const worktreeHash = shortSegment(["worktree", normalize(resolve(dir))])
+  const worktreeHash = shortSegment(["worktree", normalize(canonicalize(dir))])
   return join(stateRoot, "fdx-index", repoRootHash, worktreeHash)
+}
+
+/** Resolve symlinks (mirrors Rust `Path::canonicalize` with abs fallback). */
+function canonicalize(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return resolve(p)
+  }
 }
 
 function normalize(p: string): string {

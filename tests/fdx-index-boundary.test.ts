@@ -308,7 +308,9 @@ function worktreeStateDir(dir: string): string {
   try {
     gitCommonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, encoding: "utf-8" }).trim()
   } catch {}
-  const canonicalRepoRoot = gitCommonDir || resolve(dir)
+  // The Rust identity hashes CANONICAL (symlink-resolved) paths; realpathSync
+  // is required on macOS where /var -> /private/var.
+  const canonicalRepoRoot = canonicalize(gitCommonDir || resolve(dir))
   const norm = (p: string) => (process.platform === "win32" || process.platform === "darwin" ? p.toLowerCase() : p)
   const seg = (parts: string[]) => {
     const h = createHash("sha256")
@@ -318,5 +320,14 @@ function worktreeStateDir(dir: string): string {
     }
     return h.digest().toString("hex")
   }
-  return join(stateDir, "fdx-index", seg(["repo", norm(canonicalRepoRoot)]), seg(["worktree", norm(resolve(dir))]))
+  return join(stateDir, "fdx-index", seg(["repo", norm(canonicalRepoRoot)]), seg(["worktree", norm(canonicalize(dir))]))
+}
+
+/** Resolve symlinks (mirrors Rust `Path::canonicalize` with abs fallback). */
+function canonicalize(p: string): string {
+  try {
+    return fs.realpathSync(p)
+  } catch {
+    return resolve(p)
+  }
 }
