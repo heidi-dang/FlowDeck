@@ -328,6 +328,46 @@ describe("adversarial: strategy high-risk posture (D14)", () => {
     expect(isHighRiskCompatible(DEFAULT_STRATEGY_POLICIES.explore_then_execute)).toBe(false)
   })
 
+  it("rejects a high-risk policy missing the review state", () => {
+    const base = getStrategyPolicy("planned_execution")
+    expect(isHighRiskCompatible({ ...base, allowedStates: ["task", "execute", "verify"] })).toBe(false)
+  })
+
+  it("rejects a high-risk policy with zero required reviewers", () => {
+    const base = getStrategyPolicy("planned_execution")
+    expect(isHighRiskCompatible({ ...base, requiredReviewers: 0 })).toBe(false)
+  })
+
+  it("rejects a high-risk policy with focused verification", () => {
+    const base = getStrategyPolicy("planned_execution")
+    expect(isHighRiskCompatible({ ...base, verificationLevel: "focused" })).toBe(false)
+    expect(isHighRiskCompatible({ ...base, verificationLevel: "standard" })).toBe(false)
+  })
+
+  it("rejects a high-risk policy whose approval is not the canonical requirement", () => {
+    const base = getStrategyPolicy("planned_execution")
+    // An arbitrary non-empty approval string is not the canonical requirement.
+    expect(isHighRiskCompatible({ ...base, approvalRequirements: ["someone-approves"] })).toBe(false)
+    expect(isHighRiskCompatible({ ...base, approvalRequirements: [] })).toBe(false)
+  })
+
+  it("rejects a high-risk policy with a weak model tier", () => {
+    const base = getStrategyPolicy("planned_execution")
+    expect(isHighRiskCompatible({ ...base, modelTier: "small_fast" })).toBe(false)
+    expect(isHighRiskCompatible({ ...base, modelTier: "general_coding" })).toBe(false)
+  })
+
+  it("rejects a high-risk policy with an unknown required capability", () => {
+    const base = getStrategyPolicy("planned_execution")
+    expect(isHighRiskCompatible({ ...base, requiredCapabilities: ["not_a_real_capability"] })).toBe(false)
+  })
+
+  it("accepts a fully compliant high-risk strategy", () => {
+    const base = getStrategyPolicy("planned_execution")
+    expect(isHighRiskCompatible(base)).toBe(true)
+    expect(isHighRiskCompatible(getStrategyPolicy("root_cause_repair"))).toBe(true)
+  })
+
   it("every high-risk-capable strategy carries the approval requirement", () => {
     for (const strategy of [
       "planned_execution",

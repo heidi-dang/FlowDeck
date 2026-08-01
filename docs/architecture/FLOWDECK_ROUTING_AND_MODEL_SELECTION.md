@@ -422,12 +422,13 @@ interface StrategyPolicy {
 
 **High-risk posture.** Section 5.5 mandates that high-risk tasks use full (or release) verification, at
 least one required reviewer, and at least one approval requirement. `isHighRiskCompatible(policy)` returns
-true exactly when `verificationLevel` is `full`/`release`, `requiredReviewers >= 1`, and
-`approvalRequirements` is non-empty. The default policies attach `HIGH_RISK_APPROVAL_REQUIREMENT` to every
-high-risk-capable strategy (planned, parallel, root-cause, audit, repair-and-audit, recovery). Direct
-strategies such as `fast_direct` (focused verification, zero reviewers, no approvals) are therefore
-incompatible with high-risk tasks. The review stage appears in every high-risk-capable strategy's
-`allowedStates`.
+true exactly when `verificationLevel` is `full`/`release`, `requiredReviewers >= 1`, `allowedStates`
+contains the `review` stage, `approvalRequirements` contains the canonical `HIGH_RISK_APPROVAL_REQUIREMENT`
+(an arbitrary non-empty approval string does not qualify), every `requiredCapability` is recognized by the
+capability-tier floor projection, and the strategy's `modelTier` satisfies the high-risk capability floor
+(`security audit`, `database migration`, `release operation`, `package publication`, `destructive Git`,
+`infrastructure change` — all `strong_reasoning`). Direct strategies such as `fast_direct` (focused
+verification, zero reviewers, no approvals) are therefore incompatible with high-risk tasks.
 
 ### 6.3 Mapping note — legacy vs canonical
 

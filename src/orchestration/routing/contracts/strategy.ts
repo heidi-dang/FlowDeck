@@ -11,7 +11,7 @@
 
 import { z } from "zod"
 import type { ModelTier } from "./models"
-import { zModelTier } from "./models"
+import { zModelTier, CAPABILITY_TIER_FLOOR, tierMeetsCapabilityFloor } from "./models"
 import type { Capability } from "./agents"
 import { type ExecutionStrategy, zExecutionStrategy, zNonEmptyId } from "./task"
 
@@ -24,8 +24,35 @@ export type VerificationLevel = "focused" | "standard" | "full" | "release"
 /**
  * Approval requirement attached to every high-risk-capable default strategy
  * (document section 5.5: high-risk tasks require at least one approval).
+ * A strategy is high-risk compatible only when `approvalRequirements`
+ * contains this exact canonical requirement; an arbitrary non-empty approval
+ * string does not satisfy the posture.
  */
 export const HIGH_RISK_APPROVAL_REQUIREMENT = "high_risk_approval"
+
+/**
+ * Capabilities a high-risk task must be able to satisfy. High-risk signals
+ * (security, migration, release, package publication, destructive Git,
+ * infrastructure change) all map to `strong_reasoning` in the
+ * CAPABILITY_TIER_FLOOR projection, so a high-risk-compatible strategy's
+ * model tier must satisfy this floor.
+ */
+export const HIGH_RISK_CAPABILITY_FLOOR: readonly Capability[] = [
+  "security audit",
+  "database migration",
+  "release operation",
+  "package publication",
+  "destructive Git",
+  "infrastructure change",
+]
+
+/**
+ * Returns true when every capability in `capabilities` is recognized by the
+ * canonical capability-tier floor projection (document section 7.2).
+ */
+export function capabilitiesAreRecognized(capabilities: readonly Capability[]): boolean {
+  return capabilities.every((capability) => CAPABILITY_TIER_FLOOR[capability] !== undefined)
+}
 
 /** Runtime posture that governs how a routed task is executed. */
 export interface StrategyPolicy {
@@ -43,16 +70,30 @@ export interface StrategyPolicy {
 
 /**
  * Returns true when `policy` satisfies the section 5.5 high-risk posture:
- * full (or release) verification, at least one required reviewer, and at
- * least one approval requirement. Strategies that do not meet this posture
- * (e.g. fast_direct: focused verification, zero reviewers, no approvals)
- * are incompatible with high-risk tasks.
+ * full (or release) verification, at least one required reviewer, the review
+ * stage present in `allowedStates`, the canonical high-risk approval
+ * requirement present (not an arbitrary string), every required capability
+ * recognized, and the model tier satisfying the high-risk capability floor.
+ * Strategies that do not meet this posture (e.g. fast_direct: focused
+ * verification, zero reviewers, no approvals) are incompatible with
+ * high-risk tasks.
  */
 export function isHighRiskCompatible(policy: StrategyPolicy): boolean {
+  const hasFullVerification =
+    policy.verificationLevel === "full" || policy.verificationLevel === "release"
+  const hasReviewer = policy.requiredReviewers >= 1
+  const hasCanonicalApproval = policy.approvalRequirements.includes(HIGH_RISK_APPROVAL_REQUIREMENT)
+  const hasReviewStage = policy.allowedStates.includes("review")
+  const recognizedCapabilities = capabilitiesAreRecognized(policy.requiredCapabilities)
+  const tierMeetsFloor = tierMeetsCapabilityFloor(policy.modelTier, [...HIGH_RISK_CAPABILITY_FLOOR])
+
   return (
-    (policy.verificationLevel === "full" || policy.verificationLevel === "release") &&
-    policy.requiredReviewers >= 1 &&
-    policy.approvalRequirements.length >= 1
+    hasFullVerification &&
+    hasReviewer &&
+    hasCanonicalApproval &&
+    hasReviewStage &&
+    recognizedCapabilities &&
+    tierMeetsFloor
   )
 }
 
@@ -120,7 +161,7 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
     requiredReviewers: 1,
     verificationLevel: "full",
     contextBudget: 32000,
-    modelTier: "general_coding",
+    modelTier: "strong_reasoning",
     recoveryLimit: 2,
     approvalRequirements: [HIGH_RISK_APPROVAL_REQUIREMENT],
   },
@@ -132,7 +173,7 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
     requiredReviewers: 1,
     verificationLevel: "full",
     contextBudget: 48000,
-    modelTier: "general_coding",
+    modelTier: "strong_reasoning",
     recoveryLimit: 2,
     approvalRequirements: [HIGH_RISK_APPROVAL_REQUIREMENT],
   },
@@ -164,7 +205,7 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
     strategy: "repair_and_independent_audit",
     allowedStates: ["execute", "review", "verify"],
     maximumSpecialists: 3,
-    requiredCapabilities: ["code_mutation", "independent_review"],
+    requiredCapabilities: ["code mutation", "independent_review"],
     requiredReviewers: 2,
     verificationLevel: "release",
     contextBudget: 56000,
@@ -180,7 +221,7 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
     requiredReviewers: 1,
     verificationLevel: "full",
     contextBudget: 24000,
-    modelTier: "general_coding",
+    modelTier: "strong_reasoning",
     recoveryLimit: 1,
     approvalRequirements: [HIGH_RISK_APPROVAL_REQUIREMENT],
   },

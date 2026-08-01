@@ -56,6 +56,12 @@ export const CAPABILITY_TIER_FLOOR: Record<string, ModelTier> = {
   "package publication": "strong_reasoning",
   "destructive Git": "strong_reasoning",
   "infrastructure change": "strong_reasoning",
+  // Strategy-required capabilities (document section 6.2) — recognized so
+  // StrategyPolicy.requiredCapabilities validate against the projection.
+  planning: "general_coding",
+  ownership_leases: "general_coding",
+  read_only: "small_fast",
+  independent_review: "strong_reasoning",
 }
 
 /** Returns true when `value` is one of the canonical model tiers. */
