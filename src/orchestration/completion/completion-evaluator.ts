@@ -277,10 +277,10 @@ function evaluateMandatoryEvidencePresent(input: CompletionGateInput): GateResul
   // Validate evidence is not stale (SHA and runId match)
   for (const ev of currentEvidence) {
     if (ev.sha !== input.currentSha) {
-      failures.push(`Evidence "${ev.id}" targets stale SHA ${ev.sha}, expected ${input.currentSha}`)
+      failures.push(`Evidence "${ev.id}" targets SHA ${ev.sha}, expected ${input.currentSha}`)
     }
     if (ev.runId !== input.runId) {
-      failures.push(`Evidence "${ev.id}" belongs to wrong run ${ev.runId}, expected ${input.runId}`)
+      failures.push(`Evidence "${ev.id}" belongs to run ${ev.runId}, expected ${input.runId}`)
     }
   }
 
