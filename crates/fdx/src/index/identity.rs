@@ -98,7 +98,13 @@ fn git_out(args: &[&str], cwd: &Path) -> Option<String> {
         .output()
         .ok()?;
     if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        // trim_end only: porcelain status lines begin with a space for
+        // unstaged changes (" M file"), which must be preserved for parsing.
+        Some(
+            String::from_utf8_lossy(&output.stdout)
+                .trim_end()
+                .to_string(),
+        )
     } else {
         None
     }
@@ -140,11 +146,54 @@ pub fn git_detached(cwd: &Path) -> bool {
 }
 
 /// Dirty-tree fingerprint: a stable hash over `git status --porcelain`
-/// plus untracked-file names. Two equal trees produce the same fingerprint;
-/// any worktree change flips it.
+/// AND the content hashes of files reported as modified/untracked. Two equal
+/// trees produce the same fingerprint; ANY worktree change — including a
+/// content edit inside an already-dirty file — flips it.
+///
+/// The status text alone is insufficient: ` M lib.ts` is identical whether
+/// lib.ts changed once or three times, so the fingerprint must incorporate
+/// the dirty files' content to make the no-change fast path sound.
 pub fn dirty_fingerprint(cwd: &Path) -> String {
-    let status = git_out(&["status", "--porcelain=v1"], cwd).unwrap_or_default();
-    short_segment(&["dirty", &status])
+    let status = git_out(&["status", "--porcelain=v1", "--no-renames"], cwd).unwrap_or_default();
+    if status.is_empty() {
+        return short_segment(&["dirty", ""]);
+    }
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"dirty\0");
+    let mut lines: Vec<&str> = status.lines().collect();
+    lines.sort_unstable();
+    let max_content_files = 1000usize;
+    let mut content_count = 0usize;
+    for line in lines {
+        hasher.update(line.as_bytes());
+        hasher.update(b"\0");
+        if line.len() < 4 {
+            continue;
+        }
+        let status_part = &line[0..2];
+        // Include content hash for modified/untracked/added files so a
+        // content edit inside an already-dirty file is detected. Deleted
+        // files have no content to hash (their removal is in the status).
+        if (status_part.contains('M') || status_part.contains('?') || status_part.contains('A'))
+            && content_count < max_content_files
+        {
+            let path = line[3..].trim().trim_matches('"');
+            if !path.is_empty() {
+                if let Ok(meta) = std::fs::metadata(cwd.join(path)) {
+                    if meta.is_file() {
+                        if let Ok(content) = std::fs::read(cwd.join(path)) {
+                            hasher.update(&content);
+                            hasher.update(b"\0");
+                            content_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let digest = hasher.finalize();
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
 
 /// Hash of relevant configuration. For Task 3 the "relevant config" is the
@@ -272,6 +321,33 @@ mod tests {
         std::fs::write(tmp.path().join("a.txt"), "b").unwrap();
         let fp_dirty = dirty_fingerprint(tmp.path());
         assert_ne!(fp_clean, fp_dirty);
+    }
+
+    #[test]
+    fn fingerprint_detects_content_edit_within_already_dirty_file() {
+        // Regression: git status text (" M a.txt") is identical whether the
+        // file changed once or twice; the fingerprint must incorporate the
+        // dirty file's content so a second edit is still detected.
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        std::fs::write(tmp.path().join("a.txt"), "a").unwrap();
+        git(tmp.path(), &["add", "."]).unwrap();
+        git(tmp.path(), &["commit", "-qm", "init"]).unwrap();
+
+        std::fs::write(tmp.path().join("a.txt"), "b").unwrap();
+        let fp1 = dirty_fingerprint(tmp.path());
+        std::fs::write(tmp.path().join("a.txt"), "c").unwrap();
+        let fp2 = dirty_fingerprint(tmp.path());
+        assert_ne!(
+            fp1, fp2,
+            "second edit inside an already-dirty file must flip the fingerprint"
+        );
+
+        // Clean tree fingerprint is stable and distinct.
+        git(tmp.path(), &["add", "-A"]).unwrap();
+        git(tmp.path(), &["commit", "-qm", "second"]).unwrap();
+        let fp_clean = dirty_fingerprint(tmp.path());
+        assert_eq!(fp_clean, short_segment(&["dirty", ""]));
     }
 
     #[test]

@@ -310,6 +310,23 @@ describe("FDX index incremental refresh (real binary)", () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  it("repeated edits to an already-dirty file are detected", () => {
+    const dir = makeRepo()
+    refresh(dir)
+    // First dirty edit: clean -> dirty.
+    writeFileSync(join(dir, "utils.py"), "def helper():\n    return 2\n\ndef firstedit():\n    return 1\n")
+    refresh(dir)
+    expect(parseJson(fdxIndex(dir, ["symbols.query", "--query", "firstedit"])).some((s: any) => s.name === "firstedit")).toBe(true)
+    // Second dirty edit: git status text is identical (" M utils.py"), but
+    // content changed — the fingerprint must still detect it (regression for
+    // the P1 where content-only changes inside an already-dirty file were
+    // missed because status text is content-insensitive).
+    writeFileSync(join(dir, "utils.py"), "def helper():\n    return 2\n\ndef firstedit():\n    return 1\n\ndef secondedit():\n    return 2\n")
+    refresh(dir)
+    expect(parseJson(fdxIndex(dir, ["symbols.query", "--query", "secondedit"])).some((s: any) => s.name === "secondedit")).toBe(true)
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   it("missed watcher events are found by reconciliation", () => {
     const dir = makeRepo()
     refresh(dir)

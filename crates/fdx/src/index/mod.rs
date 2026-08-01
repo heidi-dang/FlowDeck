@@ -709,18 +709,28 @@ pub fn query_git_state(snap: &IndexSnapshot) -> GitStateSnapshot {
 // shared across connections, so concurrent clients on one repository share
 // one index (with per-service locks — no global lock across repos).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Registry of open index services, keyed by canonical worktree root.
 pub struct IndexRegistry {
     services: Mutex<HashMap<String, Arc<IndexService>>>,
+    /// LRU access order (most recent last) for bounded eviction so a
+    /// long-running daemon never accumulates services for removed projects.
+    access: Mutex<VecDeque<String>>,
+    /// Maximum number of cached services before eviction.
+    max_services: usize,
     options: IndexServiceOptions,
 }
 
 impl IndexRegistry {
+    /// Default bound on concurrently cached index services.
+    pub const DEFAULT_MAX_SERVICES: usize = 64;
+
     pub fn new(options: IndexServiceOptions) -> Self {
         Self {
             services: Mutex::new(HashMap::new()),
+            access: Mutex::new(VecDeque::new()),
+            max_services: Self::DEFAULT_MAX_SERVICES,
             options,
         }
     }
@@ -734,6 +744,7 @@ impl IndexRegistry {
         {
             let map = self.services.lock().unwrap();
             if let Some(svc) = map.get(&key) {
+                self.touch(&key);
                 return Ok(svc.clone());
             }
         }
@@ -741,11 +752,44 @@ impl IndexRegistry {
         let mut map = self.services.lock().unwrap();
         // Double-checked: another thread may have opened it while we waited.
         if let Some(existing) = map.get(&key) {
+            self.touch(&key);
             Ok(existing.clone())
         } else {
-            map.insert(key, svc.clone());
+            map.insert(key.clone(), svc.clone());
+            self.touch(&key);
+            self.evict(&mut map);
             Ok(svc)
         }
+    }
+
+    /// Record access, dropping the service when the bound is exceeded.
+    fn touch(&self, key: &str) {
+        let mut access = self.access.lock().unwrap();
+        access.retain(|k| k != key);
+        access.push_back(key.to_string());
+    }
+
+    /// Evict least-recently-used services beyond the bound. Services are
+    /// cheap (lazy load) and Arc-shared, so eviction only drops the registry
+    /// reference; active callers keep their Arc.
+    fn evict(&self, map: &mut HashMap<String, Arc<IndexService>>) {
+        let mut access = self.access.lock().unwrap();
+        while map.len() > self.max_services {
+            let Some(oldest) = access.pop_front() else {
+                break;
+            };
+            map.remove(&oldest);
+        }
+    }
+
+    /// Number of cached services (observability/tests).
+    pub fn len(&self) -> usize {
+        self.services.lock().unwrap().len()
+    }
+
+    /// Whether the registry holds no cached services.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Remove an idle service (used by invalidate/rebuild paths if desired).
@@ -756,6 +800,7 @@ impl IndexRegistry {
             .unwrap_or_else(|_| worktree.to_path_buf());
         let key = canonical.to_string_lossy().into_owned();
         self.services.lock().unwrap().remove(&key);
+        self.access.lock().unwrap().retain(|k| k != &key);
     }
 }
 
