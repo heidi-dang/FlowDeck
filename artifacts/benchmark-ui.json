@@ -1,31 +1,41 @@
 {
   "benchmarkSuite": "ui-projection-dom-render",
-  "timestamp": "2026-08-01T03:44:30.532Z",
+  "timestamp": "2026-08-01T04:22:34.950Z",
+  "gitSha": "0625dba4dfdf7e55a9b2a4e519a54eb1c2147381",
+  "branch": "feat/performance-sse-ui-foundation",
+  "environment": "test",
+  "runtimeVersions": {
+    "bun": "1.3.14",
+    "node": "v24.3.0"
+  },
+  "sampleCount": 3000,
+  "fixture": "LiveDashboard UI Component",
+  "warmColdState": "warm",
   "metrics": {
     "browserEventToReducer": {
       "samples": 3000,
-      "reductionsPerSec": 805481,
+      "reductionsPerSec": 819755,
       "medianMs": 0.0007,
       "p95Ms": 0.0026,
-      "maxMs": 0.0257
+      "maxMs": 0.1219
     },
     "reducerToDomRender": {
       "samples": 500,
-      "rendersPerSec": 778283,
-      "medianMs": 0.0008,
-      "p95Ms": 0.0026,
-      "maxMs": 0.036
+      "rendersPerSec": 2367,
+      "medianMs": 0.3198,
+      "p95Ms": 0.8673,
+      "maxMs": 3.6255
     },
     "frameStability": {
       "targetFps": 60,
       "maxFrameTimeMs": 16.67,
-      "measuredMaxRenderMs": 0.036,
+      "measuredMaxRenderMs": 3.6255,
       "passed": true
     }
   },
   "memoryBytes": {
-    "baseline": 2768550,
-    "peak": 2768550,
-    "growthMb": 0
+    "baseline": 2694306,
+    "peak": 14347867,
+    "growthMb": 11.11
   }
 }

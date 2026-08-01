@@ -94,12 +94,12 @@
     "test:streaming:reconnect": "bun test tests/streaming/browser-client.test.ts",
     "test:streaming:load": "bun test tests/streaming/http-sse-load-soak.test.ts",
     "test:streaming:faults": "bun test tests/streaming/load-reconnect-fault.test.ts",
+    "test:production-integration": "bun test tests/better-harness/production-server-integration.test.ts",
     "test:ui": "bun test tests/ui",
     "test:ui:e2e": "bun test tests/ui/browser-e2e.test.ts",
-    "test:accessibility": "bun test tests/ui/live-dashboard.test.ts",
+    "test:accessibility": "bun test tests/ui/accessibility.test.ts",
     "benchmark:streaming": "bun scripts/benchmarks/benchmark-streaming.ts",
     "benchmark:ui": "bun scripts/benchmarks/benchmark-ui.ts",
-    "test:production-integration": "bun test tests/better-harness/production-server-integration.test.ts",
     "report:self-host": "node scripts/report-self-host.mjs"
   },
   "keywords": [

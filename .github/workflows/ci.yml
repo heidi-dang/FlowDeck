@@ -80,8 +80,14 @@ jobs:
         with:
           bun-version: "1.3.14"
       - run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
       - run: npm run build
       - run: npm run test
+      - run: npm run test:production-integration
+      - run: npm run test:ui:e2e
+      - run: npm run test:accessibility
+      - run: npm run test:streaming:load
 
 
   build:
