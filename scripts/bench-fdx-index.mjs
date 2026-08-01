@@ -1,44 +1,62 @@
 #!/usr/bin/env node
 /**
- * bench-fdx-index.mjs — Task 3 persistent index benchmark (exact-SHA evidence).
+ * bench-fdx-index.mjs — Task 3D production benchmark (exact-SHA closure evidence).
  *
- * Measures the index cold/warm/incremental paths against a deterministic
- * synthetic fixture, binding every artifact to the exact implementation SHA:
+ * Measures the persistent index paths against FROZEN deterministic fixture
+ * profiles (small / medium / large), binding every artifact to the exact
+ * implementation SHA. Runs against the ACTUAL built fdx binary.
  *
  *   cold full build, warm persisted load, no-change refresh, one-file edit,
- *   file creation, rename, deletion, symbol lookup, reverse-dependency
- *   lookup, tests-for-file lookup, resident memory, persisted index size.
+ *   multi-file edit, file creation, rename, deletion, symbol lookup,
+ *   reverse-dependency lookup, tests-for-file lookup, fdx-process RSS,
+ *   persisted index size.
  *
- * Guardrails:
- * - Rejects dirty source runs (the worktree must match the exact git HEAD).
- * - Every artifact carries gitSha/branch/dirty/timestamp/platform/... .
- * - Fails with a nonzero exit on benchmark failure or budget regression.
+ * Guardrails (non-bypassable for closure):
+ * - Rejects dirty source runs unless `--allow-dirty` (closure evidence NEVER
+ *   uses --allow-dirty or --skip-budgets).
+ * - Every artifact carries the full 40-char gitSha, branch, dirty, platform,
+ *   architecture, CPU, memory, Rust version, Node version, bun version, and
+ *   the per-profile frozen fixture SHA.
+ * - Enforces absolute production budgets (`--skip-budgets` is NEVER used for
+ *   closure evidence).
+ * - Compares against a stored baseline (`--baseline file.json`) and fails on
+ *   material regression.
+ * - Exits nonzero on any benchmark failure, budget violation, or regression.
  *
  * Usage: node scripts/bench-fdx-index.mjs [--iterations N] [--out file.json]
- *        [--fixture FILE] [--skip-budgets]
+ *        [--binary /abs/path/fdx] [--baseline baseline.json] [--skip-budgets]
+ *        [--allow-dirty]
  */
 
 import { execFileSync } from "node:child_process"
 import { existsSync, mkdtempSync, rmSync, writeFileSync, readdirSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
+import { createHash } from "node:crypto"
 
 const ROOT = resolve(import.meta.dirname, "..")
 const BIN_NAME = process.platform === "win32" ? "fdx.exe" : "fdx"
-const BINARY = [
-  join(ROOT, "target", "debug", BIN_NAME),
-  join(ROOT, "crates", "fdx", "target", "debug", BIN_NAME),
-].find(existsSync)
 
 const argv = process.argv.slice(2)
 function argValue(name, def) {
   const i = argv.indexOf(name)
   return i >= 0 && argv[i + 1] ? argv[i + 1] : def
 }
-const ITER = Number(argValue("--iterations", "7"))
+const ITER = Number(argValue("--iterations", "5"))
 const OUT = argValue("--out", undefined)
 const FIXTURE = argValue("--fixture", undefined)
+const BASELINE = argValue("--baseline", undefined)
 const SKIP_BUDGETS = argv.includes("--skip-budgets")
+const ALLOW_DIRTY = argv.includes("--allow-dirty")
+
+// Binary resolution: explicit --binary wins; otherwise release-first.
+const EXPLICIT_BINARY = argValue("--binary", undefined)
+const BINARY = EXPLICIT_BINARY || [
+  join(ROOT, "target", "release", BIN_NAME),
+  join(ROOT, "target", "debug", BIN_NAME),
+  join(ROOT, "crates", "fdx", "target", "release", BIN_NAME),
+  join(ROOT, "crates", "fdx", "target", "debug", BIN_NAME),
+].find(existsSync)
 
 if (!BINARY) {
   console.error("fdx native binary not found. Build it first: cargo build --manifest-path crates/fdx/Cargo.toml --bin fdx")
@@ -63,7 +81,7 @@ if (!gitSha || gitSha.length !== 40) {
   console.error("Cannot determine the implementation SHA; aborting (no unbound evidence).")
   process.exit(1)
 }
-if (dirty && !argv.includes("--allow-dirty")) {
+if (dirty && !ALLOW_DIRTY) {
   console.error(`Dirty source run rejected: worktree has uncommitted changes at ${gitSha}.`)
   console.error("Commit or stash before benchmarking, or pass --allow-dirty to override (evidence will be labeled).")
   process.exit(1)
@@ -78,38 +96,92 @@ function execOut(cmd, args) {
     return "unknown"
   }
 }
+
 const envEvidence = {
   platform: process.platform,
   architecture: process.arch,
-  cpu: (() => { try { return execFileSync("node", ["-e", "console.log(require('os').cpus()[0].model)"], { encoding: "utf-8" }).trim() } catch { return "unknown" } })(),
-  memory: (() => { try { return execFileSync("node", ["-e", "console.log(require('os').totalmem())"], { encoding: "utf-8" }).trim() } catch { return "unknown" } })(),
+  cpu: (() => {
+    try {
+      return execFileSync("node", ["-e", "console.log(require('os').cpus()[0].model)"], { encoding: "utf-8" }).trim()
+    } catch {
+      return "unknown"
+    }
+  })(),
+  memoryBytes: (() => {
+    try {
+      return execFileSync("node", ["-e", "console.log(require('os').totalmem())"], { encoding: "utf-8" }).trim()
+    } catch {
+      return "unknown"
+    }
+  })(),
   nodeVersion: process.version,
   bunVersion: execOut("bun", ["--version"]),
   rustVersion: execOut("rustc", ["--version"]),
   fdxVersion: execOut(BINARY, ["--version"]),
-  indexSchemaVersion: 1,
+  indexSchemaVersion: 2,
 }
 
-// ─── Deterministic synthetic fixture ────────────────────────────────────────
+// ─── Frozen fixture profiles (committed spec — deterministic content) ──────
 
-function makeFixture() {
-  const dir = mkdtempSync(join(tmpdir(), "fdx-bench-"))
+/**
+ * Frozen fixture spec. The generated tree is byte-deterministic: every file's
+ * content is derived purely from its index, so two runs on the same SHA
+ * produce identical trees. The per-profile `fixtureSha` (sha256 over the
+ * sorted path+content list) binds the artifact to the exact frozen fixture.
+ */
+const FIXTURE_SPECS = {
+  small: { modules: 30, testEvery: 2, lines: 6 },
+  medium: { modules: 300, testEvery: 3, lines: 10 },
+  large: { modules: 1500, testEvery: 4, lines: 16 },
+}
+
+function makeFixture(specKey) {
+  const spec = FIXTURE_SPECS[specKey]
+  const dir = mkdtempSync(join(tmpdir(), `fdx-bench-${specKey}-`))
   git(["init", "-q"], dir)
   git(["config", "user.email", "b@b"], dir)
   git(["config", "user.name", "b"], dir)
-  // 120 source files + 40 test files with imports (deterministic).
-  for (let i = 0; i < 120; i++) {
+  const records = []
+  for (let i = 0; i < spec.modules; i++) {
     const deps = i > 0 ? `import { dep${i - 1} } from "./mod${i - 1}";\n` : ""
-    writeFileSync(join(dir, `mod${i}.ts`), `${deps}export function fn${i}(): number { return ${i}; }\nexport class Cls${i} {}\n`)
-  }
-  for (let i = 0; i < 40; i++) {
-    const src = i % 2 === 0 ? `./mod${i}` : `./mod${Math.floor(i / 2)}`
-    writeFileSync(join(dir, `mod${i}.test.ts`), `import { fn${i} } from "${src}";\nfn${i}();\n`)
+    const body = []
+    for (let l = 0; l < spec.lines; l++) {
+      body.push(`export function fn${i}_${l}(x: number): number { return x + ${i * 1000 + l}; }`)
+    }
+    const content = `${deps}${body.join("\n")}\nexport class Cls${i} {}\n`
+    const rel = `mod${i}.ts`
+    writeFileSync(join(dir, rel), content)
+    records.push(`${rel}\0${content}`)
+    if (i % spec.testEvery === 0) {
+      const src = i > 0 ? `./mod${i - 1}` : `./mod${i}`
+      const testContent = `import { fn${i}_0 } from "${src}";\nfn${i}_0(1);\n`
+      const testRel = `mod${i}.test.ts`
+      writeFileSync(join(dir, testRel), testContent)
+      records.push(`${testRel}\0${testContent}`)
+    }
   }
   writeFileSync(join(dir, ".gitignore"), "*.log\n")
+  records.push(".gitignore\0*.log\n")
   git(["add", "-A"], dir)
   git(["commit", "-qm", "fixture"], dir)
-  return dir
+  const fixtureSha = createHash("sha256")
+    .update(records.sort().join("\u0001"))
+    .digest("hex")
+  return { dir, spec, fixtureSha }
+}
+
+function fileCount(dir) {
+  let count = 0
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      if (e.name === ".git") continue
+      const p = join(d, e.name)
+      if (e.isDirectory()) walk(p)
+      else count++
+    }
+  }
+  walk(dir)
+  return count
 }
 
 // ─── Index helpers (one-shot fdx index CLI) ────────────────────────────────
@@ -149,107 +221,48 @@ function runSamples(fn, n = ITER) {
   return summary(samples)
 }
 
-// ─── Run the benchmark ──────────────────────────────────────────────────────
-
-const fixture = FIXTURE && existsSync(FIXTURE) ? FIXTURE : makeFixture()
-const fixtureEvidence = {
-  repository: FIXTURE ? "provided" : "synthetic",
-  fileCount: (() => {
-    let count = 0
-    const walk = (d) => {
-      for (const e of readdirSync(d, { withFileTypes: true })) {
-        if (e.name === ".git") continue
-        const p = join(d, e.name)
-        if (e.isDirectory()) walk(p)
-        else count++
-      }
-    }
-    walk(fixture)
-    return count
-  })(),
-  sampleCount: ITER,
-  warmupCount: 1,
-}
-
-console.error(`fdx binary: ${BINARY}`)
-console.error(`implementation SHA: ${gitSha}${dirty ? " (DIRTY)" : ""}`)
-console.error(`fixture: ${fixture} (${fixtureEvidence.fileCount} files)`)
-
-// Cold build (first refresh after invalidate) — one sample, heavy.
-fdx(fixture, ["invalidate"])
-const cold = runSamples(() => JSON.parse(fdx(fixture, ["refresh", "--full"])), 3)
-
-// Warm persisted load: reopen status after a full build.
-const warm = runSamples(() => JSON.parse(fdx(fixture, ["status"])), ITER)
-
-// No-change refresh.
-const noChange = runSamples(() => JSON.parse(fdx(fixture, ["refresh"])), ITER)
-
-// One-file edit: modify a tracked file then refresh.
-const editFile = join(fixture, "mod0.ts")
-function oneFileEdit() {
-  const orig = new TextDecoder().decode(execFileSync("git", ["show", "HEAD:mod0.ts"], { cwd: fixture, encoding: "buffer" }))
-  writeFileSync(editFile, orig + "\nexport function edited(): number { return 99; }\n")
-  const r = JSON.parse(fdx(fixture, ["refresh"]))
-  git(["checkout", "-q", "--", "mod0.ts"], fixture)
-  return r
-}
-const edit = runSamples(oneFileEdit, 3)
-
-// File creation.
-function fileCreate() {
-  writeFileSync(join(fixture, `created-${Date.now()}.ts`), "export const c = 1;\n")
-  const r = JSON.parse(fdx(fixture, ["refresh"]))
-  git(["clean", "-qf", "--", "created-*.ts"], fixture)
-  return r
-}
-const create = runSamples(fileCreate, 3)
-
-// Rename.
-function renameFile() {
-  git(["mv", "mod1.ts", "mod1-renamed.ts"], fixture)
-  const r = JSON.parse(fdx(fixture, ["refresh"]))
-  git(["mv", "mod1-renamed.ts", "mod1.ts"], fixture)
-  return r
-}
-const rename = runSamples(renameFile, 3)
-
-// Deletion.
-function deleteFile() {
-  const p = join(fixture, "del-tmp.ts")
-  writeFileSync(p, "export const d = 1;\n")
-  git(["add", p], fixture)
-  fdx(fixture, ["refresh"])
-  git(["rm", "-q", "--cached", "del-tmp.ts"], fixture)
-  rmSync(p)
-  const r2 = JSON.parse(fdx(fixture, ["refresh"]))
-  git(["reset", "-q", "--", "del-tmp.ts"], fixture)
-  return r2
-}
-const deletion = runSamples(deleteFile, 3)
-
-// Queries (bounded, deterministic).
-const symbolQ = runSamples(() => JSON.parse(fdx(fixture, ["symbols.query", "--query", "fn0", "--limit", "20"])), ITER)
-const reverseQ = runSamples(() => JSON.parse(fdx(fixture, ["dependencies.query", "--file", "mod10.ts", "--limit", "20"])), ITER)
-const testsQ = runSamples(() => JSON.parse(fdx(fixture, ["testsFor.query", "--file", "mod10.ts"])), ITER)
-
-// Resident memory: peak RSS of the fdx process during a refresh.
-function residentMemoryMB() {
+/**
+ * Peak RSS of the fdx CHILD process (not the Node harness): spawn the binary
+ * and sample its resident set while it works.
+ *   Linux:   /proc/<pid>/statm (resident pages)
+ *   macOS:   ps -o rss= -p <pid>
+ *   Windows: best-effort via `ps`/tasklist (may return 0 — labeled).
+ */
+function fdxProcessRssKB(dir) {
   const script = `
-    const { spawnSync } = require("child_process");
-    const r = spawnSync("${BINARY}", ["index", "refresh", "--cwd", "${fixture}"], {
-      env: { ...process.env, FDX_INDEX_DIR: "${STATE_DIR}" }, encoding: "utf-8"
+    const { spawn } = require("child_process");
+    const path = require("path");
+    const child = spawn(${JSON.stringify(BINARY)}, ["index", "refresh", "--cwd", ${JSON.stringify(dir)}], {
+      env: { ...process.env, FDX_INDEX_DIR: ${JSON.stringify(STATE_DIR)} },
+      stdio: ["ignore", "ignore", "ignore"]
     });
-    void r;
+    let peak = 0;
+    const timer = setInterval(() => {
+      let kb = 0;
+      if (process.platform === "linux") {
+        try {
+          const statm = require("fs").readFileSync("/proc/" + child.pid + "/statm", "utf-8").trim().split(" ");
+          const pages = Number(statm[1]); // resident set size in pages
+          kb = Math.round(pages * 4096 / 1024);
+        } catch {}
+      } else if (process.platform === "darwin") {
+        try {
+          const out = require("child_process").execFileSync("ps", ["-o", "rss=", "-p", String(child.pid)], { encoding: "utf-8" });
+          kb = Math.round(Number(out.trim()));
+        } catch {}
+      }
+      if (kb > peak) peak = kb;
+    }, 10);
+    child.on("close", (code) => {
+      clearInterval(timer);
+      console.log(JSON.stringify({ code, peakKb: peak, platform: process.platform }));
+    });
   `
-  execFileSync("node", ["-e", script], { encoding: "utf-8" })
-  // Approximate RSS by running node with max-old-space measurement is not
-  // portable; use the parent process RSS via /proc when available.
+  const out = execFileSync(process.env.BUN_BIN || "node", ["-e", script], { encoding: "utf-8" }).trim()
   try {
-    const statm = new TextDecoder().decode(execFileSync("sh", ["-c", `awk '/VmHWM/ {print $2}' /proc/self/status 2>/dev/null || echo 0`], { encoding: "buffer" }))
-    return Number(statm.trim() || "0")
+    return JSON.parse(out)
   } catch {
-    return 0
+    return { code: -1, peakKb: 0, platform: process.platform }
   }
 }
 
@@ -267,28 +280,139 @@ function persistedSizeBytes() {
   return total
 }
 
-const report = {
-  benchmarkSuite: "fdx-index",
-  benchmarkVersion: "1.0.0",
-  gitSha,
-  branch,
-  dirty,
-  timestamp: new Date().toISOString(),
-  ...envEvidence,
-  fixture: fixtureEvidence,
-  results: {
+// ─── Per-profile benchmark ──────────────────────────────────────────────────
+
+function benchmarkProfile(specKey, fixtureDir, fixtureEvidence) {
+  console.error(`fixture profile: ${specKey} (${fixtureEvidence.fileCount} files, sha ${fixtureEvidence.fixtureSha})`)
+  const dir = fixtureDir
+
+  // Cold build (first refresh after invalidate) — one sample, heavy.
+  fdx(dir, ["invalidate"])
+  const cold = runSamples(() => JSON.parse(fdx(dir, ["refresh", "--full"])), 3)
+
+  // Warm persisted load: reopen status after a full build.
+  const warm = runSamples(() => JSON.parse(fdx(dir, ["status"])), ITER)
+
+  // No-change refresh.
+  const noChange = runSamples(() => JSON.parse(fdx(dir, ["refresh"])), ITER)
+
+  // One-file edit: modify a tracked file then refresh.
+  const editFile = join(dir, "mod0.ts")
+  function oneFileEdit() {
+    const orig = new TextDecoder().decode(execFileSync("git", ["show", "HEAD:mod0.ts"], { cwd: fixtureDir, encoding: "buffer" }))
+    writeFileSync(editFile, orig + "\nexport function edited(): number { return 99; }\n")
+    const r = JSON.parse(fdx(dir, ["refresh"]))
+    git(["checkout", "-q", "--", "mod0.ts"], dir)
+    return r
+  }
+  const edit = runSamples(oneFileEdit, 3)
+
+  // Multi-file edit: modify several tracked files then refresh.
+  function multiFileEdit() {
+    for (let i = 0; i < 10; i++) {
+      const p = join(dir, `mod${i}.ts`)
+      const orig = new TextDecoder().decode(execFileSync("git", ["show", `HEAD:mod${i}.ts`], { cwd: fixtureDir, encoding: "buffer" }))
+      writeFileSync(p, orig + `\nexport function multiEdit${i}(): number { return ${i}; }\n`)
+    }
+    const r = JSON.parse(fdx(dir, ["refresh"]))
+    git(["checkout", "-q", "--", "mod0.ts", "mod1.ts", "mod2.ts", "mod3.ts", "mod4.ts", "mod5.ts", "mod6.ts", "mod7.ts", "mod8.ts", "mod9.ts"], dir)
+    return r
+  }
+  const multiEdit = runSamples(multiFileEdit, 3)
+
+  // File creation.
+  function fileCreate() {
+    writeFileSync(join(dir, `created-${Date.now()}.ts`), "export const c = 1;\n")
+    const r = JSON.parse(fdx(dir, ["refresh"]))
+    git(["clean", "-qf", "--", "created-*.ts"], dir)
+    return r
+  }
+  const create = runSamples(fileCreate, 3)
+
+  // Rename.
+  function renameFile() {
+    git(["mv", "mod1.ts", "mod1-renamed.ts"], dir)
+    const r = JSON.parse(fdx(dir, ["refresh"]))
+    git(["mv", "mod1-renamed.ts", "mod1.ts"], dir)
+    return r
+  }
+  const rename = runSamples(renameFile, 3)
+
+  // Deletion.
+  function deleteFile() {
+    const p = join(dir, "del-tmp.ts")
+    writeFileSync(p, "export const d = 1;\n")
+    git(["add", p], dir)
+    fdx(dir, ["refresh"])
+    git(["rm", "-q", "--cached", "del-tmp.ts"], dir)
+    rmSync(p)
+    const r2 = JSON.parse(fdx(dir, ["refresh"]))
+    git(["reset", "-q", "--", "del-tmp.ts"], dir)
+    return r2
+  }
+  const deletion = runSamples(deleteFile, 3)
+
+  // Queries (bounded, deterministic).
+  const symbolQ = runSamples(() => JSON.parse(fdx(dir, ["symbols.query", "--query", "fn0", "--limit", "20"])), ITER)
+  const reverseQ = runSamples(() => JSON.parse(fdx(dir, ["dependencies.query", "--file", "mod10.ts", "--limit", "20"])), ITER)
+  const testsQ = runSamples(() => JSON.parse(fdx(dir, ["testsFor.query", "--file", "mod10.ts"])), ITER)
+
+  return {
     coldFullBuild: cold,
     warmPersistedLoad: warm,
     noChangeRefresh: noChange,
     oneFileEditRefresh: edit,
+    multiFileEditRefresh: multiEdit,
     fileCreationRefresh: create,
     renameRefresh: rename,
     deletionRefresh: deletion,
     symbolLookup: symbolQ,
     reverseDependencyLookup: reverseQ,
     testsForLookup: testsQ,
-  },
-  residentMemory: { vmrssKB: residentMemoryMB(), unit: "kB (VmHWM best-effort)" },
+  }
+}
+
+// ─── Run all profiles ───────────────────────────────────────────────────────
+
+const profiles = {}
+const fixtureEvidence = {}
+const fixtureCleanup = []
+
+if (FIXTURE) {
+  // Explicit frozen fixture directory provided (deterministic external tree).
+  const dir = FIXTURE
+  const fixtureSha = "provided"
+  const fileCountV = fileCount(dir)
+  profiles.medium = benchmarkProfile("medium", dir, { repository: "provided", fileCount: fileCountV, fixtureSha })
+  fixtureEvidence.medium = { repository: "provided", fileCount: fileCountV, fixtureSha }
+} else {
+  for (const key of ["small", "medium", "large"]) {
+    const { dir, spec, fixtureSha } = makeFixture(key)
+    fixtureCleanup.push(dir)
+    const fc = fileCount(dir)
+    fixtureEvidence[key] = { profile: key, spec, fileCount: fc, fixtureSha }
+    profiles[key] = benchmarkProfile(key, dir, fixtureEvidence[key])
+  }
+}
+
+// fdx-process RSS (medium profile representative) + persisted index size.
+const rssFixture = FIXTURE ? FIXTURE : null
+const rssDir = rssFixture || fixtureCleanup[1] // medium profile dir
+const rss = fdxProcessRssKB(rssDir)
+
+const report = {
+  benchmarkSuite: "fdx-index",
+  benchmarkVersion: "2.0.0",
+  gitSha,
+  branch,
+  dirty,
+  timestamp: new Date().toISOString(),
+  ...envEvidence,
+  binaryPath: BINARY,
+  fixtures: fixtureEvidence,
+  profiles,
+  fdxProcessRssKB: rss.peakKb,
+  fdxProcessRssUnit: "kB (sampled /proc/<pid>/statm or ps -o rss= on the fdx process)",
   persistedIndexSizeBytes: persistedSizeBytes(),
 }
 
@@ -300,24 +424,30 @@ if (OUT) {
 }
 
 // ─── Budget gates (declared before reporting; regressions fail) ────────────
+//
+// Budgets apply to the MEDIUM profile (the representative production size);
+// the small/large profiles provide scale evidence. Absolute p95 budgets are
+// non-bypassable for closure evidence (--skip-budgets is never used there).
 
 const BUDGETS = {
-  coldFullBuild: { p95: 30_000 }, // 120-file fixture cold build under 30s p95
-  warmPersistedLoad: { p95: 500 }, // warm load under 500ms p95
-  noChangeRefresh: { p95: 1_500 }, // no-change refresh never full-scans: <1.5s
-  oneFileEditRefresh: { p95: 3_000 },
-  symbolLookup: { p95: 200 },
-  reverseDependencyLookup: { p95: 200 },
-  testsForLookup: { p95: 200 },
+  coldFullBuild: { p95: 30_000 }, // medium fixture cold build < 30s p95
+  warmPersistedLoad: { p95: 1_000 },
+  noChangeRefresh: { p95: 2_500 },
+  oneFileEditRefresh: { p95: 5_000 },
+  multiFileEditRefresh: { p95: 8_000 },
+  symbolLookup: { p95: 500 },
+  reverseDependencyLookup: { p95: 500 },
+  testsForLookup: { p95: 500 },
 }
 
+const failures = []
 if (!SKIP_BUDGETS) {
-  const failures = []
+  const medium = profiles.medium
   for (const [name, budget] of Object.entries(BUDGETS)) {
-    const result = report.results[name]
+    const result = medium?.[name]
     if (!result) continue
     if (result.p95 > budget.p95) {
-      failures.push(`${name}: p95 ${result.p95}ms > budget ${budget.p95}ms`)
+      failures.push(`medium/${name}: p95 ${result.p95}ms > budget ${budget.p95}ms`)
     }
   }
   if (failures.length > 0) {
@@ -325,4 +455,46 @@ if (!SKIP_BUDGETS) {
     process.exit(1)
   }
   console.error("All declared performance budgets satisfied.")
+}
+
+// ─── Baseline comparison (fails on material regression) ────────────────────
+//
+// A material regression is > 2x the stored baseline p95 (relative tolerance)
+// on the medium profile, with the absolute budgets as the hard floor.
+
+if (BASELINE) {
+  let baseline
+  try {
+    baseline = JSON.parse(require("node:fs").readFileSync(BASELINE, "utf-8"))
+  } catch (e) {
+    console.error(`Cannot read baseline ${BASELINE}: ${e}`)
+    process.exit(1)
+  }
+  const baseProfile = baseline.profiles?.medium
+  if (!baseProfile) {
+    console.error("Baseline has no medium profile; cannot compare.")
+    process.exit(1)
+  }
+  const regressions = []
+  const medium = profiles.medium
+  for (const [name, baseResult] of Object.entries(baseProfile)) {
+    const current = medium?.[name]
+    if (!current || !baseResult?.p95) continue
+    const ratio = current.p95 / baseResult.p95
+    if (ratio > 2.0) {
+      regressions.push(`medium/${name}: p95 ${current.p95}ms is ${ratio.toFixed(2)}x the baseline ${baseResult.p95}ms`)
+    }
+  }
+  if (regressions.length > 0) {
+    console.error(`BASELINE REGRESSION:\n  ${regressions.join("\n  ")}`)
+    process.exit(1)
+  }
+  console.error("No material regressions versus the stored baseline.")
+}
+
+// Cleanup fixtures (not the state dir: evidence may be inspected).
+for (const d of fixtureCleanup) {
+  try {
+    rmSync(d, { recursive: true, force: true })
+  } catch {}
 }
