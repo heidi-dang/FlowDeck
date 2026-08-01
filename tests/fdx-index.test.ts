@@ -475,6 +475,12 @@ describe("FDX index daemon/one-shot parity (real binary)", () => {
   })
 
   it("warm daemon connection is reused for repeated index queries", async () => {
+    // The persistent `fdxd --socket` mode serves a UNIX domain socket and is
+    // documented as unix-only (fdxd.rs: "fdxd: --socket is not supported on
+    // this platform; use --stdio"; INDEX_V1.md: "socket lifecycle remains
+    // unix-only per Task 2"). On Windows the daemon exits with that error,
+    // so this test only runs on unix.
+    if (process.platform === "win32") return
     const dir = makeRepo()
     refresh(dir)
     const proc = spawn(FDXD!, ["--socket", join(stateDir, "warm.sock"), "--idle", "30"], {

@@ -29,7 +29,7 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, rmSync, writeFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, writeFileSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { createHash } from "node:crypto"
@@ -465,7 +465,7 @@ if (!SKIP_BUDGETS) {
 if (BASELINE) {
   let baseline
   try {
-    baseline = JSON.parse(require("node:fs").readFileSync(BASELINE, "utf-8"))
+    baseline = JSON.parse(readFileSync(BASELINE, "utf-8"))
   } catch (e) {
     console.error(`Cannot read baseline ${BASELINE}: ${e}`)
     process.exit(1)
