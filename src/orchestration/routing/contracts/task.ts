@@ -10,6 +10,7 @@
  */
 
 import { z } from "zod"
+import { isCanonicalSerializable } from "./canonical"
 
 /** Lower bound of every score produced by the classifier and the scorers. */
 export const SCORE_MIN = 0
@@ -106,10 +107,49 @@ export function isValidExecutionStrategy(value: unknown): value is ExecutionStra
   return (EXECUTION_STRATEGIES as readonly unknown[]).includes(value)
 }
 
-/** Rejects empty and whitespace-only identifier strings. */
-export const zNonEmptyId = z.string().refine((s) => s.trim().length > 0, {
-  message: "must not be empty or whitespace-only",
-})
+/**
+ * Rejects empty and whitespace-only identifier strings and trims the stored
+ * value so comparisons are always made against canonical (trimmed) ids.
+ */
+export const zNonEmptyId = z
+  .string()
+  .trim()
+  .refine((s) => s.length > 0, {
+    message: "must not be empty or whitespace-only",
+  })
+
+/**
+ * Meaningful free-text: trimmed, non-empty, and not a bare placeholder token
+ * ("unknown", "n/a", "none", "tbd", "-", …) unless followed by an explanatory
+ * detail. Used for evidence source/detail, signals, and summaries so a
+ * record can never carry empty, whitespace-only, or placeholder evidence.
+ */
+export const PLACEHOLDER_TOKENS: readonly string[] = [
+  "unknown",
+  "n/a",
+  "na",
+  "none",
+  "tbd",
+  "todo",
+  "tba",
+  "-",
+  "null",
+  "undefined",
+  "later",
+  "unavailable",
+]
+
+export function isMeaningfulText(value: string): boolean {
+  const trimmed = value.trim()
+  if (trimmed.length === 0) return false
+  return !PLACEHOLDER_TOKENS.includes(trimmed.toLowerCase())
+}
+
+/** Zod schema: trimmed, non-empty, non-placeholder free text. */
+export const zMeaningfulString = z
+  .string()
+  .trim()
+  .refine(isMeaningfulText, { message: "must be meaningful (non-empty, non-whitespace, not a bare placeholder)" })
 
 /**
  * Validated version identifier: a non-empty string of the form
@@ -228,31 +268,73 @@ export interface ScoredTask {
   policyVersion: string
 }
 
-/** Zod schema for an EvidenceReference; ids must be non-empty identifiers. */
+/** Zod schema for an EvidenceReference; ids and text must be meaningful. */
 export const zEvidenceReference = z.object({
   id: zNonEmptyId,
-  source: z.string(),
-  detail: z.string(),
+  source: zMeaningfulString,
+  detail: zMeaningfulString,
 })
 
 /** Zod schema for ScoredTask. Every dimension must carry non-empty evidence. */
-export const zScoredTask = z.object({
-  scores: zTaskScores,
-  evidence: z.object({
-    complexity: z.array(zEvidenceReference).min(1, "complexity evidence must be non-empty"),
-    ambiguity: z.array(zEvidenceReference).min(1, "ambiguity evidence must be non-empty"),
-    risk: z.array(zEvidenceReference).min(1, "risk evidence must be non-empty"),
-    confidence: z.array(zEvidenceReference).min(1, "confidence evidence must be non-empty"),
-  }),
-  weightsVersion: zVersionId,
-  policyVersion: zVersionId,
-})
+export const zScoredTask = z
+  .object({
+    scores: zTaskScores,
+    evidence: z.object({
+      complexity: z.array(zEvidenceReference).min(1, "complexity evidence must be non-empty"),
+      ambiguity: z.array(zEvidenceReference).min(1, "ambiguity evidence must be non-empty"),
+      risk: z.array(zEvidenceReference).min(1, "risk evidence must be non-empty"),
+      confidence: z.array(zEvidenceReference).min(1, "confidence evidence must be non-empty"),
+    }),
+    weightsVersion: zVersionId,
+    policyVersion: zVersionId,
+  })
+  .superRefine((s, ctx) => {
+    const dimensions: Array<[string, EvidenceReference[]]> = [
+      ["complexity", s.evidence.complexity],
+      ["ambiguity", s.evidence.ambiguity],
+      ["risk", s.evidence.risk],
+      ["confidence", s.evidence.confidence],
+    ]
+    // Unique within each dimension.
+    for (const [dimension, entries] of dimensions) {
+      const seen = new Set<string>()
+      for (const entry of entries) {
+        if (seen.has(entry.id)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["evidence", dimension],
+            message: `score evidence ids must be unique within the ${dimension} dimension`,
+          })
+          break
+        }
+        seen.add(entry.id)
+      }
+    }
+    // No cross-dimension duplicate evidence ids.
+    const allIds = new Map<string, string>()
+    for (const [dimension, entries] of dimensions) {
+      for (const entry of entries) {
+        const existing = allIds.get(entry.id)
+        if (existing !== undefined && existing !== dimension) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["evidence"],
+            message: `cross-dimension duplicate evidence id "${entry.id}" (${existing} vs ${dimension}) is not permitted`,
+          })
+        } else if (existing === undefined) {
+          allIds.set(entry.id, dimension)
+        }
+      }
+    }
+  })
 
 /** Zod schema for a RoutingInputEvidence entry. */
 export const zRoutingInputEvidence = z.object({
-  signal: z.string(),
-  value: z.unknown(),
-  source: z.string(),
+  signal: zMeaningfulString,
+  value: z.unknown().refine(isCanonicalSerializable, {
+    message: "evidence value must be canonically serializable (no unsupported objects)",
+  }),
+  source: zMeaningfulString,
 })
 
 /** Zod schema for ClassificationInput; every field is optional. */
@@ -287,10 +369,32 @@ export const zClassificationInput = z.object({
 })
 
 /** Zod schema for a ClassificationResult. */
-export const zClassificationResult = z.object({
-  taskClass: zTaskClass,
-  confidence: z.number().min(0).max(100),
-  evidence: z.array(zEvidenceReference),
-  usedModelFallback: z.boolean(),
-  policyVersion: zVersionId,
-})
+export const zClassificationResult = z
+  .object({
+    taskClass: zTaskClass,
+    confidence: z.number().min(0).max(100),
+    evidence: z.array(zEvidenceReference),
+    usedModelFallback: z.boolean(),
+    policyVersion: zVersionId,
+  })
+  .superRefine((r, ctx) => {
+    if (r.evidence.length === 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["evidence"],
+        message: "classification evidence must contain at least one entry",
+      })
+    }
+    const seen = new Set<string>()
+    for (const entry of r.evidence) {
+      if (seen.has(entry.id)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["evidence"],
+          message: "classification evidence ids must be unique",
+        })
+        break
+      }
+      seen.add(entry.id)
+    }
+  })
