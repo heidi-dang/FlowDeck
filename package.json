@@ -88,7 +88,18 @@
     "report:orchestration:compatibility": "node scripts/generate-orchestration-compliance.mjs",
     "report:orchestration:provenance": "node scripts/generate-orchestration-provenance.mjs",
     "report:orchestration:repair-handoff": "node scripts/orchestration/generate-repair-handoff.mjs",
-    "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:matrix && npm run test:orchestration:port-discovery && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults && npm run test:orchestration:integration && npm run verify:orchestration:schema"
+    "test:orchestration:all": "npm run test:orchestration:framework && npm run test:orchestration:matrix && npm run test:orchestration:port-discovery && npm run test:orchestration:negative && npm run test:orchestration:replay && npm run test:orchestration:concurrency && npm run test:orchestration:faults && npm run test:orchestration:integration && npm run verify:orchestration:schema",
+    "test:streaming": "bun test tests/streaming",
+    "test:streaming:replay": "bun test tests/streaming/durable-sse.test.ts",
+    "test:streaming:reconnect": "bun test tests/streaming/browser-client.test.ts",
+    "test:streaming:load": "bun test tests/streaming/load-reconnect-fault.test.ts",
+    "test:streaming:faults": "bun test tests/streaming/load-reconnect-fault.test.ts",
+    "test:ui": "bun test tests/ui",
+    "test:ui:e2e": "bun test tests/ui",
+    "test:accessibility": "bun test tests/ui/live-dashboard.test.ts",
+    "benchmark:streaming": "bun test tests/streaming/load-reconnect-fault.test.ts",
+    "benchmark:ui": "bun test tests/ui",
+    "report:self-host": "node scripts/validate-docs.mjs"
   },
   "keywords": [
     "opencode",
