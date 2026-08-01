@@ -28,3 +28,7 @@ sha2 = "0.10"
 [[bin]]
 name = "fdx"
 path = "src/main.rs"
+
+[[bin]]
+name = "fdxd"
+path = "src/bin/fdxd.rs"
