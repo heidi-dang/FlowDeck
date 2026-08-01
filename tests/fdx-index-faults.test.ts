@@ -42,8 +42,8 @@ function normalize(p: string): string {
 }
 
 /**
- * Rust-compatible short_segment: hashes each part with null separator,
- * returns first 8 bytes (16 hex chars).
+ * Rust-compatible identity segment: full SHA-256 digest over the parts with
+ * null separators (mirrors `identity_hash` in crates/fdx/src/index/identity.rs).
  */
 function shortSegment(parts: string[]): string {
   const hasher = createHash("sha256")
@@ -52,7 +52,7 @@ function shortSegment(parts: string[]): string {
     hasher.update("\0")
   }
   const digest = hasher.digest()
-  return digest.toString("hex").slice(0, 16)
+  return digest.toString("hex")
 }
 
 function findBinary(name: string): string | null {
@@ -89,7 +89,7 @@ beforeAll(() => {
 })
 
 afterAll(() => {
-  rmSync(stateDir, { recursive: true, force: true })
+  if (stateDir) rmSync(stateDir, { recursive: true, force: true })
 })
 
 function git(dir: string, args: string[]) {
@@ -185,7 +185,7 @@ describe("FDX index fault and corruption recovery", () => {
     refreshOnce(dir)
     const wt = worktreeStateDir(dir)
     // Corrupt the current generation's manifest.
-    const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
+    const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.includes(".tmp"))
     expect(gens.length).toBeGreaterThan(0)
     const genDir = join(wt, gens[gens.length - 1])
     writeFileSync(join(genDir, "manifest.json"), "{not json")
@@ -205,7 +205,7 @@ describe("FDX index fault and corruption recovery", () => {
     const dir = makeRepo()
     refreshOnce(dir)
     const wt = worktreeStateDir(dir)
-    const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
+    const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.includes(".tmp"))
     const genDir = join(wt, gens[gens.length - 1])
     // Tamper with a component file (files.json) so the checksum no longer
     // matches the manifest.
@@ -233,7 +233,7 @@ describe("FDX index fault and corruption recovery", () => {
     const dir = makeRepo()
     refreshOnce(dir)
     const wt = worktreeStateDir(dir)
-    const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
+    const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.includes(".tmp"))
     const genDir = join(wt, gens[gens.length - 1])
     // Bump the manifest's schema_version to a future value.
     const manifestPath = join(genDir, "manifest.json")
@@ -261,7 +261,7 @@ describe("FDX index fault and corruption recovery", () => {
     const dir = makeRepo()
     refreshOnce(dir)
     const wt = worktreeStateDir(dir)
-    const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.endsWith(".tmp"))
+    const gens = readdirSync(wt).filter((e) => e.startsWith("gen-") && !e.includes(".tmp"))
     const genDir = join(wt, gens[gens.length - 1])
     writeFileSync(join(genDir, "manifest.json"), "{broken")
     // Warm reopen (status) attempts to load; corrupt gen moves to quarantine.
@@ -329,7 +329,7 @@ describe("FDX index fault and corruption recovery", () => {
     // no .tmp dirs remain in the state dir.
     const wt = worktreeStateDir(dir)
     const entries = readdirSync(wt)
-    expect(entries.some((e) => e.endsWith(".tmp"))).toBe(false)
+    expect(entries.some((e) => e.includes(".tmp"))).toBe(false)
     rmSync(dir, { recursive: true, force: true })
   })
 

@@ -72,7 +72,7 @@ beforeAll(() => {
 })
 
 afterAll(() => {
-  rmSync(stateDir, { recursive: true, force: true })
+  if (stateDir) rmSync(stateDir, { recursive: true, force: true })
 })
 
 function git(dir: string, args: string[]) {
@@ -130,7 +130,7 @@ describe("FDX index lifecycle (real binary)", () => {
     // ignored + binary files must not be in the file index
     const s = status(dir)
     expect(s.available).toBe(true)
-    expect(s.schema_version).toBe(1)
+    expect(s.schema_version).toBe(2)
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -180,7 +180,7 @@ describe("FDX index lifecycle (real binary)", () => {
     // The CLI process exits after each command (clean shutdown); check the
     // state dir has no .tmp remnants.
     const stateEntries = readdirSync(stateDir)
-    expect(stateEntries.some((e) => e.endsWith(".tmp"))).toBe(false)
+    expect(stateEntries.some((e) => e.includes(".tmp"))).toBe(false)
     rmSync(dir, { recursive: true, force: true })
   })
 
@@ -358,7 +358,7 @@ describe("FDX index queries (real binary)", () => {
     refresh(dir)
   })
   afterAll(() => {
-    rmSync(dir, { recursive: true, force: true })
+    if (dir) rmSync(dir, { recursive: true, force: true })
   })
 
   it("file query returns matching metadata", () => {
