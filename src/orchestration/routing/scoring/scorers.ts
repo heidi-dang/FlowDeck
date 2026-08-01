@@ -27,6 +27,7 @@ import {
   ROUTING_WEIGHTS_VERSION,
   ROUTING_POLICY_VERSION,
 } from "@/orchestration/routing/contracts"
+import { deepFreeze, type DeepReadonly } from "@/orchestration/routing/contracts/immutability"
 
 /** Relative weight of every deterministic scoring signal. */
 export interface ScoreWeights {
@@ -100,8 +101,14 @@ export interface ScoreWeights {
  */
 export const WEIGHTS_VERSION = "1.0.0"
 
-/** Default deterministic weights for every scoring signal. */
-export const DEFAULT_WEIGHTS: ScoreWeights = {
+/**
+ * Default deterministic weights for every scoring signal.
+ *
+ * Deep-frozen at module load: mutation without a WEIGHTS_VERSION bump is
+ * impossible.  Callers that need a mutable copy should clone via
+ * `structuredClone(DEFAULT_WEIGHTS)`.
+ */
+export const DEFAULT_WEIGHTS: DeepReadonly<ScoreWeights> = deepFreeze({
   complexity: {
     perFile: 15,
     perDomain: 20,
@@ -136,7 +143,7 @@ export const DEFAULT_WEIGHTS: ScoreWeights = {
     rollbackDifficultyWeight: 15,
     externalSideEffectsWeight: 20,
   },
-}
+} as const)
 
 /** A dimension score plus the evidence that produced it. */
 export interface ScoredDimension {

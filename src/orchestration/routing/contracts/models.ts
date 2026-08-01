@@ -1,10 +1,10 @@
 /**
  * Routing contract: model tier selection.
  *
- * Tiers are ordered weakest -> strongest. Routing picks the cheapest tier
+ * Tiers are ordered weakest → strongest. Routing picks the cheapest tier
  * that still meets the capability floor required by the task. The floor is
  * expressed as a list of canonical capabilities (document section 7.2)
- * mapped to a minimum tier through the routing-owned CAPABILITY_TIER_FLOOR
+ * mapped to a tier through the routing-owned CAPABILITY_TIER_FLOOR
  * projection (document section 10.3).
  */
 
@@ -19,31 +19,34 @@ import {
   zTaskScores,
   type TaskScores,
 } from "./task"
+import { deepFreeze, type DeepReadonly } from "./immutability"
 
 /** Ordered model capability tiers. */
 export type ModelTier = "small_fast" | "general_coding" | "strong_reasoning"
 
 /** Every model tier, ordered weakest to strongest. */
-export const MODEL_TIERS = [
+export const MODEL_TIERS = deepFreeze([
   "small_fast",
   "general_coding",
   "strong_reasoning",
-] as const satisfies readonly ModelTier[]
+] as const satisfies readonly ModelTier[])
 
 /** Numeric rank of each tier; higher means stronger capability. */
-export const MODEL_TIER_RANK: Record<ModelTier, number> = {
+export const MODEL_TIER_RANK: DeepReadonly<Record<ModelTier, number>> = deepFreeze({
   small_fast: 0,
   general_coding: 1,
   strong_reasoning: 2,
-}
+} as const)
 
 /**
  * Routing-owned projection mapping each canonical capability (document
  * section 7.2) to the minimum tier that can satisfy it (document section
  * 10.2 use lists). This projection lives in the routing domain; the
  * canonical registry in src/services is never modified.
+ *
+ * Deep-frozen at module load: mutation requires an explicit version bump.
  */
-export const CAPABILITY_TIER_FLOOR: Record<string, ModelTier> = {
+export const CAPABILITY_TIER_FLOOR: DeepReadonly<Record<string, ModelTier>> = deepFreeze({
   "repository inspection": "general_coding",
   "GitHub inspection": "small_fast",
   "CI log inspection": "small_fast",
@@ -56,13 +59,13 @@ export const CAPABILITY_TIER_FLOOR: Record<string, ModelTier> = {
   "package publication": "strong_reasoning",
   "destructive Git": "strong_reasoning",
   "infrastructure change": "strong_reasoning",
-  // Strategy-required capabilities (document section 6.2) — recognized so
+  // Strategy-required capabilities (document section 6.2) — recognised so
   // StrategyPolicy.requiredCapabilities validate against the projection.
   planning: "general_coding",
   ownership_leases: "general_coding",
   read_only: "small_fast",
   independent_review: "strong_reasoning",
-}
+} as const)
 
 /** Returns true when `value` is one of the canonical model tiers. */
 export function isValidModelTier(value: unknown): value is ModelTier {
@@ -126,12 +129,43 @@ export interface ModelSelectionDecision {
 /** Zod schema for a ModelTier value. */
 export const zModelTier = z.enum(MODEL_TIERS)
 
-/** Zod schema for a TimeoutPolicy; every bound is a non-negative integer. */
-export const zTimeoutPolicy = z.object({
-  queueMs: z.number().int().min(0),
-  firstTokenMs: z.number().int().min(0),
-  totalMs: z.number().int().min(0),
-})
+/**
+ * Zod schema for a TimeoutPolicy with cross-field invariants.
+ *
+ * Invariants:
+ * - totalMs > 0 (a model call without a timeout is unbounded — rejected)
+ * - queueMs <= totalMs (queuing cannot exceed total)
+ * - firstTokenMs <= totalMs (first-token wait cannot exceed total)
+ */
+export const zTimeoutPolicy = z
+  .object({
+    queueMs: z.number().int().min(0),
+    firstTokenMs: z.number().int().min(0),
+    totalMs: z.number().int().min(0),
+  })
+  .superRefine((t, ctx) => {
+    if (t.totalMs <= 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["totalMs"],
+        message: "totalMs must be > 0",
+      })
+    }
+    if (t.queueMs > t.totalMs) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["queueMs"],
+        message: "queueMs must not exceed totalMs",
+      })
+    }
+    if (t.firstTokenMs > t.totalMs) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["firstTokenMs"],
+        message: "firstTokenMs must not exceed totalMs",
+      })
+    }
+  })
 
 /** Zod schema for ModelRoutingInput (document section 10.3 shape). */
 export const zModelRoutingInput = z
@@ -145,6 +179,7 @@ export const zModelRoutingInput = z
     providerHealth: z.record(z.string(), z.number().min(0).max(100)).optional(),
   })
   .superRefine((input, ctx) => {
+    const seen = new Set<string>()
     for (const capability of input.capabilityFloor) {
       if (CAPABILITY_TIER_FLOOR[capability] === undefined) {
         ctx.addIssue({
@@ -153,6 +188,14 @@ export const zModelRoutingInput = z
           message: `unknown capability in floor: ${capability}`,
         })
       }
+      if (seen.has(capability)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["capabilityFloor"],
+          message: `duplicate capability in floor: ${capability}`,
+        })
+      }
+      seen.add(capability)
     }
   })
 
@@ -169,6 +212,36 @@ export const zModelSelectionDecision = z
     capabilityFloor: z.array(zNonEmptyId),
   })
   .superRefine((d, ctx) => {
+    // Provider/model: reject whitespace-only; model cannot be present
+    // without provider unless explicitly documented.
+    if (d.provider !== undefined && d.provider.trim().length === 0) {
+      ctx.addIssue({ code: "custom", path: ["provider"], message: "provider must not be whitespace-only" })
+    }
+    if (d.model !== undefined && d.model.trim().length === 0) {
+      ctx.addIssue({ code: "custom", path: ["model"], message: "model must not be whitespace-only" })
+    }
+    if (d.model !== undefined && (d.provider === undefined || d.provider.trim().length === 0)) {
+      ctx.addIssue({ code: "custom", path: ["model"], message: "model requires a provider" })
+    }
+
+    // Reason codes must be unique.
+    {
+      const seen = new Set<string>()
+      for (const code of d.reasonCodes) {
+        if (seen.has(code)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["reasonCodes"],
+            message: `duplicate reason code "${code}"`,
+          })
+          break
+        }
+        seen.add(code)
+      }
+    }
+
+    // Capability-floor entries must be recognised and unique.
+    const cfSeen = new Set<string>()
     for (const capability of d.capabilityFloor) {
       if (CAPABILITY_TIER_FLOOR[capability] === undefined) {
         ctx.addIssue({
@@ -177,7 +250,16 @@ export const zModelSelectionDecision = z
           message: `unknown capability in floor: ${capability}`,
         })
       }
+      if (cfSeen.has(capability)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["capabilityFloor"],
+          message: `duplicate capability in floor: ${capability}`,
+        })
+      }
+      cfSeen.add(capability)
     }
+
     if (!tierMeetsCapabilityFloor(d.tier, d.capabilityFloor)) {
       ctx.addIssue({
         code: "custom",
@@ -185,9 +267,21 @@ export const zModelSelectionDecision = z
         message: "selected tier does not meet the capability floor",
       })
     }
-    const seen = new Set<string>()
+
+    // Fallback policy: degradation-only (selected strongest -> progressively
+    // weaker compatible tiers). The selected tier MUST NOT appear in fallback
+    // (it is the primary choice, not a degraded fallback).
+    if (d.fallbackTiers.includes(d.tier)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["fallbackTiers"],
+        message: "selected tier must not appear in fallback tiers (degradation-only policy)",
+      })
+    }
+
+    const fbSeen = new Set<string>()
     for (const tier of d.fallbackTiers) {
-      if (seen.has(tier)) {
+      if (fbSeen.has(tier)) {
         ctx.addIssue({
           code: "custom",
           path: ["fallbackTiers"],
@@ -195,14 +289,15 @@ export const zModelSelectionDecision = z
         })
         break
       }
-      seen.add(tier)
+      fbSeen.add(tier)
     }
+    // Degradation-only order: strongest-first (strictly descending rank).
     for (let i = 1; i < d.fallbackTiers.length; i += 1) {
       if (MODEL_TIER_RANK[d.fallbackTiers[i]] >= MODEL_TIER_RANK[d.fallbackTiers[i - 1]]) {
         ctx.addIssue({
           code: "custom",
           path: ["fallbackTiers"],
-          message: "fallback tiers must be strictly ordered strongest-first",
+          message: "fallback tiers must be strictly ordered strongest-first (degradation-only policy)",
         })
         break
       }

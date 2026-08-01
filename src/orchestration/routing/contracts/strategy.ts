@@ -14,6 +14,19 @@ import type { ModelTier } from "./models"
 import { zModelTier, CAPABILITY_TIER_FLOOR, tierMeetsCapabilityFloor } from "./models"
 import type { Capability } from "./agents"
 import { type ExecutionStrategy, zExecutionStrategy, zNonEmptyId } from "./task"
+import { deepFreeze } from "./immutability"
+
+/**
+ * Documented maximum for `recoveryLimit`. Any policy above this bound is
+ * invalid — a recovery loop with an unbounded retry budget is a safety risk.
+ */
+export const MAX_RECOVERY_LIMIT = 3
+
+/**
+ * Documented maximum for `maximumSpecialists`. Strategies are bounded so a
+ * parallel strategy cannot request an unbounded specialist fan-out.
+ */
+export const MAX_SPECIALISTS_LIMIT = 8
 
 /** The five pipeline stages a strategy may be allowed to operate in. */
 export type RunStage = "task" | "review" | "execute" | "verify" | "done"
@@ -97,24 +110,6 @@ export function isHighRiskCompatible(policy: StrategyPolicy): boolean {
   )
 }
 
-/**
- * Deep-freezes an object and all nested objects/arrays recursively.
- * Returns the frozen object.
- */
-function deepFreeze<T>(obj: T): T {
-  if (obj === null || typeof obj !== "object") {
-    return obj
-  }
-  Object.freeze(obj)
-  for (const key of Object.keys(obj)) {
-    const value = (obj as Record<string, unknown>)[key]
-    if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-      deepFreeze(value)
-    }
-  }
-  return obj
-}
-
 /** Deterministic default policies, one per canonical execution strategy. */
 export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
   fast_direct: {
@@ -143,7 +138,8 @@ export const DEFAULT_STRATEGY_POLICIES = deepFreeze({
   },
   explore_then_execute: {
     strategy: "explore_then_execute",
-    allowedStates: ["task", "execute"],
+    // "standard" verification requires the verify stage (contract invariant).
+    allowedStates: ["task", "execute", "verify"],
     maximumSpecialists: 1,
     requiredCapabilities: [],
     requiredReviewers: 0,
@@ -241,16 +237,152 @@ export const zRunStage = z.enum(["task", "review", "execute", "verify", "done"] 
 /** Zod schema for a VerificationLevel value. */
 export const zVerificationLevel = z.enum(["focused", "standard", "full", "release"] as const)
 
-/** Zod schema for a StrategyPolicy. */
-export const zStrategyPolicy = z.object({
-  strategy: zExecutionStrategy,
-  allowedStates: z.array(zRunStage),
-  maximumSpecialists: z.number().int().min(0),
-  requiredCapabilities: z.array(zNonEmptyId),
-  requiredReviewers: z.number().int().min(0),
-  verificationLevel: zVerificationLevel,
-  contextBudget: z.number().int().min(0),
-  modelTier: zModelTier,
-  recoveryLimit: z.number().int().min(0),
-  approvalRequirements: z.array(z.string()),
-})
+/**
+ * Zod schema for a StrategyPolicy with cross-field invariants.
+ *
+ * Invariants:
+ * - `allowedStates` is non-empty and contains unique stages.
+ * - required capabilities are unique and recognised by the canonical floor.
+ * - approval requirements are unique and meaningful.
+ * - a strategy requiring reviewers must include the `review` stage.
+ * - verification other than `focused` must include the `verify` stage.
+ * - `contextBudget > 0` and `recoveryLimit` is bounded by MAX_RECOVERY_LIMIT.
+ * - `maximumSpecialists` is bounded by MAX_SPECIALISTS_LIMIT.
+ * - a policy carrying the canonical high-risk approval must pass the full
+ *   high-risk posture (no contradictory low-risk configurations).
+ */
+export const zStrategyPolicy = z
+  .object({
+    strategy: zExecutionStrategy,
+    allowedStates: z.array(zRunStage),
+    maximumSpecialists: z.number().int().min(0),
+    requiredCapabilities: z.array(zNonEmptyId),
+    requiredReviewers: z.number().int().min(0),
+    verificationLevel: zVerificationLevel,
+    contextBudget: z.number().int().min(0),
+    modelTier: zModelTier,
+    recoveryLimit: z.number().int().min(0),
+    approvalRequirements: z.array(z.string()),
+  })
+  .superRefine((p, ctx) => {
+    // allowedStates must be non-empty and unique.
+    if (p.allowedStates.length === 0) {
+      ctx.addIssue({ code: "custom", path: ["allowedStates"], message: "allowedStates must be non-empty" })
+    }
+    {
+      const seen = new Set<string>()
+      for (const stage of p.allowedStates) {
+        if (seen.has(stage)) {
+          ctx.addIssue({ code: "custom", path: ["allowedStates"], message: `duplicate stage "${stage}"` })
+          break
+        }
+        seen.add(stage)
+      }
+    }
+    // Required capabilities unique and recognised.
+    {
+      const seen = new Set<string>()
+      for (const capability of p.requiredCapabilities) {
+        if (CAPABILITY_TIER_FLOOR[capability] === undefined) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["requiredCapabilities"],
+            message: `unknown capability "${capability}"`,
+          })
+        }
+        if (seen.has(capability)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["requiredCapabilities"],
+            message: `duplicate capability "${capability}"`,
+          })
+          break
+        }
+        seen.add(capability)
+      }
+    }
+    // Approval requirements unique and meaningful.
+    {
+      const seen = new Set<string>()
+      for (const approval of p.approvalRequirements) {
+        if (approval.trim().length === 0) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["approvalRequirements"],
+            message: "approval requirements must be meaningful",
+          })
+        }
+        if (seen.has(approval)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["approvalRequirements"],
+            message: `duplicate approval requirement "${approval}"`,
+          })
+          break
+        }
+        seen.add(approval)
+      }
+    }
+    // A strategy requiring reviewers must include the review stage.
+    if (p.requiredReviewers > 0 && !p.allowedStates.includes("review")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["requiredReviewers"],
+        message: "a strategy requiring reviewers must include the review stage",
+      })
+    }
+    // Verification other than focused must include the verify stage.
+    if (p.verificationLevel !== "focused" && !p.allowedStates.includes("verify")) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["verificationLevel"],
+        message: `a strategy with verification level "${p.verificationLevel}" must include the verify stage`,
+      })
+    }
+    // contextBudget > 0.
+    if (p.contextBudget <= 0) {
+      ctx.addIssue({ code: "custom", path: ["contextBudget"], message: "contextBudget must be > 0" })
+    }
+    // recoveryLimit bounded.
+    if (p.recoveryLimit > MAX_RECOVERY_LIMIT) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["recoveryLimit"],
+        message: `recoveryLimit must be <= ${MAX_RECOVERY_LIMIT}`,
+      })
+    }
+    // maximumSpecialists bounded.
+    if (p.maximumSpecialists > MAX_SPECIALISTS_LIMIT) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["maximumSpecialists"],
+        message: `maximumSpecialists must be <= ${MAX_SPECIALISTS_LIMIT}`,
+      })
+    }
+    // A strategy carrying the canonical high-risk approval must pass the
+    // full high-risk posture — no contradictory low-risk configuration.
+    if (p.approvalRequirements.includes(HIGH_RISK_APPROVAL_REQUIREMENT)) {
+      if (!isHighRiskCompatible(p)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["approvalRequirements"],
+          message:
+            "a strategy carrying the high-risk approval requirement must satisfy the full high-risk posture (full verification, >= 1 reviewer, review stage, strong-reasoning tier)",
+        })
+      }
+    }
+  })
+
+// Load-time invariant: every default policy must validate. Run once at
+// module load so a broken default fails immediately rather than at runtime.
+// This check lives after both zStrategyPolicy and DEFAULT_STRATEGY_POLICIES
+// are defined, so there is no circular initialization dependency.
+for (const policy of Object.values(DEFAULT_STRATEGY_POLICIES)) {
+  const parsed = zStrategyPolicy.safeParse(policy)
+  if (!parsed.success) {
+    const details = parsed.error.issues
+      .map((issue) => `${issue.path.join(".") || "(root)"}: ${issue.message}`)
+      .join("; ")
+    throw new Error(`default strategy policy "${policy.strategy}" failed validation at load: ${details}`)
+  }
+}
