@@ -163,3 +163,6 @@ fd-worktrees/
 *.db
 *.db-wal
 *.db-shm
+
+# Local FlowDeck session overrides (never committed)
+.flowdeck.jsonc
