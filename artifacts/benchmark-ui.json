@@ -1,8 +1,8 @@
 {
   "benchmarkSuite": "ui-projection-dom-render",
   "benchmarkType": "microbenchmark-reducer-and-dom-render",
-  "timestamp": "2026-08-01T06:30:44.741Z",
-  "gitSha": "946defcdcf7b952c3adcebd285ecebdca7cae54b",
+  "timestamp": "2026-08-01T06:47:40.477Z",
+  "gitSha": "f0718b22dd04b224f50434d93094ba4208affe2f",
   "dirty": false,
   "branch": "feat/performance-sse-ui-foundation",
   "environment": "test",
@@ -23,31 +23,31 @@
     "browserEventToReducer": {
       "measurementType": "in-process-reducer-microbenchmark",
       "samples": 3000,
-      "reductionsPerSec": 902052,
-      "medianMs": 0.0006,
-      "p95Ms": 0.0026,
-      "maxMs": 0.0147
+      "reductionsPerSec": 844713,
+      "medianMs": 0.0007,
+      "p95Ms": 0.0024,
+      "maxMs": 0.1553
     },
     "reducerToDomRender": {
       "measurementType": "happy-dom-render-microbenchmark",
       "samples": 500,
-      "rendersPerSec": 2521,
-      "medianMs": 0.2941,
-      "p95Ms": 0.8192,
-      "maxMs": 3.1447
+      "rendersPerSec": 2267,
+      "medianMs": 0.3274,
+      "p95Ms": 0.9647,
+      "maxMs": 3.6202
     },
     "frameStability": {
       "measurementType": "happy-dom-60fps-budget-check",
       "targetFps": 60,
       "maxFrameTimeMs": 16.67,
-      "measuredMaxRenderMs": 3.1447,
+      "measuredMaxRenderMs": 3.6202,
       "passed": true
     }
   },
   "memoryBytes": {
-    "baseline": 2762998,
-    "peak": 14621972,
-    "growthMb": 11.31
+    "baseline": 175406,
+    "peak": 14000056,
+    "growthMb": 13.18
   },
-  "artifactChecksum": "sha256:7f1817b62949df01d1fb8a3e7deded6d1cb57f7d2fda8bb3ed7bd7894726c48b"
+  "artifactChecksum": "sha256:fb74e9d6815431bbc3cb1267cf4cc63e1a3272e1d394f7003604a50a0d9c21e8"
 }

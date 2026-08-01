@@ -1,8 +1,8 @@
 {
   "benchmarkSuite": "streaming-infrastructure",
   "benchmarkType": "microbenchmark-sqlite-and-broker",
-  "timestamp": "2026-08-01T06:30:44.036Z",
-  "gitSha": "946defcdcf7b952c3adcebd285ecebdca7cae54b",
+  "timestamp": "2026-08-01T06:47:40.073Z",
+  "gitSha": "f0718b22dd04b224f50434d93094ba4208affe2f",
   "dirty": false,
   "branch": "feat/performance-sse-ui-foundation",
   "environment": "test",
@@ -23,38 +23,38 @@
     "sqliteCommitLatency": {
       "measurementType": "in-process-sqlite-microbenchmark",
       "samples": 2000,
-      "opsPerSec": 10460,
-      "medianMs": 0.0914,
-      "p95Ms": 0.1166,
-      "maxMs": 2.8216
+      "opsPerSec": 8192,
+      "medianMs": 0.1045,
+      "p95Ms": 0.1873,
+      "maxMs": 5.7377
     },
     "publisherCommitAndBrokerDispatch": {
       "measurementType": "in-process-broker-dispatch-microbenchmark",
       "samples": 2000,
-      "opsPerSec": 12429,
-      "medianMs": 0.0744,
-      "p95Ms": 0.1047,
-      "maxMs": 1.0014
+      "opsPerSec": 10275,
+      "medianMs": 0.0814,
+      "p95Ms": 0.1614,
+      "maxMs": 1.0741
     },
     "publishToClientReceipt": {
       "measurementType": "in-process-broker-to-mock-session-microbenchmark",
       "samples": 1000,
-      "opsPerSec": 12352,
-      "medianMs": 0.0727,
-      "p95Ms": 0.11,
-      "maxMs": 0.3344
+      "opsPerSec": 10350,
+      "medianMs": 0.0794,
+      "p95Ms": 0.1555,
+      "maxMs": 0.632
     },
     "reconnectReplay": {
       "measurementType": "in-process-replay-service-microbenchmark",
       "replayedEvents": 1000,
-      "durationMs": 2.11,
-      "replaysPerSec": 474444
+      "durationMs": 2.48,
+      "replaysPerSec": 403473
     }
   },
   "memoryBytes": {
-    "baseline": 1216245,
-    "peak": 5677607,
-    "growthMb": 4.25
+    "baseline": 724163,
+    "peak": 5689933,
+    "growthMb": 4.74
   },
-  "artifactChecksum": "sha256:0a9aed584b26d5300a9d019a4c46b746e4120be76e97b153fe450040c86e6061"
+  "artifactChecksum": "sha256:d5420d78fdba0b59cb6b6b2fa8ba829126810dc0ee2d71b790610f51d11d8b3f"
 }
