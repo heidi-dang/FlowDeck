@@ -1,6 +1,4 @@
-import { existsSync } from "fs";
 import { writeFileSync } from "fs";
-import { resolve } from "path";
 
 // Self-host report generator
 // Usage: npm run report:self-host

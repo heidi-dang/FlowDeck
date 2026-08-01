@@ -75,7 +75,6 @@ export function addOptionalCost(budget: ContextBudget, cost: number): ContextBud
 
 export function truncateOptional(budget: ContextBudget, amount: number): ContextBudget {
   const reducedOptional = Math.max(0, budget.optionalCost - amount);
-  const reduction = budget.optionalCost - reducedOptional;
   const optionalCost = reducedOptional;
   const totalCost = budget.mandatoryCost + budget.highValueCost + optionalCost;
   const remainingBudget = Math.max(0, budget.totalBudget - totalCost);

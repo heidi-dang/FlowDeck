@@ -11,16 +11,67 @@ import type {
   TaskContractDraft,
   TaskContractValidationResult,
   ContractActivationResult,
-  Requirement,
-  AcceptanceCriterion,
-  Constraint,
-  EvidenceRequirement,
-  VerificationRequirement,
   MutationScope,
-  ApprovalGate,
 } from "./task-contract"
 import { hashContract } from "./contract-hasher"
 import { ContractStore } from "./contract-store"
+
+/**
+ * Validates a full SHA format (40 character hex for SHA-1, 64 character hex for SHA-256).
+ * Rejects SHAs that are too short, too long, or contain invalid characters.
+ */
+function isValidSha(sha: string): boolean {
+  return /^[a-f0-9]{40}$/.test(sha) || /^[a-f0-9]{64}$/.test(sha)
+}
+
+/**
+ * Normalizes a path by resolving . and .. components.
+ * Returns null if the path attempts to escape above the root directory.
+ */
+function normalizePath(path: string): string | null {
+  // Split on slashes, filter out empty parts and handle .
+  const parts = path.split(/[/\\]+/).filter((p) => p && p !== ".")
+  const normalized: string[] = []
+
+  for (const part of parts) {
+    if (part === "..") {
+      if (normalized.length === 0) {
+        // Path tries to traverse above root
+        return null
+      }
+      normalized.pop()
+    } else {
+      normalized.push(part)
+    }
+  }
+
+  return "/" + normalized.join("/")
+}
+
+/**
+ * Checks if a path contains traversal attempts or is otherwise suspicious.
+ */
+function isPathTraversalUnsafe(path: string): boolean {
+  // Check for literal .. components
+  if (path.includes("..")) return true
+  // Check for URL-encoded traversal
+  if (path.includes("%2e%2e") || path.includes("%252e")) return true
+  // Check for absolute paths that escape repository
+  if (path.startsWith("/etc/") || path.startsWith("/root/") || path.startsWith("/usr/")) return true
+  return false
+}
+
+/**
+ * Checks if a path is safe (normalized form exists and doesn't escape).
+ */
+function isPathSafe(path: string): boolean {
+  if (isPathTraversalUnsafe(path)) return false
+  const normalized = normalizePath(path)
+  if (normalized === null) return false
+  // Ensure path is absolute
+  if (!normalized.startsWith("/")) return false
+  return true
+}
 
 /**
  * Validates that a contract draft has all required fields and meets invariants.
@@ -44,6 +95,13 @@ export function validateContractDraft(draft: TaskContractDraft): TaskContractVal
 
   if (!draft.startingSha || draft.startingSha.trim() === "") {
     errors.push("Starting SHA is required")
+  } else if (!isValidSha(draft.startingSha)) {
+    errors.push("Starting SHA must be a valid 40-character hex SHA-256 hash")
+  }
+
+  // Status validation - draft must have "draft" status
+  if (draft.status !== "draft") {
+    errors.push(`Draft contract must have status "draft", got "${draft.status}"`)
   }
 
   // Requirements validation
@@ -169,28 +227,102 @@ export function validateMutationScope(
     }
   }
 
-  // Check path permissions
+  const proposedPath = proposedChanges.path
+
+  // Reject path traversal attempts
+  if (!isPathSafe(proposedPath)) {
+    return {
+      valid: false,
+      error: `Path "${proposedPath}" is not safe (traversal or escape attempt detected)`,
+    }
+  }
+
+  // Normalize the proposed path for comparison
+  const normalizedProposed = normalizePath(proposedPath)
+  if (normalizedProposed === null) {
+    return {
+      valid: false,
+      error: `Path "${proposedPath}" is not safe (traversal or escape attempt detected)`,
+    }
+  }
+
+  // Check denied paths - normalize them too
   for (const path of scope.deniedPaths) {
-    if (proposedChanges.path.startsWith(path)) {
+    if (!isPathSafe(path)) {
+      // Skip entries that are themselves unsafe (shouldn't be in config)
+      continue
+    }
+    const normalizedDenied = normalizePath(path)
+    if (normalizedDenied === null) continue
+    if (normalizedProposed.startsWith(normalizedDenied)) {
       return {
         valid: false,
-        error: `Path ${path} is explicitly denied`,
+        error: `Path "${path}" is explicitly denied`,
       }
     }
   }
 
-  // Check allowed paths (if specified)
+  // Check allowed paths (if specified) - normalize them
   if (scope.allowedPaths.length > 0) {
-    const isAllowed = scope.allowedPaths.some((allowed) => proposedChanges.path.startsWith(allowed))
+    const isAllowed = scope.allowedPaths.some((allowed) => {
+      if (!isPathSafe(allowed)) return false
+      const normalizedAllowed = normalizePath(allowed)
+      if (normalizedAllowed === null) return false
+      return normalizedProposed.startsWith(normalizedAllowed)
+    })
     if (!isAllowed) {
       return {
         valid: false,
-        error: `Path ${proposedChanges.path} is not in allowed paths`,
+        error: `Path "${proposedPath}" is not in allowed paths`,
       }
     }
   }
 
   return { valid: true }
+}
+
+/**
+ * Creates a deep frozen copy of an object, handling nested structures.
+ */
+function deepFreezeCopy<T extends object>(obj: T): Readonly<T> {
+  if (obj === null || obj === undefined) return obj as Readonly<T>
+  if (typeof obj !== "object") return obj as Readonly<T>
+
+  // Handle Date - create frozen copy
+  if (obj instanceof Date) {
+    return Object.freeze(new Date(obj)) as unknown as Readonly<T>
+  }
+
+  // Handle Map
+  if (obj instanceof Map) {
+    const frozenMap = new Map()
+    for (const [k, v] of obj.entries()) {
+      frozenMap.set(deepFreezeCopy(k), deepFreezeCopy(v))
+    }
+    return Object.freeze(frozenMap) as unknown as Readonly<T>
+  }
+
+  // Handle Set
+  if (obj instanceof Set) {
+    const frozenSet = new Set()
+    for (const value of obj.values()) {
+      frozenSet.add(deepFreezeCopy(value))
+    }
+    return Object.freeze(frozenSet) as unknown as Readonly<T>
+  }
+
+  // Handle arrays
+  if (Array.isArray(obj)) {
+    return Object.freeze(obj.map((item) => deepFreezeCopy(item))) as unknown as Readonly<T>
+  }
+
+  // Handle plain objects - freeze each value recursively
+  const result: Record<string, unknown> = {}
+  const objRecord = obj as Record<string, unknown>
+  for (const key of Object.keys(objRecord)) {
+    result[key] = deepFreezeCopy(objRecord[key] as object)
+  }
+  return Object.freeze(result) as unknown as Readonly<T>
 }
 
 /**
@@ -222,41 +354,26 @@ export function activateContract(
   // Compute deterministic hash
   const hash = hashContract(draft)
 
-  // Deep freeze helper - freezes object and all nested arrays/objects
-  function deepFreeze<T>(obj: T): Readonly<T> {
-    if (obj === null || obj === undefined) return obj as Readonly<T>
-    if (typeof obj !== "object") return obj as Readonly<T>
-
-    if (Array.isArray(obj)) {
-      Object.freeze(obj)
-      for (const item of obj) {
-        deepFreeze(item)
-      }
-      return Object.freeze([...obj]) as unknown as Readonly<T>
-    }
-
-    Object.freeze(obj)
-    for (const key of Object.keys(obj as object)) {
-      deepFreeze((obj as Record<string, unknown>)[key])
-    }
-    return obj as Readonly<T>
-  }
-
   // Create immutable activated contract with deep freezing
-  const contractData = {
+  // Use deep freeze copy to ensure all nested objects, arrays, Maps, Sets, Dates are frozen
+  const contractData: TaskContract = deepFreezeCopy({
     ...draft,
     hash,
+    status: "activated",
     activatedAt: new Date(),
+  }) as TaskContract
+
+  // Verify the contract is properly frozen
+  if (!Object.isFrozen(contractData)) {
+    throw new Error("Contract failed to freeze properly")
   }
 
-  const contract: TaskContract = deepFreeze(contractData)
-
   // Store immutably using withContract to get new store instance
-  const updatedStore = store.withContract(contract)
+  const updatedStore = store.withContract(contractData)
 
   return {
     success: true,
-    contract,
+    contract: contractData,
     updatedStore,
   }
 }
@@ -267,6 +384,13 @@ export function activateContract(
 export function validateActivatedContract(contract: TaskContract): TaskContractValidationResult {
   const errors: string[] = []
   const warnings: string[] = []
+
+  // Verify status is valid
+  if (!contract.status) {
+    errors.push("Contract must have a status")
+  } else if (contract.status !== "activated" && contract.status !== "completed" && contract.status !== "failed" && contract.status !== "superseded") {
+    errors.push(`Invalid status: ${contract.status}`)
+  }
 
   // Verify hash integrity
   const draft: TaskContractDraft = {
@@ -283,6 +407,7 @@ export function validateActivatedContract(contract: TaskContract): TaskContractV
     allowedMutationScope: contract.allowedMutationScope,
     approvalGates: contract.approvalGates,
     createdAt: contract.createdAt,
+    status: "draft",
   }
 
   const expectedHash = hashContract(draft)

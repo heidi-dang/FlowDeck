@@ -1,10 +1,6 @@
 /**
  * Context deduplication to reduce redundant context items.
- * @module orchestration/context/context-deduplicator
  */
-
-import type { ContextReference } from "./context-reference";
-import { ContextReferenceFactory } from "./context-reference";
 
 export interface ContextItem {
   readonly id: string;

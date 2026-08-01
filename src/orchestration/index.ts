@@ -15,3 +15,15 @@ export * from "./logging";
 export * from "./tracing";
 export * from "./diagnostics";
 export * from "./telemetry";
+
+// —— Dev 2 runtime modules ——————————————————————————————————————
+// Runtime integration wires the Dev 2 runtime (contracts, transitions,
+// verification, completion, cancellation, recovery, context budgets,
+// telemetry) through the production execution path.
+export { RuntimeOrchestrator, type RuntimeConfig, type RuntimeEvent, type RuntimeEventListener } from "./runtime-integration.js";
+export type { Unsubscribe } from "./runtime-integration.js";
+
+// Runtime state machine modules
+export * from "./runtime";
+export * from "./completion";
+export * from "./context";

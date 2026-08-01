@@ -14,13 +14,7 @@ import { describe, it, expect } from "bun:test"
 import {
   type TaskContract,
   type TaskContractDraft,
-  type Requirement,
-  type AcceptanceCriterion,
-  type Constraint,
-  type EvidenceRequirement,
-  type VerificationRequirement,
   type MutationScope,
-  type ApprovalGate,
 } from "@/orchestration/contracts/task-contract"
 import { hashContract, verifyContractHash } from "@/orchestration/contracts/contract-hasher"
 import {
@@ -30,7 +24,6 @@ import {
   validateActivatedContract,
 } from "@/orchestration/contracts/contract-validator"
 import {
-  ContractStore,
   createContractStore,
   reconstructContractStore,
 } from "@/orchestration/contracts/contract-store"
@@ -61,7 +54,7 @@ function makeDraft(overrides: Partial<TaskContractDraft> = {}): TaskContractDraf
       { type: "test", description: "All auth tests pass" },
       { type: "build", description: "Build succeeds" },
     ],
-    startingSha: "abc123",
+    startingSha: "abc123def456789012345678901234567890abcd",
     allowedMutationScope: {
       allowedPaths: ["src/auth/", "tests/auth/"],
       deniedPaths: ["src/admin/", "tests/admin/"],
@@ -72,6 +65,7 @@ function makeDraft(overrides: Partial<TaskContractDraft> = {}): TaskContractDraf
       { type: "manual", authority: "security-team" },
     ],
     createdAt: new Date("2024-01-15T10:00:00Z"),
+    status: "draft",
     ...overrides,
   }
 }
@@ -134,8 +128,8 @@ describe("Contract hashing", () => {
   })
 
   it("hash changes when startingSha changes", () => {
-    const draft1 = makeDraft({ startingSha: "abc123" })
-    const draft2 = makeDraft({ startingSha: "def456" })
+    const draft1 = makeDraft({ startingSha: "abc123def456789012345678901234567890abcd" })
+    const draft2 = makeDraft({ startingSha: "def456789012345678901234567890abcdef1234" })
 
     expect(hashContract(draft1)).not.toBe(hashContract(draft2))
   })
@@ -468,9 +462,9 @@ describe("Contract store", () => {
 
   it("retrieves contracts by starting SHA for historical reconstruction", () => {
     let store = createContractStore()
-    const draft1 = makeDraft({ id: "contract-001", startingSha: "abc123" })
-    const draft2 = makeDraft({ id: "contract-002", startingSha: "abc123" })
-    const draft3 = makeDraft({ id: "contract-003", startingSha: "def456" })
+    const draft1 = makeDraft({ id: "contract-001", startingSha: "abc123def456789012345678901234567890abcd" })
+    const draft2 = makeDraft({ id: "contract-002", startingSha: "abc123def456789012345678901234567890abcd" })
+    const draft3 = makeDraft({ id: "contract-003", startingSha: "def456789012345678901234567890abcdef1234" })
 
     const result1 = activateContract(draft1, store)
     store = result1.updatedStore!
@@ -479,7 +473,7 @@ describe("Contract store", () => {
     const result3 = activateContract(draft3, store)
     store = result3.updatedStore!
 
-    const fromSha = store.getByStartingSha("abc123")
+    const fromSha = store.getByStartingSha("abc123def456789012345678901234567890abcd")
 
     expect(fromSha).toHaveLength(2)
     expect(fromSha.map((c) => c.id).sort()).toEqual(["contract-001", "contract-002"])

@@ -8,19 +8,63 @@
  */
 
 import { CompletionGate, GateResult, CompletionGateInput, ALL_GATES } from "./completion-gates"
-import { AggregatedGateResult, evaluateAllGates } from "./completion-evaluator"
+import { AggregatedGateResult, evaluateAllGates, evaluateGate } from "./completion-evaluator"
 
 export interface CompletionCheckResult {
-  canComplete: boolean;
-  evaluation: AggregatedGateResult;
-  blockedReasons: readonly string[];
+  readonly canComplete: boolean;
+  readonly evaluation: AggregatedGateResult;
+  readonly blockedReasons: readonly string[];
 }
 
 export interface IdempotencyRecord {
-  runId: string;
-  inputHash: string;
-  result: CompletionCheckResult;
-  checkedAt: Date;
+  readonly runId: string;
+  readonly inputHash: string;
+  readonly result: CompletionCheckResult;
+  readonly checkedAt: Date;
+}
+
+/**
+ * Deep freeze helper for completion results.
+ * Handles arrays, objects, Date, Map, and Set instances.
+ */
+function deepFreeze<T>(obj: T): Readonly<T> {
+  if (obj === null || obj === undefined) return obj as Readonly<T>
+  if (typeof obj !== "object") return obj as Readonly<T>
+
+  if (Array.isArray(obj)) {
+    Object.freeze(obj)
+    for (const item of obj) {
+      deepFreeze(item)
+    }
+    return obj as Readonly<T>
+  }
+
+  if (obj instanceof Date) {
+    Object.freeze(obj)
+    return obj as Readonly<T>
+  }
+
+  if (obj instanceof Map) {
+    Object.freeze(obj)
+    for (const value of obj.values()) {
+      deepFreeze(value)
+    }
+    return obj as Readonly<T>
+  }
+
+  if (obj instanceof Set) {
+    Object.freeze(obj)
+    for (const value of obj.values()) {
+      deepFreeze(value)
+    }
+    return obj as Readonly<T>
+  }
+
+  Object.freeze(obj)
+  for (const key of Object.keys(obj as object)) {
+    deepFreeze((obj as Record<string, unknown>)[key])
+  }
+  return obj as Readonly<T>
 }
 
 /**
@@ -36,6 +80,7 @@ export class CompletionEngine {
 
   /**
    * Generates a hash key for the input to enable idempotency checking.
+   * Uses deterministic ordering (sorted by id) so key order doesn't matter.
    */
   private hashInput(input: CompletionGateInput): string {
     const normalized = {
@@ -63,6 +108,11 @@ export class CompletionEngine {
         runId: e.runId,
         status: e.status,
       })).sort((a, b) => a.id.localeCompare(b.id)),
+      requiredEvidence: (input.requiredEvidence ?? []).map((ev) => ({
+        type: ev.type,
+        description: ev.description,
+        path: ev.path,
+      })).sort((a, b) => (a.path ?? a.type).localeCompare(b.path ?? b.type)),
     }
     return JSON.stringify(normalized)
   }
@@ -77,13 +127,15 @@ export class CompletionEngine {
 
   /**
    * Caches the result for idempotency.
+   * The cached result is deeply frozen to prevent external mutation.
    */
   private cacheResult(input: CompletionGateInput, result: CompletionCheckResult): void {
     const hash = this.hashInput(input)
+    const frozenResult = deepFreeze(result) as CompletionCheckResult
     const record: IdempotencyRecord = {
       runId: input.runId,
       inputHash: hash,
-      result,
+      result: frozenResult,
       checkedAt: new Date(),
     }
     this.idempotencyCache.set(`${input.runId}:${hash}`, record)
@@ -150,7 +202,6 @@ export class CompletionEngine {
       }
     }
 
-    const { evaluateGate } = require("./completion-evaluator")
     return evaluateGate(gate, input)
   }
 

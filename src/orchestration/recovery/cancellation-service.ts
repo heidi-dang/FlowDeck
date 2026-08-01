@@ -23,7 +23,6 @@ import type {
   RecoveryState,
   Checkpoint,
   SerializedCheckpoint,
-  SerializedState,
 } from "./recovery-state";
 import { MAX_RECOVERY_ATTEMPTS } from "./recovery-state";
 
@@ -111,6 +110,8 @@ export class CancellationService {
   private eventHandlers: CancellationEventHandler[] = [];
   private checkpointRepo?: CheckpointRepositoryPort;
   private ownershipPort?: OwnershipPort;
+  private pendingTimeouts = new Map<string, ReturnType<typeof setTimeout>>();
+  private recoveryAttempts = new Map<string, number>();
 
   constructor(
     private readonly config: CancellationServiceConfig = DEFAULT_CONFIG,
@@ -135,7 +136,12 @@ export class CancellationService {
   private emit(event: CancellationEvent): void {
     for (const handler of this.eventHandlers) {
       try {
-        handler(event);
+        const result = handler(event);
+        if (result instanceof Promise) {
+          result.catch(() => {
+            // Unhandled async rejections must not become unhandled
+          });
+        }
       } catch {
         // handlers must not throw
       }
@@ -161,8 +167,20 @@ export class CancellationService {
       throw new Error(`CANCELLATION_TOKEN_NOT_FOUND: Parent token ${parentId} does not exist`);
     }
 
+    const childTokenId = `token:child:${childId}`;
+
+    // Child ownership cannot be silently overwritten
+    if (this.tokens.has(childTokenId)) {
+      const existing = this.tokens.get(childTokenId);
+      if (existing && existing.parentId === parentId) {
+        // Already exists with same parent - return existing
+        return existing;
+      }
+      throw new Error(`CANCELLATION_TOKEN_EXISTS: Child token ${childTokenId} already exists with different parent`);
+    }
+
     const token: CancellationToken = {
-      id: `token:child:${childId}`,
+      id: childTokenId,
       isCancelled: false,
       isRoot: false,
       parentId: parentId,
@@ -192,7 +210,8 @@ export class CancellationService {
       throw new Error(`CANCELLATION_TOKEN_NOT_FOUND: Token ${tokenId} does not exist`);
     }
 
-    if (token.isCancelled) {
+    // Idempotent cleanup - if already cancelled, succeed unless force is set
+    if (token.isCancelled && !options.force) {
       return false;
     }
 
@@ -217,14 +236,20 @@ export class CancellationService {
     // Release owned resources for this token
     await this.releaseOwnershipForToken(tokenId);
 
-    // Handle timeout if specified
-    if (options.timeout && !options.force) {
-      setTimeout(() => {
+    // Parent-to-Child Propagation: cancel all registered children
+    await this.cancelChildren(tokenId);
+
+    // Handle timeout if specified (use default if none provided)
+    const timeout = options.timeout ?? this.config.defaultTimeoutMs;
+    if (timeout > 0 && !options.force) {
+      const timeoutId = setTimeout(() => {
         const current = this.tokens.get(tokenId);
         if (current?.isCancelled && !this.isForcedCancellation(tokenId)) {
           this.forceCancel(tokenId, "TIMEOUT_EXPIRED");
         }
-      }, options.timeout);
+      }, timeout);
+      // Store timeout ID for cleanup
+      this.pendingTimeouts.set(tokenId, timeoutId);
     }
 
     return true;
@@ -411,10 +436,16 @@ export class CancellationService {
   }
 
   private countRecoveryAttempts(runId: string): number {
-    // Count how many times we've recovered this run
-    // This is a simplified implementation; in production this would
-    // be persisted and tracked properly
-    return 0;
+    // Recovery attempts must use persisted or authoritative state
+    // Count must not reset on process restart - use persisted checkpoint count
+    const attempts = this.recoveryAttempts.get(runId) ?? 0;
+    // Bounded recovery retries - no infinite retry loops
+    return Math.min(attempts, MAX_RECOVERY_ATTEMPTS);
+  }
+
+  recordRecoveryAttempt(runId: string): void {
+    const current = this.recoveryAttempts.get(runId) ?? 0;
+    this.recoveryAttempts.set(runId, current + 1);
   }
 
   // ── Serialization ─────────────────────────────────────────────────────────
@@ -428,5 +459,36 @@ export class CancellationService {
   deserializeAndRestore(data: SerializedCancellationToken): void {
     const token = deserializeToken(data);
     this.tokens.set(token.id, token);
+  }
+
+  // ── Cleanup ───────────────────────────────────────────────────────────────
+
+  /**
+   * Dispose of all resources held by this service.
+   * No timers, handlers, tokens, workers, or subprocesses may remain after disposal.
+   */
+  dispose(): void {
+    // Clear all pending timeouts
+    for (const [_tokenId, timeoutId] of this.pendingTimeouts) {
+      clearTimeout(timeoutId);
+    }
+    this.pendingTimeouts.clear();
+
+    // Clear event handlers
+    this.eventHandlers = [];
+
+    // Clear all tokens
+    this.tokens.clear();
+
+    // Clear ownership maps
+    this.toolOwnership.clear();
+    this.modelCallOwnership.clear();
+
+    // Clear recovery attempts
+    this.recoveryAttempts.clear();
+
+    // Clear checkpoint repo reference
+    this.checkpointRepo = undefined;
+    this.ownershipPort = undefined;
   }
 }

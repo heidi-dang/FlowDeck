@@ -5,13 +5,17 @@
  * results with timing, handling timeouts, and emitting events.
  */
 
-import { exec } from "child_process"
-import { readFileSync, existsSync, statSync } from "fs"
+import { spawn } from "child_process"
+import { existsSync, statSync } from "fs"
+import { readFileSync } from "fs"
 import { readFile } from "fs/promises"
+import { resolve } from "path"
 import type { VerificationPlan, VerificationCheck, Precondition } from "./verification-plan"
 import type { CheckResult, VerificationResult, VerificationStatus } from "./verification-result"
 import type { Clock } from "../common/ports/clock"
 import type { DomainEventAppender } from "../events/ports/event-publisher"
+
+const MAX_OUTPUT_SIZE = 1024 * 1024 // 1MB max output
 
 export type ExecutorEvent =
   | { type: "check_started"; checkId: string; timestamp: Date }
@@ -79,7 +83,7 @@ export class VerificationExecutor {
     }
 
     const endTime = this.clock.now()
-    const status = this.computeStatus(checkResults)
+    const status = this.computeStatus(checkResults, sortedChecks)
     const result: VerificationResult = {
       planId: plan.id,
       status,
@@ -100,21 +104,25 @@ export class VerificationExecutor {
   private async checkPreconditions(preconditions: Precondition[], cwd: string): Promise<boolean> {
     for (const precondition of preconditions) {
       let met = false
+      const resolvedPath = precondition.path ? resolve(cwd, precondition.path) : undefined
 
       switch (precondition.type) {
         case "file_exists":
-          met = existsSync(precondition.path!)
+          met = existsSync(resolvedPath!)
           break
         case "dir_exists":
-          met = existsSync(precondition.path!) && statSync(precondition.path!).isDirectory()
+          met = existsSync(resolvedPath!) && statSync(resolvedPath!).isDirectory()
           break
         case "sha_match":
-          if (precondition.path && precondition.expected) {
-            try {
-              const content = readFileSync(precondition.path, "utf-8")
-              met = content.trim() === precondition.expected.trim()
-            } catch {
-              met = false
+          if (resolvedPath) {
+            const expectedSha = precondition.expectedSha ?? precondition.expected
+            if (expectedSha) {
+              try {
+                const content = readFileSync(resolvedPath, "utf-8")
+                met = content.trim() === expectedSha.trim()
+              } catch {
+                met = false
+              }
             }
           }
           break
@@ -141,11 +149,12 @@ export class VerificationExecutor {
 
     switch (check.type) {
       case "file": {
-        const exists = existsSync(check.command!)
+        const resolvedPath = check.command ? resolve(cwd, check.command) : undefined
+        const exists = resolvedPath ? existsSync(resolvedPath) : false
         return {
           checkId: check.id,
           status: exists ? "passed" : "failed",
-          output: exists ? `File exists: ${check.command}` : `File not found: ${check.command}`,
+          output: exists ? `File exists: ${resolvedPath}` : `File not found: ${resolvedPath}`,
           duration: this.clock.now().getTime() - checkStart.getTime(),
           timestamp: checkStart,
         }
@@ -161,8 +170,9 @@ export class VerificationExecutor {
             timestamp: checkStart,
           }
         }
+        const resolvedPath = resolve(cwd, check.command)
         try {
-          const content = await readFile(check.command, "utf-8")
+          const content = await readFile(resolvedPath, "utf-8")
           const actualSha = content.trim()
           const expectedSha = check.expectedExitCode?.toString()
           const passed = actualSha === expectedSha
@@ -174,11 +184,11 @@ export class VerificationExecutor {
             duration: this.clock.now().getTime() - checkStart.getTime(),
             timestamp: checkStart,
           }
-        } catch (err) {
+        } catch {
           return {
             checkId: check.id,
             status: "failed",
-            error: `Failed to read file: ${check.command}`,
+            error: `Failed to read file: ${resolvedPath}`,
             duration: this.clock.now().getTime() - checkStart.getTime(),
             timestamp: checkStart,
           }
@@ -216,57 +226,146 @@ export class VerificationExecutor {
   private runCommand(check: VerificationCheck, cwd: string, checkStart: Date): Promise<CheckResult> {
     return new Promise((resolve) => {
       const timeout = check.timeout ?? 60000
+      let stdout = ""
+      let stderr = ""
+      let timedOut = false
+      let killed = false
+
+      const child = spawn(check.command!, {
+        cwd,
+        shell: true,
+        signal: this.abortController?.signal,
+      })
 
       const timer = setTimeout(() => {
-        const result: CheckResult = {
-          checkId: check.id,
-          status: "failed",
-          error: `Command timed out after ${timeout}ms`,
-          duration: this.clock.now().getTime() - checkStart.getTime(),
-          timestamp: checkStart,
-        }
-        resolve(result)
+        timedOut = true
+        killed = true
+        child.kill("SIGKILL")
       }, timeout)
 
-      exec(
-        check.command!,
-        { cwd, signal: this.abortController?.signal },
-        (error, stdout, stderr) => {
-          clearTimeout(timer)
-          const exitCode = error instanceof Error ? (error as NodeJS.ErrnoException).code : 0
-          const expectedCode = check.expectedExitCode ?? 0
-          const passed = exitCode === expectedCode
+      child.stdout?.on("data", (data: Buffer) => {
+        if (stdout.length < MAX_OUTPUT_SIZE) {
+          stdout += data.toString()
+        }
+      })
 
-          const result: CheckResult = {
+      child.stderr?.on("data", (data: Buffer) => {
+        if (stderr.length < MAX_OUTPUT_SIZE) {
+          stderr += data.toString()
+        }
+      })
+
+      child.on("error", (error: Error) => {
+        clearTimeout(timer)
+        let errorMessage = error.message
+
+        if (timedOut) {
+          errorMessage = `Command timed out after ${timeout}ms`
+        } else if (killed) {
+          errorMessage = "Command was killed"
+        } else if (this.abortController?.signal.aborted) {
+          errorMessage = "Command was cancelled"
+        }
+
+        resolve({
+          checkId: check.id,
+          status: "failed",
+          output: stdout.length > MAX_OUTPUT_SIZE ? stdout.slice(0, MAX_OUTPUT_SIZE) + "... (truncated)" : stdout,
+          error: errorMessage,
+          duration: this.clock.now().getTime() - checkStart.getTime(),
+          timestamp: checkStart,
+        })
+      })
+
+      child.on("close", (code: number | null, signal: string | null) => {
+        clearTimeout(timer)
+
+        if (timedOut) {
+          resolve({
             checkId: check.id,
-            status: passed ? "passed" : "failed",
-            output: stdout || undefined,
-            error: passed ? undefined : stderr || `Exit code ${exitCode}, expected ${expectedCode}`,
+            status: "failed",
+            output: stdout.length > MAX_OUTPUT_SIZE ? stdout.slice(0, MAX_OUTPUT_SIZE) + "... (truncated)" : stdout,
+            error: `Command timed out after ${timeout}ms`,
             duration: this.clock.now().getTime() - checkStart.getTime(),
             timestamp: checkStart,
-          }
-          resolve(result)
-        },
-      )
+          })
+          return
+        }
+
+        if (killed) {
+          resolve({
+            checkId: check.id,
+            status: "failed",
+            output: stdout.length > MAX_OUTPUT_SIZE ? stdout.slice(0, MAX_OUTPUT_SIZE) + "... (truncated)" : stdout,
+            error: `Command was killed with signal ${signal}`,
+            duration: this.clock.now().getTime() - checkStart.getTime(),
+            timestamp: checkStart,
+          })
+          return
+        }
+
+        if (this.abortController?.signal.aborted) {
+          resolve({
+            checkId: check.id,
+            status: "failed",
+            output: stdout.length > MAX_OUTPUT_SIZE ? stdout.slice(0, MAX_OUTPUT_SIZE) + "... (truncated)" : stdout,
+            error: "Command was cancelled",
+            duration: this.clock.now().getTime() - checkStart.getTime(),
+            timestamp: checkStart,
+          })
+          return
+        }
+
+        const exitCode = code ?? 0
+        const expectedCode = check.expectedExitCode ?? 0
+        const passed = exitCode === expectedCode
+
+        resolve({
+          checkId: check.id,
+          status: passed ? "passed" : "failed",
+          output: stdout.length > MAX_OUTPUT_SIZE ? stdout.slice(0, MAX_OUTPUT_SIZE) + "... (truncated)" : stdout,
+          error: passed
+            ? undefined
+            : stderr
+              ? `${stderr}\nExit code ${exitCode}, expected ${expectedCode}`
+              : `Exit code ${exitCode}, expected ${expectedCode}`,
+          duration: this.clock.now().getTime() - checkStart.getTime(),
+          timestamp: checkStart,
+        })
+      })
     })
   }
 
-  private computeStatus(checkResults: CheckResult[]): VerificationStatus {
+  private computeStatus(checkResults: CheckResult[], checks: VerificationCheck[]): VerificationStatus {
     if (checkResults.length === 0) {
       return "failed"
     }
 
-    const criticalFailed = checkResults.some(
-      (r) => r.status === "failed" && checkResults.find((c) => c.checkId === r.checkId)?.status === "failed",
-    )
+    // Check if any critical check failed
+    const criticalFailed = checkResults.some((result) => {
+      if (result.status === "failed") {
+        const check = checks.find((c) => c.id === result.checkId)
+        return check?.critical === true
+      }
+      return false
+    })
 
     if (criticalFailed) {
       return "failed"
     }
 
+    // Check if any check failed (non-critical)
+    const anyFailed = checkResults.some((r) => r.status === "failed")
+
+    // All checks passed
     const allPassed = checkResults.every((r) => r.status === "passed")
     if (allPassed) {
       return "passed"
+    }
+
+    // Some failed but none critical - partial/warnings
+    if (anyFailed) {
+      return "partial"
     }
 
     return "partial"

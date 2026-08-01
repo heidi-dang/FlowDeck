@@ -9,7 +9,7 @@ import type {
   Comparison,
   FinalVerdict,
 } from "./self-host-report-schema.js";
-import { validateSelfHostReport, SCHEMA_VERSION } from "./self-host-report-schema.js";
+import { validateSelfHostReport } from "./self-host-report-schema.js";
 
 // ── JSON Renderer ─────────────────────────────────────────────────────────────
 

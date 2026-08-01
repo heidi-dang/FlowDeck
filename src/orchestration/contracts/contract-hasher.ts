@@ -14,8 +14,9 @@ import type { TaskContract, TaskContractDraft } from "./task-contract"
 
 /**
  * Canonical JSON serialization with deterministic ordering.
+ * Uses index as tiebreaker for equal elements to ensure stable sort.
  */
-function canonicalJson(value: unknown): string {
+function canonicalJson(value: unknown, _index?: number, _parentCanonical?: string): string {
   if (value === null || value === undefined) {
     return "null"
   }
@@ -33,11 +34,16 @@ function canonicalJson(value: unknown): string {
   }
 
   if (Array.isArray(value)) {
-    const withCanonical = value.map((item) => ({
-      raw: item,
-      canonical: canonicalJson(item),
+    const withCanonical = value.map((item, idx) => ({
+      index: idx,
+      canonical: canonicalJson(item, idx),
     }))
-    withCanonical.sort((a, b) => (a.canonical < b.canonical ? -1 : a.canonical > b.canonical ? 1 : 0))
+    // Sort by canonical, then by index for stability
+    withCanonical.sort((a, b) => {
+      const cmp = a.canonical.localeCompare(b.canonical)
+      if (cmp !== 0) return cmp
+      return a.index - b.index
+    })
     const items = withCanonical.map((item) => item.canonical)
     return `[${items.join(",")}]`
   }
@@ -158,6 +164,7 @@ export function verifyContractHash(contract: TaskContract): boolean {
     allowedMutationScope: contract.allowedMutationScope,
     approvalGates: contract.approvalGates,
     createdAt: contract.createdAt,
+    status: "draft",
   }
   return hashContract(draft) === contract.hash
 }

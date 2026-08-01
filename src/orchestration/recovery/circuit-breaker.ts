@@ -30,6 +30,17 @@ export interface CircuitBreakerMetrics {
   readonly totalFailures: number;
 }
 
+export interface SerializedCircuitBreaker {
+  state: CircuitState;
+  failureCount: number;
+  lastFailureAt?: string;
+  lastStateChangeAt: string;
+  totalSuccesses: number;
+  totalFailures: number;
+  halfOpenSuccesses: number;
+  halfOpenAttempts: number;
+}
+
 export class CircuitBreaker {
   private _state: CircuitState = "closed";
   private failureCount = 0;
@@ -127,6 +138,37 @@ export class CircuitBreaker {
     this.totalFailures = 0;
     this.lastFailureAt = undefined;
   }
+
+  /**
+   * Serialize circuit breaker state for persistence.
+   * Circuit breaker state must be persisted where restart recovery requires it.
+   */
+  serialize(): SerializedCircuitBreaker {
+    return {
+      state: this._state,
+      failureCount: this.failureCount,
+      lastFailureAt: this.lastFailureAt?.toISOString(),
+      lastStateChangeAt: this.lastStateChangeAt.toISOString(),
+      totalSuccesses: this.totalSuccesses,
+      totalFailures: this.totalFailures,
+      halfOpenSuccesses: this.halfOpenSuccesses,
+      halfOpenAttempts: this.halfOpenAttempts,
+    };
+  }
+
+  /**
+   * Restore circuit breaker state from persistence.
+   */
+  restore(data: SerializedCircuitBreaker): void {
+    this._state = data.state;
+    this.failureCount = data.failureCount;
+    this.lastFailureAt = data.lastFailureAt ? new Date(data.lastFailureAt) : undefined;
+    this.lastStateChangeAt = new Date(data.lastStateChangeAt);
+    this.totalSuccesses = data.totalSuccesses;
+    this.totalFailures = data.totalFailures;
+    this.halfOpenSuccesses = data.halfOpenSuccesses;
+    this.halfOpenAttempts = data.halfOpenAttempts;
+  }
 }
 
 export class CircuitBreakerRegistry {
@@ -156,6 +198,27 @@ export class CircuitBreakerRegistry {
   resetAll(): void {
     for (const breaker of this.breakers.values()) {
       breaker.reset();
+    }
+  }
+
+  /**
+   * Serialize all circuit breakers for persistence.
+   */
+  serializeAll(): Map<string, SerializedCircuitBreaker> {
+    const result = new Map<string, SerializedCircuitBreaker>();
+    for (const [name, breaker] of this.breakers) {
+      result.set(name, breaker.serialize());
+    }
+    return result;
+  }
+
+  /**
+   * Restore all circuit breakers from persisted state.
+   */
+  restoreAll(data: Map<string, SerializedCircuitBreaker>): void {
+    for (const [name, serialized] of data) {
+      const breaker = this.getOrCreate(name);
+      breaker.restore(serialized);
     }
   }
 }

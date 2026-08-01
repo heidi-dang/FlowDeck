@@ -4,7 +4,6 @@ import {
   isTerminalState,
   isActiveState,
   getStateCategory,
-  TRANSITION_TABLE,
   getAllowedTransitions,
   isTransitionAllowed,
   TransitionService,
@@ -13,9 +12,11 @@ import {
   noSelfTransitionGuard,
   cancellationGuard,
   composeGuards,
+  InMemoryStateStore,
   type State,
   type TransitionContext,
   type StageStageEvent,
+  type StateStore,
 } from "../../../src/orchestration/runtime/index.js";
 
 describe("State Definitions", () => {
@@ -249,8 +250,8 @@ describe("Transition Guards", () => {
 
   describe("composeGuards", () => {
     it("should run all guards in order", () => {
-      const guard1 = vi.fn((from: State, to: State, ctx: TransitionContext) => ({ allowed: true }));
-      const guard2 = vi.fn((from: State, to: State, ctx: TransitionContext) => ({ allowed: true }));
+      const guard1 = vi.fn((_from: State, _to: State, _ctx: TransitionContext) => ({ allowed: true }));
+      const guard2 = vi.fn((_from: State, _to: State, _ctx: TransitionContext) => ({ allowed: true }));
       const composed = composeGuards(guard1, guard2);
       const context = createContext();
 
@@ -261,11 +262,11 @@ describe("Transition Guards", () => {
     });
 
     it("should stop at first failing guard", () => {
-      const guard1 = vi.fn((from: State, to: State, ctx: TransitionContext) => ({
+      const guard1 = vi.fn((_from: State, _to: State, _ctx: TransitionContext) => ({
         allowed: false,
         reason: "Guard 1 failed",
       }));
-      const guard2 = vi.fn((from: State, to: State, ctx: TransitionContext) => ({ allowed: true }));
+      const guard2 = vi.fn((_from: State, _to: State, _ctx: TransitionContext) => ({ allowed: true }));
       const composed = composeGuards(guard1, guard2);
       const context = createContext();
 
@@ -280,12 +281,12 @@ describe("Transition Guards", () => {
 describe("TransitionService", () => {
   let service: TransitionService;
   let eventEmitter: StageEventEmitter;
-  let emittedEvents: ReturnType<typeof service.subscribe>[];
+  let stateStore: StateStore;
 
   beforeEach(() => {
     eventEmitter = new StageEventEmitter();
-    service = new TransitionService({ eventEmitter });
-    emittedEvents = [];
+    stateStore = new InMemoryStateStore();
+    service = new TransitionService({ eventEmitter, stateStore });
   });
 
   describe("canTransition", () => {
@@ -305,12 +306,14 @@ describe("TransitionService", () => {
   });
 
   describe("executeTransition", () => {
-    it("should successfully transition with events", () => {
+    it("should successfully transition with events", async () => {
       const listener = vi.fn();
       eventEmitter.subscribe(listener);
 
+      await stateStore.saveState("test-run", "created", -1);
+
       const context = { runId: "test-run", timestamp: Date.now() };
-      const result = service.executeTransition("test-run", "created", "planning", context);
+      const result = await service.executeTransition("test-run", "created", "planning", context);
 
       expect(result.success).toBe(true);
       expect(result.from).toBe("created");
@@ -318,29 +321,35 @@ describe("TransitionService", () => {
       expect(listener).toHaveBeenCalled();
     });
 
-    it("should emit StageExited and StageEntered events", () => {
+    it("should emit StageExited and StageEntered events", async () => {
       const events: StageStageEvent[] = [];
       eventEmitter.subscribe((e: StageStageEvent) => events.push(e));
 
+      await stateStore.saveState("test-run", "created", -1);
+
       const context = { runId: "test-run", timestamp: Date.now() };
-      service.executeTransition("test-run", "created", "planning", context);
+      await service.executeTransition("test-run", "created", "planning", context);
 
       expect(events).toHaveLength(2);
       expect(events[0]).toMatchObject({ type: "StageExited", state: "created", nextState: "planning" });
       expect(events[1]).toMatchObject({ type: "StageEntered", state: "planning", previousState: "created" });
     });
 
-    it("should fail for invalid transitions", () => {
+    it("should fail for invalid transitions", async () => {
+      await stateStore.saveState("test-run", "created", -1);
+
       const context = { runId: "test-run", timestamp: Date.now() };
-      const result = service.executeTransition("test-run", "created", "executing", context);
+      const result = await service.executeTransition("test-run", "created", "executing", context);
 
       expect(result.success).toBe(false);
       expect(result.error).toContain("Invalid transition");
     });
 
-    it("should fail for terminal state transitions", () => {
+    it("should fail for terminal state transitions", async () => {
+      await stateStore.saveState("test-run", "completed", -1);
+
       const context = { runId: "test-run", timestamp: Date.now() };
-      const result = service.executeTransition("test-run", "completed", "created", context);
+      const result = await service.executeTransition("test-run", "completed", "created", context);
 
       expect(result.success).toBe(false);
       expect(result.error).toContain("terminal state");
@@ -383,15 +392,100 @@ describe("TransitionService", () => {
       expect(service.canTransition(state, "cancelled", context)).toBe(true);
     });
 
-    it.each(activeStates)("should execute cancellation from %s", (state) => {
-      const events: StageStageEvent[] = [];
-      eventEmitter.subscribe((e: StageStageEvent) => events.push(e));
+    it.each(activeStates)("should execute cancellation from %s", async (state) => {
+      await stateStore.saveState("test-run", state, -1);
 
       const context = { runId: "test-run", timestamp: Date.now() };
-      const result = service.executeTransition("test-run", state, "cancelled", context);
+      const result = await service.executeTransition("test-run", state, "cancelled", context);
 
       expect(result.success).toBe(true);
       expect(result.to).toBe("cancelled");
+    });
+  });
+
+  describe("Per-Run Concurrency Control", () => {
+    it("should block concurrent transitions for the same run", async () => {
+      await stateStore.saveState("run-1", "created", -1);
+
+      const context = { runId: "run-1", timestamp: Date.now() };
+
+      const results = await Promise.all([
+        service.executeTransition("run-1", "created", "planning", context),
+        service.executeTransition("run-1", "created", "planning", context),
+      ]);
+
+      // One should succeed, one should fail due to version conflict
+      const successes = results.filter((r) => r.success);
+      expect(successes).toHaveLength(1);
+    });
+
+    it("should allow concurrent transitions for different runs", async () => {
+      await stateStore.saveState("run-1", "created", -1);
+      await stateStore.saveState("run-2", "created", -1);
+
+      const context1 = { runId: "run-1", timestamp: Date.now() };
+      const context2 = { runId: "run-2", timestamp: Date.now() };
+
+      const [result1, result2] = await Promise.all([
+        service.executeTransition("run-1", "created", "planning", context1),
+        service.executeTransition("run-2", "created", "planning", context2),
+      ]);
+
+      expect(result1.success).toBe(true);
+      expect(result2.success).toBe(true);
+    });
+  });
+
+  describe("Version Verification", () => {
+    it("should fail when expected version does not match", async () => {
+      await stateStore.saveState("run-1", "created", -1);
+
+      const context = { runId: "run-1", timestamp: Date.now() };
+      const result = await service.executeTransition(
+        "run-1",
+        "created",
+        "planning",
+        context,
+        "normal",
+        99 // wrong expected version
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Version conflict");
+    });
+
+    it("should succeed when expected version matches", async () => {
+      await stateStore.saveState("run-1", "created", -1);
+
+      const context = { runId: "run-1", timestamp: Date.now() };
+      const result = await service.executeTransition(
+        "run-1",
+        "created",
+        "planning",
+        context,
+        "normal",
+        0 // correct expected version
+      );
+
+      expect(result.success).toBe(true);
+    });
+  });
+
+  describe("State Store Integration", () => {
+    it("should load authoritative state instead of caller-supplied from", async () => {
+      await stateStore.saveState("run-1", "planning", -1);
+
+      const context = { runId: "run-1", timestamp: Date.now() };
+      const result = await service.executeTransition(
+        "run-1",
+        "created", // caller says created, but store says planning
+        "analysing",
+        context
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("State mismatch");
+      expect(result.from).toBe("planning");
     });
   });
 });

@@ -35,6 +35,7 @@ export interface Precondition {
   readonly type: PreconditionType
   readonly path?: string
   readonly expected?: string
+  readonly expectedSha?: string
   readonly envKey?: string
 }
 

@@ -543,9 +543,65 @@ Rollback is a single `git reset --hard` to the previous SHA plus a fresh deploym
 
 ---
 
+## 14. Production Runtime Integration
+
+**Status:** Integrated (2026-08-01)
+
+### 14.1 Integration Overview
+
+Dev 2 runtime modules (runtime state machine, contract validation/store, verification executor, completion engine, cancellation service, recovery strategies, context budgets, and telemetry) have been wired through the production execution path via `src/orchestration/runtime-integration.ts` and exported through `src/orchestration/index.ts`.
+
+### 14.2 RuntimeOrchestrator API
+
+The `RuntimeOrchestrator` class provides a unified interface covering all integration points:
+
+| Method | Integration Point | Description |
+|---|---|---|
+| `createTask(contractData)` | Contract Activation | Validates and activates an immutable `TaskContract`, persists to `ContractStore`, initializes `StateStore` state |
+| `transition(runId, event, fromState?)` | Transition Events | Loads authoritative state from `StateStore`, validates transition matrix + guards, persists state + event atomically via `TransitionService` |
+| `verify(runId)` | Verification Plans | Builds a `VerificationPlan` from the contract's `requiredVerification` requirements and executes through `VerificationExecutor` |
+| `complete(runId)` | Completion | Evaluates contract-derived completion gates via `CompletionEngine`; model report cannot bypass gates |
+| `cancel(runId, force?)` | Cancellation | Propagates cancellation to active child work via `CancellationService` token tree |
+| `recover(runId)` | Recovery | Restores run state from persisted `Checkpoint` in `StateStore`; state persists across process restart |
+| `getContextBudget(runId)` | Context Budgets | Returns a `ContextBudget` derived from contract configuration for agent execution |
+| `subscribe(listener)` | Telemetry | Event subscription for runtime events (transitions, verification, completion, cancellation, recovery) |
+
+### 14.3 Wiring Details
+
+- **StateStore:** `InMemoryStateStore` used as default; `TransitionService` shares the same `StateStore` to load authoritative state for each transition
+- **Contract Store:** `ContractStore` (immutable in-memory) used as default; `activateContract` validates and freezes contracts before persistence
+- **Transition Events:** `TransitionService` persists `TransitionEvent` records alongside state updates via `StateStore.recordEvent()` — same unit of work
+- **Verification:** `VerificationExecutor` constructed with injected `Clock`; plans built from contract `requiredVerification` fields
+- **Completion:** `CompletionEngine` evaluates all 6 semantic gates; input built from contract `acceptanceCriteria`, `requirements`, `requiredEvidence`, and `startingSha`
+- **Cancellation:** `CancellationService` manages token tree; root token created per run; `cancel()` propagates to child tokens and transitions state to `cancelled`
+- **Recovery:** `RecoveryState` and `Checkpoint` persisted via `CancellationService` checkpoint repository; `recover()` evaluates strategy via `determineRecoveryStrategy` and restores from checkpoint
+- **Context Budget:** `createBudget()` initializes budget from `RuntimeConfig.contextBudgetTokens` (default 200000); `addMandatoryCost`, `addHighValueCost`, `addOptionalCost` applied during agent execution (caller responsibility)
+- **Telemetry:** All runtime events published through `subscribe()` as `RuntimeEvent` objects; `StageEventEmitter` events also forwarded
+
+### 14.4 New File
+
+| File | Purpose |
+|---|---|
+| `src/orchestration/runtime-integration.ts` | `RuntimeOrchestrator` class and supporting types (`RuntimeConfig`, `RuntimeEvent`, `RuntimeEventListener`, `Unsubscribe`, `RecoveryResult`, `CompletionResult`) |
+
+### 14.5 Modified File
+
+| File | Change |
+|---|---|
+| `src/orchestration/index.ts` | Added exports for `RuntimeOrchestrator`, `RuntimeConfig`, runtime events, `Unsubscribe`; re-exports from `./runtime`, `./completion`, `./context` dev2 sub-modules |
+
+### 14.6 Files Not Modified (Ownership)
+
+- Dev 1: `src/orchestration/streaming/**`, `src/better-harness/**`, `src/ui/**`, `src/client/**`
+- Dev 3: `crates/fdx/**`, FDX daemon and index code
+- Dev 4: `src/orchestration/routing/**` (if present), model routing and scheduling code
+
+---
+
 ## Document History
 
 | Date | Author | Change |
 |---|---|---|
 | 2026-08-01 | Dev 2 | Initial publication |
 | 2026-08-01 | Dev 2 | Dev 3/Dev 4 overlap removal: marked routing (Dev 4), model routing (Dev 4), FDX daemon/index (Dev 3) as dependencies; removed orphaned routing directory |
+| 2026-08-01 | Dev 2 | Production runtime integration: RuntimeOrchestrator wired through `src/orchestration/index.ts`; Dev 2 runtime modules (runtime, contracts, verification, completion, recovery, context, telemetry) now exported via orchestration entrypoint; StateStore, ContractStore, TransitionService, VerificationExecutor, CompletionEngine, CancellationService, ContextBudget unified in `src/orchestration/runtime-integration.ts` |

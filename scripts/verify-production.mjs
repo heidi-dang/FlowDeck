@@ -22,12 +22,6 @@ const root = join(__dirname, '..');
 
 const MANDATORY_SUITES = [
   {
-    name: 'Performance',
-    pattern: 'tests/performance/',
-    description: 'Performance benchmark and scenario tests',
-    note: 'Run via npm run benchmark:* scripts, not bun test',
-  },
-  {
     name: 'Consistency',
     pattern: 'tests/consistency/',
     description: 'Repeated-run consistency tests',
@@ -72,14 +66,8 @@ function runSuite(suite) {
   console.log(`${'─'.repeat(60)}`);
 
   if (!existsSync(basePath)) {
-    console.log(`⚠ Suite directory not found: ${basePath}`);
-    return { passed: false, skipped: true };
-  }
-
-  // Performance suite has no test files - it's run via npm scripts
-  if (suite.name === 'Performance') {
-    console.log(`⚠ Performance suite run via: npm run benchmark:* scripts`);
-    return { passed: true, skipped: true, reason: 'Run via npm scripts' };
+    console.log(`✗ Suite directory not found: ${basePath}`);
+    return { passed: false, skipped: false, missing: true };
   }
 
   const startTime = Date.now();
@@ -114,7 +102,7 @@ async function main() {
   console.log(`\nRunning ${MANDATORY_SUITES.length} mandatory suites:`);
   for (const suite of MANDATORY_SUITES) {
     const exists = checkSuiteExists(suite);
-    console.log(`  ${exists ? '✓' : '⚠'} ${suite.name}`);
+    console.log(`  ${exists ? '✓' : '✗'} ${suite.name}`);
     console.log(`    ${suite.description}`);
     if (!exists) {
       console.log(`    (directory not found: ${suite.pattern})`);
@@ -126,13 +114,16 @@ async function main() {
   let passedSuites = 0;
   let skippedSuites = 0;
   let failedSuites = 0;
+  let missingSuites = 0;
 
   for (const suite of MANDATORY_SUITES) {
     totalSuites++;
     const result = runSuite(suite);
     results.push({ suite: suite.name, ...result });
 
-    if (result.skipped) {
+    if (result.missing) {
+      missingSuites++;
+    } else if (result.skipped) {
       skippedSuites++;
     } else if (result.passed) {
       passedSuites++;
@@ -148,11 +139,12 @@ async function main() {
   console.log(`Passed: ${passedSuites}`);
   console.log(`Skipped: ${skippedSuites}`);
   console.log(`Failed: ${failedSuites}`);
+  console.log(`Missing: ${missingSuites}`);
 
   if (results.length > 0) {
     console.log('\nSuite Results:');
     for (const r of results) {
-      const status = r.skipped ? '⚠ SKIPPED' : r.passed ? '✓ PASSED' : '✗ FAILED';
+      const status = r.missing ? '✗ MISSING' : r.skipped ? '⚠ SKIPPED' : r.passed ? '✓ PASSED' : '✗ FAILED';
       const duration = r.duration ? ` (${r.duration}s)` : '';
       console.log(`  ${status} ${r.suite}${duration}`);
       if (r.error) {
@@ -161,8 +153,7 @@ async function main() {
     }
   }
 
-  // Only fail if there are actual failures, not skipped suites
-  if (failedSuites > 0) {
+  if (failedSuites > 0 || skippedSuites > 0 || missingSuites > 0) {
     console.log('\n✗ Production verification FAILED');
     process.exit(1);
   }

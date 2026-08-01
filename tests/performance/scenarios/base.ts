@@ -7,8 +7,6 @@ import type {
   BenchmarkScenario,
   BenchmarkExecution,
   ScenarioFixture,
-  TokenCounts,
-  MemorySnapshot,
 } from '../benchmark-runner';
 
 export { BenchmarkScenario, BenchmarkExecution, ScenarioFixture };

@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach } from "bun:test"
 import { CompletionGate, type CompletionGateInput } from "./completion-gates"
 import { evaluateAllGates, evaluateGate } from "./completion-evaluator"
-import { CompletionEngine, CompletionCheckResult } from "./completion-engine"
+import { CompletionEngine } from "./completion-engine"
 
 function createBaseInput(): CompletionGateInput {
   return {

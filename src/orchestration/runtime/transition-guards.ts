@@ -30,7 +30,7 @@ export type TransitionGuard = (
  */
 export function terminalStateGuard(
   from: State,
-  to: State,
+  _to: State,
   _context: TransitionContext,
   _transitionType: TransitionType
 ): GuardResult {
@@ -65,8 +65,8 @@ export function noSelfTransitionGuard(
  * Guard for planning -> analysing transition.
  */
 export function planningToAnalysingGuard(
-  from: State,
-  to: State,
+  _from: State,
+  _to: State,
   _context: TransitionContext,
   _transitionType: TransitionType
 ): GuardResult {
@@ -79,8 +79,8 @@ export function planningToAnalysingGuard(
  * Guard for analysing -> delegating/executing transition.
  */
 export function analysingGuard(
-  from: State,
-  to: State,
+  _from: State,
+  _to: State,
   _context: TransitionContext,
   _transitionType: TransitionType
 ): GuardResult {
@@ -93,8 +93,8 @@ export function analysingGuard(
  * Guard for verifying state transitions.
  */
 export function verifyingGuard(
-  from: State,
-  to: State,
+  _from: State,
+  _to: State,
   _context: TransitionContext,
   _transitionType: TransitionType
 ): GuardResult {
@@ -107,8 +107,8 @@ export function verifyingGuard(
  * Guard for recovering state transitions.
  */
 export function recoveringGuard(
-  from: State,
-  to: State,
+  _from: State,
+  _to: State,
   _context: TransitionContext,
   _transitionType: TransitionType
 ): GuardResult {

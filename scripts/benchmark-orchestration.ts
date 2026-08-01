@@ -3,7 +3,7 @@
  * Benchmarks multi-agent orchestration performance and coordination
  */
 
-import { BaseBenchmarkRunner, type BenchmarkResult, type BenchmarkExecution } from '../tests/performance/benchmark-runner';
+import { BaseBenchmarkRunner } from '../tests/performance/benchmark-runner';
 import { delegatedTaskScenario } from '../tests/performance/scenarios/delegated-task';
 import { crossModuleFeatureScenario } from '../tests/performance/scenarios/cross-module-feature';
 import { ciRepairScenario } from '../tests/performance/scenarios/ci-repair';

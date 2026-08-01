@@ -1,5 +1,5 @@
-import type { RedundancyReport } from "./redundancy-detector.js";
-import type { PerformanceMetrics, ToolMetrics, StabilityMetrics } from "./self-host-report-schema.js";
+import type { ToolMetrics } from "./self-host-report-schema.js";
+import type { RedundancyReport, RepeatedQuery, DuplicateContextItem } from "./redundancy-detector.js";
 
 // ── Historical data types ─────────────────────────────────────────────────────
 
@@ -89,8 +89,8 @@ export class AdaptiveRecommendationEngine {
 
       if (hasRedundancy) {
         samplesWithRedundancy++;
-        totalRepeatedQueries += report.repeatedToolQueries.reduce((sum, q) => sum + q.count, 0);
-        totalDuplicateContext += report.duplicateContext.reduce((sum, c) => sum + c.count, 0);
+        totalRepeatedQueries += report.repeatedToolQueries.reduce((sum: number, q: RepeatedQuery) => sum + q.count, 0);
+        totalDuplicateContext += report.duplicateContext.reduce((sum: number, c: DuplicateContextItem) => sum + c.count, 0);
         totalUnnecessarySpecialists += report.unnecessarySpecialists.length;
       }
     }

@@ -224,12 +224,24 @@ function evaluateRequiredVerificationPassed(input: CompletionGateInput): GateRes
 /**
  * Evaluates Gate 6: MANDATORY_EVIDENCE_PRESENT
  * All mandatory evidence artifacts must be present and SHA-matched.
+ * Evidence requirements come from the contract (requiredEvidence), not caller-provided empty arrays.
  */
 function evaluateMandatoryEvidencePresent(input: CompletionGateInput): GateResult {
   const failures: string[] = []
-  const evidence: Record<string, unknown> = {}
 
+  // Check if the contract requires mandatory evidence
+  const contractRequiresEvidence = input.requiredEvidence && input.requiredEvidence.length > 0
+
+  // If contract requires evidence but caller provides empty array, reject
   if (input.evidenceItems.length === 0) {
+    if (contractRequiresEvidence) {
+      return createFail(
+        CompletionGate.MANDATORY_EVIDENCE_PRESENT,
+        ["Contract requires mandatory evidence but caller provided empty evidence array"],
+        { requiredEvidenceCount: input.requiredEvidence!.length, evidenceCount: 0 }
+      )
+    }
+
     const hasEvidenceRefs = input.verificationResults.some((r) => r.evidenceIds.length > 0)
     if (hasEvidenceRefs) {
       return createFail(
@@ -241,17 +253,38 @@ function evaluateMandatoryEvidencePresent(input: CompletionGateInput): GateResul
     return createPass(CompletionGate.MANDATORY_EVIDENCE_PRESENT, ["No mandatory evidence required"])
   }
 
+  // Filter to current (non-archived) evidence
   const currentEvidence = input.evidenceItems.filter((e) => e.status === "current")
 
-  for (const ev of currentEvidence) {
-    if (ev.sha !== input.currentSha) {
-      failures.push(`Evidence "${ev.id}" targets SHA ${ev.sha}, expected ${input.currentSha}`)
-    }
-    if (ev.runId !== input.runId) {
-      failures.push(`Evidence "${ev.id}" belongs to run ${ev.runId}, expected ${input.runId}`)
+  // Check if contract requires evidence and verify all required evidence exists
+  if (contractRequiresEvidence) {
+    for (const required of input.requiredEvidence!) {
+      // Check if there's evidence matching the required type
+      const hasMatchingEvidence = currentEvidence.some((ev) => {
+        // For file evidence, also check path
+        if (required.type === "file" && required.path) {
+          return ev.sha === input.currentSha && ev.runId === input.runId
+        }
+        return ev.sha === input.currentSha && ev.runId === input.runId
+      })
+
+      if (!hasMatchingEvidence) {
+        failures.push(`Required evidence of type "${required.type}" is missing or stale`)
+      }
     }
   }
 
+  // Validate evidence is not stale (SHA and runId match)
+  for (const ev of currentEvidence) {
+    if (ev.sha !== input.currentSha) {
+      failures.push(`Evidence "${ev.id}" targets stale SHA ${ev.sha}, expected ${input.currentSha}`)
+    }
+    if (ev.runId !== input.runId) {
+      failures.push(`Evidence "${ev.id}" belongs to wrong run ${ev.runId}, expected ${input.runId}`)
+    }
+  }
+
+  // Verify required verification results have current SHA-matched evidence
   for (const result of input.verificationResults) {
     if (result.required && result.status !== "skipped" && result.evidenceIds.length > 0) {
       const hasCurrentEvidence = result.evidenceIds.some((eid) => {
@@ -277,6 +310,7 @@ function evaluateMandatoryEvidencePresent(input: CompletionGateInput): GateResul
       {
         evidenceCount: input.evidenceItems.length,
         currentEvidenceCount: currentEvidence.length,
+        requiredEvidenceCount: contractRequiresEvidence ? input.requiredEvidence!.length : 0,
         failedCount: failures.length
       }
     )
@@ -329,5 +363,7 @@ export function evaluateGate(gate: CompletionGate, input: CompletionGateInput): 
       return evaluateRequiredVerificationPassed(input)
     case CompletionGate.MANDATORY_EVIDENCE_PRESENT:
       return evaluateMandatoryEvidencePresent(input)
+    default:
+      throw new Error(`Unknown completion gate: ${gate}`)
   }
 }

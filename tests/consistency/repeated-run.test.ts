@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { FakeAgentRuntime } from '../orchestration/fake/fake-agent-runtime';
 import { FakeUuidGenerator } from '../orchestration/fake/fake-uuid';
@@ -77,7 +77,7 @@ const SCENARIOS: ScenarioFixture[] = [
   },
 ];
 
-function createSnapshot(fixture: ScenarioFixture): {
+function createSnapshot(_fixture: ScenarioFixture): {
   runtime: FakeAgentRuntime;
   uuid: FakeUuidGenerator;
   clock: FakeClock;
@@ -133,7 +133,7 @@ function seededRandom(seed: number): () => number {
 async function executeRun(
   scenario: ScenarioFixture,
   snapshot: { runtime: FakeAgentRuntime; uuid: FakeUuidGenerator; clock: FakeClock; db: Database },
-  runIndex: number
+  _runIndex: number
 ): Promise<RunMetrics> {
   const runId = snapshot.uuid.generate();
   const startTime = snapshot.clock.now();

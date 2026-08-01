@@ -1,8 +1,6 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { FaultInjector, type FaultPoint, type FaultConfig } from '../orchestration/fault/fault-injector';
-
-const BASELINE_SHA = '5809fcf1230ff349ff0d7f5b53ed75403f44573b';
+import { FaultInjector, type FaultPoint } from '../orchestration/fault/fault-injector';
 
 type FaultScenario = {
   name: string;

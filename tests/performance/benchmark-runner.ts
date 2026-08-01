@@ -203,9 +203,8 @@ export abstract class BaseBenchmarkRunner {
 
   protected async executeScenario(
     scenario: BenchmarkScenario,
-    recordMetrics: boolean
+    _recordMetrics: boolean
   ): Promise<BenchmarkExecution> {
-    const startMemory = this.captureMemory();
     const startTime = performance.now();
 
     try {

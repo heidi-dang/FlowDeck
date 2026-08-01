@@ -4,7 +4,6 @@
  */
 
 import type { BenchmarkScenario, BenchmarkExecution } from '../benchmark-runner';
-import { createMockExecution } from './base';
 
 const SCENARIO_ID = 'parallel-ownership-conflict';
 const SCENARIO_NAME = 'Parallel Ownership Conflict';

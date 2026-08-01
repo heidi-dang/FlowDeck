@@ -1,29 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { FakeAgentRuntime } from '../orchestration/fake/fake-agent-runtime';
-import { FakeEventBus } from '../orchestration/fake/fake-event-bus';
 import { FakeClock } from '../orchestration/fake/fake-clock';
 import { FakeUuidGenerator } from '../orchestration/fake/fake-uuid';
+import {
+  TraceEvent,
+  replayTrace,
+  validateEventOrder,
+  validateReproducibility,
+} from '../../src/orchestration/runtime/trace-replay';
 
 const BASELINE_SHA = '5809fcf1230ff349ff0d7f5b53ed75403f44573b';
-
-interface TraceEvent {
-  id: string;
-  type: string;
-  timestamp: number;
-  payload: unknown;
-  agentId?: string;
-  toolName?: string;
-  toolArgs?: unknown;
-  toolResult?: unknown;
-  error?: string;
-}
-
-interface ReplayResult {
-  events: TraceEvent[];
-  finalState: unknown;
-  errorCount: number;
-}
 
 class FakeModelAdapter {
   private responses: Map<string, unknown> = new Map();
@@ -183,96 +169,6 @@ function createFailureTrace(scenarioId: string): TraceEvent[] {
       payload: { status: 'failure', error: 'Tool execution failed' },
     },
   ];
-}
-
-async function replayTrace(
-  events: TraceEvent[],
-  model: FakeModelAdapter,
-  tools: FakeToolAdapter,
-  clock: FakeClock
-): Promise<ReplayResult> {
-  const replayedEvents: TraceEvent[] = [];
-  let errorCount = 0;
-  const state: Record<string, unknown> = {};
-
-  for (const event of events) {
-    clock.setDate(new Date(event.timestamp));
-    const replayedEvent: TraceEvent = { ...event, id: `${event.id}-replay` };
-
-    try {
-      switch (event.type) {
-        case 'tool_called':
-          if (event.toolName && event.toolArgs) {
-            const result = await tools.executeTool(event.toolName, event.toolArgs);
-            replayedEvent.toolResult = result;
-            state[`tool_${event.toolName}`] = result;
-          }
-          break;
-        case 'tool_error':
-          errorCount++;
-          state.lastError = event.error;
-          break;
-        case 'specialist_failed':
-          errorCount++;
-          state.lastError = event.error;
-          break;
-        case 'task_completed':
-          state.finalStatus = (event.payload as { status: string }).status;
-          break;
-        default:
-          break;
-      }
-    } catch (err) {
-      replayedEvent.error = err instanceof Error ? err.message : String(err);
-      errorCount++;
-    }
-
-    replayedEvents.push(replayedEvent);
-  }
-
-  return {
-    events: replayedEvents,
-    finalState: state,
-    errorCount,
-  };
-}
-
-function validateEventOrder(original: TraceEvent[], replayed: TraceEvent[]): boolean {
-  const originalTimestamps = original.map((e) => ({ id: e.id, ts: e.timestamp }));
-  const replayedTimestamps = replayed.map((e) => ({
-    id: e.id.replace('-replay', ''),
-    ts: e.timestamp,
-  }));
-
-  for (let i = 1; i < originalTimestamps.length; i++) {
-    if (originalTimestamps[i].ts < originalTimestamps[i - 1].ts) {
-      return false;
-    }
-  }
-
-  for (let i = 1; i < replayedTimestamps.length; i++) {
-    if (replayedTimestamps[i].ts < replayedTimestamps[i - 1].ts) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-function validateReproducibility(original: TraceEvent[], replayed: TraceEvent[]): boolean {
-  if (original.length !== replayed.length) {
-    return false;
-  }
-
-  for (let i = 0; i < original.length; i++) {
-    const origType = original[i].type;
-    const replayType = replayed[i].type;
-    if (origType !== replayType) {
-      return false;
-    }
-  }
-
-  return true;
 }
 
 describe('Trace Replay', () => {

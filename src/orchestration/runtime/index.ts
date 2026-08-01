@@ -64,3 +64,11 @@ export {
 } from "./transition-service.js";
 
 export type { TransitionResult, TransitionServiceOptions } from "./transition-service.js";
+
+export { InMemoryStateStore } from "./state-store.js";
+
+export type {
+  RunState,
+  TransitionEvent,
+  StateStore,
+} from "./state-store.js";

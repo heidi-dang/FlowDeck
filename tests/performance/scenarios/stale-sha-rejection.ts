@@ -4,7 +4,6 @@
  */
 
 import type { BenchmarkScenario, BenchmarkExecution } from '../benchmark-runner';
-import { createMockExecution } from './base';
 
 const SCENARIO_ID = 'stale-sha-rejection';
 const SCENARIO_NAME = 'Stale SHA Rejection';

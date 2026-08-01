@@ -4,7 +4,6 @@
  */
 
 import type { BenchmarkScenario, BenchmarkExecution } from '../benchmark-runner';
-import { createMockExecution } from './base';
 
 const SCENARIO_ID = 'cancellation';
 const SCENARIO_NAME = 'Cancellation';

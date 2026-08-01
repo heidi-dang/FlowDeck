@@ -119,7 +119,6 @@ export function selectContext(
  * Validate that mandatory items haven't been silently removed.
  */
 export function validateMandatoryPreserved(result: SelectionResult): boolean {
-  const mandatoryItems = result.manifest.selectedItems.filter((i) => i.priority === "mandatory");
   const omittedMandatory = result.omittedItems.filter((i) => i.priority === "mandatory");
   return omittedMandatory.length === 0;
 }

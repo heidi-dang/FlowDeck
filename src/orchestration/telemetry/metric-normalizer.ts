@@ -1,9 +1,7 @@
 import type {
   TokenMetrics,
-  SpecialistTokenMetrics,
   ToolMetrics,
-  PerformanceMetrics,
-  StabilityMetrics,
+  SpecialistTokenMetrics,
 } from "./self-host-report-schema.js";
 import { TokenMetricsSchema, ToolMetricsSchema } from "./self-host-report-schema.js";
 
@@ -91,7 +89,7 @@ export function extractProvider(modelIdentifier: string): string {
  */
 export function normalizeTokenMetrics(
   raw: Record<string, unknown>,
-  defaultProvider: string = "unknown",
+  _defaultProvider: string = "unknown",
 ): NormalizedTokenMetrics {
   const provider = (raw.provider as string) ?? extractProvider((raw.model as string) ?? "");
   const inputTokens = Number(raw.inputTokens ?? raw.prompt_tokens ?? raw.input ?? 0);
@@ -128,7 +126,7 @@ export function normalizeSpecialistTokenMetrics(
   perSpecialistRaw: Record<string, Record<string, unknown>>,
 ): SpecialistTokenMetrics {
   const perSpecialist: TokenMetrics[] = Object.entries(perSpecialistRaw).map(
-    ([specialistId, raw]) => ({
+    ([_specialistId, raw]) => ({
       ...normalizeTokenMetrics(raw),
       provider: (raw.provider as string) ?? extractProvider((raw.model as string) ?? ""),
     }),

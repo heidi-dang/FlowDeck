@@ -8,6 +8,42 @@
 
 import type { ContractStore } from "./contract-store"
 
+/**
+ * Terminal states - once reached, the contract cannot transition back to active states.
+ */
+export const TERMINAL_STATUSES = new Set<TaskContractStatus>(["completed", "failed", "superseded"])
+
+/**
+ * Active states - the contract is still in progress.
+ */
+export const ACTIVE_STATUSES = new Set<TaskContractStatus>(["draft", "activated"])
+
+/**
+ * Validates that a status transition is valid.
+ * Terminal states cannot transition back to active states.
+ */
+export function isValidStatusTransition(
+  from: TaskContractStatus,
+  to: TaskContractStatus
+): boolean {
+  // Can't go from terminal to active
+  if (TERMINAL_STATUSES.has(from) && ACTIVE_STATUSES.has(to)) {
+    return false
+  }
+  // Can't transition from draft to completed/failed directly without going through activated
+  if (from === "draft" && (to === "completed" || to === "failed")) {
+    return false
+  }
+  return true
+}
+
+/**
+ * Checks if a status is terminal.
+ */
+export function isTerminalStatus(status: TaskContractStatus): boolean {
+  return TERMINAL_STATUSES.has(status)
+}
+
 export interface Requirement {
   readonly id: string
   readonly description: string
@@ -68,6 +104,7 @@ export interface TaskContract {
   readonly approvalGates: readonly ApprovalGate[]
   readonly createdAt: Date
   readonly activatedAt?: Date
+  readonly status: TaskContractStatus
   readonly hash: string
 }
 
@@ -85,6 +122,10 @@ export interface TaskContractDraft {
   readonly allowedMutationScope: MutationScope
   readonly approvalGates: readonly ApprovalGate[]
   readonly createdAt: Date
+  /**
+   * Draft status - required to be "draft" for a valid draft.
+   */
+  readonly status: "draft"
 }
 
 export interface TaskContractValidationResult {

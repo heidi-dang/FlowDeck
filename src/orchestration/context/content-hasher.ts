@@ -1,9 +1,6 @@
 /**
  * SHA-256 content hashing for deduplication.
- * @module orchestration/context/content-hasher
  */
-
-const hasher = new Bun.CryptoHasher("sha256");
 
 /**
  * Computes SHA-256 hash of a string.

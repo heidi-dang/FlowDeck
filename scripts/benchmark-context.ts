@@ -3,8 +3,8 @@
  * Measures context usage and efficiency across scenarios
  */
 
-import { MetricsCollector, type AggregatedMetrics } from '../tests/performance/metrics-collector';
-import { BaseBenchmarkRunner, type BenchmarkResult } from '../tests/performance/benchmark-runner';
+import { BaseBenchmarkRunner } from '../tests/performance/benchmark-runner';
+import { AggregatedMetrics, MetricsCollector } from '../tests/performance/metrics-collector';
 import { trivialDirectEditScenario } from '../tests/performance/scenarios/trivial-direct-edit';
 import { localBugScenario } from '../tests/performance/scenarios/local-bug';
 import { crossModuleFeatureScenario } from '../tests/performance/scenarios/cross-module-feature';
@@ -114,7 +114,6 @@ async function main() {
 
     // Measured iterations
     for (let i = 0; i < iterations; i++) {
-      const startMemory = process.memoryUsage();
       const startTime = performance.now();
       
       await scenario.execute();

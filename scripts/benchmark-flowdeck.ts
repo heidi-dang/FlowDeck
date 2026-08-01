@@ -3,7 +3,7 @@
  * Runs all benchmark scenarios and generates comparison reports
  */
 
-import { BaseBenchmarkRunner, type BenchmarkResult, type BenchmarkComparison } from '../tests/performance/benchmark-runner';
+import { BaseBenchmarkRunner, BenchmarkResult } from '../tests/performance/benchmark-runner';
 import { MetricsCollector } from '../tests/performance/metrics-collector';
 import { trivialDirectEditScenario } from '../tests/performance/scenarios/trivial-direct-edit';
 import { localBugScenario } from '../tests/performance/scenarios/local-bug';
@@ -74,7 +74,7 @@ class FlowDeckBenchmarkRunner extends BaseBenchmarkRunner {
     let totalRegressions = 0;
     let scenariosChecked = 0;
 
-    for (const [scenarioId, baselineResult] of baselineResults) {
+    for (const [scenarioId, _baselineResult] of baselineResults) {
       const candidateResult = candidateResults.get(scenarioId);
       if (!candidateResult) continue;
 

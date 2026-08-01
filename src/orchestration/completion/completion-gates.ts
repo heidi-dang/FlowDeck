@@ -52,6 +52,15 @@ export interface CompletionGateInput {
     status: "current" | "archived";
     criterionIds: readonly string[];
   }[];
+  /**
+   * Evidence requirements derived from the contract.
+   * Used by MANDATORY_EVIDENCE_PRESENT gate to verify all required evidence exists.
+   */
+  requiredEvidence?: readonly {
+    type: string;
+    description: string;
+    path?: string;
+  }[];
 }
 
 export const ALL_GATES: CompletionGate[] = [

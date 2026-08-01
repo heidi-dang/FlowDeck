@@ -2,7 +2,6 @@ import type {
   SelfHostReport,
   Identity,
   Orchestration,
-  SpecialistTokenMetrics,
   ToolMetrics,
   PerformanceMetrics,
   StabilityMetrics,
