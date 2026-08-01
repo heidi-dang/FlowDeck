@@ -36,6 +36,7 @@ import {
   zModelTier,
   zScoredTask,
   canonicalJson,
+  canonicalClone,
   bindDecisionToSha,
   ROUTING_POLICY_VERSION,
   ROUTING_WEIGHTS_VERSION,
@@ -396,5 +397,210 @@ describe("adversarial: exact-SHA and ISO timestamp provenance", () => {
     expect(zScoredTask.safeParse(record.scores).success).toBe(true)
     expect(record.scores.weightsVersion).toBe(ROUTING_WEIGHTS_VERSION)
     expect(record.scores.policyVersion).toBe(ROUTING_POLICY_VERSION)
+  })
+})
+
+describe("adversarial: clone-safe decision binding (provenance)", () => {
+  /** Builds an options object whose arrays/objects we can probe after binding. */
+  function makeProbeableOptions() {
+    const inputEvidence = [{ signal: "expectedFileCount", value: 2, source: "prompt" }]
+    const delegationDecisions = [
+      {
+        taskId: "task-probe-1",
+        delegatingAgent: "orchestrator",
+        targetAgent: "debug-specialist",
+        depth: 1,
+        allowed: true,
+        reason: "specialist_expertise" as const,
+        justification: ["stack trace present"],
+      },
+    ]
+    const classification = {
+      taskClass: "local_bug" as const,
+      confidence: 92,
+      evidence: [{ id: "e1", source: "classifier", detail: "stack trace found" }],
+      usedModelFallback: false,
+      policyVersion: "1.0.0",
+    }
+    const scores = {
+      scores: { complexity: 40, ambiguity: 30, risk: 25, confidence: 80 },
+      evidence: {
+        complexity: [{ id: "e-cx", source: "scoring.complexity", detail: "file count" }],
+        ambiguity: [{ id: "e-amb", source: "scoring.ambiguity", detail: "missing target" }],
+        risk: [{ id: "e-risk", source: "scoring.risk", detail: "production impact" }],
+        confidence: [{ id: "e-conf", source: "scoring.confidence", detail: "ambiguity" }],
+      },
+      weightsVersion: ROUTING_WEIGHTS_VERSION,
+      policyVersion: ROUTING_POLICY_VERSION,
+    }
+    const options = {
+      taskId: "task-probe-1",
+      decisionId: "dec-probe-1",
+      repositorySha: VALID_SHA,
+      weightsVersion: ROUTING_WEIGHTS_VERSION,
+      inputEvidence,
+      rulesApplied: ["rule:classify"],
+      modelFallbackUsed: false,
+      classification,
+      scores,
+      selectedStrategy: "root_cause_repair" as const,
+      rejectedStrategies: [{ strategy: "audit_only" as const, reason: "task is mutating" }],
+      specialistCandidates: ["debug-specialist"],
+      delegationDecisions,
+      modelCandidates: [{ tier: "strong_reasoning" as const, reason: "debugging" }],
+      selectedTier: "strong_reasoning" as const,
+      fallback: ["general_coding" as const, "small_fast" as const],
+      confidence: 90,
+    }
+    return { options, inputEvidence, delegationDecisions, classification, scores }
+  }
+
+  it("leaves caller-owned arrays and objects mutable after binding", () => {
+    const { options, inputEvidence, delegationDecisions } = makeProbeableOptions()
+    const record = bindDecisionToSha(options)
+
+    expect(Object.isFrozen(inputEvidence)).toBe(false)
+    expect(Object.isFrozen(delegationDecisions)).toBe(false)
+    expect(Object.isFrozen(delegationDecisions[0].justification)).toBe(false)
+    expect(Object.isFrozen(options.rejectedStrategies)).toBe(false)
+    expect(Object.isFrozen(options.specialistCandidates)).toBe(false)
+
+    // Caller can still mutate its arrays after binding.
+    inputEvidence.push({ signal: "extra", value: 1, source: "probe" })
+    delegationDecisions[0].justification.push("after-bind mutation")
+    expect(inputEvidence).toHaveLength(2)
+    expect(delegationDecisions[0].justification).toHaveLength(2)
+
+    // The bound record is unaffected by later caller mutation.
+    expect(record.inputEvidence).toHaveLength(1)
+    expect(record.delegationDecisions[0].justification).toHaveLength(1)
+  })
+
+  it("returns a record sharing no nested object identity with the input", () => {
+    const { options, inputEvidence, delegationDecisions } = makeProbeableOptions()
+    const record = bindDecisionToSha(options)
+
+    expect(record.inputEvidence).not.toBe(inputEvidence)
+    expect(record.inputEvidence[0]).not.toBe(inputEvidence[0])
+    expect(record.delegationDecisions).not.toBe(delegationDecisions)
+    expect(record.delegationDecisions[0]).not.toBe(delegationDecisions[0])
+    expect(record.scores).not.toBe(options.scores)
+    expect(record.scores.scores).not.toBe(options.scores.scores)
+  })
+
+  it("returns a deeply frozen record", () => {
+    const { options } = makeProbeableOptions()
+    const record = bindDecisionToSha(options)
+
+    expect(Object.isFrozen(record)).toBe(true)
+    expect(Object.isFrozen(record.inputEvidence)).toBe(true)
+    expect(Object.isFrozen(record.inputEvidence[0])).toBe(true)
+    expect(Object.isFrozen(record.delegationDecisions)).toBe(true)
+    expect(Object.isFrozen(record.delegationDecisions[0])).toBe(true)
+    expect(Object.isFrozen(record.scores)).toBe(true)
+    expect(Object.isFrozen(record.scores.evidence)).toBe(true)
+    expect(Object.isFrozen(record.classification)).toBe(true)
+    expect(Object.isFrozen(record.rejectedStrategies)).toBe(true)
+  })
+
+  it("throws on an invalid repository SHA", () => {
+    const { options } = makeProbeableOptions()
+    expect(() => bindDecisionToSha({ ...options, repositorySha: "abc123" })).toThrow(/repositorySha/)
+    expect(() => bindDecisionToSha({ ...options, repositorySha: "G".repeat(40) })).toThrow(/repositorySha/)
+  })
+
+  it("throws on an invalid timestamp", () => {
+    const { options } = makeProbeableOptions()
+    expect(() => bindDecisionToSha({ ...options, timestamp: "not-a-date" })).toThrow(/timestamp/)
+    expect(() => bindDecisionToSha({ ...options, timestamp: "2026-13-99T99:99:99.000Z" })).toThrow(/timestamp/)
+  })
+
+  it("throws on malformed version identifiers", () => {
+    const { options } = makeProbeableOptions()
+    expect(() => bindDecisionToSha({ ...options, weightsVersion: "" })).toThrow(/weightsVersion/)
+    expect(() => bindDecisionToSha({ ...options, weightsVersion: "   " })).toThrow(/weightsVersion/)
+    expect(() => bindDecisionToSha({ ...options, weightsVersion: "v1.0" })).toThrow(/weightsVersion/)
+  })
+
+  it("throws on invalid nested score data", () => {
+    const { options } = makeProbeableOptions()
+    const badScores = {
+      ...options.scores,
+      scores: { complexity: 150, ambiguity: 30, risk: 25, confidence: 80 },
+    }
+    expect(() => bindDecisionToSha({ ...options, scores: badScores })).toThrow(/scores/)
+  })
+
+  it("throws on invalid nested classification data", () => {
+    const { options } = makeProbeableOptions()
+    const badClassification = { ...options.classification, taskClass: "not_a_class" as never }
+    expect(() => bindDecisionToSha({ ...options, classification: badClassification })).toThrow(/classification/)
+  })
+
+  it("throws on invalid nested delegation data", () => {
+    const { options } = makeProbeableOptions()
+    const badDelegation = [{ ...options.delegationDecisions[0], depth: 5 }]
+    expect(() => bindDecisionToSha({ ...options, delegationDecisions: badDelegation })).toThrow(/delegationDecisions/)
+  })
+
+  it("throws when the input carries an unsupported value type", () => {
+    const { options } = makeProbeableOptions()
+    const badInputEvidence = [{ signal: "map", value: new Map([["a", 1]]), source: "probe" }]
+    expect(() => bindDecisionToSha({ ...options, inputEvidence: badInputEvidence })).toThrow(/non-serializable value/)
+  })
+
+  it("a supersede record remains immutable and references the prior decisionId", () => {
+    const { options } = makeProbeableOptions()
+    const prior = bindDecisionToSha(options)
+    const correction = bindDecisionToSha({ ...options, decisionId: "dec-probe-2", supersedes: "dec-probe-1" })
+
+    expect(correction.supersedes).toBe("dec-probe-1")
+    expect(Object.isFrozen(correction)).toBe(true)
+    // The prior record is untouched by the correction.
+    expect(prior.supersedes).toBeUndefined()
+    expect(prior.decisionId).toBe("dec-probe-1")
+  })
+})
+
+describe("adversarial: canonical clone isolation", () => {
+  it("canonicalClone returns an independent deep copy", () => {
+    const original = { a: [1, 2], b: { c: "x" } }
+    const clone = canonicalClone(original)
+    expect(clone).toEqual(original)
+    expect(clone).not.toBe(original)
+    expect(clone.a).not.toBe(original.a)
+    expect(clone.b).not.toBe(original.b)
+
+    clone.a.push(3)
+    expect(original.a).toHaveLength(2)
+  })
+
+  it("canonicalClone sorts keys and drops undefined", () => {
+    const clone = canonicalClone({ z: 1, a: undefined, m: { d: 1, b: 2 } })
+    expect(Object.keys(clone)).toEqual(["m", "z"])
+    expect(Object.keys((clone as { m: object }).m)).toEqual(["b", "d"])
+  })
+
+  it("canonicalClone rejects unsupported types", () => {
+    expect(() => canonicalClone(new Map())).toThrow(/non-serializable value/)
+    expect(() => canonicalClone(new Set())).toThrow(/non-serializable value/)
+    expect(() => canonicalClone(/regex/)).toThrow(/non-serializable value/)
+    expect(() => canonicalClone(Promise.resolve(1))).toThrow(/non-serializable value/)
+    expect(() => canonicalClone(Symbol("x"))).toThrow(/non-serializable value/)
+    expect(() => canonicalClone(1n)).toThrow(/non-serializable value/)
+    expect(() => canonicalClone(() => 1)).toThrow(/non-serializable value/)
+    expect(() => canonicalClone(NaN)).toThrow(/non-serializable value/)
+    expect(() => canonicalClone(Infinity)).toThrow(/non-serializable value/)
+  })
+
+  it("canonicalClone rejects cyclic graphs", () => {
+    const x: Record<string, unknown> = {}
+    x.self = x
+    expect(() => canonicalClone(x)).toThrow(/non-serializable value/)
+  })
+
+  it("canonicalClone converts Dates to ISO strings", () => {
+    const d = new Date("2026-01-01T00:00:00.000Z")
+    expect(canonicalClone({ d } as { d: unknown })).toEqual({ d: "2026-01-01T00:00:00.000Z" })
   })
 })

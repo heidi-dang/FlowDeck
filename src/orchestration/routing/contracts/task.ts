@@ -111,6 +111,17 @@ export const zNonEmptyId = z.string().refine((s) => s.trim().length > 0, {
   message: "must not be empty or whitespace-only",
 })
 
+/**
+ * Validated version identifier: a non-empty string of the form
+ * MAJOR.MINOR.PATCH with optional prerelease and build metadata, e.g.
+ * "1.0.0" or "1.0.0-rc.1". Rejects empty, whitespace-only, and malformed
+ * version strings so a bound record can never carry an unparseable version.
+ */
+export const zVersionId = z.string().regex(
+  /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/,
+  "must be a valid MAJOR.MINOR.PATCH version identifier",
+)
+
 /** Scorer output: four 0-100 dimensions consumed by strategy and model selection. */
 export interface TaskScores {
   complexity: number
