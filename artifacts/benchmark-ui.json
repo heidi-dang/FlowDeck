@@ -1,7 +1,7 @@
 {
   "benchmarkSuite": "ui-projection-dom-render",
-  "timestamp": "2026-08-01T04:57:09.263Z",
-  "gitSha": "4df5d8d9e1b04c9ebf13bb811b71312da295eed0",
+  "timestamp": "2026-08-01T04:59:43.248Z",
+  "gitSha": "2d4b568cb1fb5f43ab23c263ee035543bd43a707",
   "branch": "feat/performance-sse-ui-foundation",
   "environment": "test",
   "runtimeVersions": {
@@ -14,28 +14,28 @@
   "metrics": {
     "browserEventToReducer": {
       "samples": 3000,
-      "reductionsPerSec": 620205,
-      "medianMs": 0.0011,
-      "p95Ms": 0.0035,
-      "maxMs": 0.0218
+      "reductionsPerSec": 874557,
+      "medianMs": 0.0007,
+      "p95Ms": 0.0024,
+      "maxMs": 0.0118
     },
     "reducerToDomRender": {
       "samples": 500,
-      "rendersPerSec": 2304,
-      "medianMs": 0.3287,
-      "p95Ms": 0.9496,
-      "maxMs": 3.3904
+      "rendersPerSec": 2264,
+      "medianMs": 0.323,
+      "p95Ms": 0.9873,
+      "maxMs": 3.1509
     },
     "frameStability": {
       "targetFps": 60,
       "maxFrameTimeMs": 16.67,
-      "measuredMaxRenderMs": 3.3904,
+      "measuredMaxRenderMs": 3.1509,
       "passed": true
     }
   },
   "memoryBytes": {
-    "baseline": 2751400,
-    "peak": 14428705,
-    "growthMb": 11.14
+    "baseline": 175406,
+    "peak": 13944122,
+    "growthMb": 13.13
   }
 }
