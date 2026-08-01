@@ -259,6 +259,44 @@ describe("deterministic routing scorers", () => {
     }
   })
 
+  it("emits stable no-signal evidence for a measured zero in every dimension", () => {
+    const scored = computeTaskScores({ ambiguityLevel: 0, expectedFileCount: 0 })
+    expect(scored.scores.complexity).toBe(0)
+    expect(scored.scores.ambiguity).toBe(0)
+    expect(scored.scores.risk).toBe(0)
+
+    expect(scored.evidence.complexity.some((e) => e.id === "score.cx.no_contributing_signal")).toBe(true)
+    expect(scored.evidence.ambiguity.some((e) => e.id === "score.amb.explicit_zero")).toBe(true)
+    expect(scored.evidence.risk.some((e) => e.id === "score.risk.no_contributing_signal")).toBe(true)
+
+    // Confidence always carries derived evidence.
+    expect(scored.evidence.confidence.length).toBeGreaterThanOrEqual(1)
+
+    // The full ScoredTask must satisfy the non-empty-evidence schema.
+    expect(zScoredTask.safeParse(scored).success).toBe(true)
+  })
+
+  it("emits evidence for a sparse all-zero input", () => {
+    const scored = computeTaskScores({})
+    expect(zScoredTask.safeParse(scored).success).toBe(true)
+    expect(scored.evidence.complexity.length).toBeGreaterThanOrEqual(1)
+    expect(scored.evidence.ambiguity.length).toBeGreaterThanOrEqual(1)
+    expect(scored.evidence.risk.length).toBeGreaterThanOrEqual(1)
+    expect(scored.evidence.confidence.length).toBeGreaterThanOrEqual(1)
+  })
+
+  it("evidence ids are deterministic and stable across repeated runs", () => {
+    const input: ClassificationInput = { productionImpact: 50, expectedFileCount: 1, ambiguityLevel: 20 }
+    const first = computeTaskScores(input)
+    for (let call = 0; call < 5; call++) {
+      const again = computeTaskScores(input)
+      expect(again.evidence.complexity.map((e) => e.id)).toEqual(first.evidence.complexity.map((e) => e.id))
+      expect(again.evidence.risk.map((e) => e.id)).toEqual(first.evidence.risk.map((e) => e.id))
+      expect(again.evidence.ambiguity.map((e) => e.id)).toEqual(first.evidence.ambiguity.map((e) => e.id))
+      expect(again.evidence.confidence.map((e) => e.id)).toEqual(first.evidence.confidence.map((e) => e.id))
+    }
+  })
+
   it("rejects out-of-range and non-integer manual scores via zTaskScores", () => {
     expect(zTaskScores.safeParse({ complexity: 150, ambiguity: 0, risk: 0, confidence: 0 }).success).toBe(false)
     expect(zTaskScores.safeParse({ complexity: -1, ambiguity: 0, risk: 0, confidence: 0 }).success).toBe(false)
@@ -271,9 +309,9 @@ describe("deterministic routing scorers", () => {
       scores: { complexity: 10, ambiguity: 10, risk: 10, confidence: 10 },
       evidence: {
         complexity: [{ id: "e1", source: "s", detail: "d" }],
-        ambiguity: [],
-        risk: [],
-        confidence: [],
+        ambiguity: [{ id: "e2", source: "s", detail: "d" }],
+        risk: [{ id: "e3", source: "s", detail: "d" }],
+        confidence: [{ id: "e4", source: "s", detail: "d" }],
       },
       weightsVersion: "1.0.0",
       policyVersion: "1.0.0",
@@ -299,6 +337,22 @@ describe("deterministic routing scorers", () => {
     expect(
       zScoredTask.safeParse({ ...validScoredTask, scores: { ...validScoredTask.scores, risk: 150 } }).success,
     ).toBe(false)
+
+    // every dimension requires non-empty evidence
+    expect(
+      zScoredTask.safeParse({ ...validScoredTask, evidence: { ...validScoredTask.evidence, risk: [] } }).success,
+    ).toBe(false)
+    expect(
+      zScoredTask.safeParse({
+        ...validScoredTask,
+        evidence: { ...validScoredTask.evidence, complexity: [] },
+      }).success,
+    ).toBe(false)
+
+    // malformed version identifiers are rejected
+    expect(zScoredTask.safeParse({ ...validScoredTask, weightsVersion: "" }).success).toBe(false)
+    expect(zScoredTask.safeParse({ ...validScoredTask, weightsVersion: "v1.0" }).success).toBe(false)
+    expect(zScoredTask.safeParse({ ...validScoredTask, policyVersion: "not a version" }).success).toBe(false)
   })
 
   it("validates arrays of scores via areScoresInRange and zTaskScoresArray (D11)", () => {

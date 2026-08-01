@@ -74,7 +74,12 @@ function makeValidRecord(): RoutingDecisionRecord {
     },
     scores: {
       scores: { complexity: 40, ambiguity: 30, risk: 25, confidence: 80 },
-      evidence: { complexity: [], ambiguity: [], risk: [], confidence: [] },
+      evidence: {
+        complexity: [{ id: "e-cx", source: "scoring.complexity", detail: "file count" }],
+        ambiguity: [{ id: "e-amb", source: "scoring.ambiguity", detail: "missing target" }],
+        risk: [{ id: "e-risk", source: "scoring.risk", detail: "production impact" }],
+        confidence: [{ id: "e-conf", source: "scoring.confidence", detail: "ambiguity" }],
+      },
       weightsVersion: ROUTING_WEIGHTS_VERSION,
       policyVersion: ROUTING_POLICY_VERSION,
     },

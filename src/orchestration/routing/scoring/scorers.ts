@@ -281,6 +281,16 @@ export function scoreComplexity(input: ClassificationInput, weights: ScoreWeight
     })
   }
 
+  // A measured zero must still carry evidence: an empty complexity evidence
+  // array is a defect (document section 5.4).
+  if (evidence.length === 0) {
+    evidence.push({
+      id: "score.cx.no_contributing_signal",
+      source: "scoring.complexity",
+      detail: "no complexity signal contributed; measured zero",
+    })
+  }
+
   return { score: clampScore(score), evidence }
 }
 
@@ -308,7 +318,17 @@ export function scoreAmbiguity(input: ClassificationInput, weights: ScoreWeights
 
   const weakFactor = !hasExplicitLevel ? 1 : level === 0 ? 0 : 0.5
   if (weakFactor === 0) {
-    return { score: clampScore(score), evidence }
+    return {
+      score: clampScore(score),
+      evidence: [
+        ...evidence,
+        {
+          id: "score.amb.explicit_zero",
+          source: "scoring.ambiguity",
+          detail: "ambiguity explicitly measured zero (level 0 supersedes weak signals)",
+        },
+      ],
+    }
   }
 
   const missingTarget = input.expectedFileCount === undefined
@@ -348,6 +368,15 @@ export function scoreAmbiguity(input: ClassificationInput, weights: ScoreWeights
       id: "score.amb.missing_verification",
       source: "scoring.ambiguity",
       detail: `mutating task without tests adds ${weakFactor * WEAK_SIGNAL_NO_VERIFICATION}`,
+    })
+  }
+
+  // A measured zero must still carry evidence (document section 5.4).
+  if (evidence.length === 0) {
+    evidence.push({
+      id: "score.amb.no_contributing_signal",
+      source: "scoring.ambiguity",
+      detail: "no ambiguity signal contributed; measured zero",
     })
   }
 
@@ -506,6 +535,15 @@ export function scoreRisk(input: ClassificationInput, weights: ScoreWeights = DE
       id: "score.risk.blast_radius",
       source: "scoring.risk",
       detail: `expected file count >= 3 adds ${RISK_BLAST_RADIUS}`,
+    })
+  }
+
+  // A measured zero must still carry evidence (document section 5.4).
+  if (evidence.length === 0) {
+    evidence.push({
+      id: "score.risk.no_contributing_signal",
+      source: "scoring.risk",
+      detail: "no risk signal contributed; measured zero",
     })
   }
 

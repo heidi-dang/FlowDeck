@@ -235,17 +235,17 @@ export const zEvidenceReference = z.object({
   detail: z.string(),
 })
 
-/** Zod schema for ScoredTask. */
+/** Zod schema for ScoredTask. Every dimension must carry non-empty evidence. */
 export const zScoredTask = z.object({
   scores: zTaskScores,
   evidence: z.object({
-    complexity: z.array(zEvidenceReference),
-    ambiguity: z.array(zEvidenceReference),
-    risk: z.array(zEvidenceReference),
-    confidence: z.array(zEvidenceReference),
+    complexity: z.array(zEvidenceReference).min(1, "complexity evidence must be non-empty"),
+    ambiguity: z.array(zEvidenceReference).min(1, "ambiguity evidence must be non-empty"),
+    risk: z.array(zEvidenceReference).min(1, "risk evidence must be non-empty"),
+    confidence: z.array(zEvidenceReference).min(1, "confidence evidence must be non-empty"),
   }),
-  weightsVersion: z.string(),
-  policyVersion: z.string(),
+  weightsVersion: zVersionId,
+  policyVersion: zVersionId,
 })
 
 /** Zod schema for a RoutingInputEvidence entry. */
@@ -292,5 +292,5 @@ export const zClassificationResult = z.object({
   confidence: z.number().min(0).max(100),
   evidence: z.array(zEvidenceReference),
   usedModelFallback: z.boolean(),
-  policyVersion: z.string(),
+  policyVersion: zVersionId,
 })
