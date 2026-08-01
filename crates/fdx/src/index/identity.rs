@@ -9,7 +9,7 @@
 //! symbol layers refresh against the new tree); dirty changes are represented
 //! independently from HEAD (dirty fingerprint + git-state snapshot).
 
-use crate::index::manifest::{IndexIdentity, INDEX_SCHEMA_VERSION};
+use crate::index::manifest::{identity_hash, IndexIdentity, INDEX_SCHEMA_VERSION};
 use crate::index::paths::validate_segment;
 use std::path::{Path, PathBuf};
 
@@ -44,11 +44,13 @@ pub fn discover_identity(worktree: &Path, _fdx_version: &str) -> IndexIdentity {
     };
     let canonical_repo_root_str = normalize_for_hash(&canonical_repo_root);
 
-    // Short hashes: repository id + worktree id. Only hashes appear in file
-    // names (bounded, no raw paths).
-    let repository_id = short_segment(&["repo", &canonical_repo_root_str]);
-    let worktree_id = short_segment(&["worktree", &worktree_root_str]);
-    let repository_root_hash = short_segment(&["root", &canonical_repo_root_str]);
+    // Full-strength identity segments: the entire SHA-256 digest (256 bits)
+    // so a hash collision or incorrect directory selection cannot silently
+    // load another repository's state (Task 3D §9). Only hashes appear in
+    // file names (bounded, no raw paths).
+    let repository_id = identity_hash(&["repo", &canonical_repo_root_str]);
+    let worktree_id = identity_hash(&["worktree", &worktree_root_str]);
+    let repository_root_hash = identity_hash(&["root", &canonical_repo_root_str]);
 
     IndexIdentity {
         repository_id,
@@ -56,6 +58,21 @@ pub fn discover_identity(worktree: &Path, _fdx_version: &str) -> IndexIdentity {
         repository_root_hash,
         repository_root: canonical_repo_root.to_string_lossy().into_owned(),
         worktree_root: worktree_root.to_string_lossy().into_owned(),
+    }
+}
+
+/// Normalize a stored root path for identity comparison across equivalent
+/// spellings: canonicalize, then lowercase on case-insensitive filesystems.
+/// Used by the legacy-identity migration to verify a stored manifest's
+/// `repository_root` / `worktree_root` ownership before adopting its state.
+pub fn normalize_root_for_compare(path: &str) -> String {
+    let p = PathBuf::from(path);
+    let canonical = canonicalize_or_abs(&p);
+    let s = canonical.to_string_lossy().into_owned();
+    if case_insensitive_fs() {
+        s.to_lowercase()
+    } else {
+        s
     }
 }
 
@@ -145,55 +162,98 @@ pub fn git_detached(cwd: &Path) -> bool {
     git_branch(cwd).is_empty() && !git_head_sha(cwd).is_empty()
 }
 
-/// Dirty-tree fingerprint: a stable hash over `git status --porcelain`
-/// AND the content hashes of files reported as modified/untracked. Two equal
-/// trees produce the same fingerprint; ANY worktree change — including a
-/// content edit inside an already-dirty file — flips it.
+/// Dirty-tree fingerprint: a stable hash over `git status --porcelain=v1 -z`
+/// (NUL-delimited) AND the content hashes of files reported as
+/// modified/untracked. Two equal trees produce the same fingerprint; ANY
+/// worktree change — including a content edit inside an already-dirty file —
+/// flips it.
 ///
 /// The status text alone is insufficient: ` M lib.ts` is identical whether
 /// lib.ts changed once or three times, so the fingerprint must incorporate
 /// the dirty files' content to make the no-change fast path sound.
+///
+/// Uses `-z` NUL-delimited output so special-character paths (spaces, quotes,
+/// tabs, newlines, Unicode) are parsed correctly. Never parse
+/// human-oriented quoted output.
 pub fn dirty_fingerprint(cwd: &Path) -> String {
-    let status = git_out(&["status", "--porcelain=v1", "--no-renames"], cwd).unwrap_or_default();
-    if status.is_empty() {
-        return short_segment(&["dirty", ""]);
+    let output = git_status_z(cwd);
+    if output.is_empty() {
+        return identity_hash(&["dirty", ""]);
     }
     use sha2::Digest;
     let mut hasher = sha2::Sha256::new();
     hasher.update(b"dirty\0");
-    let mut lines: Vec<&str> = status.lines().collect();
-    lines.sort_unstable();
+
+    // NUL-delimited format: each record is "<XY> <path>\0".
+    // Split on NUL, filter empty, sort by path for determinism.
+    let mut records: Vec<&[u8]> = output.split(|b| *b == 0).collect();
+    records.retain(|r| !r.is_empty());
+    // Sort by the record content (first 2 bytes are XY status, third is space).
+    records.sort_unstable();
+
     let max_content_files = 1000usize;
     let mut content_count = 0usize;
-    for line in lines {
-        hasher.update(line.as_bytes());
-        hasher.update(b"\0");
-        if line.len() < 4 {
+
+    for record in &records {
+        if record.len() < 4 {
             continue;
         }
-        let status_part = &line[0..2];
+        hasher.update(record);
+        hasher.update(b"\0");
+
+        // Parse XY status: record[0..2] is the status, record[3..] is the path.
+        let status_part = std::str::from_utf8(&record[0..2]).unwrap_or("");
+        // Handle rename records: "R XY old\0new\0"
+        if status_part.starts_with('R') {
+            // Rename: skip the old name record; the new name is handled.
+            // The format is "R <XY> <oldpath>\0<newpath>\0" — we skip the
+            // old entry here and will hit the new entry in the next record.
+            content_count += 1;
+            continue;
+        }
+        let path_bytes = &record[3..];
+        let path = std::str::from_utf8(path_bytes).unwrap_or("").trim();
+        if path.is_empty() {
+            continue;
+        }
+
         // Include content hash for modified/untracked/added files so a
         // content edit inside an already-dirty file is detected. Deleted
         // files have no content to hash (their removal is in the status).
-        if (status_part.contains('M') || status_part.contains('?') || status_part.contains('A'))
+        if (status_part.contains('M')
+            || status_part.contains('?')
+            || status_part.contains('A')
+            || status_part.starts_with('R'))
             && content_count < max_content_files
         {
-            let path = line[3..].trim().trim_matches('"');
-            if !path.is_empty() {
-                if let Ok(meta) = std::fs::metadata(cwd.join(path)) {
-                    if meta.is_file() {
-                        if let Ok(content) = std::fs::read(cwd.join(path)) {
-                            hasher.update(&content);
-                            hasher.update(b"\0");
-                            content_count += 1;
-                        }
+            if let Ok(meta) = std::fs::metadata(cwd.join(path)) {
+                if meta.is_file() {
+                    if let Ok(content) = std::fs::read(cwd.join(path)) {
+                        hasher.update(&content);
+                        hasher.update(b"\0");
+                        content_count += 1;
                     }
                 }
             }
         }
     }
     let digest = hasher.finalize();
-    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+    digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+}
+
+/// Run `git status --porcelain=v1 -z` and return the raw bytes.
+fn git_status_z(cwd: &Path) -> Vec<u8> {
+    let output = std::process::Command::new("git")
+        .args(["status", "--porcelain=v1", "-z", "--no-renames"])
+        .current_dir(cwd)
+        .output();
+    match output {
+        Ok(out) if out.status.success() => out.stdout,
+        _ => Vec::new(),
+    }
 }
 
 /// Hash of relevant configuration. For Task 3 the "relevant config" is the
@@ -255,6 +315,14 @@ fn short_segment(parts: &[&str]) -> String {
         .collect::<String>();
     debug_assert!(validate_segment(&seg));
     seg
+}
+
+/// Legacy 64-bit identity segment (16 hex chars) — reproduces the exact
+/// hashing used by older builds, so legacy state directories can be located
+/// and migrated. Public because [`crate::index::storage`] uses it during
+/// legacy-identity migration.
+pub fn legacy_segment(parts: &[&str]) -> String {
+    short_segment(parts)
 }
 
 /// The FDX binary version (from Cargo).
@@ -347,7 +415,7 @@ mod tests {
         git(tmp.path(), &["add", "-A"]).unwrap();
         git(tmp.path(), &["commit", "-qm", "second"]).unwrap();
         let fp_clean = dirty_fingerprint(tmp.path());
-        assert_eq!(fp_clean, short_segment(&["dirty", ""]));
+        assert_eq!(fp_clean, identity_hash(&["dirty", ""]));
     }
 
     #[test]

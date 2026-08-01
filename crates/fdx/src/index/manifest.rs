@@ -18,7 +18,16 @@ use std::path::{Path, PathBuf};
 
 /// Schema version of the on-disk index format. Bump only on incompatible
 /// changes; compatible changes add new optional fields.
-pub const INDEX_SCHEMA_VERSION: u32 = 1;
+///
+/// v1 → v2: added `component_counts` (strict row-count validation on load)
+/// and strengthened identity segments from 64-bit to the full SHA-256 digest
+/// (128+ bits). Generations from v1 are structurally compatible and are
+/// migrated by [`crate::index::storage`] (identity migration path).
+pub const INDEX_SCHEMA_VERSION: u32 = 2;
+
+/// Minimum schema version that can be read directly (older schemas are
+/// migrated or rebuilt by the legacy-identity migration path).
+pub const MIN_READABLE_SCHEMA_VERSION: u32 = 1;
 
 /// Maximum length of any single path segment we create in the global state
 /// directory. Keeps every generated path well under common filesystem limits
@@ -27,6 +36,12 @@ pub const MAX_GENERATED_SEGMENT_LEN: usize = 64;
 
 /// Length of generated hash segments (hex) used in state paths.
 pub const HASH_SEGMENT_LEN: usize = 16;
+
+/// Length of identity hash segments (hex). Identity segments use the FULL
+/// SHA-256 digest (32 bytes = 256 bits of entropy) so a hash collision or an
+/// incorrect directory selection cannot silently alias another repository's
+/// state. 128+ bit minimum per Task 3D §9.
+pub const IDENTITY_SEGMENT_LEN: usize = 64;
 
 // ─── Identity ───────────────────────────────────────────────────────────────
 
@@ -62,6 +77,25 @@ pub enum ComponentStatus {
     Quarantined,
 }
 
+/// Expected row counts for each persisted component, validated strictly on
+/// load so a truncated or silently-dropped component can never be accepted as
+/// an empty/default collection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ComponentCounts {
+    /// Number of rows in `files.json`.
+    pub files: usize,
+    /// Number of rows in `symbols.json`.
+    pub symbols: usize,
+    /// Number of rows in `dependencies.json`.
+    pub dependencies: usize,
+    /// Number of rows in `test-mapping.json`.
+    pub test_mapping: usize,
+    /// Always 1 when `git-state.json` is present, else 0.
+    pub git_state: usize,
+    /// Number of rows in `content-cache.json`.
+    pub content_cache: usize,
+}
+
 /// Versioned on-disk index manifest.
 ///
 /// The manifest is written last (after every component) and is the commit
@@ -79,6 +113,14 @@ pub struct FdxIndexManifest {
     pub worktree_id: String,
     /// Hash of the normalized repository root path.
     pub repository_root_hash: String,
+    /// Canonical repository root path (identity verification + diagnostics;
+    /// never used in file names).
+    #[serde(default)]
+    pub repository_root: String,
+    /// Canonical worktree root path (identity verification + diagnostics;
+    /// never used in file names).
+    #[serde(default)]
+    pub worktree_root: String,
     /// Git HEAD SHA at generation time (empty when not a git repo).
     pub head_sha: String,
     /// Fingerprint of the dirty worktree state at generation time.
@@ -95,6 +137,9 @@ pub struct FdxIndexManifest {
     pub updated_at: String,
     /// Per-component status for this generation.
     pub components: ComponentsManifest,
+    /// Expected row counts per component (strict load validation, schema v2+).
+    #[serde(default)]
+    pub component_counts: ComponentCounts,
     /// Content checksums for every persisted component file (hex).
     pub checksums: std::collections::BTreeMap<String, String>,
 }
@@ -272,6 +317,24 @@ pub fn short_hash(parts: &[&str]) -> String {
         .collect()
 }
 
+/// Full SHA-256 hex digest over the given parts (null-separated). Used for
+/// repository/worktree identity segments: at least 128 bits of SHA-256 output
+/// (full 256-bit digest here) so a collision cannot alias another
+/// repository's state.
+pub fn identity_hash(parts: &[&str]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update(b"\0");
+    }
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+}
+
 /// Generate a stable symbol id from qualified name + file path.
 pub fn symbol_id(qualified_name: &str, file: &str) -> String {
     short_hash(&["sym", file, qualified_name])
@@ -295,6 +358,8 @@ pub fn new_manifest(
         repository_id: identity.repository_id.clone(),
         worktree_id: identity.worktree_id.clone(),
         repository_root_hash: identity.repository_root_hash.clone(),
+        repository_root: identity.repository_root.clone(),
+        worktree_root: identity.worktree_root.clone(),
         head_sha: head_sha.to_string(),
         dirty_fingerprint: dirty_fingerprint.to_string(),
         config_hash: config_hash.to_string(),
@@ -303,6 +368,7 @@ pub fn new_manifest(
         created_at: now_iso.to_string(),
         updated_at: now_iso.to_string(),
         components: ComponentsManifest::default(),
+        component_counts: ComponentCounts::default(),
         checksums: std::collections::BTreeMap::new(),
     }
 }

@@ -1,28 +1,72 @@
 //! Crash-safe generation-based storage for the FDX index.
 //!
-//! Write lifecycle (Task 3 §6):
+//! Write lifecycle (Task 3 §6, hardened for Task 3D):
 //!
-//! 1. build a new generation in a sibling temporary directory;
-//! 2. write every component + the manifest;
-//! 3. validate the manifest and component checksums;
-//! 4. fsync the generation directory;
-//! 5. atomically publish the new generation (rename tmp → final);
-//! 6. update the CURRENT pointer last;
-//! 7. retain the previous valid generation until activation succeeds;
-//! 8. clean stale temporary generations.
+//! 1. acquire a repository/worktree-scoped cross-process writer lock
+//!    (`index.lock`, OS file lock released automatically on process death);
+//! 2. build a new generation in a sibling temporary directory;
+//! 3. write every component + the manifest;
+//! 4. validate the manifest and component checksums;
+//! 5. fsync the generation directory;
+//! 6. atomically publish the new generation (rename tmp → final, never over
+//!    an existing valid final on Windows);
+//! 7. update the CURRENT pointer last, with bounded retry so a temporarily
+//!    held file handle cannot leave the pointer missing;
+//! 8. retain the previous valid generation until activation succeeds;
+//! 9. clean stale temporary generations and abandoned pointer files.
 //!
-//! On corruption: quarantine the corrupt component/generation (retaining
-//! diagnostic evidence), rebuild only the affected layer where safe, fall
-//! back to one-shot/TS behaviour while rebuilding, and never return corrupt
-//! index data.
+//! Load lifecycle (Task 3D §4/§5 — strict, fail-closed, self-recovering):
+//!
+//! 1. read CURRENT (missing or malformed is handled, never fatal);
+//! 2. validate the referenced generation: manifest → schema compatibility →
+//!    identity verification → required component presence → checksum
+//!    validation → strict deserialization → semantic validation → counts;
+//! 3. quarantine any generation that fails validation (retaining diagnostic
+//!    evidence, never retried);
+//! 4. scan remaining generations newest to oldest;
+//! 5. select the newest fully valid generation;
+//! 6. atomically repair CURRENT to point at it;
+//! 7. return the recovered snapshot; rebuild only when nothing valid remains.
+//!
+//! Malformed components are NEVER converted into empty/default collections:
+//! a generation that fails any validation step is rejected wholesale.
+//!
+//! Windows-safe publication (§6): CURRENT replacement uses a temp pointer +
+//! atomic rename with bounded retry (file handles can temporarily prevent
+//! replacement); a reader observes either the previous valid generation or
+//! the new complete generation — never a missing, partial, or corrupt
+//! pointer state.
+//!
+//! Cross-process coordination (§3): every writer (CLI vs CLI, CLI vs daemon,
+//! daemon vs daemon, rebuild vs refresh, invalidate vs refresh) serializes on
+//! the worktree-scoped OS file lock. Readers never take the lock: they read
+//! CURRENT + a fully-published generation, both of which are atomic.
+//!
+//! Legacy identity migration (§9): state directories created by older 64-bit
+//! identity segments are detected, ownership is verified against the stored
+//! canonical roots, and the state is adopted (migrated) or preserved as
+//! quarantine evidence. Identity verification at load is the hard guarantee
+//! that a manifest from another repository can never be loaded.
 
-use crate::index::manifest::{FdxIndexManifest, IndexIdentity, INDEX_SCHEMA_VERSION};
-use crate::index::paths::{
-    current_pointer, ensure_state_root, ensure_state_version, generation_dir, generation_tmp_dir,
-    quarantine_dir, worktree_dir,
+use crate::index::identity::normalize_root_for_compare;
+use crate::index::manifest::{
+    ComponentCounts, ContentCacheEntry, DependencyEdge, FdxIndexManifest, FileMeta,
+    GitStateSnapshot, IndexIdentity, SymbolMeta, TestMappingRow, IDENTITY_SEGMENT_LEN,
+    INDEX_SCHEMA_VERSION, MIN_READABLE_SCHEMA_VERSION,
 };
+use crate::index::paths::{
+    current_pointer, ensure_state_root, ensure_state_version, generation_dir, quarantine_dir,
+    worktree_dir,
+};
+use std::collections::HashSet;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+
+/// Lock file name stored in the worktree state directory.
+pub const LOCK_FILE: &str = "index.lock";
+
+/// Maximum time to block waiting for the cross-process lock.
+pub const LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// How many previous valid generations to retain after a successful publish.
 pub const RETAIN_GENERATIONS: usize = 1;
@@ -40,6 +84,31 @@ pub const COMPONENT_FILES: [&str; 6] = [
 /// The manifest file name inside a generation directory.
 pub const MANIFEST_FILE: &str = "manifest.json";
 
+/// Environment variable enabling deterministic fault-injection barriers in
+/// the publication path (test-only; unset in production). When set to a
+/// directory, `publish` signals each phase and blocks until the test writes
+/// `<dir>/go-<phase>` (or 30s elapses). This gives real process-level crash
+/// tests explicit synchronization points instead of timing races.
+pub const BARRIER_ENV: &str = "FDX_TEST_BARRIER";
+
+/// Block at a named publication phase when the barrier environment variable
+/// is set. No-op in production.
+fn barrier(phase: &str) {
+    let Ok(dir) = std::env::var(BARRIER_ENV) else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let _ = std::fs::create_dir_all(&dir);
+    let reached = dir.join(format!("phase-{phase}"));
+    let _ = std::fs::write(&reached, "reached");
+    let go = dir.join(format!("go-{phase}"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !go.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let _ = std::fs::remove_file(&reached);
+}
+
 /// Result of loading a persisted generation.
 #[derive(Debug)]
 pub enum LoadOutcome {
@@ -54,11 +123,132 @@ pub enum LoadOutcome {
         quarantined: Vec<PathBuf>,
         last_valid: Option<FdxIndexManifest>,
     },
-    /// A persisted generation has a newer schema than this binary supports.
+    /// The newest generation has a newer schema than this binary supports;
+    /// it is left in place (evidence for the newer binary), and no valid
+    /// older generation exists.
     FutureSchema {
         generation: u64,
         schema_version: u32,
     },
+}
+
+/// Cross-process writer lock for one worktree state directory.
+///
+/// Backed by an OS file lock (flock on Unix, LockFileEx on Windows via `fs2`)
+/// on `<worktree>/index.lock`:
+/// - visible across processes (CLI vs CLI, CLI vs daemon, daemon vs daemon);
+/// - scoped to the worktree identity (no global lock across repositories);
+/// - bounded acquisition ([`LOCK_TIMEOUT`]);
+/// - the OS releases the lock on process death, so a stale lock can never
+///   block and a live owner's lock is never deleted;
+/// - owner evidence (PID) is recorded for diagnostics.
+#[derive(Debug)]
+pub struct WriterLock {
+    file: Option<std::fs::File>,
+    path: PathBuf,
+}
+
+impl WriterLock {
+    /// Acquire the exclusive writer lock for `worktree`, blocking up to
+    /// [`LOCK_TIMEOUT`]. Returns `WouldBlock` when the lock stays held.
+    pub fn acquire(worktree: &Path) -> std::io::Result<WriterLock> {
+        let path = worktree.join(LOCK_FILE);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        let owner = format!("pid={}\n", std::process::id());
+        let contended = fs2::lock_contended_error();
+        let deadline = std::time::Instant::now() + LOCK_TIMEOUT;
+        loop {
+            use fs2::FileExt;
+            match file.try_lock_exclusive() {
+                Ok(()) => {
+                    // Owner evidence (best effort; the OS holds the real
+                    // lock, so a leftover file can never block anyone).
+                    let _ = std::fs::write(&path, &owner);
+                    return Ok(WriterLock {
+                        file: Some(file),
+                        path,
+                    });
+                }
+                Err(e) if is_contended(&e, &contended) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::WouldBlock,
+                            format!(
+                                "timed out waiting for index writer lock at {} (currently held by {})",
+                                path.display(),
+                                read_owner(&path).unwrap_or_else(|| "unknown owner".to_string())
+                            ),
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(15));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Try to acquire without blocking (tests/diagnostics).
+    #[allow(dead_code)]
+    pub fn try_acquire(worktree: &Path) -> std::io::Result<WriterLock> {
+        let path = worktree.join(LOCK_FILE);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)?;
+        use fs2::FileExt;
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                let _ = std::fs::write(&path, format!("pid={}\n", std::process::id()));
+                Ok(WriterLock {
+                    file: Some(file),
+                    path,
+                })
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// The lock file path (observability/tests).
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+/// Whether an fs2 lock error means "held by someone else" (contended).
+fn is_contended(e: &std::io::Error, contended: &std::io::Error) -> bool {
+    match (e.raw_os_error(), contended.raw_os_error()) {
+        (Some(a), Some(b)) => a == b,
+        _ => e.kind() == std::io::ErrorKind::WouldBlock,
+    }
+}
+
+impl Drop for WriterLock {
+    fn drop(&mut self) {
+        if let Some(f) = &self.file {
+            let _ = fs2::FileExt::unlock(f);
+        }
+        // The lock file remains on disk: it is advisory and re-acquired on
+        // demand. No stale-lock cleanup is required because the OS releases
+        // the underlying lock when the owning process exits.
+    }
+}
+
+/// Read the recorded owner evidence from a lock file (best effort).
+fn read_owner(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
 }
 
 /// The storage layer: knows how to persist and load index generations.
@@ -69,18 +259,36 @@ pub struct GenerationStore {
     state_root: PathBuf,
     /// Worktree directory holding all generations for this identity.
     worktree: PathBuf,
+    /// Expected identity, verified against every manifest on load so a
+    /// generation from another repository (or a wrong directory selection)
+    /// can never be loaded.
+    repository_id: String,
+    worktree_id: String,
+    repository_root_hash: String,
+    /// Canonical roots (path-based ownership checks for legacy migration).
+    repository_root: String,
+    worktree_root: String,
 }
 
 impl GenerationStore {
-    /// Create a store for the given identity, ensuring the state tree exists.
+    /// Create a store for the given identity, ensuring the state tree exists
+    /// and migrating legacy (64-bit identity) state where ownership matches.
     pub fn open(state_root: &Path, identity: &IndexIdentity) -> std::io::Result<Self> {
         let root = ensure_state_root(state_root)?;
         ensure_state_version(&root)?;
         let wt = worktree_dir(&root, &identity.repository_id, &identity.worktree_id);
-        Ok(Self {
-            state_root: root,
+        let store = Self {
+            state_root: root.clone(),
             worktree: wt,
-        })
+            repository_id: identity.repository_id.clone(),
+            worktree_id: identity.worktree_id.clone(),
+            repository_root_hash: identity.repository_root_hash.clone(),
+            repository_root: identity.repository_root.clone(),
+            worktree_root: identity.worktree_root.clone(),
+        };
+        // Legacy 64-bit identity migration (best effort, never mixes state).
+        let _ = store.migrate_legacy_identity(&root);
+        Ok(store)
     }
 
     /// Directory for a specific generation.
@@ -93,13 +301,24 @@ impl GenerationStore {
         &self.worktree
     }
 
-    /// Read the CURRENT pointer: the active generation number, if any.
+    /// Acquire the cross-process writer lock for this worktree.
+    pub fn writer_lock(&self) -> std::io::Result<WriterLock> {
+        WriterLock::acquire(&self.worktree)
+    }
+
+    /// Read the CURRENT pointer, distinguishing:
+    /// - `Ok(Some(n))` — a valid pointer;
+    /// - `Ok(None)` — no pointer file yet;
+    /// - `Err` — the pointer exists but is malformed (recovery path).
     pub fn current_generation(&self) -> std::io::Result<Option<u64>> {
         let ptr = current_pointer(&self.worktree);
         match std::fs::read_to_string(&ptr) {
             Ok(s) => match s.trim().parse::<u64>() {
                 Ok(n) => Ok(Some(n)),
-                Err(_) => Ok(None),
+                Err(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("CURRENT pointer is malformed at {}", ptr.display()),
+                )),
             },
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
@@ -123,13 +342,22 @@ impl GenerationStore {
         gens
     }
 
+    /// Whether any persisted generation exists (used to skip migration when
+    /// current-identity state is already present).
+    fn has_generations(&self) -> bool {
+        !self.persisted_generations().is_empty() || self.worktree.join("CURRENT").exists()
+    }
+
     /// Remove every persisted generation and the CURRENT pointer (used by
     /// `index.invalidate` so a later refresh starts from a clean slate).
+    /// The caller must hold the writer lock (see `IndexService::invalidate`).
     pub fn clear_persisted(&self) -> std::io::Result<()> {
         for gen in self.persisted_generations() {
             let _ = std::fs::remove_dir_all(self.generation_path(gen));
         }
         let ptr = current_pointer(&self.worktree);
+        let tmp_ptr = ptr.with_extension("tmp");
+        let _ = std::fs::remove_file(&tmp_ptr);
         match std::fs::remove_file(&ptr) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -138,45 +366,71 @@ impl GenerationStore {
         Ok(())
     }
 
-    /// Remove stale `.tmp` generation dirs (called on refresh, including the
-    /// no-change path, so interrupted writes never accumulate).
+    /// Remove stale `.tmp` generation dirs and abandoned `CURRENT.tmp`
+    /// pointer files (called on refresh, including the no-change path, so
+    /// interrupted writes never accumulate). Matches any entry containing
+    /// `.tmp` (covers both `gen-N.tmp` and unique `gen-N.tmp-<pid>-<n>`).
     pub fn cleanup_stale_tmp(&self) {
         if let Ok(entries) = std::fs::read_dir(&self.worktree) {
             for entry in entries.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name.ends_with(".tmp") {
+                if name.contains(".tmp") {
                     let _ = std::fs::remove_dir_all(entry.path());
                 }
             }
         }
+        let _ = std::fs::remove_file(current_pointer(&self.worktree).with_extension("tmp"));
     }
 
     /// Load and validate the current generation (or the newest valid one).
     ///
-    /// Returns the outcome; corrupt generations are quarantined. This is a
-    /// read-only activation: no components are loaded here, only the manifest
-    /// is validated (component loading happens in the index service).
+    /// Strict, fail-closed, and self-recovering:
+    /// 1. read CURRENT (missing or malformed is handled);
+    /// 2. validate the referenced generation through the full chain
+    ///    (manifest → schema → identity → presence → checksums → strict
+    ///    deserialization → semantic validation → counts);
+    /// 3. quarantine invalid generations (evidence retained, never retried);
+    /// 4. scan remaining generations newest to oldest;
+    /// 5. select the newest fully valid generation;
+    /// 6. atomically repair CURRENT to point at it.
     pub fn load(&self) -> LoadOutcome {
-        let Some(current) = self.current_generation().unwrap_or(None) else {
-            return LoadOutcome::Empty;
+        let pointer = match self.current_generation() {
+            Ok(Some(n)) => Some(n),
+            Ok(None) => None,
+            Err(_) => {
+                // Malformed CURRENT: quarantine the evidence and scan.
+                let ptr = current_pointer(&self.worktree);
+                let dst = ptr.with_extension("corrupt");
+                let _ = std::fs::rename(&ptr, &dst);
+                None
+            }
         };
 
-        let mut last_valid: Option<FdxIndexManifest> = None;
-        // Walk from newest to oldest; find the newest valid generation.
         let mut gens = self.persisted_generations();
         gens.reverse();
+        let mut last_valid: Option<FdxIndexManifest> = None;
         let mut quarantined = Vec::new();
+        let mut future: Option<(u64, u32)> = None;
 
         for gen in gens {
             let path = self.generation_path(gen);
-            match read_valid_manifest(&path, gen) {
+            match read_valid_manifest(&path, gen, self) {
                 Ok(manifest) => {
                     last_valid = Some(manifest);
                     break;
                 }
                 Err(e) => {
-                    // Quarantine the corrupt generation (keep evidence).
-                    let reason = e.to_string();
+                    let msg = e.to_string();
+                    if msg.contains("unsupported schema") {
+                        // Leave future-schema generations in place (the newer
+                        // binary that wrote them must be able to read them).
+                        let sv = schema_from_err(&msg).unwrap_or(u32::MAX);
+                        if future.is_none() {
+                            future = Some((gen, sv));
+                        }
+                        continue;
+                    }
+                    let reason = msg;
                     let dst = self.quarantine(&path, gen, &reason);
                     quarantined.push(dst);
                 }
@@ -185,16 +439,35 @@ impl GenerationStore {
 
         match last_valid {
             Some(manifest) => {
-                // If the quarantined generation was the CURRENT pointer,
-                // re-point to the newly activated generation.
-                if quarantined_was_current(&quarantined, current) {
-                    let _ = self.write_current_pointer(manifest.generation);
+                // Repair CURRENT: it must point at the newest valid
+                // generation (handles malformed/missing/stale pointers and
+                // interrupted publication where a newer valid generation
+                // exists but CURRENT was never updated).
+                let need_repair = match pointer {
+                    Some(p) => p != manifest.generation,
+                    None => true,
+                };
+                if need_repair {
+                    let _ = self.set_current(manifest.generation);
                 }
                 LoadOutcome::Loaded(manifest)
             }
             None => {
-                // Nothing valid. If we quarantined something, report it.
-                if quarantined.is_empty() {
+                // Nothing valid remains. If CURRENT pointed at a generation
+                // that was quarantined or is missing, clear the pointer so a
+                // later publish can republish gen 1 (a stale pointer would
+                // otherwise look like a generation conflict).
+                if let Some(_p) = pointer {
+                    let _ = std::fs::remove_file(current_pointer(&self.worktree));
+                    let _ =
+                        std::fs::remove_file(current_pointer(&self.worktree).with_extension("tmp"));
+                }
+                if let Some((g, sv)) = future {
+                    LoadOutcome::FutureSchema {
+                        generation: g,
+                        schema_version: sv,
+                    }
+                } else if quarantined.is_empty() {
                     LoadOutcome::Empty
                 } else {
                     LoadOutcome::Corrupt {
@@ -208,19 +481,28 @@ impl GenerationStore {
 
     /// Atomically publish a new generation.
     ///
-    /// `build` writes the generation into the temporary sibling directory and
-    /// returns the manifest. This function then:
-    /// 1. validates the manifest's schema;
-    /// 2. verifies every listed component checksum;
+    /// `build` writes the generation into a UNIQUE per-process temporary
+    /// sibling directory (so two racing processes can build the same
+    /// generation number without clobbering each other) and returns the
+    /// manifest. This function then:
+    /// 1. validates the manifest's schema and identity;
+    /// 2. verifies every listed component checksum + required presence;
     /// 3. fsyncs the tmp dir;
-    /// 4. renames tmp → final;
-    /// 5. atomically updates CURRENT;
-    /// 6. retains the previous valid generation;
-    /// 7. cleans stale `.tmp` siblings.
+    /// 4. acquires the cross-process writer lock;
+    /// 5. detects a generation conflict (another writer already published
+    ///    this or a newer generation — reject, never clobber);
+    /// 6. publishes the final dir (reusing a validated existing final on
+    ///    Windows instead of renaming over it);
+    /// 7. atomically updates CURRENT with bounded retry;
+    /// 8. retains the previous valid generation and cleans stale tmp dirs.
+    ///
+    /// The lock is held only for the critical publication section (conflict
+    /// check → rename → CURRENT), never for the build, so a long build does
+    /// not block other writers for longer than necessary.
     pub fn publish<F>(
         &self,
         generation: u64,
-        _identity: &IndexIdentity,
+        identity: &IndexIdentity,
         _fdx_version: &str,
         _now_iso: &str,
         build: F,
@@ -228,17 +510,19 @@ impl GenerationStore {
     where
         F: FnOnce(&Path) -> std::io::Result<FdxIndexManifest>,
     {
-        let tmp = generation_tmp_dir(&self.worktree, generation);
+        // Build into a unique tmp dir (no lock required — builders of the
+        // same generation never touch each other's tmp dirs).
+        let tmp = self.unique_tmp_dir(generation);
         if tmp.exists() {
             let _ = std::fs::remove_dir_all(&tmp);
         }
         std::fs::create_dir_all(&tmp)?;
+        barrier("build");
 
-        // 1. Build components in the tmp dir; `publish` writes the manifest
-        //    itself so callers cannot forget it.
+        // 1. Build components in the tmp dir.
         let manifest = build(&tmp)?;
 
-        // 2. Validate schema: reject unsupported future schemas.
+        // 2. Validate schema + identity before anything is persisted.
         if manifest.schema_version > INDEX_SCHEMA_VERSION {
             let _ = std::fs::remove_dir_all(&tmp);
             return Err(std::io::Error::new(
@@ -249,9 +533,14 @@ impl GenerationStore {
                 ),
             ));
         }
+        verify_manifest_identity(identity, &manifest).inspect_err(|_| {
+            let _ = std::fs::remove_dir_all(&tmp);
+        })?;
 
         // 3. Write the manifest file last (the commit point of the
-        //    generation), then verify all component checksums.
+        //    generation), then verify all component checksums + presence +
+        //    strict semantics.
+        barrier("manifest");
         {
             let bytes = serde_json::to_vec_pretty(&manifest).map_err(std::io::Error::other)?;
             let mut f = std::fs::File::create(tmp.join(MANIFEST_FILE))?;
@@ -259,28 +548,75 @@ impl GenerationStore {
             f.sync_all()?;
         }
         verify_checksums(&tmp, &manifest)?;
+        validate_components(&tmp, &manifest)?;
 
         // 4. fsync the tmp dir contents.
         sync_dir(&tmp)?;
 
-        // 5. Atomically rename tmp → final.
-        let final_dir = generation_dir(&self.worktree, generation);
-        if final_dir.exists() {
-            let _ = std::fs::remove_dir_all(&final_dir);
+        // 5. Critical publication section — serialize with all other
+        //    writers (CLI vs CLI, CLI vs daemon, daemon vs daemon).
+        let _lock = WriterLock::acquire(&self.worktree)?;
+
+        // Generation conflict detection under the lock: a concurrent writer
+        // may have already published this or a newer generation.
+        match self.current_generation() {
+            Ok(Some(current)) if current >= generation => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("generation conflict: {generation} already superseded by {current}"),
+                ));
+            }
+            Ok(_) => {}
+            Err(_) => {
+                // Malformed pointer: load() recovers it; we can proceed.
+            }
         }
-        std::fs::rename(&tmp, &final_dir)?;
+
+        // 6. Publish the final dir. Never rename over an existing directory
+        //    on Windows: if a final for this generation already exists, it is
+        //    either a validated complete generation (reuse) or a corrupt one
+        //    (replace after removal).
+        let final_dir = generation_dir(&self.worktree, generation);
+        if !final_dir.exists() {
+            std::fs::rename(&tmp, &final_dir)?;
+        } else if read_valid_manifest(&final_dir, generation, self).is_ok() {
+            // A previous interrupted attempt reached the rename; the
+            // generation is complete. Drop the tmp and reuse.
+            let _ = std::fs::remove_dir_all(&tmp);
+        } else {
+            // Corrupt leftover final: remove and rename.
+            let _ = std::fs::remove_dir_all(&final_dir);
+            std::fs::rename(&tmp, &final_dir)?;
+        }
         sync_dir(&self.worktree)?;
 
-        // 6. Atomically update CURRENT.
-        self.write_current_pointer(generation)?;
+        // 7. Atomically update CURRENT (bounded retry for Windows file
+        //    handles that temporarily prevent replacement).
+        barrier("publish");
+        self.set_current(generation)?;
+        barrier("current");
 
-        // 7. Retain previous valid generation, clean stale tmp dirs.
+        // 8. Retain previous valid generation, clean stale tmp dirs.
         self.retain_previous(&final_dir, generation);
 
         Ok(manifest)
     }
 
-    fn write_current_pointer(&self, generation: u64) -> std::io::Result<()> {
+    /// A unique per-process temporary generation directory name, so racing
+    /// writers building the same generation never clobber each other.
+    fn unique_tmp_dir(&self, generation: u64) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        self.worktree
+            .join(format!("gen-{generation}.tmp-{}-{n}", std::process::id()))
+    }
+
+    /// Atomically set the CURRENT pointer with bounded retry. Uses a temp
+    /// pointer + atomic rename so a reader always sees either the previous
+    /// valid pointer or the new one — never a missing/partial pointer.
+    fn set_current(&self, generation: u64) -> std::io::Result<()> {
         let ptr = current_pointer(&self.worktree);
         let tmp_ptr = ptr.with_extension("tmp");
         {
@@ -288,23 +624,33 @@ impl GenerationStore {
             f.write_all(generation.to_string().as_bytes())?;
             f.sync_all()?;
         }
-        std::fs::rename(&tmp_ptr, &ptr)?;
-        sync_dir(&self.worktree)
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match std::fs::rename(&tmp_ptr, &ptr) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&tmp_ptr);
+                    return sync_dir(&self.worktree);
+                }
+                Err(e) => {
+                    // On Windows a reader may briefly hold the CURRENT file
+                    // open (sharing violation). Retry until the deadline.
+                    if std::time::Instant::now() < deadline {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    let _ = std::fs::remove_file(&tmp_ptr);
+                    return Err(e);
+                }
+            }
+        }
     }
 
     /// Remove stale `.tmp` generations and keep at most `RETAIN_GENERATIONS`
     /// old generations (besides the just-published one).
     fn retain_previous(&self, published: &Path, generation: u64) {
         let _ = published;
-        // Clean stale tmp dirs.
-        if let Ok(entries) = std::fs::read_dir(&self.worktree) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.ends_with(".tmp") {
-                    let _ = std::fs::remove_dir_all(entry.path());
-                }
-            }
-        }
+        // Clean stale tmp dirs + abandoned pointer files.
+        self.cleanup_stale_tmp();
         // Keep newest RETAIN_GENERATIONS + the current one.
         let mut gens = self.persisted_generations();
         gens.retain(|g| *g != generation);
@@ -332,19 +678,230 @@ impl GenerationStore {
         );
         dst
     }
+
+    /// Detect and migrate legacy (64-bit identity) state directories that
+    /// belong to this repository/worktree.
+    ///
+    /// The legacy directory names ARE the old 16-hex hashes of the canonical
+    /// roots, so ownership is verified by recomputing the legacy names for
+    /// this repository + worktree (plus a manifest self-consistency check).
+    /// On a match the legacy worktree directory is moved under the current
+    /// identity path and its generation manifests are rewritten to the
+    /// current identity (schema 2 + full-strength segments), preserving the
+    /// index. Any failure leaves the legacy directory in place as quarantine
+    /// evidence and falls back to a fresh build — state from different
+    /// repositories is never mixed (post-migration loads are protected by
+    /// full-strength identity verification).
+    fn migrate_legacy_identity(&self, root: &Path) -> std::io::Result<()> {
+        // Only migrate when no current-identity state exists yet.
+        if self.has_generations() {
+            return Ok(());
+        }
+        // Recompute the legacy (64-bit, 16-hex) dir names for THIS repo and
+        // worktree using the exact old hashing algorithm.
+        let repo_norm = normalize_root_for_compare(&self.repository_root);
+        let wt_norm = normalize_root_for_compare(&self.worktree_root);
+        let legacy_repo = crate::index::identity::legacy_segment(&["repo", &repo_norm]);
+        let legacy_wt = crate::index::identity::legacy_segment(&["worktree", &wt_norm]);
+        let legacy_wt_dir = root.join(&legacy_repo).join(&legacy_wt);
+        if !legacy_wt_dir.is_dir() {
+            return Ok(());
+        }
+
+        // Self-consistency: the legacy manifests must agree they live in this
+        // (legacy) repository + worktree. A 64-bit collision would be caught
+        // here because the manifest carries the same legacy ids.
+        let mut manifests_ok = false;
+        for gen in read_generation_numbers(&legacy_wt_dir) {
+            let m_path = legacy_wt_dir.join(format!("gen-{gen}")).join(MANIFEST_FILE);
+            if let Ok(text) = std::fs::read_to_string(&m_path) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if v["repository_id"].as_str() == Some(&legacy_repo)
+                        && v["worktree_id"].as_str() == Some(&legacy_wt)
+                    {
+                        manifests_ok = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if !manifests_ok {
+            // No ownership evidence: preserve as-is (never adopt blindly).
+            return Ok(());
+        }
+
+        // Adopt: move the legacy dir under the current identity path.
+        if self.worktree.exists() {
+            return Ok(()); // a concurrent process created it
+        }
+        if let Some(parent) = self.worktree.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::rename(&legacy_wt_dir, &self.worktree).is_err() {
+            // Cross-device or locked: copy, then remove best-effort.
+            if let Err(e) = copy_dir_all(&legacy_wt_dir, &self.worktree) {
+                let _ = std::fs::remove_dir_all(&self.worktree);
+                let _ = std::fs::create_dir_all(quarantine_dir(&self.worktree));
+                let _ = std::fs::write(
+                    quarantine_dir(&self.worktree).join("legacy-migrate-copy-failed"),
+                    format!("copy failed: {e}\n"),
+                );
+                return Err(e);
+            }
+            let _ = std::fs::remove_dir_all(&legacy_wt_dir);
+        }
+
+        // Rewrite each generation's manifest to the current identity and
+        // validate. Any failure → quarantine evidence and rebuild.
+        let mut ok = true;
+        for gen in self.persisted_generations() {
+            let dir = self.generation_path(gen);
+            let manifest_path = dir.join(MANIFEST_FILE);
+            let text = match std::fs::read_to_string(&manifest_path) {
+                Ok(t) => t,
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            };
+            let mut m: FdxIndexManifest = match serde_json::from_str(&text) {
+                Ok(m) => m,
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            };
+            m.repository_id = self.repository_id.clone();
+            m.worktree_id = self.worktree_id.clone();
+            m.repository_root_hash = self.repository_root_hash.clone();
+            m.repository_root = self.repository_root.clone();
+            m.worktree_root = self.worktree_root.clone();
+            m.schema_version = INDEX_SCHEMA_VERSION;
+            m.component_counts = match compute_component_counts(&dir) {
+                Ok(c) => c,
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            };
+            // The git-state component embeds the worktree identity; rewrite
+            // it to the current identity and refresh its checksum so the
+            // migrated generation stays consistent.
+            match rewrite_git_state_identity(&dir, &mut m, &self.worktree_id, gen) {
+                Ok(()) => {}
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            }
+            let bytes = match serde_json::to_vec_pretty(&m) {
+                Ok(b) => b,
+                Err(_) => {
+                    ok = false;
+                    break;
+                }
+            };
+            if std::fs::write(&manifest_path, bytes).is_err() || verify_checksums(&dir, &m).is_err()
+            {
+                ok = false;
+                break;
+            }
+        }
+
+        if !ok {
+            // Migration could not be completed safely: preserve evidence.
+            let evidence = quarantine_dir(&self.worktree).join("legacy-migrate-incomplete");
+            let _ = std::fs::create_dir_all(&evidence);
+            let _ = std::fs::remove_dir_all(&self.worktree);
+            let _ = std::fs::rename(&legacy_wt_dir, &evidence);
+            return Ok(());
+        }
+
+        // Finish the pointer: prefer the newest valid generation.
+        let mut gens = self.persisted_generations();
+        gens.reverse();
+        for gen in gens {
+            if read_valid_manifest(&self.generation_path(gen), gen, self).is_ok() {
+                let _ = self.set_current(gen);
+                break;
+            }
+        }
+        Ok(())
+    }
 }
 
-/// Whether the set of quarantined paths includes the generation that CURRENT
-/// pointed at (meaning we need to repoint).
-fn quarantined_was_current(quarantined: &[PathBuf], current: u64) -> bool {
-    quarantined
-        .iter()
-        .any(|p| p.to_string_lossy().contains(&format!("gen-{current}")))
+/// List generation numbers in a directory (for the legacy migration scan).
+fn read_generation_numbers(dir: &Path) -> Vec<u64> {
+    let mut gens = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(num) = name.strip_prefix("gen-") {
+                if let Ok(n) = num.parse::<u64>() {
+                    gens.push(n);
+                }
+            }
+        }
+    }
+    gens.sort_unstable();
+    gens
 }
 
-/// Read and validate a generation's manifest. Returns the manifest when the
-/// generation is structurally valid (schema + checksums).
-fn read_valid_manifest(path: &Path, generation: u64) -> std::io::Result<FdxIndexManifest> {
+/// Verify a manifest's identity matches the expected identity. Path-based
+/// ownership (canonical roots) plus full-strength hash segments: a manifest
+/// from another repository can never pass.
+fn verify_manifest_identity(
+    expected: &IndexIdentity,
+    manifest: &FdxIndexManifest,
+) -> std::io::Result<()> {
+    if manifest.repository_id != expected.repository_id {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "repository identity mismatch: manifest {} != expected {}",
+                manifest.repository_id, expected.repository_id
+            ),
+        ));
+    }
+    if manifest.worktree_id != expected.worktree_id {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "worktree identity mismatch",
+        ));
+    }
+    if manifest.repository_root_hash != expected.repository_root_hash {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "repository root hash mismatch",
+        ));
+    }
+    if !normalize_root_for_compare(&manifest.repository_root)
+        .eq(&normalize_root_for_compare(&expected.repository_root))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "repository root path mismatch",
+        ));
+    }
+    if !normalize_root_for_compare(&manifest.worktree_root)
+        .eq(&normalize_root_for_compare(&expected.worktree_root))
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "worktree root path mismatch",
+        ));
+    }
+    Ok(())
+}
+
+/// Read and validate a generation's manifest through the full validation
+/// chain: parse → generation match → schema compatibility → identity →
+/// presence → checksums → strict deserialization → semantics → counts.
+fn read_valid_manifest(
+    path: &Path,
+    generation: u64,
+    store: &GenerationStore,
+) -> std::io::Result<FdxIndexManifest> {
     let manifest_path = path.join(MANIFEST_FILE);
     let text = std::fs::read_to_string(&manifest_path).map_err(|e| {
         std::io::Error::new(
@@ -376,12 +933,53 @@ fn read_valid_manifest(path: &Path, generation: u64) -> std::io::Result<FdxIndex
             ),
         ));
     }
+    if manifest.schema_version < MIN_READABLE_SCHEMA_VERSION {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "generation {generation}: unsupported old schema {}",
+                manifest.schema_version
+            ),
+        ));
+    }
+    // Identity verification: never load another repository's state.
+    let expected = IndexIdentity {
+        repository_id: store.repository_id.clone(),
+        worktree_id: store.worktree_id.clone(),
+        repository_root_hash: store.repository_root_hash.clone(),
+        repository_root: store.repository_root.clone(),
+        worktree_root: store.worktree_root.clone(),
+    };
+    verify_manifest_identity(&expected, &manifest)?;
+    // Required presence + checksums.
     verify_checksums(path, &manifest)?;
+    // Strict deserialization + semantic validation + counts.
+    validate_components(path, &manifest)?;
     Ok(manifest)
 }
 
-/// Verify every component checksum listed in the manifest.
+/// Extract the schema version from an "unsupported schema N" error message.
+fn schema_from_err(msg: &str) -> Option<u32> {
+    msg.rsplit(' ').next()?.trim().parse().ok()
+}
+
+/// Verify every component checksum listed in the manifest AND that every
+/// required component file exists (a component omitted from the checksum map
+/// is still required).
 fn verify_checksums(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Result<()> {
+    // Required presence first: every component must exist, even when the
+    // manifest (deliberately or not) omits its checksum.
+    for name in COMPONENT_FILES {
+        if !dir.join(name).is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "generation {}: missing required component {name}",
+                    manifest.generation
+                ),
+            ));
+        }
+    }
     for (name, expected) in &manifest.checksums {
         let file = dir.join(name);
         let text = std::fs::read(&file).map_err(|e| {
@@ -401,7 +999,194 @@ fn verify_checksums(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Result<
     Ok(())
 }
 
-/// Compute the SHA-256 hex of bytes (used for component checksums).
+/// Strictly deserialize every component and validate semantics. Any failure
+/// rejects the ENTIRE generation — malformed components are never converted
+/// into empty/default collections.
+fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Result<()> {
+    let gen = manifest.generation;
+    let files: Vec<FileMeta> = load_typed(dir, "files.json", gen)?;
+    let symbols: Vec<SymbolMeta> = load_typed(dir, "symbols.json", gen)?;
+    let deps: Vec<DependencyEdge> = load_typed(dir, "dependencies.json", gen)?;
+    let tests: Vec<TestMappingRow> = load_typed(dir, "test-mapping.json", gen)?;
+    let git: GitStateSnapshot = load_typed(dir, "git-state.json", gen)?;
+    let cache: Vec<ContentCacheEntry> = load_typed(dir, "content-cache.json", gen)?;
+
+    // Indexed file set for reference validation.
+    let mut known: HashSet<&str> = HashSet::new();
+    let mut seen_paths: HashSet<&str> = HashSet::new();
+    for f in &files {
+        if f.path.is_empty()
+            || f.path.starts_with('/')
+            || f.path.starts_with("..")
+            || f.path.contains('\\')
+            || f.path.contains("//")
+        {
+            return Err(invalid(gen, format!("invalid file path {:?}", f.path)));
+        }
+        if !seen_paths.insert(f.path.as_str()) {
+            return Err(invalid(gen, format!("duplicate file path {:?}", f.path)));
+        }
+        known.insert(f.path.as_str());
+    }
+
+    // Symbols: ids unique, names non-empty, files known, line range sane.
+    let mut sym_ids: HashSet<&str> = HashSet::new();
+    for s in &symbols {
+        if s.id.is_empty() || s.name.is_empty() || s.file.is_empty() {
+            return Err(invalid(gen, format!("malformed symbol {:?}", s.id)));
+        }
+        if !sym_ids.insert(s.id.as_str()) {
+            return Err(invalid(gen, format!("duplicate symbol id {:?}", s.id)));
+        }
+        if !known.contains(s.file.as_str()) {
+            return Err(invalid(
+                gen,
+                format!("symbol {:?} references unknown file {:?}", s.id, s.file),
+            ));
+        }
+        if s.line_end < s.line_start {
+            return Err(invalid(
+                gen,
+                format!("symbol {:?} has inverted line range", s.id),
+            ));
+        }
+    }
+
+    // Dependencies: from_file known, to_file known unless unresolved.
+    for e in &deps {
+        if e.from_file.is_empty() || !known.contains(e.from_file.as_str()) {
+            return Err(invalid(
+                gen,
+                format!("dependency edge from unknown file {:?}", e.from_file),
+            ));
+        }
+        if !e.unresolved && e.to_file.is_empty() {
+            return Err(invalid(
+                gen,
+                format!("dependency edge from {:?} has empty target", e.from_file),
+            ));
+        }
+        if !e.unresolved && !known.contains(e.to_file.as_str()) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "dependency edge from {:?} references unknown file {:?}",
+                    e.from_file, e.to_file
+                ),
+            ));
+        }
+    }
+
+    // Test mapping: non-empty source + test; confidence in range.
+    for t in &tests {
+        if t.source_file.is_empty() || t.test_file.is_empty() {
+            return Err(invalid(
+                gen,
+                "test mapping with empty source/test path".to_string(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&t.confidence) {
+            return Err(invalid(
+                gen,
+                format!("test mapping confidence out of range: {}", t.confidence),
+            ));
+        }
+    }
+
+    // Git state: HEAD SHA length, worktree + generation consistency.
+    if !git.head_sha.is_empty() && git.head_sha.len() != 40 {
+        return Err(invalid(gen, format!("invalid HEAD SHA {:?}", git.head_sha)));
+    }
+    if !git.worktree_id.is_empty() && git.worktree_id != manifest.worktree_id {
+        return Err(invalid(gen, "git-state worktree id mismatch".to_string()));
+    }
+    if git.generation != 0 && git.generation != gen {
+        return Err(invalid(gen, "git-state generation mismatch".to_string()));
+    }
+
+    // Content cache: keys/paths non-empty, size consistent with content.
+    for c in &cache {
+        if c.key.is_empty() || c.path.is_empty() {
+            return Err(invalid(
+                gen,
+                "content cache entry with empty key/path".to_string(),
+            ));
+        }
+        if c.size != c.content.len() {
+            return Err(invalid(
+                gen,
+                format!("content cache size mismatch for {:?}", c.path),
+            ));
+        }
+    }
+
+    // Manifest component counts (schema v2+): reject silently-dropped rows.
+    if manifest.schema_version >= 2 {
+        let counts = compute_counts(manifest, &files, &symbols, &deps, &tests, &git, &cache);
+        if counts != manifest.component_counts {
+            return Err(invalid(
+                gen,
+                format!(
+                    "component count mismatch: manifest {:?}, actual {:?}",
+                    manifest.component_counts, counts
+                ),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// Compute the expected component counts for a fully-parsed generation.
+#[allow(clippy::too_many_arguments)]
+fn compute_counts(
+    manifest: &FdxIndexManifest,
+    files: &[FileMeta],
+    symbols: &[SymbolMeta],
+    deps: &[DependencyEdge],
+    tests: &[TestMappingRow],
+    _git: &GitStateSnapshot,
+    cache: &[ContentCacheEntry],
+) -> ComponentCounts {
+    let _ = manifest;
+    ComponentCounts {
+        files: files.len(),
+        symbols: symbols.len(),
+        dependencies: deps.len(),
+        test_mapping: tests.len(),
+        git_state: 1,
+        content_cache: cache.len(),
+    }
+}
+
+/// Parse a component file strictly into typed rows.
+fn load_typed<T: serde::de::DeserializeOwned>(
+    dir: &Path,
+    name: &str,
+    generation: u64,
+) -> std::io::Result<T> {
+    let text = std::fs::read_to_string(dir.join(name)).map_err(|e| {
+        std::io::Error::new(
+            e.kind(),
+            format!("generation {generation}: component {name} unreadable: {e}"),
+        )
+    })?;
+    serde_json::from_str(&text).map_err(|e| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("generation {generation}: component {name} parse error: {e}"),
+        )
+    })
+}
+
+fn invalid(generation: u64, msg: String) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!("generation {generation}: {msg}"),
+    )
+}
+
+/// Compute SHA-256 hex of bytes (used for component checksums).
 pub fn sha256_hex(data: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(data);
@@ -440,6 +1225,26 @@ pub fn write_component_serde<T: serde::Serialize>(
 ) -> std::io::Result<()> {
     let json = serde_json::to_value(value).map_err(std::io::Error::other)?;
     write_component(dir, manifest, name, &json)
+}
+
+/// Update the manifest's component counts from the in-memory components
+/// (called by the index service after building a generation).
+pub fn update_component_counts(
+    manifest: &mut FdxIndexManifest,
+    files: usize,
+    symbols: usize,
+    dependencies: usize,
+    test_mapping: usize,
+    content_cache: usize,
+) {
+    manifest.component_counts = ComponentCounts {
+        files,
+        symbols,
+        dependencies,
+        test_mapping,
+        git_state: 1,
+        content_cache,
+    };
 }
 
 /// fsync a directory (best effort on platforms where it is unsupported).
@@ -489,35 +1294,119 @@ pub fn ready_components(manifest: &mut FdxIndexManifest, ready: &[&str]) {
     }
 }
 
+/// Whether a directory name looks like a legacy (64-bit, 16 hex chars)
+/// identity segment.
+#[allow(dead_code)]
+fn is_legacy_segment(name: &str) -> bool {
+    name.len() == 16
+        && name.chars().all(|c| c.is_ascii_hexdigit())
+        && name.len() != IDENTITY_SEGMENT_LEN
+}
+
+/// Compute component counts by re-parsing a generation directory (used by
+/// the legacy migration to rewrite manifests).
+fn compute_component_counts(dir: &Path) -> std::io::Result<ComponentCounts> {
+    let files: Vec<FileMeta> = load_typed(dir, "files.json", 0)?;
+    let symbols: Vec<SymbolMeta> = load_typed(dir, "symbols.json", 0)?;
+    let deps: Vec<DependencyEdge> = load_typed(dir, "dependencies.json", 0)?;
+    let tests: Vec<TestMappingRow> = load_typed(dir, "test-mapping.json", 0)?;
+    let _git: GitStateSnapshot = load_typed(dir, "git-state.json", 0)?;
+    let cache: Vec<ContentCacheEntry> = load_typed(dir, "content-cache.json", 0)?;
+    Ok(ComponentCounts {
+        files: files.len(),
+        symbols: symbols.len(),
+        dependencies: deps.len(),
+        test_mapping: tests.len(),
+        git_state: 1,
+        content_cache: cache.len(),
+    })
+}
+
+/// Rewrite the worktree identity inside a generation's `git-state.json`
+/// component (legacy migration) and refresh its checksum in the manifest.
+fn rewrite_git_state_identity(
+    dir: &Path,
+    manifest: &mut FdxIndexManifest,
+    worktree_id: &str,
+    generation: u64,
+) -> std::io::Result<()> {
+    let mut git: GitStateSnapshot = load_typed(dir, "git-state.json", generation)?;
+    git.worktree_id = worktree_id.to_string();
+    git.generation = generation;
+    let bytes = serde_json::to_vec_pretty(&git).map_err(std::io::Error::other)?;
+    {
+        let mut f = std::fs::File::create(dir.join("git-state.json"))?;
+        f.write_all(&bytes)?;
+        f.sync_all()?;
+    }
+    manifest
+        .checksums
+        .insert("git-state.json".to_string(), sha256_hex(&bytes));
+    Ok(())
+}
+
+/// Recursively copy a directory (fallback when rename fails, e.g. across
+/// devices on the migration path).
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let target = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else if ty.is_symlink() {
+            let link = std::fs::read_link(entry.path())?;
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&link, &target)?;
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_file(&link, &target)?;
+            #[cfg(not(any(unix, windows)))]
+            {
+                let _ = &link;
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    "symlink copy unsupported",
+                ));
+            }
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::index::manifest::{new_manifest, IndexIdentity};
 
     fn identity(name: &str) -> IndexIdentity {
+        let repo_root = format!("/tmp/repo-{name}");
+        let wt_root = format!("/tmp/wt-{name}");
         IndexIdentity {
-            repository_id: format!("repo-{name}"),
-            worktree_id: format!("wt-{name}"),
-            repository_root_hash: format!("root-{name}"),
-            repository_root: format!("/tmp/repo-{name}"),
-            worktree_root: format!("/tmp/wt-{name}"),
+            repository_id: crate::index::manifest::identity_hash(&["repo", &repo_root]),
+            worktree_id: crate::index::manifest::identity_hash(&["worktree", &wt_root]),
+            repository_root_hash: crate::index::manifest::identity_hash(&["root", &repo_root]),
+            repository_root: repo_root,
+            worktree_root: wt_root,
         }
     }
 
-    #[test]
-    fn publish_and_reload_round_trip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ident = identity("a");
-        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
-
-        let manifest = store
-            .publish(1, &ident, "0.1.0", "2026-01-01T00:00:00Z", |dir| {
+    fn build_manifest(
+        store: &GenerationStore,
+        ident: &IndexIdentity,
+        generation: u64,
+        head: &str,
+    ) -> FdxIndexManifest {
+        store
+            .publish(generation, ident, "0.1.0", "2026-01-01T00:00:00Z", |dir| {
                 let mut m = new_manifest(
-                    &ident,
+                    ident,
                     "0.1.0",
-                    1,
+                    generation,
                     "2026-01-01T00:00:00Z",
-                    "abc",
+                    head,
                     "dirty",
                     "cfg",
                     "ign",
@@ -526,13 +1415,57 @@ mod tests {
                     dir,
                     &mut m,
                     "files.json",
-                    &serde_json::json!([{"path": "a.txt"}]),
+                    &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}]),
+                );
+                let _ = write_component_serde(dir, &mut m, "symbols.json", &serde_json::json!([]));
+                let _ = write_component_serde(
+                    dir,
+                    &mut m,
+                    "dependencies.json",
+                    &serde_json::json!([]),
+                );
+                let _ = write_component_serde(
+                    dir,
+                    &mut m,
+                    "test-mapping.json",
+                    &serde_json::json!([]),
+                );
+                let _ = write_component_serde(
+                    dir,
+                    &mut m,
+                    "git-state.json",
+                    &serde_json::json!({"head_sha": head, "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": ident.worktree_id, "generation": generation}),
+                );
+                let _ = write_component_serde(
+                    dir,
+                    &mut m,
+                    "content-cache.json",
+                    &serde_json::json!([]),
+                );
+                update_component_counts(&mut m, 1, 0, 0, 0, 0);
+                ready_components(
+                    &mut m,
+                    &[
+                        "files",
+                        "symbols",
+                        "dependencies",
+                        "test_mapping",
+                        "git_state",
+                        "content_cache",
+                    ],
                 );
                 Ok(m)
             })
-            .unwrap();
+            .unwrap()
+    }
 
-        assert_eq!(manifest.generation, 1);
+    #[test]
+    fn publish_and_reload_round_trip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("a");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"a".repeat(40));
+
         assert_eq!(store.current_generation().unwrap(), Some(1));
 
         // Reload: same store (same identity) should load gen 1.
@@ -540,7 +1473,7 @@ mod tests {
         match store2.load() {
             LoadOutcome::Loaded(m) => {
                 assert_eq!(m.generation, 1);
-                assert_eq!(m.head_sha, "abc");
+                assert_eq!(m.head_sha, "a".repeat(40));
             }
             other => panic!("expected Loaded, got {other:?}"),
         }
@@ -550,18 +1483,13 @@ mod tests {
     fn different_worktrees_do_not_share_state() {
         let tmp = tempfile::tempdir().unwrap();
         let ident1 = identity("repo1");
+        let store1 = GenerationStore::open(tmp.path(), &ident1).unwrap();
+        build_manifest(&store1, &ident1, 1, &"a".repeat(40));
         let ident2 = IndexIdentity {
-            worktree_id: "wt-other".to_string(),
+            worktree_id: crate::index::manifest::identity_hash(&["worktree", "/tmp/wt-other"]),
+            worktree_root: "/tmp/wt-other".to_string(),
             ..ident1.clone()
         };
-        let store1 = GenerationStore::open(tmp.path(), &ident1).unwrap();
-        store1
-            .publish(1, &ident1, "0.1.0", "t", |dir| {
-                let mut m = new_manifest(&ident1, "0.1.0", 1, "t", "abc", "d", "c", "i");
-                let _ = write_component_serde(dir, &mut m, "files.json", &serde_json::json!([]));
-                Ok(m)
-            })
-            .unwrap();
         let store2 = GenerationStore::open(tmp.path(), &ident2).unwrap();
         assert!(matches!(store2.load(), LoadOutcome::Empty));
     }
@@ -572,17 +1500,11 @@ mod tests {
         let ident = identity("corrupt");
         let store = GenerationStore::open(tmp.path(), &ident).unwrap();
         // gen 1 valid
-        store
-            .publish(1, &ident, "0.1.0", "t", |dir| {
-                let mut m = new_manifest(&ident, "0.1.0", 1, "t", "h1", "d", "c", "i");
-                let _ = write_component_serde(dir, &mut m, "files.json", &serde_json::json!([]));
-                Ok(m)
-            })
-            .unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
         // gen 2 corrupt: write a manifest with a wrong checksum
         let gen2 = store.generation_path(2);
         std::fs::create_dir_all(&gen2).unwrap();
-        let mut m = new_manifest(&ident, "0.1.0", 2, "t", "h2", "d", "c", "i");
+        let mut m = new_manifest(&ident, "0.1.0", 2, "t", &"2".repeat(40), "d", "c", "i");
         m.checksums
             .insert("files.json".to_string(), "deadbeef".to_string());
         std::fs::write(
@@ -591,7 +1513,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(gen2.join("files.json"), b"[]").unwrap();
-        store.write_current_pointer(2).unwrap();
+        store.set_current(2).unwrap();
 
         match store.load() {
             LoadOutcome::Loaded(m) => {
@@ -607,7 +1529,7 @@ mod tests {
     }
 
     #[test]
-    fn future_schema_is_rejected() {
+    fn future_schema_is_rejected_and_left_in_place() {
         let tmp = tempfile::tempdir().unwrap();
         let ident = identity("future");
         let store = GenerationStore::open(tmp.path(), &ident).unwrap();
@@ -621,14 +1543,16 @@ mod tests {
             serde_json::to_vec_pretty(&m).unwrap(),
         )
         .unwrap();
-        store.write_current_pointer(1).unwrap();
+        store.set_current(1).unwrap();
 
-        // load() quarantines it (schema > supported => invalid), returns Empty/Corrupt.
+        // load() reports FutureSchema and leaves it in place.
         match store.load() {
-            LoadOutcome::Empty => {}
-            LoadOutcome::Corrupt { .. } => {}
-            other => panic!("expected Empty/Corrupt for future schema, got {other:?}"),
+            LoadOutcome::FutureSchema { generation, .. } => {
+                assert_eq!(generation, 1);
+            }
+            other => panic!("expected FutureSchema, got {other:?}"),
         }
+        assert!(store.generation_path(1).join(MANIFEST_FILE).exists());
 
         // publish() must reject the future schema too.
         let err = store
@@ -652,13 +1576,7 @@ mod tests {
         std::fs::create_dir_all(&stale).unwrap();
         std::fs::write(stale.join("x"), b"y").unwrap();
 
-        store
-            .publish(1, &ident, "0.1.0", "t", |dir| {
-                let mut m = new_manifest(&ident, "0.1.0", 1, "t", "h", "d", "c", "i");
-                let _ = write_component_serde(dir, &mut m, "files.json", &serde_json::json!([]));
-                Ok(m)
-            })
-            .unwrap();
+        build_manifest(&store, &ident, 1, &"0".repeat(40));
 
         assert!(!store.worktree_path().join("gen-99.tmp").exists());
     }
@@ -669,19 +1587,7 @@ mod tests {
         let ident = identity("retain");
         let store = GenerationStore::open(tmp.path(), &ident).unwrap();
         for g in [1, 2, 3] {
-            store
-                .publish(g, &ident, "0.1.0", "t", |dir| {
-                    let mut m =
-                        new_manifest(&ident, "0.1.0", g, "t", &format!("h{g}"), "d", "c", "i");
-                    let _ = write_component_serde(
-                        dir,
-                        &mut m,
-                        "files.json",
-                        &serde_json::json!([{"g": g}]),
-                    );
-                    Ok(m)
-                })
-                .unwrap();
+            build_manifest(&store, &ident, g, &"9".repeat(40));
         }
         let gens = store.persisted_generations();
         assert!(gens.contains(&3), "current gen present: {gens:?}");
@@ -695,23 +1601,299 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let ident = identity("tamper");
         let store = GenerationStore::open(tmp.path(), &ident).unwrap();
-        store
-            .publish(1, &ident, "0.1.0", "t", |dir| {
-                let mut m = new_manifest(&ident, "0.1.0", 1, "t", "h", "d", "c", "i");
-                let _ = write_component_serde(
-                    dir,
-                    &mut m,
-                    "files.json",
-                    &serde_json::json!([{"path": "a"}]),
-                );
-                Ok(m)
-            })
-            .unwrap();
+        build_manifest(&store, &ident, 1, &"0".repeat(40));
         // Tamper with the component file after publish.
         let mut f = std::fs::File::create(store.generation_path(1).join("files.json")).unwrap();
         f.write_all(br#"[{"path":"tampered"}]"#).unwrap();
         f.sync_all().unwrap();
 
+        match store.load() {
+            LoadOutcome::Corrupt { .. } => {}
+            LoadOutcome::Empty => {}
+            other => panic!("expected corrupt load, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_pointer_recovers_to_newest_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("badptr");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        // Malformed CURRENT.
+        let ptr = current_pointer(store.worktree_path());
+        std::fs::write(&ptr, "not-a-number").unwrap();
+
+        match store.load() {
+            LoadOutcome::Loaded(m) => assert_eq!(m.generation, 1),
+            other => panic!("expected recovery to gen 1, got {other:?}"),
+        }
+        assert_eq!(store.current_generation().unwrap(), Some(1));
+    }
+
+    #[test]
+    fn interrupted_publication_repoints_to_newer_valid_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("interrupted");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        // Simulate a crash after gen-2 rename but before CURRENT update.
+        let gen2 = store.generation_path(2);
+        std::fs::create_dir_all(&gen2).unwrap();
+        let mut m = new_manifest(&ident, "0.1.0", 2, "t", &"2".repeat(40), "d", "c", "i");
+        let _ = write_component_serde(
+            &gen2,
+            &mut m,
+            "files.json",
+            &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}]),
+        );
+        let _ = write_component_serde(&gen2, &mut m, "symbols.json", &serde_json::json!([]));
+        let _ = write_component_serde(&gen2, &mut m, "dependencies.json", &serde_json::json!([]));
+        let _ = write_component_serde(&gen2, &mut m, "test-mapping.json", &serde_json::json!([]));
+        let _ = write_component_serde(
+            &gen2,
+            &mut m,
+            "git-state.json",
+            &serde_json::json!({"head_sha": "2222222222222222222222222222222222222222", "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": ident.worktree_id, "generation": 2}),
+        );
+        let _ = write_component_serde(&gen2, &mut m, "content-cache.json", &serde_json::json!([]));
+        update_component_counts(&mut m, 1, 0, 0, 0, 0);
+        ready_components(
+            &mut m,
+            &[
+                "files",
+                "symbols",
+                "dependencies",
+                "test_mapping",
+                "git_state",
+                "content_cache",
+            ],
+        );
+        std::fs::write(
+            gen2.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+
+        // CURRENT still points at 1.
+        assert_eq!(store.current_generation().unwrap(), Some(1));
+        // load() must recover to the newer valid gen 2 and repoint.
+        match store.load() {
+            LoadOutcome::Loaded(m) => assert_eq!(m.generation, 2),
+            other => panic!("expected recovery to gen 2, got {other:?}"),
+        }
+        assert_eq!(store.current_generation().unwrap(), Some(2));
+    }
+
+    #[test]
+    fn malformed_component_with_valid_checksum_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("badcomp");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        // Corrupt symbols.json AND recompute its checksum in the manifest so
+        // the checksum validation alone cannot catch it; strict
+        // deserialization must.
+        let gen = store.generation_path(1);
+        let bytes = br#"[{"id": 42}]"#; // wrong shape: id is a number, not string
+        std::fs::write(gen.join("symbols.json"), bytes).unwrap();
+        let mut m: FdxIndexManifest =
+            serde_json::from_str(&std::fs::read_to_string(gen.join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        m.checksums
+            .insert("symbols.json".to_string(), sha256_hex(bytes));
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+
+        match store.load() {
+            LoadOutcome::Corrupt { .. } => {}
+            LoadOutcome::Empty => {}
+            other => panic!("expected corrupt load, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn count_mismatch_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("badcount");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        // Drop a row from files.json and recompute the checksum; the count
+        // mismatch must be detected.
+        let gen = store.generation_path(1);
+        std::fs::write(gen.join("files.json"), b"[]").unwrap();
+        let mut m: FdxIndexManifest =
+            serde_json::from_str(&std::fs::read_to_string(gen.join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        m.checksums
+            .insert("files.json".to_string(), sha256_hex(b"[]"));
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+
+        match store.load() {
+            LoadOutcome::Corrupt { .. } => {}
+            LoadOutcome::Empty => {}
+            other => panic!("expected corrupt load, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wrong_repository_identity_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("mine");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        // Point a store for a DIFFERENT repository at the same state dir.
+        let other = identity("other");
+        let store2 = GenerationStore::open(tmp.path(), &other).unwrap();
+        match store2.load() {
+            LoadOutcome::Empty => {}
+            LoadOutcome::Corrupt { .. } => {}
+            other => panic!("expected empty/corrupt for wrong identity, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn writer_lock_excludes_concurrent_writers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("lock");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        let _lock = store.writer_lock().unwrap();
+        // A second acquisition must time out (would-block), not succeed.
+        let err = WriterLock::try_acquire(store.worktree_path()).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+        drop(_lock);
+        // After release, acquisition succeeds.
+        let _lock2 = WriterLock::try_acquire(store.worktree_path()).unwrap();
+    }
+
+    #[test]
+    fn legacy_identity_state_is_migrated_when_ownership_matches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("legacy");
+        // Build a legacy layout: 16-hex repo/wt dirs (computed from the
+        // identity exactly as older builds did) with a schema-1 manifest.
+        let repo_norm = normalize_root_for_compare(&ident.repository_root);
+        let wt_norm = normalize_root_for_compare(&ident.worktree_root);
+        let legacy_repo = crate::index::identity::legacy_segment(&["repo", &repo_norm]);
+        let legacy_wt = crate::index::identity::legacy_segment(&["worktree", &wt_norm]);
+        let legacy_dir = tmp.path().join(&legacy_repo).join(&legacy_wt);
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let gen = legacy_dir.join("gen-1");
+        std::fs::create_dir_all(&gen).unwrap();
+        let mut m = new_manifest(&ident, "0.1.0", 1, "t", &"1".repeat(40), "d", "c", "i");
+        m.schema_version = 1;
+        m.repository_id = legacy_repo.to_string();
+        m.worktree_id = legacy_wt.to_string();
+        let files = serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}]);
+        m.checksums
+            .insert("files.json".to_string(), sha256_hex(b"[]")); // wrong on purpose
+                                                                  // Write a structurally valid set of components.
+        std::fs::write(gen.join("files.json"), serde_json::to_vec(&files).unwrap()).unwrap();
+        std::fs::write(gen.join("symbols.json"), b"[]").unwrap();
+        std::fs::write(gen.join("dependencies.json"), b"[]").unwrap();
+        std::fs::write(gen.join("test-mapping.json"), b"[]").unwrap();
+        std::fs::write(
+            gen.join("git-state.json"),
+            serde_json::to_vec(&serde_json::json!({"head_sha": "1111111111111111111111111111111111111111", "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": legacy_wt, "generation": 1})).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(gen.join("content-cache.json"), b"[]").unwrap();
+        m.component_counts = ComponentCounts {
+            files: 1,
+            symbols: 0,
+            dependencies: 0,
+            test_mapping: 0,
+            git_state: 1,
+            content_cache: 0,
+        };
+        m.checksums.insert(
+            "files.json".to_string(),
+            sha256_hex(&serde_json::to_vec(&files).unwrap()),
+        );
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+
+        // Open a store with the CURRENT (full-strength) identity: the legacy
+        // state must be migrated and loadable.
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        match store.load() {
+            LoadOutcome::Loaded(m) => {
+                assert_eq!(m.generation, 1);
+                assert_eq!(m.repository_id, ident.repository_id);
+            }
+            other => panic!("expected migrated load, got {other:?}"),
+        }
+        // The legacy dir is gone (moved into the current identity path).
+        assert!(!legacy_dir.exists());
+    }
+
+    #[test]
+    fn legacy_identity_state_is_not_mixed_with_other_repositories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident_a = identity("a");
+        let ident_b = identity("b");
+        // Legacy dir for repository B exists; opening a store for repository
+        // A must NOT adopt it.
+        let legacy_wt = "fedcba9876543210";
+        let legacy_dir = tmp.path().join("0123456789abcdef").join(legacy_wt);
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let gen = legacy_dir.join("gen-1");
+        std::fs::create_dir_all(&gen).unwrap();
+        let mut m = new_manifest(&ident_b, "0.1.0", 1, "t", &"1".repeat(40), "d", "c", "i");
+        m.schema_version = 1;
+        m.repository_id = "0123456789abcdef".to_string();
+        m.worktree_id = legacy_wt.to_string();
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+
+        let store_a = GenerationStore::open(tmp.path(), &ident_a).unwrap();
+        // Not adopted, not mixed: A sees no state and builds fresh.
+        assert!(matches!(store_a.load(), LoadOutcome::Empty));
+        assert!(
+            legacy_dir.exists(),
+            "foreign legacy state preserved as evidence"
+        );
+    }
+
+    #[test]
+    fn no_tmp_or_pointer_leftovers_after_publish() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("clean");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        build_manifest(&store, &ident, 2, &"2".repeat(40));
+        let entries: Vec<String> = std::fs::read_dir(store.worktree_path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !entries.iter().any(|e| e.ends_with(".tmp")),
+            "no tmp dirs: {entries:?}"
+        );
+        assert!(!entries.iter().any(|e| e.contains("CURRENT.tmp")));
+    }
+
+    #[test]
+    fn missing_component_is_rejected_not_emptied() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("missingcomp");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        // Remove a component file entirely (no checksum map entry can save it).
+        std::fs::remove_file(store.generation_path(1).join("symbols.json")).unwrap();
         match store.load() {
             LoadOutcome::Corrupt { .. } => {}
             LoadOutcome::Empty => {}
