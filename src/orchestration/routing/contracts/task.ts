@@ -165,9 +165,16 @@ export interface ClassificationInput {
   repositoryCriticality?: number
   productionImpact?: number
   releaseImpact?: boolean
+  dataIntegrityInvolved?: boolean
   securitySensitive?: boolean
+  destructiveOperations?: boolean
   migrationInvolved?: boolean
   concurrencyInvolved?: boolean
+  authInvolved?: boolean
+  packagePublication?: boolean
+  infrastructureChange?: boolean
+  rollbackDifficulty?: boolean
+  uncertainExternalSideEffects?: boolean
   uiInvolved?: boolean
   ciContext?: boolean
   buildOrPackageFailure?: boolean
@@ -258,9 +265,16 @@ export const zClassificationInput = z.object({
   repositoryCriticality: z.number().int().min(SCORE_MIN).max(SCORE_MAX).optional(),
   productionImpact: z.number().int().min(SCORE_MIN).max(SCORE_MAX).optional(),
   releaseImpact: z.boolean().optional(),
+  dataIntegrityInvolved: z.boolean().optional(),
   securitySensitive: z.boolean().optional(),
+  destructiveOperations: z.boolean().optional(),
   migrationInvolved: z.boolean().optional(),
   concurrencyInvolved: z.boolean().optional(),
+  authInvolved: z.boolean().optional(),
+  packagePublication: z.boolean().optional(),
+  infrastructureChange: z.boolean().optional(),
+  rollbackDifficulty: z.boolean().optional(),
+  uncertainExternalSideEffects: z.boolean().optional(),
   uiInvolved: z.boolean().optional(),
   ciContext: z.boolean().optional(),
   buildOrPackageFailure: z.boolean().optional(),

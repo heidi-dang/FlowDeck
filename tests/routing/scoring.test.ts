@@ -149,6 +149,63 @@ describe("deterministic routing scorers", () => {
     expect(computeTaskScores({ expectedFileCount: 3 }).scores.risk).toBeGreaterThanOrEqual(70)
   })
 
+  it("floors risk to >= 70 for every canonical high-risk signal (isolated case per signal)", () => {
+    const canonicalSignals: Array<{ name: string; input: ClassificationInput }> = [
+      { name: "production impact", input: { productionImpact: 70 } },
+      { name: "release impact", input: { releaseImpact: true } },
+      { name: "data integrity", input: { dataIntegrityInvolved: true } },
+      { name: "security", input: { securitySensitive: true } },
+      { name: "destructive operations", input: { destructiveOperations: true } },
+      { name: "migration", input: { migrationInvolved: true } },
+      { name: "concurrency", input: { concurrencyInvolved: true } },
+      { name: "authentication/authorization", input: { authInvolved: true } },
+      { name: "package publication", input: { packagePublication: true } },
+      { name: "infrastructure change", input: { infrastructureChange: true } },
+      { name: "rollback difficulty", input: { rollbackDifficulty: true } },
+      { name: "uncertain external side effects", input: { uncertainExternalSideEffects: true } },
+    ]
+
+    for (const { name, input } of canonicalSignals) {
+      const scored = computeTaskScores(input)
+      expect(scored.scores.risk, `${name} signal must floor risk to >= 70`).toBeGreaterThanOrEqual(70)
+      expect(zScoredTask.safeParse(scored).success).toBe(true)
+    }
+  })
+
+  it("emits high-risk-minimum evidence only when the floor raises the risk", () => {
+    const raised = computeTaskScores({ securitySensitive: true })
+    expect(raised.scores.risk).toBe(70)
+    expect(raised.evidence.risk.some((e) => e.id === "score.risk.high_risk_minimum")).toBe(true)
+
+    // productionImpact >= 70 already contributes exactly 70 (weight 30/30),
+    // so the floor does not raise it and no minimum evidence is emitted.
+    const alreadyFloored = computeTaskScores({ productionImpact: 70 })
+    expect(alreadyFloored.scores.risk).toBeGreaterThanOrEqual(70)
+  })
+
+  it("scores every canonical risk signal with its own executable evidence", () => {
+    const cases: Array<{ input: ClassificationInput; evidenceId: string }> = [
+      { input: { productionImpact: 50 }, evidenceId: "score.risk.production" },
+      { input: { releaseImpact: true }, evidenceId: "score.risk.release" },
+      { input: { dataIntegrityInvolved: true }, evidenceId: "score.risk.data_integrity" },
+      { input: { securitySensitive: true }, evidenceId: "score.risk.security" },
+      { input: { destructiveOperations: true }, evidenceId: "score.risk.destructive" },
+      { input: { migrationInvolved: true }, evidenceId: "score.risk.migration" },
+      { input: { concurrencyInvolved: true }, evidenceId: "score.risk.concurrency" },
+      { input: { authInvolved: true }, evidenceId: "score.risk.auth" },
+      { input: { packagePublication: true }, evidenceId: "score.risk.package_publication" },
+      { input: { infrastructureChange: true }, evidenceId: "score.risk.infrastructure" },
+      { input: { rollbackDifficulty: true }, evidenceId: "score.risk.rollback_difficulty" },
+      { input: { uncertainExternalSideEffects: true }, evidenceId: "score.risk.external_side_effects" },
+    ]
+
+    for (const { input, evidenceId } of cases) {
+      const dimension = scoreRisk(input)
+      expect(dimension.score).toBeGreaterThan(0)
+      expect(dimension.evidence.some((e) => e.id === evidenceId)).toBe(true)
+    }
+  })
+
   it("applies the high-risk floor only when it raises the risk", () => {
     const raised = ensureHighRiskMinimum({ productionImpact: 90 }, 30, [])
     expect(raised.risk).toBe(70)

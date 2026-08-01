@@ -71,25 +71,25 @@ export interface ScoreWeights {
     productionWeight: number
     /** Weight added when the change touches a release. */
     releaseWeight: number
-    /** Reserved: data-integrity scaling for future formula revisions. */
+    /** Weight added when data integrity is involved. */
     dataIntegrityWeight: number
     /** Weight added when the change is security-sensitive. */
     securityWeight: number
-    /** Reserved: destructive-change scaling for future formula revisions. */
+    /** Weight added when the change is destructive. */
     destructiveWeight: number
     /** Weight added when a migration is involved. */
     migrationWeight: number
     /** Weight added when concurrency is involved. */
     concurrencyWeight: number
-    /** Reserved: auth-touching scaling for future formula revisions. */
+    /** Weight added when authentication/authorization is touched. */
     authWeight: number
-    /** Reserved: package-publication scaling for future formula revisions. */
+    /** Weight added when a package is published or a registry mutated. */
     packagePublicationWeight: number
-    /** Reserved: infrastructure scaling for future formula revisions. */
+    /** Weight added when infrastructure changes. */
     infrastructureWeight: number
-    /** Reserved: rollback-difficulty scaling for future formula revisions. */
+    /** Weight added when rollback is difficult. */
     rollbackDifficultyWeight: number
-    /** Reserved: external-side-effects scaling for future formula revisions. */
+    /** Weight added when external side effects are uncertain. */
     externalSideEffectsWeight: number
   }
 }
@@ -383,12 +383,30 @@ export function scoreRisk(input: ClassificationInput, weights: ScoreWeights = DE
     })
   }
 
+  if (input.dataIntegrityInvolved === true) {
+    score += weights.risk.dataIntegrityWeight
+    evidence.push({
+      id: "score.risk.data_integrity",
+      source: "scoring.risk",
+      detail: `data integrity involvement adds ${weights.risk.dataIntegrityWeight}`,
+    })
+  }
+
   if (input.securitySensitive === true) {
     score += weights.risk.securityWeight
     evidence.push({
       id: "score.risk.security",
       source: "scoring.risk",
       detail: `security sensitivity adds ${weights.risk.securityWeight}`,
+    })
+  }
+
+  if (input.destructiveOperations === true) {
+    score += weights.risk.destructiveWeight
+    evidence.push({
+      id: "score.risk.destructive",
+      source: "scoring.risk",
+      detail: `destructive operations add ${weights.risk.destructiveWeight}`,
     })
   }
 
@@ -410,6 +428,51 @@ export function scoreRisk(input: ClassificationInput, weights: ScoreWeights = DE
     })
   }
 
+  if (input.authInvolved === true) {
+    score += weights.risk.authWeight
+    evidence.push({
+      id: "score.risk.auth",
+      source: "scoring.risk",
+      detail: `authentication/authorization involvement adds ${weights.risk.authWeight}`,
+    })
+  }
+
+  if (input.packagePublication === true) {
+    score += weights.risk.packagePublicationWeight
+    evidence.push({
+      id: "score.risk.package_publication",
+      source: "scoring.risk",
+      detail: `package publication adds ${weights.risk.packagePublicationWeight}`,
+    })
+  }
+
+  if (input.infrastructureChange === true) {
+    score += weights.risk.infrastructureWeight
+    evidence.push({
+      id: "score.risk.infrastructure",
+      source: "scoring.risk",
+      detail: `infrastructure change adds ${weights.risk.infrastructureWeight}`,
+    })
+  }
+
+  if (input.rollbackDifficulty === true) {
+    score += weights.risk.rollbackDifficultyWeight
+    evidence.push({
+      id: "score.risk.rollback_difficulty",
+      source: "scoring.risk",
+      detail: `rollback difficulty adds ${weights.risk.rollbackDifficultyWeight}`,
+    })
+  }
+
+  if (input.uncertainExternalSideEffects === true) {
+    score += weights.risk.externalSideEffectsWeight
+    evidence.push({
+      id: "score.risk.external_side_effects",
+      source: "scoring.risk",
+      detail: `uncertain external side effects add ${weights.risk.externalSideEffectsWeight}`,
+    })
+  }
+
   if (input.needsIndependentReview === true) {
     score += RISK_INDEPENDENT_REVIEW
     evidence.push({
@@ -419,19 +482,19 @@ export function scoreRisk(input: ClassificationInput, weights: ScoreWeights = DE
     })
   }
 
-  if (input.rawPrompt !== undefined && DESTRUCTIVE_PATTERN.test(input.rawPrompt)) {
+  if (input.destructiveOperations !== true && input.rawPrompt !== undefined && DESTRUCTIVE_PATTERN.test(input.rawPrompt)) {
     score += RISK_DESTRUCTIVE
     evidence.push({
-      id: "score.risk.destructive",
+      id: "score.risk.destructive_prompt",
       source: "scoring.risk",
       detail: `destructive prompt adds ${RISK_DESTRUCTIVE}`,
     })
   }
 
-  if (input.rawPrompt !== undefined && SENSITIVE_PATTERN.test(input.rawPrompt)) {
+  if (input.authInvolved !== true && input.rawPrompt !== undefined && SENSITIVE_PATTERN.test(input.rawPrompt)) {
     score += RISK_AUTH
     evidence.push({
-      id: "score.risk.auth",
+      id: "score.risk.auth_prompt",
       source: "scoring.risk",
       detail: `auth-touching prompt adds ${RISK_AUTH}`,
     })
@@ -451,11 +514,14 @@ export function scoreRisk(input: ClassificationInput, weights: ScoreWeights = DE
 
 /**
  * Applies the universal high-risk floor. Any task carrying at least one of
- * the nine high-risk signals (productionImpact >= 70, releaseImpact,
- * securitySensitive, migrationInvolved, concurrencyInvolved,
- * needsIndependentReview, destructive prompt, auth prompt, blast radius >= 3)
- * floors risk to HIGH_RISK_FLOOR (70). The floor only applies when it raises
- * the risk score. A "score.risk.high_risk_minimum" evidence entry with
+ * the twelve canonical high-risk signals (productionImpact >= 70,
+ * releaseImpact, dataIntegrityInvolved, securitySensitive,
+ * destructiveOperations, migrationInvolved, concurrencyInvolved,
+ * authInvolved, packagePublication, infrastructureChange, rollbackDifficulty,
+ * uncertainExternalSideEffects) floors risk to HIGH_RISK_FLOOR (70). The
+ * floor also applies for needsIndependentReview, a destructive/auth raw
+ * prompt, or a blast radius of >= 3 files. The floor only applies when it
+ * raises the risk score. A "score.risk.high_risk_minimum" evidence entry with
  * reason code HIGH_RISK_FLOOR is added when the floor takes effect.
  */
 export function ensureHighRiskMinimum(
@@ -468,9 +534,16 @@ export function ensureHighRiskMinimum(
 
   const hasProductionImpact = input.productionImpact !== undefined && input.productionImpact >= 70
   const hasReleaseImpact = input.releaseImpact === true
+  const hasDataIntegrity = input.dataIntegrityInvolved === true
   const hasSecuritySensitive = input.securitySensitive === true
+  const hasDestructive = input.destructiveOperations === true
   const hasMigrationInvolved = input.migrationInvolved === true
   const hasConcurrencyInvolved = input.concurrencyInvolved === true
+  const hasAuth = input.authInvolved === true
+  const hasPackagePublication = input.packagePublication === true
+  const hasInfrastructureChange = input.infrastructureChange === true
+  const hasRollbackDifficulty = input.rollbackDifficulty === true
+  const hasExternalSideEffects = input.uncertainExternalSideEffects === true
   const hasIndependentReview = input.needsIndependentReview === true
   const hasDestructivePrompt = input.rawPrompt !== undefined && DESTRUCTIVE_PATTERN.test(input.rawPrompt)
   const hasAuthPrompt = input.rawPrompt !== undefined && SENSITIVE_PATTERN.test(input.rawPrompt)
@@ -479,9 +552,16 @@ export function ensureHighRiskMinimum(
   const hasHighRiskSignal =
     hasProductionImpact ||
     hasReleaseImpact ||
+    hasDataIntegrity ||
     hasSecuritySensitive ||
+    hasDestructive ||
     hasMigrationInvolved ||
     hasConcurrencyInvolved ||
+    hasAuth ||
+    hasPackagePublication ||
+    hasInfrastructureChange ||
+    hasRollbackDifficulty ||
+    hasExternalSideEffects ||
     hasIndependentReview ||
     hasDestructivePrompt ||
     hasAuthPrompt ||

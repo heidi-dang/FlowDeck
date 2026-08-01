@@ -298,17 +298,28 @@ Four independent scores, each on a **0–100** integer range, are computed for e
 
 ### 5.2 Risk signals
 
-- production/release effect
-- data integrity
-- security
-- destructive operations
-- migration
-- concurrency
-- auth
-- package publication
-- infrastructure
-- rollback difficulty
-- uncertain external side effects
+The canonical executable risk taxonomy has twelve signals, each with a dedicated
+`ClassificationInput` field and a dedicated `ScoreWeights.risk` weight:
+
+- production impact — `productionImpact` (0-100; the term scales by `productionWeight/30`)
+- release impact — `releaseImpact`
+- data integrity — `dataIntegrityInvolved`
+- security — `securitySensitive`
+- destructive operations — `destructiveOperations`
+- migration — `migrationInvolved`
+- concurrency — `concurrencyInvolved`
+- authentication/authorization — `authInvolved`
+- package publication — `packagePublication`
+- infrastructure changes — `infrastructureChange`
+- rollback difficulty — `rollbackDifficulty`
+- uncertain external side effects — `uncertainExternalSideEffects`
+
+Every signal is executable: it has an input field, a weight, a risk term in
+`scoreRisk`, and (where it denotes a high-risk condition) a floor trigger in
+`ensureHighRiskMinimum`. A destructive or auth-touching raw prompt is also
+detected as a secondary signal when the explicit field is not set. Two
+additional risk contributions — `needsIndependentReview` and an expected blast
+radius of >= 3 files — raise risk without adding to the canonical taxonomy.
 
 ### 5.3 Ambiguity signals
 
@@ -334,23 +345,28 @@ decision record's `inputEvidence` (section 13) and are distinct from score evide
 
 ### 5.5 High-risk minimum rules
 
-Any task carrying **any** of the following nine executable risk signals gets a `risk >= 70` floor
+Any task carrying **any** of the twelve canonical risk signals gets a `risk >= 70` floor
 (`HIGH_RISK_FLOOR = 70`) and triggers the high-risk capability floor (sections 10, 12) plus mandatory
 review:
 
 - `productionImpact >= 70` — touches production data or a live production system
 - `releaseImpact === true` — release impact
+- `dataIntegrityInvolved === true` — data integrity risk
 - `securitySensitive === true` — security sensitivity
+- `destructiveOperations === true` — performs destructive operations (delete, force-push, drop, purge)
 - `migrationInvolved === true` — database migration
 - `concurrencyInvolved === true` — concurrency involvement
-- `needsIndependentReview === true` — independent review required
-- destructive prompt pattern — performs destructive operations (delete, force-push, drop, purge)
-- auth prompt pattern — touches authentication or authorization
-- `expectedFileCount >= 3` — blast radius of three or more files
+- `authInvolved === true` — touches authentication or authorization
+- `packagePublication === true` — publishes a package or mutates a registry
+- `infrastructureChange === true` — infrastructure changes
+- `rollbackDifficulty === true` — rollback is difficult
+- `uncertainExternalSideEffects === true` — uncertain external side effects with no rollback path
 
-These nine signals correspond exactly to the scorer's risk signal set (section 5.2). For high-risk tasks:
-verification level is at least `full` (section 6), required reviewers are non-empty,
-`approvalRequirements` apply, and the model tier may never be silently downgraded below the capability floor
+The floor also applies for `needsIndependentReview`, a destructive or auth-touching raw prompt (secondary
+detection when the explicit field is not set), and an expected blast radius of >= 3 files. These twelve
+signals are exactly the executable risk taxonomy in section 5.2. For high-risk tasks: verification level is
+at least `full` (section 6), required reviewers are non-empty, `approvalRequirements` apply, the review
+stage is present, and the model tier may never be silently downgraded below the capability floor
 (section 12).
 
 ---
