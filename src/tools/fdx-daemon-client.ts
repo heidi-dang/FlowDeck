@@ -39,6 +39,9 @@ export const PROTOCOL_VERSION = 1
 /** Max size of a single NDJSON message (must match the daemon). */
 export const MAX_MESSAGE_BYTES = 64 * 1024
 
+/** Bounded response buffer (matches daemon). */
+const MAX_OUTPUT_BYTES = MAX_MESSAGE_BYTES
+
 /** Default per-request timeout (ms). */
 export const DEFAULT_TIMEOUT_MS = 30_000
 
@@ -54,7 +57,13 @@ export const MAX_STARTUP_ATTEMPTS = 1
 /** Daemon idle timeout when we spawn it (seconds) — matches fdxd default. */
 export const DAEMON_IDLE_SECONDS = 300
 
-// ─── Types ─────────────────────────────────────────────────────────────────
+type DaemonConnectionState =
+  | "disconnected"
+  | "connecting"
+  | "handshaking"
+  | "ready"
+  | "closing"
+  | "failed"
 
 export interface DaemonCapabilities {
   protocol: number
@@ -63,6 +72,7 @@ export interface DaemonCapabilities {
   transport: string
   version: string
   pid: number
+  activeInterruption: boolean
 }
 
 export interface HelloResult {
@@ -128,20 +138,100 @@ export interface ClientResult<T> {
 /** Socket path the daemon listens on for a given project directory. */
 export function daemonSocketPath(projectDir: string): string {
   // User-scoped, per-project: no cross-user collision, no cross-worktree
-  // contamination. /tmp/fdxd-<uid>-<hash>.sock (SUN_LEN-safe: uid+hash ~40B).
+  // contamination. Uses XDG_RUNTIME_DIR when available, otherwise private user-owned dir.
+  // Path format: <runtime-dir>/fdxd-<uid>-<sha256(projectDir)>.sock
   const uid = typeof process.getuid === "function" ? process.getuid() : 0
   const hash = hashString(resolve(projectDir))
-  return join(tmpdir(), `fdxd-${uid}-${hash}.sock`)
+
+  // Use XDG_RUNTIME_DIR on Linux, otherwise a private user-owned directory
+  let runtimeDir: string
+  if (process.platform === "linux" && process.env.XDG_RUNTIME_DIR) {
+    runtimeDir = process.env.XDG_RUNTIME_DIR
+  } else {
+    // Create a private user-owned runtime directory
+    const homeDir = process.env.HOME || process.env.USERPROFILE || tmpdir()
+    runtimeDir = join(homeDir, ".local", "run", "fdxd")
+    // Ensure directory exists with restricted permissions
+    try {
+      const fs = require("node:fs")
+      if (!fs.existsSync(runtimeDir)) {
+        fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 })
+      }
+    } catch {
+      // Fallback to tmpdir if we can't create the directory
+      runtimeDir = tmpdir()
+    }
+  }
+
+  return join(runtimeDir, `fdxd-${uid}-${hash}.sock`)
 }
 
-/** Deterministic short hash for a path (FNV-1a, 8 hex chars). */
+/** Deterministic SHA-256 hash for a path (collision-resistant). */
 export function hashString(s: string): string {
-  let h = 0x811c9dc5
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
+  const crypto = require("node:crypto")
+  return crypto.createHash("sha256").update(s).digest("hex").slice(0, 16)
+}
+
+/** Startup lock for single-flight daemon startup. */
+class StartupLock {
+  private lockPath: string
+  private acquired = false
+
+  constructor(socketPath: string) {
+    this.lockPath = socketPath + ".lock"
   }
-  return (h >>> 0).toString(16).padStart(8, "0")
+
+  /** Acquire the startup lock. Returns true if acquired, false if another process holds it. */
+  async acquire(): Promise<boolean> {
+    const fs = require("node:fs")
+    try {
+      // Use O_EXCL for atomic creation
+      const fd = fs.openSync(this.lockPath, "wx")
+      fs.closeSync(fd)
+      this.acquired = true
+      return true
+    } catch (e: any) {
+      if (e.code === "EEXIST") {
+        // Lock exists, check if it's stale
+        return await this.checkStaleLock()
+      }
+      throw e
+    }
+  }
+
+  /** Check if existing lock is stale (daemon not running). */
+  private async checkStaleLock(): Promise<boolean> {
+    const fs = require("node:fs")
+    try {
+      const stat = fs.statSync(this.lockPath)
+      // If lock is older than 5 minutes, consider it stale
+      if (Date.now() - stat.mtimeMs > 5 * 60 * 1000) {
+        // Try to remove stale lock
+        try {
+          fs.unlinkSync(this.lockPath)
+          return await this.acquire()
+        } catch {
+          return false
+        }
+      }
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  /** Release the startup lock. */
+  release(): void {
+    if (this.acquired) {
+      try {
+        const fs = require("node:fs")
+        fs.unlinkSync(this.lockPath)
+      } catch {
+        // Ignore errors on release
+      }
+      this.acquired = false
+    }
+  }
 }
 
 /** The daemon binary path: FDX_DAEMON_BINARY_PATH, sibling of the resolved
@@ -196,11 +286,8 @@ export function isDaemonRunning(projectDirOrSocket: string): Promise<boolean> {
   })
 }
 
-// ─── Connection / protocol helpers ──────────────────────────────────────────
-
-const MAX_OUTPUT_BYTES = MAX_MESSAGE_BYTES // bounded, matches daemon
-
 export class DaemonConnection {
+  private state: DaemonConnectionState = "disconnected"
   private child: ChildProcess | null = null
   private socketPath: string
   private buffer = ""
@@ -212,53 +299,117 @@ export class DaemonConnection {
   private nextId = 1
   private listener: ReturnType<typeof import("node:net").createConnection> | null = null
   private stream: NodeJS.ReadWriteStream | null = null
+  private connectPromise: Promise<void> | null = null
+  private helloPromise: Promise<HelloResult> | null = null
 
   constructor(projectDir: string) {
     this.socketPath = daemonSocketPath(projectDir)
   }
 
-  /** Spawn the daemon on demand (no-op if already running). Never per request. */
+  /** Get current connection state for debugging/monitoring. */
+  getState(): DaemonConnectionState {
+    return this.state
+  }
+
+  /**
+   * Spawn the daemon on demand using single-flight startup with an atomic lock.
+   * Never spawns per request. Concurrent callers converge on one daemon PID.
+   * Never unlinks a live socket or deletes a regular file.
+   */
   async ensureStarted(): Promise<void> {
     if (await isDaemonRunning(this.socketPath)) return
-    const bin = resolveDaemonBinaryPath()
-    if (!bin) throw new Error("fdxd binary not found — install via `bun run build:fdx`")
-    this.child = spawn(bin, ["--socket", this.socketPath, "--idle", String(DAEMON_IDLE_SECONDS)], {
-      stdio: ["ignore", "pipe", "pipe"],
-      shell: false,
-      detached: false,
-    })
-    // Drain stderr for diagnostics; never unbounded.
-    this.child.stderr?.on("data", (d: Buffer) => {
-      const s = d.toString().slice(0, 2000)
-      this.lastStderr = s
-    })
-    // Wait for the socket to appear + accept.
-    const deadline = Date.now() + STARTUP_TIMEOUT_MS
-    while (Date.now() < deadline) {
-      if (this.child.exitCode !== null) {
-        throw new Error(`fdxd exited during startup (code ${this.child.exitCode}): ${this.lastStderr}`)
+
+    const lock = new StartupLock(this.socketPath)
+    try {
+      const acquired = await lock.acquire()
+      if (!acquired) {
+        // Another process is starting the daemon — wait for it.
+        const deadline = Date.now() + STARTUP_TIMEOUT_MS
+        while (Date.now() < deadline) {
+          if (await isDaemonRunning(this.socketPath)) return
+          await sleep(50)
+        }
+        throw new Error("fdxd did not become ready in time (concurrent start)")
       }
+
+      // Re-check after acquiring lock (double-check pattern).
       if (await isDaemonRunning(this.socketPath)) return
-      await sleep(50)
+
+      const bin = resolveDaemonBinaryPath()
+      if (!bin) throw new Error("fdxd binary not found — install via `bun run build:fdx`")
+
+      // Verify socket path does not point to a regular file.
+      const fs = require("node:fs")
+      try {
+        const stat = fs.statSync(this.socketPath)
+        if (stat.isFile()) {
+          throw new Error(`refusing to overwrite regular file at socket path: ${this.socketPath}`)
+        }
+      } catch (e: any) {
+        if (e.code !== "ENOENT") throw e
+        // ENOENT is expected — socket does not exist yet.
+      }
+
+      this.child = spawn(bin, ["--socket", this.socketPath, "--idle", String(DAEMON_IDLE_SECONDS)], {
+        stdio: ["ignore", "pipe", "pipe"],
+        shell: false,
+        detached: false,
+      })
+      this.child.stderr?.on("data", (d: Buffer) => {
+        this.lastStderr = d.toString().slice(0, 2000)
+      })
+
+      // Wait for the socket to appear + accept.
+      const deadline = Date.now() + STARTUP_TIMEOUT_MS
+      while (Date.now() < deadline) {
+        if (this.child.exitCode !== null) {
+          throw new Error(`fdxd exited during startup (code ${this.child.exitCode}): ${this.lastStderr}`)
+        }
+        if (await isDaemonRunning(this.socketPath)) return
+        await sleep(50)
+      }
+      throw new Error("fdxd did not become ready in time")
+    } finally {
+      lock.release()
     }
-    throw new Error("fdxd did not become ready in time")
   }
 
   private lastStderr = ""
 
-  /** Connect to the daemon socket and run the hello handshake. */
+  /** Idempotent connection establishment. Returns existing connection if ready. */
   async connect(): Promise<void> {
+    if (this.state === "ready") return
+    if (this.state === "connecting" || this.state === "handshaking") {
+      if (!this.connectPromise) {
+        this.connectPromise = this.doConnect()
+      }
+      return await this.connectPromise
+    }
+
+    this.state = "connecting"
+    this.connectPromise = this.doConnect()
+    try {
+      await this.connectPromise
+    } finally {
+      this.connectPromise = null
+    }
+  }
+
+  private async doConnect(): Promise<void> {
     const net = require("node:net") as typeof import("node:net")
     this.listener = net.createConnection(this.socketPath)
     this.listener.setNoDelay(true)
     this.stream = this.listener
+
     this.listener.on("data", (d: Buffer) => this.onData(d))
     this.listener.on("error", (e: Error) => this.onDisconnect(e))
     this.listener.on("close", () => this.onDisconnect(new Error("daemon connection closed")))
+
     await new Promise<void>((resolvePromise, reject) => {
       const timer = setTimeout(() => reject(new Error("daemon connect timeout")), HANDSHAKE_TIMEOUT_MS)
       this.listener!.once("connect", () => {
         clearTimeout(timer)
+        this.state = "handshaking"
         resolvePromise()
       })
       this.listener!.once("error", (e: Error) => {
@@ -268,8 +419,25 @@ export class DaemonConnection {
     })
   }
 
-  /** Send the hello handshake; validate protocol version + capabilities. */
+  /** Perform hello handshake once per connection. */
   async hello(client: string, clientVersion: string): Promise<HelloResult> {
+    if (this.state !== "handshaking" && this.state !== "ready") {
+      throw new Error(`Cannot perform hello: invalid state ${this.state}`)
+    }
+
+    if (!this.helloPromise) {
+      this.helloPromise = this.doHello(client, clientVersion)
+    }
+    try {
+      const hello = await this.helloPromise
+      this.state = "ready"
+      return hello
+    } finally {
+      this.helloPromise = null
+    }
+  }
+
+  private async doHello(client: string, clientVersion: string): Promise<HelloResult> {
     const resp = await this.request("hello", {
       client,
       clientVersion,
@@ -286,43 +454,6 @@ export class DaemonConnection {
     return hello
   }
 
-  /** Ping liveness probe. */
-  async ping(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<DaemonResponse> {
-    return this.request("ping", undefined, timeoutMs)
-  }
-
-  /** Execute a single hosted command. */
-  async query(command: string, argv: string[], cwd?: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<DaemonResponse> {
-    return this.request("query", { command, argv, cwd }, timeoutMs)
-  }
-
-  /** Request cancellation of an in-flight request id. */
-  async cancel(targetId: number): Promise<DaemonResponse> {
-    return this.request("cancel", { targetId }, DEFAULT_TIMEOUT_MS)
-  }
-
-  /** Send a correlated request and await its response. */
-  request(method: string, params: Record<string, unknown> | undefined, timeoutMs: number): Promise<DaemonResponse> {
-    const id = this.nextId++
-    const body: DaemonRequest = { v: PROTOCOL_VERSION, id, method }
-    if (params !== undefined) body.params = params
-    return new Promise<DaemonResponse>((resolvePromise, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id)
-        reject(new Error(`daemon request ${id} (${method}) timed out after ${timeoutMs}ms`))
-      }, timeoutMs)
-      this.pending.set(id, { resolve: resolvePromise, reject, timer })
-      const line = JSON.stringify(body) + "\n"
-      if (this.stream) {
-        this.stream.write(line)
-      } else {
-        this.pending.delete(id)
-        clearTimeout(timer)
-        reject(new Error("daemon not connected"))
-      }
-    })
-  }
-
   /** Graceful shutdown of the daemon. */
   async shutdown(): Promise<void> {
     try {
@@ -335,6 +466,7 @@ export class DaemonConnection {
 
   /** Close the client side; does NOT kill a daemon we did not spawn. */
   async close(): Promise<void> {
+    this.state = "closing"
     for (const { reject, timer } of this.pending.values()) {
       clearTimeout(timer)
       reject(new Error("daemon connection closed"))
@@ -345,6 +477,14 @@ export class DaemonConnection {
       this.listener = null
     }
     this.stream = null
+    this.state = "disconnected"
+    // Clean up any orphaned lock file for this socket.
+    try {
+      const fs = require("node:fs")
+      fs.unlinkSync(this.socketPath + ".lock")
+    } catch {
+      // Ignore — lock may not exist or may be held by another process.
+    }
   }
 
   /** Stop a daemon this client spawned (used by tests for cleanup). */
@@ -355,6 +495,40 @@ export class DaemonConnection {
       if (this.child.exitCode === null) this.child.kill("SIGKILL")
       this.child = null
     }
+  }
+
+  /** Request cancellation of an in-flight request id. */
+  async cancel(targetId: number): Promise<DaemonResponse> {
+    return this.request("cancel", { targetId }, DEFAULT_TIMEOUT_MS)
+  }
+
+  /** Execute a single hosted command. */
+  async query(command: string, argv: string[], cwd?: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<DaemonResponse> {
+    return this.request("query", { command, argv, cwd }, timeoutMs)
+  }
+
+  /** Ping liveness probe. */
+  async ping(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<DaemonResponse> {
+    return this.request("ping", undefined, timeoutMs)
+  }
+
+  /** Send a correlated request and await its response. */
+  request(method: string, params: Record<string, unknown> | undefined, timeoutMs: number): Promise<DaemonResponse> {
+    if (this.state !== "ready" && this.state !== "handshaking") {
+      return Promise.reject(new Error(`Cannot send request: invalid state ${this.state}`))
+    }
+    const id = this.nextId++
+    const body: DaemonRequest = { v: PROTOCOL_VERSION, id, method }
+    if (params !== undefined) body.params = params
+    return new Promise<DaemonResponse>((resolvePromise, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new Error(`daemon request ${id} (${method}) timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+      this.pending.set(id, { resolve: resolvePromise, reject, timer })
+      const line = JSON.stringify(body) + "\n"
+      this.stream!.write(line)
+    })
   }
 
   private onData(d: Buffer): void {
@@ -394,6 +568,7 @@ export class DaemonConnection {
   }
 
   private onDisconnect(e: Error): void {
+    this.state = "failed"
     for (const { reject, timer } of this.pending.values()) {
       clearTimeout(timer)
       reject(new Error(`daemon disconnected: ${e.message}`))
@@ -404,40 +579,116 @@ export class DaemonConnection {
 
 // ─── High-level client with fallback ladder ─────────────────────────────────
 
-let cachedClient: DaemonConnection | null = null
-let lastFallbackReason: FallbackReason = "ok"
-let lastFallbackDetail: string | undefined
+export interface DaemonRegistry {
+  /** Get or create a daemon connection for a project directory. */
+  get(projectDir: string): DaemonConnection
 
-export function getLastFallbackReason(): FallbackReason {
-  return lastFallbackReason
+  /** Disconnect a specific client connection. */
+  disconnect(projectDir: string): Promise<void>
+
+  /** Shutdown a daemon owned by this client (used by tests). */
+  shutdownOwned(projectDir: string): Promise<void>
+
+  /** Reset all test connections (for test isolation). */
+  resetAll(): Promise<void>
+
+  /** Clear all cached connections and fallback state. */
+  clearCache(): void
 }
 
-export function getLastFallbackDetail(): string | undefined {
-  return lastFallbackDetail
-}
-
-function setFallback(reason: FallbackReason, detail?: string): void {
-  lastFallbackReason = reason
-  lastFallbackDetail = detail
-}
-
-let cachedProjectDir: string | null = null
-
-/** Shared daemon connection (one compatible daemon reused across calls for
- * the same project dir). A different project dir gets its own client so a
- * stale socket path is never reused across projects. */
-export function getDaemonConnection(projectDir: string): DaemonConnection {
-  if (!cachedClient || cachedProjectDir !== resolve(projectDir)) {
-    cachedClient = new DaemonConnection(projectDir)
-    cachedProjectDir = resolve(projectDir)
+/** Global daemon registry for managing connections across projects. */
+export class DaemonRegistryImpl implements DaemonRegistry {
+  private connections = new Map<string, DaemonConnection>()
+  private fallbackState = {
+    lastReason: "ok" as FallbackReason,
+    lastDetail: undefined as string | undefined,
   }
-  return cachedClient
+
+  get(projectDir: string): DaemonConnection {
+    const key = resolve(projectDir)
+    if (!this.connections.has(key)) {
+      this.connections.set(key, new DaemonConnection(projectDir))
+    }
+    return this.connections.get(key)!
+  }
+
+  async disconnect(projectDir: string): Promise<void> {
+    const key = resolve(projectDir)
+    const conn = this.connections.get(key)
+    if (conn) {
+      await conn.close()
+      this.connections.delete(key)
+    }
+  }
+
+  async shutdownOwned(projectDir: string): Promise<void> {
+    const key = resolve(projectDir)
+    const conn = this.connections.get(key)
+    if (conn) {
+      await conn.killSpawned()
+      this.connections.delete(key)
+    }
+  }
+
+  async resetAll(): Promise<void> {
+    const promises: Promise<void>[] = []
+    for (const [, conn] of this.connections) {
+      promises.push(conn.close())
+    }
+    await Promise.all(promises)
+    this.connections.clear()
+    this.fallbackState.lastReason = "ok"
+    this.fallbackState.lastDetail = undefined
+  }
+
+  clearCache(): void {
+    this.connections.clear()
+    this.fallbackState.lastReason = "ok"
+    this.fallbackState.lastDetail = undefined
+  }
+
+  getFallbackState() {
+    return { ...this.fallbackState }
+  }
+
+  /** Set the current fallback state (mutates in place). */
+  setFallback(reason: FallbackReason, detail?: string): void {
+    this.fallbackState.lastReason = reason
+    this.fallbackState.lastDetail = detail
+  }
 }
 
-export function resetDaemonConnection(): void {
-  cachedClient = null
-  lastFallbackReason = "ok"
-  lastFallbackDetail = undefined
+/** Global daemon registry instance. */
+export const daemonRegistry = new DaemonRegistryImpl()
+
+/** Disconnect a specific client connection. */
+export async function disconnectDaemonConnection(projectDir: string): Promise<void> {
+  await daemonRegistry.disconnect(projectDir)
+}
+
+/** Shutdown a daemon owned by this client (used by tests for cleanup). */
+export async function shutdownOwnedDaemon(projectDir: string): Promise<void> {
+  await daemonRegistry.shutdownOwned(projectDir)
+}
+
+/** Reset all daemon connections and fallback state (for test isolation). */
+export async function resetDaemonConnection(): Promise<void> {
+  await daemonRegistry.resetAll()
+}
+
+/** Clear all cached connections and fallback state. */
+export function clearDaemonCache(): void {
+  daemonRegistry.clearCache()
+}
+
+/** Get the last fallback reason (backward-compatible). */
+export function getLastFallbackReason(): FallbackReason {
+  return daemonRegistry.getFallbackState().lastReason
+}
+
+/** Get the last fallback detail (backward-compatible). */
+export function getLastFallbackDetail(): string | undefined {
+  return daemonRegistry.getFallbackState().lastDetail
 }
 
 /**
@@ -458,7 +709,7 @@ export async function runViaDaemon(
   } = {},
 ): Promise<ClientResult<string>> {
   const started = Date.now()
-  const client = getDaemonConnection(projectDir)
+  const client = daemonRegistry.get(projectDir)
 
   // 1. Try the daemon path (single startup attempt; no loop).
   try {
@@ -468,13 +719,13 @@ export async function runViaDaemon(
     const resp = await client.query(command, argv, opts.cwd, opts.timeoutMs || DEFAULT_TIMEOUT_MS)
     if (!resp.ok) {
       if (resp.error?.code === "E_UNSUPPORTED") {
-        setFallback("command-not-hosted", resp.error.message)
+        daemonRegistry.setFallback("command-not-hosted", resp.error.message)
         return fallbackToOneShot(command, argv, opts, started)
       }
-      setFallback("daemon-unavailable", resp.error?.message)
+      daemonRegistry.setFallback("daemon-unavailable", resp.error?.message)
       return fallbackToOneShot(command, argv, opts, started)
     }
-    setFallback("ok")
+    daemonRegistry.setFallback("ok")
     return {
       value: (resp.result as QueryResult | undefined)?.stdout ?? JSON.stringify(resp.result ?? null),
       fallback: "ok",
@@ -494,7 +745,7 @@ export async function runViaDaemon(
         : msg.includes("did not become ready") || msg.includes("during startup")
           ? "daemon-not-ready"
           : "daemon-unavailable"
-    setFallback(reason, msg)
+    daemonRegistry.setFallback(reason, msg)
     await client.close().catch(() => undefined)
     return fallbackToOneShot(command, argv, opts, started)
   }
@@ -508,16 +759,16 @@ function fallbackToOneShot(
   started: number,
 ): ClientResult<string> {
   if (shouldDisableFallback()) {
-    setFallback("disabled")
+    daemonRegistry.setFallback("disabled")
     return {
       fallback: "disabled",
-      reason: getLastFallbackDetail(),
+      reason: daemonRegistry.getFallbackState().lastDetail,
       metrics: { transport: "one-shot", durationMs: Date.now() - started },
     }
   }
   try {
     const out = runFdx([command, ...argv])
-    setFallback("ok")
+    daemonRegistry.setFallback("ok")
     return {
       value: out,
       fallback: "ok",
@@ -525,24 +776,23 @@ function fallbackToOneShot(
     }
   } catch (e) {
     if (opts.allowTsFallback === false || !resolveFdxBinaryPath()) {
-      setFallback("native-unavailable", e instanceof Error ? e.message : String(e))
+      daemonRegistry.setFallback("native-unavailable", e instanceof Error ? e.message : String(e))
       return {
         fallback: "native-unavailable",
         reason: e instanceof Error ? e.message : String(e),
         metrics: { transport: "one-shot", durationMs: Date.now() - started },
       }
     }
-    // TS fallback for known commands (read/search/ls/outline/git).
     const ts = tsFallback(command, argv)
     if (ts !== null) {
-      setFallback("ok")
+      daemonRegistry.setFallback("ok")
       return {
         value: ts,
         fallback: "ok",
         metrics: { transport: "ts-fallback", durationMs: Date.now() - started },
       }
     }
-    setFallback("native-unavailable", e instanceof Error ? e.message : String(e))
+    daemonRegistry.setFallback("native-unavailable", e instanceof Error ? e.message : String(e))
     return {
       fallback: "native-unavailable",
       reason: e instanceof Error ? e.message : String(e),
