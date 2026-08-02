@@ -23,7 +23,17 @@ use std::path::{Path, PathBuf};
 /// and strengthened identity segments from 64-bit to the full SHA-256 digest
 /// (128+ bits). Generations from v1 are structurally compatible and are
 /// migrated by [`crate::index::storage`] (identity migration path).
-pub const INDEX_SCHEMA_VERSION: u32 = 2;
+///
+/// v2 → v3: the recent-content cache became content-bound. Every cache key
+/// is now the full SHA-256 digest over the domain-separated tuple
+/// (`"fdx-content-cache-v1"`, path, content) via [`content_cache_key`],
+/// so a persisted key is bound to the exact cached bytes and strict load
+/// recomputes it from the row's own content. Schema v2 generations (16-hex
+/// keys over path+size) remain readable without migration — validation is
+/// per-schema (see [`crate::index::storage`]). Legacy v1 generations that
+/// carry pre-contract cache rows are migrated (keys recomputed from the
+/// persisted content) or quarantined, never loaded partially.
+pub const INDEX_SCHEMA_VERSION: u32 = 3;
 
 /// Minimum schema version that can be read directly (older schemas are
 /// migrated or rebuilt by the legacy-identity migration path).
@@ -175,19 +185,24 @@ impl Default for ComponentsManifest {
 pub struct FileMeta {
     /// Normalized, repository-relative path (always `/` separators).
     pub path: String,
-    /// File type: file | dir | symlink.
+    /// File type: file | symlink. The producer never indexes directories
+    /// (they are skipped during the walk), so a persisted `dir` is corrupt.
     pub kind: String,
-    /// Size in bytes (dirs: 0).
+    /// Size in bytes.
     pub size: u64,
     /// Modification time (seconds since epoch, best effort).
     pub modified: u64,
-    /// Content hash (SHA-256, hex, first 16 chars) where computed.
+    /// Content hash (SHA-256, hex, first 16 chars). Empty ONLY for binary
+    /// files, whose content is never read into memory; every other
+    /// persisted file carries a 16-hex hash.
     pub content_hash: String,
     /// Detected language ("" when unknown/binary).
     pub language: String,
     /// Executable flag (unix).
     pub executable: bool,
-    /// Classification: source | test | generated | binary | ignored.
+    /// Classification: source | test | generated | binary. The producer
+    /// never persists ignored files (they are excluded by the walker), so a
+    /// persisted `ignored` classification is corrupt.
     pub classification: String,
     /// Generation that last indexed this file.
     pub generation: u64,
@@ -214,7 +229,10 @@ pub struct SymbolMeta {
     pub exported: bool,
     /// Parent/container symbol id ("" when top-level).
     pub parent_id: String,
-    /// Content hash of the source file at index time.
+    /// Content hash of the source file at index time. MUST equal the
+    /// owning `FileMeta.content_hash`: both derive from the same guarded
+    /// bytes (the producer hashes each file once and reuses the reader
+    /// cache), so a symbol whose hash diverges from its file is corrupt.
     pub source_hash: String,
     /// Generation that produced this symbol.
     pub generation: u64,
@@ -240,13 +258,15 @@ pub struct DependencyEdge {
 /// One row of the test-to-source mapping.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TestMappingRow {
-    /// Repository-relative path of the source file.
+    /// Repository-relative path of the source file (never a test file and
+    /// never the test file itself).
     pub source_file: String,
     /// Repository-relative path of the test file.
     pub test_file: String,
-    /// Mapping basis: direct_import | naming | configured | package.
+    /// Mapping basis (producer vocabulary): direct_import | naming.
     pub basis: String,
-    /// Confidence: 1.0 (direct) .. 0.0 (weak naming heuristic).
+    /// Confidence: 1.0 (direct) .. 0.0 (weak naming heuristic). Must be
+    /// finite and within [0.0, 1.0]; NaN/±inf reject the row.
     pub confidence: f64,
 }
 
@@ -276,7 +296,11 @@ pub struct GitStateSnapshot {
 /// One entry of the recent-content cache.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ContentCacheEntry {
-    /// Content-addressed key (sha256 of content, first 16 hex).
+    /// Content-addressed key: full SHA-256 hex (64 chars) over
+    /// `("fdx-content-cache-v1", path, content)` in schema v3
+    /// ([`content_cache_key`]); 16-hex over (path, size) in schema v2
+    /// ([`legacy_content_cache_key`]). The producer, strict load, and tests
+    /// all derive keys through the same functions.
     pub key: String,
     /// Repository-relative file path.
     pub path: String,
@@ -317,6 +341,39 @@ pub fn short_hash(parts: &[&str]) -> String {
         .take(HASH_SEGMENT_LEN / 2)
         .map(|b| format!("{b:02x}"))
         .collect()
+}
+
+/// Content-addressed key for the recent-content cache (schema v3 contract).
+///
+/// The key is the FULL SHA-256 digest (64 hex) over the domain-separated
+/// tuple `"fdx-content-cache-v1" \0 path \0 content`, binding the persisted
+/// key to the exact cached bytes: two entries for the same path with
+/// different content can never share a key, and strict load recomputes the
+/// key from the row's own content to detect tampering. The SAME function is
+/// used by the producer ([`crate::index::components`]), by strict load
+/// validation, and by tests — the key contract lives in exactly one place.
+pub fn content_cache_key(path: &str, content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"fdx-content-cache-v1\0");
+    hasher.update(path.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(content.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+}
+
+/// Legacy schema-v2 content-cache key (16 hex, over path + size).
+///
+/// Schema v2 keyed the cache on (path, size), which did NOT bind the key to
+/// the content (same path+size, different bytes → same key). Retained only
+/// so strict load can validate schema-v2 generations against their own
+/// documented contract; new entries always use [`content_cache_key`].
+pub fn legacy_content_cache_key(path: &str, size: usize) -> String {
+    short_hash(&["content", path, &format!("{size}")])
 }
 
 /// Full SHA-256 hex digest over the given parts (null-separated). Used for

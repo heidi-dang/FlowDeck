@@ -239,7 +239,7 @@ impl ContentCacheComponent {
         if size > self.max_bytes {
             return None; // single item too large: don't cache
         }
-        let key = crate::index::manifest::short_hash(&["content", path, &format!("{}", size)]);
+        let key = crate::index::manifest::content_cache_key(path, content);
         // Drop an existing entry for the same path first.
         if let Some(old_key) = self.by_path.get(path).cloned() {
             self.remove_by_key(&old_key);
