@@ -129,7 +129,7 @@ fn two_processes_cannot_publish_simultaneously() {
     store
         .publish(1, &ident, "0.1.0", "t", |dir| {
             let mut m = fdx::index::manifest::new_manifest(
-                &ident, "0.1.0", 1, "t", &"1".repeat(40), "d", "c", "i",
+                &ident, "0.1.0", 1, "t", &"1".repeat(40), &"d".repeat(64), "c", "i",
             );
             fdx::index::storage::write_component_serde(
                 dir,
@@ -169,7 +169,7 @@ fn two_processes_cannot_publish_simultaneously() {
             // Produce a complete (but different) generation so the conflict
             // check catches it — not a validation failure.
             let mut m = fdx::index::manifest::new_manifest(
-                &ident, "0.1.0", 1, "t", &"2".repeat(40), "d", "c", "i",
+                &ident, "0.1.0", 1, "t", &"2".repeat(40), &"d".repeat(64), "c", "i",
             );
             fdx::index::storage::write_component_serde(
                 dir,

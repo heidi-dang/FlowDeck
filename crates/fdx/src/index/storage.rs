@@ -131,6 +131,15 @@ pub enum LoadOutcome {
         generation: u64,
         schema_version: u32,
     },
+    /// Recovery failed: a valid generation was found (or none), but the
+    /// post-scan repair could not be completed — repairing the CURRENT
+    /// pointer or clearing a stale one failed. `last_valid` is the newest
+    /// valid manifest found (if any); the error is surfaced instead of
+    /// pretending the load fully recovered.
+    RecoveryFailed {
+        error: String,
+        last_valid: Option<FdxIndexManifest>,
+    },
     /// The cross-process writer lock could not be acquired (another writer is
     /// mid-publication or the state dir is unavailable). No mutation or
     /// recovery was attempted — the caller decides how to proceed.
@@ -405,19 +414,24 @@ impl GenerationStore {
 
     /// Remove every persisted generation and the CURRENT pointer (used by
     /// `index.invalidate` so a later refresh starts from a clean slate).
-    /// The caller must hold the writer lock (see `IndexService::invalidate`).
+    ///
+    /// The caller must hold the writer lock (see `IndexService::invalidate`),
+    /// which provides the lock ordering: lock first, then delete. Deletions
+    /// run in descending generation order (newest first) and every failure
+    /// is propagated — a partial clear never reports success.
     pub fn clear_persisted(&self) -> std::io::Result<()> {
-        for gen in self.persisted_generations() {
-            let _ = std::fs::remove_dir_all(self.generation_path(gen));
+        let mut gens = self.persisted_generations();
+        gens.sort_unstable();
+        gens.reverse();
+        for gen in gens {
+            // remove_dir_all on a missing path is a no-op, so generations
+            // already quarantined by a prior load do not fail here.
+            std::fs::remove_dir_all(self.generation_path(gen))?;
         }
         let ptr = current_pointer(&self.worktree);
+        remove_file_if_present(&ptr)?;
         let tmp_ptr = ptr.with_extension("tmp");
-        let _ = std::fs::remove_file(&tmp_ptr);
-        match std::fs::remove_file(&ptr) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e),
-        }
+        remove_file_if_present(&tmp_ptr)?;
         Ok(())
     }
 
@@ -555,7 +569,15 @@ impl GenerationStore {
                     None => true,
                 };
                 if need_repair {
-                    let _ = self.set_current(manifest.generation);
+                    if let Err(e) = self.set_current(manifest.generation) {
+                        return LoadOutcome::RecoveryFailed {
+                            error: format!(
+                                "failed to repair CURRENT pointer to generation {}: {e}",
+                                manifest.generation
+                            ),
+                            last_valid: Some(manifest),
+                        };
+                    }
                 }
                 LoadOutcome::Loaded(manifest)
             }
@@ -565,9 +587,12 @@ impl GenerationStore {
                 // later publish can republish gen 1 (a stale pointer would
                 // otherwise look like a generation conflict).
                 if let Some(_p) = pointer {
-                    let _ = std::fs::remove_file(current_pointer(&self.worktree));
-                    let _ =
-                        std::fs::remove_file(current_pointer(&self.worktree).with_extension("tmp"));
+                    if let Err(e) = clear_pointer(self) {
+                        return LoadOutcome::RecoveryFailed {
+                            error: format!("failed to clear stale CURRENT pointer: {e}"),
+                            last_valid: None,
+                        };
+                    }
                 }
                 if let Some((g, sv)) = future {
                     LoadOutcome::FutureSchema {
@@ -1166,6 +1191,25 @@ fn is_lower_hex(s: &str, len: usize) -> bool {
     s.len() == len
         && s.chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
+/// Remove a file, treating a missing path as success but propagating any
+/// other error (a failed removal must never be reported as success).
+fn remove_file_if_present(path: &std::path::Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+/// Clear the CURRENT pointer (and any abandoned temp pointer). Both
+/// removals must succeed for the load to report a clean recovery.
+fn clear_pointer(store: &GenerationStore) -> std::io::Result<()> {
+    let ptr = current_pointer(&store.worktree);
+    remove_file_if_present(&ptr)?;
+    remove_file_if_present(&ptr.with_extension("tmp"))?;
+    Ok(())
 }
 
 /// Strictly deserialize every component and validate semantics. Any failure
@@ -2716,6 +2760,118 @@ mod tests {
             LoadOutcome::Corrupt { .. } | LoadOutcome::Empty => {}
             other => panic!("unexpected outcome {other:?}"),
         }
+    }
+
+    #[test]
+    fn clear_persisted_removes_all_generations_and_pointer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("clear-ok");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        build_manifest(&store, &ident, 2, &"2".repeat(40));
+        assert_eq!(store.current_generation().unwrap(), Some(2));
+
+        store.clear_persisted().unwrap();
+        assert_eq!(store.persisted_generations(), Vec::<u64>::new());
+        assert_eq!(store.current_generation().unwrap(), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn clear_persisted_propagates_deletion_errors() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("clear-err");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        assert_eq!(store.current_generation().unwrap(), Some(1));
+
+        // A read-only worktree dir makes both the generation removal and the
+        // pointer removal fail; clear_persisted must report the error instead
+        // of pretending the state was cleared.
+        let wt = store.worktree_path().to_path_buf();
+        let mut perms = std::fs::metadata(&wt).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&wt, perms.clone()).unwrap();
+
+        let err = store.clear_persisted().unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        // No false success: the generation is still on disk.
+        assert!(!store.persisted_generations().is_empty());
+
+        // Restore so the temp dir can be cleaned up.
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&wt, perms).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_reports_recovery_failed_when_pointer_repair_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("recovery-repair");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        // Point CURRENT at a nonexistent generation so load must repair it
+        // back to the valid gen 1.
+        std::fs::write(store.worktree_path().join("CURRENT"), "7").unwrap();
+
+        let wt = store.worktree_path().to_path_buf();
+        let mut perms = std::fs::metadata(&wt).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&wt, perms.clone()).unwrap();
+
+        match store.load() {
+            LoadOutcome::RecoveryFailed { error, last_valid } => {
+                assert!(
+                    error.contains("repair CURRENT"),
+                    "error should describe the pointer repair: {error}"
+                );
+                let m = last_valid.expect("last_valid must carry the valid generation");
+                assert_eq!(m.generation, 1);
+            }
+            other => panic!("expected RecoveryFailed, got {other:?}"),
+        }
+
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&wt, perms).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_reports_recovery_failed_when_stale_pointer_clear_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("recovery-clear");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        // Corrupt the only generation so nothing valid remains, while CURRENT
+        // still points at gen 1 (a stale pointer that must be cleared).
+        tamper_manifest(
+            &store,
+            1,
+            "dirty_fingerprint",
+            serde_json::json!("not-a-fingerprint"),
+        );
+
+        let wt = store.worktree_path().to_path_buf();
+        let mut perms = std::fs::metadata(&wt).unwrap().permissions();
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&wt, perms.clone()).unwrap();
+
+        match store.load() {
+            LoadOutcome::RecoveryFailed { error, last_valid } => {
+                assert!(
+                    error.contains("clear stale CURRENT"),
+                    "error should describe the pointer clear: {error}"
+                );
+                assert!(last_valid.is_none());
+            }
+            other => panic!("expected RecoveryFailed, got {other:?}"),
+        }
+
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&wt, perms).unwrap();
     }
 
     #[test]

@@ -198,6 +198,7 @@ impl IndexService {
             LoadOutcome::Empty => Ok(false),
             LoadOutcome::Corrupt { .. } => Ok(false),
             LoadOutcome::FutureSchema { .. } => Ok(false),
+            LoadOutcome::RecoveryFailed { .. } => Ok(false),
             LoadOutcome::LockBusy(_) => Ok(false),
         }
     }
@@ -366,7 +367,6 @@ impl IndexService {
             }
             _ => self.build_full(next_gen),
         };
-
         let rebuilt = match rebuilt {
             Ok(s) => s,
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
