@@ -136,7 +136,13 @@ async function loadRuntimeModule(dir: string): Promise<RuntimeModule | null> {
 
 async function benchRuntimeInit(mod: RuntimeModule): Promise<number[]> {
   const samples: number[] = [];
-  for (let i = 0; i < 20; i++) {
+  // Warmup: JIT + OS page cache are not the measured subject.
+  for (let i = 0; i < 5; i++) {
+    const dir = mkdtempSync(join(tmpdir(), "rt-bench-init-"));
+    const store = mod.openSqliteStateStore(join(dir, "bench.db"));
+    await store.close?.();
+  }
+  for (let i = 0; i < 40; i++) {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-init-"));
     const dbPath = join(dir, "bench.db");
     const t0 = performance.now();
@@ -160,7 +166,21 @@ async function benchCommitTransition(mod: RuntimeModule): Promise<number[]> {
 
   let expectedVersion = 0;
   let current: State = "created" as State;
-  for (let i = 0; i < 100; i++) {
+  // Warmup: JIT compilation of the transaction hot path.
+  for (let i = 0; i < 25; i++) {
+    const nextWarm: State =
+      current === ("created" as State) ? ("planning" as State) : ("created" as State);
+    const warm = await store.commitTransition({
+      runId,
+      state: nextWarm,
+      expectedVersion,
+      event: makeCreationEvent(runId, current, nextWarm),
+    });
+    if (!warm.committed) throw new Error(`benchmark warmup commitTransition failed: ${warm.reason}`);
+    expectedVersion++;
+    current = nextWarm;
+  }
+  for (let i = 0; i < 300; i++) {
     const next: State =
       current === ("created" as State) ? ("planning" as State) : ("created" as State);
     const t0 = performance.now();
@@ -183,7 +203,13 @@ async function benchCommitTransition(mod: RuntimeModule): Promise<number[]> {
 
 async function benchLoadRunAfterRestart(mod: RuntimeModule): Promise<number[]> {
   const samples: number[] = [];
-  for (let i = 0; i < 10; i++) {
+  // Warmup: open/close cycle before measuring restart load.
+  for (let i = 0; i < 3; i++) {
+    const dir = mkdtempSync(join(tmpdir(), "rt-bench-restart-"));
+    const store = mod.openSqliteStateStore(join(dir, "bench.db"));
+    await store.close?.();
+  }
+  for (let i = 0; i < 30; i++) {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-restart-"));
     const dbPath = join(dir, "bench.db");
     const runId = `bench-restart-${i}`;
@@ -212,7 +238,23 @@ async function benchLoadRunAfterRestart(mod: RuntimeModule): Promise<number[]> {
 
 async function benchCompletePath(mod: RuntimeModule): Promise<number[]> {
   const samples: number[] = [];
-  for (let i = 0; i < 10; i++) {
+  // Warmup: one full verify->completed cycle.
+  {
+    const store = mod.createInMemoryStateStore();
+    await store.createRun({
+      runId: "bench-complete-warm",
+      initialState: "verifying" as State,
+      contract: makeContract("bench-ct-complete-warm"),
+    });
+    await store.commitTransition({
+      runId: "bench-complete-warm",
+      state: "completed" as State,
+      expectedVersion: 0,
+      event: makeCreationEvent("bench-complete-warm", "verifying" as State, "completed" as State),
+    });
+    await store.close?.();
+  }
+  for (let i = 0; i < 50; i++) {
     const store = mod.createInMemoryStateStore();
     const runId = `bench-complete-${i}`;
     await store.createRun({
@@ -239,7 +281,19 @@ async function benchCompletePath(mod: RuntimeModule): Promise<number[]> {
 
 async function benchCancellationPhase(mod: RuntimeModule): Promise<number[]> {
   const samples: number[] = [];
-  for (let i = 0; i < 10; i++) {
+  // Warmup: phase CRUD before measuring.
+  {
+    const store = mod.createInMemoryStateStore();
+    await store.createRun({
+      runId: "bench-cancel-warm",
+      initialState: "executing" as State,
+      contract: makeContract("bench-ct-cancel-warm"),
+    });
+    await store.saveCancellationPhase("bench-cancel-warm", "force_requested", { reason: "warm" });
+    await store.loadCancellationPhase("bench-cancel-warm");
+    await store.close?.();
+  }
+  for (let i = 0; i < 50; i++) {
     const store = mod.createInMemoryStateStore();
     const runId = `bench-cancel-${i}`;
     await store.createRun({
@@ -405,6 +459,50 @@ function parseArgs(): { baselineDir: string | null; candidateDir: string } {
   };
 }
 
+/**
+ * Average two per-metric summaries (used by the ABBA measurement scheme).
+ */
+function averageSummaries(a: MetricSummary, b: MetricSummary): MetricSummary {
+  return {
+    meanMs: round((a.meanMs + b.meanMs) / 2),
+    medianMs: round((a.medianMs + b.medianMs) / 2),
+    p95Ms: round((a.p95Ms + b.p95Ms) / 2),
+    minMs: Math.min(a.minMs, b.minMs),
+    maxMs: Math.max(a.maxMs, b.maxMs),
+    iterations: a.iterations + b.iterations,
+  };
+}
+
+/**
+ * ABBA measurement: run candidate-first AND baseline-first, then average the
+ * per-metric medians. A single pass always measures the first module cold and
+ * the second warm, which biases the comparison on noisy machines; averaging
+ * both orders cancels that bias.
+ */
+async function measureABBA(
+  candidateMod: RuntimeModule,
+  baselineMod: RuntimeModule,
+): Promise<{ candidate: Metrics; baseline: Metrics }> {
+  // Discard warmup pass on BOTH modules so neither starts cold in the ABBA
+  // sequence — a cold JIT/import/fs-cache state would otherwise land on the
+  // first-measured module only.
+  await measureAll(candidateMod);
+  await measureAll(baselineMod);
+
+  const c1 = await measureAll(candidateMod);
+  const b1 = await measureAll(baselineMod);
+  const b2 = await measureAll(baselineMod);
+  const c2 = await measureAll(candidateMod);
+
+  const candidate = {} as Metrics;
+  const baseline = {} as Metrics;
+  for (const id of METRIC_IDS) {
+    candidate[id] = averageSummaries(c1[id], c2[id]);
+    baseline[id] = averageSummaries(b1[id], b2[id]);
+  }
+  return { candidate, baseline };
+}
+
 async function main(): Promise<void> {
   const { baselineDir, candidateDir } = parseArgs();
 
@@ -421,19 +519,23 @@ async function main(): Promise<void> {
   console.log(`Baseline: ${baselineDir ?? "(none)"}`);
   console.log("");
 
-  const candidate = await measureAll(candidateMod);
-
+  let candidate: Metrics;
   let baseline: Metrics | null = null;
   if (baselineDir) {
     const baselineMod = await loadRuntimeModule(baselineDir);
     if (baselineMod) {
-      console.log(`Measuring baseline (${baselineDir})...`);
-      baseline = await measureAll(baselineMod);
+      console.log(`Measuring candidate+baseline (ABBA scheme)...`);
+      const both = await measureABBA(candidateMod, baselineMod);
+      candidate = both.candidate;
+      baseline = both.baseline;
     } else {
       console.warn(
         `[warn] Baseline directory ${baselineDir} has no runtime module — running candidate only.`,
       );
+      candidate = await measureAll(candidateMod);
     }
+  } else {
+    candidate = await measureAll(candidateMod);
   }
 
   const report = buildReport({ candidateDir, baselineDir, candidate, baseline });
