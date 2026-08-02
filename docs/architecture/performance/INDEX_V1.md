@@ -36,25 +36,35 @@ Every persisted generation contains a `manifest.json`:
 
 ```jsonc
 {
-  "schemaVersion": 1,
-  "fdxVersion": "0.1.0",
-  "repositoryId": "<sha256-16>",
-  "worktreeId": "<sha256-16>",
-  "repositoryRootHash": "<sha256-16>",
-  "headSha": "<git HEAD, 40 hex>",
-  "dirtyFingerprint": "<sha256-16 of git status --porcelain>",
-  "configHash": "<sha256-16 of FlowDeck/FDX config files>",
-  "ignoreHash": "<sha256-16 of .gitignore/.ignore/.fdignore>",
+  "schema_version": 3,
+  "fdx_version": "0.1.0",
+  "repository_id": "<sha256-16>",
+  "worktree_id": "<sha256-16>",
+  "repository_root_hash": "<sha256-16>",
+  "repository_root": "<canonical root path>",
+  "worktree_root": "<canonical worktree path>",
+  "head_sha": "<git HEAD, 40 hex>",
+  "dirty_fingerprint": "<sha256-64 of git status --porcelain>",
+  "config_hash": "<sha256-16 of FlowDeck/FDX config files>",
+  "ignore_hash": "<sha256-16 of .gitignore/.ignore/.fdignore>",
   "generation": 1,
-  "createdAt": "ISO-8601",
-  "updatedAt": "ISO-8601",
+  "created_at": "ISO-8601",
+  "updated_at": "ISO-8601",
   "components": {
     "files": "Ready|Unavailable|Quarantined",
     "symbols": "Ready|Unavailable|Quarantined",
     "dependencies": "Ready|Unavailable|Quarantined",
-    "testMapping": "Ready|Unavailable|Quarantined",
-    "gitState": "Ready|Unavailable|Quarantined",
-    "contentCache": "Ready|Unavailable|Quarantined"
+    "test_mapping": "Ready|Unavailable|Quarantined",
+    "git_state": "Ready|Unavailable|Quarantined",
+    "content_cache": "Ready|Unavailable|Quarantined"
+  },
+  "component_counts": {
+    "files": 0,
+    "symbols": 0,
+    "dependencies": 0,
+    "test_mapping": 0,
+    "git_state": 1,
+    "content_cache": 0
   },
   "checksums": {
     "files.json": "<sha256-hex>",
@@ -73,12 +83,12 @@ component checksums verify.
 
 ## Repository and worktree identity
 
-- `repositoryId` = SHA-256 (16 hex) of the git common dir
+- `repository_id` = SHA-256 (16 hex) of the git common dir
   (`git rev-parse --git-common-dir`). Every worktree of one repository shares
   this id; different repositories never collide (256-bit hash input).
-- `worktreeId` = SHA-256 (16 hex) of the canonicalized worktree root. Two
+- `worktree_id` = SHA-256 (16 hex) of the canonicalized worktree root. Two
   worktrees of the same repository have distinct worktree ids.
-- `repositoryRootHash` = SHA-256 of the canonicalized repository root path.
+- `repository_root_hash` = SHA-256 of the canonicalized repository root path.
 
 Guarantees:
 
@@ -295,8 +305,9 @@ success.
 
 ## Schema compatibility
 
-- `schemaVersion = 1` is the current format.
-- Newer schemas are rejected (never read as valid) and quarantined.
+- `schema_version = 3` is the current format.
+- Newer schemas are rejected (never read as valid) and left in place for the
+  newer binary (fail-closed load; the service refuses to build over them).
 - Compatible older schemas are migrated explicitly.
 - Incompatible older schemas are rebuilt safely.
 
