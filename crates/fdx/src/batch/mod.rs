@@ -15,6 +15,10 @@
 //! - Max 64 operations per batch; duplicate ids and empty batches are
 //!   rejected structurally.
 //! - Read-only only: mutation commands (`index.refresh` & co) are rejected.
+//! - Results of Repository-cacheable ops (all six batch ops) are served from
+//!   and stored in the content-addressed query cache (Dev 3 Task 4 Phase 3)
+//!   under the worktree state dir, keyed by repository/worktree state. Cache
+//!   writes are skipped when the batch snapshot is stale.
 
 pub mod registry;
 
@@ -23,6 +27,13 @@ pub use registry::{
     ToolDescriptor,
 };
 
+use crate::index::identity::{
+    config_hash, dirty_fingerprint, discover_identity, fdx_version, git_head_sha, ignore_hash,
+};
+use crate::index::paths::{index_state_root, worktree_dir};
+use crate::index::query_cache::{
+    canonical_json, configuration_fingerprint, query_cache_key, QueryCache, BATCH_PROTOCOL_VERSION,
+};
 use crate::index::{query_tests_for, IndexSnapshot};
 use crate::reader::code::cache::AstCache;
 use crate::reader::impact::{self, ImpactDirection};
@@ -163,6 +174,93 @@ impl BatchIndexProvider for crate::index::IndexService {
     }
 }
 
+// ─── Query cache context (Task 4, Phase 3) ─────────────────────────────────
+//
+// The batch executor serves Repository-cacheable ops (read/grep/search/
+// outline/impact/testsFor) from the content-addressed query cache. The cache
+// lives under the same worktree state dir the index uses
+// (`<state-root>/fdx-index/<repo_id>/<worktree_id>/query-cache/`), so a
+// repeat of the same query against the same repository state is served
+// without re-execution. Only real git worktrees are cached: the key embeds
+// the HEAD SHA and dirty fingerprint, which are meaningless (and unstable)
+// outside git, and non-git temp dirs in tests stay uncached.
+
+/// Precomputed per-batch cache inputs (identity + state hashes), built once
+/// per batch and reused for every cacheable op. `None` means no caching.
+struct QueryCacheContext {
+    cache: QueryCache,
+    repository_id: String,
+    worktree_id: String,
+    repository_sha: String,
+    dirty_fingerprint: String,
+    index_generation: u64,
+    configuration_fingerprint: String,
+}
+
+impl QueryCacheContext {
+    /// Resolve the cache context for a batch, or `None` when caching is not
+    /// applicable (no cwd, not a git worktree, or no Repository-cacheable op).
+    fn resolve(cwd: Option<&str>, operations: &[BatchOperation]) -> Option<Self> {
+        let cwd = cwd?;
+        // Only build when at least one op is Repository-cacheable.
+        let any_cacheable = operations.iter().any(|op| {
+            tool_descriptor(&op.op)
+                .map(|d| d.cache_policy == CachePolicy::Repository)
+                .unwrap_or(false)
+        });
+        if !any_cacheable {
+            return None;
+        }
+        let worktree = Path::new(cwd);
+        let repository_sha = git_head_sha(worktree);
+        if repository_sha.is_empty() {
+            // Not a git worktree: no meaningful state to key on.
+            return None;
+        }
+        let identity = discover_identity(worktree, &fdx_version());
+        let root = index_state_root();
+        let state_dir = worktree_dir(&root, &identity.repository_id, &identity.worktree_id);
+        Some(Self {
+            cache: QueryCache::new(&state_dir),
+            repository_id: identity.repository_id,
+            worktree_id: identity.worktree_id,
+            repository_sha,
+            dirty_fingerprint: dirty_fingerprint(worktree),
+            index_generation: 0, // set by the executor after freezing the snapshot
+            configuration_fingerprint: configuration_fingerprint(
+                &config_hash(worktree),
+                &ignore_hash(worktree),
+            ),
+        })
+    }
+
+    /// The content-addressed cache key for one operation. Returns `None` when
+    /// the op is not Repository-cacheable or the caller opted out via
+    /// `no_cache`.
+    fn key_for(&self, op: &BatchOperation) -> Option<String> {
+        let d = tool_descriptor(&op.op)?;
+        if d.cache_policy != CachePolicy::Repository {
+            return None;
+        }
+        if op.params.no_cache == Some(true) {
+            return None;
+        }
+        let canonical = canonical_json(&serde_json::to_value(&op.params).ok()?);
+        Some(query_cache_key(
+            &self.repository_id,
+            &self.worktree_id,
+            &self.repository_sha,
+            &self.dirty_fingerprint,
+            self.index_generation,
+            BATCH_PROTOCOL_VERSION,
+            &fdx_version(),
+            &op.op,
+            &canonical,
+            &self.configuration_fingerprint,
+        ))
+    }
+}
+
 // ─── Executor ───────────────────────────────────────────────────────────────
 
 /// Execute a typed batch. Validation errors (empty, >64, duplicate ids)
@@ -208,12 +306,37 @@ pub fn execute_batch(
         None
     };
 
+    // Stale snapshot: the generation changed while the batch ran, so results
+    // derived from `frozen` must not feed cache writes. Compute before the
+    // loop so the loop can gate writes per op.
+    let stale_snapshot = match (&frozen, index) {
+        (Some(frozen), Some(idx)) => {
+            idx.snapshot().map(|s| s.generation()) != Some(frozen.generation())
+        }
+        _ => false,
+    };
+
+    // Content-addressed query cache (Phase 3): one context per batch. The
+    // generation component of the key comes from the frozen snapshot so
+    // index-derived results never collide across generations.
+    let mut cache_ctx = QueryCacheContext::resolve(cwd, operations);
+    if let Some(ctx) = &mut cache_ctx {
+        ctx.index_generation = frozen.as_ref().map(|s| s.generation()).unwrap_or(0);
+    }
+
     let cache = AstCache::new();
     let mut responses = Vec::with_capacity(operations.len());
     let mut failed_fast = false;
 
     for op in operations {
-        let resp = run_operation(op, cwd, frozen.as_deref(), &cache);
+        let resp = run_operation(
+            op,
+            cwd,
+            frozen.as_deref(),
+            &cache,
+            cache_ctx.as_ref(),
+            stale_snapshot,
+        );
         let stop = !resp.ok && fail_fast;
         responses.push(resp);
         if stop {
@@ -221,15 +344,6 @@ pub fn execute_batch(
             break;
         }
     }
-
-    // Stale snapshot: the generation changed while the batch ran, so results
-    // derived from `frozen` must not feed cache writes.
-    let stale_snapshot = match (&frozen, index) {
-        (Some(frozen), Some(idx)) => {
-            idx.snapshot().map(|s| s.generation()) != Some(frozen.generation())
-        }
-        _ => false,
-    };
 
     Ok(BatchResponse {
         version: 1,
@@ -244,6 +358,8 @@ fn run_operation(
     cwd: Option<&str>,
     snapshot: Option<&IndexSnapshot>,
     cache: &AstCache,
+    cache_ctx: Option<&QueryCacheContext>,
+    stale_snapshot: bool,
 ) -> OperationResponse {
     let id = op.id.clone();
     // Every batch operation must be read-only and known. `index.*` commands
@@ -278,6 +394,23 @@ fn run_operation(
         _ => {}
     }
 
+    // Query cache: serve Repository-cacheable ops from disk when the key
+    // matches the current repository state. The key is `None` for ops that
+    // are not cacheable or opted out via `no_cache`.
+    let cache_key = cache_ctx.and_then(|ctx| ctx.key_for(op));
+    if let (Some(ctx), Some(key)) = (&cache_ctx, &cache_key) {
+        if let Some(bytes) = ctx.cache.get(key) {
+            if let Ok(value) = serde_json::from_slice(&bytes) {
+                return OperationResponse {
+                    id,
+                    ok: true,
+                    result: Some(value),
+                    error: None,
+                };
+            }
+        }
+    }
+
     let outcome = match op.op.as_str() {
         "read" => op_read(&op.params, cwd, cache),
         "grep" => op_grep(&op.params, cwd),
@@ -292,12 +425,23 @@ fn run_operation(
     };
 
     match outcome {
-        Ok(value) => OperationResponse {
-            id,
-            ok: true,
-            result: Some(value),
-            error: None,
-        },
+        Ok(value) => {
+            // Cache the fresh result only when the snapshot is not stale and
+            // the op is Repository-cacheable.
+            if let (Some(ctx), Some(key)) = (&cache_ctx, &cache_key) {
+                if !stale_snapshot {
+                    if let Ok(bytes) = serde_json::to_vec(&value) {
+                        ctx.cache.put(key, &bytes);
+                    }
+                }
+            }
+            OperationResponse {
+                id,
+                ok: true,
+                result: Some(value),
+                error: None,
+            }
+        }
         Err((code, message)) => OperationResponse {
             id,
             ok: false,
@@ -719,5 +863,155 @@ mod tests {
         let ops = vec![op("1", "grep", serde_json::json!({ "pattern": "x" }))];
         let resp = execute_batch(&ops, None, None, false).unwrap();
         assert!(!resp.stale_snapshot);
+    }
+
+    // ─── Query cache wiring ──────────────────────────────────────────────────
+
+    /// Serializes the FDX_INDEX_DIR env var so cache tests don't race each
+    /// other (or the paths module test) over process-global env state.
+    static CACHE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Initializes a real git repository (HEAD present, clean tree) so the
+    /// cache context activates.
+    fn git_init(path: &std::path::Path) {
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.email", "cache-test@example.com"][..],
+            &["config", "user.name", "cache-test"][..],
+            &["add", "-A"][..],
+            &["commit", "-q", "-m", "init"][..],
+        ] {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(path)
+                .output()
+                .expect("git must be installed for cache tests");
+            assert!(
+                out.status.success(),
+                "git {args:?} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    /// Number of cached result files under the given FDX_INDEX_DIR root.
+    fn cache_entry_count(state_root: &std::path::Path) -> usize {
+        let qc = state_root.join(crate::index::paths::INDEX_NAMESPACE);
+        if !qc.exists() {
+            return 0;
+        }
+        let mut count = 0;
+        // <root>/fdx-index/<repo>/<worktree>/query-cache/*.json
+        if let Ok(repos) = std::fs::read_dir(&qc) {
+            for repo in repos.flatten() {
+                if let Ok(worktrees) = std::fs::read_dir(repo.path()) {
+                    for wt in worktrees.flatten() {
+                        let dir = wt.path().join(crate::index::query_cache::QUERY_CACHE_DIR);
+                        count += std::fs::read_dir(&dir)
+                            .map(|e| e.flatten().count())
+                            .unwrap_or(0);
+                    }
+                }
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn query_cache_roundtrips_and_flips_key_on_change() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(
+            tmp.path().join("lib.ts"),
+            "export const greeting = \"hi\"\n",
+        )
+        .unwrap();
+        git_init(tmp.path());
+
+        let cwd = tmp.path().to_str().unwrap();
+        let read_op = || {
+            vec![op(
+                "r1",
+                "read",
+                serde_json::json!({ "file": "lib.ts", "mode": "raw" }),
+            )]
+        };
+
+        // 1. First execution: cache miss, result computed, entry written.
+        let resp1 = execute_batch(&read_op(), Some(cwd), None, false).unwrap();
+        let r1 = ok_result(&resp1.responses[0]);
+        assert_eq!(r1["total_lines"], 1);
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "first run writes one cache entry"
+        );
+
+        // 2. Identical second execution: served from cache (still 1 entry).
+        let resp2 = execute_batch(&read_op(), Some(cwd), None, false).unwrap();
+        assert_eq!(
+            ok_result(&resp2.responses[0]),
+            r1,
+            "cached result is identical"
+        );
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "repeat is a cache hit, no new entry"
+        );
+
+        // 3. Content change flips the dirty fingerprint → new key → fresh result.
+        std::fs::write(
+            tmp.path().join("lib.ts"),
+            "export const greeting = \"hello\"\n",
+        )
+        .unwrap();
+        let resp3 = execute_batch(&read_op(), Some(cwd), None, false).unwrap();
+        let r3 = ok_result(&resp3.responses[0]);
+        assert_eq!(r3["lines"][0], "export const greeting = \"hello\"");
+        assert_eq!(
+            cache_entry_count(state.path()),
+            2,
+            "content change writes a new entry"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn query_cache_is_inactive_outside_git_repos() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "line1\n").unwrap();
+        let ops = vec![op(
+            "r1",
+            "read",
+            serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+        )];
+        let resp = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap();
+        assert_eq!(ok_result(&resp.responses[0])["total_lines"], 1);
+        assert_eq!(
+            cache_entry_count(state.path()),
+            0,
+            "non-git cwd must not touch the query cache"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
     }
 }

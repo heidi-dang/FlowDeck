@@ -27,6 +27,7 @@ pub mod components;
 pub mod identity;
 pub mod manifest;
 pub mod paths;
+pub mod query_cache;
 pub mod refresh;
 pub mod storage;
 pub mod winfs;
