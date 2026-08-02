@@ -454,7 +454,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
 
   let version: string | null = null
   try {
-    const out = execFileSync(binPath, ["--version"], { encoding: "utf-8", timeout: 3000, shell: false })
+    const out = execFileSync(binPath, ["--version"], { encoding: "utf-8", timeout: 3000, shell: process.platform === "win32" })
     const match = out.match(/fdx\s+v?([0-9]+\.[0-9]+\.[0-9]+)/i) || out.match(/v?([0-9]+\.[0-9]+\.[0-9]+)/)
     if (match && match[1]) {
       version = match[1]

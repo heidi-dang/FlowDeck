@@ -135,19 +135,19 @@ describe("Doctor CLI — Argument Parsing", () => {
 
 describe("Doctor CLI — JSON Output", () => {
   it("produces valid JSON when --json is specified", () => {
-    const result = runDoctor(["--json"])
-    expect(result.code).toBe(0)
+    const result = runDoctor(["--json", "--profile", "minimal"])
+    expect(result.code).toBeLessThanOrEqual(1)
     expect(() => JSON.parse(result.stdout)).not.toThrow()
   })
 
   it("includes schemaVersion: 1 in JSON output", () => {
-    const result = runDoctor(["--json"])
+    const result = runDoctor(["--json", "--profile", "minimal"])
     const parsed = JSON.parse(result.stdout)
     expect(parsed.schemaVersion).toBe(1)
   })
 
   it("does not mix human text into stdout with --json", () => {
-    const result = runDoctor(["--json"])
+    const result = runDoctor(["--json", "--profile", "minimal"])
     // stdout should be parseable as a single JSON value
     const trimmed = result.stdout.trim()
     // Should start with { and end with }

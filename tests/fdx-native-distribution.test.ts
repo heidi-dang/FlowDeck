@@ -57,11 +57,11 @@ describe("FDX Native Distribution & Binary Resolver", () => {
   })
 
   it("validateFdxBinaryPath verifies valid executable and checksum", () => {
-    const binName = process.platform === "win32" ? "fdx.exe" : "fdx"
+    const binName = process.platform === "win32" ? "fdx.cmd" : "fdx"
     const binPath = join(tempDir, binName)
 
     if (process.platform === "win32") {
-      writeFileSync(binPath, "echo fdx v1.0.4", "utf-8")
+      writeFileSync(binPath, "@echo fdx v1.0.4\r\n", "utf-8")
     } else {
       // Mock shell script returning fdx v1.0.4
       writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
@@ -78,11 +78,11 @@ describe("FDX Native Distribution & Binary Resolver", () => {
   })
 
   it("validateFdxBinaryPath rejects checksum mismatch", () => {
-    const binName = process.platform === "win32" ? "fdx.exe" : "fdx"
+    const binName = process.platform === "win32" ? "fdx.cmd" : "fdx"
     const binPath = join(tempDir, binName)
 
     if (process.platform === "win32") {
-      writeFileSync(binPath, "echo fdx v1.0.4", "utf-8")
+      writeFileSync(binPath, "@echo fdx v1.0.4\r\n", "utf-8")
     } else {
       writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
       chmodSync(binPath, 0o755)
@@ -97,11 +97,11 @@ describe("FDX Native Distribution & Binary Resolver", () => {
   })
 
   it("priority resolution prefers FDX_BINARY_PATH when valid", () => {
-    const binName = process.platform === "win32" ? "fdx.exe" : "fdx"
+    const binName = process.platform === "win32" ? "fdx.cmd" : "fdx"
     const binPath = join(tempDir, binName)
 
     if (process.platform === "win32") {
-      writeFileSync(binPath, "echo fdx v1.0.4", "utf-8")
+      writeFileSync(binPath, "@echo fdx v1.0.4\r\n", "utf-8")
     } else {
       writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
       chmodSync(binPath, 0o755)

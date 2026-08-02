@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { mkdirSync, writeFileSync, rmSync, chmodSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, delimiter } from "node:path"
 import { tmpdir } from "node:os"
 
 /**
@@ -143,7 +143,7 @@ function runRegistryCheck(mode: string): { code: number; output: string } {
       cwd: env.root,
       env: {
         ...(process.env as Record<string, string>),
-        PATH: join(env.root, "bin") + ":" + (process.env.PATH ?? ""),
+        PATH: join(env.root, "bin") + delimiter + (process.env.PATH ?? ""),
         HOME: join(env.root, "home"),
         MOCK_NPM_MODE: mode,
       },
