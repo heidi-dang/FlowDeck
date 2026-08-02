@@ -29,7 +29,7 @@ async function tryVersion(cmd: string): Promise<string | null> {
   return out?.split("\n")[0]?.trim() ?? null
 }
 
-export async function runRuntimeChecks(_directory: string): Promise<CheckResult[]> {
+export async function runRuntimeChecks(_directory: string, profileArg?: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
 
   const [
@@ -144,7 +144,7 @@ export async function runRuntimeChecks(_directory: string): Promise<CheckResult[
     }
   }
   const fdxStatus = fdxSharedModule.getFdxAvailabilityStatus(true)
-  const profile = process.env.FLOWDECK_PROFILE || "recommended-dev"
+  const profile = profileArg || process.env.FLOWDECK_PROFILE || "recommended-dev"
   const isStrictFail = profile !== "minimal"
 
   // 1. fdx.target-supported
