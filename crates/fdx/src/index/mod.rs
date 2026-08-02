@@ -107,6 +107,9 @@ pub struct IndexStatus {
     pub cache_entries: usize,
     pub cache_bytes: usize,
     pub loading: bool,
+    /// Non-empty when the index is unavailable and the reason is a hard
+    /// failure (e.g. a fatal persisted state like a future schema).
+    pub error: String,
 }
 
 /// The thread-safe index service for one repository/worktree.
@@ -167,7 +170,10 @@ impl IndexService {
             fdx_version,
         };
         // Eagerly load the persisted generation on startup (warm load).
-        let _ = svc.load_persisted();
+        // Fail-closed: a fatal persisted state (future schema, unrecoverable
+        // corruption, busy writer) propagates instead of opening a service
+        // that would silently build over the evidence.
+        svc.load_persisted()?;
         Ok(svc)
     }
 
@@ -186,8 +192,48 @@ impl IndexService {
         self.store.worktree_path().to_path_buf()
     }
 
-    /// Load a persisted generation into memory (warm startup). Best effort:
-    /// returns false when nothing valid exists or a strict load fails.
+    /// Map a fatal persisted-load outcome to an error. Recoverable outcomes
+    /// (`Loaded`/`Empty`/`Corrupt`) return `None`: the caller can build over
+    /// them. Fatal outcomes — future schema (a newer binary wrote the state;
+    /// building over it would destroy evidence), an unrecoverable recovery
+    /// failure (with the newest valid generation kept in the diagnostic), and
+    /// a busy cross-process writer — must surface as errors, never be
+    /// swallowed.
+    fn fatal_load_error(outcome: &LoadOutcome) -> Option<std::io::Error> {
+        match outcome {
+            LoadOutcome::FutureSchema {
+                generation,
+                schema_version,
+            } => Some(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "persisted index uses schema {schema_version} (generation {generation}), \
+                     newer than supported {INDEX_SCHEMA_VERSION}; refusing to build over it"
+                ),
+            )),
+            LoadOutcome::RecoveryFailed { error, last_valid } => {
+                Some(std::io::Error::other(format!(
+                    "persisted index recovery failed: {error} \
+                 (last valid generation: {})",
+                    last_valid
+                        .as_ref()
+                        .map(|m| m.generation.to_string())
+                        .unwrap_or_else(|| "none".to_string())
+                )))
+            }
+            LoadOutcome::LockBusy(owner) => Some(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                format!("index writer lock busy: {owner}"),
+            )),
+            _ => None,
+        }
+    }
+
+    /// Load a persisted generation into memory (warm startup). Fail-closed:
+    /// returns true when a valid generation was activated, false when
+    /// nothing valid exists (Empty) or the corrupt generation was
+    /// quarantined and recovered (Corrupt). All fatal outcomes surface as
+    /// errors instead of being swallowed (see [`Self::fatal_load_error`]).
     pub fn load_persisted(&self) -> std::io::Result<bool> {
         match self.store.load() {
             LoadOutcome::Loaded(manifest) => {
@@ -197,9 +243,7 @@ impl IndexService {
             }
             LoadOutcome::Empty => Ok(false),
             LoadOutcome::Corrupt { .. } => Ok(false),
-            LoadOutcome::FutureSchema { .. } => Ok(false),
-            LoadOutcome::RecoveryFailed { .. } => Ok(false),
-            LoadOutcome::LockBusy(_) => Ok(false),
+            outcome => Err(Self::fatal_load_error(&outcome).expect("fatal variants map to errors")),
         }
     }
 
@@ -297,6 +341,7 @@ impl IndexService {
                 cache_entries: s.cache.len(),
                 cache_bytes: s.cache.total_bytes,
                 loading: false,
+                error: String::new(),
             },
             None => IndexStatus {
                 available: false,
@@ -313,6 +358,7 @@ impl IndexService {
                 cache_entries: 0,
                 cache_bytes: 0,
                 loading: false,
+                error: String::new(),
             },
         }
     }
@@ -337,6 +383,12 @@ impl IndexService {
         // Load with recovery: validates the persisted state, quarantines
         // corrupt generations, repairs CURRENT.
         let persisted = self.store.load();
+
+        // Fail-closed: a fatal persisted state (future schema, unrecoverable
+        // recovery failure, busy writer) is never built over.
+        if let Some(err) = Self::fatal_load_error(&persisted) {
+            return Err(err);
+        }
 
         // No-change fast path against the *persisted* generation (another
         // process may have already refreshed for this exact state).
@@ -391,7 +443,7 @@ impl IndexService {
         let head = git_head_sha(&root);
         let dirty = dirty_fingerprint(&root);
 
-        let manifest =
+        let publication =
             self.store
                 .publish(generation, &self.identity, &self.fdx_version, &now, |dir| {
                     let mut m = crate::index::manifest::new_manifest(
@@ -482,7 +534,9 @@ impl IndexService {
                     Ok(m)
                 })?;
 
-        Ok(Arc::new(self.load_generation(&manifest)?))
+        // PublicationResult proves the generation was activated through
+        // CURRENT; load the snapshot from the proven manifest.
+        Ok(Arc::new(self.load_generation(&publication.manifest)?))
     }
 
     /// Incremental refresh: compute the change set and update only the
@@ -514,7 +568,7 @@ impl IndexService {
             cs = refresher.fs_change_detection(&prev.files, &current_files);
         }
 
-        let manifest =
+        let publication =
             self.store
                 .publish(generation, &self.identity, &self.fdx_version, &now, |dir| {
                     let mut m = crate::index::manifest::new_manifest(
@@ -649,7 +703,9 @@ impl IndexService {
                     Ok(m)
                 })?;
 
-        Ok(Arc::new(self.load_generation(&manifest)?))
+        // PublicationResult proves the generation was activated through
+        // CURRENT; load the snapshot from the proven manifest.
+        Ok(Arc::new(self.load_generation(&publication.manifest)?))
     }
 
     /// Invalidate the index: drop the in-memory snapshot AND the persisted
@@ -662,8 +718,15 @@ impl IndexService {
     pub fn invalidate(&self) -> std::io::Result<()> {
         let _guard = self.refresh_lock.lock().unwrap();
         let _writer = self.store.writer_lock()?;
+        // Clear the persisted state first, then prove its absence. Only when
+        // the disk state is verifiably gone is the in-memory snapshot
+        // dropped: on failure the service keeps serving the old snapshot
+        // (fail-closed) instead of reporting a clean slate that still has
+        // state on disk.
+        self.store.clear_persisted()?;
+        self.store.verify_persisted_absent()?;
         *self.snapshot.write().unwrap() = None;
-        self.store.clear_persisted()
+        Ok(())
     }
 
     /// Force a full rebuild. Serializes with other writers via the
@@ -673,6 +736,10 @@ impl IndexService {
         // Recover/load the persisted state so the next generation continues
         // from the newest valid one.
         let persisted = self.store.load();
+        // Fail-closed: a fatal persisted state is never rebuilt over.
+        if let Some(err) = Self::fatal_load_error(&persisted) {
+            return Err(err);
+        }
         let next_gen = match &persisted {
             LoadOutcome::Loaded(m) => m.generation + 1,
             _ => 1,
@@ -981,9 +1048,35 @@ pub fn handle_index_command(
     // index.* commands (no per-query service state needed at dispatch).
     match op.as_str() {
         "status" => {
-            let svc = GLOBAL_INDEX_REGISTRY.service_for(&worktree).ok()?;
-            let status = svc.status();
-            return serde_json::to_value(&status).ok();
+            match GLOBAL_INDEX_REGISTRY.service_for(&worktree) {
+                Ok(svc) => {
+                    let status = svc.status();
+                    return serde_json::to_value(&status).ok();
+                }
+                Err(e) => {
+                    // Fail-closed: a fatal persisted state (e.g. a future
+                    // schema) surfaces as an unavailable index with the
+                    // reason, not as a hard command failure.
+                    let status = IndexStatus {
+                        available: false,
+                        generation: 0,
+                        schema_version: INDEX_SCHEMA_VERSION,
+                        repository_id: String::new(),
+                        worktree_id: String::new(),
+                        head_sha: String::new(),
+                        dirty_fingerprint: String::new(),
+                        files: 0,
+                        symbols: 0,
+                        dependencies: 0,
+                        tests: 0,
+                        cache_entries: 0,
+                        cache_bytes: 0,
+                        loading: false,
+                        error: e.to_string(),
+                    };
+                    return serde_json::to_value(&status).ok();
+                }
+            }
         }
         "refresh" => {
             let force = argv.iter().any(|a| a == "--force" || a == "--full");
@@ -1071,6 +1164,7 @@ fn parse_limit(argv: &[String]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::index::storage::MANIFEST_FILE;
     use std::process::Command;
     fn git(cwd: &Path, args: &[&str]) {
         let out = Command::new("git")
@@ -1278,5 +1372,86 @@ mod tests {
 
         let git = query_git_state(&snap);
         assert_eq!(git.head_sha.len(), 40);
+    }
+
+    #[test]
+    fn open_fails_closed_on_future_schema() {
+        let repo = tempfile::tempdir().unwrap();
+        make_repo(repo.path());
+        let state = tempfile::tempdir().unwrap();
+        // Persist a valid generation first.
+        let svc = IndexService::open(repo.path(), &opts(state.path())).unwrap();
+        svc.refresh(false).unwrap();
+        drop(svc);
+
+        // Rewrite the persisted manifest to a future schema in place.
+        let svc2 = IndexService::open(repo.path(), &opts(state.path())).unwrap();
+        let manifest_path = svc2.store.generation_path(1).join(MANIFEST_FILE);
+        let mut m: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        m["schema_version"] = serde_json::json!(999);
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&m).unwrap()).unwrap();
+        drop(svc2);
+
+        // A fresh open must fail closed instead of silently building over the
+        // newer schema's evidence.
+        let err = match IndexService::open(repo.path(), &opts(state.path())) {
+            Ok(_) => panic!("open should fail closed on a future schema"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("newer than supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn refresh_fails_closed_on_future_schema() {
+        let repo = tempfile::tempdir().unwrap();
+        make_repo(repo.path());
+        let state = tempfile::tempdir().unwrap();
+        let svc = IndexService::open(repo.path(), &opts(state.path())).unwrap();
+        svc.refresh(false).unwrap();
+
+        // Corrupt the persisted generation to a future schema after open.
+        let manifest_path = svc.store.generation_path(1).join(MANIFEST_FILE);
+        let mut m: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        m["schema_version"] = serde_json::json!(999);
+        std::fs::write(&manifest_path, serde_json::to_vec_pretty(&m).unwrap()).unwrap();
+
+        let err = match svc.refresh(false) {
+            Ok(_) => panic!("refresh should fail closed on a future schema"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("newer than supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn invalidate_clears_persisted_state_and_snapshot() {
+        let repo = tempfile::tempdir().unwrap();
+        make_repo(repo.path());
+        let state = tempfile::tempdir().unwrap();
+        let svc = IndexService::open(repo.path(), &opts(state.path())).unwrap();
+        svc.refresh(false).unwrap();
+        assert!(svc.snapshot().is_some());
+        assert!(!svc.store.persisted_generations().is_empty());
+
+        svc.invalidate().unwrap();
+        assert!(
+            svc.snapshot().is_none(),
+            "snapshot dropped after invalidate"
+        );
+        assert!(svc.store.persisted_generations().is_empty());
+        assert_eq!(svc.store.current_generation().unwrap(), None);
+
+        // The next refresh rebuilds from scratch.
+        let snap = svc.refresh(false).unwrap();
+        assert!(snap.files.files.contains_key("lib.ts"));
     }
 }
