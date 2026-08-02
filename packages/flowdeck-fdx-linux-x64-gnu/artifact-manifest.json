@@ -2,11 +2,11 @@
   "packageName": "@heidi-dang/flowdeck-fdx-linux-x64-gnu",
   "packageVersion": "1.0.4",
   "target": "flowdeck-fdx-linux-x64-gnu",
-  "sourceCommitSha": "4e5885eeae8c5497d5bed00eee8737d1d2b276c4",
+  "sourceCommitSha": "c4eafe782cc1003003f57535e7e44af75d149532",
   "artifactFilename": "heidi-dang-flowdeck-fdx-linux-x64-gnu-1.0.4.tgz",
-  "artifactSha256": "bc34bc36b2a3d3c9eaad2952894e34639ebd7d8c0454c5957c57eccebb8a1997",
-  "npmIntegrity": "sha512-+Mh2t1riZKlplRm6pdk+AyFmFz01o1sfCPHyHrXg3xPXME7sAlm0O1ZA13Df8NaKgtsNZFwNHYyIH/Z9cP+XPA==",
+  "artifactSha256": "92b4b8ebb126c42a949b14eb6a97d5a5c8f85e441717e47c56df05a8b96421ca",
+  "npmIntegrity": "sha512-QS42QSzELKTDd+BoZp6xDmR/cdH5eKCtSEeW4k3buVoN3rtH3hd85NxuZL2+YSWvreZzy6bWqWkOABdPc0z9EQ==",
   "binarySha256": "3db48a0b85dbb8074f996ffa167486b49d1c25e1e80dcfa85aba28a4570a33f0",
-  "provenanceSha256": "d5ac082c28eafa942e3d6fc70ec3f307de86fdbba647e9959ecf5f76852f0d13",
-  "builtAt": "2026-08-02T07:36:08.082Z"
+  "provenanceSha256": "cc57ac25a1718122acaadc03698cb2c325fc104eef330c6ab084685b3b91d987",
+  "builtAt": "2026-08-02T07:44:25.315Z"
 }

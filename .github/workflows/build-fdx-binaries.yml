@@ -193,7 +193,7 @@ jobs:
           - os: macos-latest
             pkg: flowdeck-fdx-darwin-arm64
             binary: fdx
-          - os: macos-latest
+          - os: macos-13
             pkg: flowdeck-fdx-darwin-x64
             binary: fdx
           - os: windows-latest
@@ -281,7 +281,7 @@ jobs:
           TMP_APP=$(mktemp -d 2>/dev/null || mktemp -d -t 'tmpapp')
           cd "$TMP_APP"
           npm init -y > /dev/null
-          npm install "$GITHUB_WORKSPACE/packages/${{ matrix.target.pkg }}/$TGZ"
+          npm install --force "$GITHUB_WORKSPACE/packages/${{ matrix.target.pkg }}/$TGZ"
 
           INSTALLED_BIN="$TMP_APP/node_modules/@heidi-dang/${{ matrix.target.pkg }}/${{ matrix.target.binary }}"
           if [ ! -f "$INSTALLED_BIN" ]; then
