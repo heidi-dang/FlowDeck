@@ -135,7 +135,7 @@ fn two_processes_cannot_publish_simultaneously() {
                 dir,
                 &mut m,
                 "files.json",
-                &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}]),
+                &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "0123456789abcdef", "language": "", "executable": false, "classification": "source", "generation": 1}]),
             )
             .unwrap();
             fdx::index::storage::write_component_serde(dir, &mut m, "symbols.json", &serde_json::json!([]))
@@ -175,7 +175,7 @@ fn two_processes_cannot_publish_simultaneously() {
                 dir,
                 &mut m,
                 "files.json",
-                &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}]),
+                &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "0123456789abcdef", "language": "", "executable": false, "classification": "source", "generation": 1}]),
             )
             .unwrap();
             fdx::index::storage::write_component_serde(dir, &mut m, "symbols.json", &serde_json::json!([]))

@@ -130,7 +130,7 @@ describe("FDX index lifecycle (real binary)", () => {
     // ignored + binary files must not be in the file index
     const s = status(dir)
     expect(s.available).toBe(true)
-    expect(s.schema_version).toBe(2)
+    expect(s.schema_version).toBe(3)
     rmSync(dir, { recursive: true, force: true })
   })
 

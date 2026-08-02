@@ -371,13 +371,21 @@ describe("FDX index cross-process coordination (real processes)", () => {
 })
 
 describe("FDX index crash interruption at every publication phase (real processes)", () => {
+  // Publication phases emitted by the binary (see `barrier()` in
+  // crates/fdx/src/index/storage.rs): the generation is built into a tmp
+  // dir (build), the manifest is written last (manifest), the final dir is
+  // published and re-validated at its final path (final), CURRENT is
+  // atomically updated (publish/current), and the new pointer is proven by
+  // a fresh read before retention (activate).
+  const PUBLISH_PHASES = ["build", "manifest", "final", "publish", "current", "activate", "retain"]
+
   function barrierDir(): string {
     return mkdtempSync(join(tmpdir(), "fdx-barrier-"))
   }
 
   function allowAll(bar: string) {
     // Best-effort: allow every phase to proceed (cleanup path).
-    for (const phase of ["build", "manifest", "publish", "current"]) {
+    for (const phase of PUBLISH_PHASES) {
       const p = join(bar, `go-${phase}`)
       if (!existsSync(p)) writeFileSync(p, "go")
     }
@@ -393,7 +401,7 @@ describe("FDX index crash interruption at every publication phase (real processe
     child.stderr!.on("data", (d) => (stderr += d.toString()))
     // Walk the phases in order, releasing each until the target phase, then
     // SIGKILL the writer while it is blocked at the target barrier.
-    const phases = ["build", "manifest", "publish", "current"]
+    const phases = PUBLISH_PHASES
     let reached = false
     for (const p of phases) {
       const deadline = Date.now() + 30_000

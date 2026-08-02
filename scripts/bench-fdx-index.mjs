@@ -118,7 +118,7 @@ const envEvidence = {
   bunVersion: execOut("bun", ["--version"]),
   rustVersion: execOut("rustc", ["--version"]),
   fdxVersion: execOut(BINARY, ["--version"]),
-  indexSchemaVersion: 2,
+  indexSchemaVersion: 3,
 }
 
 // ─── Frozen fixture profiles (committed spec — deterministic content) ──────

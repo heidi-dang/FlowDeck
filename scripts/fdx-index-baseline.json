@@ -13,7 +13,7 @@
   "bunVersion": "1.3.14",
   "rustVersion": "unknown",
   "fdxVersion": "fdx 0.1.0",
-  "indexSchemaVersion": 2,
+  "indexSchemaVersion": 3,
   "binaryPath": "/home/heidi/flowdeck/target/release/fdx",
   "fixtures": {
     "small": {
