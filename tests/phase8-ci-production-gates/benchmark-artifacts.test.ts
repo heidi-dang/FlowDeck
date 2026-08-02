@@ -41,6 +41,7 @@ describe("Phase 8 — Benchmark Artifacts", () => {
       baselineSha: string
       frozenBaselineSha: string
       runtimeImplementationBaselineSha: string
+      sampleProfile: string
       metrics: Record<string, { meanMs: number; medianMs: number }>
       baselineMetrics: Record<string, { meanMs: number; medianMs: number }>
       comparison: { regressions: unknown[]; passed: boolean } | null
@@ -51,6 +52,9 @@ describe("Phase 8 — Benchmark Artifacts", () => {
     expect(parsed.comparison).not.toBeNull()
     expect(parsed.comparison?.passed).toBe(true)
     expect(parsed.comparison?.regressions).toEqual([])
+
+    // Committed evidence must be full-sample (small mode is for tests only).
+    expect(parsed.sampleProfile).toBe("full")
 
     // Exact-SHA evidence: distinct baseline constants recorded.
     expect(parsed.frozenBaselineSha).toBe(FROZEN_BASELINE_SHA)

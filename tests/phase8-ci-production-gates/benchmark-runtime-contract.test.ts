@@ -156,7 +156,7 @@ describe("Phase 8 — Fail-closed runtime benchmark contract", () => {
   })
 
   it("emits fail-closed baseline-vs-candidate evidence with comparison on success", () => {
-    const res = runBenchmark(["--candidate", candidate.dir, "--baseline", baseline.dir])
+    const res = runBenchmark(["--candidate", candidate.dir, "--baseline", baseline.dir, "--small-samples"])
     expect(res.status).toBe(0)
 
     const jsonPath = join(res.outputDir, "runtime-benchmark.json")
@@ -170,12 +170,14 @@ describe("Phase 8 — Fail-closed runtime benchmark contract", () => {
       baselineSha: string
       frozenBaselineSha: string
       runtimeImplementationBaselineSha: string
+      sampleProfile: string
       metrics: Record<string, { meanMs: number; medianMs: number }>
       baselineMetrics: Record<string, { meanMs: number; medianMs: number }>
       comparison: { regressions: unknown[]; passed: boolean } | null
     }
 
     expect(parsed.mode).toBe("baseline-vs-candidate")
+    expect(parsed.sampleProfile).toBe("small")
     expect(parsed.candidateSha).toBe(candidate.sha)
     expect(parsed.baselineSha).toBe(baseline.sha)
     expect(parsed.frozenBaselineSha).toBe(FROZEN_BASELINE_SHA)

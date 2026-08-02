@@ -75,6 +75,41 @@ const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, "..");
 const HEX40 = /^[0-9a-f]{40}$/;
 
+/** Per-metric sample/warmup counts. Full = CI + committed evidence; small = hermetic contract tests. */
+interface SampleProfile {
+  runtimeInitWarmup: number;
+  runtimeInitSamples: number;
+  commitWarmup: number;
+  commitSamples: number;
+  restartWarmup: number;
+  restartSamples: number;
+  completeSamples: number;
+  cancelSamples: number;
+}
+
+const FULL_SAMPLES: SampleProfile = {
+  runtimeInitWarmup: 15,
+  runtimeInitSamples: 100,
+  commitWarmup: 10,
+  commitSamples: 400,
+  restartWarmup: 3,
+  restartSamples: 30,
+  completeSamples: 20,
+  cancelSamples: 20,
+};
+
+/** Small mode: fast and load-insensitive so contract tests do not false-positive under parallel CI load. */
+const SMALL_SAMPLES: SampleProfile = {
+  runtimeInitWarmup: 2,
+  runtimeInitSamples: 6,
+  commitWarmup: 2,
+  commitSamples: 12,
+  restartWarmup: 1,
+  restartSamples: 4,
+  completeSamples: 4,
+  cancelSamples: 4,
+};
+
 const METRIC_IDS = [
   "runtimeInit",
   "commitTransition",
@@ -179,9 +214,9 @@ async function warmup(mod: RuntimeModule, iterations: number, fn: () => Promise<
   }
 }
 
-async function benchRuntimeInit(mod: RuntimeModule): Promise<number[]> {
+async function benchRuntimeInit(mod: RuntimeModule, profile: SampleProfile): Promise<number[]> {
   // Warm up: the first open creates the schema and is much slower than steady-state.
-  await warmup(mod, 15, async () => {
+  await warmup(mod, profile.runtimeInitWarmup, async () => {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-init-warm-"));
     try {
       const store = mod.openSqliteStateStore(join(dir, "bench.db"));
@@ -191,7 +226,7 @@ async function benchRuntimeInit(mod: RuntimeModule): Promise<number[]> {
     }
   });
   const samples: number[] = [];
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < profile.runtimeInitSamples; i++) {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-init-"));
     try {
       const dbPath = join(dir, "bench.db");
@@ -206,7 +241,7 @@ async function benchRuntimeInit(mod: RuntimeModule): Promise<number[]> {
   return samples;
 }
 
-async function benchCommitTransition(mod: RuntimeModule): Promise<number[]> {
+async function benchCommitTransition(mod: RuntimeModule, profile: SampleProfile): Promise<number[]> {
   const samples: number[] = [];
   const store = mod.createInMemoryStateStore();
   const runId = "bench-commit";
@@ -219,7 +254,7 @@ async function benchCommitTransition(mod: RuntimeModule): Promise<number[]> {
 
   // Warm up the write path before timing. Track versions so timing continues cleanly.
   let expectedVersion = 0;
-  for (let w = 0; w < 10; w++) {
+  for (let w = 0; w < profile.commitWarmup; w++) {
     await store.commitTransition({
       runId,
       state: "planning" as State,
@@ -237,7 +272,7 @@ async function benchCommitTransition(mod: RuntimeModule): Promise<number[]> {
   }
 
   let current: State = "created" as State;
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < profile.commitSamples; i++) {
     const next: State =
       current === ("created" as State) ? ("planning" as State) : ("created" as State);
     const t0 = performance.now();
@@ -258,8 +293,8 @@ async function benchCommitTransition(mod: RuntimeModule): Promise<number[]> {
   return samples;
 }
 
-async function benchLoadRunAfterRestart(mod: RuntimeModule): Promise<number[]> {
-  await warmup(mod, 3, async () => {
+async function benchLoadRunAfterRestart(mod: RuntimeModule, profile: SampleProfile): Promise<number[]> {
+  await warmup(mod, profile.restartWarmup, async () => {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-restart-warm-"));
     try {
       const dbPath = join(dir, "bench.db");
@@ -281,7 +316,7 @@ async function benchLoadRunAfterRestart(mod: RuntimeModule): Promise<number[]> {
     }
   });
   const samples: number[] = [];
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < profile.restartSamples; i++) {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-restart-"));
     try {
       const dbPath = join(dir, "bench.db");
@@ -312,9 +347,9 @@ async function benchLoadRunAfterRestart(mod: RuntimeModule): Promise<number[]> {
   return samples;
 }
 
-async function benchCompletePath(mod: RuntimeModule): Promise<number[]> {
+async function benchCompletePath(mod: RuntimeModule, profile: SampleProfile): Promise<number[]> {
   const samples: number[] = [];
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < profile.completeSamples; i++) {
     const store = mod.createInMemoryStateStore();
     const runId = `bench-complete-${i}`;
     await store.createRun({
@@ -339,9 +374,9 @@ async function benchCompletePath(mod: RuntimeModule): Promise<number[]> {
   return samples;
 }
 
-async function benchCancellationPhase(mod: RuntimeModule): Promise<number[]> {
+async function benchCancellationPhase(mod: RuntimeModule, profile: SampleProfile): Promise<number[]> {
   const samples: number[] = [];
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < profile.cancelSamples; i++) {
     const store = mod.createInMemoryStateStore();
     const runId = `bench-cancel-${i}`;
     await store.createRun({
@@ -359,13 +394,13 @@ async function benchCancellationPhase(mod: RuntimeModule): Promise<number[]> {
   return samples;
 }
 
-async function measureAll(mod: RuntimeModule): Promise<Metrics> {
+async function measureAll(mod: RuntimeModule, profile: SampleProfile): Promise<Metrics> {
   return {
-    runtimeInit: summarize(await benchRuntimeInit(mod)),
-    commitTransition: summarize(await benchCommitTransition(mod)),
-    loadRunAfterRestart: summarize(await benchLoadRunAfterRestart(mod)),
-    completePath: summarize(await benchCompletePath(mod)),
-    cancellationPhase: summarize(await benchCancellationPhase(mod)),
+    runtimeInit: summarize(await benchRuntimeInit(mod, profile)),
+    commitTransition: summarize(await benchCommitTransition(mod, profile)),
+    loadRunAfterRestart: summarize(await benchLoadRunAfterRestart(mod, profile)),
+    completePath: summarize(await benchCompletePath(mod, profile)),
+    cancellationPhase: summarize(await benchCancellationPhase(mod, profile)),
   };
 }
 
@@ -474,15 +509,17 @@ interface Options {
   outputDir: string | null;
   expectCandidateSha: string | null;
   expectBaselineSha: string | null;
+  smallSamples: boolean;
 }
 
 function printUsage(): void {
   console.log(
-    `Usage: bun scripts/benchmark-runtime.ts --baseline <dir> [--candidate <dir>] [--output <dir>] [--expect-candidate-sha <sha>] [--expect-baseline-sha <sha>]\n` +
+    `Usage: bun scripts/benchmark-runtime.ts --baseline <dir> [--candidate <dir>] [--output <dir>] [--expect-candidate-sha <sha>] [--expect-baseline-sha <sha>] [--small-samples]\n` +
       `Env: BENCHMARK_BASELINE_DIR (required), BENCHMARK_CANDIDATE_DIR, BENCHMARK_OUTPUT_DIR,\n` +
-      `     BENCHMARK_EXPECT_CANDIDATE_SHA, BENCHMARK_EXPECT_BASELINE_SHA\n` +
+      `     BENCHMARK_EXPECT_CANDIDATE_SHA, BENCHMARK_EXPECT_BASELINE_SHA, BENCHMARK_SMALL_SAMPLES\n` +
       `Fail-closed: baseline is required, candidate-only is rejected, dirty worktrees are rejected,\n` +
-      `expected SHAs must match, and the candidate must not regress > ${MAX_REGRESSION_PERCENT}% (>${MIN_REGRESSION_DELTA_MS} ms) vs baseline.`,
+      `expected SHAs must match, and the candidate must not regress > ${MAX_REGRESSION_PERCENT}% (>${MIN_REGRESSION_DELTA_MS} ms) vs baseline.\n` +
+      `--small-samples uses reduced sample counts (fast, load-insensitive) for hermetic tests.`,
   );
 }
 
@@ -494,6 +531,7 @@ function parseArgs(): Options {
   let outputDir = env.BENCHMARK_OUTPUT_DIR ?? null;
   let expectCandidateSha = env.BENCHMARK_EXPECT_CANDIDATE_SHA ?? null;
   let expectBaselineSha = env.BENCHMARK_EXPECT_BASELINE_SHA ?? null;
+  let smallSamples = env.BENCHMARK_SMALL_SAMPLES === "1" || env.BENCHMARK_SMALL_SAMPLES === "true";
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -519,6 +557,9 @@ function parseArgs(): Options {
       case "--expect-baseline-sha":
         expectBaselineSha = next();
         break;
+      case "--small-samples":
+        smallSamples = true;
+        break;
       case "--help":
       case "-h":
         printUsage();
@@ -537,6 +578,7 @@ function parseArgs(): Options {
     outputDir: outputDir ? resolve(outputDir) : null,
     expectCandidateSha,
     expectBaselineSha,
+    smallSamples,
   };
 }
 
@@ -616,8 +658,12 @@ async function main(): Promise<void> {
   console.log(`Baseline: ${baselineDir} @ ${baselineSha}`);
   console.log("");
 
-  const candidate = await measureAll(candidateMod);
-  const baseline = await measureAll(baselineMod);
+  const profile = opts.smallSamples ? SMALL_SAMPLES : FULL_SAMPLES;
+  console.log(`Sample profile: ${opts.smallSamples ? "small (hermetic test)" : "full (CI evidence)"}`);
+  console.log("");
+
+  const candidate = await measureAll(candidateMod, profile);
+  const baseline = await measureAll(baselineMod, profile);
 
   validateMetrics(candidate, "candidate");
   validateMetrics(baseline, "baseline");
@@ -648,6 +694,7 @@ async function main(): Promise<void> {
     frozenBaselineSha: FROZEN_BASELINE_SHA,
     runtimeImplementationBaselineSha: RUNTIME_IMPLEMENTATION_BASELINE_SHA,
     thresholdPercent: MAX_REGRESSION_PERCENT,
+    sampleProfile: opts.smallSamples ? "small" : "full",
     worktreeStatus: { candidateClean: true, baselineClean: true },
     environment: {
       platform: process.platform,
