@@ -176,14 +176,11 @@ jobs:
             echo "FAIL: flowdeck doctor exited $DOCTOR_EXIT in isolated home (expected 0)"
             exit "$DOCTOR_EXIT"
           fi
-          echo "PASS: flowdeck doctor exit 0 in isolated home"
-          rm -rf "$TMP_ROOT" "$FLOWDECK_TARBALL_PATH"
-
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck uninstall || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: uninstall"
           ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs || { echo "FAIL: config-mutator.mjs missing"; exit 1; }
           echo "PASS: Runtime files verified"
-          rm -f "$GITHUB_WORKSPACE/$PACKAGE"
+          rm -rf "$TMP_ROOT" "$FLOWDECK_TARBALL_PATH"
 
   installer-test:
     name: Installer Tests
