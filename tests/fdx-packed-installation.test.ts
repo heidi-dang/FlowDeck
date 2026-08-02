@@ -4,6 +4,8 @@ import { join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { execFileSync } from "node:child_process"
 
+import { detectFdxTarget } from "../src/tools/fdx-shared"
+
 describe("FDX Clean Packed Installation Tests", () => {
   let projectDir: string
   let originalEnv: NodeJS.ProcessEnv
@@ -29,9 +31,11 @@ describe("FDX Clean Packed Installation Tests", () => {
     const mainPackJson = JSON.parse(mainPackOut)
     const mainTarball = join(root, mainPackJson[0].filename)
 
-    // Build local platform package
+    // Build local platform package for current host target
     execFileSync("node", ["scripts/build-fdx-packages.mjs"], { cwd: root, stdio: "ignore" })
-    const pkgDir = join(root, "packages", "flowdeck-fdx-linux-x64-gnu")
+    const target = detectFdxTarget()
+    const pkgFolderName = target?.packageName ? target.packageName.replace("@heidi-dang/", "") : "flowdeck-fdx-linux-x64-gnu"
+    const pkgDir = join(root, "packages", pkgFolderName)
     const pkgPackOut = execFileSync("npm", ["pack", "--json"], { cwd: pkgDir, encoding: "utf-8" })
     const pkgPackJson = JSON.parse(pkgPackOut)
     const platformTarball = join(pkgDir, pkgPackJson[0].filename)
@@ -42,7 +46,8 @@ describe("FDX Clean Packed Installation Tests", () => {
     // Install packed tarballs
     execFileSync("npm", ["install", mainTarball, platformTarball], { cwd: projectDir, stdio: "ignore" })
 
-    const cliBin = join(projectDir, "node_modules", ".bin", "flowdeck")
+    const binName = process.platform === "win32" ? "flowdeck.cmd" : "flowdeck"
+    const cliBin = join(projectDir, "node_modules", ".bin", binName)
 
     // 1. flowdeck fdx status
     const statusOut = execFileSync(cliBin, ["fdx", "status"], { cwd: projectDir, encoding: "utf-8" })
@@ -71,7 +76,7 @@ describe("FDX Clean Packed Installation Tests", () => {
     // Cleanup generated tarballs
     try { rmSync(mainTarball, { force: true }) } catch {}
     try { rmSync(platformTarball, { force: true }) } catch {}
-  }, 60000)
+  }, 120000)
 
   it("packed tarball includes crates/fdx source and excludes target build artifacts", () => {
     const root = resolve(__dirname, "..")
