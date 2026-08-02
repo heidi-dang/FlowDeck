@@ -1,52 +1,52 @@
 {
   "baselineSha": "5809fcf1230ff349ff0d7f5b53ed75403f44573b",
   "runtimeCompatibleSha": "e22e04b38e45405b4ae9f15115012d0dce99c241",
-  "candidateSha": "99feefda5c60155592eac412d86ec86fbb2b6b62",
+  "candidateSha": "18a8ee6a1522dcb92df83d194db9a7e863622a23",
   "dirty": true,
-  "timestamp": "2026-08-02T05:17:24.998Z",
+  "timestamp": "2026-08-02T05:18:48.308Z",
   "candidateDir": "/root/flowdeck",
   "baselineDir": "/tmp/opencode/bench-baseline",
   "mode": "baseline-vs-candidate",
   "metrics": {
     "runtimeInit": {
-      "meanMs": 1.442,
-      "medianMs": 1.358,
-      "p95Ms": 1.956,
-      "minMs": 1.223,
-      "maxMs": 3.585,
-      "iterations": 80
+      "meanMs": 1.549,
+      "medianMs": 1.563,
+      "p95Ms": 1.818,
+      "minMs": 1.246,
+      "maxMs": 2.636,
+      "iterations": 240
     },
     "commitTransition": {
-      "meanMs": 0.014,
+      "meanMs": 0.018,
       "medianMs": 0.012,
-      "p95Ms": 0.022,
-      "minMs": 0.009,
-      "maxMs": 0.936,
-      "iterations": 600
+      "p95Ms": 0.027,
+      "minMs": 0.008,
+      "maxMs": 1.154,
+      "iterations": 1800
     },
     "loadRunAfterRestart": {
-      "meanMs": 0.252,
-      "medianMs": 0.243,
-      "p95Ms": 0.324,
-      "minMs": 0.204,
-      "maxMs": 0.369,
-      "iterations": 60
+      "meanMs": 0.308,
+      "medianMs": 0.274,
+      "p95Ms": 0.445,
+      "minMs": 0.2,
+      "maxMs": 1.364,
+      "iterations": 180
     },
     "completePath": {
-      "meanMs": 0.064,
-      "medianMs": 0.058,
-      "p95Ms": 0.088,
-      "minMs": 0.049,
-      "maxMs": 0.218,
-      "iterations": 100
+      "meanMs": 0.076,
+      "medianMs": 0.068,
+      "p95Ms": 0.106,
+      "minMs": 0.05,
+      "maxMs": 1.13,
+      "iterations": 300
     },
     "cancellationPhase": {
-      "meanMs": 0.058,
-      "medianMs": 0.033,
-      "p95Ms": 0.067,
+      "meanMs": 0.046,
+      "medianMs": 0.038,
+      "p95Ms": 0.062,
       "minMs": 0.027,
-      "maxMs": 1.37,
-      "iterations": 100
+      "maxMs": 1.083,
+      "iterations": 300
     }
   },
   "comparison": {
