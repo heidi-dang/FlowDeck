@@ -736,9 +736,11 @@ impl GenerationStore {
     }
 
     /// Atomically set the CURRENT pointer with bounded retry. Uses a unique
-    /// temp pointer + atomic rename so a reader always sees either the
-    /// previous valid pointer or the new one — never a missing/partial
-    /// pointer — and two racing writers never share a temp path.
+    /// temp pointer + platform-native atomic replacement ([`winfs::atomic_replace`])
+    /// so a reader always sees either the previous valid pointer or the new
+    /// one — never a missing/partial pointer — and two racing writers never
+    /// share a temp path. The replacement never deletes CURRENT first and
+    /// preserves the previous pointer on failure.
     fn set_current(&self, generation: u64) -> std::io::Result<()> {
         let ptr = current_pointer(&self.worktree);
         let tmp_ptr = self.unique_tmp_sibling(&ptr);
@@ -749,7 +751,7 @@ impl GenerationStore {
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            match std::fs::rename(&tmp_ptr, &ptr) {
+            match crate::index::winfs::atomic_replace(&tmp_ptr, &ptr) {
                 Ok(()) => {
                     let _ = std::fs::remove_file(&tmp_ptr);
                     return sync_dir(&self.worktree);
@@ -1618,6 +1620,40 @@ mod tests {
             }
             other => panic!("expected Loaded, got {other:?}"),
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn set_current_preserves_pointer_while_old_pointer_held_open() {
+        use crate::index::winfs::open_pinned;
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("pinned");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        assert_eq!(store.current_generation().unwrap(), Some(1));
+
+        // Pin CURRENT without FILE_SHARE_DELETE: an atomic pointer
+        // replacement must fail with a sharing violation, retry to its
+        // deadline, and leave the previous pointer (gen 1) fully intact.
+        let ptr = current_pointer(store.worktree_path());
+        let pinned = open_pinned(&ptr).unwrap();
+        let err = store.set_current(2).unwrap_err();
+        drop(pinned);
+
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "sharing violation must surface as PermissionDenied"
+        );
+        assert_eq!(
+            store.current_generation().unwrap(),
+            Some(1),
+            "previous pointer preserved while old pointer held open"
+        );
+
+        // Once the pin is released the same publication succeeds.
+        store.set_current(2).unwrap();
+        assert_eq!(store.current_generation().unwrap(), Some(2));
     }
 
     #[test]

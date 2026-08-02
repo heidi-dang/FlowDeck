@@ -13,6 +13,7 @@
 //! within the repository root (it could have been replaced with a symlink
 //! between check and read).
 
+use crate::index::winfs::{identity_of_file, FileIdentity};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -136,13 +137,17 @@ fn guard_resolve(
 
 /// Post-read/stat revalidation: `candidate` must still resolve to the same
 /// canonical target inside `root`, and the file at the path now must still
-/// be the same file as `base` (the file that was actually opened or
-/// stat'ed). Any mismatch means a swap happened mid-read.
+/// be the same file as `base` (the strong identity of the file that was
+/// actually opened or stat'ed). Any mismatch means a swap happened
+/// mid-read. The identity comparison uses an *opened handle* on the
+/// post-read path — never a re-stat — so a same-size/same-mtime/same-attrs
+/// swap is still detected (size/time/attrs are forgeable; a true file
+/// identity is not).
 fn revalidate(
     root: &Path,
     candidate: &Path,
     canon: &Path,
-    base: &std::fs::Metadata,
+    base: &FileIdentity,
 ) -> Result<(), RepositoryReadRejection> {
     let post_canon = match candidate.canonicalize() {
         Ok(c) => c,
@@ -151,11 +156,15 @@ fn revalidate(
     if post_canon != *canon || !post_canon.starts_with(root) {
         return Err(RepositoryReadRejection::ChangedDuringRead);
     }
-    let post_meta = match std::fs::metadata(&post_canon) {
-        Ok(m) => m,
+    let post = match std::fs::File::open(&post_canon) {
+        Ok(f) => f,
         Err(_) => return Err(RepositoryReadRejection::ChangedDuringRead),
     };
-    if !same_file(base, &post_meta) {
+    let post_identity = match identity_of_file(&post) {
+        Ok(i) => i,
+        Err(_) => return Err(RepositoryReadRejection::ChangedDuringRead),
+    };
+    if &post_identity != base {
         return Err(RepositoryReadRejection::ChangedDuringRead);
     }
     Ok(())
@@ -178,24 +187,43 @@ pub fn read_repository_file(
         .map_err(|_| RepositoryReadRejection::Unresolvable)?;
     let (is_symlink, canon, target_meta) = guard_resolve(&root, candidate)?;
 
-    // 5. Open + read the resolved target.
+    // 5. Open + read the resolved target through ONE handle (the bytes can
+    //    never come from a file other than the one whose identity we
+    //    capture here).
     use std::io::Read;
     let mut f = std::fs::File::open(&canon).map_err(|_| RepositoryReadRejection::Io)?;
-    let mut bytes = Vec::new();
-    f.read_to_end(&mut bytes)
-        .map_err(|_| RepositoryReadRejection::Io)?;
     let opened_meta = f.metadata().map_err(|_| RepositoryReadRejection::Io)?;
 
-    // 6. The file actually opened must be the file validated at step 4 (a
-    //    swap between stat and open is caught here).
+    // 6. Defense in depth against a pre-open path swap: the metadata stat'ed
+    //    at step 4 should match the handle we actually opened. This is
+    //    supplementary (size/time/attrs are forgeable); the authoritative
+    //    mid-read check below compares true file identity from handles.
     if !same_file(&target_meta, &opened_meta) {
         return Err(RepositoryReadRejection::ChangedDuringRead);
     }
 
-    // 7. Post-read revalidation: the candidate must still resolve to the
-    //    same canonical target inside the root (a swap to an external
-    //    symlink between steps 1-4 and the read is caught here).
-    revalidate(&root, candidate, &canon, &opened_meta)?;
+    // 7. Capture the strong identity of the handle that will be read. This
+    //    is the TOCTOU reference: after reading, the path must still yield a
+    //    file with this exact identity (volume serial + file index on
+    //    Windows, dev + ino on Unix).
+    let base_identity =
+        identity_of_file(&f).map_err(|_| RepositoryReadRejection::ChangedDuringRead)?;
+
+    let mut bytes = Vec::new();
+    f.read_to_end(&mut bytes)
+        .map_err(|_| RepositoryReadRejection::Io)?;
+
+    // Test hook: deterministically swap the file between the read and the
+    // strong revalidation, so adversarial TOCTOU tests do not race.
+    #[cfg(test)]
+    run_test_swap_hook(&canon);
+
+    // 8. Post-read revalidation: the candidate must still resolve to the
+    //    same canonical target inside the root, and the file at that path
+    //    must still be the same file (strong identity). A swap to an
+    //    external symlink or to a different file — even one with identical
+    //    size/time/attributes — is caught here.
+    revalidate(&root, candidate, &canon, &base_identity)?;
 
     Ok(GuardedRepositoryFile {
         bytes,
@@ -220,7 +248,15 @@ pub fn repository_file_metadata(
         .canonicalize()
         .map_err(|_| RepositoryReadRejection::Unresolvable)?;
     let (is_symlink, canon, target_meta) = guard_resolve(&root, candidate)?;
-    revalidate(&root, candidate, &canon, &target_meta)?;
+
+    // Open a handle to the validated target so the revalidation can compare
+    // strong identity (a stat alone cannot on Windows). No content is read.
+    let f = std::fs::File::open(&canon).map_err(|_| RepositoryReadRejection::Io)?;
+    let base_identity =
+        identity_of_file(&f).map_err(|_| RepositoryReadRejection::ChangedDuringRead)?;
+    drop(f);
+
+    revalidate(&root, candidate, &canon, &base_identity)?;
     Ok(GuardedFileInfo {
         len: target_meta.len(),
         modified: target_meta.modified().unwrap_or(std::time::UNIX_EPOCH),
@@ -310,6 +346,11 @@ fn classify_resolve(e: &std::io::Error) -> RepositoryReadRejection {
 }
 
 /// Whether two metadata snapshots describe the same file.
+///
+/// This is the *supplementary* pre-open check only: it compares the step-4
+/// path stat against the opened handle's metadata. The authoritative
+/// mid-read check compares strong identity from handles ([`revalidate`]
+/// via [`identity_of_file`]).
 #[cfg(unix)]
 fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
@@ -319,10 +360,12 @@ fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
 #[cfg(windows)]
 fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
-    // Stable identity signals only: `file_index()`/`volume_serial_number()`
+    // Supplementary only (defense in depth against a pre-open path swap):
+    // stable identity signals — `file_index()`/`volume_serial_number()` —
     // remain behind the unstable `windows_by_handle` feature gate, so use
-    // size + last-write-time + attribute flags (all stable) to detect a
-    // swapped file between the resolve and open steps.
+    // size + last-write-time + attribute flags (all stable). This check can
+    // be fooled by a forged same-size/same-time/same-attr file; the strong
+    // identity comparison in `revalidate` cannot.
     a.file_size() == b.file_size()
         && a.last_write_time() == b.last_write_time()
         && a.file_attributes() == b.file_attributes()
@@ -343,6 +386,34 @@ fn is_executable(meta: &std::fs::Metadata) -> bool {
 #[cfg(not(unix))]
 fn is_executable(_meta: &std::fs::Metadata) -> bool {
     false
+}
+
+/// Test-only swap hook: invoked with the canonical target path immediately
+/// after content is read and before the strong revalidation, so adversarial
+/// TOCTOU tests can deterministically swap files without racing.
+#[cfg(test)]
+type SwapHook = Box<dyn Fn(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_SWAP_HOOK: RefCell<Option<SwapHook>> =
+        const { RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn run_test_swap_hook(canon: &Path) {
+    TEST_SWAP_HOOK.with(|hook| {
+        if let Some(f) = hook.borrow().as_ref() {
+            f(canon);
+        }
+    });
+}
+
+/// Test-only: install (or clear) the swap hook. `None` restores normal
+/// behavior.
+#[cfg(test)]
+pub fn set_test_swap_hook(hook: Option<SwapHook>) {
+    TEST_SWAP_HOOK.with(|h| *h.borrow_mut() = hook);
 }
 
 #[cfg(test)]
@@ -507,5 +578,62 @@ mod guarded_read_tests {
             let info = repository_file_metadata(&root, &root.join("run.sh")).unwrap();
             assert!(info.executable);
         }
+    }
+
+    #[test]
+    fn same_metadata_different_identity_swap_is_changed_during_read() {
+        // Contract item 2 adversarial case: A and B have identical size,
+        // identical mtime, and (on Windows) identical default attributes,
+        // but different true identities. Swapping A→B mid-read MUST yield
+        // ChangedDuringRead — a size/time/attrs comparison alone could not
+        // detect this swap.
+        let (_tmp, root) = tmp_root();
+        let fixed = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+
+        fs::write(root.join("a.ts"), "AAAA").unwrap();
+        fs::write(root.join("b.ts"), "BBBB").unwrap();
+        for p in [root.join("a.ts"), root.join("b.ts")] {
+            let f = std::fs::File::options()
+                .read(true)
+                .write(true)
+                .open(p)
+                .unwrap();
+            f.set_times(
+                std::fs::FileTimes::new()
+                    .set_modified(fixed)
+                    .set_accessed(fixed),
+            )
+            .unwrap();
+            drop(f);
+        }
+
+        let a = root.join("a.ts");
+        let b = root.join("b.ts");
+        // Sanity: the two files really are distinct by identity.
+        let fa = std::fs::File::open(&a).unwrap();
+        let fb = std::fs::File::open(&b).unwrap();
+        assert_ne!(
+            identity_of_file(&fa).unwrap(),
+            identity_of_file(&fb).unwrap()
+        );
+        drop(fa);
+        drop(fb);
+
+        let a_for_hook = a.clone();
+        let b_for_hook = b.clone();
+        set_test_swap_hook(Some(Box::new(move |canon: &Path| {
+            if canon == a_for_hook {
+                // Swap b.ts over a.ts mid-read.
+                fs::rename(&b_for_hook, &a_for_hook).unwrap();
+            }
+        })));
+
+        let result = read_repository_file(&root, &a);
+        set_test_swap_hook(None);
+        assert_eq!(
+            result,
+            Err(RepositoryReadRejection::ChangedDuringRead),
+            "same-metadata different-identity swap must be detected"
+        );
     }
 }

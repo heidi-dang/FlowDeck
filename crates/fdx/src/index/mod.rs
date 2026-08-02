@@ -29,6 +29,7 @@ pub mod manifest;
 pub mod paths;
 pub mod refresh;
 pub mod storage;
+pub mod winfs;
 
 use crate::index::components::{
     ContentCacheComponent, DependenciesComponent, FilesComponent, GitStateComponent,
