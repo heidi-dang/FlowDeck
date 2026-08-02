@@ -404,7 +404,8 @@ impl IndexService {
                     );
 
                     let ignored = default_overrides();
-                    let files = builder::build_files(&root, &ignored, self.max_files);
+                    let reader = crate::index::boundary::RepositoryReader::new(&root);
+                    let files = builder::build_files(&reader, &ignored, self.max_files);
                     storage::write_component_serde(
                         dir,
                         &mut m,
@@ -412,7 +413,7 @@ impl IndexService {
                         &files.files.values().cloned().collect::<Vec<_>>(),
                     )?;
 
-                    let symbols = builder::build_symbols(&root, &files, self.max_symbols);
+                    let symbols = builder::build_symbols(&reader, &files, self.max_symbols);
                     storage::write_component_serde(
                         dir,
                         &mut m,
@@ -420,7 +421,7 @@ impl IndexService {
                         &symbols.by_id.values().cloned().collect::<Vec<_>>(),
                     )?;
 
-                    let deps = builder::build_dependencies(&root, &files, self.max_edges);
+                    let deps = builder::build_dependencies(&reader, &files, self.max_edges);
                     let mut dep_rows: Vec<DependencyEdge> = Vec::new();
                     for edges in deps.forward.values() {
                         dep_rows.extend(edges.iter().cloned());
@@ -503,7 +504,8 @@ impl IndexService {
         if cs.is_empty() && prev.manifest.dirty_fingerprint != dirty {
             // Rebuild the full file component (metadata-only scan, no
             // content re-read beyond hashes) and diff by hash.
-            let current_files = builder::build_files(&root, &ignored, self.max_files);
+            let reader = crate::index::boundary::RepositoryReader::new(&root);
+            let current_files = builder::build_files(&reader, &ignored, self.max_files);
             let refresher = Refresher::new(&root, generation);
             cs = refresher.fs_change_detection(&prev.files, &current_files);
         }
@@ -534,11 +536,12 @@ impl IndexService {
                     refresher.detect_renames(&mut cs, &next_git.snapshot);
                     if cs.full_rebuild {
                         // HEAD moved: rebuild the whole tree-derived index.
-                        let files_new = builder::build_files(&root, &ignored, self.max_files);
+                        let reader = crate::index::boundary::RepositoryReader::new(&root);
+                        let files_new = builder::build_files(&reader, &ignored, self.max_files);
                         let symbols_new =
-                            builder::build_symbols(&root, &files_new, self.max_symbols);
+                            builder::build_symbols(&reader, &files_new, self.max_symbols);
                         let deps_new =
-                            builder::build_dependencies(&root, &files_new, self.max_edges);
+                            builder::build_dependencies(&reader, &files_new, self.max_edges);
                         let tests_new = builder::build_test_mapping(&files_new, &deps_new);
                         files = files_new;
                         symbols = symbols_new;

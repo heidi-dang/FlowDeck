@@ -13,6 +13,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 #[derive(Debug, Clone, Default)]
 pub struct FilesComponent {
     pub files: BTreeMap<String, FileMeta>,
+    /// Repository files rejected during the last build/refresh pass
+    /// (path → structured reason). In-memory only: rejected files have NO
+    /// row in any persisted component, so this map is never serialized.
+    pub rejected: BTreeMap<String, String>,
 }
 
 /// Symbol index: symbol id → symbol metadata, plus a per-file index for fast

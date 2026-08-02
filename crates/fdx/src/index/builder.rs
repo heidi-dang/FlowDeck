@@ -5,7 +5,7 @@
 //! per-file update paths. All functions are deterministic: given the same
 //! input tree, they produce the same output ordering.
 
-use crate::index::boundary::{check_file_boundary, verify_post_read, BoundaryVerdict};
+use crate::index::boundary::{GuardedFileInfo, RepositoryReader};
 use crate::index::components::{
     DependenciesComponent, FilesComponent, GitStateComponent, SymbolsComponent,
     TestMappingComponent,
@@ -81,13 +81,22 @@ pub fn detect_language_for(rel: &str) -> String {
 
 /// Build the file metadata component by walking `root` with ignore rules.
 ///
-/// `ignore` is an optional `ignore::WalkBuilder` configured by the caller.
-/// `max_files` bounds the total number of files indexed (hard cap).
+/// `reader` provides every repository-content read through the guarded
+/// boundary + TOCTOU primitive and caches results per pass (each file is
+/// read at most once). `ignore` is an optional `ignore::WalkBuilder`
+/// configuration. `max_files` bounds the total number of files indexed
+/// (hard cap).
+///
+/// Files rejected by the guard (external symlinks, broken links, non-regular
+/// files, TOCTOU swaps) are excluded from the component entirely and
+/// recorded in `FilesComponent::rejected` with a structured reason — never
+/// as an empty-hash metadata row.
 pub fn build_files(
-    root: &Path,
+    reader: &RepositoryReader,
     ignored: &ignore::overrides::Override,
     max_files: usize,
 ) -> FilesComponent {
+    let root = reader.root();
     let mut files = FilesComponent::default();
     let mut walk = ignore::WalkBuilder::new(root);
     walk.add_custom_ignore_filename(".fdignore");
@@ -116,14 +125,6 @@ pub fn build_files(
         if rel_str.is_empty() {
             continue;
         }
-        // Repository boundary enforcement: reject symlinks that escape
-        // the canonical repository root and broken/unresolvable entries.
-        match check_file_boundary(abs, root) {
-            BoundaryVerdict::Allow | BoundaryVerdict::AllowSymlink => {}
-            BoundaryVerdict::SymlinkEscape(_) | BoundaryVerdict::Unresolvable => {
-                continue;
-            }
-        }
         // Never index the git metadata directory or VCS internals.
         if rel_str.starts_with(".git/")
             || rel_str == ".git"
@@ -132,62 +133,70 @@ pub fn build_files(
         {
             continue;
         }
-        let meta = file_meta_from_entry(
-            abs,
-            root,
-            &rel_str,
-            is_test_path(&rel_str),
-            is_generated_path(&rel_str),
-            is_binary_path(&rel_str),
-            COLD_GENERATION,
-        );
+        let is_test = is_test_path(&rel_str);
+        let is_generated = is_generated_path(&rel_str);
+        let is_binary = is_binary_path(&rel_str);
+        // Repository boundary enforcement: the guarded read (or guarded
+        // metadata check for binary files, whose content must never be
+        // loaded into memory) rejects symlinks that escape the canonical
+        // root, broken links, non-regular files, and TOCTOU swaps.
+        let meta = if is_binary {
+            match reader.metadata(abs) {
+                Ok(info) => file_meta_from_guarded(
+                    &rel_str,
+                    &info,
+                    String::new(),
+                    is_test,
+                    is_generated,
+                    true,
+                    COLD_GENERATION,
+                ),
+                Err(rej) => {
+                    files.rejected.insert(rel_str.clone(), rej.to_string());
+                    continue;
+                }
+            }
+        } else {
+            match reader.read(abs) {
+                Ok(g) => {
+                    let hash = sha256_hex(&g.bytes).chars().take(16).collect();
+                    file_meta_from_guarded(
+                        &rel_str,
+                        &g.info,
+                        hash,
+                        is_test,
+                        is_generated,
+                        false,
+                        COLD_GENERATION,
+                    )
+                }
+                Err(rej) => {
+                    files.rejected.insert(rel_str.clone(), rej.to_string());
+                    continue;
+                }
+            }
+        };
         files.files.insert(rel_str.clone(), meta);
         count += 1;
     }
     files
 }
 
-/// Compute a `FileMeta` for one file path.
+/// Compute a `FileMeta` from a guarded read result.
 ///
-/// `root` is required for the post-read TOCTOU check: after reading content,
-/// we verify the file still resolves within `root` so a race that swaps a
-/// regular file with an external symlink before read cannot leak content.
-fn file_meta_from_entry(
-    abs: &Path,
-    root: &Path,
+/// `content_hash` is precomputed by the caller from the guarded bytes ("" for
+/// binary files, whose content is never read). `info` carries the metadata
+/// captured by the guard; no further filesystem access happens here.
+fn file_meta_from_guarded(
     rel: &str,
+    info: &GuardedFileInfo,
+    content_hash: String,
     is_test: bool,
     is_generated: bool,
     is_binary: bool,
     generation: u64,
 ) -> FileMeta {
-    let meta = std::fs::symlink_metadata(abs)
-        .unwrap_or_else(|_| std::fs::metadata(abs).unwrap_or_default_for_file());
-    let kind = if meta.file_type().is_symlink() {
-        "symlink"
-    } else if meta.is_dir() {
-        "dir"
-    } else {
-        "file"
-    };
-    let size = meta.len();
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let executable = {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            meta.permissions().mode() & 0o111 != 0
-        }
-        #[cfg(not(unix))]
-        {
-            false
-        }
-    };
+    let kind = if info.is_symlink { "symlink" } else { "file" };
     let classification = if is_binary {
         CLASS_BINARY
     } else if is_generated {
@@ -197,54 +206,21 @@ fn file_meta_from_entry(
     } else {
         CLASS_SOURCE
     };
-    let content_hash = if is_binary {
-        String::new()
-    } else {
-        // TOCTOU guard: read content, then verify the path still resolves
-        // inside root. A symlink swap that occurred between the walk and
-        // the read cannot leak external content because we re-validate.
-        match std::fs::read(abs) {
-            Ok(bytes) if verify_post_read(abs, root) => {
-                sha256_hex(&bytes).chars().take(16).collect()
-            }
-            Ok(_) => String::new(),
-            Err(_) => String::new(),
-        }
-    };
     FileMeta {
         path: rel.to_string(),
         kind: kind.to_string(),
-        size,
-        modified,
+        size: info.len,
+        modified: info
+            .modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
         content_hash,
         language: detect_language_for(rel),
-        executable,
+        executable: info.executable,
         classification: classification.to_string(),
         generation,
     }
-}
-
-/// Trait-less helper: default FileMeta used when metadata is unavailable.
-trait DefaultFileMeta {
-    fn unwrap_or_default_for_file(self) -> std::fs::Metadata;
-}
-
-impl DefaultFileMeta for std::io::Result<std::fs::Metadata> {
-    fn unwrap_or_default_for_file(self) -> std::fs::Metadata {
-        match self {
-            Ok(m) => m,
-            Err(_) => std::fs::File::open("/dev/null")
-                .and_then(|f| f.metadata())
-                .unwrap_or_else(|_| dummy_metadata()),
-        }
-    }
-}
-
-fn dummy_metadata() -> std::fs::Metadata {
-    // A permissive empty metadata: size 0, not a dir.
-    std::fs::File::open("/dev/null")
-        .and_then(|f| f.metadata())
-        .expect("cannot open /dev/null")
 }
 
 /// Build the symbol component for one file. Returns symbols (possibly empty).
@@ -344,7 +320,16 @@ fn is_exported(ts_kind: &str) -> bool {
 }
 
 /// Build the symbol component for the whole repo by scanning source files.
-pub fn build_symbols(root: &Path, files: &FilesComponent, max_symbols: usize) -> SymbolsComponent {
+///
+/// Content comes from the shared `reader` — a cache hit for files already
+/// read by `build_files`, so symbols derive from the same guarded bytes
+/// (no second read, no mid-pass TOCTOU window).
+pub fn build_symbols(
+    reader: &RepositoryReader,
+    files: &FilesComponent,
+    max_symbols: usize,
+) -> SymbolsComponent {
+    let root = reader.root();
     let mut comp = SymbolsComponent::default();
     let mut count = 0usize;
     for (rel, meta) in &files.files {
@@ -355,10 +340,13 @@ pub fn build_symbols(root: &Path, files: &FilesComponent, max_symbols: usize) ->
             continue;
         }
         let abs = root.join(rel);
-        let Ok(content) = std::fs::read_to_string(&abs) else {
+        let Ok(g) = reader.read(&abs) else {
             continue;
         };
-        let syms = build_symbols_for_file(&abs, rel, &content, COLD_GENERATION);
+        let Ok(content) = std::str::from_utf8(&g.bytes) else {
+            continue;
+        };
+        let syms = build_symbols_for_file(&abs, rel, content, COLD_GENERATION);
         count += syms.len();
         for sym in syms {
             comp.insert(sym);
@@ -514,11 +502,15 @@ pub fn resolve_import(
 }
 
 /// Build the dependency component for the whole repo.
+///
+/// Content comes from the shared `reader` (cache hit for files already read
+/// by `build_files`), so edges derive from the same guarded bytes.
 pub fn build_dependencies(
-    root: &Path,
+    reader: &RepositoryReader,
     files: &FilesComponent,
     max_edges: usize,
 ) -> DependenciesComponent {
+    let root = reader.root();
     let mut comp = DependenciesComponent::default();
     let mut count = 0usize;
     for (rel, meta) in &files.files {
@@ -529,10 +521,13 @@ pub fn build_dependencies(
             continue;
         }
         let abs = root.join(rel);
-        let Ok(content) = std::fs::read_to_string(&abs) else {
+        let Ok(g) = reader.read(&abs) else {
             continue;
         };
-        let mut edges = build_dependencies_for_file(rel, &content, COLD_GENERATION);
+        let Ok(content) = std::str::from_utf8(&g.bytes) else {
+            continue;
+        };
+        let mut edges = build_dependencies_for_file(rel, content, COLD_GENERATION);
         let language = meta.language.clone();
         for e in &mut edges {
             if !e.unresolved {

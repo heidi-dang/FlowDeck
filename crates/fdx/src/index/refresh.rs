@@ -11,6 +11,7 @@
 //! - no full scan on no-change refresh;
 //! - localized component updates.
 
+use crate::index::boundary::{GuardedRepositoryFile, RepositoryReader};
 use crate::index::builder::{
     build_dependencies_for_file, build_git_state, build_symbols_for_file, CLASS_BINARY,
     CLASS_GENERATED,
@@ -138,6 +139,9 @@ pub struct Refresher {
     root: PathBuf,
     /// Current generation number.
     generation: u64,
+    /// Guarded per-pass repository reader: every content read inside one
+    /// `apply` derives from cached, verified bytes.
+    reader: RepositoryReader,
 }
 
 impl Refresher {
@@ -145,6 +149,7 @@ impl Refresher {
         Self {
             root: root.to_path_buf(),
             generation,
+            reader: RepositoryReader::new(root),
         }
     }
 
@@ -210,22 +215,45 @@ impl Refresher {
 
         // 2. Renames: move metadata + symbols + edges.
         for (old, new) in &cs.renamed {
-            if let Some(meta) = files.files.remove(old) {
-                let mut moved = meta;
-                moved.path = new.clone();
-                files.files.insert(new.clone(), moved);
-            }
-            // Symbols move to the new file (re-index new content).
-            symbols.remove_file(old);
-            tests.remove_source(old);
-            deps.remove_file(old);
-            cache.invalidate_path(old);
-            cache.invalidate_path(new);
-            if let Ok(content) = std::fs::read_to_string(self.root.join(new)) {
-                let syms =
-                    build_symbols_for_file(&self.root.join(new), new, &content, self.generation);
-                symbols.replace_file(new, syms);
-                stats.symbols_reindexed += 1;
+            let abs = self.root.join(new);
+            match self.reader.read(&abs) {
+                Ok(g) => {
+                    // Re-index the renamed target from the guarded bytes
+                    // (fresh hash/size/modified for the new path).
+                    let meta = file_meta(new, &g, self.generation);
+                    files.files.remove(old);
+                    files.files.insert(new.clone(), meta);
+                    // Symbols move to the new file (re-index new content).
+                    symbols.remove_file(old);
+                    tests.remove_source(old);
+                    deps.remove_file(old);
+                    cache.invalidate_path(old);
+                    cache.invalidate_path(new);
+                    if let Ok(content) = std::str::from_utf8(&g.bytes) {
+                        let syms =
+                            build_symbols_for_file(&abs, new, content, self.generation);
+                        symbols.replace_file(new, syms);
+                        stats.symbols_reindexed += 1;
+                    }
+                    stats.files_reindexed += 1;
+                }
+                Err(rej) => {
+                    // The renamed target cannot be safely read (broken
+                    // symlink, outside root, ...): exclude it from every
+                    // layer — no stale rows may survive under the new name.
+                    files.files.remove(old);
+                    files.files.remove(new);
+                    symbols.remove_file(old);
+                    symbols.remove_file(new);
+                    deps.remove_file(old);
+                    deps.remove_file(new);
+                    tests.remove_source(old);
+                    tests.remove_source(new);
+                    cache.invalidate_path(old);
+                    cache.invalidate_path(new);
+                    files.rejected.insert(new.clone(), rej.to_string());
+                    stats.files_reindexed += 1;
+                }
             }
         }
 
@@ -236,38 +264,46 @@ impl Refresher {
 
         for rel in &to_index {
             let abs = self.root.join(rel);
-            if !abs.exists() {
-                // Disappeared between status and refresh: treat as deleted.
-                files.files.remove(rel);
-                symbols.remove_file(rel);
-                deps.remove_file(rel);
-                tests.remove_source(rel);
-                cache.invalidate_path(rel);
-                continue;
-            }
-            let meta = file_meta(rel, &abs, self.generation, &self.root);
-            let language = meta.language.clone();
-            files.files.insert(rel.clone(), meta);
-            stats.files_reindexed += 1;
+            match self.reader.read(&abs) {
+                Ok(g) => {
+                    let meta = file_meta(rel, &g, self.generation);
+                    let language = meta.language.clone();
+                    let classification = meta.classification.clone();
+                    files.files.insert(rel.clone(), meta);
+                    stats.files_reindexed += 1;
 
-            if language == CLASS_BINARY || language == CLASS_GENERATED {
-                // No symbols/deps for binary/generated files.
-                symbols.remove_file(rel);
-                deps.remove_file(rel);
-                cache.invalidate_path(rel);
-                continue;
-            }
-            let Ok(content) = std::fs::read_to_string(&abs) else {
-                continue;
-            };
-            let syms = build_symbols_for_file(&abs, rel, &content, self.generation);
-            symbols.replace_file(rel, syms);
-            stats.symbols_reindexed += 1;
+                    if classification == CLASS_BINARY || classification == CLASS_GENERATED {
+                        // No symbols/deps for binary/generated files.
+                        symbols.remove_file(rel);
+                        deps.remove_file(rel);
+                        cache.invalidate_path(rel);
+                        continue;
+                    }
+                    let Ok(content) = std::str::from_utf8(&g.bytes) else {
+                        continue;
+                    };
+                    let syms = build_symbols_for_file(&abs, rel, content, self.generation);
+                    symbols.replace_file(rel, syms);
+                    stats.symbols_reindexed += 1;
 
-            let mut edges = build_dependencies_for_file(rel, &content, self.generation);
-            resolve_edges(rel, &mut edges, files, &language);
-            deps.replace_file(rel, edges);
-            stats.deps_reindexed += 1;
+                    let mut edges = build_dependencies_for_file(rel, content, self.generation);
+                    resolve_edges(rel, &mut edges, files, &language);
+                    deps.replace_file(rel, edges);
+                    stats.deps_reindexed += 1;
+                }
+                Err(rej) => {
+                    // Disappeared or unsafe file (external symlink, broken
+                    // link, ...): treat as excluded — removes any stale rows
+                    // from a previous generation.
+                    files.files.remove(rel);
+                    symbols.remove_file(rel);
+                    deps.remove_file(rel);
+                    tests.remove_source(rel);
+                    cache.invalidate_path(rel);
+                    files.rejected.insert(rel.clone(), rej.to_string());
+                    stats.files_reindexed += 1;
+                }
+            }
         }
 
         // 4. Refresh test mapping for touched source/test files.
@@ -305,21 +341,35 @@ impl Refresher {
         //     target. No stale edge may survive into the published
         //     generation (strict load validation rejects dangling edges).
         for rel in &reindex_dependants {
-            if files.files.contains_key(rel) {
-                if let Ok(content) = std::fs::read_to_string(self.root.join(rel)) {
-                    let language = files
-                        .files
-                        .get(rel)
-                        .map(|m| m.language.clone())
-                        .unwrap_or_default();
-                    let mut edges = build_dependencies_for_file(rel, &content, self.generation);
-                    resolve_edges(rel, &mut edges, files, &language);
-                    deps.replace_file(rel, edges);
-                    stats.deps_reindexed += 1;
-                }
-            } else {
+            if !files.files.contains_key(rel) {
                 // Dependant itself was removed in this pass; its edges are
                 // already gone via deps.remove_file.
+                continue;
+            }
+            match self.reader.read(&self.root.join(rel)) {
+                Ok(g) => {
+                    if let Ok(content) = std::str::from_utf8(&g.bytes) {
+                        let language = files
+                            .files
+                            .get(rel)
+                            .map(|m| m.language.clone())
+                            .unwrap_or_default();
+                        let mut edges = build_dependencies_for_file(rel, content, self.generation);
+                        resolve_edges(rel, &mut edges, files, &language);
+                        deps.replace_file(rel, edges);
+                        stats.deps_reindexed += 1;
+                    }
+                }
+                Err(rej) => {
+                    // The dependant is no longer safely readable: exclude it
+                    // from every layer (its stale edges must not survive).
+                    files.files.remove(rel);
+                    symbols.remove_file(rel);
+                    deps.remove_file(rel);
+                    tests.remove_source(rel);
+                    cache.invalidate_path(rel);
+                    files.rejected.insert(rel.clone(), rej.to_string());
+                }
             }
         }
 
@@ -395,10 +445,10 @@ impl Refresher {
 
 /// Compute a `FileMeta` for a file during incremental refresh.
 ///
-/// `root` is required for the TOCTOU re-validation after content read: a
-/// file could have been replaced with an external symlink between the
-/// change-set detection and the refresh read. We re-verify before hashing.
-fn file_meta(rel: &str, abs: &Path, generation: u64, root: &Path) -> FileMeta {
+/// All metadata and the content hash derive from the guarded read `g` —
+/// no filesystem access happens here and no re-read is performed, so the
+/// hash, symbols, and dependencies all come from the same verified bytes.
+fn file_meta(rel: &str, g: &GuardedRepositoryFile, generation: u64) -> FileMeta {
     let is_test = rel.to_lowercase().contains("_test")
         || rel.to_lowercase().contains(".test.")
         || rel.to_lowercase().contains(".spec.")
@@ -417,62 +467,25 @@ fn file_meta(rel: &str, abs: &Path, generation: u64, root: &Path) -> FileMeta {
     ]
     .iter()
     .any(|ext| rel.to_lowercase().ends_with(ext));
-    let meta = std::fs::symlink_metadata(abs).unwrap_or_else(|_| {
-        // Fallback: minimal metadata
-        #[cfg(unix)]
-        {
-            std::fs::metadata("/dev/null").unwrap()
-        }
-        #[cfg(not(unix))]
-        {
-            std::fs::metadata(".").unwrap()
-        }
-    });
-    let kind = if meta.file_type().is_symlink() {
-        "symlink"
-    } else if meta.is_dir() {
-        "dir"
-    } else {
-        "file"
-    };
-    let size = meta.len();
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let executable = {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            meta.permissions().mode() & 0o111 != 0
-        }
-        #[cfg(not(unix))]
-        {
-            false
-        }
-    };
+    let kind = if g.info.is_symlink { "symlink" } else { "file" };
     let content_hash = if is_binary {
         String::new()
     } else {
-        // TOCTOU guard: re-validate post-read.
-        match std::fs::read(abs) {
-            Ok(bytes) if crate::index::boundary::verify_post_read(abs, root) => {
-                sha256_hex(&bytes).chars().take(16).collect()
-            }
-            Ok(_) => String::new(),
-            Err(_) => String::new(),
-        }
+        sha256_hex(&g.bytes).chars().take(16).collect()
     };
     FileMeta {
         path: rel.to_string(),
         kind: kind.to_string(),
-        size,
-        modified,
+        size: g.info.len,
+        modified: g
+            .info
+            .modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
         content_hash,
         language: crate::index::builder::detect_language_for(rel),
-        executable,
+        executable: g.info.executable,
         classification: if is_binary {
             CLASS_BINARY.to_string()
         } else if is_generated {
