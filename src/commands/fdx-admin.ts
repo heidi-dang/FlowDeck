@@ -79,7 +79,6 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     return true
   }
 
-  // First check if already resolved & valid
   const currentStatus = getFdxAvailabilityStatus(true)
   if (currentStatus.available && currentStatus.binaryPath && !isRepair) {
     console.log(`✓ Compatible native FDX binary already available at: ${currentStatus.binaryPath}`)
@@ -97,7 +96,6 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
   try {
     mkdirSync(tmpDir, { recursive: true })
 
-    // Check if we can locate a local package binary (e.g. from local checkout or node_modules)
     let sourceBinDir: string | null = null
     const searchDirs = [
       process.cwd(),
@@ -118,14 +116,38 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     }
 
     if (!sourceBinDir) {
-      // Create a managed placeholder / stub manifest in cache
-      console.log(`Creating managed FDX target cache directory at: ${cacheDir}`)
-    } else {
-      console.log(`Installing prebuilt binary from: ${sourceBinDir}`)
-      copyFileSync(join(sourceBinDir, target.executableName), join(tmpDir, target.executableName))
-      if (existsSync(join(sourceBinDir, "checksum.json"))) {
-        copyFileSync(join(sourceBinDir, "checksum.json"), join(tmpDir, "checksum.json"))
-      }
+      // Clean temp
+      try {
+        const fs = await import("node:fs")
+        fs.rmSync(tmpDir, { recursive: true, force: true })
+      } catch {}
+      console.error(`✗ Installation FAILED: Could not locate platform package ${target.packageName}.`)
+      console.error(`  Ensure ${target.packageName} is installed or present in node_modules/packages directory.`)
+      return false
+    }
+
+    const tmpBin = join(tmpDir, target.executableName)
+    copyFileSync(join(sourceBinDir, target.executableName), tmpBin)
+    if (existsSync(join(sourceBinDir, "checksum.json"))) {
+      copyFileSync(join(sourceBinDir, "checksum.json"), join(tmpDir, "checksum.json"))
+    }
+    if (existsSync(join(sourceBinDir, "provenance.json"))) {
+      copyFileSync(join(sourceBinDir, "provenance.json"), join(tmpDir, "provenance.json"))
+    }
+
+    if (process.platform !== "win32") {
+      chmodSync(tmpBin, 0o755)
+    }
+
+    // Validate binary inside temporary directory before activation
+    const val = validateFdxBinaryPath(tmpBin, tmpDir, true)
+    if (!val.valid) {
+      try {
+        const fs = await import("node:fs")
+        fs.rmSync(tmpDir, { recursive: true, force: true })
+      } catch {}
+      console.error(`✗ Installation FAILED: Validation of acquired binary failed: ${val.reason}`)
+      return false
     }
 
     // Write installation manifest
@@ -137,23 +159,19 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     }
     writeFileSync(join(tmpDir, "install-manifest.json"), JSON.stringify(installManifest, null, 2), "utf-8")
 
-    if (process.platform !== "win32" && existsSync(join(tmpDir, target.executableName))) {
-      chmodSync(join(tmpDir, target.executableName), 0o755)
+    // Atomic activation
+    mkdirSync(cacheDir, { recursive: true })
+    copyFileSync(tmpBin, targetBin)
+    if (existsSync(join(tmpDir, "checksum.json"))) {
+      copyFileSync(join(tmpDir, "checksum.json"), join(cacheDir, "checksum.json"))
     }
+    if (existsSync(join(tmpDir, "provenance.json"))) {
+      copyFileSync(join(tmpDir, "provenance.json"), join(cacheDir, "provenance.json"))
+    }
+    writeFileSync(join(cacheDir, "install-manifest.json"), JSON.stringify(installManifest, null, 2), "utf-8")
 
-    // Atomic move
-    mkdirSync(dirname(cacheDir), { recursive: true })
-
-    if (existsSync(join(tmpDir, target.executableName))) {
-      mkdirSync(cacheDir, { recursive: true })
-      copyFileSync(join(tmpDir, target.executableName), targetBin)
-      if (existsSync(join(tmpDir, "checksum.json"))) {
-        copyFileSync(join(tmpDir, "checksum.json"), join(cacheDir, "checksum.json"))
-      }
-      writeFileSync(join(cacheDir, "install-manifest.json"), JSON.stringify(installManifest, null, 2), "utf-8")
-      if (process.platform !== "win32") {
-        chmodSync(targetBin, 0o755)
-      }
+    if (process.platform !== "win32") {
+      chmodSync(targetBin, 0o755)
     }
 
     // Clean temp
@@ -167,11 +185,14 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
       console.log(`✓ FDX native installation successful: ${verifyStatus.binaryPath}`)
       return true
     } else {
-      console.log(`ℹ FDX cache initialized at ${cacheDir}.`)
-      console.log(`  To complete native installation, ensure ${target.packageName} optional dependency is installed or place binary at ${targetBin}.`)
-      return true
+      console.error(`✗ Installation FAILED: Post-installation verification failed.`)
+      return false
     }
   } catch (err: any) {
+    try {
+      const fs = await import("node:fs")
+      fs.rmSync(tmpDir, { recursive: true, force: true })
+    } catch {}
     console.error(`✗ FDX installation failed: ${err.message}`)
     return false
   }

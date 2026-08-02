@@ -185,12 +185,48 @@ export function setActiveProjectDir(dir: string): void {
   activeProjectDir = dir
 }
 
+export const MINIMUM_SUPPORTED_FDX_VERSION = "1.0.0"
+export const MAXIMUM_SUPPORTED_FDX_MAJOR = 1
+export const EXPECTED_FDX_PROTOCOL_VERSION = "1.0.0"
+export const FLOWDECK_PACKAGE_VERSION = "1.0.4"
+
 export interface FdxTarget {
   platform: NodeJS.Platform;
   arch: string;
   libc?: "gnu" | "musl";
   packageName: string;
   executableName: "fdx" | "fdx.exe";
+}
+
+export interface FdxProvenance {
+  packageName: string;
+  packageVersion: string;
+  flowdeckVersion: string;
+  fdxBinaryVersion: string;
+  fdxProtocolVersion: string;
+  targetTriple: string;
+  platform: string;
+  architecture: string;
+  libc?: string;
+  binaryFilename: string;
+  binaryByteSize: number;
+  sha256: string;
+  sourceCommitSha?: string;
+  cargoLockSha256?: string;
+  rustcVersion?: string;
+  buildProfile?: string;
+  workflowRunId?: string;
+  buildTimestamp?: string;
+}
+
+export interface FdxIntegrityResult {
+  status: "pass" | "fail";
+  checksumStatus: "pass" | "fail" | "missing" | "unverified";
+  checksumMatch: boolean;
+  expectedSha256?: string;
+  actualSha256?: string;
+  provenanceValid: boolean;
+  reason?: string;
 }
 
 export interface FdxResolutionResult {
@@ -211,6 +247,21 @@ export interface FdxResolutionResult {
   fallbackAvailable: boolean;
   diagnostics: string[];
   repairCommand?: string;
+}
+
+export function isSemverCompatible(version: string | null): { compatible: boolean; reason?: string } {
+  if (!version) return { compatible: false, reason: "Missing version string" }
+  const match = version.trim().match(/^v?([0-9]+)\.([0-9]+)\.([0-9]+)/)
+  if (!match) return { compatible: false, reason: `Malformed semver version "${version}"` }
+
+  const major = parseInt(match[1], 10)
+  if (major < 1) {
+    return { compatible: false, reason: `Version v${version} is below minimum supported v${MINIMUM_SUPPORTED_FDX_VERSION}` }
+  }
+  if (major > MAXIMUM_SUPPORTED_FDX_MAJOR) {
+    return { compatible: false, reason: `Major version v${major} exceeds maximum supported v${MAXIMUM_SUPPORTED_FDX_MAJOR}` }
+  }
+  return { compatible: true }
 }
 
 export function detectFdxTarget(): FdxTarget | null {
@@ -270,68 +321,190 @@ export function getFdxCacheDir(target: FdxTarget, version = "1.0.4"): string {
   return join(homedir(), ".cache", "flowdeck", "fdx", version, targetName)
 }
 
-export function validateFdxBinaryPath(binPath: string, expectedDir?: string): {
+export function validateFdxBinaryPath(binPath: string, expectedDir?: string, requireManagedChecksum = false): {
   valid: boolean;
   version: string | null;
+  versionCompatible: boolean;
   checksumStatus: "pass" | "fail" | "missing" | "unverified";
+  integrity: FdxIntegrityResult;
   reason?: string;
 } {
   if (!existsSync(binPath)) {
-    return { valid: false, version: null, checksumStatus: "missing", reason: "File does not exist" }
+    return {
+      valid: false,
+      version: null,
+      versionCompatible: false,
+      checksumStatus: "missing",
+      integrity: { status: "fail", checksumStatus: "missing", checksumMatch: false, provenanceValid: false, reason: "Binary file does not exist" },
+      reason: "File does not exist",
+    }
   }
+
   try {
     const st = statSync(binPath)
     if (!st.isFile()) {
-      return { valid: false, version: null, checksumStatus: "fail", reason: "Path is a directory or not a regular file" }
+      return {
+        valid: false,
+        version: null,
+        versionCompatible: false,
+        checksumStatus: "fail",
+        integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, provenanceValid: false, reason: "Path is not a regular file" },
+        reason: "Path is a directory or not a regular file",
+      }
     }
   } catch {
-    return { valid: false, version: null, checksumStatus: "fail", reason: "Cannot stat file" }
+    return {
+      valid: false,
+      version: null,
+      versionCompatible: false,
+      checksumStatus: "fail",
+      integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, provenanceValid: false, reason: "Cannot stat file" },
+      reason: "Cannot stat file",
+    }
   }
 
   if (process.platform !== "win32") {
     try {
       accessSync(binPath, constants.X_OK)
     } catch {
-      return { valid: false, version: null, checksumStatus: "fail", reason: "Missing POSIX executable permission (X_OK)" }
+      return {
+        valid: false,
+        version: null,
+        versionCompatible: false,
+        checksumStatus: "fail",
+        integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, provenanceValid: false, reason: "Missing POSIX executable permission (X_OK)" },
+        reason: "Missing POSIX executable permission (X_OK)",
+      }
     }
   }
 
-  let checksumStatus: "pass" | "fail" | "missing" | "unverified" = "unverified"
   const dir = expectedDir || dirname(binPath)
-  const manifestPath = join(dir, "checksum.json")
-  if (existsSync(manifestPath)) {
+  const checksumPath = join(dir, "checksum.json")
+  const provenancePath = join(dir, "provenance.json")
+
+  let checksumStatus: "pass" | "fail" | "missing" | "unverified" = "unverified"
+  let checksumMatch = false
+  let expectedSha: string | undefined
+  let actualSha: string | undefined
+  let provenanceValid = false
+
+  if (existsSync(checksumPath) || existsSync(provenancePath)) {
     try {
-      const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"))
-      const expectedSha = manifest.sha256 || manifest.checksum
+      let manifest: any = {}
+      if (existsSync(provenancePath)) {
+        manifest = JSON.parse(readFileSync(provenancePath, "utf-8"))
+        provenanceValid = true
+      }
+      if (existsSync(checksumPath)) {
+        const cManifest = JSON.parse(readFileSync(checksumPath, "utf-8"))
+        manifest = { ...cManifest, ...manifest }
+      }
+
+      expectedSha = manifest.sha256 || manifest.checksum
       if (expectedSha) {
         const fileBuf = readFileSync(binPath)
-        const actualSha = createHash("sha256").update(fileBuf).digest("hex")
-        if (actualSha !== expectedSha) {
-          return { valid: false, version: null, checksumStatus: "fail", reason: `Checksum mismatch: expected ${expectedSha}, got ${actualSha}` }
+        actualSha = createHash("sha256").update(fileBuf).digest("hex")
+        if (actualSha === expectedSha) {
+          checksumStatus = "pass"
+          checksumMatch = true
+        } else {
+          checksumStatus = "fail"
+          checksumMatch = false
+          return {
+            valid: false,
+            version: null,
+            versionCompatible: false,
+            checksumStatus: "fail",
+            integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, expectedSha256: expectedSha, actualSha256: actualSha, provenanceValid, reason: `Checksum mismatch: expected ${expectedSha}, got ${actualSha}` },
+            reason: `Checksum mismatch: expected ${expectedSha}, got ${actualSha}`,
+          }
         }
-        checksumStatus = "pass"
+      } else if (requireManagedChecksum) {
+        return {
+          valid: false,
+          version: null,
+          versionCompatible: false,
+          checksumStatus: "missing",
+          integrity: { status: "fail", checksumStatus: "missing", checksumMatch: false, provenanceValid: false, reason: "Checksum manifest missing sha256 field" },
+          reason: "Checksum manifest missing sha256 field",
+        }
       }
     } catch {
-      return { valid: false, version: null, checksumStatus: "fail", reason: "Corrupt checksum.json manifest" }
+      return {
+        valid: false,
+        version: null,
+        versionCompatible: false,
+        checksumStatus: "fail",
+        integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, provenanceValid: false, reason: "Corrupt checksum/provenance manifest" },
+        reason: "Corrupt checksum/provenance manifest",
+      }
+    }
+  } else if (requireManagedChecksum) {
+    return {
+      valid: false,
+      version: null,
+      versionCompatible: false,
+      checksumStatus: "missing",
+      integrity: { status: "fail", checksumStatus: "missing", checksumMatch: false, provenanceValid: false, reason: "Managed source missing mandatory checksum.json" },
+      reason: "Managed source missing mandatory checksum.json",
     }
   }
 
   let version: string | null = null
   try {
-    const out = execFileSync(binPath, ["--version"], { encoding: "utf-8", timeout: 2000, shell: false })
+    const out = execFileSync(binPath, ["--version"], { encoding: "utf-8", timeout: 3000, shell: false })
     const match = out.match(/fdx\s+v?([0-9]+\.[0-9]+\.[0-9]+)/i) || out.match(/v?([0-9]+\.[0-9]+\.[0-9]+)/)
     if (match && match[1]) {
       version = match[1]
     }
   } catch (err: any) {
-    return { valid: false, version: null, checksumStatus, reason: `Binary execution failed: ${err.message}` }
+    return {
+      valid: false,
+      version: null,
+      versionCompatible: false,
+      checksumStatus,
+      integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid, reason: `Binary execution failed: ${err.message}` },
+      reason: `Binary execution failed: ${err.message}`,
+    }
   }
 
   if (!version) {
-    return { valid: false, version: null, checksumStatus, reason: "Binary returned malformed --version output" }
+    return {
+      valid: false,
+      version: null,
+      versionCompatible: false,
+      checksumStatus,
+      integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid, reason: "Binary returned malformed --version output" },
+      reason: "Binary returned malformed --version output",
+    }
   }
 
-  return { valid: true, version, checksumStatus }
+  const verCheck = isSemverCompatible(version)
+  if (!verCheck.compatible) {
+    return {
+      valid: false,
+      version,
+      versionCompatible: false,
+      checksumStatus,
+      integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid, reason: verCheck.reason },
+      reason: verCheck.reason,
+    }
+  }
+
+  return {
+    valid: true,
+    version,
+    versionCompatible: true,
+    checksumStatus,
+    integrity: {
+      status: (checksumStatus === "pass" || (!requireManagedChecksum && checksumStatus === "unverified")) ? "pass" : "fail",
+      checksumStatus,
+      checksumMatch,
+      expectedSha256: expectedSha,
+      actualSha256: actualSha,
+      provenanceValid,
+    },
+  }
 }
 
 export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
@@ -412,7 +585,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
 
       if (pkgDir && existsSync(pkgDir)) {
         const binPath = join(pkgDir, execName)
-        const val = validateFdxBinaryPath(binPath, pkgDir)
+        const val = validateFdxBinaryPath(binPath, pkgDir, true)
         if (val.valid) {
           return {
             available: true,
@@ -446,7 +619,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
     const cacheDir = getFdxCacheDir(target)
     const cacheBin = join(cacheDir, target.executableName)
     if (existsSync(cacheBin)) {
-      const val = validateFdxBinaryPath(cacheBin, cacheDir)
+      const val = validateFdxBinaryPath(cacheBin, cacheDir, true)
       if (val.valid) {
         return {
           available: true,

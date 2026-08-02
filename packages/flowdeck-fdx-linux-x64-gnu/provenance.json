@@ -1,0 +1,15 @@
+{
+  "packageName": "@heidi-dang/flowdeck-fdx-linux-x64-gnu",
+  "packageVersion": "1.0.4",
+  "flowdeckVersion": "1.0.4",
+  "fdxBinaryVersion": "1.0.4",
+  "fdxProtocolVersion": "1.0.0",
+  "targetTriple": "x64-unknown-linux-gnu",
+  "platform": "linux",
+  "architecture": "x64",
+  "binaryFilename": "fdx",
+  "binaryByteSize": 10605848,
+  "sha256": "3db48a0b85dbb8074f996ffa167486b49d1c25e1e80dcfa85aba28a4570a33f0",
+  "buildProfile": "release",
+  "buildTimestamp": "2026-08-02T02:22:40.440Z"
+}

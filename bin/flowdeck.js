@@ -223,27 +223,32 @@ async function cmdInstall() {
   }
 
   // Verify native FDX availability after plugin registration
+  let fdxShared;
   try {
-    const { getFdxAvailabilityStatus, detectFdxTarget } = await import("../src/tools/fdx-shared.js");
-    const target = detectFdxTarget();
-    const fdxStatus = getFdxAvailabilityStatus(true);
+    fdxShared = await import("../dist/tools/fdx-shared.js");
+  } catch {
+    fdxShared = await import("../src/tools/fdx-shared.js");
+  }
 
-    console.log(`\n── Native FDX Status ──`);
-    if (!target) {
-      console.log(`  ℹ Target platform ${process.platform}/${process.arch}: Native FDX prebuilt package not targeted.`);
-      console.log(`  ✓ TypeScript fallback mode active.`);
-    } else if (fdxStatus.available && fdxStatus.binaryPath) {
-      console.log(`  ✓ Native FDX binary resolved: ${fdxStatus.binaryPath}`);
-      console.log(`  ✓ Source: ${fdxStatus.source} (v${fdxStatus.binaryVersion || "1.0.4"})`);
-    } else {
-      console.log(`  ⚠ Native FDX binary not resolved for target ${target.platform}/${target.arch}${target.libc ? `-${target.libc}` : ""}`);
-      console.log(`  To install/repair native FDX, run: flowdeck fdx repair`);
-      const profile = process.env.FLOWDECK_PROFILE || "recommended-dev";
-      if (profile !== "minimal") {
-        console.log(`  ⚠ Profile "${profile}" expects native FDX performance.`);
-      }
+  const target = fdxShared.detectFdxTarget();
+  const fdxStatus = fdxShared.getFdxAvailabilityStatus(true);
+
+  console.log(`\n── Native FDX Status ──`);
+  if (!target) {
+    console.log(`  ℹ Target platform ${process.platform}/${process.arch}: Native FDX prebuilt package not targeted.`);
+    console.log(`  ✓ TypeScript fallback mode active.`);
+  } else if (fdxStatus.available && fdxStatus.binaryPath) {
+    console.log(`  ✓ Native FDX binary resolved: ${fdxStatus.binaryPath}`);
+    console.log(`  ✓ Source: ${fdxStatus.source} (v${fdxStatus.binaryVersion || "1.0.4"})`);
+  } else {
+    const profile = process.env.FLOWDECK_PROFILE || "recommended-dev";
+    console.log(`  ⚠ Native FDX binary not resolved for target ${target.platform}/${target.arch}${target.libc ? `-${target.libc}` : ""}`);
+    console.log(`  To install/repair native FDX, run: flowdeck fdx repair`);
+    if (profile !== "minimal") {
+      console.error(`  ✗ Error: Profile "${profile}" requires verified native FDX performance.`);
+      process.exit(1);
     }
-  } catch {}
+  }
 }
 
 async function cmdUpdate() {
@@ -927,7 +932,13 @@ async function cmdDryRun() {
 
 async function cmdFdx() {
   const sub = args[1] || "status";
-  const { handleFdxStatus, handleFdxInstall, handleFdxVerify } = await import("../src/commands/fdx-admin.js");
+  let admin;
+  try {
+    admin = await import("../dist/commands/fdx-admin.js");
+  } catch {
+    admin = await import("../src/commands/fdx-admin.js");
+  }
+  const { handleFdxStatus, handleFdxInstall, handleFdxVerify } = admin;
   if (sub === "status") {
     handleFdxStatus();
   } else if (sub === "install") {

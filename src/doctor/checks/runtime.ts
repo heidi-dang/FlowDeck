@@ -130,8 +130,8 @@ export async function runRuntimeChecks(_directory: string): Promise<CheckResult[
   })
 
   // ─── FDX Native Distribution Doctor Checks ─────────────────────────────
-  const { getFdxAvailabilityStatus } = await import("../../tools/fdx-shared.js")
-  const fdxStatus = getFdxAvailabilityStatus(true)
+  const fdxSharedModule = await import("../../tools/fdx-shared.js")
+  const fdxStatus = fdxSharedModule.getFdxAvailabilityStatus(true)
   const profile = process.env.FLOWDECK_PROFILE || "recommended-dev"
   const isStrictFail = profile !== "minimal"
 

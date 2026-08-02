@@ -50,29 +50,87 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install System Dependencies & Cross Toolchains
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.target.rust_target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu qemu-user-static
+          elif [ "${{ matrix.target.rust_target }}" = "x86_64-unknown-linux-musl" ]; then
+            sudo apt-get install -y musl-tools
+          fi
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target.rust_target }}
 
       - name: Build FDX Binary
+        shell: bash
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo build --manifest-path crates/fdx/Cargo.toml --release --locked --target ${{ matrix.target.rust_target }}
 
-      - name: Populate Package
+      - name: Verify Binary Execution Sanity
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target.rust_target }}/release/${{ matrix.target.binary }}"
+          if [ "${{ matrix.target.rust_target }}" = "aarch64-unknown-linux-gnu" ]; then
+            qemu-aarch64 -L /usr/aarch64-linux-gnu "$BIN" --version
+          elif [ "${{ runner.os }}" != "Windows" ]; then
+            "$BIN" --version
+          else
+            ./$BIN --version
+          fi
+
+      - name: Populate Package & Provenance Manifest
         shell: bash
         run: |
           mkdir -p packages/${{ matrix.target.pkg }}
-          cp target/${{ matrix.target.rust_target }}/release/${{ matrix.target.binary }} packages/${{ matrix.target.pkg }}/
+          BIN_PATH="target/${{ matrix.target.rust_target }}/release/${{ matrix.target.binary }}"
+          cp "$BIN_PATH" packages/${{ matrix.target.pkg }}/
           cd packages/${{ matrix.target.pkg }}
+
           if [ "${{ runner.os }}" = "Windows" ]; then
             SHA=$(certutil -hashfile ${{ matrix.target.binary }} SHA256 | grep -v "hash" | tr -d '\r\n ')
+            SIZE=$(powershell -Command "(Get-Item '${{ matrix.target.binary }}').Length")
           else
             SHA=$(shasum -a 256 ${{ matrix.target.binary }} | awk '{print $1}')
+            SIZE=$(stat -c%s ${{ matrix.target.binary }} 2>/dev/null || stat -f%z ${{ matrix.target.binary }})
           fi
-          echo "{\"packageName\":\"@heidi-dang/${{ matrix.target.pkg }}\",\"sha256\":\"$SHA\",\"builtAt\":\"$(date -u +'%Y-%m-%dT%H:%M:%SZ')\"}" > checksum.json
-          cp ../../LICENSE . || true
 
-      - name: Test Packed Tarball
+          NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+          echo "{\"packageName\":\"@heidi-dang/${{ matrix.target.pkg }}\",\"version\":\"1.0.4\",\"sha256\":\"$SHA\",\"builtAt\":\"$NOW\"}" > checksum.json
+
+          cat <<EOF > provenance.json
+          {
+            "packageName": "@heidi-dang/${{ matrix.target.pkg }}",
+            "packageVersion": "1.0.4",
+            "flowdeckVersion": "1.0.4",
+            "fdxBinaryVersion": "1.0.4",
+            "fdxProtocolVersion": "1.0.0",
+            "targetTriple": "${{ matrix.target.rust_target }}",
+            "platform": "${{ runner.os }}",
+            "architecture": "${{ matrix.target.name }}",
+            "binaryFilename": "${{ matrix.target.binary }}",
+            "binaryByteSize": $SIZE,
+            "sha256": "$SHA",
+            "sourceCommitSha": "${{ github.sha }}",
+            "buildProfile": "release",
+            "workflowRunId": "${{ github.run_id }}",
+            "buildTimestamp": "$NOW"
+          }
+          EOF
+
+          cp ../../LICENSE . || true
+          if [ ! -f README.md ]; then
+            echo "# @heidi-dang/${{ matrix.target.pkg }}" > README.md
+            echo "Prebuilt native FDX executable binary for FlowDeck." >> README.md
+          fi
+
+      - name: Test Packed Tarball Contents
         shell: bash
         run: |
           cd packages/${{ matrix.target.pkg }}

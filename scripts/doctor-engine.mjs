@@ -702,12 +702,10 @@ export function testFdxVersionCompatibility(directory, pkgRaw, customFdxOutput =
   let malformedOutput = false
   if (customFdxOutput !== undefined) {
     if (typeof customFdxOutput === "string" && customFdxOutput.trim() !== "") {
-      const match = customFdxOutput.trim().match(/^fdx\s+(.+)/)
+      const match = customFdxOutput.trim().match(/fdx\s+v?([0-9]+\.[0-9]+\.[0-9]+)/i) || customFdxOutput.trim().match(/v?([0-9]+\.[0-9]+\.[0-9]+)/)
       if (match) {
         installedVersion = match[1]
       } else {
-        // Non-empty string that doesn't match expected format → binary is present
-        // but returned garbage output. This is a FAIL, not a missing-binary warn.
         malformedOutput = true
       }
     }
@@ -715,7 +713,7 @@ export function testFdxVersionCompatibility(directory, pkgRaw, customFdxOutput =
     try {
       const output = execFileSync("fdx", ["--version"], { encoding: "utf-8", timeout: 5000 })
       if (output && output.trim() !== "") {
-        const match = output.trim().match(/^fdx\s+(.+)/)
+        const match = output.trim().match(/fdx\s+v?([0-9]+\.[0-9]+\.[0-9]+)/i) || output.trim().match(/v?([0-9]+\.[0-9]+\.[0-9]+)/)
         if (match) {
           installedVersion = match[1]
         } else {

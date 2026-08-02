@@ -59,27 +59,48 @@ function main() {
   const destBin = join(destDir, execName)
   copyFileSync(cargoTargetBin, destBin)
 
-  // Calculate SHA-256
+  // Calculate SHA-256 and byte size
   const buf = readFileSync(destBin)
   const sha256 = createHash("sha256").update(buf).digest("hex")
 
-  const manifest = {
+  const checksumManifest = {
     packageName: `@heidi-dang/${targetDirName}`,
+    version: "1.0.4",
     executable: execName,
     sha256,
     builtAt: new Date().toISOString(),
   }
+  writeFileSync(join(destDir, "checksum.json"), JSON.stringify(checksumManifest, null, 2), "utf-8")
 
-  writeFileSync(join(destDir, "checksum.json"), JSON.stringify(manifest, null, 2), "utf-8")
+  const provenanceManifest = {
+    packageName: `@heidi-dang/${targetDirName}`,
+    packageVersion: "1.0.4",
+    flowdeckVersion: "1.0.4",
+    fdxBinaryVersion: "1.0.4",
+    fdxProtocolVersion: "1.0.0",
+    targetTriple: process.platform === "win32" ? "x86_64-pc-windows-msvc" : `${process.arch}-unknown-${process.platform}-gnu`,
+    platform: process.platform,
+    architecture: process.arch,
+    binaryFilename: execName,
+    binaryByteSize: buf.length,
+    sha256,
+    buildProfile: "release",
+    buildTimestamp: new Date().toISOString(),
+  }
+  writeFileSync(join(destDir, "provenance.json"), JSON.stringify(provenanceManifest, null, 2), "utf-8")
 
-  // Copy License
+  // Copy License & README
   if (existsSync(join(PKG_ROOT, "LICENSE"))) {
     copyFileSync(join(PKG_ROOT, "LICENSE"), join(destDir, "LICENSE"))
   }
+  if (!existsSync(join(destDir, "README.md"))) {
+    writeFileSync(join(destDir, "README.md"), `# @heidi-dang/${targetDirName}\n\nPrebuilt native FDX executable binary for FlowDeck.\n`, "utf-8")
+  }
 
   console.log(`[build-fdx-packages] Successfully populated ${destDir}`)
-  console.log(`  Binary:   ${destBin}`)
-  console.log(`  SHA-256:  ${sha256}`)
+  console.log(`  Binary:     ${destBin}`)
+  console.log(`  SHA-256:    ${sha256}`)
+  console.log(`  Size:       ${buf.length} bytes`)
 }
 
 main()
