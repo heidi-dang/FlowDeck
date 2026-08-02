@@ -1085,25 +1085,41 @@ fn schema_from_err(msg: &str) -> Option<u32> {
     msg.rsplit(' ').next()?.trim().parse().ok()
 }
 
-/// Verify every component checksum listed in the manifest AND that every
-/// required component file exists (a component omitted from the checksum map
-/// is still required).
+/// Verify the manifest's checksum map is EXACTLY the required component set
+/// and that every listed checksum matches the on-disk component bytes.
+///
+/// The set must be exact in both directions: a component whose checksum entry
+/// was dropped from the manifest would otherwise bypass integrity verification
+/// entirely, and an entry for an unknown component is not part of the
+/// validated contract (tampered or corrupt manifest).
 fn verify_checksums(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Result<()> {
-    // Required presence first: every component must exist, even when the
-    // manifest (deliberately or not) omits its checksum.
+    let gen = manifest.generation;
     for name in COMPONENT_FILES {
-        if !dir.join(name).is_file() {
+        if !manifest.checksums.contains_key(name) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!(
-                    "generation {}: missing required component {name}",
-                    manifest.generation
-                ),
+                format!("generation {gen}: missing checksum for required component {name}"),
             ));
         }
     }
-    for (name, expected) in &manifest.checksums {
+    for name in manifest.checksums.keys() {
+        if !COMPONENT_FILES.contains(&name.as_str()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("generation {gen}: checksum for unknown component {name}"),
+            ));
+        }
+    }
+    // Required presence + hash verification for every component.
+    for name in COMPONENT_FILES {
         let file = dir.join(name);
+        if !file.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("generation {gen}: missing required component {name}"),
+            ));
+        }
+        let expected = &manifest.checksums[name];
         let text = std::fs::read(&file).map_err(|e| {
             std::io::Error::new(
                 e.kind(),
@@ -1737,6 +1753,60 @@ mod tests {
     }
 
     #[test]
+    fn dropped_checksum_entry_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("dropchk");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"0".repeat(40));
+        // Remove one component's checksum entry from an otherwise-valid
+        // manifest: the exact-set rule must reject it (a dropped entry would
+        // otherwise bypass integrity verification for that component).
+        let gen = store.generation_path(1);
+        let mut m: FdxIndexManifest =
+            serde_json::from_str(&std::fs::read_to_string(gen.join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        m.checksums.remove("symbols.json");
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+
+        match store.load() {
+            LoadOutcome::Corrupt { .. } => {}
+            LoadOutcome::Empty => {}
+            other => panic!("expected corrupt load, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_checksum_key_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("unkchk");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"0".repeat(40));
+        // Add a checksum entry for a file that is not a validated component:
+        // the exact-set rule must reject the extra key.
+        let gen = store.generation_path(1);
+        let mut m: FdxIndexManifest =
+            serde_json::from_str(&std::fs::read_to_string(gen.join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        m.checksums
+            .insert("secret.json".to_string(), "deadbeef".to_string());
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+
+        match store.load() {
+            LoadOutcome::Corrupt { .. } => {}
+            LoadOutcome::Empty => {}
+            other => panic!("expected corrupt load, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn malformed_pointer_recovers_to_newest_valid() {
         let tmp = tempfile::tempdir().unwrap();
         let ident = identity("badptr");
@@ -1914,18 +1984,14 @@ mod tests {
         m.repository_id = legacy_repo.to_string();
         m.worktree_id = legacy_wt.to_string();
         let files = serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}]);
-        m.checksums
-            .insert("files.json".to_string(), sha256_hex(b"[]")); // wrong on purpose
-                                                                  // Write a structurally valid set of components.
+        let git_state = serde_json::json!({"head_sha": "1111111111111111111111111111111111111111", "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": legacy_wt, "generation": 1});
+        let git_bytes = serde_json::to_vec(&git_state).unwrap();
+        // Write a structurally valid set of components.
         std::fs::write(gen.join("files.json"), serde_json::to_vec(&files).unwrap()).unwrap();
         std::fs::write(gen.join("symbols.json"), b"[]").unwrap();
         std::fs::write(gen.join("dependencies.json"), b"[]").unwrap();
         std::fs::write(gen.join("test-mapping.json"), b"[]").unwrap();
-        std::fs::write(
-            gen.join("git-state.json"),
-            serde_json::to_vec(&serde_json::json!({"head_sha": "1111111111111111111111111111111111111111", "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": legacy_wt, "generation": 1})).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(gen.join("git-state.json"), &git_bytes).unwrap();
         std::fs::write(gen.join("content-cache.json"), b"[]").unwrap();
         m.component_counts = ComponentCounts {
             files: 1,
@@ -1935,10 +2001,22 @@ mod tests {
             git_state: 1,
             content_cache: 0,
         };
+        // The checksum map must be the EXACT component set: every component
+        // registered with the hash of the bytes written above.
         m.checksums.insert(
             "files.json".to_string(),
             sha256_hex(&serde_json::to_vec(&files).unwrap()),
         );
+        m.checksums
+            .insert("symbols.json".to_string(), sha256_hex(b"[]"));
+        m.checksums
+            .insert("dependencies.json".to_string(), sha256_hex(b"[]"));
+        m.checksums
+            .insert("test-mapping.json".to_string(), sha256_hex(b"[]"));
+        m.checksums
+            .insert("git-state.json".to_string(), sha256_hex(&git_bytes));
+        m.checksums
+            .insert("content-cache.json".to_string(), sha256_hex(b"[]"));
         std::fs::write(
             gen.join(MANIFEST_FILE),
             serde_json::to_vec_pretty(&m).unwrap(),
