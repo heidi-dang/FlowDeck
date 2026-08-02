@@ -51,9 +51,9 @@
 use crate::index::builder::CLASS_TEST;
 use crate::index::identity::normalize_root_for_compare;
 use crate::index::manifest::{
-    ComponentCounts, ContentCacheEntry, DependencyEdge, FdxIndexManifest, FileMeta,
-    GitStateSnapshot, IndexIdentity, SymbolMeta, TestMappingRow, IDENTITY_SEGMENT_LEN,
-    INDEX_SCHEMA_VERSION, MIN_READABLE_SCHEMA_VERSION,
+    content_cache_key, legacy_content_cache_key, ComponentCounts, ContentCacheEntry,
+    DependencyEdge, FdxIndexManifest, FileMeta, GitStateSnapshot, IndexIdentity, SymbolMeta,
+    TestMappingRow, IDENTITY_SEGMENT_LEN, INDEX_SCHEMA_VERSION, MIN_READABLE_SCHEMA_VERSION,
 };
 use crate::index::paths::{
     current_pointer, ensure_state_root, ensure_state_version, generation_dir, quarantine_dir,
@@ -88,17 +88,46 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 /// Environment variable enabling deterministic fault-injection barriers in
 /// the publication path (test-only; unset in production). When set to a
 /// directory, `publish` signals each phase and blocks until the test writes
-/// `<dir>/go-<phase>` (or 30s elapses). This gives real process-level crash
+/// `<dir>/go-<phase>` (or 60s elapses). This gives real process-level crash
 /// tests explicit synchronization points instead of timing races.
+///
+/// Unit tests (many `publish` calls running concurrently in one process)
+/// do NOT consult this variable: arming the barrier is per-thread via
+/// [`BARRIER_DIR_OVERRIDE`], so a barrier test never parks an unrelated
+/// concurrent test. Process-level crash tests keep the environment-variable
+/// behaviour (see the non-`cfg(test)` build).
 pub const BARRIER_ENV: &str = "FDX_TEST_BARRIER";
 
-/// Block at a named publication phase when the barrier environment variable
-/// is set. No-op in production.
+#[cfg(test)]
+thread_local! {
+    /// Test-only per-thread barrier directory. When set, [`barrier`] parks
+    /// THIS thread at each publication phase until the test writes the
+    /// matching `go-<phase>` file. Thread-local so concurrent non-barrier
+    /// `publish` calls are never blocked.
+    static BARRIER_DIR_OVERRIDE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Block at a named publication phase when a barrier is armed. No-op in
+/// production and in unit-test threads that did not arm a barrier.
 fn barrier(phase: &str) {
-    let Ok(dir) = std::env::var(BARRIER_ENV) else {
-        return;
+    let dir: PathBuf = {
+        #[cfg(test)]
+        {
+            // Unit tests arm the barrier per thread; the environment
+            // variable is reserved for process-level crash tests.
+            match BARRIER_DIR_OVERRIDE.with(|c| c.borrow().clone()) {
+                Some(dir) => dir,
+                None => return,
+            }
+        }
+        #[cfg(not(test))]
+        {
+            let Ok(dir) = std::env::var(BARRIER_ENV) else {
+                return;
+            };
+            PathBuf::from(dir)
+        }
     };
-    let dir = PathBuf::from(dir);
     let _ = std::fs::create_dir_all(&dir);
     let reached = dir.join(format!("phase-{phase}"));
     let _ = std::fs::write(&reached, "reached");
@@ -144,6 +173,28 @@ pub enum LoadOutcome {
     /// mid-publication or the state dir is unavailable). No mutation or
     /// recovery was attempted — the caller decides how to proceed.
     LockBusy(String),
+}
+
+/// Proof that a published generation was activated through the CURRENT
+/// pointer, not just written to disk. Every field is derived from an actual
+/// filesystem read-back after the corresponding step, so a caller can trust
+/// that readers of the persisted state will observe exactly this generation.
+#[derive(Debug)]
+pub struct PublicationResult {
+    /// The manifest of the generation that was just published.
+    pub manifest: FdxIndexManifest,
+    /// The final generation directory passed full validation (manifest,
+    /// schema, identity, checksums, semantics) at its final path.
+    pub final_path_validated: bool,
+    /// CURRENT was atomically repointed at this generation.
+    pub pointer_activated: bool,
+    /// A post-activation load through CURRENT resolved to this generation
+    /// and matched its identity — i.e. a fresh reader of the persisted state
+    /// will see exactly this generation.
+    pub loaded_through_pointer: bool,
+    /// Previous generations were pruned/retained per the retention policy
+    /// and stale tmp state was cleaned.
+    pub previous_generation_retained: bool,
 }
 
 /// Cross-process writer lock for one worktree state directory.
@@ -435,6 +486,37 @@ impl GenerationStore {
         Ok(())
     }
 
+    /// Prove that no persisted state remains: no generation directories, no
+    /// CURRENT pointer, no stray pointer temp.
+    ///
+    /// Called by the service boundary after [`Self::clear_persisted`] so a
+    /// successful clear is only reported once the absence is verified — a
+    /// clear that silently left generations or the pointer behind must not
+    /// be reported as clean.
+    pub fn verify_persisted_absent(&self) -> std::io::Result<()> {
+        let gens = self.persisted_generations();
+        if !gens.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "persisted generations remain after clear: {gens:?}"
+            )));
+        }
+        let ptr = current_pointer(&self.worktree);
+        if ptr.exists() {
+            return Err(std::io::Error::other(format!(
+                "CURRENT pointer remains after clear at {}",
+                ptr.display()
+            )));
+        }
+        let tmp_ptr = ptr.with_extension("tmp");
+        if tmp_ptr.exists() {
+            return Err(std::io::Error::other(format!(
+                "pointer temp remains after clear at {}",
+                tmp_ptr.display()
+            )));
+        }
+        Ok(())
+    }
+
     /// Remove stale `.tmp` generation dirs and abandoned pointer files.
     ///
     /// Writer-locked: cleanup must never run while another writer is in its
@@ -448,48 +530,56 @@ impl GenerationStore {
             Ok(l) => l,
             Err(_) => return,
         };
-        self.cleanup_stale_tmp_locked();
+        let _ = self.cleanup_stale_tmp_locked();
     }
 
     /// Cleanup while already holding the writer lock (called from publish's
     /// critical section, which serializes all writers).
-    fn cleanup_stale_tmp_locked(&self) {
-        if let Ok(entries) = std::fs::read_dir(&self.worktree) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if !name.contains(".tmp") {
+    ///
+    /// Removals propagate: every identified stale entry must actually be
+    /// removed, or the next pass would re-attempt the same cleanup while
+    /// hiding the failure. Callers that want best-effort semantics (e.g. the
+    /// no-change refresh path) ignore the result explicitly.
+    fn cleanup_stale_tmp_locked(&self) -> std::io::Result<()> {
+        let entries = std::fs::read_dir(&self.worktree)?;
+        for entry in entries {
+            let path = entry?.path();
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if !name.contains(".tmp") {
+                continue;
+            }
+            if path.is_dir() {
+                // Candidate stale build dir. A live writer's temp build
+                // dir holds an exclusive OS lock on OWNER.lock for the
+                // whole build; if we can take the lock, the owner is
+                // gone (crashed) and the dir is collectable.
+                let owner_lock = path.join("OWNER.lock");
+                let live = match std::fs::OpenOptions::new().read(true).open(&owner_lock) {
+                    Ok(f) => {
+                        use fs2::FileExt;
+                        // Any failure to acquire is treated as "live" —
+                        // leaking a stale dir beats deleting a live one.
+                        f.try_lock_exclusive().is_err()
+                    }
+                    Err(_) => false, // no OWNER.lock → legacy tmp dir → stale
+                };
+                if live {
                     continue;
                 }
-                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    // Candidate stale build dir. A live writer's temp build
-                    // dir holds an exclusive OS lock on OWNER.lock for the
-                    // whole build; if we can take the lock, the owner is
-                    // gone (crashed) and the dir is collectable.
-                    let owner_lock = path.join("OWNER.lock");
-                    let live = match std::fs::OpenOptions::new().read(true).open(&owner_lock) {
-                        Ok(f) => {
-                            use fs2::FileExt;
-                            // Any failure to acquire is treated as "live" —
-                            // leaking a stale dir beats deleting a live one.
-                            f.try_lock_exclusive().is_err()
-                        }
-                        Err(_) => false, // no OWNER.lock → legacy tmp dir → stale
-                    };
-                    if live {
-                        continue;
-                    }
-                    let _ = std::fs::remove_dir_all(&path);
-                } else {
-                    // Abandoned pointer temp (`CURRENT.tmp`,
-                    // `CURRENT.tmp-<pid>-<n>`) or stray file. Under the
-                    // writer lock no live writer is mid-`set_current`, so
-                    // these are always stale.
-                    let _ = std::fs::remove_file(&path);
-                }
+                std::fs::remove_dir_all(&path)?;
+            } else {
+                // Abandoned pointer temp (`CURRENT.tmp`,
+                // `CURRENT.tmp-<pid>-<n>`) or stray file. Under the
+                // writer lock no live writer is mid-`set_current`, so
+                // these are always stale.
+                std::fs::remove_file(&path)?;
             }
         }
-        let _ = std::fs::remove_file(current_pointer(&self.worktree).with_extension("tmp"));
+        remove_file_if_present(&current_pointer(&self.worktree).with_extension("tmp"))?;
+        Ok(())
     }
 
     /// Load and validate the current generation (or the newest valid one).
@@ -552,7 +642,20 @@ impl GenerationStore {
                         continue;
                     }
                     let reason = msg;
-                    let dst = self.quarantine(&path, gen, &reason);
+                    let dst = match self.quarantine(&path, gen, &reason) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            // Evidence could not be retained for the corrupt
+                            // generation: surface it instead of pretending
+                            // recovery completed.
+                            return LoadOutcome::RecoveryFailed {
+                                error: format!(
+                                    "failed to quarantine corrupt generation {gen}: {e}"
+                                ),
+                                last_valid,
+                            };
+                        }
+                    };
                     quarantined.push(dst);
                 }
             }
@@ -641,7 +744,7 @@ impl GenerationStore {
         _fdx_version: &str,
         _now_iso: &str,
         build: F,
-    ) -> std::io::Result<FdxIndexManifest>
+    ) -> std::io::Result<PublicationResult>
     where
         F: FnOnce(&Path) -> std::io::Result<FdxIndexManifest>,
     {
@@ -718,31 +821,97 @@ impl GenerationStore {
         // 6. Publish the final dir. Never rename over an existing directory
         //    on Windows: if a final for this generation already exists, it is
         //    either a validated complete generation (reuse) or a corrupt one
-        //    (replace after removal).
+        //    (replace after removal). The corrupt-leftover removal is a
+        //    required step — a failure here must abort publication, not be
+        //    swallowed, or the leftover would silently shadow the new build.
         let final_dir = generation_dir(&self.worktree, generation);
         if !final_dir.exists() {
             std::fs::rename(&tmp, &final_dir)?;
         } else if read_valid_manifest(&final_dir, generation, self).is_ok() {
             // A previous interrupted attempt reached the rename; the
             // generation is complete. Drop the tmp and reuse.
-            let _ = std::fs::remove_dir_all(&tmp);
+            std::fs::remove_dir_all(&tmp)?;
         } else {
             // Corrupt leftover final: remove and rename.
-            let _ = std::fs::remove_dir_all(&final_dir);
+            std::fs::remove_dir_all(&final_dir)?;
             std::fs::rename(&tmp, &final_dir)?;
         }
         sync_dir(&self.worktree)?;
 
-        // 7. Atomically update CURRENT (unique temp pointer; bounded retry
+        // 7. Prove the FINAL path itself (not just the pre-rename tmp copy)
+        //    is a valid, readable generation. This closes the gap where the
+        //    generation was validated in tmp, but the renamed final dir was
+        //    never re-validated at its published path.
+        barrier("final");
+        let final_path_validated = read_valid_manifest(&final_dir, generation, self).is_ok();
+        if !final_path_validated {
+            // The published path failed validation: it must not be
+            // activated. Remove it (propagating a cleanup failure) so a
+            // later load does not quarantine it repeatedly.
+            std::fs::remove_dir_all(&final_dir)?;
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("generation {generation} failed validation at its final path"),
+            ));
+        }
+
+        // 8. Atomically update CURRENT (unique temp pointer; bounded retry
         //    for Windows file handles that temporarily prevent replacement).
+        //    The previous pointer is captured first so a failed activation
+        //    can be rolled back.
         barrier("publish");
+        let previous_pointer = self.current_generation().unwrap_or(None);
         self.set_current(generation)?;
+        let pointer_activated = true;
         barrier("current");
 
-        // 8. Retain previous valid generation, clean stale tmp dirs.
-        self.retain_previous(&final_dir, generation);
+        // 9. Prove the activation: a fresh read through CURRENT must resolve
+        //    to this exact generation (generation number + identity are both
+        //    verified by read_valid_manifest). If it does not — e.g. a
+        //    concurrent writer repointed CURRENT, or the pointer read-back
+        //    raced a corruption — roll the pointer back and fail instead of
+        //    reporting a publication that readers cannot observe.
+        barrier("activate");
+        let loaded_through_pointer = match self.current_generation() {
+            Ok(Some(n)) if n == generation => {
+                read_valid_manifest(&final_dir, generation, self).is_ok()
+            }
+            _ => false,
+        };
+        if !loaded_through_pointer {
+            // Restore the previous pointer (best effort — the previous
+            // pointer is strictly safer than the unproven one; a failure to
+            // restore is reported as part of the error).
+            let restored = match previous_pointer {
+                Some(prev) => self.set_current(prev).is_ok(),
+                None => clear_pointer(self).is_ok(),
+            };
+            return Err(std::io::Error::other(format!(
+                "generation {generation} was not observable through CURRENT after \
+                 activation (restore of previous pointer {}: {})",
+                if restored { "succeeded" } else { "failed" },
+                match self.current_generation() {
+                    Ok(Some(n)) => format!("pointer now reads {n}"),
+                    Ok(None) => "pointer now empty".to_string(),
+                    Err(e) => format!("pointer unreadable: {e}"),
+                }
+            )));
+        }
 
-        Ok(manifest)
+        // 10. Retain previous valid generation, clean stale tmp dirs. The
+        //     retention step is required post-publication housekeeping; its
+        //     filesystem errors propagate so the caller learns the state was
+        //     not fully pruned.
+        barrier("retain");
+        self.retain_previous(&final_dir, generation)?;
+
+        Ok(PublicationResult {
+            manifest,
+            final_path_validated,
+            pointer_activated,
+            loaded_through_pointer,
+            previous_generation_retained: true,
+        })
     }
 
     /// A unique per-process temporary generation directory name, so racing
@@ -798,38 +967,46 @@ impl GenerationStore {
 
     /// Remove stale `.tmp` generations and keep at most `RETAIN_GENERATIONS`
     /// old generations (besides the just-published one).
-    fn retain_previous(&self, published: &Path, generation: u64) {
+    ///
+    /// Filesystem errors propagate: retention is required housekeeping, and
+    /// a partial prune must not be reported as a clean state.
+    fn retain_previous(&self, published: &Path, generation: u64) -> std::io::Result<()> {
         let _ = published;
         // Clean stale tmp dirs + abandoned pointer files. The caller
         // (publish) holds the writer lock for the whole critical section,
         // so the lock-free variant is used here.
-        self.cleanup_stale_tmp_locked();
+        self.cleanup_stale_tmp_locked()?;
         // Keep newest RETAIN_GENERATIONS + the current one.
         let mut gens = self.persisted_generations();
         gens.retain(|g| *g != generation);
         gens.sort_unstable();
         gens.reverse();
         for old in gens.iter().skip(RETAIN_GENERATIONS) {
-            let _ = std::fs::remove_dir_all(self.generation_path(*old));
+            std::fs::remove_dir_all(self.generation_path(*old))?;
         }
+        Ok(())
     }
 
     /// Move a corrupt generation into quarantine, retaining evidence.
-    fn quarantine(&self, path: &Path, generation: u64, reason: &str) -> PathBuf {
+    ///
+    /// The quarantine directory and the diagnostic marker are required
+    /// evidence — a failure to create them propagates so the load reports
+    /// `RecoveryFailed` instead of silently discarding the corrupt state.
+    fn quarantine(&self, path: &Path, generation: u64, reason: &str) -> std::io::Result<PathBuf> {
         let qroot = quarantine_dir(&self.worktree);
-        let _ = std::fs::create_dir_all(&qroot);
+        std::fs::create_dir_all(&qroot)?;
         let dst = qroot.join(format!("gen-{generation}-{}", sanitize(reason)));
         if std::fs::rename(path, &dst).is_err() {
             // Fallback: copy evidence marker alongside the original.
-            let _ = std::fs::write(path.with_extension("corrupt"), format!("reason={reason}\n"));
-            return path.to_path_buf();
+            std::fs::write(path.with_extension("corrupt"), format!("reason={reason}\n"))?;
+            return Ok(path.to_path_buf());
         }
         // Write a diagnostic marker in quarantine.
-        let _ = std::fs::write(
+        std::fs::write(
             dst.join("QUARANTINE.txt"),
             format!("reason={reason}\ngeneration={generation}\n"),
-        );
-        dst
+        )?;
+        Ok(dst)
     }
 
     /// Detect and migrate legacy (64-bit identity) state directories that
@@ -888,20 +1065,29 @@ impl GenerationStore {
             return Ok(()); // a concurrent process created it
         }
         if let Some(parent) = self.worktree.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
         if std::fs::rename(&legacy_wt_dir, &self.worktree).is_err() {
             // Cross-device or locked: copy, then remove best-effort.
             if let Err(e) = copy_dir_all(&legacy_wt_dir, &self.worktree) {
-                let _ = std::fs::remove_dir_all(&self.worktree);
+                // Removing the partial copy is required cleanup — a failure
+                // here is the error to surface (the partial state must not
+                // linger as a current-identity generation).
+                let cleanup = std::fs::remove_dir_all(&self.worktree);
                 let _ = std::fs::create_dir_all(quarantine_dir(&self.worktree));
                 let _ = std::fs::write(
                     quarantine_dir(&self.worktree).join("legacy-migrate-copy-failed"),
                     format!("copy failed: {e}\n"),
                 );
-                return Err(e);
+                return match cleanup {
+                    Ok(()) => Err(e),
+                    Err(ce) => Err(std::io::Error::new(
+                        ce.kind(),
+                        format!("legacy migration copy failed ({e}); removing partial state failed: {ce}"),
+                    )),
+                };
             }
-            let _ = std::fs::remove_dir_all(&legacy_wt_dir);
+            std::fs::remove_dir_all(&legacy_wt_dir)?;
         }
 
         // Rewrite each generation's manifest to the current identity and
@@ -968,9 +1154,12 @@ impl GenerationStore {
 
         if !ok {
             // Migration could not be completed safely: preserve evidence.
+            // Removing the partially-migrated worktree is required cleanup —
+            // its manifests already carry the current identity, so leaving it
+            // in place would make a corrupt generation look current.
             let evidence = quarantine_dir(&self.worktree).join("legacy-migrate-incomplete");
             let _ = std::fs::create_dir_all(&evidence);
-            let _ = std::fs::remove_dir_all(&self.worktree);
+            std::fs::remove_dir_all(&self.worktree)?;
             let _ = std::fs::rename(&legacy_wt_dir, &evidence);
             return Ok(());
         }
@@ -1230,6 +1419,8 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
     // path -> classification, used to verify test mappings reference real
     // test files.
     let mut class_of: HashMap<&str, &str> = HashMap::new();
+    // path -> content hash, used to bind every symbol to its file's bytes.
+    let mut file_hash_by_path: HashMap<&str, &str> = HashMap::new();
     for f in &files {
         if f.path.is_empty()
             || f.path.starts_with('/')
@@ -1254,13 +1445,59 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 ),
             ));
         }
+        // FileMeta semantics: kind ∈ {file, symlink} (the producer never
+        // indexes directories — they are skipped during the walk, so a
+        // persisted `dir` is corrupt) and classification ∈ {source, test,
+        // generated, binary} (ignored files are excluded by the walker,
+        // never persisted). Content-hash coherence: binary files are never
+        // read, so their hash is ALWAYS empty; every other persisted file
+        // carries a 16-hex hash.
+        if f.kind != "file" && f.kind != "symlink" {
+            return Err(invalid(
+                gen,
+                format!("file {:?} has invalid kind {:?}", f.path, f.kind),
+            ));
+        }
+        const FILE_CLASSES: [&str; 4] = ["source", "test", "generated", "binary"];
+        if !FILE_CLASSES.contains(&f.classification.as_str()) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "file {:?} has invalid classification {:?}",
+                    f.path, f.classification
+                ),
+            ));
+        }
+        if f.classification == "binary" {
+            if !f.content_hash.is_empty() {
+                return Err(invalid(
+                    gen,
+                    format!("binary file {:?} must have an empty content hash", f.path),
+                ));
+            }
+        } else if !is_lower_hex(&f.content_hash, 16) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "file {:?} (non-binary) has malformed content_hash {:?}",
+                    f.path, f.content_hash
+                ),
+            ));
+        }
         known.insert(f.path.as_str());
         class_of.insert(f.path.as_str(), f.classification.as_str());
+        file_hash_by_path.insert(f.path.as_str(), f.content_hash.as_str());
     }
 
-    // Symbols: ids unique, names non-empty, files known, line range sane,
-    // source hash well-formed, and parent pointers consistent (same file,
-    // existing symbol, no self-parent, no cycles).
+    // Symbols: validated in three order-independent passes so the row order
+    // never affects validity (parent-before-child and child-before-parent
+    // are equally valid).
+    //
+    // Pass 1 — basic fields, id uniqueness, known file, sane line range,
+    // well-formed source hash, per-row generation, and the source-binding
+    // contract: a symbol's source_hash MUST equal its file's content_hash
+    // (both derive from the same guarded bytes), and symbols must never
+    // exist for files the producer cannot hash (binary → empty hash).
     let mut sym_ids: HashSet<&str> = HashSet::new();
     let mut sym_file: HashMap<&str, &str> = HashMap::new();
     for s in &symbols {
@@ -1307,36 +1544,64 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 ),
             ));
         }
-        // Parent: empty (top-level) or an existing symbol in the SAME file.
-        if !s.parent_id.is_empty() {
-            if s.parent_id == s.id {
-                return Err(invalid(gen, format!("symbol {:?} is its own parent", s.id)));
-            }
-            match sym_file.get(s.parent_id.as_str()) {
-                None => {
-                    return Err(invalid(
-                        gen,
-                        format!(
-                            "symbol {:?} references unknown parent {:?}",
-                            s.id, s.parent_id
-                        ),
-                    ));
-                }
-                Some(pf) if *pf != s.file => {
-                    return Err(invalid(
-                        gen,
-                        format!(
-                            "symbol {:?} parent {:?} is in another file",
-                            s.id, s.parent_id
-                        ),
-                    ));
-                }
-                Some(_) => {}
-            }
+        let file_hash = file_hash_by_path
+            .get(s.file.as_str())
+            .copied()
+            .unwrap_or("");
+        if file_hash.is_empty() {
+            return Err(invalid(
+                gen,
+                format!("symbol {:?} exists for un-hashed file {:?}", s.id, s.file),
+            ));
+        }
+        if s.source_hash != file_hash {
+            return Err(invalid(
+                gen,
+                format!(
+                    "symbol {:?} source_hash {:?} does not match file {:?} hash {:?}",
+                    s.id, s.source_hash, s.file, file_hash
+                ),
+            ));
         }
     }
-    // Parent chains must terminate: walk each chain and reject any cycle
-    // (self-parents were already rejected above).
+
+    // Pass 2 (order-independent) — every parent pointer must reference an
+    // existing symbol in the SAME file, and never itself. The full id/file
+    // maps from pass 1 are used, so the parent's position in the rows is
+    // irrelevant.
+    for s in &symbols {
+        if s.parent_id.is_empty() {
+            continue;
+        }
+        if s.parent_id == s.id {
+            return Err(invalid(gen, format!("symbol {:?} is its own parent", s.id)));
+        }
+        match sym_file.get(s.parent_id.as_str()) {
+            None => {
+                return Err(invalid(
+                    gen,
+                    format!(
+                        "symbol {:?} references unknown parent {:?}",
+                        s.id, s.parent_id
+                    ),
+                ));
+            }
+            Some(pf) if *pf != s.file => {
+                return Err(invalid(
+                    gen,
+                    format!(
+                        "symbol {:?} parent {:?} is in another file",
+                        s.id, s.parent_id
+                    ),
+                ));
+            }
+            Some(_) => {}
+        }
+    }
+
+    // Pass 3 (cycles) — parent chains must terminate. Chains are allowed to
+    // be arbitrarily deep; a revisit of a node on the current path is a
+    // cycle. `chain_ok` memoizes chains already proven to terminate.
     let mut parent_of: HashMap<&str, &str> = HashMap::new();
     for s in &symbols {
         if !s.parent_id.is_empty() {
@@ -1475,6 +1740,25 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 format!("test mapping {:?} references non-test file", t.test_file),
             ));
         }
+        // A test can never map to itself, and the source side must be a
+        // real implementation file: the producer skips rows whose source
+        // is itself classified as a test (see `build_test_mapping`), so a
+        // persisted test→test or self mapping is corrupt.
+        if t.source_file == t.test_file {
+            return Err(invalid(
+                gen,
+                format!("test mapping maps {:?} to itself", t.test_file),
+            ));
+        }
+        if class_of.get(t.source_file.as_str()) == Some(&CLASS_TEST) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "test mapping {:?} has test-classified source {:?}",
+                    t.test_file, t.source_file
+                ),
+            ));
+        }
         if t.basis != "direct_import" && t.basis != "naming" {
             return Err(invalid(
                 gen,
@@ -1484,7 +1768,9 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 ),
             ));
         }
-        if !(0.0..=1.0).contains(&t.confidence) {
+        // Finiteness checked first: NaN/±inf can never satisfy a range
+        // comparison, but the explicit check keeps the contract legible.
+        if !t.confidence.is_finite() || !(0.0..=1.0).contains(&t.confidence) {
             return Err(invalid(
                 gen,
                 format!("test mapping confidence out of range: {}", t.confidence),
@@ -1553,6 +1839,16 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
             }
         }
     }
+    // Renames: path form, from != to. A rename REPLACES a delete+add pair
+    // in git's own vocabulary, so neither endpoint may also appear in
+    // changed/deleted/untracked (a file cannot be both modified and renamed
+    // away, and a rename target is a tracked new path, not an untracked
+    // one). Each `from` and each `to` must be unique — a file cannot be the
+    // source of two renames and two files cannot rename onto the same path.
+    // Chains (a→b, b→c) are legal; cycles (a→b, b→a) are rejected below.
+    let mut rename_froms: HashSet<&str> = HashSet::new();
+    let mut rename_tos: HashSet<&str> = HashSet::new();
+    let mut rename_of: HashMap<&str, &str> = HashMap::new();
     for (from, to) in &git.renamed_files {
         let bad = |p: &str| {
             p.is_empty()
@@ -1566,6 +1862,52 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 gen,
                 format!("git-state rename pair ({from:?}, {to:?}) is invalid"),
             ));
+        }
+        if !rename_froms.insert(from.as_str()) {
+            return Err(invalid(
+                gen,
+                format!("git-state file {:?} is the source of two renames", from),
+            ));
+        }
+        if !rename_tos.insert(to.as_str()) {
+            return Err(invalid(
+                gen,
+                format!("git-state file {:?} is the target of two renames", to),
+            ));
+        }
+        if git_seen.contains(from.as_str()) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "git-state rename source {:?} also appears in changed/deleted/untracked",
+                    from
+                ),
+            ));
+        }
+        if git_seen.contains(to.as_str()) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "git-state rename target {:?} also appears in changed/deleted/untracked",
+                    to
+                ),
+            ));
+        }
+        rename_of.insert(from.as_str(), to.as_str());
+    }
+    // Rename chains must terminate: a revisit of a node on the current
+    // path is a cycle. Chains (a→b, b→c) walk to the end and pass.
+    for (start, _) in &git.renamed_files {
+        let mut cur = start.as_str();
+        let mut seen: HashSet<&str> = HashSet::new();
+        while let Some(&next) = rename_of.get(cur) {
+            if !seen.insert(cur) {
+                return Err(invalid(
+                    gen,
+                    format!("git-state rename cycle involving {:?}", start),
+                ));
+            }
+            cur = next;
         }
     }
 
@@ -1585,12 +1927,6 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
             return Err(invalid(
                 gen,
                 format!("content cache entry {:?} is not in the index", c.path),
-            ));
-        }
-        if !is_lower_hex(&c.key, 16) {
-            return Err(invalid(
-                gen,
-                format!("content cache entry {:?} has malformed key", c.path),
             ));
         }
         if !cache_keys.insert(c.key.as_str()) {
@@ -1617,6 +1953,29 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 format!(
                     "content cache entry {:?} has generation {}, expected {gen}",
                     c.path, c.generation
+                ),
+            ));
+        }
+        // Per-schema key contract, checked AFTER the size==content.len()
+        // invariant so the legacy recomputation has valid inputs:
+        //  - schema v3: full 64-hex SHA-256 over ("fdx-content-cache-v1",
+        //    path, content); MUST recompute from the row's own content, so
+        //    a key is bound to the exact cached bytes.
+        //  - schema v1/v2: 16-hex over (path, size) via the same function
+        //    the pre-v3 producer used — a persisted key that does not
+        //    recompute is tampered or corrupt, and the row cannot be
+        //    loaded partially.
+        let key_ok = if manifest.schema_version >= 3 {
+            is_lower_hex(&c.key, 64) && c.key == content_cache_key(&c.path, &c.content)
+        } else {
+            is_lower_hex(&c.key, 16) && c.key == legacy_content_cache_key(&c.path, c.size)
+        };
+        if !key_ok {
+            return Err(invalid(
+                gen,
+                format!(
+                    "content cache entry {:?} key does not match its content",
+                    c.path
                 ),
             ));
         }
@@ -1883,6 +2242,18 @@ mod tests {
     use super::*;
     use crate::index::manifest::{new_manifest, IndexIdentity};
 
+    /// True when the test process runs with uid 0. Permission-propagation
+    /// tests (EACCES via read-only dirs) cannot reproduce their scenario as
+    /// root, which bypasses file-mode checks; they skip instead of failing.
+    #[cfg(unix)]
+    fn euid_is_root() -> bool {
+        std::process::Command::new("id")
+            .arg("-u")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+            .unwrap_or(false)
+    }
+
     fn identity(name: &str) -> IndexIdentity {
         let repo_root = format!("/tmp/repo-{name}");
         let wt_root = format!("/tmp/wt-{name}");
@@ -1895,70 +2266,147 @@ mod tests {
         }
     }
 
+    /// Publish a valid generation and return the full publication result
+    /// (fault tests assert on the activation/retention proof fields).
+    fn publish_manifest(
+        store: &GenerationStore,
+        ident: &IndexIdentity,
+        generation: u64,
+        head: &str,
+    ) -> std::io::Result<PublicationResult> {
+        store.publish(generation, ident, "0.1.0", "2026-01-01T00:00:00Z", |dir| {
+            let mut m = new_manifest(
+                ident,
+                "0.1.0",
+                generation,
+                "2026-01-01T00:00:00Z",
+                head,
+                &"d".repeat(64),
+                "cfg",
+                "ign",
+            );
+            let _ = write_component_serde(
+                dir,
+                &mut m,
+                "files.json",
+                &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": VALID_HASH, "language": "", "executable": false, "classification": "source", "generation": generation}]),
+            );
+            let _ = write_component_serde(dir, &mut m, "symbols.json", &serde_json::json!([]));
+            let _ = write_component_serde(
+                dir,
+                &mut m,
+                "dependencies.json",
+                &serde_json::json!([]),
+            );
+            let _ = write_component_serde(
+                dir,
+                &mut m,
+                "test-mapping.json",
+                &serde_json::json!([]),
+            );
+            let _ = write_component_serde(
+                dir,
+                &mut m,
+                "git-state.json",
+                &serde_json::json!({"head_sha": head, "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": ident.worktree_id, "generation": generation}),
+            );
+            let _ = write_component_serde(
+                dir,
+                &mut m,
+                "content-cache.json",
+                &serde_json::json!([]),
+            );
+            update_component_counts(&mut m, 1, 0, 0, 0, 0);
+            ready_components(
+                &mut m,
+                &[
+                    "files",
+                    "symbols",
+                    "dependencies",
+                    "test_mapping",
+                    "git_state",
+                    "content_cache",
+                ],
+            );
+            Ok(m)
+        })
+    }
+
     fn build_manifest(
         store: &GenerationStore,
         ident: &IndexIdentity,
         generation: u64,
         head: &str,
     ) -> FdxIndexManifest {
-        store
-            .publish(generation, ident, "0.1.0", "2026-01-01T00:00:00Z", |dir| {
-                let mut m = new_manifest(
-                    ident,
-                    "0.1.0",
-                    generation,
-                    "2026-01-01T00:00:00Z",
-                    head,
-                    &"d".repeat(64),
-                    "cfg",
-                    "ign",
-                );
-                let _ = write_component_serde(
-                    dir,
-                    &mut m,
-                    "files.json",
-                    &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": generation}]),
-                );
-                let _ = write_component_serde(dir, &mut m, "symbols.json", &serde_json::json!([]));
-                let _ = write_component_serde(
-                    dir,
-                    &mut m,
-                    "dependencies.json",
-                    &serde_json::json!([]),
-                );
-                let _ = write_component_serde(
-                    dir,
-                    &mut m,
-                    "test-mapping.json",
-                    &serde_json::json!([]),
-                );
-                let _ = write_component_serde(
-                    dir,
-                    &mut m,
-                    "git-state.json",
-                    &serde_json::json!({"head_sha": head, "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": ident.worktree_id, "generation": generation}),
-                );
-                let _ = write_component_serde(
-                    dir,
-                    &mut m,
-                    "content-cache.json",
-                    &serde_json::json!([]),
-                );
-                update_component_counts(&mut m, 1, 0, 0, 0, 0);
-                ready_components(
-                    &mut m,
-                    &[
-                        "files",
-                        "symbols",
-                        "dependencies",
-                        "test_mapping",
-                        "git_state",
-                        "content_cache",
-                    ],
-                );
-                Ok(m)
-            })
+        publish_manifest(store, ident, generation, head)
             .unwrap()
+            .manifest
+    }
+
+    /// Ordered publication phases (must match the `barrier(...)` calls
+    /// inside `publish`), used to drive a barrier test to a target phase.
+    const PUBLISH_PHASES: &[&str] = &[
+        "build", "manifest", "final", "publish", "current", "activate", "retain",
+    ];
+
+    /// Run `publish` in a thread armed with a per-thread barrier at `phase`.
+    /// The current thread drives publication to that phase (releasing each
+    /// earlier phase), runs `corrupt` while the publish thread is parked,
+    /// then releases it and returns the publish result.
+    fn publish_with_barrier<C>(
+        store_root: &Path,
+        ident: &IndexIdentity,
+        generation: u64,
+        barrier_dir: &Path,
+        phase: &str,
+        corrupt: C,
+    ) -> std::io::Result<PublicationResult>
+    where
+        C: FnOnce(&GenerationStore) + Send + 'static,
+    {
+        let root = store_root.to_path_buf();
+        let ident = ident.clone();
+        let barrier_dir = barrier_dir.to_path_buf();
+        let thread_ident = ident.clone();
+        let thread_barrier_dir = barrier_dir.clone();
+
+        let handle = std::thread::spawn(move || {
+            BARRIER_DIR_OVERRIDE.with(|c| *c.borrow_mut() = Some(thread_barrier_dir));
+            let store = GenerationStore::open(&root, &thread_ident).unwrap();
+            publish_manifest(&store, &thread_ident, generation, &"7".repeat(40))
+        });
+
+        let target = PUBLISH_PHASES
+            .iter()
+            .position(|p| *p == phase)
+            .unwrap_or_else(|| panic!("unknown barrier phase {phase}"));
+        let store = GenerationStore::open(store_root, &ident).unwrap();
+        // Release every phase before the target (each parks the publish
+        // thread until its `go-<phase>` file appears).
+        for p in &PUBLISH_PHASES[..target] {
+            wait_phase(&barrier_dir, p);
+            std::fs::write(barrier_dir.join(format!("go-{p}")), "go").unwrap();
+        }
+        // Park at the target phase, corrupt the state, then release.
+        wait_phase(&barrier_dir, phase);
+        corrupt(&store);
+        std::fs::write(barrier_dir.join(format!("go-{phase}")), "go").unwrap();
+
+        handle.join().expect("publish thread panicked")
+    }
+
+    /// Wait until the publish thread has reached `phase` (its `phase-<phase>`
+    /// marker file exists) or panic after a generous deadline.
+    fn wait_phase(barrier_dir: &Path, phase: &str) {
+        let reached = barrier_dir.join(format!("phase-{phase}"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !reached.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            reached.exists(),
+            "publish never reached barrier phase {phase}"
+        );
     }
 
     #[test]
@@ -1979,6 +2427,121 @@ mod tests {
             }
             other => panic!("expected Loaded, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn publish_fails_when_final_path_validation_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("barrier-final");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+
+        // Corrupt the manifest at the published path while publish is
+        // parked after the rename: validation at the FINAL path must fail
+        // and the corrupt final must be removed, not activated.
+        let barrier_dir = tmp.path().join("barrier");
+        let err = publish_with_barrier(tmp.path(), &ident, 1, &barrier_dir, "final", |store| {
+            let manifest = store.generation_path(1).join(MANIFEST_FILE);
+            std::fs::write(&manifest, b"{ not json").unwrap();
+        })
+        .unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string()
+                .contains("failed validation at its final path"),
+            "error should describe the final-path failure: {err}"
+        );
+        assert!(
+            !store.generation_path(1).exists(),
+            "corrupt final must be removed, not activated"
+        );
+        assert_eq!(store.current_generation().unwrap(), None);
+    }
+
+    #[test]
+    fn publish_restores_previous_pointer_when_activation_unobservable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("barrier-activate");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        assert_eq!(store.current_generation().unwrap(), Some(1));
+
+        // CURRENT already points at gen 2 when the activate barrier is hit;
+        // corrupt the published manifest so the read-back proof fails and
+        // the previous pointer must be rolled back.
+        let barrier_dir = tmp.path().join("barrier");
+        let err = publish_with_barrier(tmp.path(), &ident, 2, &barrier_dir, "activate", |store| {
+            let manifest = store.generation_path(2).join(MANIFEST_FILE);
+            std::fs::write(&manifest, b"corrupted").unwrap();
+        })
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("not observable through CURRENT"),
+            "error should describe the failed activation: {err}"
+        );
+        assert!(
+            err.to_string()
+                .contains("restore of previous pointer succeeded"),
+            "error should report the pointer was restored: {err}"
+        );
+        assert_eq!(
+            store.current_generation().unwrap(),
+            Some(1),
+            "previous pointer must be restored after failed activation"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publish_propagates_retention_failure_after_activation() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("barrier-retain");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        // Two prior valid generations; publishing gen 3 must prune gen 1.
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        build_manifest(&store, &ident, 2, &"2".repeat(40));
+
+        let barrier_dir = tmp.path().join("barrier");
+        let err = publish_with_barrier(tmp.path(), &ident, 3, &barrier_dir, "retain", |store| {
+            // Prevent deletion of the old generation's contents. As
+            // root, only the immutable flag defeats removal; as an
+            // unprivileged user, removing the write bit on the
+            // directory is enough.
+            let gen1 = store.generation_path(1);
+            let immutable = std::process::Command::new("chattr")
+                .arg("+i")
+                .arg(gen1.join(MANIFEST_FILE))
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if !immutable {
+                let mut perms = std::fs::metadata(&gen1).unwrap().permissions();
+                perms.set_mode(0o555);
+                std::fs::set_permissions(&gen1, perms).unwrap();
+            }
+        })
+        .unwrap_err();
+
+        // Restore so the temp dir can be cleaned up.
+        let gen1 = store.generation_path(1);
+        let _ = std::process::Command::new("chattr")
+            .arg("-i")
+            .arg(gen1.join(MANIFEST_FILE))
+            .status();
+        let mut perms = std::fs::metadata(&gen1).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&gen1, perms).unwrap();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        // Activation succeeded before retention failed: CURRENT points at
+        // gen 3, and the unpruned old generation is still on disk.
+        assert_eq!(store.current_generation().unwrap(), Some(3));
+        assert!(
+            gen1.exists(),
+            "failed retention must leave the old generation"
+        );
     }
 
     #[cfg(windows)]
@@ -2079,7 +2642,7 @@ mod tests {
         // generation different from the manifest's must be rejected on
         // load — per component type. The manifest checksum is kept
         // consistent so the semantic (generation) validation is reached.
-        let files_row = serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 99}]);
+        let files_row = serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": VALID_HASH, "language": "", "executable": false, "classification": "source", "generation": 99}]);
         let symbols_row = serde_json::json!([{"id": "sym1", "name": "x", "qualified_name": "", "kind": "function", "file": "a.txt", "line_start": 1, "line_end": 1, "exported": false, "parent_id": "", "source_hash": "aabbcc", "generation": 99}]);
         let deps_row = serde_json::json!([{"from_file": "a.txt", "to_file": "", "specifier": "lib", "kind": "import", "unresolved": true, "generation": 99}]);
         let git_row = serde_json::json!({"head_sha": "1111111111111111111111111111111111111111", "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": "", "generation": 99});
@@ -2274,8 +2837,8 @@ mod tests {
         // file classified as a test, use the producer basis vocabulary, and
         // be unique per (source, test, basis).
         let base_files = serde_json::json!([
-            {"path": "a.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "ts", "executable": false, "classification": "source", "generation": 1},
-            {"path": "a.test.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "ts", "executable": false, "classification": "test", "generation": 1}
+            {"path": "a.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": VALID_HASH, "language": "ts", "executable": false, "classification": "source", "generation": 1},
+            {"path": "a.test.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": VALID_HASH, "language": "ts", "executable": false, "classification": "test", "generation": 1}
         ]);
         let ok = serde_json::json!([{"source_file": "a.ts", "test_file": "a.test.ts", "basis": "direct_import", "confidence": 1.0}]);
 
@@ -2345,8 +2908,8 @@ mod tests {
         // Test file not classified as a test (separate store: the test
         // mapping must reference a file whose classification is "test").
         let source_test = serde_json::json!([
-            {"path": "a.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "ts", "executable": false, "classification": "source", "generation": 1},
-            {"path": "a.test.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "ts", "executable": false, "classification": "source", "generation": 1}
+            {"path": "a.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": VALID_HASH, "language": "ts", "executable": false, "classification": "source", "generation": 1},
+            {"path": "a.test.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": VALID_HASH, "language": "ts", "executable": false, "classification": "source", "generation": 1}
         ]);
         let (tmp, _ident, store) = fresh_store("tm-misclassified");
         seed_files(&store, &source_test);
@@ -2363,15 +2926,18 @@ mod tests {
     #[test]
     fn content_cache_rows_are_validated_semantically() {
         // Contract item 6: cache entries must reference indexed files, carry
-        // a well-formed 16-hex key, and be unique by key and by path.
-        let entry = |key: &str, path: &str| serde_json::json!({"key": key, "path": path, "size": 1, "access_order": 1, "content": "x", "generation": 1});
+        // a key that RECOMPUTES from the row's own content (schema v3:
+        // full SHA-256 over ("fdx-content-cache-v1", path, content)), and be
+        // unique by key and by path.
+        let entry = |key: &str, path: &str, content: &str| serde_json::json!({"key": key, "path": path, "size": content.len(), "access_order": 1, "content": content, "generation": 1});
+        let valid_key = content_cache_key("a.txt", "x");
 
         // Sanity: a valid entry for an indexed file loads.
         let (tmp, _ident, store) = fresh_store("cc-valid");
         assert_component_loaded(
             &store,
             "content-cache.json",
-            &serde_json::json!([entry(VALID_HASH, "a.txt")]),
+            &serde_json::json!([entry(&valid_key, "a.txt", "x")]),
             [1, 0, 0, 0, 1],
             "valid cache entry",
         );
@@ -2382,7 +2948,7 @@ mod tests {
         assert_component_rejected(
             &store,
             "content-cache.json",
-            &serde_json::json!([entry(VALID_HASH, "nope.txt")]),
+            &serde_json::json!([entry(&valid_key, "nope.txt", "x")]),
             [1, 0, 0, 0, 1],
             "unknown cache path",
         );
@@ -2393,9 +2959,20 @@ mod tests {
         assert_component_rejected(
             &store,
             "content-cache.json",
-            &serde_json::json!([entry("zz", "a.txt")]),
+            &serde_json::json!([entry("zz", "a.txt", "x")]),
             [1, 0, 0, 0, 1],
             "malformed key",
+        );
+        drop(tmp);
+
+        // Well-formed hex that does NOT match the content (tampered row).
+        let (tmp, _ident, store) = fresh_store("cc-key-mismatch");
+        assert_component_rejected(
+            &store,
+            "content-cache.json",
+            &serde_json::json!([entry(&"0".repeat(64), "a.txt", "x")]),
+            [1, 0, 0, 0, 1],
+            "key does not match content",
         );
         drop(tmp);
 
@@ -2404,21 +2981,24 @@ mod tests {
         assert_component_rejected(
             &store,
             "content-cache.json",
-            &serde_json::json!([entry(VALID_HASH, "a.txt"), entry(VALID_HASH, "a.txt")]),
+            &serde_json::json!([
+                entry(&valid_key, "a.txt", "x"),
+                entry(&valid_key, "a.txt", "x")
+            ]),
             [1, 0, 0, 0, 2],
             "duplicate key",
         );
         drop(tmp);
 
-        // Duplicate path with distinct keys.
+        // Duplicate path with distinct (content-bound) keys: same path,
+        // different cached bytes, so the keys legitimately differ and only
+        // the path duplication is at fault.
+        let key_y = content_cache_key("a.txt", "y");
         let (tmp, _ident, store) = fresh_store("cc-duplicate-path");
         assert_component_rejected(
             &store,
             "content-cache.json",
-            &serde_json::json!([
-                entry(VALID_HASH, "a.txt"),
-                entry("0123456789abcdee", "a.txt")
-            ]),
+            &serde_json::json!([entry(&valid_key, "a.txt", "x"), entry(&key_y, "a.txt", "y")]),
             [1, 0, 0, 0, 2],
             "duplicate path",
         );
@@ -2490,8 +3070,8 @@ mod tests {
 
         // Parent in another file (needs b.txt in the index).
         let two_files = serde_json::json!([
-            {"path": "a.txt", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1},
-            {"path": "b.txt", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}
+            {"path": "a.txt", "kind": "file", "size": 1, "modified": 0, "content_hash": VALID_HASH, "language": "", "executable": false, "classification": "source", "generation": 1},
+            {"path": "b.txt", "kind": "file", "size": 1, "modified": 0, "content_hash": VALID_HASH, "language": "", "executable": false, "classification": "source", "generation": 1}
         ]);
         let (tmp, _ident, store) = fresh_store("sym-cross-file");
         seed_files(&store, &two_files);
@@ -2774,12 +3354,41 @@ mod tests {
         store.clear_persisted().unwrap();
         assert_eq!(store.persisted_generations(), Vec::<u64>::new());
         assert_eq!(store.current_generation().unwrap(), None);
+
+        // The absence proof confirms the cleared state.
+        store.verify_persisted_absent().unwrap();
+    }
+
+    #[test]
+    fn verify_persisted_absent_rejects_leftover_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("verify-absent");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+
+        store.clear_persisted().unwrap();
+
+        // A generation that reappears after the clear (e.g. a racing writer)
+        // must make the absence proof fail instead of reporting clean.
+        std::fs::create_dir_all(store.generation_path(1)).unwrap();
+        std::fs::write(store.generation_path(1).join("leftover"), b"x").unwrap();
+        let err = store.verify_persisted_absent().unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("persisted generations remain after clear"),
+            "error should describe the leftover generation: {err}"
+        );
     }
 
     #[cfg(unix)]
     #[test]
     fn clear_persisted_propagates_deletion_errors() {
         use std::os::unix::fs::PermissionsExt;
+        // Root bypasses file-mode checks, so the permission-denied path this
+        // test drives cannot be reproduced as root; skip (CI runs non-root).
+        if euid_is_root() {
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
         let ident = identity("clear-err");
         let store = GenerationStore::open(tmp.path(), &ident).unwrap();
@@ -2808,6 +3417,10 @@ mod tests {
     #[test]
     fn load_reports_recovery_failed_when_pointer_repair_fails() {
         use std::os::unix::fs::PermissionsExt;
+        // Root bypasses file-mode checks (see clear_persisted... above).
+        if euid_is_root() {
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
         let ident = identity("recovery-repair");
         let store = GenerationStore::open(tmp.path(), &ident).unwrap();
@@ -2841,18 +3454,20 @@ mod tests {
     #[test]
     fn load_reports_recovery_failed_when_stale_pointer_clear_fails() {
         use std::os::unix::fs::PermissionsExt;
+        // Root bypasses file-mode checks (see clear_persisted... above).
+        if euid_is_root() {
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
         let ident = identity("recovery-clear");
         let store = GenerationStore::open(tmp.path(), &ident).unwrap();
         build_manifest(&store, &ident, 1, &"1".repeat(40));
-        // Corrupt the only generation so nothing valid remains, while CURRENT
-        // still points at gen 1 (a stale pointer that must be cleared).
-        tamper_manifest(
-            &store,
-            1,
-            "dirty_fingerprint",
-            serde_json::json!("not-a-fingerprint"),
-        );
+        // Remove the generation entirely so there is nothing to quarantine:
+        // CURRENT is now a stale pointer to a MISSING generation, and the
+        // pointer-clear is the first failing operation. (Corrupting the
+        // generation instead would trip the quarantine-evidence path first,
+        // which now reports its own failure.)
+        std::fs::remove_dir_all(store.generation_path(1)).unwrap();
 
         let wt = store.worktree_path().to_path_buf();
         let mut perms = std::fs::metadata(&wt).unwrap().permissions();
@@ -3054,7 +3669,7 @@ mod tests {
             &gen2,
             &mut m,
             "files.json",
-            &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 2}]),
+            &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": VALID_HASH, "language": "", "executable": false, "classification": "source", "generation": 2}]),
         );
         let _ = write_component_serde(&gen2, &mut m, "symbols.json", &serde_json::json!([]));
         let _ = write_component_serde(&gen2, &mut m, "dependencies.json", &serde_json::json!([]));
@@ -3200,7 +3815,7 @@ mod tests {
         m.schema_version = 1;
         m.repository_id = legacy_repo.to_string();
         m.worktree_id = legacy_wt.to_string();
-        let files = serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}]);
+        let files = serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": VALID_HASH, "language": "", "executable": false, "classification": "source", "generation": 1}]);
         let git_state = serde_json::json!({"head_sha": "1111111111111111111111111111111111111111", "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": legacy_wt, "generation": 1});
         let git_bytes = serde_json::to_vec(&git_state).unwrap();
         // Write a structurally valid set of components.
