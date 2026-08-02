@@ -568,6 +568,16 @@ pub fn build_test_mapping(
         // Rule 1: direct imports.
         for e in deps.edges_from(test) {
             if !e.unresolved && !e.to_file.is_empty() {
+                // A test file may import another test file (helpers,
+                // fixtures); never emit a row whose "source" is itself a
+                // test-classified file.
+                if files
+                    .files
+                    .get(&e.to_file)
+                    .is_some_and(|m| m.classification == CLASS_TEST)
+                {
+                    continue;
+                }
                 comp.insert(TestMappingRow {
                     source_file: e.to_file.clone(),
                     test_file: test.clone(),
@@ -587,13 +597,17 @@ pub fn build_test_mapping(
             .trim_end_matches(".test.go");
         if stem != test && !stem.is_empty() {
             let source = format!("{stem}{}", source_extension(test));
-            if files.files.contains_key(&source) {
-                comp.insert(TestMappingRow {
-                    source_file: source.clone(),
-                    test_file: test.clone(),
-                    basis: "naming".to_string(),
-                    confidence: 0.8,
-                });
+            if let Some(src_meta) = files.files.get(&source) {
+                // The generated source must itself be a real source file,
+                // not another test file (e.g. `helpers.test.ts`).
+                if src_meta.classification != CLASS_TEST {
+                    comp.insert(TestMappingRow {
+                        source_file: source.clone(),
+                        test_file: test.clone(),
+                        basis: "naming".to_string(),
+                        confidence: 0.8,
+                    });
+                }
             }
         }
     }
@@ -679,4 +693,130 @@ pub fn build_git_state(
         snap.untracked_files = untracked.into_iter().collect();
     }
     GitStateComponent { snapshot: snap }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::manifest::DependencyEdge;
+
+    fn meta(path: &str, classification: &str) -> FileMeta {
+        FileMeta {
+            path: path.to_string(),
+            kind: "file".to_string(),
+            size: 1,
+            modified: 0,
+            content_hash: "0123456789abcdef".to_string(),
+            language: "typescript".to_string(),
+            executable: false,
+            classification: classification.to_string(),
+            generation: 1,
+        }
+    }
+
+    fn edge(from: &str, to: &str) -> DependencyEdge {
+        DependencyEdge {
+            from_file: from.to_string(),
+            to_file: to.to_string(),
+            specifier: format!("./{}", to),
+            kind: "import".to_string(),
+            unresolved: false,
+            generation: 1,
+        }
+    }
+
+    #[test]
+    fn direct_import_mapping_skips_test_to_test_rows() {
+        let mut files = FilesComponent::default();
+        files
+            .files
+            .insert("lib.ts".into(), meta("lib.ts", CLASS_SOURCE));
+        files
+            .files
+            .insert("lib.test.ts".into(), meta("lib.test.ts", CLASS_TEST));
+        files.files.insert(
+            "helpers.test.ts".into(),
+            meta("helpers.test.ts", CLASS_TEST),
+        );
+        let mut deps = DependenciesComponent::default();
+        // lib.test.ts imports both a real source and another test file.
+        deps.replace_file(
+            "lib.test.ts",
+            vec![
+                edge("lib.test.ts", "lib.ts"),
+                edge("lib.test.ts", "helpers.test.ts"),
+            ],
+        );
+
+        let comp = build_test_mapping(&files, &deps);
+
+        // lib.ts receives both the direct_import row and the naming row.
+        let rows = comp.by_source.get("lib.ts").unwrap();
+        assert!(rows
+            .iter()
+            .any(|r| r.basis == "direct_import" && r.test_file == "lib.test.ts"));
+        assert_eq!(comp.by_source.get("lib.test.ts"), None);
+        assert_eq!(
+            comp.by_source.get("helpers.test.ts"),
+            None,
+            "test-to-test row must be skipped"
+        );
+    }
+
+    #[test]
+    fn naming_mapping_skips_generated_test_source() {
+        let mut files = FilesComponent::default();
+        files
+            .files
+            .insert("bar.test.ts".into(), meta("bar.test.ts", CLASS_TEST));
+        files
+            .files
+            .insert("bar.ts".into(), meta("bar.ts", CLASS_SOURCE));
+        // foo.ts exists but is itself classified as test (e.g. a shared
+        // test-support module), so no naming row may point at it.
+        files
+            .files
+            .insert("foo.test.ts".into(), meta("foo.test.ts", CLASS_TEST));
+        files
+            .files
+            .insert("foo.ts".into(), meta("foo.ts", CLASS_TEST));
+        let deps = DependenciesComponent::default();
+
+        let comp = build_test_mapping(&files, &deps);
+
+        assert_eq!(comp.by_source.get("bar.ts").unwrap()[0].basis, "naming");
+        assert_eq!(
+            comp.by_source.get("foo.ts"),
+            None,
+            "naming row whose source is a test file must be skipped"
+        );
+    }
+
+    #[test]
+    fn mapping_never_points_test_at_itself() {
+        let mut files = FilesComponent::default();
+        files
+            .files
+            .insert("self.test.ts".into(), meta("self.test.ts", CLASS_TEST));
+        files
+            .files
+            .insert("self.ts".into(), meta("self.ts", CLASS_SOURCE));
+        let mut deps = DependenciesComponent::default();
+        // A test importing itself (cycle) must not produce a row.
+        deps.replace_file(
+            "self.test.ts",
+            vec![
+                edge("self.test.ts", "self.test.ts"),
+                edge("self.test.ts", "self.ts"),
+            ],
+        );
+
+        let comp = build_test_mapping(&files, &deps);
+
+        assert_eq!(comp.by_source.get("self.test.ts"), None);
+        assert_eq!(
+            comp.by_source.get("self.ts").unwrap()[0].test_file,
+            "self.test.ts"
+        );
+    }
 }
