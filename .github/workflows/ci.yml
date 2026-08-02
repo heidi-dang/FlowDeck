@@ -64,44 +64,80 @@ jobs:
         run: bun test tests/check-coverage.test.ts
       - run: node scripts/check-coverage.mjs
   benchmark-runtime:
-    name: Runtime Benchmark (Exact-SHA)
+    name: Runtime Benchmark (Branch-Head)
     runs-on: ubuntu-latest
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout benchmark candidate
+        uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
+      - name: Verify candidate checkout SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "Expected candidate SHA: $CANDIDATE_SHA"
+          echo "Actual checkout SHA:    $ACTUAL_SHA"
+          if [ "$ACTUAL_SHA" != "$CANDIDATE_SHA" ]; then
+            echo "FAIL: benchmark checkout does not match the PR branch head"
+            exit 1
+          fi
       - name: Materialize runtime implementation baseline worktree
         run: |
           git fetch --no-tags origin e22e04b38e45405b4ae9f15115012d0dce99c241
           git worktree add --detach "$RUNNER_TEMP/rt-baseline" e22e04b38e45405b4ae9f15115012d0dce99c241
           git -C "$RUNNER_TEMP/rt-baseline" rev-parse HEAD
-      - name: Run fail-closed runtime benchmark (candidate = this exact SHA)
+      - name: Run fail-closed runtime benchmark (candidate = PR branch head)
         env:
           BENCHMARK_OUTPUT_DIR: ${{ runner.temp }}/benchmark-artifacts
         run: |
           bun scripts/benchmark-runtime.ts \
             --candidate "$GITHUB_WORKSPACE" \
             --baseline "$RUNNER_TEMP/rt-baseline" \
-            --expect-candidate-sha "${{ github.sha }}" \
+            --expect-candidate-sha "$CANDIDATE_SHA" \
             --expect-baseline-sha "e22e04b38e45405b4ae9f15115012d0dce99c241"
-      - name: Verify exact-SHA benchmark evidence
+      - name: Verify branch-head benchmark evidence
+        shell: bash
         run: |
-          node -e "
-            const a = require(process.env.RUNNER_TEMP + '/benchmark-artifacts/runtime-benchmark.json');
-            const expected = '${{ github.sha }}';
-            if (a.mode !== 'baseline-vs-candidate') { console.error('FAIL: mode=' + a.mode); process.exit(1); }
-            if (a.candidateSha !== expected) { console.error('FAIL: candidateSha=' + a.candidateSha); process.exit(1); }
-            if (a.comparison === null || a.comparison.passed !== true) { console.error('FAIL: comparison=' + JSON.stringify(a.comparison)); process.exit(1); }
-            if (a.comparison.regressions.length > 0) { console.error('FAIL: regressions=' + JSON.stringify(a.comparison.regressions)); process.exit(1); }
-            console.log('PASS: exact-SHA baseline-vs-candidate evidence for ' + expected);
-          "
+          node - "$CANDIDATE_SHA" "$RUNNER_TEMP/benchmark-artifacts/runtime-benchmark.json" <<'NODE'
+          const fs = require("node:fs");
+          const expectedSha = process.argv[2];
+          const artifactPath = process.argv[3];
+          const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+          const fail = (message) => {
+            console.error(`FAIL: ${message}`);
+            process.exit(1);
+          };
+          if (artifact.mode !== "baseline-vs-candidate") {
+            fail(`unexpected mode: ${artifact.mode}`);
+          }
+          if (artifact.candidateSha !== expectedSha) {
+            fail(`candidateSha=${artifact.candidateSha}, expected=${expectedSha}`);
+          }
+          if (!artifact.comparison || artifact.comparison.passed !== true) {
+            fail("comparison did not pass");
+          }
+          if (!Array.isArray(artifact.comparison.regressions)) {
+            fail("comparison.regressions is missing");
+          }
+          if (artifact.comparison.regressions.length !== 0) {
+            fail(`regressions=${JSON.stringify(artifact.comparison.regressions)}`);
+          }
+          if (artifact.sampleProfile !== "full") {
+            fail(`sampleProfile=${artifact.sampleProfile}`);
+          }
+          console.log(`PASS: branch-head benchmark evidence for ${expectedSha}`);
+          NODE
       - name: Upload benchmark artifact
         uses: actions/upload-artifact@v4
         with:
-          name: benchmark-artifacts-${{ github.sha }}
+          name: benchmark-artifacts-${{ github.event.pull_request.head.sha || github.sha }}
           path: ${{ runner.temp }}/benchmark-artifacts
           if-no-files-found: error
   test-matrix:
@@ -549,7 +585,7 @@ jobs:
           echo "- Lint & Typecheck: ${{ needs.lint-typecheck.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Typecheck: ${{ needs.typecheck.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Coverage: ${{ needs.coverage.result }}" >> $GITHUB_STEP_SUMMARY
-          echo "- Runtime Benchmark (Exact-SHA): ${{ needs.benchmark-runtime.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Runtime Benchmark (Branch-Head): ${{ needs.benchmark-runtime.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Test Matrix: ${{ needs.test-matrix.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Build & Validate: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Installer Tests: ${{ needs.installer-test.result }}" >> $GITHUB_STEP_SUMMARY
