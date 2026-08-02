@@ -287,11 +287,15 @@ if (isMain) {
         args.base = fallback.status === 0 && fallback.stdout ? fallback.stdout.trim() : undefined
       }
       if (args.base === undefined) {
-        console.error(
-          "No base ref provided and auto-detection failed (origin/main and main unavailable). " +
-            "Pass --base <sha> explicitly.",
+        // Shallow CI checkouts (actions/checkout default fetch-depth: 1) do
+        // not contain origin/main or main, so merge-base auto-detection can
+        // fail. Fall back to a head-only check: the live-vs-registered
+        // fingerprint comparison still rejects editing version-governed
+        // values without a version bump.
+        console.warn(
+          "Base ref auto-detection failed (origin/main and main unavailable — " +
+            "shallow checkout). Running a head-only fingerprint check.",
         )
-        process.exit(2)
       }
     }
     const result = runPolicyVersionGate(args)
