@@ -9,8 +9,10 @@ function clean() { closeAll(); for (const f of [DB,DB+'-wal',DB+'-shm']) { try {
 const conns = new Map();
 function openConn(p, ro = false) {
   let d = conns.get(p); if (d) return d;
-  d = new Database(p, { readonly: ro });
-  d.pragma('journal_mode = WAL'); d.pragma('foreign_keys = ON'); d.pragma('busy_timeout = 5000'); d.pragma('synchronous = NORMAL');
+  // bun:sqlite has no .pragma(); use exec. Avoid all-zero-flags options objects
+  // (SQLITE_MISUSE under bun 1.3.14), so open plain unless readonly.
+  d = ro ? new Database(p, { readonly: true }) : new Database(p);
+  d.exec('PRAGMA journal_mode = WAL'); d.exec('PRAGMA foreign_keys = ON'); d.exec('PRAGMA busy_timeout = 5000'); d.exec('PRAGMA synchronous = NORMAL');
   conns.set(p, d); return d;
 }
 function closeAll() { for (const [,d] of conns) { d.close(); } conns.clear(); }
@@ -46,10 +48,13 @@ function detectThenable(r) {
 
 function createTxMan(db, policy) {
   const _p = policy || makePolicy(new FakeClock(), new FakeScheduler());
-  const writeTxn = db.transaction((fn) => fn());
+  // Thenable detection runs INSIDE the transaction wrapper, before the driver
+  // commits — matching production transaction-manager.ts. bun:sqlite commits on
+  // callback return, so a post-commit check would leave the row persisted.
+  const txn = (fn) => db.transaction(() => { const r = fn(); detectThenable(r); return r });
   return {
-    read: (fn) => db.transaction(() => fn())(),
-    write: (fn) => { const r = writeTxn(fn); detectThenable(r); return r },
+    read: (fn) => txn(fn)(),
+    write: (fn) => txn(fn)(),
     savepoint: (name, fn) => {
       const id = ++savepointCounter;
       const sp = `sp_${name.replace(/[^a-z0-9_]/gi,'_')}_${id}`;
@@ -120,12 +125,12 @@ const exhaustPolicy = {
   clock: fc, scheduler: fs,
   classify: () => 'busy', isRetryable: () => true,
 };
-const txExhaust = createTxMan(db, exhaustPolicy); db.pragma('busy_timeout = 1');
+const txExhaust = createTxMan(db, exhaustPolicy); db.exec('PRAGMA busy_timeout = 1');
 let exhausted = false;
 try {
   // Hold write lock to cause busy
   const blocker = openConn(DB + '-block');
-  blocker.pragma('busy_timeout = 1');
+  blocker.exec('PRAGMA busy_timeout = 1');
   blocker.exec('BEGIN IMMEDIATE');
   try { txExhaust.write(() => { db.prepare("SELECT 1").run(); }); }
   catch { exhausted = true; }

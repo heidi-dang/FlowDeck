@@ -447,7 +447,15 @@ export class SqliteStateStore implements StateStore {
 
   // ── Deprecated methods (delegate to commitTransition pattern) ──────────
 
-  /** @deprecated Use commitTransition */
+  /**
+   * Insert the initial run state row, or CAS-update an existing row.
+   *
+   * The orchestrator's `createTask` uses this as the initial insert, so a
+   * missing row must be inserted (version 0) rather than rejected. Existing
+   * rows still require the expected version to match (optimistic locking).
+   *
+   * @deprecated Use commitTransition for state changes; kept for createTask.
+   */
   async saveState(
     runId: string,
     state: State,
@@ -459,7 +467,19 @@ export class SqliteStateStore implements StateStore {
       )
       .get(runId) as { version: number } | undefined;
 
-    if (!current || current.version !== expectedVersion) return false;
+    if (!current) {
+      // Initial insert — version must be 0 (no prior state exists).
+      if (expectedVersion !== 0) return false;
+      const result = this.db
+        .query(
+          `INSERT INTO run_states (run_id, state, version, last_updated, metadata)
+           VALUES (?, ?, 0, datetime('now'), '{}')`,
+        )
+        .run(runId, state);
+      return result.changes > 0;
+    }
+
+    if (current.version !== expectedVersion) return false;
 
     const newVersion = current.version + 1;
     const result = this.db

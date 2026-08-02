@@ -25,6 +25,7 @@
  */
 
 import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -36,6 +37,8 @@ import type {
 } from "../src/orchestration/runtime/state-store.js";
 
 const BASELINE_SHA = "5809fcf1230ff349ff0d7f5b53ed75403f44573b";
+/** Runtime-compatible implementation SHA (has the runtime module). */
+const RUNTIME_COMPATIBLE_SHA = "e22e04b38e45405b4ae9f15115012d0dce99c241";
 const OUTPUT_DIR = "benchmark-results";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(SCRIPT_DIR, "..");
@@ -341,6 +344,39 @@ function buildReport(opts: {
   return lines.join("\n");
 }
 
+/**
+ * Resolve the git HEAD SHA of a directory, or null when not a git repo.
+ * Never throws — benchmarks must degrade gracefully on git errors.
+ */
+function gitHeadSha(dir: string): string | null {
+  try {
+    return execSync("git rev-parse HEAD", { cwd: dir, stdio: ["ignore", "pipe", "ignore"] })
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Determine whether a directory has uncommitted changes (dirty working tree).
+ * `dirty=false` in the artifact means the benchmark ran against a clean checkout.
+ */
+function isDirty(dir: string): boolean {
+  try {
+    const out = execSync("git status --porcelain", {
+      cwd: dir,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+    return out.length > 0;
+  } catch {
+    // Not a git repo or git unavailable — treat as dirty to be conservative.
+    return true;
+  }
+}
+
 function parseArgs(): { baselineDir: string | null; candidateDir: string } {
   const args = process.argv.slice(2);
   let baselineDir = process.env.BENCHMARK_BASELINE_DIR ?? null;
@@ -408,6 +444,9 @@ async function main(): Promise<void> {
 
   const jsonPayload = {
     baselineSha: BASELINE_SHA,
+    runtimeCompatibleSha: RUNTIME_COMPATIBLE_SHA,
+    candidateSha: gitHeadSha(candidateDir),
+    dirty: isDirty(candidateDir),
     timestamp: new Date().toISOString(),
     candidateDir,
     baselineDir,

@@ -640,6 +640,11 @@ export class RuntimeOrchestrator {
     });
 
     const tokenId = `token:root:${runId}`;
+    const token = this.cancellationService.getToken(tokenId);
+    if (!token) {
+      // Create the root token if it doesn't exist yet (same as cancel())
+      this.cancellationService.createRootToken(runId);
+    }
     await this.cancellationService.cancel(tokenId, { force: true, reason });
 
     return { success: true, runId, phase: "completed" };
