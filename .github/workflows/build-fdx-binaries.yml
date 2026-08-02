@@ -77,7 +77,7 @@ jobs:
         run: |
           BIN="target/${{ matrix.target.rust_target }}/release/${{ matrix.target.binary }}"
           if [ "${{ matrix.target.rust_target }}" = "aarch64-unknown-linux-gnu" ]; then
-            qemu-aarch64 -L /usr/aarch64-linux-gnu "$BIN" --version
+            qemu-aarch64-static -L /usr/aarch64-linux-gnu "$BIN" --version
           elif [ "${{ runner.os }}" != "Windows" ]; then
             "$BIN" --version
           else
