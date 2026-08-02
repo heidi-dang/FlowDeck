@@ -628,11 +628,15 @@ impl IndexService {
     /// Invalidate the index: drop the in-memory snapshot AND the persisted
     /// generations, so the next refresh starts from a clean slate.
     /// Serializes with other writers via the cross-process lock.
-    pub fn invalidate(&self) {
+    ///
+    /// Errors propagate instead of being swallowed: a busy writer lock (the
+    /// cross-process writer is mid-publish) or a failed clear returns an
+    /// error rather than racing the writer or leaving a half-cleared state.
+    pub fn invalidate(&self) -> std::io::Result<()> {
         let _guard = self.refresh_lock.lock().unwrap();
-        let _writer = self.store.writer_lock();
+        let _writer = self.store.writer_lock()?;
         *self.snapshot.write().unwrap() = None;
-        let _ = self.store.clear_persisted();
+        self.store.clear_persisted()
     }
 
     /// Force a full rebuild. Serializes with other writers via the
@@ -939,7 +943,7 @@ pub fn handle_index_command(
         }
         "invalidate" => {
             let svc = GLOBAL_INDEX_REGISTRY.service_for(&worktree).ok()?;
-            svc.invalidate();
+            svc.invalidate().ok()?;
             return Some(serde_json::json!({ "invalidated": true }));
         }
         "rebuild" => {
