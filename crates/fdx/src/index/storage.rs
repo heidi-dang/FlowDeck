@@ -48,6 +48,7 @@
 //! quarantine evidence. Identity verification at load is the hard guarantee
 //! that a manifest from another repository can never be loaded.
 
+use crate::index::builder::CLASS_TEST;
 use crate::index::identity::normalize_root_for_compare;
 use crate::index::manifest::{
     ComponentCounts, ContentCacheEntry, DependencyEdge, FdxIndexManifest, FileMeta,
@@ -58,7 +59,7 @@ use crate::index::paths::{
     current_pointer, ensure_state_root, ensure_state_version, generation_dir, quarantine_dir,
     worktree_dir,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -904,6 +905,11 @@ impl GenerationStore {
             m.repository_root = self.repository_root.clone();
             m.worktree_root = self.worktree_root.clone();
             m.schema_version = INDEX_SCHEMA_VERSION;
+            // The legacy manifest's dirty fingerprint predates the 64-hex
+            // format contract; recompute it for the current worktree so the
+            // migrated (schema v2) generation satisfies strict validation.
+            m.dirty_fingerprint =
+                crate::index::identity::dirty_fingerprint(Path::new(&self.worktree_root));
             m.component_counts = match compute_component_counts(&dir) {
                 Ok(c) => c,
                 Err(_) => {
@@ -1080,6 +1086,19 @@ fn read_valid_manifest(
     verify_manifest_identity(&expected, &manifest)?;
     // Required presence + checksums.
     verify_checksums(path, &manifest)?;
+    // Schema v2 manifests must carry a well-formed dirty fingerprint (the
+    // producer derives it from the worktree's git status via identity_hash).
+    // Legacy v1 manifests are exempt: they were written before the format
+    // contract existed.
+    if manifest.schema_version >= 2 && !is_lower_hex(&manifest.dirty_fingerprint, 64) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "generation {generation}: invalid dirty fingerprint {:?}",
+                manifest.dirty_fingerprint
+            ),
+        ));
+    }
     // Strict deserialization + semantic validation + counts.
     validate_components(path, &manifest)?;
     Ok(manifest)
@@ -1142,6 +1161,13 @@ fn verify_checksums(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Result<
     Ok(())
 }
 
+/// Whether `s` is exactly `len` lowercase hex characters.
+fn is_lower_hex(s: &str, len: usize) -> bool {
+    s.len() == len
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+}
+
 /// Strictly deserialize every component and validate semantics. Any failure
 /// rejects the ENTIRE generation — malformed components are never converted
 /// into empty/default collections.
@@ -1157,6 +1183,9 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
     // Indexed file set for reference validation.
     let mut known: HashSet<&str> = HashSet::new();
     let mut seen_paths: HashSet<&str> = HashSet::new();
+    // path -> classification, used to verify test mappings reference real
+    // test files.
+    let mut class_of: HashMap<&str, &str> = HashMap::new();
     for f in &files {
         if f.path.is_empty()
             || f.path.starts_with('/')
@@ -1182,10 +1211,14 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
             ));
         }
         known.insert(f.path.as_str());
+        class_of.insert(f.path.as_str(), f.classification.as_str());
     }
 
-    // Symbols: ids unique, names non-empty, files known, line range sane.
+    // Symbols: ids unique, names non-empty, files known, line range sane,
+    // source hash well-formed, and parent pointers consistent (same file,
+    // existing symbol, no self-parent, no cycles).
     let mut sym_ids: HashSet<&str> = HashSet::new();
+    let mut sym_file: HashMap<&str, &str> = HashMap::new();
     for s in &symbols {
         if s.id.is_empty() || s.name.is_empty() || s.file.is_empty() {
             return Err(invalid(gen, format!("malformed symbol {:?}", s.id)));
@@ -1193,16 +1226,32 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
         if !sym_ids.insert(s.id.as_str()) {
             return Err(invalid(gen, format!("duplicate symbol id {:?}", s.id)));
         }
+        sym_file.insert(s.id.as_str(), s.file.as_str());
         if !known.contains(s.file.as_str()) {
             return Err(invalid(
                 gen,
                 format!("symbol {:?} references unknown file {:?}", s.id, s.file),
             ));
         }
+        if s.line_start < 1 {
+            return Err(invalid(
+                gen,
+                format!("symbol {:?} has line_start {}", s.id, s.line_start),
+            ));
+        }
         if s.line_end < s.line_start {
             return Err(invalid(
                 gen,
                 format!("symbol {:?} has inverted line range", s.id),
+            ));
+        }
+        if !is_lower_hex(&s.source_hash, 16) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "symbol {:?} has malformed source_hash {:?}",
+                    s.id, s.source_hash
+                ),
             ));
         }
         if s.generation != gen {
@@ -1214,9 +1263,68 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 ),
             ));
         }
+        // Parent: empty (top-level) or an existing symbol in the SAME file.
+        if !s.parent_id.is_empty() {
+            if s.parent_id == s.id {
+                return Err(invalid(gen, format!("symbol {:?} is its own parent", s.id)));
+            }
+            match sym_file.get(s.parent_id.as_str()) {
+                None => {
+                    return Err(invalid(
+                        gen,
+                        format!(
+                            "symbol {:?} references unknown parent {:?}",
+                            s.id, s.parent_id
+                        ),
+                    ));
+                }
+                Some(pf) if *pf != s.file => {
+                    return Err(invalid(
+                        gen,
+                        format!(
+                            "symbol {:?} parent {:?} is in another file",
+                            s.id, s.parent_id
+                        ),
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    // Parent chains must terminate: walk each chain and reject any cycle
+    // (self-parents were already rejected above).
+    let mut parent_of: HashMap<&str, &str> = HashMap::new();
+    for s in &symbols {
+        if !s.parent_id.is_empty() {
+            parent_of.insert(s.id.as_str(), s.parent_id.as_str());
+        }
+    }
+    let mut chain_ok: HashSet<&str> = HashSet::new();
+    for s in &symbols {
+        if s.parent_id.is_empty() {
+            continue;
+        }
+        let mut cur = s.id.as_str();
+        let mut seen: HashSet<&str> = HashSet::new();
+        while let Some(&p) = parent_of.get(cur) {
+            if !seen.insert(cur) {
+                return Err(invalid(
+                    gen,
+                    format!("symbol parent cycle involving {:?}", s.id),
+                ));
+            }
+            cur = p;
+            if chain_ok.contains(cur) {
+                break;
+            }
+        }
+        chain_ok.insert(s.id.as_str());
     }
 
-    // Dependencies: from_file known, to_file known unless unresolved.
+    // Dependencies: from_file known, to_file known unless unresolved, kinds
+    // from the producer vocabulary, non-empty specifier, no duplicate edges.
+    const DEP_KINDS: &[&str] = &["import", "require", "from", "use"];
+    let mut seen_edges: HashSet<(&str, &str, &str, &str, bool)> = HashSet::new();
     for e in &deps {
         if e.from_file.is_empty() || !known.contains(e.from_file.as_str()) {
             return Err(invalid(
@@ -1224,10 +1332,34 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 format!("dependency edge from unknown file {:?}", e.from_file),
             ));
         }
+        if e.specifier.is_empty() {
+            return Err(invalid(
+                gen,
+                format!("dependency edge from {:?} has empty specifier", e.from_file),
+            ));
+        }
+        if !DEP_KINDS.contains(&e.kind.as_str()) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "dependency edge from {:?} has unknown kind {:?}",
+                    e.from_file, e.kind
+                ),
+            ));
+        }
         if !e.unresolved && e.to_file.is_empty() {
             return Err(invalid(
                 gen,
                 format!("dependency edge from {:?} has empty target", e.from_file),
+            ));
+        }
+        if e.unresolved && !e.to_file.is_empty() {
+            return Err(invalid(
+                gen,
+                format!(
+                    "unresolved dependency edge from {:?} carries a target",
+                    e.from_file
+                ),
             ));
         }
         if !e.unresolved && !known.contains(e.to_file.as_str()) {
@@ -1248,14 +1380,64 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 ),
             ));
         }
+        if !seen_edges.insert((
+            e.from_file.as_str(),
+            e.to_file.as_str(),
+            e.specifier.as_str(),
+            e.kind.as_str(),
+            e.unresolved,
+        )) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "duplicate dependency edge from {:?} -> {:?} ({:?}, {:?})",
+                    e.from_file, e.to_file, e.specifier, e.kind
+                ),
+            ));
+        }
     }
 
-    // Test mapping: non-empty source + test; confidence in range.
+    // Test mapping: known source/test files, test file classified as a test,
+    // basis from the producer vocabulary, unique per (source, test, basis).
+    let mut seen_tests: HashSet<(&str, &str, &str)> = HashSet::new();
     for t in &tests {
         if t.source_file.is_empty() || t.test_file.is_empty() {
             return Err(invalid(
                 gen,
                 "test mapping with empty source/test path".to_string(),
+            ));
+        }
+        if !known.contains(t.source_file.as_str()) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "test mapping {:?} references unknown source {:?}",
+                    t.test_file, t.source_file
+                ),
+            ));
+        }
+        if !known.contains(t.test_file.as_str()) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "test mapping {:?} references unknown test file",
+                    t.test_file
+                ),
+            ));
+        }
+        if class_of.get(t.test_file.as_str()) != Some(&CLASS_TEST) {
+            return Err(invalid(
+                gen,
+                format!("test mapping {:?} references non-test file", t.test_file),
+            ));
+        }
+        if t.basis != "direct_import" && t.basis != "naming" {
+            return Err(invalid(
+                gen,
+                format!(
+                    "test mapping {:?} has unknown basis {:?}",
+                    t.test_file, t.basis
+                ),
             ));
         }
         if !(0.0..=1.0).contains(&t.confidence) {
@@ -1264,13 +1446,27 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 format!("test mapping confidence out of range: {}", t.confidence),
             ));
         }
+        if !seen_tests.insert((
+            t.source_file.as_str(),
+            t.test_file.as_str(),
+            t.basis.as_str(),
+        )) {
+            return Err(invalid(
+                gen,
+                format!(
+                    "duplicate test mapping {:?} -> {:?} ({:?})",
+                    t.test_file, t.source_file, t.basis
+                ),
+            ));
+        }
     }
 
-    // Git state: HEAD SHA length, worktree + generation consistency.
-    if !git.head_sha.is_empty() && git.head_sha.len() != 40 {
+    // Git state: HEAD SHA format, worktree + generation consistency, and
+    // canonical, disjoint, per-list-unique file sets.
+    if !git.head_sha.is_empty() && !is_lower_hex(&git.head_sha, 40) {
         return Err(invalid(gen, format!("invalid HEAD SHA {:?}", git.head_sha)));
     }
-    if !git.worktree_id.is_empty() && git.worktree_id != manifest.worktree_id {
+    if git.worktree_id != manifest.worktree_id {
         return Err(invalid(gen, "git-state worktree id mismatch".to_string()));
     }
     // Strict: no zero bypass — the snapshot must carry the manifest
@@ -1284,14 +1480,85 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
             ),
         ));
     }
+    // A file may appear in at most one of changed/deleted/untracked, and
+    // every listed path must be canonical and repo-relative.
+    let mut git_seen: HashSet<&str> = HashSet::new();
+    let git_lists = [
+        ("changed_files", &git.changed_files),
+        ("deleted_files", &git.deleted_files),
+        ("untracked_files", &git.untracked_files),
+    ];
+    for (list_name, list) in git_lists {
+        for p in list {
+            if p.is_empty()
+                || p.starts_with('/')
+                || p.starts_with("..")
+                || p.contains('\\')
+                || p.contains("//")
+            {
+                return Err(invalid(
+                    gen,
+                    format!("git-state {list_name} has invalid path {:?}", p),
+                ));
+            }
+            if !git_seen.insert(p.as_str()) {
+                return Err(invalid(
+                    gen,
+                    format!("git-state file {:?} listed more than once", p),
+                ));
+            }
+        }
+    }
+    for (from, to) in &git.renamed_files {
+        let bad = |p: &str| {
+            p.is_empty()
+                || p.starts_with('/')
+                || p.starts_with("..")
+                || p.contains('\\')
+                || p.contains("//")
+        };
+        if bad(from) || bad(to) || from == to {
+            return Err(invalid(
+                gen,
+                format!("git-state rename pair ({from:?}, {to:?}) is invalid"),
+            ));
+        }
+    }
 
-    // Content cache: keys/paths non-empty, size consistent with content,
+    // Content cache: keys/paths non-empty, canonical, unique, well-formed
+    // keys, path present in the index, size consistent with content,
     // generation consistent with the manifest.
+    let mut cache_keys: HashSet<&str> = HashSet::new();
+    let mut cache_paths: HashSet<&str> = HashSet::new();
     for c in &cache {
         if c.key.is_empty() || c.path.is_empty() {
             return Err(invalid(
                 gen,
                 "content cache entry with empty key/path".to_string(),
+            ));
+        }
+        if !known.contains(c.path.as_str()) {
+            return Err(invalid(
+                gen,
+                format!("content cache entry {:?} is not in the index", c.path),
+            ));
+        }
+        if !is_lower_hex(&c.key, 16) {
+            return Err(invalid(
+                gen,
+                format!("content cache entry {:?} has malformed key", c.path),
+            ));
+        }
+        if !cache_keys.insert(c.key.as_str()) {
+            return Err(invalid(
+                gen,
+                format!("content cache duplicate key {:?}", c.key),
+            ));
+        }
+        if !cache_paths.insert(c.path.as_str()) {
+            return Err(invalid(
+                gen,
+                format!("content cache duplicate path {:?}", c.path),
             ));
         }
         if c.size != c.content.len() {
@@ -1598,7 +1865,7 @@ mod tests {
                     generation,
                     "2026-01-01T00:00:00Z",
                     head,
-                    "dirty",
+                    &"d".repeat(64),
                     "cfg",
                     "ign",
                 );
@@ -1729,7 +1996,16 @@ mod tests {
         // gen 2 corrupt: write a manifest with a wrong checksum
         let gen2 = store.generation_path(2);
         std::fs::create_dir_all(&gen2).unwrap();
-        let mut m = new_manifest(&ident, "0.1.0", 2, "t", &"2".repeat(40), "d", "c", "i");
+        let mut m = new_manifest(
+            &ident,
+            "0.1.0",
+            2,
+            "t",
+            &"2".repeat(40),
+            &"d".repeat(64),
+            "c",
+            "i",
+        );
         m.checksums
             .insert("files.json".to_string(), "deadbeef".to_string());
         std::fs::write(
@@ -1831,6 +2107,612 @@ mod tests {
 
         match store.load() {
             LoadOutcome::Loaded(_) => panic!("zero-generation rows must be rejected"),
+            LoadOutcome::Corrupt { .. } | LoadOutcome::Empty => {}
+            other => panic!("unexpected outcome {other:?}"),
+        }
+    }
+
+    /// Corrupt a generation's manifest (tamper a field) so load rejects it.
+    fn tamper_manifest(
+        store: &GenerationStore,
+        generation: u64,
+        field: &str,
+        value: serde_json::Value,
+    ) {
+        let gen = store.generation_path(generation);
+        let mut m: FdxIndexManifest =
+            serde_json::from_str(&std::fs::read_to_string(gen.join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        match field {
+            "dirty_fingerprint" => m.dirty_fingerprint = value.as_str().unwrap().to_string(),
+            _ => panic!("unknown manifest field {field}"),
+        }
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Open a fresh store with a published generation 1 and return it along
+    /// with its identity. Each case runs on its own store because a rejected
+    /// load quarantines the current generation (removing gen-1 from disk).
+    fn fresh_store(name: &str) -> (tempfile::TempDir, IndexIdentity, GenerationStore) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity(name);
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        (tmp, ident, store)
+    }
+
+    /// Rewrite `files.json` in generation 1 with the given rows and refresh
+    /// the manifest counts accordingly.
+    fn seed_files(store: &GenerationStore, rows: &serde_json::Value) {
+        let gen = store.generation_path(1);
+        let mut m: FdxIndexManifest =
+            serde_json::from_str(&std::fs::read_to_string(gen.join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        let _ = write_component_serde(&gen, &mut m, "files.json", rows);
+        let n = rows.as_array().map(|a| a.len()).unwrap_or(0);
+        update_component_counts(&mut m, n, 0, 0, 0, 0);
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+    }
+
+    /// Rewrite one component with the given rows, update counts, and assert
+    /// the generation is rejected on load.
+    fn assert_component_rejected(
+        store: &GenerationStore,
+        component: &str,
+        rows: &serde_json::Value,
+        counts: [usize; 5],
+        label: &str,
+    ) {
+        let gen = store.generation_path(1);
+        let mut m: FdxIndexManifest =
+            serde_json::from_str(&std::fs::read_to_string(gen.join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        let _ = write_component_serde(&gen, &mut m, component, rows);
+        update_component_counts(
+            &mut m, counts[0], counts[1], counts[2], counts[3], counts[4],
+        );
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+        match store.load() {
+            LoadOutcome::Loaded(_) => panic!("{label}: generation must be rejected"),
+            LoadOutcome::Corrupt { .. } | LoadOutcome::Empty => {}
+            other => panic!("{label}: unexpected outcome {other:?}"),
+        }
+    }
+
+    /// Assert the generation still loads after a rewrite.
+    fn assert_component_loaded(
+        store: &GenerationStore,
+        component: &str,
+        rows: &serde_json::Value,
+        counts: [usize; 5],
+        label: &str,
+    ) {
+        let gen = store.generation_path(1);
+        let mut m: FdxIndexManifest =
+            serde_json::from_str(&std::fs::read_to_string(gen.join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        let _ = write_component_serde(&gen, &mut m, component, rows);
+        update_component_counts(
+            &mut m, counts[0], counts[1], counts[2], counts[3], counts[4],
+        );
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+        match store.load() {
+            LoadOutcome::Loaded(_) => {}
+            other => panic!("{label}: expected load, got {other:?}"),
+        }
+    }
+
+    fn sym(id: &str, file: &str, parent: &str, hash: &str, ls: u64) -> serde_json::Value {
+        serde_json::json!({"id": id, "name": id, "qualified_name": id, "kind": "function", "file": file, "line_start": ls, "line_end": ls, "exported": false, "parent_id": parent, "source_hash": hash, "generation": 1})
+    }
+
+    const VALID_HASH: &str = "0123456789abcdef";
+
+    #[test]
+    fn test_mapping_rows_are_validated_semantically() {
+        // Contract item 5: test mappings must reference known files, map to a
+        // file classified as a test, use the producer basis vocabulary, and
+        // be unique per (source, test, basis).
+        let base_files = serde_json::json!([
+            {"path": "a.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "ts", "executable": false, "classification": "source", "generation": 1},
+            {"path": "a.test.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "ts", "executable": false, "classification": "test", "generation": 1}
+        ]);
+        let ok = serde_json::json!([{"source_file": "a.ts", "test_file": "a.test.ts", "basis": "direct_import", "confidence": 1.0}]);
+
+        // Sanity: a valid mapping (with the two-file index) loads.
+        let (tmp, _ident, store) = fresh_store("tm-valid");
+        seed_files(&store, &base_files);
+        assert_component_loaded(
+            &store,
+            "test-mapping.json",
+            &ok,
+            [2, 0, 0, 1, 0],
+            "valid mapping",
+        );
+        drop(tmp);
+
+        // Unknown source file.
+        let (tmp, _ident, store) = fresh_store("tm-unknown-source");
+        seed_files(&store, &base_files);
+        assert_component_rejected(
+            &store,
+            "test-mapping.json",
+            &serde_json::json!([{"source_file": "nope.ts", "test_file": "a.test.ts", "basis": "direct_import", "confidence": 1.0}]),
+            [2, 0, 0, 1, 0],
+            "unknown source",
+        );
+        drop(tmp);
+
+        // Unknown test file.
+        let (tmp, _ident, store) = fresh_store("tm-unknown-test");
+        seed_files(&store, &base_files);
+        assert_component_rejected(
+            &store,
+            "test-mapping.json",
+            &serde_json::json!([{"source_file": "a.ts", "test_file": "nope.test.ts", "basis": "direct_import", "confidence": 1.0}]),
+            [2, 0, 0, 1, 0],
+            "unknown test",
+        );
+        drop(tmp);
+
+        // Unknown basis.
+        let (tmp, _ident, store) = fresh_store("tm-unknown-basis");
+        seed_files(&store, &base_files);
+        assert_component_rejected(
+            &store,
+            "test-mapping.json",
+            &serde_json::json!([{"source_file": "a.ts", "test_file": "a.test.ts", "basis": "package", "confidence": 1.0}]),
+            [2, 0, 0, 1, 0],
+            "unknown basis",
+        );
+        drop(tmp);
+
+        // Duplicate (source, test, basis).
+        let (tmp, _ident, store) = fresh_store("tm-duplicate");
+        seed_files(&store, &base_files);
+        assert_component_rejected(
+            &store,
+            "test-mapping.json",
+            &serde_json::json!([
+                {"source_file": "a.ts", "test_file": "a.test.ts", "basis": "naming", "confidence": 0.8},
+                {"source_file": "a.ts", "test_file": "a.test.ts", "basis": "naming", "confidence": 0.8}
+            ]),
+            [2, 0, 0, 2, 0],
+            "duplicate mapping",
+        );
+        drop(tmp);
+
+        // Test file not classified as a test (separate store: the test
+        // mapping must reference a file whose classification is "test").
+        let source_test = serde_json::json!([
+            {"path": "a.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "ts", "executable": false, "classification": "source", "generation": 1},
+            {"path": "a.test.ts", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "ts", "executable": false, "classification": "source", "generation": 1}
+        ]);
+        let (tmp, _ident, store) = fresh_store("tm-misclassified");
+        seed_files(&store, &source_test);
+        assert_component_rejected(
+            &store,
+            "test-mapping.json",
+            &serde_json::json!([{"source_file": "a.ts", "test_file": "a.test.ts", "basis": "direct_import", "confidence": 1.0}]),
+            [2, 0, 0, 1, 0],
+            "test file misclassified",
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn content_cache_rows_are_validated_semantically() {
+        // Contract item 6: cache entries must reference indexed files, carry
+        // a well-formed 16-hex key, and be unique by key and by path.
+        let entry = |key: &str, path: &str| serde_json::json!({"key": key, "path": path, "size": 1, "access_order": 1, "content": "x", "generation": 1});
+
+        // Sanity: a valid entry for an indexed file loads.
+        let (tmp, _ident, store) = fresh_store("cc-valid");
+        assert_component_loaded(
+            &store,
+            "content-cache.json",
+            &serde_json::json!([entry(VALID_HASH, "a.txt")]),
+            [1, 0, 0, 0, 1],
+            "valid cache entry",
+        );
+        drop(tmp);
+
+        // Path not in the index.
+        let (tmp, _ident, store) = fresh_store("cc-unknown-path");
+        assert_component_rejected(
+            &store,
+            "content-cache.json",
+            &serde_json::json!([entry(VALID_HASH, "nope.txt")]),
+            [1, 0, 0, 0, 1],
+            "unknown cache path",
+        );
+        drop(tmp);
+
+        // Malformed key.
+        let (tmp, _ident, store) = fresh_store("cc-malformed-key");
+        assert_component_rejected(
+            &store,
+            "content-cache.json",
+            &serde_json::json!([entry("zz", "a.txt")]),
+            [1, 0, 0, 0, 1],
+            "malformed key",
+        );
+        drop(tmp);
+
+        // Duplicate key.
+        let (tmp, _ident, store) = fresh_store("cc-duplicate-key");
+        assert_component_rejected(
+            &store,
+            "content-cache.json",
+            &serde_json::json!([entry(VALID_HASH, "a.txt"), entry(VALID_HASH, "a.txt")]),
+            [1, 0, 0, 0, 2],
+            "duplicate key",
+        );
+        drop(tmp);
+
+        // Duplicate path with distinct keys.
+        let (tmp, _ident, store) = fresh_store("cc-duplicate-path");
+        assert_component_rejected(
+            &store,
+            "content-cache.json",
+            &serde_json::json!([
+                entry(VALID_HASH, "a.txt"),
+                entry("0123456789abcdee", "a.txt")
+            ]),
+            [1, 0, 0, 0, 2],
+            "duplicate path",
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn symbol_rows_are_validated_semantically() {
+        // Contract item 7: symbols need sane line ranges, well-formed source
+        // hashes, and parent pointers that stay in the same file, reference
+        // an existing symbol, and never form cycles.
+        // Sanity: top-level + child symbol with a valid parent loads.
+        let (tmp, _ident, store) = fresh_store("sym-valid");
+        assert_component_loaded(
+            &store,
+            "symbols.json",
+            &serde_json::json!([
+                sym("a", "a.txt", "", VALID_HASH, 1),
+                sym("b", "a.txt", "a", VALID_HASH, 2)
+            ]),
+            [1, 2, 0, 0, 0],
+            "valid parent",
+        );
+        drop(tmp);
+
+        // line_start below 1.
+        let (tmp, _ident, store) = fresh_store("sym-line-start-0");
+        assert_component_rejected(
+            &store,
+            "symbols.json",
+            &serde_json::json!([sym("a", "a.txt", "", VALID_HASH, 0)]),
+            [1, 1, 0, 0, 0],
+            "line_start 0",
+        );
+        drop(tmp);
+
+        // Malformed source hash.
+        let (tmp, _ident, store) = fresh_store("sym-bad-hash");
+        assert_component_rejected(
+            &store,
+            "symbols.json",
+            &serde_json::json!([sym("a", "a.txt", "", "not-a-hash", 1)]),
+            [1, 1, 0, 0, 0],
+            "bad source hash",
+        );
+        drop(tmp);
+
+        // Self-parent.
+        let (tmp, _ident, store) = fresh_store("sym-self-parent");
+        assert_component_rejected(
+            &store,
+            "symbols.json",
+            &serde_json::json!([sym("a", "a.txt", "a", VALID_HASH, 1)]),
+            [1, 1, 0, 0, 0],
+            "self parent",
+        );
+        drop(tmp);
+
+        // Unknown parent.
+        let (tmp, _ident, store) = fresh_store("sym-unknown-parent");
+        assert_component_rejected(
+            &store,
+            "symbols.json",
+            &serde_json::json!([sym("a", "a.txt", "ghost", VALID_HASH, 1)]),
+            [1, 1, 0, 0, 0],
+            "unknown parent",
+        );
+        drop(tmp);
+
+        // Parent in another file (needs b.txt in the index).
+        let two_files = serde_json::json!([
+            {"path": "a.txt", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1},
+            {"path": "b.txt", "kind": "file", "size": 1, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}
+        ]);
+        let (tmp, _ident, store) = fresh_store("sym-cross-file");
+        seed_files(&store, &two_files);
+        assert_component_rejected(
+            &store,
+            "symbols.json",
+            &serde_json::json!([
+                sym("a", "a.txt", "", VALID_HASH, 1),
+                sym("b", "b.txt", "a", VALID_HASH, 2)
+            ]),
+            [2, 2, 0, 0, 0],
+            "cross-file parent",
+        );
+        drop(tmp);
+
+        // Parent cycle.
+        let (tmp, _ident, store) = fresh_store("sym-cycle");
+        assert_component_rejected(
+            &store,
+            "symbols.json",
+            &serde_json::json!([
+                sym("a", "a.txt", "b", VALID_HASH, 1),
+                sym("b", "a.txt", "a", VALID_HASH, 2)
+            ]),
+            [1, 2, 0, 0, 0],
+            "parent cycle",
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn dependency_rows_are_validated_semantically() {
+        // Contract item 8: dependency edges carry a non-empty specifier, a
+        // known kind, a consistent unresolved/target contract, and are
+        // unique by (from, to, specifier, kind, unresolved).
+        let edge = |from: &str, to: &str, spec: &str, kind: &str, unresolved: bool| serde_json::json!({"from_file": from, "to_file": to, "specifier": spec, "kind": kind, "unresolved": unresolved, "generation": 1});
+
+        // Sanity: a resolved edge to an indexed file loads.
+        let (tmp, _ident, store) = fresh_store("dep-valid-resolved");
+        assert_component_loaded(
+            &store,
+            "dependencies.json",
+            &serde_json::json!([edge("a.txt", "a.txt", "./a", "import", false)]),
+            [1, 0, 1, 0, 0],
+            "valid resolved edge",
+        );
+        drop(tmp);
+
+        // Sanity: an unresolved edge with empty target loads.
+        let (tmp, _ident, store) = fresh_store("dep-valid-unresolved");
+        assert_component_loaded(
+            &store,
+            "dependencies.json",
+            &serde_json::json!([edge("a.txt", "", "lodash", "import", true)]),
+            [1, 0, 1, 0, 0],
+            "valid unresolved edge",
+        );
+        drop(tmp);
+
+        // Empty specifier.
+        let (tmp, _ident, store) = fresh_store("dep-empty-specifier");
+        assert_component_rejected(
+            &store,
+            "dependencies.json",
+            &serde_json::json!([edge("a.txt", "", "", "import", true)]),
+            [1, 0, 1, 0, 0],
+            "empty specifier",
+        );
+        drop(tmp);
+
+        // Unknown kind.
+        let (tmp, _ident, store) = fresh_store("dep-unknown-kind");
+        assert_component_rejected(
+            &store,
+            "dependencies.json",
+            &serde_json::json!([edge("a.txt", "", "x", "relative", true)]),
+            [1, 0, 1, 0, 0],
+            "unknown kind",
+        );
+        drop(tmp);
+
+        // Unresolved edge carrying a target.
+        let (tmp, _ident, store) = fresh_store("dep-unresolved-with-target");
+        assert_component_rejected(
+            &store,
+            "dependencies.json",
+            &serde_json::json!([edge("a.txt", "a.txt", "x", "import", true)]),
+            [1, 0, 1, 0, 0],
+            "unresolved with target",
+        );
+        drop(tmp);
+
+        // Duplicate edge.
+        let (tmp, _ident, store) = fresh_store("dep-duplicate");
+        assert_component_rejected(
+            &store,
+            "dependencies.json",
+            &serde_json::json!([
+                edge("a.txt", "a.txt", "./a", "import", false),
+                edge("a.txt", "a.txt", "./a", "import", false)
+            ]),
+            [1, 0, 2, 0, 0],
+            "duplicate edge",
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn git_state_rows_are_validated_semantically() {
+        // Contract item 9: HEAD must be empty or 40 lowercase hex, worktree
+        // must match the manifest, and the file lists must be canonical and
+        // pairwise disjoint with unique entries; renames must be well-formed.
+        let snap = |head: &str,
+                    wt: &str,
+                    changed: serde_json::Value,
+                    renamed: serde_json::Value,
+                    deleted: serde_json::Value,
+                    untracked: serde_json::Value| {
+            serde_json::json!({"head_sha": head, "branch": "", "detached": false, "changed_files": changed, "renamed_files": renamed, "deleted_files": deleted, "untracked_files": untracked, "worktree_id": wt, "generation": 1})
+        };
+
+        // Sanity: valid snapshot (empty lists) loads.
+        let (tmp, ident, store) = fresh_store("git-valid");
+        assert_component_loaded(
+            &store,
+            "git-state.json",
+            &snap(
+                &"1".repeat(40),
+                &ident.worktree_id,
+                serde_json::json!([]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+            ),
+            [1, 0, 0, 0, 0],
+            "valid git state",
+        );
+        drop(tmp);
+
+        // Non-hex HEAD.
+        let (tmp, ident, store) = fresh_store("git-non-hex-head");
+        assert_component_rejected(
+            &store,
+            "git-state.json",
+            &snap(
+                &"z".repeat(40),
+                &ident.worktree_id,
+                serde_json::json!([]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+            ),
+            [1, 0, 0, 0, 0],
+            "non-hex head",
+        );
+        drop(tmp);
+
+        // Uppercase hex HEAD.
+        let (tmp, ident, store) = fresh_store("git-uppercase-head");
+        assert_component_rejected(
+            &store,
+            "git-state.json",
+            &snap(
+                &"A".repeat(40),
+                &ident.worktree_id,
+                serde_json::json!([]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+            ),
+            [1, 0, 0, 0, 0],
+            "uppercase head",
+        );
+        drop(tmp);
+
+        // Wrong worktree id.
+        let (tmp, _ident, store) = fresh_store("git-wrong-worktree");
+        assert_component_rejected(
+            &store,
+            "git-state.json",
+            &snap(
+                &"1".repeat(40),
+                "deadbeef",
+                serde_json::json!([]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+            ),
+            [1, 0, 0, 0, 0],
+            "worktree mismatch",
+        );
+        drop(tmp);
+
+        // Same file in changed + deleted.
+        let (tmp, ident, store) = fresh_store("git-overlap");
+        assert_component_rejected(
+            &store,
+            "git-state.json",
+            &snap(
+                &"1".repeat(40),
+                &ident.worktree_id,
+                serde_json::json!(["a.txt"]),
+                serde_json::json!([]),
+                serde_json::json!(["a.txt"]),
+                serde_json::json!([]),
+            ),
+            [1, 0, 0, 0, 0],
+            "overlapping lists",
+        );
+        drop(tmp);
+
+        // Non-canonical path.
+        let (tmp, ident, store) = fresh_store("git-absolute-path");
+        assert_component_rejected(
+            &store,
+            "git-state.json",
+            &snap(
+                &"1".repeat(40),
+                &ident.worktree_id,
+                serde_json::json!(["/abs/a.txt"]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+            ),
+            [1, 0, 0, 0, 0],
+            "absolute path",
+        );
+        drop(tmp);
+
+        // Malformed rename pair.
+        let (tmp, ident, store) = fresh_store("git-bad-rename");
+        assert_component_rejected(
+            &store,
+            "git-state.json",
+            &snap(
+                &"1".repeat(40),
+                &ident.worktree_id,
+                serde_json::json!([]),
+                serde_json::json!([["", "a.txt"]]),
+                serde_json::json!([]),
+                serde_json::json!([]),
+            ),
+            [1, 0, 0, 0, 0],
+            "bad rename pair",
+        );
+        drop(tmp);
+    }
+
+    #[test]
+    fn manifest_dirty_fingerprint_format_is_validated() {
+        // Contract item 9 (fingerprint): schema v2 manifests must carry a
+        // 64-hex dirty fingerprint; a tampered one rejects the generation.
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("fp");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+
+        tamper_manifest(
+            &store,
+            1,
+            "dirty_fingerprint",
+            serde_json::json!("not-a-fingerprint"),
+        );
+        match store.load() {
+            LoadOutcome::Loaded(_) => panic!("malformed dirty fingerprint must be rejected"),
             LoadOutcome::Corrupt { .. } | LoadOutcome::Empty => {}
             other => panic!("unexpected outcome {other:?}"),
         }
@@ -2002,7 +2884,16 @@ mod tests {
         // Simulate a crash after gen-2 rename but before CURRENT update.
         let gen2 = store.generation_path(2);
         std::fs::create_dir_all(&gen2).unwrap();
-        let mut m = new_manifest(&ident, "0.1.0", 2, "t", &"2".repeat(40), "d", "c", "i");
+        let mut m = new_manifest(
+            &ident,
+            "0.1.0",
+            2,
+            "t",
+            &"2".repeat(40),
+            &"d".repeat(64),
+            "c",
+            "i",
+        );
         let _ = write_component_serde(
             &gen2,
             &mut m,
