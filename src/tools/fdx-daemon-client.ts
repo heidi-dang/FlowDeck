@@ -110,6 +110,80 @@ export interface DaemonRequest {
   params?: Record<string, unknown>
 }
 
+// ─── Task 4: typed read-only batch protocol ───────────────────────────────
+// Mirrors crates/fdx/src/batch/mod.rs — one canonical schema across daemon,
+// CLI, TS client, fallback, and capability metadata.
+
+/** Parameter bag for a single batch operation (all fields optional). */
+export interface OperationParams {
+  file?: string
+  mode?: string
+  symbol?: string
+  limit?: number
+  offset?: number
+  pattern?: string
+  paths?: string[]
+  contextLines?: number
+  fixedStrings?: boolean
+  caseSensitive?: boolean
+  kindFilter?: string
+  maxMatches?: number
+  noCache?: boolean
+  depth?: number
+  minLines?: number
+  targets?: string[]
+  direction?: string
+  root?: string
+  source?: string
+}
+
+/** One typed operation inside a batch. */
+export interface BatchOperation {
+  id: string
+  op: string
+  params: OperationParams
+}
+
+/** Error payload for a failed operation. */
+export interface BatchOpError {
+  code: string
+  message: string
+}
+
+/** Response for a single batch operation. */
+export interface OperationResponse {
+  id: string
+  ok: boolean
+  result?: unknown
+  error?: BatchOpError
+}
+
+/** Whole-batch response (version 1). */
+export interface BatchResponse {
+  version: number
+  responses: OperationResponse[]
+  failedFast: boolean
+  staleSnapshot: boolean
+}
+
+/** Capability metadata for a hosted tool (mirrors batch/registry.rs). */
+export interface ToolDescriptor {
+  name: string
+  readOnly: boolean
+  supportsStreaming: boolean
+  supportsCancellation: boolean
+  supportsBatching: boolean
+  cachePolicy: "none" | "run" | "repository"
+  expectedLatencyClass: "instant" | "fast" | "slow"
+  maximumOutputBytes: number
+  negativeCacheEligible: boolean
+}
+
+export interface CapabilitiesPayload {
+  descriptors: ToolDescriptor[]
+}
+
+
 export type FallbackReason =
   | "ok" // daemon served the request
   | "daemon-unavailable" // no binary / socket unreachable
@@ -505,6 +579,24 @@ export class DaemonConnection {
   /** Execute a single hosted command. */
   async query(command: string, argv: string[], cwd?: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<DaemonResponse> {
     return this.request("query", { command, argv, cwd }, timeoutMs)
+  }
+
+  /** Execute a typed read-only batch (Task 4). Responses in input order. */
+  async batch(
+    operations: BatchOperation[],
+    cwd?: string,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+  ): Promise<DaemonResponse> {
+    return this.request(
+      "batch",
+      { version: 1, operations, cwd },
+      timeoutMs,
+    )
+  }
+
+  /** Fetch capability metadata for all hosted tools. */
+  async capabilities(timeoutMs = DEFAULT_TIMEOUT_MS): Promise<DaemonResponse> {
+    return this.query("capabilities.query", [], undefined, timeoutMs)
   }
 
   /** Ping liveness probe. */

@@ -391,6 +391,24 @@ enum Commands {
         #[arg(long)]
         cwd: Option<PathBuf>,
     },
+
+    /// Execute a typed read-only batch (Task 4)
+    ///
+    /// Reads a JSON batch request from stdin — either a full
+    /// `{"version":1,"operations":[...]}` object or a bare operations
+    /// array — executes it with one frozen index snapshot, and prints the
+    /// batch response JSON on stdout.
+    ///
+    /// Example: cat batch.json | fdx batch-query --cwd /repo
+    BatchQuery {
+        /// Working directory for relative paths and the index (default: current dir)
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+
+        /// Stop at the first failed operation (failedFast=true)
+        #[arg(long)]
+        fail_fast: bool,
+    },
 }
 
 fn main() {
@@ -1169,6 +1187,69 @@ fn main() {
                 }
                 None => {
                     eprintln!("Error: index command '{}' failed", subcommand);
+                    process::exit(1);
+                }
+            }
+        }
+        Commands::BatchQuery { cwd, fail_fast } => {
+            // Typed read-only batch (Task 4). Reads a JSON batch request from
+            // stdin (full {"version":1,"operations":[...]} object, or a bare
+            // operations array) and prints the BatchResponse on stdout.
+            // Uses the SAME production executor as the daemon (execute_batch)
+            // so one-shot and daemon results are semantically equivalent.
+            let mut input = String::new();
+            if let Err(e) = std::io::Read::read_to_string(&mut std::io::stdin(), &mut input) {
+                eprintln!("Error: failed to read batch request from stdin: {}", e);
+                process::exit(1);
+            }
+            let trimmed = input.trim();
+            if trimmed.is_empty() {
+                eprintln!("Error: no batch request on stdin");
+                process::exit(2);
+            }
+
+            #[derive(serde::Deserialize)]
+            struct BatchEnvelope {
+                #[serde(default)]
+                operations: Vec<fdx::batch::BatchOperation>,
+            }
+
+            let operations: Vec<fdx::batch::BatchOperation> = if let Ok(ops) =
+                serde_json::from_str(trimmed)
+            {
+                // Bare operations array.
+                ops
+            } else if let Ok(envelope) = serde_json::from_str::<BatchEnvelope>(trimmed) {
+                envelope.operations
+            } else {
+                eprintln!(
+                        "Error: stdin is not a valid batch request (expected an operations array or {{\"version\":1,\"operations\":[...]}})"
+                    );
+                process::exit(2);
+            };
+
+            let worktree = cwd
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+            let result = fdx::batch::execute_batch(
+                &operations,
+                Some(&worktree.to_string_lossy()),
+                None,
+                fail_fast,
+            );
+            match result {
+                Ok(response) => match serde_json::to_string_pretty(&response) {
+                    Ok(s) => println!("{}", s),
+                    Err(e) => {
+                        eprintln!("Error: failed to serialize batch response: {}", e);
+                        process::exit(1);
+                    }
+                },
+                Err(reject) => {
+                    eprintln!(
+                        "Error: batch rejected ({}): {}",
+                        reject.code, reject.message
+                    );
                     process::exit(1);
                 }
             }
