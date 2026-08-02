@@ -292,7 +292,7 @@ jobs:
           chmod +x "$INSTALLED_BIN" 2>/dev/null || true
           echo "=== Testing execution of $INSTALLED_BIN ==="
           if [ "${{ matrix.target.use_qemu }}" = "true" ]; then
-            qemu-aarch64 -L /usr/aarch64-linux-gnu "$INSTALLED_BIN" --version || "$INSTALLED_BIN" --version || { echo "FAIL: Executable failed to execute"; exit 1; }
+            qemu-aarch64-static -L /usr/aarch64-linux-gnu "$INSTALLED_BIN" --version || qemu-aarch64 "$INSTALLED_BIN" --version || "$INSTALLED_BIN" --version || { echo "FAIL: Executable failed to execute"; exit 1; }
           else
             "$INSTALLED_BIN" --version || { echo "FAIL: Executable failed to execute"; exit 1; }
           fi
