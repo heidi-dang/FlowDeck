@@ -82,6 +82,21 @@ function cacheEntryCount(stateRoot: string): number {
   return count
 }
 
+function negativeEntryCount(stateRoot: string): number {
+  const ns = join(stateRoot, "fdx-index")
+  if (!existsSync(ns)) return 0
+  let count = 0
+  for (const repo of readdirSync(ns)) {
+    const repoDir = join(ns, repo)
+    if (!statSync(repoDir).isDirectory()) continue
+    for (const wt of readdirSync(repoDir)) {
+      const ncDir = join(repoDir, wt, "negative-cache")
+      if (existsSync(ncDir)) count += readdirSync(ncDir).length
+    }
+  }
+  return count
+}
+
 let conn: DaemonConnection
 let projectDir: string
 let stateDir: string
@@ -196,6 +211,43 @@ describe("FDX query cache (daemon)", () => {
     const readResult = resp.responses[0].result as { lines: string[] }
     expect(readResult.lines.join("\n")).toContain("greet")
     expect(cacheEntryCount(stateDir)).toBe(before)
+  })
+
+  it("index.invalidate clears both cache namespaces", async () => {
+    if (!HAVE_DAEMON) return
+    // Populate the positive cache (grep with matches) and negative cache
+    // (definitive-empty grep) through the daemon.
+    const hit = asBatch(
+      await conn.batch(
+        [{ id: "g1", op: "grep", params: { pattern: "greet", paths: ["src"], maxMatches: 10 } }],
+        projectDir,
+      ),
+    )
+    expect((hit.responses[0].result as { total_matches: number }).total_matches).toBeGreaterThan(0)
+    const miss = asBatch(
+      await conn.batch(
+        [{ id: "g2", op: "grep", params: { pattern: "definitely-not-present", paths: ["src"], maxMatches: 10 } }],
+        projectDir,
+      ),
+    )
+    expect((miss.responses[0].result as { total_matches: number }).total_matches).toBe(0)
+    expect(cacheEntryCount(stateDir)).toBeGreaterThan(0)
+    expect(negativeEntryCount(stateDir)).toBeGreaterThan(0)
+
+    // index.invalidate clears the query cache under the worktree.
+    const inv = await conn.query("index.invalidate", [], projectDir)
+    expect(inv.ok).toBe(true)
+    expect(cacheEntryCount(stateDir)).toBe(0)
+    expect(negativeEntryCount(stateDir)).toBe(0)
+
+    // Results are still correct after invalidation (fresh execution).
+    const after = asBatch(
+      await conn.batch(
+        [{ id: "g1", op: "grep", params: { pattern: "greet", paths: ["src"], maxMatches: 10 } }],
+        projectDir,
+      ),
+    )
+    expect((after.responses[0].result as { total_matches: number }).total_matches).toBeGreaterThan(0)
   })
 
   it("non-git project dirs never touch the cache", async () => {
