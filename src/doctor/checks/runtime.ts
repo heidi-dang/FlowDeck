@@ -5,6 +5,8 @@
 import { execFile } from "child_process"
 import { promisify } from "util"
 import type { CheckResult } from "../types"
+import { resolve } from "path"
+import { pathToFileURL } from "url"
 
 const execFileAsync = promisify(execFile)
 
@@ -129,8 +131,18 @@ export async function runRuntimeChecks(_directory: string): Promise<CheckResult[
     autoFixAvailable: false,
   })
 
-  // ─── FDX Native Distribution Doctor Checks ─────────────────────────────
-  const fdxSharedModule = await import("../../tools/fdx-shared.js")
+  let fdxSharedModule: any
+  try {
+    const p1 = pathToFileURL(resolve(__dirname, "../../../dist/tools/fdx-shared.js")).href
+    fdxSharedModule = await import(p1)
+  } catch {
+    try {
+      const p2 = pathToFileURL(resolve(__dirname, "../../tools/fdx-shared.ts")).href
+      fdxSharedModule = await import(p2)
+    } catch {
+      fdxSharedModule = await import("../../tools/fdx-shared.js")
+    }
+  }
   const fdxStatus = fdxSharedModule.getFdxAvailabilityStatus(true)
   const profile = process.env.FLOWDECK_PROFILE || "recommended-dev"
   const isStrictFail = profile !== "minimal"

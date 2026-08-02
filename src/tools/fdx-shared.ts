@@ -21,6 +21,8 @@ import {
   readOrMissing,
   clearFileWithLock,
 } from "./planning-state-lib"
+export { redactSecrets, containsSecrets } from "../lib/secret-redaction"
+export { codebaseDir } from "./planning-state-lib"
 
 // ─── Security: Executable and argument validation ──────────────────────────
 
