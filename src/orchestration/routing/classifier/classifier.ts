@@ -46,6 +46,7 @@ import type {
   EvidenceReference,
 } from "@/orchestration/routing/contracts"
 import { TASK_CLASSES, ROUTING_POLICY_VERSION, SCORE_MIN, SCORE_MAX } from "@/orchestration/routing/contracts"
+import { deepFreeze } from "@/orchestration/routing/contracts/immutability"
 import { normalizeSpecialistId, resolveSpecialistClass } from "./specialist-registry"
 
 /** Below this confidence a classification is downgraded to "unknown". */
@@ -54,17 +55,17 @@ export const DEFAULT_CLASSIFICATION_THRESHOLD = 60
 /** Minimum number of evidence entries required for a confident class. */
 export const MIN_CLASSIFICATION_EVIDENCE = 2
 
-/** Classes treated as high risk by downstream strategy selection. */
-export const HIGH_RISK_CLASSES: readonly TaskClass[] = [
+/** Classes treated as high risk by downstream strategy selection. Deeply frozen. */
+export const HIGH_RISK_CLASSES: readonly TaskClass[] = deepFreeze([
   "production_incident",
   "database_migration",
   "concurrency_failure",
   "security_review",
   "release_failure",
-]
+])
 
-/** Classes that imply mutation of repository state. */
-export const MUTATING_CLASSES: readonly TaskClass[] = [
+/** Classes that imply mutation of repository state. Deeply frozen. */
+export const MUTATING_CLASSES: readonly TaskClass[] = deepFreeze([
   "trivial_edit",
   "local_bug",
   "cross_module_feature",
@@ -76,7 +77,7 @@ export const MUTATING_CLASSES: readonly TaskClass[] = [
   "production_incident",
   "recovery_resume",
   "documentation",
-]
+])
 
 /**
  * Bounded documentation-term matching (rule 9). A prompt is documentation
@@ -242,6 +243,15 @@ for (const rule of RULES) {
     throw new Error(`classifier: rule "${rule.id}" references unknown task class "${rule.taskClass}"`)
   }
 }
+
+/**
+ * Classifier rule ids in priority order (first rule wins). Exported so the
+ * routing-policy fingerprint/version gate can bind rule identity and
+ * priority into the policy fingerprint — a rule reordering, addition, or
+ * removal changes the policy fingerprint and therefore requires a version
+ * bump. Deeply frozen.
+ */
+export const CLASSIFIER_RULE_IDS: readonly string[] = deepFreeze(RULES.map((rule) => rule.id))
 
 /** Evidence contributed by the winning rule (always at least MIN entries). */
 function winnerEvidence(rule: ClassificationRule, input: ClassificationInput): EvidenceReference[] {

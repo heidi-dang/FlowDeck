@@ -63,6 +63,8 @@ jobs:
       - name: Coverage check (unit tests)
         run: bun test tests/check-coverage.test.ts
       - run: node scripts/check-coverage.mjs
+      - name: Routing policy-version gate
+        run: npm run test:routing:policy-version
   test-matrix:
     name: Test Matrix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

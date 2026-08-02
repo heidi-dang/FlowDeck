@@ -40,6 +40,8 @@ jobs:
           
       - name: Validate Artifacts
         run: npm run validate:orchestration:artifacts
+      - name: Routing policy-version gate
+        run: npm run test:routing:policy-version
 
   integration-compatibility:
     name: Integration Compatibility

@@ -50,14 +50,14 @@ export const HIGH_RISK_APPROVAL_REQUIREMENT = "high_risk_approval"
  * CAPABILITY_TIER_FLOOR projection, so a high-risk-compatible strategy's
  * model tier must satisfy this floor.
  */
-export const HIGH_RISK_CAPABILITY_FLOOR: readonly Capability[] = [
+export const HIGH_RISK_CAPABILITY_FLOOR: readonly Capability[] = deepFreeze([
   "security audit",
   "database migration",
   "release operation",
   "package publication",
   "destructive Git",
   "infrastructure change",
-]
+])
 
 /**
  * Returns true when every capability in `capabilities` is recognized by the
@@ -385,4 +385,58 @@ for (const policy of Object.values(DEFAULT_STRATEGY_POLICIES)) {
       .join("; ")
     throw new Error(`default strategy policy "${policy.strategy}" failed validation at load: ${details}`)
   }
+}
+
+/**
+ * Fields callers may NOT override for a canonical strategy id. Canonical
+ * strategy identifiers are FIXED: a policy named `fast_direct` must BE the
+ * canonical fast_direct semantics. A caller needing different semantics must
+ * use a custom policy id (never a canonical id).
+ */
+export const CANONICAL_STRATEGY_LOCKED_FIELDS = [
+  "allowedStates",
+  "maximumSpecialists",
+  "requiredCapabilities",
+  "requiredReviewers",
+  "verificationLevel",
+  "modelTier",
+  "recoveryLimit",
+  "approvalRequirements",
+] as const
+
+/**
+ * Validates that a policy carrying a CANONICAL strategy id matches the
+ * registered canonical policy semantics exactly.
+ *
+ * Returns an array of problem descriptions (empty when the policy is
+ * semantically identical to the canonical default). A canonical strategy id
+ * must never be reused with different semantics — a custom policy must use a
+ * custom `policyId` instead (versioned custom policies are outside PR 1;
+ * they must not masquerade as canonical strategies).
+ *
+ * The strategy's runtime budget may be tuned via a separately managed
+ * budget table (section 8.5) — `contextBudget` is not part of the canonical
+ * semantics locked here.
+ */
+export function validateCanonicalStrategyPolicy(
+  policy: StrategyPolicy,
+): string[] {
+  const canonical = DEFAULT_STRATEGY_POLICIES[policy.strategy]
+  if (canonical === undefined) {
+    return [`no canonical policy registered for strategy "${policy.strategy}"`]
+  }
+  const problems: string[] = []
+  for (const field of CANONICAL_STRATEGY_LOCKED_FIELDS) {
+    const key = field as keyof StrategyPolicy
+    const actual = policy[key]
+    const expected = canonical[key]
+    const actualJson = JSON.stringify(actual)
+    const expectedJson = JSON.stringify(expected)
+    if (actualJson !== expectedJson) {
+      problems.push(
+        `strategy "${policy.strategy}" field "${field}" (${actualJson}) must equal the canonical default (${expectedJson})`,
+      )
+    }
+  }
+  return problems
 }

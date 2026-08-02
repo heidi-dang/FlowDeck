@@ -1,7 +1,7 @@
 # FlowDeck Routing and Model Selection — Architecture
 
 **Author:** Dev 4 (Routing, Scheduling, Models, Capabilities)
-**Status:** Target architecture — partially implemented (PR 1: contracts, classifier, scoring); remainder is planned stacked work
+**Status:** Target architecture — contracts, classifier, scoring, strategy, capabilities, delegation, scheduling, and models implemented (PR 1 + Dev 4 stacked work); providers, shadow mode, evaluation corpus, and reporting remain planned
 **Baseline SHA:** `5809fcf` (v1.0.3)
 **Scope:** This document describes the canonical routing and model-selection architecture for the FlowDeck orchestration system.
 
@@ -379,7 +379,10 @@ stage is present, and the model tier may never be silently downgraded below the 
 
 ## 6. Strategy Contracts
 
-**Status: planned.**
+**Status: implemented.** Canonical `ExecutionStrategy` (9 values), `StrategyPolicy`
+with cross-field invariants (`zStrategyPolicy`), load-time validation of every
+default policy, `validateCanonicalStrategyPolicy` (locked-field enforcement),
+and high-risk/low-risk posture checks live in `src/orchestration/routing/contracts/strategy.ts`.
 
 ### 6.1 Canonical ExecutionStrategy — 9 values
 
@@ -456,7 +459,12 @@ legacy path continues to operate. No legacy file is modified by Dev 4.
 
 ## 7. Capability Registry
 
-**Status: planned.**
+**Status: implemented.** `CapabilityDescriptor` (`zCapabilityDescriptor`),
+canonical capability ids (`zNonEmptyId`), the capability-tier floor
+projection (`CAPABILITY_TIER_FLOOR`), the high-risk floor
+(`HIGH_RISK_CAPABILITY_FLOOR`), and per-specialist capability assignments
+(`SPECIALIST_CAPABILITIES`, `SPECIALIST_MUTATION_AUTHORITY`) are all
+deep-frozen and enforced by contracts in `src/orchestration/routing/contracts/`.
 
 ### 7.1 CapabilityDescriptor
 
@@ -502,7 +510,11 @@ registry before a strategy starts.
 
 ## 8. Delegation Rules
 
-**Status: planned.**
+**Status: implemented.** `DelegationDecision` (`zDelegationDecision`), the
+allowed/rejected reason vocabularies, canonical identity resolution
+(`resolveCanonicalPrincipal`, `CANONICAL_ALIAS_LOOKUP`), self-delegation and
+primary-target rejection, and depth-0/1 enforcement are enforced by contracts
+in `src/orchestration/routing/contracts/agents.ts`.
 
 ### 8.1 DelegationDecision
 
@@ -592,9 +604,10 @@ to the decision record, section 13).
 
 ## 9. Specialist Budgets and Scheduling Rules
 
-**Status: planned.**
-
-Scheduling is implemented through the Dev 2 runtime interfaces; Dev 4 supplies the decision inputs.
+**Status: scheduling through the Dev 2 runtime interfaces; budgets are
+bounded by contract.** `MAX_RECOVERY_LIMIT` and `MAX_SPECIALISTS_LIMIT` bound
+recovery and specialist counts in `strategy.ts`; specialist-count limits are
+pinned per strategy by `maximumSpecialists` in `DEFAULT_STRATEGY_POLICIES`.
 
 | Rule | Description |
 |---|---|
@@ -610,7 +623,12 @@ Scheduling is implemented through the Dev 2 runtime interfaces; Dev 4 supplies t
 
 ## 10. Model Tiers
 
-**Status: planned.**
+**Status: implemented.** `ModelTier` (`MODEL_TIERS`), tier ranking
+(`MODEL_TIER_RANK`), timeout invariants (`zTimeoutPolicy`), provider/model
+constraints, the degradation-only fallback policy
+(`validateDegradationFallback`, shared by `zModelSelectionDecision` and
+`zRoutingDecisionRecord`), and capability-floor compliance are enforced by
+contracts in `src/orchestration/routing/contracts/models.ts`.
 
 ### 10.1 ModelTier — provider-neutral
 
@@ -1021,6 +1039,11 @@ The following exported tables are deeply frozen at module load:
 | `DEFAULT_WEIGHTS` | `src/orchestration/routing/scoring/scorers.ts` | `WEIGHTS_VERSION` bump |
 | `MODEL_TIER_RANK` | `src/orchestration/routing/contracts/models.ts` | `ROUTING_POLICY_VERSION` bump |
 | `CAPABILITY_TIER_FLOOR` | `src/orchestration/routing/contracts/models.ts` | `ROUTING_POLICY_VERSION` bump |
+| `TASK_CLASSES` | `src/orchestration/routing/contracts/task.ts` | `ROUTING_POLICY_VERSION` bump |
+| `HIGH_RISK_CAPABILITY_FLOOR` | `src/orchestration/routing/contracts/strategy.ts` | `ROUTING_POLICY_VERSION` bump |
+| `CANONICAL_ALIAS_LOOKUP` | `src/orchestration/routing/contracts/agents.ts` | `ROUTING_POLICY_VERSION` bump |
+| `SPECIALIST_CAPABILITIES` / `SPECIALIST_MUTATION_AUTHORITY` | `src/orchestration/routing/contracts/agents.ts` | `ROUTING_POLICY_VERSION` bump |
+| `SPECIALIST_TERMINAL_STATUSES` | `src/orchestration/routing/contracts/agents.ts` | `ROUTING_POLICY_VERSION` bump |
 | `SPECIALIST_TASK_CLASS` | `src/orchestration/routing/classifier/specialist-registry.ts` | `ROUTING_POLICY_VERSION` bump |
 | `DEFAULT_STRATEGY_POLICIES` | `src/orchestration/routing/contracts/strategy.ts` | `ROUTING_POLICY_VERSION` bump |
 
@@ -1065,7 +1088,11 @@ The following exported tables are deeply frozen at module load:
   `routingPolicyVersion`; `scores.weightsVersion` equals `weightsVersion`.
 - `supersedes !== decisionId`; `rulesApplied`, input evidence, model
   candidates, and evidence ids are unique; score evidence ids unique within a
-  dimension and across dimensions.
+  dimension and across dimensions; evidence ids are unique across every scope
+  in the record (classification, scores, input) — a cross-scope collision is
+  rejected.
+- `modelFallbackUsed` must exactly equal `classification.usedModelFallback` —
+  no contradictory fallback provenance.
 - Selected tier exists in model candidates when candidates are supplied.
 - `bindDecisionToSha` canonically clones, validates, and deep-freezes the
   record; the returned record shares no mutable identity with the caller.
@@ -1095,7 +1122,10 @@ non-empty, meaningful text (`id`, `source`, `detail`, `signal`); bare
 placeholders (`"unknown"`, `"n/a"`, …) are rejected without an explanatory
 detail. Classification evidence is non-empty and unique; routing decision
 input evidence is non-empty; score evidence ids are unique within and across
-dimensions; evidence values must pass canonical serialization.
+dimensions; evidence values must pass canonical serialization — an observed
+`value` of `undefined` is rejected (it would silently disappear during
+canonical serialization), while explicit falsy values (`0`, `false`, `""`,
+`null`) remain valid observations.
 
 ### 19.6 Model selection
 
@@ -1106,20 +1136,46 @@ dimensions; evidence values must pass canonical serialization.
 - Capability-floor entries and reason codes unique; unknown capabilities
   rejected.
 - Selected tier not in fallback; fallback unique and degradation-only
-  (strongest-first); every fallback satisfies the floor.
+  (strongest-first); every fallback satisfies the floor. The record-level
+  `zRoutingDecisionRecord` re-applies the same degradation-only validator to
+  `selectedTier`/`fallback` — escalation (a fallback strictly stronger than
+  the selected tier) is rejected at both the model-selection schema and the
+  record level.
 
 ### 19.7 Specialist results
 
 - Completed results require a meaningful summary and meaningful evidence.
-- Blocked/failed results require a meaningful reason; cancelled results
-  require a cancellation reason.
+- Non-completed results require a meaningful reason: a blocked, failed, or
+  cancelled result must carry either a meaningful summary or meaningful
+  evidence, and an explicit `terminalReason` must be explanatory — the bare
+  status word (`"blocked"`, `"failed"`, `"cancelled"`, `"canceled"`, …) or a
+  generic placeholder (`"error"`, `"unable"`, …) is rejected.
 - Changed-file and ownership paths are normalized repository-relative paths
-  (absolute, drive, and traversal paths rejected) and unique.
+  (absolute, drive, UNC/device, and traversal paths rejected; repeated
+  separators and `.` segments collapsed) and unique.
 - Finding/evidence/ownership ids are unique; assumptions and unresolved risks
   reject whitespace-only entries; completed results with changes carry
-  supporting evidence.
+  supporting evidence that references a changed path.
+- `zChangeRef` normalizes `file` at parse time (transform contract): the
+  parsed value is canonical, so no code validates one representation and
+  stores another.
 
-### 19.8 Strategy policies
+### 19.8 Assignment-bound specialist results (envelope)
+
+`validateSpecialistResultEnvelope` binds a raw result to the task,
+assignment, specialist identity, and the capabilities that authorize it:
+
+- `specialistId` must be a canonical subagent; every assigned capability must
+  belong to that specialist.
+- Mutation claims (`changes.length > 0`) require a mutating assigned
+  capability (`"code mutation"`); a read-only specialist that reports changes
+  is rejected. Reported ownership must fall within assigned ownership.
+- Completed results with changes must carry evidence referencing a changed
+  path (same rule as §19.7, re-enforced at envelope level).
+- The envelope is the identity binding: raw result records carry no identity,
+  and envelope checks cannot be bypassed by constructing a bare result.
+
+### 19.9 Strategy policies
 
 `zStrategyPolicy` validates: non-empty unique stages, unique recognized
 capabilities, unique meaningful approvals, reviewer ⇒ review stage,
@@ -1128,12 +1184,30 @@ non-focused verification ⇒ verify stage, `contextBudget > 0`, bounded
 default policy is validated at module load (load-time invariant in
 `strategy.ts`).
 
-### 19.9 Specialist mapping parity
+### 19.10 Specialist mapping parity
 
 `SPECIALIST_TASK_CLASS` is deeply frozen and guarded at load: exactly the
 canonical subagent set is permitted as keys (two-way equality
 `canonical subagent ids === mapping keys`); stale entries for removed
 agents and primary-agent keys are rejected.
+
+### 19.11 Policy-version fingerprint gate
+
+Policy and weights versions are protected by a CI gate
+(`scripts/check-routing-policy-version.mjs`, wired as
+`npm run test:routing:policy-version`):
+
+- `src/orchestration/routing/fingerprints.json` records the canonical
+  fingerprint of every versioned policy/weights table for the current
+  versions (`ROUTING_POLICY_VERSION`, `ROUTING_WEIGHTS_VERSION`).
+- The gate compares the live serialized tables against the manifest: a policy
+  change without a version bump, a historical-fingerprint modification, or a
+  current-version entry missing from the manifest fails the gate.
+- `scripts/update-routing-fingerprints.mjs` regenerates the manifest after an
+  intentional, version-bumped policy change; `fingerprint-report.ts` emits the
+  manifest as JSON on the last line of its output for CI consumption.
+- The gate runs in addition to the parity fixtures in §19.1: fixtures pin the
+  serialized values, the gate pins the live-vs-manifest equivalence.
 
 ---
 
@@ -1147,5 +1221,4 @@ agents and primary-agent keys are rejected.
   `src/services/canonical-registry.ts`, `src/index.ts`, `src/services/supervisor-binding.ts`,
   `src/orchestration/` (contracts, events, persistence, completion, verification, evidence, idempotency,
   streaming, api, projections).
-- Statuses: contracts/classifier/scoring = implemented in PR 1 (inactive at baseline `5809fcf`); strategy,
-  capabilities, delegation, scheduling, models, providers, shadow, evaluation corpus, reporting = planned.
+- Statuses: contracts, classifier, scoring, strategy, capabilities, delegation, scheduling, models = implemented (PR 1 + Dev 4 stacked work, inactive at baseline `5809fcf`); providers, shadow, evaluation corpus, reporting = planned.

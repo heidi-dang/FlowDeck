@@ -11,7 +11,7 @@ import { canonicalClone } from "./canonical"
 import type { DelegationDecision } from "./agents"
 import { zDelegationDecision, isCanonicalSubagent } from "./agents"
 import type { ModelTier } from "./models"
-import { zModelTier, MODEL_TIER_RANK } from "./models"
+import { zModelTier, validateDegradationFallback } from "./models"
 import {
   type ClassificationResult,
   type ExecutionStrategy,
@@ -219,33 +219,49 @@ export const zRoutingDecisionRecord = z
         })
       }
     }
-    // ── Selected tier not in fallback; fallback unique ─────────────────
-    if (r.fallback.includes(r.selectedTier)) {
+    // ── Fallback: shared degradation-only validator ─────────────────────
+    // The record's fallback must use the SAME degradation-only policy as the
+    // model-selection schema (no duplicated or divergent fallback logic).
+    const fallbackProblem = validateDegradationFallback(r.selectedTier, r.fallback)
+    if (fallbackProblem !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["fallback"], message: fallbackProblem })
+    }
+    // ── Fallback provenance must agree ──────────────────────────────────
+    // modelFallbackUsed (record level) must exactly equal the nested
+    // classification.usedModelFallback — no contradictory provenance.
+    if (r.modelFallbackUsed !== r.classification.usedModelFallback) {
       ctx.addIssue({
         code: "custom",
-        path: ["fallback"],
-        message: "selected tier must not appear in fallback (degradation-only policy)",
+        path: ["modelFallbackUsed"],
+        message: `modelFallbackUsed (${r.modelFallbackUsed}) must equal classification.usedModelFallback (${r.classification.usedModelFallback})`,
       })
     }
+    // ── Record-wide evidence identity must be globally unique ───────────
+    // Evidence ids are unique not only within each scope but across every
+    // scope in the record. A duplicated id across scopes is rejected with
+    // both colliding scopes identified.
     {
-      const seen = new Set<string>()
-      for (const tier of r.fallback) {
-        if (seen.has(tier)) {
-          ctx.addIssue({ code: "custom", path: ["fallback"], message: "fallback tiers must be unique" })
-          break
+      const evidenceById = new Map<string, string>()
+      const scopes: Array<[string, Array<{ id: string }>]> = [
+        ["classification", r.classification.evidence],
+        ["scores.complexity", r.scores.evidence.complexity],
+        ["scores.ambiguity", r.scores.evidence.ambiguity],
+        ["scores.risk", r.scores.evidence.risk],
+        ["scores.confidence", r.scores.evidence.confidence],
+      ]
+      for (const [scope, entries] of scopes) {
+        for (const entry of entries) {
+          const existing = evidenceById.get(entry.id)
+          if (existing !== undefined && existing !== scope) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["evidence"],
+              message: `record-wide evidence id collision: "${entry.id}" appears in both "${existing}" and "${scope}"`,
+            })
+          } else if (existing === undefined) {
+            evidenceById.set(entry.id, scope)
+          }
         }
-        seen.add(tier)
-      }
-    }
-    // Fallback order must follow the canonical degradation-only policy.
-    for (let i = 1; i < r.fallback.length; i += 1) {
-      if (MODEL_TIER_RANK[r.fallback[i]] >= MODEL_TIER_RANK[r.fallback[i - 1]]) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["fallback"],
-          message: "fallback must be strictly ordered strongest-first (degradation-only policy)",
-        })
-        break
       }
     }
     // ── Delegation decisions: taskId must match the record ─────────────

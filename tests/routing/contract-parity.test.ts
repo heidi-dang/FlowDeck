@@ -368,11 +368,31 @@ describe("adversarial: specialist result evidence (D15)", () => {
     ).toBe(true)
   })
 
-  it("accepts a failed result with a reason summary but no evidence", () => {
-    expect(zSpecialistResult.safeParse({ ...base, status: "failed", summary: "blocked on creds", evidence: [] }).success).toBe(true)
+  it("accepts a failed result with an explicit terminal reason but no evidence", () => {
+    expect(
+      zSpecialistResult.safeParse({
+        ...base,
+        status: "failed",
+        summary: "blocked on creds",
+        terminalReason: "credentials unavailable in vault",
+        evidence: [],
+      }).success,
+    ).toBe(true)
   })
 
-  it("rejects a failed result with neither summary nor evidence", () => {
+  it("rejects a failed result with a status-only terminal reason", () => {
+    expect(
+      zSpecialistResult.safeParse({
+        ...base,
+        status: "failed",
+        summary: "blocked on creds",
+        terminalReason: "failed",
+        evidence: [],
+      }).success,
+    ).toBe(false)
+  })
+
+  it("rejects a failed result with neither summary nor evidence nor terminal reason", () => {
     expect(zSpecialistResult.safeParse({ ...base, status: "failed", summary: "", evidence: [] }).success).toBe(false)
   })
 })

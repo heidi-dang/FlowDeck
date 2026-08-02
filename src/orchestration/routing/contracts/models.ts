@@ -89,6 +89,52 @@ export function tierMeetsCapabilityFloor(tier: ModelTier, floor: Capability[]): 
   })
 }
 
+/**
+ * Validates a degradation-only model fallback list against the selected
+ * tier. Returns a human-readable problem description, or `undefined` when
+ * the fallback is valid.
+ *
+ * Invariants (all required for a valid degradation-only fallback):
+ * - the selected tier is absent from the fallback list;
+ * - fallback tiers are unique;
+ * - every fallback tier is strictly WEAKER than the selected tier
+ *   (rank(fallback) < rank(selected));
+ * - the fallback list strictly descends (strongest-first within the list);
+ * - every fallback tier meets the capability floor.
+ *
+ * This single validator is applied by both `zModelSelectionDecision` and
+ * `zRoutingDecisionRecord` so no schema can implement different fallback
+ * rules.
+ */
+export function validateDegradationFallback(
+  selectedTier: ModelTier,
+  fallbackTiers: readonly ModelTier[],
+  capabilityFloor?: readonly Capability[],
+): string | undefined {
+  if (fallbackTiers.includes(selectedTier)) {
+    return "selected tier must not appear in fallback tiers (degradation-only policy)"
+  }
+  const seen = new Set<ModelTier>()
+  for (const tier of fallbackTiers) {
+    if (seen.has(tier)) {
+      return "fallback tiers must be unique"
+    }
+    seen.add(tier)
+    if (MODEL_TIER_RANK[tier] >= MODEL_TIER_RANK[selectedTier]) {
+      return `fallback tier "${tier}" must be strictly weaker than the selected tier "${selectedTier}" (degradation-only)`
+    }
+    if (capabilityFloor !== undefined && !tierMeetsCapabilityFloor(tier, [...capabilityFloor])) {
+      return `fallback tier "${tier}" falls below the capability floor`
+    }
+  }
+  for (let i = 1; i < fallbackTiers.length; i += 1) {
+    if (MODEL_TIER_RANK[fallbackTiers[i]] >= MODEL_TIER_RANK[fallbackTiers[i - 1]]) {
+      return "fallback tiers must be strictly ordered strongest-first (degradation-only)"
+    }
+  }
+  return undefined
+}
+
 /** Timeout posture for a model call (document section 10.3). */
 export interface TimeoutPolicy {
   queueMs: number
@@ -268,49 +314,13 @@ export const zModelSelectionDecision = z
       })
     }
 
-    // Fallback policy: degradation-only (selected strongest -> progressively
-    // weaker compatible tiers). The selected tier MUST NOT appear in fallback
-    // (it is the primary choice, not a degraded fallback).
-    if (d.fallbackTiers.includes(d.tier)) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["fallbackTiers"],
-        message: "selected tier must not appear in fallback tiers (degradation-only policy)",
-      })
-    }
-
-    const fbSeen = new Set<string>()
-    for (const tier of d.fallbackTiers) {
-      if (fbSeen.has(tier)) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["fallbackTiers"],
-          message: "fallback tiers must not contain duplicates",
-        })
-        break
-      }
-      fbSeen.add(tier)
-    }
-    // Degradation-only order: strongest-first (strictly descending rank).
-    for (let i = 1; i < d.fallbackTiers.length; i += 1) {
-      if (MODEL_TIER_RANK[d.fallbackTiers[i]] >= MODEL_TIER_RANK[d.fallbackTiers[i - 1]]) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["fallbackTiers"],
-          message: "fallback tiers must be strictly ordered strongest-first (degradation-only policy)",
-        })
-        break
-      }
-    }
-    for (const tier of d.fallbackTiers) {
-      if (!tierMeetsCapabilityFloor(tier, d.capabilityFloor)) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["fallbackTiers"],
-          message: "fallback tier falls below the capability floor",
-        })
-        break
-      }
+    // Fallback policy: degradation-only. The single shared validator enforces
+    // selected-tier-absent, uniqueness, strict weakness vs selected tier,
+    // strictly-descending order, and capability-floor compliance. No schema
+    // may implement a different fallback rule.
+    const fallbackProblem = validateDegradationFallback(d.tier, d.fallbackTiers, d.capabilityFloor)
+    if (fallbackProblem !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["fallbackTiers"], message: fallbackProblem })
     }
   })
 

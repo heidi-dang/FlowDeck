@@ -17,37 +17,25 @@
 
 import { getSubagentIds } from "@/services/canonical-registry"
 import type { TaskClass } from "@/orchestration/routing/contracts"
-
-/**
- * Deep-freezes an object and all nested objects/arrays recursively.
- */
-function deepFreeze<T>(value: T): T {
-  if (value === null || typeof value !== "object") return value
-  Object.freeze(value)
-  for (const key of Object.keys(value as Record<string, unknown>)) {
-    const item = (value as Record<string, unknown>)[key]
-    if (item !== null && typeof item === "object" && !Object.isFrozen(item)) {
-      deepFreeze(item)
-    }
-  }
-  return value
-}
+import { deepFreeze } from "@/orchestration/routing/contracts/immutability"
+import { normalizeAgentId } from "@/orchestration/routing/contracts/agents"
 
 /**
  * Canonical specialist ids, projected from the canonical agent registry.
  * Readonly snapshot at load; parity tests assert it stays in sync with the
  * registry so additions/removals cannot silently go unmapped.
+ * Deeply frozen via the shared utility.
  */
-export const CANONICAL_SPECIALIST_IDS: readonly string[] = Object.freeze(getSubagentIds())
+export const CANONICAL_SPECIALIST_IDS: readonly string[] = deepFreeze(getSubagentIds())
 
 /**
  * Deterministic specialist → TaskClass mapping used by fallback rule 17.
  * Every canonical specialist id resolves to a class; ids outside the
  * map resolve to undefined and classify as "unknown".
  *
- * Deep-frozen at module load: mutation requires an explicit version bump.
- * Extra mapping keys not present in the canonical subagent set are rejected
- * at load time via the parity guard below.
+ * Deep-frozen at module load via the shared utility: mutation requires an
+ * explicit version bump. Extra mapping keys not present in the canonical
+ * subagent set are rejected at load time via the parity guard below.
  */
 export const SPECIALIST_TASK_CLASS: Readonly<Record<string, TaskClass>> = deepFreeze({
   planner: "cross_module_feature",
@@ -66,10 +54,11 @@ export const SPECIALIST_TASK_CLASS: Readonly<Record<string, TaskClass>> = deepFr
 /**
  * Normalizes a raw specialist reference (trim, lowercase) before matching,
  * per document section 4.2 normalization rules. Deterministic and
- * idempotent.
+ * idempotent. Delegates to the shared `normalizeAgentId` so every agent
+ * identity check in the routing domain applies the same normalization.
  */
 export function normalizeSpecialistId(raw: string): string {
-  return raw.trim().toLowerCase()
+  return normalizeAgentId(raw)
 }
 
 /**
@@ -77,7 +66,7 @@ export function normalizeSpecialistId(raw: string): string {
  * undefined when the id is not a canonical specialist.
  */
 export function resolveSpecialistClass(normalizedId: string): TaskClass | undefined {
-  return SPECIALIST_TASK_CLASS[normalizedId]
+  return SPECIALIST_TASK_CLASS[normalizeAgentId(normalizedId)]
 }
 
 /**

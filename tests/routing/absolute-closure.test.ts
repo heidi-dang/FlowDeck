@@ -35,6 +35,7 @@ import {
   zClassificationResult,
   zScoredTask,
   zTaskClass,
+  TASK_CLASSES,
   // models
   MODEL_TIERS,
   MODEL_TIER_RANK,
@@ -49,9 +50,15 @@ import {
   isHighRiskCompatible,
   MAX_RECOVERY_LIMIT,
   MAX_SPECIALISTS_LIMIT,
+  HIGH_RISK_CAPABILITY_FLOOR,
+  validateCanonicalStrategyPolicy,
   // agents
   zDelegationDecision,
   zSpecialistResult,
+  zChangeRef,
+  validateSpecialistResultEnvelope,
+  normalizeRepositoryRelativePath,
+  CANONICAL_ALIAS_LOOKUP,
   isRepositoryRelativePath,
   specialistResultHasRequiredEvidence,
   resolveCanonicalPrincipal,
@@ -65,6 +72,8 @@ import {
   validateRoutingDecisionRecord,
   bindDecisionToSha,
   type RoutingDecisionRecord,
+  type SpecialistResultEnvelope,
+  type SpecialistResult,
 } from "@/orchestration/routing/contracts"
 import {
   DEFAULT_WEIGHTS,
@@ -154,7 +163,7 @@ function makeRecord(overrides: Partial<RoutingDecisionRecord> = {}): RoutingDeci
   } as RoutingDecisionRecord
 }
 
-function validSpecialistResult(overrides: Record<string, unknown> = {}) {
+function validSpecialistResult(overrides: Partial<SpecialistResult> = {}): SpecialistResult {
   return {
     status: "completed",
     summary: "Fixed the failing test",
@@ -1192,16 +1201,42 @@ describe("closure: specialist-result contracts", () => {
     ).toBe(true)
   })
 
-  it("accepts a blocked result with a meaningful reason in evidence", () => {
+  it("accepts a blocked result with an explicit terminal reason", () => {
+    expect(
+      zSpecialistResult.safeParse(
+        validSpecialistResult({
+          status: "blocked",
+          summary: "blocked on credentials",
+          terminalReason: "credentials unavailable in the vault",
+          evidence: [{ id: "e1", kind: "observation", detail: "credentials unavailable" }],
+        }),
+      ).success,
+    ).toBe(true)
+  })
+
+  it("rejects a blocked result whose terminal reason is only the status word", () => {
     expect(
       zSpecialistResult.safeParse(
         validSpecialistResult({
           status: "blocked",
           summary: "blocked",
+          terminalReason: "blocked",
           evidence: [{ id: "e1", kind: "observation", detail: "credentials unavailable" }],
         }),
       ).success,
-    ).toBe(true)
+    ).toBe(false)
+  })
+
+  it("rejects a blocked result with evidence but no explicit terminal reason", () => {
+    expect(
+      zSpecialistResult.safeParse(
+        validSpecialistResult({
+          status: "blocked",
+          summary: "blocked on credentials",
+          evidence: [{ id: "e1", kind: "observation", detail: "credentials unavailable" }],
+        }),
+      ).success,
+    ).toBe(false)
   })
 
   it("isRepositoryRelativePath rejects absolute, drive, and traversal paths", () => {
@@ -1391,5 +1426,227 @@ describe("closure: specialist mapping parity", () => {
     expect(isCanonicalSubagent("heidi")).toBe(false)
     expect(isCanonicalSubagent("orchestrator")).toBe(false)
     expect(isCanonicalSubagent("not-an-agent")).toBe(false)
+  })
+})
+
+// ───────────────────────────────────────────────────────────────────────────
+// Req 14: adversarial counterexamples (escalation, provenance, identity,
+// path normalization, capability-gated mutation).
+// ───────────────────────────────────────────────────────────────────────────
+describe("closure: adversarial counterexamples for fallback, provenance, and identity", () => {
+  it("rejects an escalating fallback (stronger tier after small_fast) at record level", () => {
+    const record = makeRecord({
+      modelCandidates: [{ tier: "small_fast", reason: "cheap" }],
+      selectedTier: "small_fast",
+      fallback: ["strong_reasoning"],
+    })
+    const result = validateRoutingDecisionRecord(record)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("strictly weaker")
+  })
+
+  it("rejects a fallback tier that equals the selected tier at record level", () => {
+    const record = makeRecord({
+      modelCandidates: [{ tier: "general_coding", reason: "balanced" }],
+      selectedTier: "general_coding",
+      fallback: ["general_coding"],
+    })
+    expect(validateRoutingDecisionRecord(record).ok).toBe(false)
+  })
+
+  it("rejects modelFallbackUsed that contradicts classification.usedModelFallback", () => {
+    // makeRecord defaults: modelFallbackUsed=false, classification.usedModelFallback=false.
+    const record = makeRecord({ modelFallbackUsed: true })
+    const result = validateRoutingDecisionRecord(record)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("modelFallbackUsed")
+  })
+
+  it("rejects record-wide evidence id collisions across scopes", () => {
+    // Classification evidence id "e-cx" collides with scores.complexity "e-cx".
+    const record = makeRecord({
+      classification: {
+        ...makeRecord().classification,
+        evidence: [{ id: "e-cx", source: "classifier", detail: "stack trace found" }],
+      },
+    })
+    const result = validateRoutingDecisionRecord(record)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain("collision")
+  })
+
+  it("rejects routing input evidence whose observed value is undefined", () => {
+    expect(
+      zRoutingInputEvidence.safeParse({ signal: "expectedFileCount", value: undefined, source: "prompt" }).success,
+    ).toBe(false)
+    const record = makeRecord({
+      inputEvidence: [{ signal: "expectedFileCount", value: undefined, source: "prompt" }],
+    })
+    expect(validateRoutingDecisionRecord(record).ok).toBe(false)
+  })
+
+  it("accepts explicit falsy evidence values (0, false, empty string) as real observations", () => {
+    expect(zRoutingInputEvidence.safeParse({ signal: "s", value: 0, source: "src" }).success).toBe(true)
+    expect(zRoutingInputEvidence.safeParse({ signal: "s", value: false, source: "src" }).success).toBe(true)
+    expect(zRoutingInputEvidence.safeParse({ signal: "s", value: "", source: "src" }).success).toBe(true)
+    expect(zRoutingInputEvidence.safeParse({ signal: "s", value: null, source: "src" }).success).toBe(true)
+  })
+
+  it("rejects a cancelled result whose terminal reason is only the status word", () => {
+    expect(
+      zSpecialistResult.safeParse(
+        validSpecialistResult({
+          status: "cancelled",
+          summary: "cancelled",
+          terminalReason: "cancelled",
+          evidence: [{ id: "e1", kind: "observation", detail: "dependency never became available" }],
+        }),
+      ).success,
+    ).toBe(false)
+    expect(
+      zSpecialistResult.safeParse(
+        validSpecialistResult({
+          status: "cancelled",
+          summary: "cancelled",
+          terminalReason: "canceled",
+          evidence: [{ id: "e1", kind: "observation", detail: "dependency never became available" }],
+        }),
+      ).success,
+    ).toBe(false)
+  })
+
+  it("accepts a cancelled result with a meaningful terminal reason", () => {
+    expect(
+      zSpecialistResult.safeParse(
+        validSpecialistResult({
+          status: "cancelled",
+          summary: "cancelled before start",
+          terminalReason: "dependency never became available",
+          evidence: [{ id: "e1", kind: "observation", detail: "dependency never became available" }],
+        }),
+      ).success,
+    ).toBe(true)
+  })
+
+  it("rejects a read-only specialist result that claims file changes", () => {
+    // reviewer holds ["independent_review", "read_only"] — no mutating capability.
+    const envelope: SpecialistResultEnvelope = {
+      taskId: "task-closure-1",
+      assignmentId: "assignment-1",
+      specialistId: "reviewer",
+      assignedCapabilities: ["independent_review", "read_only"],
+      assignedOwnership: [],
+      result: validSpecialistResult({
+        ownershipUsed: [],
+        evidence: [{ id: "e1", kind: "observation", detail: "src/x.ts reviewed; no mutation performed" }],
+      }),
+    }
+    const result = validateSpecialistResultEnvelope(envelope)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.problems.join(" ")).toContain("no mutating capability")
+  })
+
+  it("accepts a mutating specialist result when changes are authorized and evidenced", () => {
+    const envelope: SpecialistResultEnvelope = {
+      taskId: "task-closure-1",
+      assignmentId: "assignment-1",
+      specialistId: "backend-coder",
+      assignedCapabilities: ["code mutation", "implementation"],
+      assignedOwnership: ["src/x.ts"],
+      result: validSpecialistResult({
+        ownershipUsed: ["src/x.ts"],
+        evidence: [{ id: "e1", kind: "test", detail: "src/x.ts: unit test passes" }],
+      }),
+    }
+    expect(validateSpecialistResultEnvelope(envelope).ok).toBe(true)
+  })
+
+  it("rejects reported ownership outside the assigned ownership", () => {
+    const envelope: SpecialistResultEnvelope = {
+      taskId: "task-closure-1",
+      assignmentId: "assignment-1",
+      specialistId: "backend-coder",
+      assignedCapabilities: ["code mutation", "implementation"],
+      assignedOwnership: ["src/a.ts"],
+      result: validSpecialistResult({
+        ownershipUsed: ["src/x.ts"],
+        evidence: [{ id: "e1", kind: "test", detail: "src/x.ts: unit test passes" }],
+      }),
+    }
+    const result = validateSpecialistResultEnvelope(envelope)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.problems.join(" ")).toContain("outside the assigned ownership")
+  })
+
+  it("rejects a canonical strategy policy reconfigured with multiple specialists", () => {
+    // fast_direct canonical maximumSpecialists is 0.
+    const mutated = { ...getStrategyPolicy("fast_direct"), maximumSpecialists: 2 }
+    const problems = validateCanonicalStrategyPolicy(mutated)
+    expect(problems.length).toBeGreaterThan(0)
+    expect(problems.join(" ")).toContain("maximumSpecialists")
+  })
+
+  it("rejects an audit-only strategy reconfigured to mutate", () => {
+    // audit_only canonical requiredCapabilities is ["read_only"].
+    const mutated = { ...getStrategyPolicy("audit_only"), requiredCapabilities: ["code mutation"] }
+    const problems = validateCanonicalStrategyPolicy(mutated)
+    expect(problems.length).toBeGreaterThan(0)
+    expect(problems.join(" ")).toContain("requiredCapabilities")
+  })
+
+  it("accepts canonical strategies untouched", () => {
+    expect(validateCanonicalStrategyPolicy(getStrategyPolicy("fast_direct"))).toEqual([])
+    expect(validateCanonicalStrategyPolicy(getStrategyPolicy("audit_only"))).toEqual([])
+    expect(validateCanonicalStrategyPolicy(getStrategyPolicy("root_cause_repair"))).toEqual([])
+  })
+
+  it("normalizes repeated separators, dot segments, and backslashes", () => {
+    expect(normalizeRepositoryRelativePath("src//file.ts")).toBe("src/file.ts")
+    expect(normalizeRepositoryRelativePath("src/./file.ts")).toBe("src/file.ts")
+    expect(normalizeRepositoryRelativePath("./src/file.ts")).toBe("src/file.ts")
+    expect(normalizeRepositoryRelativePath("src\\nested\\file.ts")).toBe("src/nested/file.ts")
+    expect(normalizeRepositoryRelativePath("src/file.ts")).toBe("src/file.ts")
+  })
+
+  it("rejects absolute, drive, UNC, device, and traversal paths", () => {
+    expect(normalizeRepositoryRelativePath("/abs/file.ts")).toBeUndefined()
+    expect(normalizeRepositoryRelativePath("C:/file.ts")).toBeUndefined()
+    expect(normalizeRepositoryRelativePath("C:\\file.ts")).toBeUndefined()
+    expect(normalizeRepositoryRelativePath("//server/share/file.ts")).toBeUndefined()
+    expect(normalizeRepositoryRelativePath("//?/device/file.ts")).toBeUndefined()
+    expect(normalizeRepositoryRelativePath("src/../file.ts")).toBeUndefined()
+    expect(normalizeRepositoryRelativePath("")).toBeUndefined()
+    expect(normalizeRepositoryRelativePath("   ")).toBeUndefined()
+  })
+
+  it("change refs normalize file paths at parse time (transform contract)", () => {
+    const parsed = zChangeRef.safeParse({ file: "./src//x.ts", kind: "modify" })
+    expect(parsed.success).toBe(true)
+    if (parsed.success) expect(parsed.data.file).toBe("src/x.ts")
+    expect(zChangeRef.safeParse({ file: "C:/abs.ts", kind: "modify" }).success).toBe(false)
+    expect(zChangeRef.safeParse({ file: "src/../escape.ts", kind: "modify" }).success).toBe(false)
+  })
+})
+
+describe("closure: alias lookup and capability floor are immutable", () => {
+  it("CANONICAL_ALIAS_LOOKUP is deeply frozen", () => {
+    expect(Object.isFrozen(CANONICAL_ALIAS_LOOKUP)).toBe(true)
+    expect(() => {
+      ;(CANONICAL_ALIAS_LOOKUP as Record<string, string>)["not-an-agent"] = "heidi"
+    }).toThrow(TypeError)
+  })
+
+  it("HIGH_RISK_CAPABILITY_FLOOR is deeply frozen", () => {
+    expect(Object.isFrozen(HIGH_RISK_CAPABILITY_FLOOR)).toBe(true)
+    expect(() => {
+      ;(HIGH_RISK_CAPABILITY_FLOOR as string[]).push("unsafe capability")
+    }).toThrow(TypeError)
+  })
+
+  it("TASK_CLASSES is deeply frozen", () => {
+    expect(Object.isFrozen(TASK_CLASSES)).toBe(true)
+    expect(() => {
+      ;(TASK_CLASSES as unknown as string[]).push("not_a_task_class")
+    }).toThrow(TypeError)
   })
 })

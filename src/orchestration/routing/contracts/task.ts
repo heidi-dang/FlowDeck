@@ -11,6 +11,7 @@
 
 import { z } from "zod"
 import { isCanonicalSerializable } from "./canonical"
+import { deepFreeze } from "./immutability"
 
 /** Lower bound of every score produced by the classifier and the scorers. */
 export const SCORE_MIN = 0
@@ -41,8 +42,8 @@ export type TaskClass =
   | "recovery_resume"
   | "unknown"
 
-/** Every task class value, in a stable order. */
-export const TASK_CLASSES = [
+/** Every task class value, in a stable order. Deeply frozen at module load. */
+export const TASK_CLASSES = deepFreeze([
   "trivial_edit",
   "documentation",
   "read_only_question",
@@ -60,7 +61,7 @@ export const TASK_CLASSES = [
   "production_incident",
   "recovery_resume",
   "unknown",
-] as const satisfies readonly TaskClass[]
+] as const satisfies readonly TaskClass[])
 
 /** Returns true when `value` is one of the canonical task classes. */
 export function isValidTaskClass(value: unknown): value is TaskClass {
@@ -89,8 +90,8 @@ export type ExecutionStrategy =
   | "repair_and_independent_audit"
   | "recovery_resume"
 
-/** Every canonical execution strategy, in a stable order. */
-export const EXECUTION_STRATEGIES = [
+/** Every canonical execution strategy, in a stable order. Deeply frozen. */
+export const EXECUTION_STRATEGIES = deepFreeze([
   "fast_direct",
   "direct_verified",
   "explore_then_execute",
@@ -100,7 +101,7 @@ export const EXECUTION_STRATEGIES = [
   "audit_only",
   "repair_and_independent_audit",
   "recovery_resume",
-] as const satisfies readonly ExecutionStrategy[]
+] as const satisfies readonly ExecutionStrategy[])
 
 /** Returns true when `value` is one of the canonical execution strategies. */
 export function isValidExecutionStrategy(value: unknown): value is ExecutionStrategy {
@@ -124,7 +125,7 @@ export const zNonEmptyId = z
  * detail. Used for evidence source/detail, signals, and summaries so a
  * record can never carry empty, whitespace-only, or placeholder evidence.
  */
-export const PLACEHOLDER_TOKENS: readonly string[] = [
+export const PLACEHOLDER_TOKENS: readonly string[] = deepFreeze([
   "unknown",
   "n/a",
   "na",
@@ -137,7 +138,7 @@ export const PLACEHOLDER_TOKENS: readonly string[] = [
   "undefined",
   "later",
   "unavailable",
-]
+])
 
 export function isMeaningfulText(value: string): boolean {
   const trimmed = value.trim()
@@ -331,9 +332,18 @@ export const zScoredTask = z
 /** Zod schema for a RoutingInputEvidence entry. */
 export const zRoutingInputEvidence = z.object({
   signal: zMeaningfulString,
-  value: z.unknown().refine(isCanonicalSerializable, {
-    message: "evidence value must be canonically serializable (no unsupported objects)",
-  }),
+  // The observed value is required provenance: `undefined` must not silently
+  // disappear during canonical serialization. Valid falsy values (0, false,
+  // "", null) remain acceptable real observed values — see the null policy
+  // documented in §5.4 of the architecture doc.
+  value: z
+    .unknown()
+    .refine((value) => value !== undefined, {
+      message: "routing evidence value must be explicitly present (undefined is not a valid observed value)",
+    })
+    .refine(isCanonicalSerializable, {
+      message: "evidence value must be canonically serializable (no unsupported objects)",
+    }),
   source: zMeaningfulString,
 })
 
