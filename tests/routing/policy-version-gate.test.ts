@@ -399,34 +399,62 @@ const hasOriginMain = git("rev-parse", "--verify", "origin/main") !== undefined
 function resolveBaseSha(): string {
   const mergeBase = git("merge-base", "HEAD", "origin/main")
   if (mergeBase) return mergeBase
-  const literal = git("rev-parse", "--verify", "5809fcf1230ff349ff0d7f5b53ed75403f44573b")
+  // `^{commit}` forces object existence — a bare hex literal is echoed back by
+  // rev-parse even when the commit is absent (e.g. a shallow checkout).
+  const literal = git("rev-parse", "--verify", "5809fcf1230ff349ff0d7f5b53ed75403f44573b^{commit}")
   if (literal) return literal
   const parent = git("rev-parse", "HEAD~1")
   if (parent) return parent
   throw new Error("no resolvable base commit found in this environment")
 }
 
-/** Find a commit that predates the manifest: the parent of the commit that first added it. */
+/**
+ * Best-effort resolvable base; undefined when the environment (e.g. a shallow
+ * checkout with no origin/main, no known main HEAD, and no HEAD parent) cannot
+ * provide one. History-dependent tests skip on undefined instead of throwing.
+ */
+function resolveBaseShaSafe(): string | undefined {
+  try {
+    return resolveBaseSha()
+  } catch {
+    return undefined
+  }
+}
+
+/** True when the commit resolves and does not contain the manifest file. */
+function isCommitWithoutManifest(sha: string): boolean {
+  if (!git("rev-parse", "--verify", `${sha}^{commit}`)) return false
+  return git("show", `${sha}:${MANIFEST_REL}`) === undefined
+}
+
+/**
+ * Find a commit that predates the manifest, or undefined when the environment
+ * cannot prove one exists. On a shallow checkout the shallow boundary commit
+ * is reported as a "root" (and as the add commit for every path) but may
+ * already contain the manifest, so every candidate is verified before being
+ * trusted — an unverifiable environment yields undefined, never a wrong SHA.
+ */
 function findCommitWithoutManifest(): string | undefined {
   const addLines = git("log", "--diff-filter=A", "--format=%H", "--", MANIFEST_REL)
   const oldestAdd = addLines?.split("\n").filter(Boolean).pop()
   if (oldestAdd) {
     const parent = git("rev-parse", `${oldestAdd}^`)
-    if (parent) return parent
+    if (parent && isCommitWithoutManifest(parent)) return parent
   }
-  // fallback: the root commit definitely predates the manifest
   const root = git("rev-list", "--max-parents=0", "HEAD")?.split("\n").filter(Boolean).pop()
-  return root
+  if (root && isCommitWithoutManifest(root)) return root
+  return undefined
 }
 
+const safeBaseSha = resolveBaseShaSafe()
 const beforeManifestSha = findCommitWithoutManifest()
 
 describe("policy-version gate CLI integration", () => {
-  it("should exit 0 when the base resolves and the head manifest matches live", () => {
-    const result = runGate(["--base", resolveBaseSha(), "--head", "HEAD"])
+  it.skipIf(!safeBaseSha)("should exit 0 when the base resolves and the head manifest matches live", () => {
+    const result = runGate(["--base", safeBaseSha as string, "--head", "HEAD"])
     expect(result.status).toBe(0)
     expect(result.stdout + result.stderr).toContain("passed")
-  })
+  }, 120000)
 
   it("should exit 1 when the base cannot be resolved and mention the base in stderr", () => {
     const result = runGate(["--base", "0000000000000000000000000000000000000000", "--head", "HEAD"])
@@ -441,10 +469,10 @@ describe("policy-version gate CLI integration", () => {
     expect(result.stdout).toContain("Auto-detected base")
   }, 120000)
 
-  it.skipIf(!beforeManifestSha)(
+  it.skipIf(!safeBaseSha || !beforeManifestSha)(
     "should exit 1 when the head manifest is missing (base valid, head predates the manifest)",
     () => {
-      const result = runGate(["--base", resolveBaseSha(), "--head", beforeManifestSha as string])
+      const result = runGate(["--base", safeBaseSha as string, "--head", beforeManifestSha as string])
       expect(result.status).toBe(1)
       expect(result.stdout + result.stderr).toMatch(/missing on the current branch|No fingerprint manifest/)
     },
