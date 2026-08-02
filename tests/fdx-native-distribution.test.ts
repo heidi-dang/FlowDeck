@@ -155,4 +155,59 @@ describe("FDX Native Distribution & Binary Resolver", () => {
     expect(hasCratesSrc).toBe(false)
     expect(hasTargetArtifacts).toBe(false)
   })
+
+  it("isSemverCompatible strictly parses semver and rejects invalid formats", () => {
+    const { isSemverCompatible } = require("../src/tools/fdx-shared.js")
+    expect(isSemverCompatible("1.0.4").compatible).toBe(true)
+    expect(isSemverCompatible("v1.0.4").compatible).toBe(true)
+    expect(isSemverCompatible("1.0.4-beta.1").compatible).toBe(true)
+    expect(isSemverCompatible("1.0.4+20260802").compatible).toBe(true)
+
+    // Rejections
+    expect(isSemverCompatible("1.0.0.0").compatible).toBe(false)
+    expect(isSemverCompatible("1.0").compatible).toBe(false)
+    expect(isSemverCompatible("0.1.0").compatible).toBe(false) // Major < 1
+    expect(isSemverCompatible("2.0.0").compatible).toBe(false) // Major > 1
+    expect(isSemverCompatible("invalid-version").compatible).toBe(false)
+  })
+
+  it("validateFdxProvenance validates schema and field relationships strictly", () => {
+    const { validateFdxProvenance, detectFdxTarget } = require("../src/tools/fdx-shared.js")
+    const target = detectFdxTarget() ?? { platform: "linux", arch: "x64", packageName: "@heidi-dang/flowdeck-fdx-linux-x64-gnu", executableName: "fdx" }
+
+    const validProv = {
+      packageName: target.packageName,
+      packageVersion: "1.0.4",
+      flowdeckVersion: "1.0.4",
+      fdxBinaryVersion: "1.0.4",
+      fdxProtocolVersion: "1.0.0",
+      targetTriple: "x86_64-unknown-linux-gnu",
+      platform: target.platform,
+      architecture: "x64",
+      binaryFilename: target.executableName,
+      binaryByteSize: 1000,
+      sha256: "3db48a0b85dbb8074f996ffa167486b49d1c25e1e80dcfa85aba28a4570a33f0",
+      buildProfile: "release",
+      buildTimestamp: new Date().toISOString(),
+      sourceCommitSha: "0123456789abcdef0123456789abcdef01234567"
+    }
+
+    // Valid
+    expect(validateFdxProvenance(validProv, target, "3db48a0b85dbb8074f996ffa167486b49d1c25e1e80dcfa85aba28a4570a33f0", 1000).valid).toBe(true)
+
+    // Missing field
+    const missingField = { ...validProv, sha256: "" }
+    expect(validateFdxProvenance(missingField, target).valid).toBe(false)
+
+    // Package name mismatch
+    const pkgMismatch = { ...validProv, packageName: "@heidi-dang/wrong-package" }
+    expect(validateFdxProvenance(pkgMismatch, target).valid).toBe(false)
+
+    // Checksum mismatch
+    expect(validateFdxProvenance(validProv, target, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").valid).toBe(false)
+
+    // Protocol mismatch
+    const badProto = { ...validProv, fdxProtocolVersion: "2.0.0" }
+    expect(validateFdxProvenance(badProto, target).valid).toBe(false)
+  })
 })

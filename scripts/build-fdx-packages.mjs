@@ -95,7 +95,8 @@ function main() {
     sha256,
     buildProfile: "release",
     buildTimestamp: new Date().toISOString(),
-    gitCommit: tryExec("git", ["rev-parse", "HEAD"]),
+    gitCommit: tryExec("git", ["rev-parse", "HEAD"]) || "0000000000000000000000000000000000000000",
+    sourceCommitSha: tryExec("git", ["rev-parse", "HEAD"]) || "0000000000000000000000000000000000000000",
     gitBranch: tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]),
     ciRunId: process.env.GITHUB_RUN_ID ?? null,
     ciRunUrl: process.env.GITHUB_RUN_ID ? `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null,
@@ -112,10 +113,17 @@ function main() {
     writeFileSync(join(destDir, "README.md"), `# @heidi-dang/${targetDirName}\n\nPrebuilt native FDX executable binary for FlowDeck.\n`, "utf-8")
   }
 
+  // Pack target package into .tgz artifact
+  let tgzName = null
+  try {
+    tgzName = execFileSync("npm", ["pack"], { cwd: destDir, encoding: "utf-8" }).trim().split("\n").pop()
+  } catch {}
+
   console.log(`[build-fdx-packages] Successfully populated ${destDir}`)
   console.log(`  Binary:     ${destBin}`)
   console.log(`  SHA-256:    ${sha256}`)
   console.log(`  Size:       ${buf.length} bytes`)
+  if (tgzName) console.log(`  Tarball:    ${join(destDir, tgzName)}`)
 }
 
 main()

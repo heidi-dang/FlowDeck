@@ -251,19 +251,80 @@ export interface FdxResolutionResult {
   repairCommand?: string;
 }
 
+export const STRICT_SEMVER_REGEX = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/
+
 export function isSemverCompatible(version: string | null): { compatible: boolean; reason?: string } {
   if (!version) return { compatible: false, reason: "Missing version string" }
-  const match = version.trim().match(/^v?([0-9]+)\.([0-9]+)\.([0-9]+)/)
+  const trimmed = version.trim()
+  const match = trimmed.match(STRICT_SEMVER_REGEX)
   if (!match) return { compatible: false, reason: `Malformed semver version "${version}"` }
 
   const major = parseInt(match[1], 10)
-  if (major < 1) {
-    return { compatible: false, reason: `Version v${version} is below minimum supported v${MINIMUM_SUPPORTED_FDX_VERSION}` }
+  const minMajor = parseInt(MINIMUM_SUPPORTED_FDX_VERSION, 10) || 1
+  if (major < minMajor) {
+    return { compatible: false, reason: `Version v${trimmed} is below minimum supported v${MINIMUM_SUPPORTED_FDX_VERSION}` }
   }
   if (major > MAXIMUM_SUPPORTED_FDX_MAJOR) {
     return { compatible: false, reason: `Major version v${major} exceeds maximum supported v${MAXIMUM_SUPPORTED_FDX_MAJOR}` }
   }
   return { compatible: true }
+}
+
+export function validateFdxProvenance(
+  provenance: any,
+  target?: FdxTarget | null,
+  expectedSha256?: string,
+  expectedByteSize?: number
+): { valid: boolean; reason?: string } {
+  if (!provenance || typeof provenance !== "object") {
+    return { valid: false, reason: "Provenance manifest is missing or non-object" }
+  }
+
+  const requiredFields = [
+    "packageName", "packageVersion", "flowdeckVersion",
+    "fdxBinaryVersion", "fdxProtocolVersion", "targetTriple",
+    "platform", "architecture", "binaryFilename", "binaryByteSize",
+    "sha256", "buildProfile", "buildTimestamp"
+  ]
+
+  for (const field of requiredFields) {
+    if (provenance[field] === undefined || provenance[field] === null || provenance[field] === "") {
+      return { valid: false, reason: `Provenance missing mandatory field "${field}"` }
+    }
+  }
+
+  if (target) {
+    if (provenance.packageName !== target.packageName) {
+      return { valid: false, reason: `Provenance packageName "${provenance.packageName}" mismatch with target "${target.packageName}"` }
+    }
+    if (provenance.binaryFilename !== target.executableName) {
+      return { valid: false, reason: `Provenance binaryFilename "${provenance.binaryFilename}" mismatch with target executable "${target.executableName}"` }
+    }
+  }
+
+  if (expectedSha256 && provenance.sha256 !== expectedSha256) {
+    return { valid: false, reason: `Provenance sha256 "${provenance.sha256}" mismatch with binary SHA-256 "${expectedSha256}"` }
+  }
+
+  if (expectedByteSize !== undefined && Number(provenance.binaryByteSize) !== expectedByteSize) {
+    return { valid: false, reason: `Provenance binaryByteSize "${provenance.binaryByteSize}" mismatch with binary byte size "${expectedByteSize}"` }
+  }
+
+  const verCheck = isSemverCompatible(provenance.fdxBinaryVersion)
+  if (!verCheck.compatible) {
+    return { valid: false, reason: `Provenance fdxBinaryVersion invalid: ${verCheck.reason}` }
+  }
+
+  if (provenance.fdxProtocolVersion !== "1.0.0") {
+    return { valid: false, reason: `Provenance fdxProtocolVersion "${provenance.fdxProtocolVersion}" unsupported (expected "1.0.0")` }
+  }
+
+  const commit = provenance.sourceCommitSha || provenance.gitCommit
+  if (commit && !/^[0-9a-fA-F]{40}$/.test(commit)) {
+    return { valid: false, reason: `Provenance commit SHA "${commit}" is not a valid 40-character SHA` }
+  }
+
+  return { valid: true }
 }
 
 export function detectFdxTarget(): FdxTarget | null {
@@ -395,7 +456,10 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       let manifest: any = {}
       if (existsSync(provenancePath)) {
         manifest = JSON.parse(readFileSync(provenancePath, "utf-8"))
-        provenanceValid = true
+        const fileBuf = readFileSync(binPath)
+        const fileSha = createHash("sha256").update(fileBuf).digest("hex")
+        const provRes = validateFdxProvenance(manifest, null, fileSha, fileBuf.length)
+        provenanceValid = provRes.valid
       }
       if (existsSync(checksumPath)) {
         const cManifest = JSON.parse(readFileSync(checksumPath, "utf-8"))

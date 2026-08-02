@@ -101,8 +101,19 @@ jobs:
           fi
 
           NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+          HEAD_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          HEAD_REF="${{ github.head_ref || github.ref_name }}"
+          RUST_VER=$(rustc --version 2>/dev/null || echo "rustc stable")
 
-          echo "{\"packageName\":\"@heidi-dang/${{ matrix.target.pkg }}\",\"version\":\"1.0.4\",\"sha256\":\"$SHA\",\"builtAt\":\"$NOW\"}" > checksum.json
+          cat <<EOF > checksum.json
+          {
+            "packageName": "@heidi-dang/${{ matrix.target.pkg }}",
+            "version": "1.0.4",
+            "executable": "${{ matrix.target.binary }}",
+            "sha256": "$SHA",
+            "builtAt": "$NOW"
+          }
+          EOF
 
           cat <<EOF > provenance.json
           {
@@ -117,9 +128,14 @@ jobs:
             "binaryFilename": "${{ matrix.target.binary }}",
             "binaryByteSize": $SIZE,
             "sha256": "$SHA",
-            "sourceCommitSha": "${{ github.sha }}",
-            "buildProfile": "release",
+            "sourceCommitSha": "$HEAD_SHA",
+            "gitCommit": "$HEAD_SHA",
+            "gitBranch": "$HEAD_REF",
             "workflowRunId": "${{ github.run_id }}",
+            "ciRunId": "${{ github.run_id }}",
+            "builderPlatform": "${{ runner.os }}/${{ matrix.target.name }}",
+            "rustVersion": "$RUST_VER",
+            "buildProfile": "release",
             "buildTimestamp": "$NOW"
           }
           EOF
@@ -130,14 +146,73 @@ jobs:
             echo "Prebuilt native FDX executable binary for FlowDeck." >> README.md
           fi
 
-      - name: Test Packed Tarball Contents
+      - name: Pack Native Package (.tgz)
         shell: bash
         run: |
           cd packages/${{ matrix.target.pkg }}
-          npm pack --dry-run
+          npm pack
+          ls -la *.tgz
 
       - name: Upload Package Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target.pkg }}
           path: packages/${{ matrix.target.pkg }}/
+
+  inspect-and-clean-install:
+    name: Inspect & Clean-Install (${{ matrix.target.os }})
+    needs: build-binaries
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: ubuntu-latest
+            pkg: flowdeck-fdx-linux-x64-gnu
+            binary: fdx
+          - os: macos-latest
+            pkg: flowdeck-fdx-darwin-arm64
+            binary: fdx
+          - os: windows-latest
+            pkg: flowdeck-fdx-win32-x64
+            binary: fdx.exe
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.target.pkg }}
+          path: packages/${{ matrix.target.pkg }}
+
+      - name: Inspect and Clean-Install Package
+        shell: bash
+        run: |
+          cd packages/${{ matrix.target.pkg }}
+          TGZ=$(ls *.tgz | head -n 1)
+          echo "=== Inspecting tarball $TGZ ==="
+          tar tzf "$TGZ" > /tmp/files.txt
+          grep -q "package/${{ matrix.target.binary }}" /tmp/files.txt || { echo "FAIL: binary missing"; exit 1; }
+          grep -q "package/checksum.json" /tmp/files.txt || { echo "FAIL: checksum.json missing"; exit 1; }
+          grep -q "package/provenance.json" /tmp/files.txt || { echo "FAIL: provenance.json missing"; exit 1; }
+          grep -q "package/package.json" /tmp/files.txt || { echo "FAIL: package.json missing"; exit 1; }
+          if grep -E 'package/crates/|package/target/' /tmp/files.txt; then
+            echo "FAIL: Forbidden source or build artifacts found in platform tarball"
+            exit 1
+          fi
+          echo "✓ Tarball structure & contents verified clean"
+
+          TMP_APP=$(mktemp -d)
+          cd "$TMP_APP"
+          npm init -y > /dev/null
+          npm install "$GITHUB_WORKSPACE/packages/${{ matrix.target.pkg }}/$TGZ"
+          INSTALLED_BIN="node_modules/@heidi-dang/${{ matrix.target.pkg }}/${{ matrix.target.binary }}"
+          test -f "$INSTALLED_BIN" || { echo "FAIL: Installed binary not found"; exit 1; }
+          if [ "${{ matrix.target.binary }}" = "fdx.exe" ]; then
+            ./"$INSTALLED_BIN" --version
+          else
+            "$INSTALLED_BIN" --version
+          fi
+          echo "✓ Clean install and native binary execution verified successfully"

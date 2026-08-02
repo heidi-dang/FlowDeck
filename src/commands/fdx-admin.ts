@@ -11,11 +11,13 @@
 import { existsSync, mkdirSync, writeFileSync, copyFileSync, chmodSync, renameSync, readFileSync, rmSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { createHash } from "node:crypto"
+import { execFileSync } from "node:child_process"
 import {
   detectFdxTarget,
   getFdxAvailabilityStatus,
   getFdxCacheDir,
   validateFdxBinaryPath,
+  validateFdxProvenance,
 } from "../tools/fdx-shared"
 
 export function handleFdxStatus(): void {
@@ -76,6 +78,22 @@ function sha256File(filePath: string): string {
   return createHash("sha256").update(buf).digest("hex")
 }
 
+/** Attempt to download platform package from npm registry as trusted repair fallback. */
+function fetchFromRegistry(packageName: string, version = "1.0.4"): { dir: string; tmpDir: string } | null {
+  try {
+    const tmpDir = join(getFdxCacheDir({ platform: process.platform, arch: process.arch, packageName, executableName: "fdx" }), `..`, `.registry-fetch-${Date.now()}`)
+    mkdirSync(tmpDir, { recursive: true })
+    execFileSync("npm", ["pack", `${packageName}@${version}`], { cwd: tmpDir, stdio: "ignore" })
+    // Extract tarball
+    execFileSync("tar", ["xzf", "*.tgz"], { cwd: tmpDir, shell: true, stdio: "ignore" })
+    const pkgDir = join(tmpDir, "package")
+    if (existsSync(pkgDir)) {
+      return { dir: pkgDir, tmpDir }
+    }
+  } catch {}
+  return null
+}
+
 export async function handleFdxInstall(isRepair = false): Promise<boolean> {
   const target = detectFdxTarget()
   console.log(`\n=== FlowDeck FDX ${isRepair ? "Repair" : "Installer"} ===`)
@@ -97,13 +115,13 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
   console.log(`Package: ${target.packageName}`)
 
   const cacheDir = getFdxCacheDir(target)
-  // Stage into a sibling directory; atomic rename at the end.
   const stagingDir = `${cacheDir}.staging-${process.pid}-${Date.now()}`
+  let registryFetchTmp: string | null = null
 
   try {
     mkdirSync(stagingDir, { recursive: true })
 
-    // ── 1. Locate source platform package ──────────────────────────────────
+    // ── 1. Locate source platform package (local search, then registry fallback) ──
     let sourceBinDir: string | null = null
     const searchDirs = [
       process.cwd(),
@@ -124,9 +142,18 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     }
 
     if (!sourceBinDir) {
+      console.log(`ℹ Local platform package ${target.packageName} not found. Attempting registry-backed acquisition...`)
+      const regRes = fetchFromRegistry(target.packageName)
+      if (regRes) {
+        sourceBinDir = regRes.dir
+        registryFetchTmp = regRes.tmpDir
+      }
+    }
+
+    if (!sourceBinDir) {
       rmSync(stagingDir, { recursive: true, force: true })
       console.error(`✗ Installation FAILED: Could not locate platform package ${target.packageName}.`)
-      console.error(`  Ensure ${target.packageName} is installed or present in node_modules.`)
+      console.error(`  Ensure ${target.packageName} is installed or present in node_modules/packages.`)
       console.error(`  Run: npm install ${target.packageName}`)
       return false
     }
@@ -135,8 +162,8 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     const sourceChecksumPath = join(sourceBinDir, "checksum.json")
     if (!existsSync(sourceChecksumPath)) {
       rmSync(stagingDir, { recursive: true, force: true })
+      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
       console.error(`✗ Installation FAILED: checksum.json missing from ${target.packageName}.`)
-      console.error(`  The platform package appears to be corrupt or tampered.`)
       return false
     }
 
@@ -149,6 +176,7 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
       }
     } catch (e: any) {
       rmSync(stagingDir, { recursive: true, force: true })
+      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
       console.error(`✗ Installation FAILED: checksum.json is corrupt: ${e.message}`)
       return false
     }
@@ -157,19 +185,37 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     const actualSha256 = sha256File(sourceBin)
     if (actualSha256 !== expectedSha256) {
       rmSync(stagingDir, { recursive: true, force: true })
+      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
       console.error(`✗ Installation FAILED: Binary checksum mismatch for ${target.packageName}.`)
       console.error(`  Expected: ${expectedSha256}`)
       console.error(`  Actual:   ${actualSha256}`)
-      console.error(`  The binary may be corrupt or tampered. Re-install the platform package.`)
       return false
     }
 
-    // ── 3. Require provenance ───────────────────────────────────────────────
+    // ── 3. Validate complete provenance schema and field relationships ───────
     const sourceProvenancePath = join(sourceBinDir, "provenance.json")
     if (!existsSync(sourceProvenancePath)) {
       rmSync(stagingDir, { recursive: true, force: true })
+      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
       console.error(`✗ Installation FAILED: provenance.json missing from ${target.packageName}.`)
-      console.error(`  The platform package is missing build provenance. Re-install the package.`)
+      return false
+    }
+
+    let provenanceData: any
+    try {
+      provenanceData = JSON.parse(readFileSync(sourceProvenancePath, "utf-8"))
+    } catch (e: any) {
+      rmSync(stagingDir, { recursive: true, force: true })
+      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
+      console.error(`✗ Installation FAILED: provenance.json corrupt: ${e.message}`)
+      return false
+    }
+
+    const provVal = validateFdxProvenance(provenanceData, target, actualSha256, readFileSync(sourceBin).length)
+    if (!provVal.valid) {
+      rmSync(stagingDir, { recursive: true, force: true })
+      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
+      console.error(`✗ Installation FAILED: Provenance validation failed: ${provVal.reason}`)
       return false
     }
 
@@ -187,6 +233,7 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     const val = validateFdxBinaryPath(stagedBin, stagingDir, true)
     if (!val.valid) {
       rmSync(stagingDir, { recursive: true, force: true })
+      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
       console.error(`✗ Installation FAILED: Validation of staged binary failed: ${val.reason}`)
       return false
     }
@@ -201,10 +248,12 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     }
     writeFileSync(join(stagingDir, "install-manifest.json"), JSON.stringify(installManifest, null, 2), "utf-8")
 
-    // ── 7. Atomic activation via rename ───────────────────────────────────
-    // Remove existing cache dir so rename can succeed on all platforms.
-    if (existsSync(cacheDir)) {
-      rmSync(cacheDir, { recursive: true, force: true })
+    // ── 7. Rollback-safe atomic directory activation ───────────────────────
+    const backupDir = `${cacheDir}.backup-${Date.now()}`
+    const hasExistingCache = existsSync(cacheDir)
+
+    if (hasExistingCache) {
+      renameSync(cacheDir, backupDir)
     }
     renameSync(stagingDir, cacheDir)
 
@@ -215,14 +264,26 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
 
     const verifyStatus = getFdxAvailabilityStatus(true)
     if (verifyStatus.available) {
+      if (hasExistingCache && existsSync(backupDir)) {
+        try { rmSync(backupDir, { recursive: true, force: true }) } catch {}
+      }
+      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
       console.log(`✓ FDX native installation successful: ${verifyStatus.binaryPath}`)
       return true
     } else {
-      console.error(`✗ Installation FAILED: Post-installation verification failed.`)
+      console.error(`✗ Installation FAILED: Post-installation verification failed. Rolling back...`)
+      if (existsSync(cacheDir)) {
+        try { rmSync(cacheDir, { recursive: true, force: true }) } catch {}
+      }
+      if (hasExistingCache && existsSync(backupDir)) {
+        try { renameSync(backupDir, cacheDir) } catch {}
+      }
+      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
       return false
     }
   } catch (err: any) {
     try { rmSync(stagingDir, { recursive: true, force: true }) } catch {}
+    if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
     console.error(`✗ FDX installation failed: ${err.message}`)
     return false
   }
