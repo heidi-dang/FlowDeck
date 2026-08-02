@@ -1169,6 +1169,18 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
         if !seen_paths.insert(f.path.as_str()) {
             return Err(invalid(gen, format!("duplicate file path {:?}", f.path)));
         }
+        // Strict generation consistency: every persisted row must carry the
+        // manifest's generation. A zero or stale stamp means the generation
+        // was written by a mismatched/incomplete publisher.
+        if f.generation != gen {
+            return Err(invalid(
+                gen,
+                format!(
+                    "file {:?} has generation {}, expected {gen}",
+                    f.path, f.generation
+                ),
+            ));
+        }
         known.insert(f.path.as_str());
     }
 
@@ -1193,6 +1205,15 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 format!("symbol {:?} has inverted line range", s.id),
             ));
         }
+        if s.generation != gen {
+            return Err(invalid(
+                gen,
+                format!(
+                    "symbol {:?} has generation {}, expected {gen}",
+                    s.id, s.generation
+                ),
+            ));
+        }
     }
 
     // Dependencies: from_file known, to_file known unless unresolved.
@@ -1215,6 +1236,15 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
                 format!(
                     "dependency edge from {:?} references unknown file {:?}",
                     e.from_file, e.to_file
+                ),
+            ));
+        }
+        if e.generation != gen {
+            return Err(invalid(
+                gen,
+                format!(
+                    "dependency edge from {:?} has generation {}, expected {gen}",
+                    e.from_file, e.generation
                 ),
             ));
         }
@@ -1243,11 +1273,20 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
     if !git.worktree_id.is_empty() && git.worktree_id != manifest.worktree_id {
         return Err(invalid(gen, "git-state worktree id mismatch".to_string()));
     }
-    if git.generation != 0 && git.generation != gen {
-        return Err(invalid(gen, "git-state generation mismatch".to_string()));
+    // Strict: no zero bypass — the snapshot must carry the manifest
+    // generation exactly.
+    if git.generation != gen {
+        return Err(invalid(
+            gen,
+            format!(
+                "git-state generation mismatch: {}, expected {gen}",
+                git.generation
+            ),
+        ));
     }
 
-    // Content cache: keys/paths non-empty, size consistent with content.
+    // Content cache: keys/paths non-empty, size consistent with content,
+    // generation consistent with the manifest.
     for c in &cache {
         if c.key.is_empty() || c.path.is_empty() {
             return Err(invalid(
@@ -1259,6 +1298,15 @@ fn validate_components(dir: &Path, manifest: &FdxIndexManifest) -> std::io::Resu
             return Err(invalid(
                 gen,
                 format!("content cache size mismatch for {:?}", c.path),
+            ));
+        }
+        if c.generation != gen {
+            return Err(invalid(
+                gen,
+                format!(
+                    "content cache entry {:?} has generation {}, expected {gen}",
+                    c.path, c.generation
+                ),
             ));
         }
     }
@@ -1558,7 +1606,7 @@ mod tests {
                     dir,
                     &mut m,
                     "files.json",
-                    &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}]),
+                    &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": generation}]),
                 );
                 let _ = write_component_serde(dir, &mut m, "symbols.json", &serde_json::json!([]));
                 let _ = write_component_serde(
@@ -1703,6 +1751,89 @@ mod tests {
         // quarantine dir has evidence
         let q = quarantine_dir(store.worktree_path());
         assert!(q.exists());
+    }
+
+    #[test]
+    fn stale_generation_row_rejects_each_component_type() {
+        // Contract item 4: a persisted generation whose rows carry a
+        // generation different from the manifest's must be rejected on
+        // load — per component type. The manifest checksum is kept
+        // consistent so the semantic (generation) validation is reached.
+        let files_row = serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 99}]);
+        let symbols_row = serde_json::json!([{"id": "sym1", "name": "x", "qualified_name": "", "kind": "function", "file": "a.txt", "line_start": 1, "line_end": 1, "exported": false, "parent_id": "", "source_hash": "aabbcc", "generation": 99}]);
+        let deps_row = serde_json::json!([{"from_file": "a.txt", "to_file": "", "specifier": "lib", "kind": "import", "unresolved": true, "generation": 99}]);
+        let git_row = serde_json::json!({"head_sha": "1111111111111111111111111111111111111111", "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": "", "generation": 99});
+        let cache_row = serde_json::json!([{"key": "k", "path": "a.txt", "size": 1, "access_order": 1, "content": "x", "generation": 99}]);
+        // (component, corrupt rows, [files, symbols, deps, tests, cache] counts)
+        let cases: &[(&str, serde_json::Value, [usize; 5])] = &[
+            ("files.json", files_row, [1, 0, 0, 0, 0]),
+            ("symbols.json", symbols_row, [1, 1, 0, 0, 0]),
+            ("dependencies.json", deps_row, [1, 0, 1, 0, 0]),
+            ("git-state.json", git_row, [1, 0, 0, 0, 0]),
+            ("content-cache.json", cache_row, [1, 0, 0, 0, 1]),
+        ];
+        for (component, rows, counts) in cases {
+            let tmp = tempfile::tempdir().unwrap();
+            let ident = identity("genchk");
+            let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+            build_manifest(&store, &ident, 1, &"1".repeat(40));
+
+            let gen = store.generation_path(1);
+            let mut m: FdxIndexManifest =
+                serde_json::from_str(&std::fs::read_to_string(gen.join(MANIFEST_FILE)).unwrap())
+                    .unwrap();
+            let _ = write_component_serde(&gen, &mut m, component, rows);
+            update_component_counts(
+                &mut m, counts[0], counts[1], counts[2], counts[3], counts[4],
+            );
+            std::fs::write(
+                gen.join(MANIFEST_FILE),
+                serde_json::to_vec_pretty(&m).unwrap(),
+            )
+            .unwrap();
+
+            let outcome = store.load();
+            match outcome {
+                LoadOutcome::Loaded(_) => panic!(
+                    "component {component}: stale-generation rows must reject the generation"
+                ),
+                LoadOutcome::Corrupt { .. } | LoadOutcome::Empty => {}
+                other => panic!("component {component}: unexpected outcome {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn zero_generation_rows_are_rejected_no_bypass() {
+        // Contract item 4: no zero bypass. Rows stamped 0 are as corrupt as
+        // rows stamped with a stale generation — including git-state, which
+        // previously skipped the check for generation 0.
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("zerogen");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+
+        let gen = store.generation_path(1);
+        let mut m: FdxIndexManifest =
+            serde_json::from_str(&std::fs::read_to_string(gen.join(MANIFEST_FILE)).unwrap())
+                .unwrap();
+        let _ = write_component_serde(
+            &gen,
+            &mut m,
+            "git-state.json",
+            &serde_json::json!({"head_sha": "1111111111111111111111111111111111111111", "branch": "", "detached": false, "changed_files": [], "renamed_files": [], "deleted_files": [], "untracked_files": [], "worktree_id": "", "generation": 0}),
+        );
+        std::fs::write(
+            gen.join(MANIFEST_FILE),
+            serde_json::to_vec_pretty(&m).unwrap(),
+        )
+        .unwrap();
+
+        match store.load() {
+            LoadOutcome::Loaded(_) => panic!("zero-generation rows must be rejected"),
+            LoadOutcome::Corrupt { .. } | LoadOutcome::Empty => {}
+            other => panic!("unexpected outcome {other:?}"),
+        }
     }
 
     #[test]
@@ -1876,7 +2007,7 @@ mod tests {
             &gen2,
             &mut m,
             "files.json",
-            &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 1}]),
+            &serde_json::json!([{"path": "a.txt", "kind": "file", "size": 3, "modified": 0, "content_hash": "", "language": "", "executable": false, "classification": "source", "generation": 2}]),
         );
         let _ = write_component_serde(&gen2, &mut m, "symbols.json", &serde_json::json!([]));
         let _ = write_component_serde(&gen2, &mut m, "dependencies.json", &serde_json::json!([]));

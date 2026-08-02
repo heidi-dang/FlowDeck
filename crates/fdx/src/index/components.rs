@@ -210,6 +210,11 @@ pub struct ContentCacheComponent {
     pub max_bytes: usize,
     /// Max items.
     pub max_items: usize,
+    /// Generation stamped onto entries inserted by [`Self::put`]. The
+    /// publishing layer re-stamps every entry with the published generation
+    /// before serialization; this field keeps in-memory entries consistent
+    /// between refreshes.
+    pub generation: u64,
 }
 
 impl Default for ContentCacheComponent {
@@ -222,6 +227,7 @@ impl Default for ContentCacheComponent {
             total_bytes: 0,
             max_bytes: 4 * 1024 * 1024, // 4 MiB default
             max_items: 512,
+            generation: 0,
         }
     }
 }
@@ -244,6 +250,7 @@ impl ContentCacheComponent {
             size,
             access_order: self.next_order,
             content: content.to_string(),
+            generation: self.generation,
         };
         self.next_order += 1;
         self.entries.insert(key.clone(), entry);

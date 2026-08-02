@@ -286,6 +286,8 @@ pub struct ContentCacheEntry {
     pub access_order: u64,
     /// The cached content (bounded).
     pub content: String,
+    /// Generation that produced this cache entry.
+    pub generation: u64,
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

@@ -22,9 +22,6 @@ use crate::reader::code::prototype::find_symbols_in_tree;
 use std::collections::BTreeSet;
 use std::path::Path;
 
-/// Generation number stamped onto every row built by the cold build.
-pub const COLD_GENERATION: u64 = 1;
-
 /// Language classifications.
 pub const CLASS_SOURCE: &str = "source";
 pub const CLASS_TEST: &str = "test";
@@ -95,6 +92,7 @@ pub fn build_files(
     reader: &RepositoryReader,
     ignored: &ignore::overrides::Override,
     max_files: usize,
+    generation: u64,
 ) -> FilesComponent {
     let root = reader.root();
     let mut files = FilesComponent::default();
@@ -149,7 +147,7 @@ pub fn build_files(
                     is_test,
                     is_generated,
                     true,
-                    COLD_GENERATION,
+                    generation,
                 ),
                 Err(rej) => {
                     files.rejected.insert(rel_str.clone(), rej.to_string());
@@ -167,7 +165,7 @@ pub fn build_files(
                         is_test,
                         is_generated,
                         false,
-                        COLD_GENERATION,
+                        generation,
                     )
                 }
                 Err(rej) => {
@@ -328,6 +326,7 @@ pub fn build_symbols(
     reader: &RepositoryReader,
     files: &FilesComponent,
     max_symbols: usize,
+    generation: u64,
 ) -> SymbolsComponent {
     let root = reader.root();
     let mut comp = SymbolsComponent::default();
@@ -346,7 +345,7 @@ pub fn build_symbols(
         let Ok(content) = std::str::from_utf8(&g.bytes) else {
             continue;
         };
-        let syms = build_symbols_for_file(&abs, rel, content, COLD_GENERATION);
+        let syms = build_symbols_for_file(&abs, rel, content, generation);
         count += syms.len();
         for sym in syms {
             comp.insert(sym);
@@ -509,6 +508,7 @@ pub fn build_dependencies(
     reader: &RepositoryReader,
     files: &FilesComponent,
     max_edges: usize,
+    generation: u64,
 ) -> DependenciesComponent {
     let root = reader.root();
     let mut comp = DependenciesComponent::default();
@@ -527,7 +527,7 @@ pub fn build_dependencies(
         let Ok(content) = std::str::from_utf8(&g.bytes) else {
             continue;
         };
-        let mut edges = build_dependencies_for_file(rel, content, COLD_GENERATION);
+        let mut edges = build_dependencies_for_file(rel, content, generation);
         let language = meta.language.clone();
         for e in &mut edges {
             if !e.unresolved {

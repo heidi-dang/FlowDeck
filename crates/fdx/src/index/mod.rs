@@ -407,7 +407,7 @@ impl IndexService {
 
                     let ignored = default_overrides();
                     let reader = crate::index::boundary::RepositoryReader::new(&root);
-                    let files = builder::build_files(&reader, &ignored, self.max_files);
+                    let files = builder::build_files(&reader, &ignored, self.max_files, generation);
                     storage::write_component_serde(
                         dir,
                         &mut m,
@@ -415,7 +415,8 @@ impl IndexService {
                         &files.files.values().cloned().collect::<Vec<_>>(),
                     )?;
 
-                    let symbols = builder::build_symbols(&reader, &files, self.max_symbols);
+                    let symbols =
+                        builder::build_symbols(&reader, &files, self.max_symbols, generation);
                     storage::write_component_serde(
                         dir,
                         &mut m,
@@ -423,7 +424,8 @@ impl IndexService {
                         &symbols.by_id.values().cloned().collect::<Vec<_>>(),
                     )?;
 
-                    let deps = builder::build_dependencies(&reader, &files, self.max_edges);
+                    let deps =
+                        builder::build_dependencies(&reader, &files, self.max_edges, generation);
                     let mut dep_rows: Vec<DependencyEdge> = Vec::new();
                     for edges in deps.forward.values() {
                         dep_rows.extend(edges.iter().cloned());
@@ -507,7 +509,7 @@ impl IndexService {
             // Rebuild the full file component (metadata-only scan, no
             // content re-read beyond hashes) and diff by hash.
             let reader = crate::index::boundary::RepositoryReader::new(&root);
-            let current_files = builder::build_files(&reader, &ignored, self.max_files);
+            let current_files = builder::build_files(&reader, &ignored, self.max_files, generation);
             let refresher = Refresher::new(&root, generation);
             cs = refresher.fs_change_detection(&prev.files, &current_files);
         }
@@ -539,11 +541,20 @@ impl IndexService {
                     if cs.full_rebuild {
                         // HEAD moved: rebuild the whole tree-derived index.
                         let reader = crate::index::boundary::RepositoryReader::new(&root);
-                        let files_new = builder::build_files(&reader, &ignored, self.max_files);
-                        let symbols_new =
-                            builder::build_symbols(&reader, &files_new, self.max_symbols);
-                        let deps_new =
-                            builder::build_dependencies(&reader, &files_new, self.max_edges);
+                        let files_new =
+                            builder::build_files(&reader, &ignored, self.max_files, generation);
+                        let symbols_new = builder::build_symbols(
+                            &reader,
+                            &files_new,
+                            self.max_symbols,
+                            generation,
+                        );
+                        let deps_new = builder::build_dependencies(
+                            &reader,
+                            &files_new,
+                            self.max_edges,
+                            generation,
+                        );
                         let tests_new = builder::build_test_mapping(&files_new, &deps_new);
                         files = files_new;
                         symbols = symbols_new;
@@ -565,6 +576,21 @@ impl IndexService {
                             &ignored,
                         );
                     }
+
+                    // Normalize every persisted row to the published
+                    // generation: an incremental refresh clones the previous
+                    // generation's rows (older stamps) and only re-stamps
+                    // changed ones, so without this pass the persisted
+                    // generation would mix stamps and fail the strict
+                    // load-time consistency check.
+                    stamp_published_generation(
+                        generation,
+                        &mut files,
+                        &mut symbols,
+                        &mut deps,
+                        &mut git_state,
+                        &mut cache,
+                    );
 
                     storage::write_component_serde(
                         dir,
@@ -691,6 +717,35 @@ fn default_overrides() -> ignore::overrides::Override {
 
 /// Load a component file as JSON rows (strict; errors propagate so a
 /// malformed persisted component fails the whole generation load).
+/// Stamp every persisted row with the generation being published, so a
+/// published generation is internally consistent (`row.generation ==
+/// manifest.generation`). Needed because an incremental refresh clones the
+/// previous generation's rows and only re-stamps changed ones.
+fn stamp_published_generation(
+    generation: u64,
+    files: &mut FilesComponent,
+    symbols: &mut SymbolsComponent,
+    deps: &mut DependenciesComponent,
+    git_state: &mut GitStateComponent,
+    cache: &mut ContentCacheComponent,
+) {
+    for meta in files.files.values_mut() {
+        meta.generation = generation;
+    }
+    for sym in symbols.by_id.values_mut() {
+        sym.generation = generation;
+    }
+    for edges in deps.forward.values_mut() {
+        for e in edges.iter_mut() {
+            e.generation = generation;
+        }
+    }
+    git_state.snapshot.generation = generation;
+    for entry in cache.entries.values_mut() {
+        entry.generation = generation;
+    }
+}
+
 fn load_component<T: serde::de::DeserializeOwned>(dir: &Path, name: &str) -> std::io::Result<T> {
     let file = dir.join(name);
     let text = std::fs::read_to_string(&file)?;
