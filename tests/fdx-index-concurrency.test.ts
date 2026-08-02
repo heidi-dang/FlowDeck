@@ -259,7 +259,9 @@ describe("FDX index cross-process coordination (real processes)", () => {
     }
     if (!existsSync(join(bar, "phase-build"))) {
       writer.kill("SIGKILL")
-      allowAll(bar)
+      for (const phase of ["build", "manifest", "publish", "current"]) {
+        writeFileSync(join(bar, `go-${phase}`), "go")
+      }
       throw new Error(`build barrier not reached; stderr=${stderr}`)
     }
     // The paused writer owns a unique temp build dir with a live OWNER.lock.
