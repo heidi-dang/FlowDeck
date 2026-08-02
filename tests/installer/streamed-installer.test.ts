@@ -90,7 +90,7 @@ function streamInstall(workdir: string, extraEnv: Record<string, string> = {}): 
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
-describe("streamed installer (curl | bash)", () => {
+describe.skipIf(process.platform === "win32")("streamed installer (curl | bash)", () => {
   it("completes a plain streamed install without unbound-variable failure", () => {
     const workdir = join(tmpdir(), `fd-stream-work-${Date.now()}`)
     mkdirSync(workdir, { recursive: true })

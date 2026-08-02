@@ -476,7 +476,7 @@ jobs:
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js fdx repair || true
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js verify || { echo "FAIL: verify"; exit 1; }
           set +e
-          FLOWDECK_PROFILE=minimal HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js doctor
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js doctor --profile minimal
           DOCTOR_EXIT=$?
           set -e
           if [ "$DOCTOR_EXIT" -ne 0 ]; then
