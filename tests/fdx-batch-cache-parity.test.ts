@@ -415,39 +415,43 @@ describe("FDX native/JS fallback parity", () => {
     ]
     const okFlags = [true, false, false]
     const cancelledError = { code: E_CANCELLED, message: "operation cancelled by fail-fast" }
+    const dir = freshProject()
+    try {
+      // Rung 3 (TS): cardinality == input cardinality, IDs preserved in order.
+      const ts = executeBatchFallback(ops, dir, { failFast: true })
+      expect(ts.failedFast).toBe(true)
+      expect(ts.responses.map((r) => r.ok)).toEqual(okFlags)
+      expect(ts.responses.map((r) => r.id)).toEqual(["ok1", "bad1", "ok2"])
+      expect(ts.responses[2].error).toEqual(cancelledError)
 
-    // Rung 3 (TS): cardinality == input cardinality, IDs preserved in order.
-    const ts = executeBatchFallback(ops, projectDir, { failFast: true })
-    expect(ts.failedFast).toBe(true)
-    expect(ts.responses.map((r) => r.ok)).toEqual(okFlags)
-    expect(ts.responses.map((r) => r.id)).toEqual(["ok1", "bad1", "ok2"])
-    expect(ts.responses[2].error).toEqual(cancelledError)
+      // Rung 2 (one-shot native): identical semantics via --fail-fast.
+      if (HAVE_FDX) {
+        const oneShot = oneShotBatch(FDX!, dir, ops, true)
+        expect(oneShot.failedFast).toBe(true)
+        expect(oneShot.responses.map((r) => r.ok)).toEqual(okFlags)
+        expect(oneShot.responses.map((r) => r.id)).toEqual(["ok1", "bad1", "ok2"])
+        expect(oneShot.responses[2].error).toEqual(cancelledError)
+        expect(oneShot.responses[2].error).toEqual(ts.responses[2].error)
+      }
 
-    // Rung 2 (one-shot native): identical semantics via --fail-fast.
-    if (HAVE_FDX) {
-      const oneShot = oneShotBatch(FDX!, projectDir, ops, true)
-      expect(oneShot.failedFast).toBe(true)
-      expect(oneShot.responses.map((r) => r.ok)).toEqual(okFlags)
-      expect(oneShot.responses.map((r) => r.id)).toEqual(["ok1", "bad1", "ok2"])
-      expect(oneShot.responses[2].error).toEqual(cancelledError)
-      expect(oneShot.responses[2].error).toEqual(ts.responses[2].error)
+      // Rung 1 (daemon): failFast round-trips through the wire protocol.
+      if (HAVE_DAEMON) {
+        const daemon = asBatch(await conn.batch(ops, dir, 10_000, true))
+        expect(daemon.failedFast).toBe(true)
+        expect(daemon.responses.map((r) => r.ok)).toEqual(okFlags)
+        expect(daemon.responses.map((r) => r.id)).toEqual(["ok1", "bad1", "ok2"])
+        expect(daemon.responses[2].error).toEqual(cancelledError)
+        expect(daemon.responses[2].error).toEqual(ts.responses[2].error)
+      }
+
+      // failFast=false (default) runs every op — cardinality holds either way.
+      const relaxed = executeBatchFallback(ops, dir)
+      expect(relaxed.failedFast).toBe(false)
+      expect(relaxed.responses.length).toBe(3)
+      expect(relaxed.responses[2].ok).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
-
-    // Rung 1 (daemon): failFast round-trips through the wire protocol.
-    if (HAVE_DAEMON) {
-      const daemon = asBatch(await conn.batch(ops, projectDir, 10_000, true))
-      expect(daemon.failedFast).toBe(true)
-      expect(daemon.responses.map((r) => r.ok)).toEqual(okFlags)
-      expect(daemon.responses.map((r) => r.id)).toEqual(["ok1", "bad1", "ok2"])
-      expect(daemon.responses[2].error).toEqual(cancelledError)
-      expect(daemon.responses[2].error).toEqual(ts.responses[2].error)
-    }
-
-    // failFast=false (default) runs every op — cardinality holds either way.
-    const relaxed = executeBatchFallback(ops, projectDir)
-    expect(relaxed.failedFast).toBe(false)
-    expect(relaxed.responses.length).toBe(3)
-    expect(relaxed.responses[2].ok).toBe(true)
   })
 
   it("batch paths handle spaces, Unicode, and special characters", () => {
