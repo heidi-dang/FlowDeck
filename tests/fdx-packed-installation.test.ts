@@ -24,10 +24,11 @@ describe("FDX Clean Packed Installation Tests", () => {
 
   it("packed CLI modules execute correctly from installed main tarball", () => {
     const root = resolve(__dirname, "..")
+    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
 
     // Build & pack local main package
-    execFileSync("npm", ["run", "build"], { cwd: root, stdio: "ignore" })
-    const mainPackOut = execFileSync("npm", ["pack", "--json"], { cwd: root, encoding: "utf-8" })
+    execFileSync(npmCmd, ["run", "build"], { cwd: root, stdio: "ignore" })
+    const mainPackOut = execFileSync(npmCmd, ["pack", "--json"], { cwd: root, encoding: "utf-8" })
     const mainPackJson = JSON.parse(mainPackOut)
     const mainTarball = join(root, mainPackJson[0].filename)
 
@@ -36,7 +37,7 @@ describe("FDX Clean Packed Installation Tests", () => {
     const target = detectFdxTarget()
     const pkgFolderName = target?.packageName ? target.packageName.replace("@heidi-dang/", "") : "flowdeck-fdx-linux-x64-gnu"
     const pkgDir = join(root, "packages", pkgFolderName)
-    const pkgPackOut = execFileSync("npm", ["pack", "--json"], { cwd: pkgDir, encoding: "utf-8" })
+    const pkgPackOut = execFileSync(npmCmd, ["pack", "--json"], { cwd: pkgDir, encoding: "utf-8" })
     const pkgPackJson = JSON.parse(pkgPackOut)
     const platformTarball = join(pkgDir, pkgPackJson[0].filename)
 
@@ -44,7 +45,7 @@ describe("FDX Clean Packed Installation Tests", () => {
     writeFileSync(join(projectDir, "package.json"), JSON.stringify({ name: "test-consumer", version: "1.0.0", type: "module" }), "utf-8")
 
     // Install packed tarballs
-    execFileSync("npm", ["install", mainTarball, platformTarball], { cwd: projectDir, stdio: "ignore" })
+    execFileSync(npmCmd, ["install", mainTarball, platformTarball], { cwd: projectDir, stdio: "ignore" })
 
     const binName = process.platform === "win32" ? "flowdeck.cmd" : "flowdeck"
     const cliBin = join(projectDir, "node_modules", ".bin", binName)
@@ -80,7 +81,8 @@ describe("FDX Clean Packed Installation Tests", () => {
 
   it("packed tarball excludes Rust source and build artifacts", () => {
     const root = resolve(__dirname, "..")
-    const packOut = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf-8" })
+    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
+    const packOut = execFileSync(npmCmd, ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf-8" })
     const files: string[] = JSON.parse(packOut)[0]?.files?.map((f: any) => f.path) ?? []
 
     // Rust source must not ship in the consumer tarball — binaries are

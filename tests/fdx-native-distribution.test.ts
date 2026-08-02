@@ -143,7 +143,8 @@ describe("FDX Native Distribution & Binary Resolver", () => {
 
   it("Clean packed install test: npm pack excludes crates/fdx source and excludes target build artifacts", () => {
     const root = resolve(__dirname, "..")
-    const packOut = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf-8" })
+    const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
+    const packOut = execFileSync(npmCmd, ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf-8" })
     const packJson = JSON.parse(packOut)
     const files: string[] = packJson[0]?.files?.map((f: any) => f.path) ?? []
 
