@@ -4,7 +4,8 @@
  * Spawns the REAL fdxd binary and exercises the typed batch surface:
  * - capabilities.query returns descriptor metadata for every hosted tool
  * - typed batch dispatches operations in input order (read/grep/search/outline)
- * - unknown / mutating ops produce per-op E_UNSUPPORTED without failing others
+ * - ANY invalid operation (unknown / mutating / non-batchable) rejects the
+ *   ENTIRE batch with E_BAD_REQUEST before anything executes (zero execution)
  * - whole-batch structural violations (empty, duplicate ids) → E_BAD_REQUEST
  * - failFast=false default runs all ops; failedFast flag round-trips
  * - legacy `requests` path still works (additive contract)
@@ -155,23 +156,19 @@ describe("FDX typed batch protocol", () => {
     expect(readResult.path).toContain("greeter.ts")
   })
 
-  it("unknown and mutating ops are per-op E_UNSUPPORTED, others still run", async () => {
+  it("any invalid op rejects the whole batch with E_BAD_REQUEST (zero execution)", async () => {
     if (!HAVE_DAEMON) return
+    // A batch with an unknown op, a mutating op, and a valid op: the ENTIRE
+    // batch is rejected before anything executes — the valid read never runs.
     const ops: BatchOperation[] = [
-      { id: "ok1", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
       { id: "bad1", op: "delete-everything", params: {} },
       { id: "bad2", op: "index.invalidate", params: {} },
-      { id: "ok2", op: "grep", params: { pattern: "hello", paths: ["src"], maxMatches: 5 } },
+      { id: "ok1", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
     ]
     const resp = await conn.batch(ops, projectDir)
-    const batch = asBatch(resp)
-    expect(batch.responses.length).toBe(4)
-    expect(batch.responses[0].ok).toBe(true)
-    expect(batch.responses[1].ok).toBe(false)
-    expect((batch.responses[1].error as { code: string }).code).toBe("E_UNSUPPORTED")
-    expect(batch.responses[2].ok).toBe(false)
-    expect((batch.responses[2].error as { code: string }).code).toBe("E_UNSUPPORTED")
-    expect(batch.responses[3].ok).toBe(true)
+    expect(resp.ok).toBe(false)
+    expect((resp.error as { code: string }).code).toBe("E_BAD_REQUEST")
+    expect((resp.error as { message: string }).message).toContain("delete-everything")
   })
 
   it("rejects whole-batch structural violations with E_BAD_REQUEST", async () => {

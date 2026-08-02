@@ -4,10 +4,10 @@
  * Spawns the REAL fdxd binary against a real git repository and verifies:
  * - capability metadata is served for every batch op (readOnly,
  *   supportsBatching, maximumOutputBytes) via the daemon's capabilities path
- * - non-batchable hosted commands (capabilities.query) are rejected per-op
- *   with E_UNSUPPORTED "does not support batching"
- * - mutating commands (index.refresh) are rejected per-op with E_UNSUPPORTED
- *   "not read-only"
+ * - non-batchable hosted commands (capabilities.query) reject the whole batch
+ *   with E_BAD_REQUEST "does not support batching" (zero execution)
+ * - mutating commands (index.refresh) reject the whole batch with
+ *   E_BAD_REQUEST "not read-only" (zero execution)
  * - oversized results are truncated: the response carries `truncated: true`
  *   and `artifactRef`, the marker records byte counts, and the artifact file
  *   holds the full untruncated payload
@@ -146,22 +146,20 @@ describe("FDX capability metadata (daemon)", () => {
     expect(byName.get("index.refresh")!.readOnly).toBe(false)
   })
 
-  it("rejects non-batchable hosted commands per op", async () => {
+  it("rejects non-batchable hosted commands as whole-batch preflight", async () => {
     if (!HAVE_DAEMON) return
-    const resp = asBatch(await conn.batch(oneOp("capabilities.query", {}), projectDir))
-    const r = resp.responses[0]
-    expect(r.ok).toBe(false)
-    expect((r.error as { code: string }).code).toBe("E_UNSUPPORTED")
-    expect((r.error as { message: string }).message).toContain("does not support batching")
+    const resp = await conn.batch(oneOp("capabilities.query", {}), projectDir)
+    expect(resp.ok).toBe(false)
+    expect((resp.error as { code: string }).code).toBe("E_BAD_REQUEST")
+    expect((resp.error as { message: string }).message).toContain("does not support batching")
   })
 
-  it("rejects mutating commands per op", async () => {
+  it("rejects mutating commands as whole-batch preflight", async () => {
     if (!HAVE_DAEMON) return
-    const resp = asBatch(await conn.batch(oneOp("index.refresh", {}), projectDir))
-    const r = resp.responses[0]
-    expect(r.ok).toBe(false)
-    expect((r.error as { code: string }).code).toBe("E_UNSUPPORTED")
-    expect((r.error as { message: string }).message).toContain("not read-only")
+    const resp = await conn.batch(oneOp("index.refresh", {}), projectDir)
+    expect(resp.ok).toBe(false)
+    expect((resp.error as { code: string }).code).toBe("E_BAD_REQUEST")
+    expect((resp.error as { message: string }).message).toContain("not read-only")
   })
 
   it("truncates oversized results with artifactRef to the full payload", async () => {

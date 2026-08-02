@@ -9,10 +9,12 @@
  * Assertions:
  * - wire-identical BatchResponse JSON for read/grep/impact across all rungs
  * - deterministic-field parity for search/outline (signature is shape-only)
- * - per-op error parity (unknown / mutating / missing file / bad mode)
- * - whole-batch rejection parity (empty / duplicate / over-capacity)
+ * - whole-batch preflight parity (empty / duplicate / over-capacity / ANY
+ *   invalid op — unknown, mutating, non-batchable — rejects before executing)
+ * - per-op execution error parity (missing file / bad mode)
  * - truncation marker + artifact byte parity (native vs TS)
  * - capabilities mirror deep-equals the daemon's capabilities.query
+ * - repository-state drift parity: E_STALE_SNAPSHOT abort + staleSnapshot
  * - runBatchViaDaemon ladder: daemon -> one-shot -> TS, transport metrics
  *
  * testsFor parity is asserted between one-shot and TS only: the daemon builds
@@ -46,10 +48,12 @@ import {
   executeBatchFallback,
   tsCapabilitiesPayload,
   E_BAD_REQUEST,
-  E_UNSUPPORTED,
   E_INTERNAL,
   E_CANCELLED,
+  E_STALE_SNAPSHOT,
   TS_MAX_BATCH_OPS,
+  artifactFileName,
+  type BatchStateProbe,
 } from "../src/tools/fdx-batch-fallback"
 
 const ROOT = resolve(import.meta.dirname, "..")
@@ -286,17 +290,64 @@ describe("FDX native/JS fallback parity", () => {
     }
   })
 
-  it("per-op error parity across daemon, one-shot, and TS", async () => {
+  it("whole-batch preflight parity: ANY invalid op rejects across all rungs", async () => {
     if (!HAVE_DAEMON) return
+    // Unknown, mutating, and non-batchable ops are whole-batch rejections on
+    // every rung — no operation executes (zero execution).
+    const cases: Array<[BatchOperation, { code: string; message: string }]> = [
+      [
+        { id: "x1", op: "delete-everything", params: {} },
+        { code: E_BAD_REQUEST, message: "unknown batch operation 'delete-everything'" },
+      ],
+      [
+        { id: "m1", op: "index.refresh", params: {} },
+        { code: E_BAD_REQUEST, message: "operation 'index.refresh' is not read-only and cannot run in a batch" },
+      ],
+      [
+        { id: "c1", op: "capabilities.query", params: {} },
+        { code: E_BAD_REQUEST, message: "operation 'capabilities.query' does not support batching" },
+      ],
+    ]
+    for (const [op, expected] of cases) {
+      // Rung 1 (daemon): definitive whole-batch rejection.
+      const daemon = await conn.batch([op], projectDir)
+      expect(daemon.ok).toBe(false)
+      expect(daemon.error).toEqual(expected)
+
+      // Rung 3 (TS): throws the same rejection.
+      expect(() => executeBatchFallback([op], projectDir)).toThrow(
+        new BatchRejectError(expected.code, expected.message),
+      )
+
+      // Rung 2 (one-shot): stderr carries the same rejection.
+      if (HAVE_FDX) {
+        expect(() => oneShotBatch(FDX!, projectDir, [op])).toThrow(
+          new RegExp(expected.message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        )
+      }
+    }
+
+    // A valid op alongside an invalid op: the whole batch is rejected, so
+    // the valid op never executes (zero execution).
+    const mixed: BatchOperation[] = [
+      { id: "ok1", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
+      { id: "bad1", op: "delete-everything", params: {} },
+    ]
+    const daemon = await conn.batch(mixed, projectDir)
+    expect(daemon.ok).toBe(false)
+    expect(daemon.error?.code).toBe(E_BAD_REQUEST)
+    expect(() => executeBatchFallback(mixed, projectDir)).toThrow(BatchRejectError)
+  })
+
+  it("per-op execution error parity across daemon, one-shot, and TS", async () => {
+    if (!HAVE_DAEMON) return
+    // Valid ops with runtime failures stay per-op errors (not preflight):
+    // missing file and invalid read mode.
     const ops: BatchOperation[] = [
-      { id: "x1", op: "delete-everything", params: {} },
-      { id: "m1", op: "index.refresh", params: {} },
       { id: "nf1", op: "read", params: { file: "src/missing.ts", mode: "raw" } },
       { id: "bm1", op: "read", params: { file: "src/greeter.ts", mode: "bogus" } },
     ]
     const expected = [
-      { code: E_UNSUPPORTED, message: "unknown batch operation 'delete-everything'" },
-      { code: E_UNSUPPORTED, message: "operation 'index.refresh' is not read-only and cannot run in a batch" },
       { code: E_INTERNAL, message: "read failed: No such file or directory (os error 2)" },
       { code: E_BAD_REQUEST, message: "invalid read mode: Unknown read mode: bogus" },
     ]
@@ -314,6 +365,37 @@ describe("FDX native/JS fallback parity", () => {
         expect(oneShot.responses[i].ok).toBe(false)
         expect(oneShot.responses[i].error).toEqual(expected[i])
       }
+    }
+  })
+
+  it("repository-state drift parity: E_STALE_SNAPSHOT abort + staleSnapshot", () => {
+    // The native executor's drift contract (capture → revalidate → abort
+    // remaining ops with E_STALE_SNAPSHOT) is mirrored by the TS fallback via
+    // an injectable probe. The daemon rung is exercised by the Rust unit
+    // tests (ScriptedProbe); here the same semantics are asserted on the
+    // fallback with a scripted probe.
+    let calls = 0
+    const scripted: BatchStateProbe = {
+      stateUnchanged: () => calls++ < 1, // unchanged for op1, then flips
+    }
+    const dir = freshProject()
+    try {
+      const ops: BatchOperation[] = [
+        { id: "ok1", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
+        { id: "ok2", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
+      ]
+      const ts = executeBatchFallback(ops, dir, { probe: scripted })
+      expect(ts.staleSnapshot).toBe(true)
+      expect(ts.responses[0].ok).toBe(true)
+      expect(ts.responses[1].ok).toBe(false)
+      expect(ts.responses[1].error).toEqual({
+        code: E_STALE_SNAPSHOT,
+        message: "operation aborted: repository state changed mid-batch",
+      })
+      // Cardinality preserved: one response per input op, ids in order.
+      expect(ts.responses.map((r) => r.id)).toEqual(["ok1", "ok2"])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
@@ -363,6 +445,23 @@ describe("FDX native/JS fallback parity", () => {
     expect(() => executeBatchFallback(tooMany, projectDir)).toThrow(
       new BatchRejectError(E_BAD_REQUEST, capMsg),
     )
+  })
+
+  it("artifact file names are collision-resistant for sanitized ids", () => {
+    // "a/b" and "a:b" both sanitize to "a_b"; the SHA-256 discriminator must
+    // keep their artifact files distinct so two truncated ops in one batch
+    // never overwrite each other.
+    const nameA = artifactFileName("a/b")
+    const nameB = artifactFileName("a:b")
+    expect(nameA).not.toBe(nameB)
+    expect(nameA.startsWith("a_b-")).toBe(true)
+    expect(nameB.startsWith("a_b-")).toBe(true)
+    expect(nameA.endsWith(".json")).toBe(true)
+    expect(nameB.endsWith(".json")).toBe(true)
+    // Deterministic for the same id.
+    expect(artifactFileName("grep-1")).toBe(artifactFileName("grep-1"))
+    // No path separators escape the artifact directory.
+    expect(artifactFileName("../evil/op id")).not.toMatch(/[/\\]/)
   })
 
   it("truncation marker + artifact parity between one-shot and TS", async () => {

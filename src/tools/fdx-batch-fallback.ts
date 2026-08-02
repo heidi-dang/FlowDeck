@@ -10,10 +10,14 @@
  * codes/messages, and output-bounding/truncation semantics.
  *
  * Fidelity notes:
- * - EXACT parity: whole-batch rejection rules, descriptor enforcement, raw
- *   reads (TextResult), grep, error codes/messages, and the response envelope
- *   (version / failedFast / staleSnapshot, input-order responses, truncation
- *   markers).
+ * - EXACT parity: whole-batch preflight (ANY invalid op — unknown, mutating,
+ *   non-batchable — rejects the ENTIRE batch with E_BAD_REQUEST before any
+ *   operation executes), repository-state probing (HEAD SHA / dirty
+ *   fingerprint / config fingerprint captured at batch start and revalidated
+ *   before each op; drift aborts remaining ops with E_STALE_SNAPSHOT and
+ *   reports `staleSnapshot: true`), raw reads (TextResult), grep, error
+ *   codes/messages, and the response envelope (version / failedFast /
+ *   staleSnapshot, input-order responses, truncation markers).
  * - SHAPE parity: code-mode reads (CodeResult), search, outline, impact, whose
  *   symbols come from tree-sitter in the native binary. The TS fallback uses
  *   regex declaration scanning (DECL_PATTERNS), so AST-derived fields
@@ -23,6 +27,7 @@
  *   same E_INTERNAL the native executor returns when no snapshot exists.
  */
 
+import { spawnSync } from "node:child_process"
 import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -52,6 +57,13 @@ export const E_INTERNAL = "E_INTERNAL"
  * `failFast` set. The operation was NOT executed; the response exists only to
  * preserve the one-response-per-input-operation cardinality. */
 export const E_CANCELLED = "E_CANCELLED"
+/** An operation that never started because the repository state drifted
+ * mid-batch (HEAD / dirty tree / config changed since capture). The operation
+ * was NOT executed; the batch is flagged `staleSnapshot` so clients never
+ * persist results spanning two repository states. Distinct from
+ * `E_CANCELLED`: the batch was invalidated by an external mutation, not
+ * stopped by the client. */
+export const E_STALE_SNAPSHOT = "E_STALE_SNAPSHOT"
 
 const KIB = 1024
 
@@ -64,7 +76,8 @@ const ABSOLUTE_MAX_MATCHES = 200
 /** Directories never walked (mirrors fdx-shared native fallbacks). */
 const ALWAYS_EXCLUDED = ["node_modules", ".git", "dist", "target", ".next", ".cache"]
 
-/** Whole-batch structural rejection (empty / over-capacity / duplicate ids). */
+/** Whole-batch structural rejection (empty / over-capacity / duplicate ids /
+ * any invalid operation). */
 export class BatchRejectError extends Error {
   code: string
 
@@ -72,6 +85,155 @@ export class BatchRejectError extends Error {
     super(message)
     this.name = "BatchRejectError"
     this.code = code
+  }
+}
+
+// ─── Repository-state probe (mirror batch::RepoStateProbe) ─────────────────
+
+/**
+ * Repository-state revalidation contract (mirror batch::BatchStateProbe).
+ *
+ * The batch captures the repository identity fields (HEAD SHA, dirty
+ * working-tree fingerprint, configuration fingerprint) at batch start and
+ * revalidates them before each operation. If ANY captured field changed, the
+ * batch aborts all remaining operations with `E_STALE_SNAPSHOT` (never
+ * executed) and reports `staleSnapshot: true`, so clients never persist
+ * results that span two repository states.
+ */
+export interface BatchStateProbe {
+  /** True while the captured repository state still matches the worktree. */
+  stateUnchanged(): boolean
+}
+
+/** Run git and return trimmed stdout on success, or null on failure. */
+function gitOut(args: string[], cwd: string): string | null {
+  try {
+    const res = spawnSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      timeout: 15_000,
+      shell: false,
+      maxBuffer: 10 * 1024 * 1024,
+    })
+    if (res.status === 0) return (res.stdout ?? "").trimEnd()
+    return null
+  } catch {
+    return null
+  }
+}
+
+/** Current HEAD SHA (`git rev-parse HEAD`). Empty when not a git repo. */
+function gitHeadSha(cwd: string): string {
+  return gitOut(["rev-parse", "HEAD"], cwd) ?? ""
+}
+
+/**
+ * Dirty-tree fingerprint: a stable hash over `git status --porcelain=v1 -z`
+ * AND the content hashes of files reported as modified/untracked. Two equal
+ * trees produce the same fingerprint; ANY worktree change — including a
+ * content edit inside an already-dirty file — flips it. Mirrors the semantics
+ * (not the exact bytes) of batch::dirty_fingerprint.
+ */
+function dirtyFingerprint(cwd: string): string {
+  const out = gitOut(["status", "--porcelain=v1", "-z", "--no-renames"], cwd)
+  if (out === null || out.length === 0) {
+    return sha256Hex(Buffer.from("dirty\0"))
+  }
+  const hasher = newCryptoHash()
+  hasher.update(Buffer.from("dirty\0"))
+  // NUL-delimited records: "<XY> <path>\0". Split, filter empty, sort by
+  // path for determinism.
+  const records = out.split("\0").filter((r) => r.length > 0).sort()
+  let contentCount = 0
+  const MAX_CONTENT_FILES = 1000
+  for (const record of records) {
+    if (record.length < 4) continue
+    hasher.update(Buffer.from(record))
+    hasher.update(Buffer.from("\0"))
+    const statusPart = record.slice(0, 2)
+    if (statusPart.startsWith("R")) {
+      contentCount += 1
+      continue
+    }
+    const path = record.slice(3).trim()
+    if (!path) continue
+    if (
+      (statusPart.includes("M") || statusPart.includes("?") || statusPart.includes("A") || statusPart.startsWith("R")) &&
+      contentCount < MAX_CONTENT_FILES
+    ) {
+      try {
+        const full = join(cwd, path)
+        const st = statSync(full)
+        if (st.isFile()) {
+          hasher.update(readFileSync(full))
+          hasher.update(Buffer.from("\0"))
+          contentCount += 1
+        }
+      } catch { /* unreadable/missing file contributes nothing */ }
+    }
+  }
+  return hasher.digest("hex")
+}
+
+/** Hash of the FlowDeck/FDX config files found in the worktree root. */
+function configHash(cwd: string): string {
+  const hasher = newCryptoHash()
+  for (const name of [".flowdeck.json", ".flowdeck.jsonc", ".fdx.json", ".fdxrc", "flowdeck.json"]) {
+    try {
+      hasher.update(Buffer.from(name))
+      hasher.update(readFileSync(join(cwd, name)))
+    } catch { /* missing file contributes nothing */ }
+  }
+  return hasher.digest("hex").slice(0, 16)
+}
+
+/** Hash of the ignore rules (.gitignore / .ignore / .fdignore) at the root. */
+function ignoreHash(cwd: string): string {
+  const hasher = newCryptoHash()
+  for (const name of [".gitignore", ".ignore", ".fdignore"]) {
+    try {
+      hasher.update(Buffer.from(name))
+      hasher.update(readFileSync(join(cwd, name)))
+    } catch { /* missing file contributes nothing */ }
+  }
+  return hasher.digest("hex").slice(0, 16)
+}
+
+/** Configuration fingerprint = hash(config_hash + ignore_hash). */
+function configurationFingerprint(cwd: string): string {
+  const hasher = newCryptoHash()
+  hasher.update(Buffer.from(configHash(cwd)))
+  hasher.update(Buffer.from(ignoreHash(cwd)))
+  return hasher.digest("hex")
+}
+
+function newCryptoHash(): import("node:crypto").Hash {
+  const crypto = require("node:crypto") as typeof import("node:crypto")
+  return crypto.createHash("sha256")
+}
+
+/**
+ * Production state probe: captures HEAD SHA, dirty fingerprint and
+ * configuration fingerprint and recomputes each on `stateUnchanged()`.
+ * Returns `null` when the cwd is not inside a git repository — the same
+ * condition under which the native executor's cache context (and probe) is
+ * inactive, so `staleSnapshot` stays false outside git (mirrors
+ * `QueryCacheContext::resolve`).
+ */
+export function createRepoStateProbe(cwd?: string): BatchStateProbe | null {
+  if (!cwd) return null
+  const root = resolve(cwd)
+  const repositorySha = gitHeadSha(root)
+  if (!repositorySha) return null // not a git worktree
+  const capturedDirty = dirtyFingerprint(root)
+  const capturedConfig = configurationFingerprint(root)
+  return {
+    stateUnchanged(): boolean {
+      if (gitHeadSha(root) !== repositorySha) return false
+      if (dirtyFingerprint(root) !== capturedDirty) return false
+      if (configurationFingerprint(root) !== capturedConfig) return false
+      return true
+    },
   }
 }
 
@@ -759,6 +921,18 @@ export function sanitizeArtifactName(id: string): string {
 }
 
 /**
+ * Collision-resistant artifact file name for an op id (mirror
+ * batch::artifact_file_name): the sanitized id plus an 8-hex-char SHA-256
+ * discriminator of the FULL id, so distinct ids that sanitize to the same
+ * base (e.g. "a/b" and "a:b" → "a_b") still produce distinct files and two
+ * truncated ops in one batch can never overwrite each other.
+ */
+export function artifactFileName(id: string): string {
+  const digest = sha256Hex(Buffer.from(id, "utf-8"))
+  return `${sanitizeArtifactName(id)}-${digest.slice(0, 8)}.json`
+}
+
+/**
  * Enforce the per-op output bound. When the serialized payload exceeds
  * `limit`, the full payload is spilled to `<artifactBase>/artifacts/<id>.json`
  * and `result` is replaced by the truncation marker — mirroring the native
@@ -787,7 +961,7 @@ function finalizeFallbackResponse(
   const dir = artifactBase
     ? join(artifactBase, "artifacts")
     : join(tmpdir(), "fdx-batch-artifacts")
-  const filePath = join(dir, `${sanitizeArtifactName(id)}.json`)
+  const filePath = join(dir, artifactFileName(id))
   let artifactRef: string
   try {
     mkdirSync(dir, { recursive: true })
@@ -833,18 +1007,29 @@ export interface BatchFallbackOptions {
   failFast?: boolean
   /** Base directory for truncation artifacts (default: system temp dir). */
   artifactBase?: string
+  /**
+   * Repository-state probe (mirror batch::execute_batch_with_probe test
+   * seam). Defaults to a git-backed [`createRepoStateProbe`] for `cwd`; pass
+   * `null` to disable probing entirely, or a scripted probe for tests.
+   */
+  probe?: BatchStateProbe | null
 }
 
 /**
  * Pure-TS batch executor. Throws `BatchRejectError` for whole-batch
- * structural violations (empty / over-capacity / duplicate ids); otherwise
- * returns a `BatchResponse` with input-order responses, per-op errors inside
- * the envelope, and `staleSnapshot: false` (the fallback has no index).
+ * violations: structural (empty / over-capacity / duplicate ids) AND
+ * per-operation validity (ANY unknown / mutating / non-batchable op rejects
+ * the ENTIRE batch with E_BAD_REQUEST before anything executes — zero
+ * execution). Otherwise returns a `BatchResponse` with input-order responses,
+ * per-op errors inside the envelope, and a state-probed `staleSnapshot`.
  *
  * With `failFast: true` the batch stops executing at the first failed
  * operation: every unstarted operation is returned as an explicit
- * `E_CANCELLED` response (never executed), so the response always contains
- * exactly one entry per input operation — mirroring the native executor.
+ * `E_CANCELLED` response (never executed). If the repository state drifts
+ * mid-batch (HEAD / dirty tree / config changed), every remaining operation
+ * is returned as an explicit `E_STALE_SNAPSHOT` response (never executed)
+ * and `staleSnapshot` is `true` — mirroring the native executor. In both
+ * cases the response always contains exactly one entry per input operation.
  */
 export function executeBatchFallback(
   operations: BatchOperation[],
@@ -868,9 +1053,35 @@ export function executeBatchFallback(
     seen.add(op.id)
   }
 
+  // Whole-batch preflight: every operation must be a known, read-only,
+  // batchable op. An invalid operation rejects the ENTIRE batch before ANY
+  // operation executes — zero execution, no partial results (mirrors the
+  // native executor's preflight).
+  for (const op of operations) {
+    const descriptor = tsToolDescriptor(op.op)
+    const message = descriptor
+      ? !descriptor.readOnly
+        ? `operation '${op.op}' is not read-only and cannot run in a batch`
+        : !descriptor.supportsBatching
+          ? `operation '${op.op}' does not support batching`
+          : null
+      : `unknown batch operation '${op.op}'`
+    if (message !== null) {
+      throw new BatchRejectError(E_BAD_REQUEST, message)
+    }
+  }
+
+  // Repository-state probe: an explicitly injected probe wins; otherwise a
+  // git-backed probe for the cwd; pass null to disable. The probe is
+  // consulted before each operation and once more before the final response
+  // is emitted, mirroring the native executor.
+  const probe: BatchStateProbe | null =
+    options.probe !== undefined ? options.probe : createRepoStateProbe(cwd)
+
   const responses: OperationResponse[] = []
   let usedOutputBytes = 0
   let failedFast = false
+  let staleSnapshot = false
   for (const op of operations) {
     if (failedFast) {
       // Cardinality contract: every input operation gets exactly one
@@ -884,6 +1095,33 @@ export function executeBatchFallback(
       })
       continue
     }
+    // Repository-state drift: once the captured state no longer matches the
+    // worktree, every remaining operation is ABORTED — never executed.
+    if (staleSnapshot) {
+      responses.push({
+        id: op.id,
+        ok: false,
+        error: {
+          code: E_STALE_SNAPSHOT,
+          message: "operation aborted: repository state changed mid-batch",
+        },
+      })
+      continue
+    }
+    // Revalidate the captured repository state before each operation so
+    // drift is detected even for ops that never touch the cache.
+    if (probe !== null && !probe.stateUnchanged()) {
+      staleSnapshot = true
+      responses.push({
+        id: op.id,
+        ok: false,
+        error: {
+          code: E_STALE_SNAPSHOT,
+          message: "operation aborted: repository state changed mid-batch",
+        },
+      })
+      continue
+    }
     const budget = TS_MAX_BATCH_OUTPUT_BYTES - usedOutputBytes
     const { resp, used } = runFallbackOperation(op, cwd, budget, options.artifactBase)
     usedOutputBytes += used
@@ -893,7 +1131,13 @@ export function executeBatchFallback(
     }
   }
 
-  return { version: 1, responses, failedFast, staleSnapshot: false }
+  // Revalidate once more before the final response is emitted: a change
+  // detected after the last op still marks the whole batch stale.
+  if (!staleSnapshot && probe !== null && !probe.stateUnchanged()) {
+    staleSnapshot = true
+  }
+
+  return { version: 1, responses, failedFast, staleSnapshot }
 }
 
 function runFallbackOperation(
@@ -902,41 +1146,10 @@ function runFallbackOperation(
   budget: number,
   artifactBase: string | undefined,
 ): { resp: OperationResponse; used: number } {
-  const descriptor = tsToolDescriptor(op.op)
-  if (!descriptor) {
-    return {
-      resp: {
-        id: op.id,
-        ok: false,
-        error: { code: E_UNSUPPORTED, message: `unknown batch operation '${op.op}'` },
-      },
-      used: 0,
-    }
-  }
-  if (!descriptor.readOnly) {
-    return {
-      resp: {
-        id: op.id,
-        ok: false,
-        error: {
-          code: E_UNSUPPORTED,
-          message: `operation '${op.op}' is not read-only and cannot run in a batch`,
-        },
-      },
-      used: 0,
-    }
-  }
-  if (!descriptor.supportsBatching) {
-    return {
-      resp: {
-        id: op.id,
-        ok: false,
-        error: { code: E_UNSUPPORTED, message: `operation '${op.op}' does not support batching` },
-      },
-      used: 0,
-    }
-  }
-
+  // The whole-batch preflight in executeBatchFallback has already validated
+  // that this op is a known, read-only, batchable operation; the descriptor
+  // is only consulted here for its output bound.
+  const descriptor = tsToolDescriptor(op.op)!
   const effectiveLimit = Math.min(descriptor.maximumOutputBytes, Math.max(0, budget))
   const outcome = runOp(op.op, op.params, cwd)
   if (!outcome.ok) {

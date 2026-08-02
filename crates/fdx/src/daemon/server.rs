@@ -198,9 +198,10 @@ impl Server {
             }
             RequestBody::Batch { params } => {
                 // Task 4: typed batch path — one frozen snapshot per batch,
-                // input-order responses. Mutating/unknown ops are per-op
-                // errors; structural issues (empty, >64, dup ids) reject the
-                // whole batch with E_BAD_REQUEST.
+                // input-order responses. Whole-batch preflight: ANY invalid
+                // op (unknown / mutating / non-batchable) plus structural
+                // issues (empty, >64, dup ids) reject the whole batch with
+                // E_BAD_REQUEST before anything executes (zero execution).
                 let has_ops = !params.operations.is_empty();
                 let has_reqs = !params.requests.is_empty();
                 if has_ops || !has_reqs {

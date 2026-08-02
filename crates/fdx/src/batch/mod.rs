@@ -13,18 +13,22 @@
 //!   failed operation, every unstarted operation returns an explicit
 //!   `E_CANCELLED` response (never executes), and `failed_fast=true`. The
 //!   response always contains exactly one entry per input operation.
-//! - A non-read-only or unknown operation tag → per-op `E_UNSUPPORTED`.
+//! - Whole-batch preflight: every operation must be a known, read-only,
+//!   batchable op. Any invalid operation (unknown tag, non-read-only, or
+//!   non-batchable) rejects the ENTIRE batch with `E_BAD_REQUEST` before ANY
+//!   operation executes — zero execution, no partial results.
 //! - Max 64 operations per batch; duplicate ids and empty batches are
 //!   rejected structurally.
-//! - Read-only only: mutation commands (`index.refresh` & co) are rejected.
+//! - Repository-state contract: the batch captures HEAD SHA, dirty
+//!   fingerprint, and configuration fingerprint at batch start and
+//!   revalidates them before every cache read/write and before each
+//!   operation. On drift, all remaining operations are ABORTED with
+//!   `E_STALE_SNAPSHOT` (never executed), the batch reports
+//!   `stale_snapshot: true`, and no results from the batch are persisted.
 //! - Results of Repository-cacheable ops (all six batch ops) are served from
 //!   and stored in the content-addressed query cache (Dev 3 Task 4 Phase 3)
 //!   under the worktree state dir, keyed by repository/worktree state. Cache
-//!   writes are skipped when the batch snapshot is stale, and the repository
-//!   state (HEAD SHA, dirty fingerprint, configuration fingerprint) is
-//!   revalidated before every cache write and before the final response is
-//!   emitted; any drift marks the batch `stale_snapshot`, aborts cache writes
-//!   and stops further cached-result reuse.
+//!   writes are skipped when the batch snapshot is stale.
 
 pub mod registry;
 
@@ -77,6 +81,13 @@ pub mod err {
     /// `fail_fast` set. The operation was NOT executed; the response exists
     /// only to preserve the one-response-per-input-operation cardinality.
     pub const E_CANCELLED: &str = "E_CANCELLED";
+    /// An operation that never started because the repository state drifted
+    /// mid-batch (HEAD / dirty tree / config changed since capture). The
+    /// operation was NOT executed; the batch is flagged `stale_snapshot` so
+    /// clients never persist results spanning two repository states. This is
+    /// a distinct condition from fail-fast cancellation: the batch was not
+    /// stopped by the client, it was invalidated by an external mutation.
+    pub const E_STALE_SNAPSHOT: &str = "E_STALE_SNAPSHOT";
 }
 
 // ─── Wire types ─────────────────────────────────────────────────────────────
@@ -409,6 +420,34 @@ fn execute_batch_with_probe(
         }
     }
 
+    // Whole-batch preflight: every operation must be a known, read-only,
+    // batchable op. An invalid operation (unknown tag, non-read-only, or
+    // non-batchable) rejects the ENTIRE batch with E_BAD_REQUEST before ANY
+    // operation executes — zero execution, no partial results, no cache
+    // reads or writes. The daemon, one-shot CLI, and TS fallback share this
+    // contract. (Previously invalid ops were per-op E_UNSUPPORTED, which let
+    // valid ops run alongside an invalid one; the contract forbids that.)
+    for op in operations {
+        let descriptor = tool_descriptor(&op.op);
+        let invalid = match descriptor {
+            None => Some(format!("unknown batch operation '{}'", op.op)),
+            Some(d) if !d.read_only => Some(format!(
+                "operation '{}' is not read-only and cannot run in a batch",
+                op.op
+            )),
+            Some(d) if !d.supports_batching => {
+                Some(format!("operation '{}' does not support batching", op.op))
+            }
+            _ => None,
+        };
+        if let Some(message) = invalid {
+            return Err(BatchReject {
+                code: err::E_BAD_REQUEST,
+                message,
+            });
+        }
+    }
+
     // One frozen snapshot for the whole batch (only needed by testsFor).
     let needs_index = operations.iter().any(|op| op.op == "testsFor");
     let frozen = if needs_index {
@@ -463,6 +502,26 @@ fn execute_batch_with_probe(
             // cache reads, no cache writes, no side effects.
             responses.push(cancelled_response(op.id.clone()));
             continue;
+        }
+        // Repository-state drift: once the captured state no longer matches
+        // the worktree, every remaining operation is ABORTED — never
+        // executed, never cached. The dedicated E_STALE_SNAPSHOT code keeps
+        // this distinct from fail-fast cancellation (the batch was not
+        // stopped by the client; it was invalidated by an external mutation),
+        // and `stale_snapshot` tells clients not to persist any results from
+        // this batch.
+        if state_changed {
+            responses.push(stale_abort_response(op.id.clone()));
+            continue;
+        }
+        // Revalidate the captured repository state before each operation so
+        // drift is detected even for ops that never touch the cache.
+        if let Some(p) = eff_probe {
+            if !p.state_unchanged() {
+                state_changed = true;
+                responses.push(stale_abort_response(op.id.clone()));
+                continue;
+            }
         }
         let budget = MAX_BATCH_OUTPUT_BYTES.saturating_sub(used_output_bytes);
         let (resp, used) = run_operation(
@@ -529,6 +588,26 @@ fn cancelled_response(id: String) -> OperationResponse {
     }
 }
 
+/// Abort response for an operation that never started because the repository
+/// state drifted mid-batch (HEAD / dirty tree / config changed since
+/// capture). The operation was NOT executed; the batch is flagged
+/// `stale_snapshot` so clients never persist results spanning two repository
+/// states. The response preserves the one-response-per-input-operation
+/// cardinality, like [`cancelled_response`], but with a distinct code.
+fn stale_abort_response(id: String) -> OperationResponse {
+    OperationResponse {
+        id,
+        ok: false,
+        result: None,
+        error: Some(serde_json::json!({
+            "code": err::E_STALE_SNAPSHOT,
+            "message": "operation aborted: repository state changed mid-batch",
+        })),
+        truncated: false,
+        artifact_ref: None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 // The op, its execution context (cwd/snapshot/AST cache), the cache context
 // with its state probe, and the batch output-budget/state gates are all
@@ -545,74 +624,16 @@ fn run_operation(
     output_budget: usize,
 ) -> (OperationResponse, usize) {
     let id = op.id.clone();
-    // Every batch operation must be read-only, known, and batchable. The
-    // registry marks `index.*` commands non-read-only and non-batchable:
-    // both properties are enforced here (capability metadata contract).
-    let descriptor = tool_descriptor(&op.op);
-    match descriptor.as_ref() {
-        None => {
-            return (
-                OperationResponse {
-                    id,
-                    ok: false,
-                    result: None,
-                    error: Some(serde_json::json!({
-                        "code": err::E_UNSUPPORTED,
-                        "message": format!("unknown batch operation '{}'", op.op),
-                    })),
-                    truncated: false,
-                    artifact_ref: None,
-                },
-                0,
-            );
-        }
-        Some(d) if !d.read_only => {
-            return (
-                OperationResponse {
-                    id,
-                    ok: false,
-                    result: None,
-                    error: Some(serde_json::json!({
-                        "code": err::E_UNSUPPORTED,
-                        "message": format!(
-                            "operation '{}' is not read-only and cannot run in a batch",
-                            op.op
-                        ),
-                    })),
-                    truncated: false,
-                    artifact_ref: None,
-                },
-                0,
-            );
-        }
-        Some(d) if !d.supports_batching => {
-            return (
-                OperationResponse {
-                    id,
-                    ok: false,
-                    result: None,
-                    error: Some(serde_json::json!({
-                        "code": err::E_UNSUPPORTED,
-                        "message": format!(
-                            "operation '{}' does not support batching",
-                            op.op
-                        ),
-                    })),
-                    truncated: false,
-                    artifact_ref: None,
-                },
-                0,
-            );
-        }
-        _ => {}
-    }
+    // The whole-batch preflight in execute_batch_with_probe has already
+    // validated that this op is a known, read-only, batchable operation;
+    // invalid ops reject the ENTIRE batch before any operation runs. The
+    // descriptor is only consulted here for its output bound and
+    // negative-cache eligibility.
+    let descriptor = tool_descriptor(&op.op).expect("preflight validated the operation");
     // Output bound (Phase 5): the effective limit is the descriptor's
     // maximum_output_bytes, further capped by the remaining batch budget so
     // the cumulative payload stays inside the daemon wire frame.
-    let descriptor_limit = descriptor
-        .as_ref()
-        .map(|d| d.maximum_output_bytes)
-        .unwrap_or(0);
+    let descriptor_limit = descriptor.maximum_output_bytes;
     let effective_limit = descriptor_limit.min(output_budget);
 
     // Query cache: serve Repository-cacheable ops from disk when the key
@@ -635,9 +656,7 @@ fn run_operation(
             }
         }
         if !stale_snapshot && !*state_changed {
-            let negative_eligible = descriptor
-                .as_ref()
-                .is_some_and(|d| d.negative_cache_eligible);
+            let negative_eligible = descriptor.negative_cache_eligible;
             let cached: Option<Value> = if negative_eligible {
                 ctx.cache
                     .get_negative(key)
@@ -771,11 +790,16 @@ fn finalize_response(
     }
 
     // Over budget: spill the full payload to an artifact and return a marker.
+    // The file name is collision-resistant: `sanitize_artifact_name` alone can
+    // map distinct ids to the same file (e.g. "a/b" and "a:b" → "a_b"), so a
+    // short SHA-256 discriminator of the FULL id is appended. Distinct ids
+    // always produce distinct artifact files; duplicate ids are rejected by
+    // the preflight, so two ops in one batch can never target the same file.
     let dir = artifact_base
         .map(|p| p.join("artifacts"))
         .unwrap_or_else(|| std::env::temp_dir().join("fdx-batch-artifacts"));
-    let file_name = sanitize_artifact_name(&id);
-    let path = dir.join(format!("{file_name}.json"));
+    let file_name = artifact_file_name(&id);
+    let path = dir.join(&file_name);
     let wrote = std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::write(&path, &bytes))
         .map(|()| path.to_string_lossy().into_owned());
@@ -843,6 +867,20 @@ fn sanitize_artifact_name(id: &str) -> String {
         out.push_str("op");
     }
     out
+}
+
+/// Collision-resistant artifact file name for an op id.
+///
+/// `sanitize_artifact_name` alone is not injective: distinct ids such as
+/// `"a/b"` and `"a:b"` both sanitize to `"a_b"`. Appending the first 8 hex
+/// chars of the SHA-256 of the FULL id guarantees that distinct ids produce
+/// distinct file names, so two truncated operations in one batch can never
+/// overwrite each other's artifact (ids are unique per batch — the preflight
+/// rejects duplicates).
+fn artifact_file_name(id: &str) -> String {
+    let digest = sha256_hex(id.as_bytes());
+    let discriminator = &digest[..8];
+    format!("{}-{discriminator}.json", sanitize_artifact_name(id))
 }
 
 /// Whether a result is a definitive-empty outcome — the only kind that may be
@@ -1150,23 +1188,41 @@ mod tests {
     }
 
     #[test]
-    fn unknown_and_mutating_ops_are_unsupported_per_op() {
+    fn invalid_ops_reject_the_whole_batch_before_any_execution() {
+        // Unknown, non-read-only, and non-batchable ops are whole-batch
+        // rejections: no operation executes when any op is invalid.
+        for ops in [
+            vec![op("1", "frobnicate", serde_json::json!({}))],
+            vec![op("1", "index.refresh", serde_json::json!({}))],
+            vec![op("1", "capabilities.query", serde_json::json!({}))],
+        ] {
+            let err = execute_batch(&ops, None, None, false).unwrap_err();
+            assert_eq!(err.code, err::E_BAD_REQUEST);
+        }
+        // A valid op alongside an invalid op is NOT executed: the whole batch
+        // is rejected, so the valid op never runs (zero execution).
+        let ops = vec![
+            op(
+                "ok1",
+                "read",
+                serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+            ),
+            op("bad1", "frobnicate", serde_json::json!({})),
+        ];
+        let err = execute_batch(&ops, None, None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("unknown batch operation 'frobnicate'"));
+    }
+
+    #[test]
+    fn unknown_and_mutating_ops_reject_the_whole_batch() {
         let ops = vec![
             op("1", "frobnicate", serde_json::json!({})),
             op("2", "index.refresh", serde_json::json!({})),
         ];
-        let resp = execute_batch(&ops, None, None, false).unwrap();
-        assert!(!resp.failed_fast);
-        assert!(!resp.responses[0].ok);
-        assert_eq!(
-            resp.responses[0].error.as_ref().unwrap()["code"],
-            err::E_UNSUPPORTED
-        );
-        assert!(!resp.responses[1].ok);
-        assert_eq!(
-            resp.responses[1].error.as_ref().unwrap()["code"],
-            err::E_UNSUPPORTED
-        );
+        let err = execute_batch(&ops, None, None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("frobnicate"));
     }
 
     #[test]
@@ -1320,7 +1376,7 @@ mod tests {
     }
 
     #[test]
-    fn mid_batch_state_change_marks_stale_and_aborts_cache_writes() {
+    fn mid_batch_state_change_marks_stale_and_aborts_remaining_ops() {
         let _guard = CACHE_ENV_LOCK.lock().unwrap();
         let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
 
@@ -1346,24 +1402,90 @@ mod tests {
             ),
         ];
 
-        // The probe stays unchanged through op1 (read gate + write gate), then
-        // flips before op2's cache read: op1's entry is written, op2's is not,
-        // and the response reports staleSnapshot.
+        // The probe stays unchanged through op1 (pre-op check + read gate +
+        // write gate: calls 0-2), then flips at op2's pre-op check (call 3):
+        // op1's entry is written, op2 is ABORTED (never executed), and the
+        // response reports staleSnapshot.
         let probe = ScriptedProbe {
             calls: std::sync::atomic::AtomicUsize::new(0),
-            flip_after: 2,
+            flip_after: 3,
         };
         let resp = execute_batch_with_probe(&ops, Some(cwd), None, false, Some(&probe)).unwrap();
         assert!(resp.stale_snapshot, "mid-batch mutation must flag stale");
         assert!(resp.responses[0].ok);
         assert!(
-            resp.responses[1].ok,
-            "later ops still execute (fresh state)"
+            !resp.responses[1].ok,
+            "remaining ops abort on drift instead of executing"
+        );
+        assert_eq!(
+            resp.responses[1].error.as_ref().unwrap()["code"],
+            err::E_STALE_SNAPSHOT,
+            "drift abort uses the dedicated E_STALE_SNAPSHOT code"
         );
         assert_eq!(
             cache_entry_count(state.path()),
             1,
             "only the op whose state matched at write time is cached"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn drift_aborts_all_remaining_ops_and_preserves_cardinality() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        // Probe flips at the first op: the whole batch is aborted with zero
+        // execution — every op returns E_STALE_SNAPSHOT, ids preserved.
+        let ops = vec![
+            op(
+                "a",
+                "read",
+                serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+            ),
+            op(
+                "b",
+                "read",
+                serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+            ),
+            op(
+                "c",
+                "read",
+                serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+            ),
+        ];
+        let flipped = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: 0,
+        };
+        let resp = execute_batch_with_probe(&ops, Some(cwd), None, false, Some(&flipped)).unwrap();
+        assert!(resp.stale_snapshot);
+        let ids: Vec<&str> = resp.responses.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"], "IDs preserved in input order");
+        assert_eq!(resp.responses.len(), ops.len(), "cardinality preserved");
+        assert!(resp.responses.iter().all(|r| {
+            !r.ok
+                && r.error
+                    .as_ref()
+                    .map(|e| e["code"].as_str() == Some(err::E_STALE_SNAPSHOT))
+                    == Some(true)
+        }));
+        assert_eq!(
+            cache_entry_count(state.path()),
+            0,
+            "zero execution under drift: nothing is cached"
         );
 
         match prev {
@@ -1400,8 +1522,9 @@ mod tests {
         execute_batch_with_probe(&read_a(), Some(cwd), None, false, Some(&steady)).unwrap();
         assert_eq!(cache_entry_count(state.path()), 1);
 
-        // Now the state flips before op1's cache read: the cached entry must
-        // NOT be reused (the result is computed fresh) and nothing is written.
+        // Now the state flips at the pre-op check: the op is ABORTED before
+        // execution — the cached entry is never reused, nothing is computed,
+        // and nothing is written (zero execution on drift).
         let flipped = ScriptedProbe {
             calls: std::sync::atomic::AtomicUsize::new(0),
             flip_after: 0,
@@ -1409,10 +1532,13 @@ mod tests {
         let resp =
             execute_batch_with_probe(&read_a(), Some(cwd), None, false, Some(&flipped)).unwrap();
         assert!(resp.stale_snapshot);
-        let result = ok_result(&resp.responses[0]);
+        assert!(
+            !resp.responses[0].ok,
+            "op aborted on drift, never executed, never served from cache"
+        );
         assert_eq!(
-            result["lines"][0], "alpha",
-            "fresh execution, not cached reuse"
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_STALE_SNAPSHOT
         );
         assert_eq!(
             cache_entry_count(state.path()),
@@ -1720,17 +1846,12 @@ mod tests {
     }
 
     #[test]
-    fn non_batchable_op_is_rejected_per_op() {
+    fn non_batchable_op_rejects_the_whole_batch() {
         let tmp = tempfile::tempdir().unwrap();
         let ops = vec![op("c1", "capabilities.query", serde_json::json!({}))];
-        let resp = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap();
-        let r = &resp.responses[0];
-        assert!(!r.ok);
-        assert_eq!(r.error.as_ref().unwrap()["code"], err::E_UNSUPPORTED);
-        assert!(r.error.as_ref().unwrap()["message"]
-            .as_str()
-            .unwrap()
-            .contains("does not support batching"));
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("does not support batching"));
     }
 
     #[test]
@@ -1832,5 +1953,23 @@ mod tests {
         assert_eq!(name, "___evil_op_id");
         assert_eq!(sanitize_artifact_name(""), "op");
         assert_eq!(sanitize_artifact_name("grep-1"), "grep-1");
+    }
+
+    #[test]
+    fn artifact_file_names_are_collision_resistant() {
+        // Distinct ids that sanitize to the SAME base name (e.g. "a/b" and
+        // "a:b" → "a_b") must still produce distinct artifact files, so two
+        // truncated ops in one batch can never overwrite each other.
+        let a = artifact_file_name("a/b");
+        let b = artifact_file_name("a:b");
+        assert_ne!(a, b, "sanitized-colliding ids must not collide");
+        assert!(a.ends_with(".json"));
+        assert!(b.ends_with(".json"));
+        // Each name embeds an 8-hex-char discriminator of the full id.
+        assert!(a.starts_with("a_b-") && a.len() == "a_b-".len() + 8 + ".json".len());
+        // Deterministic for the same id.
+        assert_eq!(artifact_file_name("grep-1"), artifact_file_name("grep-1"));
+        // Safe file name: no path separators.
+        assert!(!artifact_file_name("../evil/op id").contains('/'));
     }
 }
