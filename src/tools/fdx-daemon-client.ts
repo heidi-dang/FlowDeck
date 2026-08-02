@@ -230,9 +230,11 @@ export function daemonSocketPath(projectDir: string): string {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0
   const hash = hashString(resolve(projectDir))
 
-  // Use XDG_RUNTIME_DIR on Linux, otherwise a private user-owned directory
+  // Use XDG_RUNTIME_DIR on Unix (Linux and macOS — the tests and production
+  // both rely on this override for per-session socket placement), otherwise a
+  // private user-owned directory.
   let runtimeDir: string
-  if (process.platform === "linux" && process.env.XDG_RUNTIME_DIR) {
+  if (process.platform !== "win32" && process.env.XDG_RUNTIME_DIR) {
     runtimeDir = process.env.XDG_RUNTIME_DIR
   } else {
     // Create a private user-owned runtime directory
@@ -594,15 +596,19 @@ export class DaemonConnection {
     return this.request("query", { command, argv, cwd }, timeoutMs)
   }
 
-  /** Execute a typed read-only batch (Task 4). Responses in input order. */
+  /** Execute a typed read-only batch (Task 4). Responses in input order.
+   * `failFast` stops execution at the first failed operation; every unstarted
+   * operation is returned as an explicit `E_CANCELLED` response (never
+   * executed), preserving one response per input operation. */
   async batch(
     operations: BatchOperation[],
     cwd?: string,
     timeoutMs = DEFAULT_TIMEOUT_MS,
+    failFast = false,
   ): Promise<DaemonResponse> {
     return this.request(
       "batch",
-      { version: 1, operations, cwd },
+      { version: 1, operations, cwd, failFast },
       timeoutMs,
     )
   }
@@ -968,7 +974,12 @@ export async function runBatchViaDaemon(
     await client.ensureStarted()
     await client.connect()
     await client.hello(opts.client || "flowdeck", opts.clientVersion || "0.0.0")
-    const resp = await client.batch(operations, opts.cwd, opts.timeoutMs || DEFAULT_TIMEOUT_MS)
+    const resp = await client.batch(
+      operations,
+      opts.cwd,
+      opts.timeoutMs || DEFAULT_TIMEOUT_MS,
+      opts.failFast === true,
+    )
     if (!resp.ok) {
       const err = resp.error as DaemonError | undefined
       if (err?.code === "E_UNSUPPORTED") {

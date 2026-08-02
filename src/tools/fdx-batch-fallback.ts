@@ -48,6 +48,10 @@ export const TS_MAX_BATCH_OUTPUT_BYTES = 40 * 1024
 export const E_BAD_REQUEST = "E_BAD_REQUEST"
 export const E_UNSUPPORTED = "E_UNSUPPORTED"
 export const E_INTERNAL = "E_INTERNAL"
+/** An operation that never started because an earlier op failed with
+ * `failFast` set. The operation was NOT executed; the response exists only to
+ * preserve the one-response-per-input-operation cardinality. */
+export const E_CANCELLED = "E_CANCELLED"
 
 const KIB = 1024
 
@@ -808,12 +812,19 @@ function finalizeFallbackResponse(
         artifactRef,
         byteCount: used,
         limitBytes: limit,
+        contentHash: sha256Hex(bytes),
       },
       truncated: true,
       artifactRef,
     },
     used,
   }
+}
+
+/** SHA-256 hex digest of a byte slice (artifact content integrity). */
+function sha256Hex(bytes: Buffer): string {
+  const crypto = require("node:crypto") as typeof import("node:crypto")
+  return crypto.createHash("sha256").update(bytes).digest("hex")
 }
 
 // ─── Executor (mirror batch::execute_batch) ────────────────────────────────
@@ -829,6 +840,11 @@ export interface BatchFallbackOptions {
  * structural violations (empty / over-capacity / duplicate ids); otherwise
  * returns a `BatchResponse` with input-order responses, per-op errors inside
  * the envelope, and `staleSnapshot: false` (the fallback has no index).
+ *
+ * With `failFast: true` the batch stops executing at the first failed
+ * operation: every unstarted operation is returned as an explicit
+ * `E_CANCELLED` response (never executed), so the response always contains
+ * exactly one entry per input operation — mirroring the native executor.
  */
 export function executeBatchFallback(
   operations: BatchOperation[],
@@ -856,13 +872,24 @@ export function executeBatchFallback(
   let usedOutputBytes = 0
   let failedFast = false
   for (const op of operations) {
+    if (failedFast) {
+      // Cardinality contract: every input operation gets exactly one
+      // response. Operations that never started (fail-fast) return an
+      // explicit cancellation response and are never executed — mirroring
+      // the native executor (batch::execute_batch).
+      responses.push({
+        id: op.id,
+        ok: false,
+        error: { code: E_CANCELLED, message: "operation cancelled by fail-fast" },
+      })
+      continue
+    }
     const budget = TS_MAX_BATCH_OUTPUT_BYTES - usedOutputBytes
     const { resp, used } = runFallbackOperation(op, cwd, budget, options.artifactBase)
     usedOutputBytes += used
     responses.push(resp)
     if (!resp.ok && options.failFast === true) {
       failedFast = true
-      break
     }
   }
 

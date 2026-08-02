@@ -10,7 +10,9 @@
 //! - One frozen [`IndexSnapshot`] serves the whole batch (`testsFor` reads it);
 //!   `stale_snapshot` is set when the current generation no longer matches.
 //! - `fail_fast=false` by default; when true, the batch stops at the first
-//!   failed operation and `failed_fast=true`.
+//!   failed operation, every unstarted operation returns an explicit
+//!   `E_CANCELLED` response (never executes), and `failed_fast=true`. The
+//!   response always contains exactly one entry per input operation.
 //! - A non-read-only or unknown operation tag → per-op `E_UNSUPPORTED`.
 //! - Max 64 operations per batch; duplicate ids and empty batches are
 //!   rejected structurally.
@@ -18,7 +20,11 @@
 //! - Results of Repository-cacheable ops (all six batch ops) are served from
 //!   and stored in the content-addressed query cache (Dev 3 Task 4 Phase 3)
 //!   under the worktree state dir, keyed by repository/worktree state. Cache
-//!   writes are skipped when the batch snapshot is stale.
+//!   writes are skipped when the batch snapshot is stale, and the repository
+//!   state (HEAD SHA, dirty fingerprint, configuration fingerprint) is
+//!   revalidated before every cache write and before the final response is
+//!   emitted; any drift marks the batch `stale_snapshot`, aborts cache writes
+//!   and stops further cached-result reuse.
 
 pub mod registry;
 
@@ -67,6 +73,10 @@ pub mod err {
     pub const E_BAD_REQUEST: &str = "E_BAD_REQUEST";
     pub const E_UNSUPPORTED: &str = "E_UNSUPPORTED";
     pub const E_INTERNAL: &str = "E_INTERNAL";
+    /// An operation that never started because an earlier op failed with
+    /// `fail_fast` set. The operation was NOT executed; the response exists
+    /// only to preserve the one-response-per-input-operation cardinality.
+    pub const E_CANCELLED: &str = "E_CANCELLED";
 }
 
 // ─── Wire types ─────────────────────────────────────────────────────────────
@@ -223,6 +233,9 @@ struct QueryCacheContext {
     dirty_fingerprint: String,
     index_generation: u64,
     configuration_fingerprint: String,
+    /// Repository-state guard captured at batch start; revalidated before
+    /// every cache write and before the final response is emitted.
+    probe: RepoStateProbe,
 }
 
 impl QueryCacheContext {
@@ -248,17 +261,17 @@ impl QueryCacheContext {
         let identity = discover_identity(worktree, &fdx_version());
         let root = index_state_root();
         let state_dir = worktree_dir(&root, &identity.repository_id, &identity.worktree_id);
+        let dirty = dirty_fingerprint(worktree);
+        let config = configuration_fingerprint(&config_hash(worktree), &ignore_hash(worktree));
         Some(Self {
             cache: QueryCache::new(&state_dir),
             repository_id: identity.repository_id,
             worktree_id: identity.worktree_id,
-            repository_sha,
-            dirty_fingerprint: dirty_fingerprint(worktree),
+            repository_sha: repository_sha.clone(),
+            dirty_fingerprint: dirty.clone(),
             index_generation: 0, // set by the executor after freezing the snapshot
-            configuration_fingerprint: configuration_fingerprint(
-                &config_hash(worktree),
-                &ignore_hash(worktree),
-            ),
+            configuration_fingerprint: config.clone(),
+            probe: RepoStateProbe::capture(worktree, &repository_sha, &dirty, &config),
         })
     }
 
@@ -287,6 +300,64 @@ impl QueryCacheContext {
             &self.configuration_fingerprint,
         ))
     }
+
+    /// The repository-state probe captured with this cache context.
+    fn probe(&self) -> &RepoStateProbe {
+        &self.probe
+    }
+}
+
+/// Repository-state revalidation contract (Phase 7 audit).
+///
+/// The batch captures the repository identity fields (HEAD SHA, dirty
+/// working-tree fingerprint, configuration fingerprint) at batch start and
+/// revalidates them before every cache write and before the final response
+/// is emitted. If ANY captured field changed, the batch is marked stale:
+/// cache writes are aborted, cached results are no longer reused, and
+/// `stale_snapshot: true` is reported so clients never persist results that
+/// span two repository states.
+pub trait BatchStateProbe: Sync {
+    /// True while the captured repository state still matches the worktree.
+    fn state_unchanged(&self) -> bool;
+}
+
+/// Production state probe: recomputes HEAD SHA, dirty fingerprint and
+/// configuration fingerprint and compares each against the captured value.
+pub struct RepoStateProbe {
+    worktree: PathBuf,
+    repository_sha: String,
+    dirty_fingerprint: String,
+    configuration_fingerprint: String,
+}
+
+impl RepoStateProbe {
+    /// Capture the repository state fields for later revalidation.
+    pub fn capture(
+        worktree: &Path,
+        repository_sha: &str,
+        dirty_fingerprint: &str,
+        configuration_fingerprint: &str,
+    ) -> Self {
+        Self {
+            worktree: worktree.to_path_buf(),
+            repository_sha: repository_sha.to_string(),
+            dirty_fingerprint: dirty_fingerprint.to_string(),
+            configuration_fingerprint: configuration_fingerprint.to_string(),
+        }
+    }
+}
+
+impl BatchStateProbe for RepoStateProbe {
+    fn state_unchanged(&self) -> bool {
+        if git_head_sha(&self.worktree) != self.repository_sha {
+            return false;
+        }
+        if dirty_fingerprint(&self.worktree) != self.dirty_fingerprint {
+            return false;
+        }
+        configuration_fingerprint(&config_hash(&self.worktree), &ignore_hash(&self.worktree))
+            == self.configuration_fingerprint
+    }
 }
 
 // ─── Executor ───────────────────────────────────────────────────────────────
@@ -300,6 +371,18 @@ pub fn execute_batch(
     cwd: Option<&str>,
     index: Option<&dyn BatchIndexProvider>,
     fail_fast: bool,
+) -> Result<BatchResponse, BatchReject> {
+    execute_batch_with_probe(operations, cwd, index, fail_fast, None)
+}
+
+/// [`execute_batch`] with an injectable repository-state probe (test seam).
+/// `probe` overrides the production [`RepoStateProbe`] when provided.
+fn execute_batch_with_probe(
+    operations: &[BatchOperation],
+    cwd: Option<&str>,
+    index: Option<&dyn BatchIndexProvider>,
+    fail_fast: bool,
+    probe: Option<&dyn BatchStateProbe>,
 ) -> Result<BatchResponse, BatchReject> {
     if operations.is_empty() {
         return Err(BatchReject {
@@ -337,7 +420,7 @@ pub fn execute_batch(
     // Stale snapshot: the generation changed while the batch ran, so results
     // derived from `frozen` must not feed cache writes. Compute before the
     // loop so the loop can gate writes per op.
-    let stale_snapshot = match (&frozen, index) {
+    let mut stale_snapshot = match (&frozen, index) {
         (Some(frozen), Some(idx)) => {
             idx.snapshot().map(|s| s.generation()) != Some(frozen.generation())
         }
@@ -351,10 +434,21 @@ pub fn execute_batch(
     if let Some(ctx) = &mut cache_ctx {
         ctx.index_generation = frozen.as_ref().map(|s| s.generation()).unwrap_or(0);
     }
+    // The effective state probe: an injected test probe wins over the
+    // production probe embedded in the cache context.
+    let eff_probe: Option<&dyn BatchStateProbe> = probe.or_else(|| {
+        cache_ctx
+            .as_ref()
+            .map(|c| c.probe() as &dyn BatchStateProbe)
+    });
 
     let cache = AstCache::new();
     let mut responses = Vec::with_capacity(operations.len());
     let mut failed_fast = false;
+    // Repository-state drift detected mid-batch (HEAD / dirty tree / config
+    // changed since capture). Once set, the batch never reads from or writes
+    // to the cache again and the response is flagged `stale_snapshot`.
+    let mut state_changed = false;
     // Output-bounding (Phase 5): the cumulative serialized result payloads
     // across the batch may not exceed MAX_BATCH_OUTPUT_BYTES, so a batch of
     // individually-in-bounds results still fits the daemon wire frame. Each op
@@ -362,6 +456,14 @@ pub fn execute_batch(
     let mut used_output_bytes = 0usize;
 
     for op in operations {
+        if failed_fast {
+            // Cardinality contract: every input operation gets exactly one
+            // response. Operations that never started (fail-fast) return an
+            // explicit cancellation response and are never executed — no
+            // cache reads, no cache writes, no side effects.
+            responses.push(cancelled_response(op.id.clone()));
+            continue;
+        }
         let budget = MAX_BATCH_OUTPUT_BYTES.saturating_sub(used_output_bytes);
         let (resp, used) = run_operation(
             op,
@@ -369,7 +471,9 @@ pub fn execute_batch(
             frozen.as_deref(),
             &cache,
             cache_ctx.as_ref(),
+            eff_probe,
             stale_snapshot,
+            &mut state_changed,
             budget,
         );
         used_output_bytes += used;
@@ -377,7 +481,25 @@ pub fn execute_batch(
         responses.push(resp);
         if stop {
             failed_fast = true;
-            break;
+        }
+    }
+
+    // Repository-state revalidation before the final response is emitted: a
+    // change detected after the last op (or during any op) still marks the
+    // whole batch stale, so clients never persist cross-state results.
+    if !state_changed {
+        if let Some(p) = eff_probe {
+            if !p.state_unchanged() {
+                state_changed = true;
+            }
+        }
+    }
+    // Index-generation revalidation (frozen snapshot vs the live service).
+    if !stale_snapshot {
+        if let (Some(frozen), Some(idx)) = (&frozen, index) {
+            if idx.snapshot().map(|s| s.generation()) != Some(frozen.generation()) {
+                stale_snapshot = true;
+            }
         }
     }
 
@@ -385,17 +507,41 @@ pub fn execute_batch(
         version: 1,
         responses,
         failed_fast,
-        stale_snapshot,
+        stale_snapshot: stale_snapshot || state_changed,
     })
 }
 
+/// Cancellation response for an operation that never started because an
+/// earlier operation failed with `fail_fast`. The response exists to preserve
+/// the one-response-per-input-operation cardinality; the operation itself was
+/// NOT executed.
+fn cancelled_response(id: String) -> OperationResponse {
+    OperationResponse {
+        id,
+        ok: false,
+        result: None,
+        error: Some(serde_json::json!({
+            "code": err::E_CANCELLED,
+            "message": "operation cancelled by fail-fast",
+        })),
+        truncated: false,
+        artifact_ref: None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+// The op, its execution context (cwd/snapshot/AST cache), the cache context
+// with its state probe, and the batch output-budget/state gates are all
+// independent inputs; bundling them would obscure the hot path.
 fn run_operation(
     op: &BatchOperation,
     cwd: Option<&str>,
     snapshot: Option<&IndexSnapshot>,
     cache: &AstCache,
     cache_ctx: Option<&QueryCacheContext>,
+    probe: Option<&dyn BatchStateProbe>,
     stale_snapshot: bool,
+    state_changed: &mut bool,
     output_budget: usize,
 ) -> (OperationResponse, usize) {
     let id = op.id.clone();
@@ -473,35 +619,49 @@ fn run_operation(
     // matches the current repository state. The key is `None` for ops that
     // are not cacheable or opted out via `no_cache`. Negative-cache-eligible
     // ops check the negative namespace first (definitive-empty results only).
+    // Cache reads are skipped entirely once the repository state drifted
+    // mid-batch: a cached entry was keyed on the captured state and would
+    // otherwise mix results from two repository states in one response.
     let cache_key = cache_ctx.and_then(|ctx| ctx.key_for(op));
     if let (Some(ctx), Some(key)) = (&cache_ctx, &cache_key) {
-        let negative_eligible = descriptor
-            .as_ref()
-            .is_some_and(|d| d.negative_cache_eligible);
-        let cached: Option<Value> = if negative_eligible {
-            ctx.cache
-                .get_negative(key)
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        } else {
-            None
-        };
-        let cached = cached.or_else(|| {
-            ctx.cache
-                .get(key)
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        });
-        if let Some(value) = cached {
-            // Cached values were stored in full; re-enforce the current
-            // bounds before returning (descriptor limits can change).
-            return finalize_response(
-                id,
-                value,
-                effective_limit,
-                cache_ctx.map(|c| c.cache.state_dir()),
-            );
+        // Revalidate the captured repository state before reusing any cached
+        // result: a mid-batch mutation must never mix cached results from the
+        // captured state with fresh results from the new state.
+        if !stale_snapshot && !*state_changed {
+            if let Some(p) = probe {
+                if !p.state_unchanged() {
+                    *state_changed = true;
+                }
+            }
+        }
+        if !stale_snapshot && !*state_changed {
+            let negative_eligible = descriptor
+                .as_ref()
+                .is_some_and(|d| d.negative_cache_eligible);
+            let cached: Option<Value> = if negative_eligible {
+                ctx.cache
+                    .get_negative(key)
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            } else {
+                None
+            };
+            let cached = cached.or_else(|| {
+                ctx.cache
+                    .get(key)
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            });
+            if let Some(value) = cached {
+                // Cached values were stored in full; re-enforce the current
+                // bounds before returning (descriptor limits can change).
+                return finalize_response(
+                    id,
+                    value,
+                    effective_limit,
+                    cache_ctx.map(|c| c.cache.state_dir()),
+                );
+            }
         }
     }
-
     let outcome = match op.op.as_str() {
         "read" => op_read(&op.params, cwd, cache),
         "grep" => op_grep(&op.params, cwd),
@@ -517,14 +677,24 @@ fn run_operation(
 
     match outcome {
         Ok(value) => {
-            // Cache the fresh result only when the snapshot is not stale and
-            // the op is Repository-cacheable. Definitive-empty outcomes of
-            // negative-cache-eligible ops go to the negative namespace (TTL-
-            // bounded); everything else to the positive namespace. The cache
-            // always stores the FULL payload; truncation is a response-time
-            // concern.
+            // Cache the fresh result only when the batch snapshot is not
+            // stale AND the repository state still matches the state captured
+            // at batch start. The repository-state revalidation happens right
+            // before the write so a mid-batch mutation (file edit, HEAD move,
+            // config change) aborts the write and marks the batch stale.
+            // Definitive-empty outcomes of negative-cache-eligible ops go to
+            // the negative namespace (TTL-bounded); everything else to the
+            // positive namespace. The cache always stores the FULL payload;
+            // truncation is a response-time concern.
             if let (Some(ctx), Some(key)) = (&cache_ctx, &cache_key) {
-                if !stale_snapshot {
+                if !stale_snapshot && !*state_changed {
+                    if let Some(p) = probe {
+                        if !p.state_unchanged() {
+                            *state_changed = true;
+                        }
+                    }
+                }
+                if !stale_snapshot && !*state_changed {
                     if let Ok(bytes) = serde_json::to_vec(&value) {
                         if is_definitive_empty(&op.op, &value) {
                             ctx.cache.put_negative(key, &bytes);
@@ -637,6 +807,7 @@ fn finalize_response(
                 "artifactRef": artifact_ref,
                 "byteCount": used,
                 "limitBytes": limit,
+                "contentHash": sha256_hex(&bytes),
             })),
             error: None,
             truncated: true,
@@ -644,6 +815,16 @@ fn finalize_response(
         },
         used,
     )
+}
+
+/// SHA-256 hex digest of a byte slice (used for artifact content integrity).
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(bytes);
+    digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
 }
 
 /// Make an op id safe to use as a file name (ids are client-chosen and may
@@ -1071,7 +1252,40 @@ mod tests {
         ];
         let resp = execute_batch(&ops, tmp.path().to_str(), None, true).unwrap();
         assert!(resp.failed_fast);
-        assert_eq!(resp.responses.len(), 1, "stops after first failure");
+        assert_eq!(
+            resp.responses.len(),
+            2,
+            "one response per input operation, even under fail-fast"
+        );
+        assert!(!resp.responses[0].ok, "first op failed");
+        assert_eq!(resp.responses[0].id, "1");
+        // The unstarted op is cancelled — never executed, never a real error.
+        assert!(!resp.responses[1].ok);
+        assert_eq!(resp.responses[1].id, "2");
+        let err = resp.responses[1].error.as_ref().expect("cancelled error");
+        assert_eq!(err["code"], err::E_CANCELLED);
+        assert_eq!(err["message"], "operation cancelled by fail-fast");
+    }
+
+    #[test]
+    fn fail_fast_preserves_ids_and_order_for_all_ops() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ops = vec![
+            op("a", "read", serde_json::json!({ "file": "missing.txt" })),
+            op("b", "read", serde_json::json!({ "file": "missing-2.txt" })),
+            op("c", "read", serde_json::json!({ "file": "missing-3.txt" })),
+            op("d", "read", serde_json::json!({ "file": "missing-4.txt" })),
+        ];
+        let resp = execute_batch(&ops, tmp.path().to_str(), None, true).unwrap();
+        let ids: Vec<&str> = resp.responses.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c", "d"], "IDs preserved in input order");
+        assert_eq!(resp.responses.len(), ops.len(), "cardinality preserved");
+        assert!(resp.responses[1..].iter().all(|r| {
+            r.error
+                .as_ref()
+                .map(|e| e["code"].as_str() == Some(err::E_CANCELLED))
+                == Some(true)
+        }));
     }
 
     #[test]
@@ -1090,6 +1304,182 @@ mod tests {
         assert_eq!(resp.responses.len(), 2, "runs every op in input order");
         assert!(!resp.responses[0].ok);
         assert!(!resp.responses[1].ok);
+    }
+
+    /// Scripted state probe: reports "unchanged" for the first `flip_after`
+    /// calls, then "changed" forever — simulating a mid-batch mutation.
+    struct ScriptedProbe {
+        calls: std::sync::atomic::AtomicUsize,
+        flip_after: usize,
+    }
+
+    impl BatchStateProbe for ScriptedProbe {
+        fn state_unchanged(&self) -> bool {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < self.flip_after
+        }
+    }
+
+    #[test]
+    fn mid_batch_state_change_marks_stale_and_aborts_cache_writes() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+        std::fs::write(tmp.path().join("b.txt"), "beta\n").unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        let ops = vec![
+            op(
+                "r1",
+                "read",
+                serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+            ),
+            op(
+                "r2",
+                "read",
+                serde_json::json!({ "file": "b.txt", "mode": "raw" }),
+            ),
+        ];
+
+        // The probe stays unchanged through op1 (read gate + write gate), then
+        // flips before op2's cache read: op1's entry is written, op2's is not,
+        // and the response reports staleSnapshot.
+        let probe = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: 2,
+        };
+        let resp = execute_batch_with_probe(&ops, Some(cwd), None, false, Some(&probe)).unwrap();
+        assert!(resp.stale_snapshot, "mid-batch mutation must flag stale");
+        assert!(resp.responses[0].ok);
+        assert!(
+            resp.responses[1].ok,
+            "later ops still execute (fresh state)"
+        );
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "only the op whose state matched at write time is cached"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn mid_batch_state_change_never_reuses_cached_results() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+        let read_a = || {
+            vec![op(
+                "r1",
+                "read",
+                serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+            )]
+        };
+
+        // Prime the cache with the captured-state result (probe never flips).
+        let steady = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: usize::MAX,
+        };
+        execute_batch_with_probe(&read_a(), Some(cwd), None, false, Some(&steady)).unwrap();
+        assert_eq!(cache_entry_count(state.path()), 1);
+
+        // Now the state flips before op1's cache read: the cached entry must
+        // NOT be reused (the result is computed fresh) and nothing is written.
+        let flipped = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: 0,
+        };
+        let resp =
+            execute_batch_with_probe(&read_a(), Some(cwd), None, false, Some(&flipped)).unwrap();
+        assert!(resp.stale_snapshot);
+        let result = ok_result(&resp.responses[0]);
+        assert_eq!(
+            result["lines"][0], "alpha",
+            "fresh execution, not cached reuse"
+        );
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "no new cache write under a changed state"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn fail_fast_cancelled_ops_never_touch_the_cache() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        let ops = vec![
+            op(
+                "r1",
+                "read",
+                serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+            ),
+            op(
+                "r2",
+                "read",
+                serde_json::json!({ "file": "missing.txt", "mode": "raw" }),
+            ),
+            op(
+                "r3",
+                "read",
+                serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+            ),
+        ];
+        let resp = execute_batch(&ops, Some(cwd), None, true).unwrap();
+        assert!(resp.failed_fast);
+        assert_eq!(
+            resp.responses.len(),
+            3,
+            "cardinality preserved under fail-fast"
+        );
+        assert!(resp.responses[0].ok);
+        assert!(!resp.responses[1].ok);
+        assert_eq!(
+            resp.responses[2].error.as_ref().unwrap()["code"],
+            err::E_CANCELLED,
+            "the unstarted op is cancelled, not executed"
+        );
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "only the completed op may cache; cancelled ops never write"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
     }
 
     #[test]

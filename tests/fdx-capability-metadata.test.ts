@@ -50,7 +50,7 @@ function findDaemonBinary(): string | null {
 }
 
 let DAEMON: string | null = findDaemonBinary()
-const HAVE_DAEMON = DAEMON !== null
+const HAVE_DAEMON = DAEMON !== null && process.platform !== "win32"
 
 function git(dir: string, args: string[]): string {
   return execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })

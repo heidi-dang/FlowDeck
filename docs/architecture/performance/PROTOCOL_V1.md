@@ -145,7 +145,7 @@ the one-shot `fdx` spawn (fallback reason `command-not-hosted`).
 | `E_TOO_LARGE` | Frame exceeds 64 KiB; rejected before unbounded buffering. |
 | `E_UNSUPPORTED` | Command not hosted in-process. |
 | `E_INTERNAL` | Hosted command failed (e.g. file read error). |
-| `E_CANCELLED` | Reserved for real cancellation of long scans (Task 7). |
+| `E_CANCELLED` | An unstarted batch operation after a `failFast` stop (see §10). |
 | `E_NO_SUCH_REQUEST` | Reserved for cancel of a request the daemon never saw. |
 
 Errors are structured `{code, message}` — never empty "successful" results.
@@ -159,6 +159,23 @@ Errors are structured `{code, message}` — never empty "successful" results.
     queries synchronously, so this is the common case; real interruption of
     long scans lands in Task 7).
 - The client cancels by the request id it originally sent.
+
+### Typed batch `failFast` (Task 4, Phase 7)
+
+The typed `batch` method accepts `params.failFast: true`. Semantics are
+identical across daemon, one-shot `fdx batch-query --fail-fast`, and the
+pure-TS fallback:
+
+- Operations execute in input order; the batch stops at the first failed
+  operation and reports `failedFast: true`.
+- Every **unstarted** operation returns an explicit
+  `{"ok":false,"error":{"code":"E_CANCELLED","message":"operation cancelled by fail-fast"}}`
+  response — it is never executed and never touches the cache.
+- The response always contains **exactly one entry per input operation**, in
+  input order, with every id preserved (cardinality contract). No missing
+  entries, no partial truncation.
+- Completed operations keep their responses; cancelled operations write no
+  positive or negative cache entries.
 
 ## 11. Shutdown
 
@@ -228,8 +245,11 @@ daemon (hello + query)
 - Task 3–5: the index lands; `commands` grows (search, outline, impact, ...),
   `cached: true` appears for cache hits.
 - Task 6: client batching coalescing; `batch` becomes the primary path.
-- Task 7: real cancellation of long scans (`E_CANCELLED`, `cancelled` status).
-- Task 8: hard output caps per response with truncation metadata.
+- Task 7: real cancellation of long scans (`E_CANCELLED` for in-flight
+  interruption, `cancelled` status; fail-fast batch cancellation already uses
+  `E_CANCELLED` today).
+- Task 8: hard output caps per response with truncation metadata (landed:
+  per-op + batch-total caps with artifact spill and content hashes).
 - Later: Windows named-pipe transport (`transport: "pipe"`).
 
 Each evolution bumps nothing in v1 unless the wire format changes; capability

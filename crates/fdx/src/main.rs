@@ -1211,6 +1211,8 @@ fn main() {
             #[derive(serde::Deserialize)]
             struct BatchEnvelope {
                 #[serde(default)]
+                version: Option<u32>,
+                #[serde(default)]
                 operations: Vec<fdx::batch::BatchOperation>,
             }
 
@@ -1220,6 +1222,18 @@ fn main() {
                 // Bare operations array.
                 ops
             } else if let Ok(envelope) = serde_json::from_str::<BatchEnvelope>(trimmed) {
+                // Full envelope: reject unsupported protocol versions BEFORE
+                // any operation executes (preflight contract, mirrors the
+                // daemon's validate_request).
+                if let Some(v) = envelope.version {
+                    if v != 1 {
+                        eprintln!(
+                            "Error: unsupported batch protocol version {} (fdx speaks v1)",
+                            v
+                        );
+                        process::exit(1);
+                    }
+                }
                 envelope.operations
             } else {
                 eprintln!(

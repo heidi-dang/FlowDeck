@@ -48,6 +48,7 @@ import {
   E_BAD_REQUEST,
   E_UNSUPPORTED,
   E_INTERNAL,
+  E_CANCELLED,
   TS_MAX_BATCH_OPS,
 } from "../src/tools/fdx-batch-fallback"
 
@@ -69,7 +70,10 @@ function findBinary(name: string, envVar: string): string | null {
 
 let DAEMON: string | null = findBinary(DAEMON_NAME, "FDX_DAEMON_BINARY_PATH")
 let FDX: string | null = findBinary(CLI_NAME, "FDX_BINARY_PATH")
-const HAVE_DAEMON = DAEMON !== null
+// The daemon transport is unix-socket only: on win32 the daemon rung cannot
+// start, so the daemon-dependent tests skip and the one-shot/TS rungs carry
+// the parity coverage (they run on every platform).
+const HAVE_DAEMON = DAEMON !== null && process.platform !== "win32"
 const HAVE_FDX = FDX !== null
 
 /** Create an isolated project dir with the same fixtures as the parity probes. */
@@ -130,6 +134,10 @@ beforeAll(async () => {
     FDX_BINARY_PATH: process.env.FDX_BINARY_PATH,
     FDX_DAEMON_BINARY_PATH: process.env.FDX_DAEMON_BINARY_PATH,
   }
+  // Export the CLI path so runBatchViaDaemon's one-shot rung resolves the
+  // native binary via FDX_BINARY_PATH (fdx is not on PATH in test envs).
+  // Done before the win32 early-return: the one-shot/TS rungs run everywhere.
+  if (FDX) process.env.FDX_BINARY_PATH = FDX
   if (process.platform === "win32") {
     console.warn("fdxd --socket mode is unix-only — socket tests skipped on win32")
     return
@@ -151,9 +159,6 @@ beforeAll(async () => {
     }
   }
   if (!DAEMON) return
-  // Export the CLI path so runBatchViaDaemon's one-shot rung resolves the
-  // native binary via FDX_BINARY_PATH (fdx is not on PATH in test envs).
-  if (FDX) process.env.FDX_BINARY_PATH = FDX
   projectDir = freshProject()
   conn = new DaemonConnection(projectDir)
   await conn.ensureStarted()
@@ -397,6 +402,78 @@ describe("FDX native/JS fallback parity", () => {
       expect(tsArtifact.lines.length).toBe(nativeArtifact.lines.length)
     } finally {
       rmSync(bigDir, { recursive: true, force: true })
+    }
+  })
+
+  it("failFast parity: cancelled ops are marked E_CANCELLED and never executed", async () => {
+    const ops: BatchOperation[] = [
+      { id: "ok1", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
+      { id: "bad1", op: "read", params: { file: "src/missing.ts", mode: "raw" } },
+      // Would succeed if executed — must instead be cancelled (proves it
+      // never ran) with an explicit cancellation result.
+      { id: "ok2", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
+    ]
+    const okFlags = [true, false, false]
+    const cancelledError = { code: E_CANCELLED, message: "operation cancelled by fail-fast" }
+
+    // Rung 3 (TS): cardinality == input cardinality, IDs preserved in order.
+    const ts = executeBatchFallback(ops, projectDir, { failFast: true })
+    expect(ts.failedFast).toBe(true)
+    expect(ts.responses.map((r) => r.ok)).toEqual(okFlags)
+    expect(ts.responses.map((r) => r.id)).toEqual(["ok1", "bad1", "ok2"])
+    expect(ts.responses[2].error).toEqual(cancelledError)
+
+    // Rung 2 (one-shot native): identical semantics via --fail-fast.
+    if (HAVE_FDX) {
+      const oneShot = oneShotBatch(FDX!, projectDir, ops, true)
+      expect(oneShot.failedFast).toBe(true)
+      expect(oneShot.responses.map((r) => r.ok)).toEqual(okFlags)
+      expect(oneShot.responses.map((r) => r.id)).toEqual(["ok1", "bad1", "ok2"])
+      expect(oneShot.responses[2].error).toEqual(cancelledError)
+      expect(oneShot.responses[2].error).toEqual(ts.responses[2].error)
+    }
+
+    // Rung 1 (daemon): failFast round-trips through the wire protocol.
+    if (HAVE_DAEMON) {
+      const daemon = asBatch(await conn.batch(ops, projectDir, 10_000, true))
+      expect(daemon.failedFast).toBe(true)
+      expect(daemon.responses.map((r) => r.ok)).toEqual(okFlags)
+      expect(daemon.responses.map((r) => r.id)).toEqual(["ok1", "bad1", "ok2"])
+      expect(daemon.responses[2].error).toEqual(cancelledError)
+      expect(daemon.responses[2].error).toEqual(ts.responses[2].error)
+    }
+
+    // failFast=false (default) runs every op — cardinality holds either way.
+    const relaxed = executeBatchFallback(ops, projectDir)
+    expect(relaxed.failedFast).toBe(false)
+    expect(relaxed.responses.length).toBe(3)
+    expect(relaxed.responses[2].ok).toBe(true)
+  })
+
+  it("batch paths handle spaces, Unicode, and special characters", () => {
+    const dir = freshProject()
+    try {
+      const fileName = "file with spaces & ünïcode [x] (+).txt"
+      writeFileSync(join(dir, fileName), "special path content\n")
+      const ops: BatchOperation[] = [
+        { id: "p1", op: "read", params: { file: fileName, mode: "raw" } },
+      ]
+
+      const ts = executeBatchFallback(ops, dir)
+      expect(ts.responses[0].ok).toBe(true)
+      const lines = (ts.responses[0].result as { lines: string[] }).lines
+      expect(lines[0]).toBe("special path content")
+      expect((ts.responses[0].result as { path: string }).path).toBe(join(dir, fileName))
+
+      if (HAVE_FDX) {
+        const oneShot = oneShotBatch(FDX!, dir, ops)
+        expect(oneShot.responses[0].ok).toBe(true)
+        expect((oneShot.responses[0].result as { lines: string[] }).lines[0]).toBe(
+          "special path content",
+        )
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 

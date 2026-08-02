@@ -11,7 +11,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
-import { spawn } from "node:child_process"
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -19,7 +18,6 @@ import { join, resolve } from "node:path"
 import {
   DaemonConnection,
   resetDaemonConnection,
-  PROTOCOL_VERSION,
   type BatchOperation,
   type BatchResponse,
   type CapabilitiesPayload,
@@ -42,7 +40,9 @@ function findDaemonBinary(): string | null {
 }
 
 let DAEMON: string | null = findDaemonBinary()
-const HAVE_DAEMON = DAEMON !== null
+// The daemon transport is unix-socket only; on win32 the daemon tests skip
+// (beforeAll cannot establish a socket connection there).
+const HAVE_DAEMON = DAEMON !== null && process.platform !== "win32"
 
 /** Create an isolated project dir with a small source file. */
 function freshProject(): string {

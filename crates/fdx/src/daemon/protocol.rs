@@ -118,6 +118,7 @@ pub struct QueryParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchParams {
     /// Batch protocol version. Present (1) with non-empty `operations`
     /// selects the typed read-only batch path (Task 4). Absent/legacy
@@ -132,6 +133,12 @@ pub struct BatchParams {
     /// selects the worktree index service (`testsFor`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Stop at the first failed operation (`failed_fast=true` in the batch
+    /// response); every unstarted operation returns an explicit `E_CANCELLED`
+    /// response. Mirrors the one-shot CLI `--fail-fast` flag and the TS
+    /// fallback option, so all transports interpret `failFast` identically.
+    #[serde(default)]
+    pub fail_fast: bool,
     /// Legacy sub-requests; each carries its own `id` (they must not collide
     /// with the batch envelope id, which is reserved for the batch response).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

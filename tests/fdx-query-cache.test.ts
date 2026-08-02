@@ -42,7 +42,7 @@ function findDaemonBinary(): string | null {
 }
 
 let DAEMON: string | null = findDaemonBinary()
-const HAVE_DAEMON = DAEMON !== null
+const HAVE_DAEMON = DAEMON !== null && process.platform !== "win32"
 
 /** Run a git command in `dir`; fails the test on non-zero exit. */
 function git(dir: string, args: string[]): string {
@@ -273,5 +273,53 @@ describe("FDX query cache (daemon)", () => {
     } finally {
       rmSync(plainDir, { recursive: true, force: true })
     }
+  })
+
+  it("preflight rejection writes zero cache entries", async () => {
+    if (!HAVE_DAEMON) return
+    const before = cacheEntryCount(stateDir)
+    const beforeNegative = negativeEntryCount(stateDir)
+
+    // Duplicate ids: whole-batch rejection before ANY operation executes.
+    const dupOps: BatchOperation[] = [
+      { id: "x", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 1 } },
+      { id: "x", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 1 } },
+    ]
+    const dup = await conn.batch(dupOps, projectDir)
+    expect(dup.ok).toBe(false)
+    expect(cacheEntryCount(stateDir)).toBe(before)
+    expect(negativeEntryCount(stateDir)).toBe(beforeNegative)
+
+    // Over-capacity: also rejected before execution.
+    const tooMany: BatchOperation[] = Array.from({ length: 65 }, (_, i) => ({
+      id: `op${i}`,
+      op: "read",
+      params: { file: "src/greeter.ts", mode: "raw", limit: 1 },
+    }))
+    const cap = await conn.batch(tooMany, projectDir)
+    expect(cap.ok).toBe(false)
+    expect(cacheEntryCount(stateDir)).toBe(before)
+    expect(negativeEntryCount(stateDir)).toBe(beforeNegative)
+
+    // Empty batch: rejected, nothing cached.
+    const empty = await conn.batch([], projectDir)
+    expect(empty.ok).toBe(false)
+    expect(cacheEntryCount(stateDir)).toBe(before)
+  })
+
+  it("failFast cancelled ops never write cache entries", async () => {
+    if (!HAVE_DAEMON) return
+    const before = cacheEntryCount(stateDir)
+    const ops: BatchOperation[] = [
+      { id: "r1", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
+      { id: "bad1", op: "read", params: { file: "src/missing.ts", mode: "raw" } },
+      { id: "r3", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
+    ]
+    const resp = asBatch(await conn.batch(ops, projectDir, 10_000, true))
+    expect(resp.failedFast).toBe(true)
+    expect(resp.responses.length).toBe(3)
+    // Only the completed first op may have been cached; the cancelled op
+    // never executes and therefore never touches the cache.
+    expect(cacheEntryCount(stateDir)).toBe(before + 1)
   })
 })

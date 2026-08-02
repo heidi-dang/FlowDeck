@@ -228,7 +228,7 @@ impl Server {
                         index
                             .as_ref()
                             .map(|i| i.as_ref() as &dyn crate::batch::BatchIndexProvider),
-                        false,
+                        params.fail_fast,
                     ) {
                         Ok(batch) => Response::ok(
                             req.id,

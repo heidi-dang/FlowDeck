@@ -23,10 +23,21 @@
 //!
 //! Bounds: a fixed maximum number of entries and a fixed maximum total bytes,
 //! enforced by evicting least-recently-used entries (by mtime) on write.
+//!
+//! Write safety (Phase 7 audit): every entry is written atomically — the
+//! payload goes to a unique temp sibling file, is flushed and closed, then
+//! atomically renamed over the final key. Readers therefore never observe a
+//! partially written entry. On any failure the temp file is removed in a
+//! cleanup step. Read safety: entries that fail JSON validation are
+//! quarantined (moved to `quarantine/`) and treated as misses, so corrupt
+//! data can never be served or poison the LRU accounting. Leftover temp files
+//! from interrupted writers are swept by the LRU pass once they are older
+//! than a short grace period.
 
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime};
 
 /// Domain string that prefixes every cache key (contract). Bumping this
 /// invalidates all caches from older builds.
@@ -51,6 +62,20 @@ pub const BATCH_PROTOCOL_VERSION: u32 = 1;
 /// TTL for negative cache entries (Phase 4). A negative entry is only valid
 /// for this many seconds; beyond it, the query re-runs.
 pub const NEGATIVE_TTL_SECS: u64 = 30;
+
+/// Sub-directory (under each namespace) for entries that failed JSON
+/// validation. Quarantined entries are never served and never counted by the
+/// LRU pass.
+const QUARANTINE_DIR: &str = "quarantine";
+
+/// Age after which a leftover temp file is considered abandoned by a crashed
+/// writer and is swept. Live writes complete in milliseconds, so a 60-second
+/// grace period cannot race a concurrent writer.
+const STALE_TMP_GRACE: Duration = Duration::from_secs(60);
+
+/// Unique temp-file counter (per process) so concurrent writers in the same
+/// process never collide on temp names.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Configuration fingerprint = sha256(config_hash ‖ ignore_hash).
 ///
@@ -196,38 +221,48 @@ impl QueryCache {
 
     /// Look up a cached value. Touches the entry mtime on hit so the LRU
     /// bound evicts least-recently-used entries. Returns None on miss.
+    ///
+    /// Entries that fail JSON validation are quarantined (moved to
+    /// `quarantine/`) and treated as a miss — corrupt data is never served.
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
         let path = self.query_dir().join(key);
         let data = std::fs::read(&path).ok()?;
-        // Touch mtime for LRU ordering.
-        let _ = std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .and_then(|f| f.set_modified(SystemTime::now()));
-        Some(data)
+        if read_validate_quarantine(&path, &data, &self.query_dir()) {
+            // Touch mtime for LRU ordering.
+            let _ = std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .and_then(|f| f.set_modified(SystemTime::now()));
+            Some(data)
+        } else {
+            None
+        }
     }
 
     /// Store a value under `key`, then enforce the LRU bound. Best-effort:
-    /// failures are swallowed so a cache write never fails a query.
+    /// failures are swallowed so a cache write never fails a query. The value
+    /// is written atomically (temp sibling + rename), so concurrent readers
+    /// never observe a partial entry.
     pub fn put(&self, key: &str, value: &[u8]) {
         let dir = self.query_dir();
         if std::fs::create_dir_all(&dir).is_err() {
             return;
         }
-        let path = dir.join(key);
-        if std::fs::write(&path, value).is_err() {
-            return;
-        }
+        atomic_write(&dir.join(key), value);
         self.enforce_lru(&dir);
     }
 
     /// Look up a negative cache entry. A negative entry is only valid for
     /// `NEGATIVE_TTL_SECS` after it was written; expired entries are deleted
     /// so the next query re-runs. mtime is NOT touched on hit — negative
-    /// entries have a fixed TTL, not an LRU-based lifetime.
+    /// entries have a fixed TTL, not an LRU-based lifetime. Corrupt entries
+    /// are quarantined like positive ones.
     pub fn get_negative(&self, key: &str) -> Option<Vec<u8>> {
         let path = self.negative_dir().join(key);
         let data = std::fs::read(&path).ok()?;
+        if !read_validate_quarantine(&path, &data, &self.negative_dir()) {
+            return None;
+        }
         let meta = std::fs::metadata(&path).ok()?;
         let written = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let age = SystemTime::now().duration_since(written).ok();
@@ -241,16 +276,14 @@ impl QueryCache {
 
     /// Store a negative cache entry (definitive-empty result). The mtime is
     /// the TTL anchor: `get_negative` rejects entries older than
-    /// `NEGATIVE_TTL_SECS`. Same LRU bounds as the positive cache.
+    /// `NEGATIVE_TTL_SECS`. Same atomic-write and LRU rules as the positive
+    /// cache (unified safety rules).
     pub fn put_negative(&self, key: &str, value: &[u8]) {
         let dir = self.negative_dir();
         if std::fs::create_dir_all(&dir).is_err() {
             return;
         }
-        let path = dir.join(key);
-        if std::fs::write(&path, value).is_err() {
-            return;
-        }
+        atomic_write(&dir.join(key), value);
         self.enforce_lru(&dir);
     }
 
@@ -267,18 +300,35 @@ impl QueryCache {
 
     /// Evict least-recently-used entries from `dir` until both bounds hold.
     /// Best-effort. Applies to both the positive and negative cache dirs.
+    /// Also sweeps abandoned temp files from interrupted writers.
     fn enforce_lru(&self, dir: &Path) {
         let read_dir = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
             Err(_) => return,
         };
 
-        // Collect (mtime, size, path) for every entry.
+        // Collect (mtime, size, path) for every entry. Temp files and the
+        // quarantine subdir are never cache entries.
         let mut entries: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
+        let now = SystemTime::now();
         for entry in read_dir.flatten() {
             let path = entry.path();
             let Ok(meta) = entry.metadata() else { continue };
             if !meta.is_file() {
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy().into_owned();
+            if file_name.contains(TMP_MARKER) {
+                // Abandoned temp file from a crashed writer: sweep once it is
+                // older than the grace period (live writes are milliseconds).
+                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                if now
+                    .duration_since(mtime)
+                    .map(|d| d >= STALE_TMP_GRACE)
+                    .unwrap_or(false)
+                {
+                    let _ = std::fs::remove_file(&path);
+                }
                 continue;
             }
             let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -304,6 +354,78 @@ impl QueryCache {
                 break;
             }
         }
+    }
+}
+
+/// Marker embedded in every temp file name (also used by the LRU sweep).
+const TMP_MARKER: &str = ".tmp-";
+
+/// Validate that `data` parses as JSON. Corrupt entries are quarantined:
+/// moved to `<namespace>/quarantine/<key>` so they are never served, never
+/// counted by the LRU pass, and remain available for diagnostics. Returns
+/// true when the entry is valid.
+fn read_validate_quarantine(path: &Path, data: &[u8], namespace_dir: &Path) -> bool {
+    if serde_json::from_slice::<serde_json::Value>(data).is_ok() {
+        return true;
+    }
+    let key = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown".into());
+    let quarantine_dir = namespace_dir.join(QUARANTINE_DIR);
+    if std::fs::create_dir_all(&quarantine_dir).is_ok() {
+        let dest = quarantine_dir.join(key);
+        let _ = std::fs::rename(path, &dest);
+    } else {
+        // No quarantine dir possible: drop the corrupt entry outright.
+        let _ = std::fs::remove_file(path);
+    }
+    false
+}
+
+/// Atomically write `value` to `path`: write to a unique temp sibling file,
+/// flush + close, then rename over the final key. On any failure the temp
+/// file is removed (cleanup), so no partial or orphaned entry ever appears
+/// under the final key. Concurrent readers see either the previous entry or
+/// the complete new one — never a partial write.
+fn atomic_write(path: &Path, value: &[u8]) {
+    let dir = match path.parent() {
+        Some(d) => d.to_path_buf(),
+        None => return,
+    };
+    let key = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "entry".into());
+    let tmp = dir.join(format!(
+        "{key}{TMP_MARKER}{}-{}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let write_result: io::Result<()> = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(value)?;
+        // Flush + close before the rename so readers never see partial data.
+        f.sync_all()?;
+        drop(f);
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => Ok(()),
+            // Windows refuses to rename over an existing file. Cache entries
+            // are content-addressed, so an existing entry holds identical
+            // bytes; removing it first is safe (best-effort fallback).
+            Err(e) if cfg!(windows) && e.kind() == io::ErrorKind::AlreadyExists => {
+                std::fs::remove_file(path)?;
+                std::fs::rename(&tmp, path)?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    })();
+
+    if write_result.is_err() {
+        // Cleanup in the failure path: never leave a partial temp behind.
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
@@ -435,8 +557,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
         assert_eq!(cache.get("k1"), None);
-        cache.put("k1", b"value-one");
-        assert_eq!(cache.get("k1").as_deref(), Some(b"value-one".as_slice()));
+        cache.put("k1", br#"{"v":"value-one"}"#);
+        assert_eq!(
+            cache.get("k1").as_deref(),
+            Some(br#"{"v":"value-one"}"#.as_slice())
+        );
         // Entry lives under query-cache/, not generation-scoped.
         assert!(cache.query_dir().join("k1").exists());
         assert!(!tmp.path().join("gen-1").exists());
@@ -446,8 +571,8 @@ mod tests {
     fn cache_get_miss_after_clear() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        cache.put("k1", b"v");
-        cache.put("neg", b"n");
+        cache.put("k1", br#"{"v":1}"#);
+        cache.put_negative("neg", br#"{"n":1}"#);
         cache.clear().unwrap();
         assert_eq!(cache.get("k1"), None);
         assert!(!cache.negative_dir().exists());
@@ -478,11 +603,13 @@ mod tests {
         let cache = QueryCache {
             state_dir: tmp.path().to_path_buf(),
             max_items: usize::MAX,
-            max_bytes: 10,
+            max_bytes: 20,
         };
-        cache.put("big", b"0123456789"); // exactly 10 bytes
-        assert_eq!(cache.get("big").as_deref(), Some(b"0123456789".as_slice()));
-        cache.put("other", b"abcdef"); // 16 bytes total → evict one
+        let big: &[u8] = br#"{"big":"0123456789"}"#; // 19 bytes
+        let other: &[u8] = br#"{"other":"abcdef"}"#; // 20 bytes
+        cache.put("big", big);
+        assert_eq!(cache.get("big").as_deref(), Some(big));
+        cache.put("other", other); // 39 bytes total → evict one
         let big_present = cache.get("big").is_some();
         let other_present = cache.get("other").is_some();
         // Only one of them can fit; the other was evicted.
@@ -494,10 +621,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
         assert_eq!(cache.get_negative("k"), None);
-        cache.put_negative("k", b"none-found");
+        cache.put_negative("k", br#"{"empty":true}"#);
         assert_eq!(
             cache.get_negative("k").as_deref(),
-            Some(b"none-found".as_slice())
+            Some(br#"{"empty":true}"#.as_slice())
         );
         // Negative entries live in negative-cache/, positive in query-cache/.
         assert!(cache.negative_dir().join("k").exists());
@@ -554,12 +681,126 @@ mod tests {
     fn clear_drops_negative_entries_too() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        cache.put("pos", b"p");
-        cache.put_negative("neg", b"n");
+        cache.put("pos", br#"{"p":1}"#);
+        cache.put_negative("neg", br#"{"n":1}"#);
         cache.clear().unwrap();
         assert_eq!(cache.get("pos"), None);
         assert_eq!(cache.get_negative("neg"), None);
         assert!(!cache.query_dir().exists());
         assert!(!cache.negative_dir().exists());
+    }
+
+    #[test]
+    fn atomic_write_roundtrips_without_temp_leak() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put("k", br#"{"v":1}"#);
+        assert_eq!(cache.get("k").as_deref(), Some(br#"{"v":1}"#.as_slice()));
+        // Overwrite: the new value replaces the old atomically.
+        cache.put("k", br#"{"v":2}"#);
+        assert_eq!(cache.get("k").as_deref(), Some(br#"{"v":2}"#.as_slice()));
+        // No temp files may remain after any write (success or failure path).
+        let leftover = std::fs::read_dir(cache.query_dir())
+            .map(|rd| {
+                rd.flatten()
+                    .filter(|e| e.file_name().to_string_lossy().contains(TMP_MARKER))
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(leftover, 0, "atomic writes must clean up their temp files");
+    }
+
+    #[test]
+    fn corrupt_entries_are_quarantined_and_never_served() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put("good", br#"{"v":1}"#);
+
+        // Corrupt the entry on disk (simulates a torn/interrupted legacy
+        // write or disk corruption).
+        std::fs::write(cache.query_dir().join("good"), b"{\"v\": 1, BROKEN").unwrap();
+        assert_eq!(
+            cache.get("good"),
+            None,
+            "corrupt entry must be a miss, never served"
+        );
+        // Quarantined for diagnostics: moved out of the namespace.
+        assert!(!cache.query_dir().join("good").exists());
+        let quarantined = cache.query_dir().join(QUARANTINE_DIR).join("good");
+        assert!(quarantined.exists(), "corrupt entry is quarantined");
+
+        // The negative namespace follows the same rule.
+        cache.put_negative("neg", br#"{"empty":true}"#);
+        std::fs::write(cache.negative_dir().join("neg"), b"not json at all").unwrap();
+        assert_eq!(
+            cache.get_negative("neg"),
+            None,
+            "corrupt negative entry is a miss"
+        );
+        assert!(cache
+            .negative_dir()
+            .join(QUARANTINE_DIR)
+            .join("neg")
+            .exists());
+
+        // The quarantine dir never counts as a cache entry.
+        assert_eq!(cache.get("good"), None);
+    }
+
+    #[test]
+    fn stale_temp_files_are_swept_and_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put("k", br#"{"v":1}"#);
+
+        // A leftover temp from a "crashed" writer, backdated beyond the grace
+        // period: reads must ignore it and the LRU pass must sweep it.
+        let stale_tmp = cache.query_dir().join(format!("k{TMP_MARKER}999-0"));
+        std::fs::write(&stale_tmp, b"partial").unwrap();
+        let backdated = SystemTime::now() - Duration::from_secs(2 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale_tmp)
+            .and_then(|f| f.set_modified(backdated))
+            .expect("backdate temp mtime");
+
+        // Reads never see temp files (they are not under the final key).
+        assert_eq!(cache.get("k").as_deref(), Some(br#"{"v":1}"#.as_slice()));
+
+        // A fresh temp (a live concurrent writer) is NOT swept...
+        let fresh_tmp = cache.query_dir().join(format!("k{TMP_MARKER}999-1"));
+        std::fs::write(&fresh_tmp, b"in-flight").unwrap();
+        cache.put("other", br#"{"v":2}"#); // triggers the LRU pass
+        assert!(fresh_tmp.exists(), "live temp files are left alone");
+
+        // ...but the stale one is gone after the sweep.
+        assert!(!stale_tmp.exists(), "abandoned temp files are swept");
+    }
+
+    #[test]
+    fn concurrent_read_write_never_serves_partial_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        let cache = std::sync::Arc::new(cache);
+
+        let mut handles = Vec::new();
+        for t in 0..4usize {
+            let cache = cache.clone();
+            handles.push(std::thread::spawn(move || {
+                for i in 0..40usize {
+                    let key = format!("key-{}-{}", t, i % 5);
+                    let value = format!(r#"{{"writer":{t},"i":{i}}}"#);
+                    cache.put(&key, value.as_bytes());
+                    if let Some(bytes) = cache.get(&key) {
+                        // Every observed entry must be complete, valid JSON.
+                        serde_json::from_slice::<serde_json::Value>(&bytes)
+                            .expect("readers never observe partial entries");
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("cache worker joined");
+        }
     }
 }
