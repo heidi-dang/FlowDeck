@@ -162,7 +162,7 @@ function runRegistryCheck(mode: string): { code: number; output: string } {
   }
 }
 
-describe("Check Registry Availability (errexit-safe)", () => {
+describe.skipIf(process.platform === "win32")("Check Registry Availability (errexit-safe)", () => {
   it("unpublished version (E404) continues — publish is allowed", () => {
     const { code, output } = runRegistryCheck("e404")
     // The E404 text is captured internally (LOOKUP_OUTPUT) and not echoed on

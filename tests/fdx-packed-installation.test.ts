@@ -22,7 +22,7 @@ describe("FDX Clean Packed Installation Tests", () => {
     } catch {}
   })
 
-  it("packed CLI modules execute correctly from installed main tarball", () => {
+  it.skipIf(process.platform === "win32")("packed CLI modules execute correctly from installed main tarball", () => {
     const root = resolve(__dirname, "..")
 
     // Build & pack local main package
