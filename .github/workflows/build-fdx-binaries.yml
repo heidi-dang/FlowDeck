@@ -193,7 +193,7 @@ jobs:
           - os: macos-latest
             pkg: flowdeck-fdx-darwin-arm64
             binary: fdx
-          - os: macos-13
+          - os: macos-latest
             pkg: flowdeck-fdx-darwin-x64
             binary: fdx
           - os: windows-latest
