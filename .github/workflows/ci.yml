@@ -163,20 +163,20 @@ jobs:
           echo "=== Running packed CLI ==="
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck --help || { echo "FAIL: --help"; exit 1; }
           echo "PASS: --help"
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck install || { echo "FAIL: install"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js install || { echo "FAIL: install"; exit 1; }
           echo "PASS: install"
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck fdx repair || true
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck verify || { echo "FAIL: verify"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js fdx repair || true
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js verify || { echo "FAIL: verify"; exit 1; }
           echo "PASS: verify"
           set +e
-          FLOWDECK_PROFILE=minimal HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck doctor
+          FLOWDECK_PROFILE=minimal HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js doctor
           DOCTOR_EXIT=$?
           set -e
           if [ "$DOCTOR_EXIT" -ne 0 ]; then
             echo "FAIL: flowdeck doctor exited $DOCTOR_EXIT in isolated home (expected 0)"
             exit "$DOCTOR_EXIT"
           fi
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck uninstall || { echo "FAIL: uninstall"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js uninstall || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: uninstall"
           ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs || { echo "FAIL: config-mutator.mjs missing"; exit 1; }
           echo "PASS: Runtime files verified"
@@ -472,11 +472,11 @@ jobs:
           npm init -y > /dev/null 2>&1
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$TARBALL_PATH" 2>&1
           echo "=== Testing packed CLI ==="
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck install || { echo "FAIL: install"; exit 1; }
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck fdx repair || true
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck verify || { echo "FAIL: verify"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js install || { echo "FAIL: install"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js fdx repair || true
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js verify || { echo "FAIL: verify"; exit 1; }
           set +e
-          FLOWDECK_PROFILE=minimal HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck doctor
+          FLOWDECK_PROFILE=minimal HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js doctor
           DOCTOR_EXIT=$?
           set -e
           if [ "$DOCTOR_EXIT" -ne 0 ]; then
@@ -485,8 +485,8 @@ jobs:
           fi
           echo "PASS: doctor (exit code $DOCTOR_EXIT)"
 
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck rollback || { echo "FAIL: rollback"; exit 1; }
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck uninstall --force || { echo "FAIL: uninstall"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js rollback || { echo "FAIL: rollback"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js uninstall --force || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: all commands"
           rm -rf "$TMP_ROOT" "$TARBALL_PATH"
 
