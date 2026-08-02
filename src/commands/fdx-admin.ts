@@ -81,6 +81,7 @@ function sha256File(filePath: string): string {
 
 /** Attempt to download platform package from npm registry with integrity verification. */
 function fetchFromRegistry(packageName: string, version: string): { dir: string; tmpDir: string; reason?: string } | null {
+  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
   const tmpDir = join(getFdxCacheDir({ platform: process.platform, arch: process.arch, packageName, executableName: "fdx" }), `..`, `.registry-fetch-${Date.now()}`)
   try {
     mkdirSync(tmpDir, { recursive: true })
@@ -88,7 +89,7 @@ function fetchFromRegistry(packageName: string, version: string): { dir: string;
     // 1. Query registry metadata
     let metaRaw: string
     try {
-      metaRaw = execFileSync("npm", ["view", `${packageName}@${version}`, "--json"], { cwd: tmpDir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] })
+      metaRaw = execFileSync(npmCmd, ["view", `${packageName}@${version}`, "--json"], { cwd: tmpDir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] })
     } catch (e: any) {
       const msg = e.stderr?.toString() ?? e.message ?? ""
       if (msg.includes("404") || msg.includes("E404") || msg.includes("Not Found")) {
@@ -118,7 +119,7 @@ function fetchFromRegistry(packageName: string, version: string): { dir: string;
     }
 
     // 2. Download exact tarball
-    execFileSync("npm", ["pack", `${packageName}@${version}`], { cwd: tmpDir, stdio: "ignore" })
+    execFileSync(npmCmd, ["pack", `${packageName}@${version}`], { cwd: tmpDir, stdio: "ignore" })
     const files = readdirSync(tmpDir).filter(f => f.endsWith(".tgz"))
     if (files.length !== 1) {
       console.error(`  [registry] Failure: extraction failure (expected 1 .tgz, got ${files.length})`)

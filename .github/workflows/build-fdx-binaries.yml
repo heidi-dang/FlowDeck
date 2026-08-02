@@ -193,7 +193,7 @@ jobs:
           - os: macos-latest
             pkg: flowdeck-fdx-darwin-arm64
             binary: fdx
-          - os: macos-13
+          - os: macos-latest
             pkg: flowdeck-fdx-darwin-x64
             binary: fdx
           - os: windows-latest
@@ -214,7 +214,8 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           if [ "${{ matrix.target.use_qemu }}" = "true" ]; then
-            sudo apt-get update && sudo apt-get install -y qemu-user-static binfmt-support
+            sudo apt-get update && sudo apt-get install -y qemu-user-static gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            sudo docker run --rm --privileged multiarch/qemu-user-static --reset -p yes || true
           fi
           if [ "${{ matrix.target.use_musl }}" = "true" ]; then
             sudo apt-get update && sudo apt-get install -y musl
@@ -290,5 +291,9 @@ jobs:
 
           chmod +x "$INSTALLED_BIN" 2>/dev/null || true
           echo "=== Testing execution of $INSTALLED_BIN ==="
-          "$INSTALLED_BIN" --version || { echo "FAIL: Executable failed to execute"; exit 1; }
+          if [ "${{ matrix.target.use_qemu }}" = "true" ]; then
+            qemu-aarch64 -L /usr/aarch64-linux-gnu "$INSTALLED_BIN" --version || "$INSTALLED_BIN" --version || { echo "FAIL: Executable failed to execute"; exit 1; }
+          else
+            "$INSTALLED_BIN" --version || { echo "FAIL: Executable failed to execute"; exit 1; }
+          fi
           echo "✓ Clean install & execution test passed for ${{ matrix.target.pkg }}"
