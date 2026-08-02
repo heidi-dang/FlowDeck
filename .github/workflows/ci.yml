@@ -466,19 +466,20 @@ jobs:
         run: |
           set -e
           node scripts/build-fdx-packages.mjs || true
-          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
+          PACKAGE=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
+          TARBALL_PATH="$GITHUB_WORKSPACE/$PACKAGE"
           TMP_ROOT=$(mktemp -d)
           SPACE_DIR="$TMP_ROOT/My Project With Spaces"
           mkdir -p "$SPACE_DIR/app" "$SPACE_DIR/home"
           cd "$SPACE_DIR/app"
           npm init -y > /dev/null 2>&1
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$TARBALL_PATH" 2>&1
           echo "=== Testing packed CLI ==="
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck install || { echo "FAIL: install"; exit 1; }
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck fdx repair || true
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck verify || { echo "FAIL: verify"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck install || { echo "FAIL: install"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck fdx repair || true
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck verify || { echo "FAIL: verify"; exit 1; }
           set +e
-          FLOWDECK_PROFILE=minimal HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck doctor
+          FLOWDECK_PROFILE=minimal HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck doctor
           DOCTOR_EXIT=$?
           set -e
           if [ "$DOCTOR_EXIT" -ne 0 ]; then
@@ -487,10 +488,10 @@ jobs:
           fi
           echo "PASS: doctor (exit code $DOCTOR_EXIT)"
 
-
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck rollback || { echo "FAIL: rollback"; exit 1; }
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck uninstall --force || { echo "FAIL: uninstall"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck rollback || { echo "FAIL: rollback"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node_modules/.bin/flowdeck uninstall --force || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: all commands"
+          rm -rf "$TMP_ROOT" "$TARBALL_PATH"
 
   completion:
     name: Pipeline Completion
