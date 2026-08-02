@@ -1,14 +1,23 @@
 === Runtime Benchmark Report ===
 Baseline SHA: 5809fcf1230ff349ff0d7f5b53ed75403f44573b
-Generated: 2026-08-01T14:00:15.987Z
-Candidate: /home/shacker/Desktop/flowdeck-trae
-Baseline: (none — candidate only)
-Mode: candidate-only
+Generated: 2026-08-02T05:17:24.983Z
+Candidate: /root/flowdeck
+Baseline: /tmp/opencode/bench-baseline
+Mode: baseline-vs-candidate
 
 Metric                     | Mean (ms) | Median (ms) | p95 (ms) | Iterations
 ---------------------------|-----------|-------------|----------|-----------
- runtimeInit                |     1.236 |       1.123 |    1.543 |         20
- commitTransition           |     0.019 |       0.015 |     0.03 |        100
- loadRunAfterRestart        |     0.283 |       0.228 |    0.786 |         10
- completePath               |     0.064 |       0.066 |    0.078 |         10
- cancellationPhase          |     0.033 |       0.032 |    0.045 |         10
+ runtimeInit                |     1.442 |       1.358 |    1.956 |         80
+ commitTransition           |     0.014 |       0.012 |    0.022 |        600
+ loadRunAfterRestart        |     0.252 |       0.243 |    0.324 |         60
+ completePath               |     0.064 |       0.058 |    0.088 |        100
+ cancellationPhase          |     0.058 |       0.033 |    0.067 |        100
+
+Comparison (candidate vs baseline, median):
+  runtimeInit            baseline    1.306 ms -> candidate    1.358 ms  (4.0%)
+  commitTransition       baseline    0.012 ms -> candidate    0.012 ms  (0.0%)
+  loadRunAfterRestart    baseline    0.239 ms -> candidate    0.243 ms  (1.7%)
+  completePath           baseline    0.062 ms -> candidate    0.058 ms  (-6.5%)
+  cancellationPhase      baseline    0.037 ms -> candidate    0.033 ms  (-10.8%)
+
+Overall: PASS — no regressions > 20%
