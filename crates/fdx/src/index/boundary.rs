@@ -319,17 +319,13 @@ fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
 #[cfg(windows)]
 fn same_file(a: &std::fs::Metadata, b: &std::fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
-    // Prefer the volume + file-index identity when the platform exposes it;
-    // fall back to size + last-write-time otherwise.
-    match (
-        a.volume_serial_number(),
-        a.file_index(),
-        b.volume_serial_number(),
-        b.file_index(),
-    ) {
-        (Some(v1), Some(i1), Some(v2), Some(i2)) => v1 == v2 && i1 == i2,
-        _ => a.len() == b.len() && a.modified().ok() == b.modified().ok(),
-    }
+    // Stable identity signals only: `file_index()`/`volume_serial_number()`
+    // remain behind the unstable `windows_by_handle` feature gate, so use
+    // size + last-write-time + attribute flags (all stable) to detect a
+    // swapped file between the resolve and open steps.
+    a.file_size() == b.file_size()
+        && a.last_write_time() == b.last_write_time()
+        && a.file_attributes() == b.file_attributes()
 }
 
 #[cfg(not(any(unix, windows)))]
