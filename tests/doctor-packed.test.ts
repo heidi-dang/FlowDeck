@@ -29,7 +29,7 @@ type PackedReport = {
   summary?: Record<string, number>
 }
 
-async function runPackedService(dir: string, profile = "recommended-dev") {
+async function runPackedService(dir: string, profile = "minimal") {
   const result = (await runDoctorService(dir, { profile })) as {
     report: PackedReport | null
     exitCode: number
