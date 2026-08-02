@@ -48,6 +48,19 @@ use std::sync::Arc;
 /// Max operations per batch (contract).
 pub const MAX_BATCH_OPS: usize = 64;
 
+/// Cap on the cumulative serialized `result` payloads across one batch.
+///
+/// The daemon wire refuses messages over [`MAX_MESSAGE_BYTES`] (64 KiB), so a
+/// batch whose results individually pass each descriptor's
+/// `maximum_output_bytes` can still overflow the frame once the envelope (ids,
+/// flags, error shapes) is added. `40 KiB` of result payload leaves enough
+/// headroom for a 64-op envelope (≈6 KiB) to always fit inside the wire cap.
+/// Results that exceed the remaining batch budget are spilled to an artifact
+/// file and replaced by a truncation marker (`truncated` + `artifactRef`).
+///
+/// [`MAX_MESSAGE_BYTES`]: crate::daemon::protocol::MAX_MESSAGE_BYTES
+pub const MAX_BATCH_OUTPUT_BYTES: usize = 40 * 1024;
+
 /// Error codes used by batch responses (mirror the daemon `err` vocabulary so
 /// clients can branch on the same stable codes).
 pub mod err {
@@ -128,6 +141,21 @@ pub struct OperationResponse {
     /// Error payload when `ok` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<Value>,
+    /// True when `result` was replaced by a truncation marker because the
+    /// serialized payload exceeded the descriptor's `maximum_output_bytes`
+    /// (or the remaining batch output budget). The full payload is written to
+    /// the file named by `artifact_ref`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub truncated: bool,
+    /// Absolute path of the artifact file holding the full (untruncated)
+    /// serialized payload, present when `truncated` is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_ref: Option<String>,
+}
+
+/// `skip_serializing_if` predicate for [`OperationResponse::truncated`].
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Whole-batch response for the typed path.
@@ -327,16 +355,24 @@ pub fn execute_batch(
     let cache = AstCache::new();
     let mut responses = Vec::with_capacity(operations.len());
     let mut failed_fast = false;
+    // Output-bounding (Phase 5): the cumulative serialized result payloads
+    // across the batch may not exceed MAX_BATCH_OUTPUT_BYTES, so a batch of
+    // individually-in-bounds results still fits the daemon wire frame. Each op
+    // is truncated against min(descriptor.maximum_output_bytes, remaining).
+    let mut used_output_bytes = 0usize;
 
     for op in operations {
-        let resp = run_operation(
+        let budget = MAX_BATCH_OUTPUT_BYTES.saturating_sub(used_output_bytes);
+        let (resp, used) = run_operation(
             op,
             cwd,
             frozen.as_deref(),
             &cache,
             cache_ctx.as_ref(),
             stale_snapshot,
+            budget,
         );
+        used_output_bytes += used;
         let stop = !resp.ok && fail_fast;
         responses.push(resp);
         if stop {
@@ -360,39 +396,78 @@ fn run_operation(
     cache: &AstCache,
     cache_ctx: Option<&QueryCacheContext>,
     stale_snapshot: bool,
-) -> OperationResponse {
+    output_budget: usize,
+) -> (OperationResponse, usize) {
     let id = op.id.clone();
-    // Every batch operation must be read-only and known. `index.*` commands
-    // are marked non-read-only in the registry: they are rejected here.
+    // Every batch operation must be read-only, known, and batchable. The
+    // registry marks `index.*` commands non-read-only and non-batchable:
+    // both properties are enforced here (capability metadata contract).
     let descriptor = tool_descriptor(&op.op);
     match descriptor.as_ref() {
         None => {
-            return OperationResponse {
-                id,
-                ok: false,
-                result: None,
-                error: Some(serde_json::json!({
-                    "code": err::E_UNSUPPORTED,
-                    "message": format!("unknown batch operation '{}'", op.op),
-                })),
-            };
+            return (
+                OperationResponse {
+                    id,
+                    ok: false,
+                    result: None,
+                    error: Some(serde_json::json!({
+                        "code": err::E_UNSUPPORTED,
+                        "message": format!("unknown batch operation '{}'", op.op),
+                    })),
+                    truncated: false,
+                    artifact_ref: None,
+                },
+                0,
+            );
         }
         Some(d) if !d.read_only => {
-            return OperationResponse {
-                id,
-                ok: false,
-                result: None,
-                error: Some(serde_json::json!({
-                    "code": err::E_UNSUPPORTED,
-                    "message": format!(
-                        "operation '{}' is not read-only and cannot run in a batch",
-                        op.op
-                    ),
-                })),
-            };
+            return (
+                OperationResponse {
+                    id,
+                    ok: false,
+                    result: None,
+                    error: Some(serde_json::json!({
+                        "code": err::E_UNSUPPORTED,
+                        "message": format!(
+                            "operation '{}' is not read-only and cannot run in a batch",
+                            op.op
+                        ),
+                    })),
+                    truncated: false,
+                    artifact_ref: None,
+                },
+                0,
+            );
+        }
+        Some(d) if !d.supports_batching => {
+            return (
+                OperationResponse {
+                    id,
+                    ok: false,
+                    result: None,
+                    error: Some(serde_json::json!({
+                        "code": err::E_UNSUPPORTED,
+                        "message": format!(
+                            "operation '{}' does not support batching",
+                            op.op
+                        ),
+                    })),
+                    truncated: false,
+                    artifact_ref: None,
+                },
+                0,
+            );
         }
         _ => {}
     }
+    // Output bound (Phase 5): the effective limit is the descriptor's
+    // maximum_output_bytes, further capped by the remaining batch budget so
+    // the cumulative payload stays inside the daemon wire frame.
+    let descriptor_limit = descriptor
+        .as_ref()
+        .map(|d| d.maximum_output_bytes)
+        .unwrap_or(0);
+    let effective_limit = descriptor_limit.min(output_budget);
 
     // Query cache: serve Repository-cacheable ops from disk when the key
     // matches the current repository state. The key is `None` for ops that
@@ -403,27 +478,27 @@ fn run_operation(
         let negative_eligible = descriptor
             .as_ref()
             .is_some_and(|d| d.negative_cache_eligible);
-        if negative_eligible {
-            if let Some(bytes) = ctx.cache.get_negative(key) {
-                if let Ok(value) = serde_json::from_slice(&bytes) {
-                    return OperationResponse {
-                        id,
-                        ok: true,
-                        result: Some(value),
-                        error: None,
-                    };
-                }
-            }
-        }
-        if let Some(bytes) = ctx.cache.get(key) {
-            if let Ok(value) = serde_json::from_slice(&bytes) {
-                return OperationResponse {
-                    id,
-                    ok: true,
-                    result: Some(value),
-                    error: None,
-                };
-            }
+        let cached: Option<Value> = if negative_eligible {
+            ctx.cache
+                .get_negative(key)
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        } else {
+            None
+        };
+        let cached = cached.or_else(|| {
+            ctx.cache
+                .get(key)
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        });
+        if let Some(value) = cached {
+            // Cached values were stored in full; re-enforce the current
+            // bounds before returning (descriptor limits can change).
+            return finalize_response(
+                id,
+                value,
+                effective_limit,
+                cache_ctx.map(|c| c.cache.state_dir()),
+            );
         }
     }
 
@@ -445,7 +520,9 @@ fn run_operation(
             // Cache the fresh result only when the snapshot is not stale and
             // the op is Repository-cacheable. Definitive-empty outcomes of
             // negative-cache-eligible ops go to the negative namespace (TTL-
-            // bounded); everything else to the positive namespace.
+            // bounded); everything else to the positive namespace. The cache
+            // always stores the FULL payload; truncation is a response-time
+            // concern.
             if let (Some(ctx), Some(key)) = (&cache_ctx, &cache_key) {
                 if !stale_snapshot {
                     if let Ok(bytes) = serde_json::to_vec(&value) {
@@ -457,20 +534,134 @@ fn run_operation(
                     }
                 }
             }
+            finalize_response(
+                id,
+                value,
+                effective_limit,
+                cache_ctx.map(|c| c.cache.state_dir()),
+            )
+        }
+        Err((code, message)) => (
+            OperationResponse {
+                id,
+                ok: false,
+                result: None,
+                error: Some(serde_json::json!({ "code": code, "message": message })),
+                truncated: false,
+                artifact_ref: None,
+            },
+            0,
+        ),
+    }
+}
+
+/// Build the success response for an op's value, enforcing the output bound.
+///
+/// When the serialized payload exceeds `limit`, the full payload is written to
+/// an artifact file (next to the query cache namespaces, or a temp dir when no
+/// worktree cache context exists) and `result` is replaced by a small marker
+/// describing the truncation. The reported `used` bytes always reflect the
+/// full payload, so the batch budget stays conservative even across repeated
+/// truncations.
+fn finalize_response(
+    id: String,
+    value: Value,
+    limit: usize,
+    artifact_base: Option<&Path>,
+) -> (OperationResponse, usize) {
+    let Ok(bytes) = serde_json::to_vec(&value) else {
+        return (
+            OperationResponse {
+                id,
+                ok: false,
+                result: None,
+                error: Some(serde_json::json!({
+                    "code": err::E_INTERNAL,
+                    "message": "failed to serialize operation result",
+                })),
+                truncated: false,
+                artifact_ref: None,
+            },
+            0,
+        );
+    };
+    let used = bytes.len();
+    if used <= limit {
+        return (
             OperationResponse {
                 id,
                 ok: true,
                 result: Some(value),
                 error: None,
-            }
-        }
-        Err((code, message)) => OperationResponse {
-            id,
-            ok: false,
-            result: None,
-            error: Some(serde_json::json!({ "code": code, "message": message })),
-        },
+                truncated: false,
+                artifact_ref: None,
+            },
+            used,
+        );
     }
+
+    // Over budget: spill the full payload to an artifact and return a marker.
+    let dir = artifact_base
+        .map(|p| p.join("artifacts"))
+        .unwrap_or_else(|| std::env::temp_dir().join("fdx-batch-artifacts"));
+    let file_name = sanitize_artifact_name(&id);
+    let path = dir.join(format!("{file_name}.json"));
+    let wrote = std::fs::create_dir_all(&dir)
+        .and_then(|()| std::fs::write(&path, &bytes))
+        .map(|()| path.to_string_lossy().into_owned());
+    let artifact_ref = match wrote {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                OperationResponse {
+                    id,
+                    ok: false,
+                    result: None,
+                    error: Some(serde_json::json!({
+                        "code": err::E_INTERNAL,
+                        "message": format!("failed to write artifact: {e}"),
+                    })),
+                    truncated: false,
+                    artifact_ref: None,
+                },
+                used,
+            );
+        }
+    };
+    (
+        OperationResponse {
+            id,
+            ok: true,
+            result: Some(serde_json::json!({
+                "truncated": true,
+                "artifactRef": artifact_ref,
+                "byteCount": used,
+                "limitBytes": limit,
+            })),
+            error: None,
+            truncated: true,
+            artifact_ref: Some(artifact_ref),
+        },
+        used,
+    )
+}
+
+/// Make an op id safe to use as a file name (ids are client-chosen and may
+/// contain path separators or other characters that would escape the artifact
+/// directory).
+fn sanitize_artifact_name(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for c in id.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("op");
+    }
+    out
 }
 
 /// Whether a result is a definitive-empty outcome — the only kind that may be
@@ -1136,5 +1327,120 @@ mod tests {
             Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
             None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
         }
+    }
+
+    #[test]
+    fn non_batchable_op_is_rejected_per_op() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ops = vec![op("c1", "capabilities.query", serde_json::json!({}))];
+        let resp = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap();
+        let r = &resp.responses[0];
+        assert!(!r.ok);
+        assert_eq!(r.error.as_ref().unwrap()["code"], err::E_UNSUPPORTED);
+        assert!(r.error.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not support batching"));
+    }
+
+    #[test]
+    fn truncated_result_gets_artifact_marker() {
+        // A read far beyond the descriptor bound (256 KiB for `read`) must be
+        // truncated: the full payload lands in an artifact file, the response
+        // carries `truncated: true` + `artifactRef`, and the marker records
+        // byte counts. Non-git cwd → no cache context → artifacts fall back
+        // to the temp dir, which keeps this test hermetic.
+        let tmp = tempfile::tempdir().unwrap();
+        let big = "x".repeat(300 * 1024);
+        std::fs::write(tmp.path().join("big.txt"), &big).unwrap();
+
+        let ops = vec![op(
+            "r1",
+            "read",
+            serde_json::json!({ "file": "big.txt", "mode": "raw" }),
+        )];
+        let resp = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap();
+        let r = &resp.responses[0];
+        assert!(r.ok, "truncation is not a failure: {r:?}");
+        assert!(r.truncated, "oversized result must be flagged truncated");
+        let artifact_ref = r.artifact_ref.as_ref().expect("artifactRef on truncation");
+        let marker = r.result.as_ref().unwrap();
+        assert_eq!(marker["truncated"], true);
+        assert_eq!(marker["artifactRef"], artifact_ref.as_str());
+        assert!(marker["byteCount"].as_u64().unwrap() >= big.len() as u64);
+        assert!(marker["limitBytes"].as_u64().unwrap() <= 256 * 1024);
+
+        // The artifact holds the FULL payload (round-trips exactly); the
+        // byte count matches the artifact's size.
+        let full = std::fs::read(artifact_ref).unwrap();
+        assert_eq!(full.len(), marker["byteCount"].as_u64().unwrap() as usize);
+        let parsed: serde_json::Value = serde_json::from_slice(&full).unwrap();
+        assert_eq!(parsed["lines"][0].as_str().unwrap(), big.as_str());
+    }
+
+    #[test]
+    fn batch_total_budget_truncates_when_cumulative_output_overflows() {
+        // Each op alone is under its descriptor bound, but the CUMULATIVE
+        // serialized payload across the batch exceeds MAX_BATCH_OUTPUT_BYTES:
+        // the batch-total bound must truncate later ops, keeping the whole
+        // response inside the wire frame (Phase 5).
+        let tmp = tempfile::tempdir().unwrap();
+        let big = "y".repeat(22 * 1024);
+        std::fs::write(tmp.path().join("a.txt"), &big).unwrap();
+        std::fs::write(tmp.path().join("b.txt"), &big).unwrap();
+
+        let ops = vec![
+            op(
+                "r1",
+                "read",
+                serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+            ),
+            op(
+                "r2",
+                "read",
+                serde_json::json!({ "file": "b.txt", "mode": "raw" }),
+            ),
+        ];
+        let resp = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap();
+        let first = &resp.responses[0];
+        let second = &resp.responses[1];
+        // 22 KiB each is below the 256 KiB descriptor bound; at least one op
+        // must still be truncated by the batch-total budget.
+        assert!(
+            first.truncated || second.truncated,
+            "batch-total bound must bite: {resp:?}"
+        );
+        assert!(
+            second.truncated,
+            "later ops truncate when the budget is exhausted"
+        );
+        assert!(first.artifact_ref.is_some() || second.artifact_ref.is_some());
+    }
+
+    #[test]
+    fn under_budget_results_are_not_truncated() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("small.txt"), "hello world\n").unwrap();
+        let ops = vec![op(
+            "r1",
+            "read",
+            serde_json::json!({ "file": "small.txt", "mode": "raw" }),
+        )];
+        let resp = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap();
+        let r = &resp.responses[0];
+        assert!(r.ok);
+        assert!(!r.truncated);
+        assert!(r.artifact_ref.is_none());
+        assert_eq!(ok_result(r)["total_lines"], 1);
+    }
+
+    #[test]
+    fn artifact_name_is_sanitized() {
+        // Op ids are client-chosen; path separators must not escape the
+        // artifact directory.
+        let name = sanitize_artifact_name("../evil/op id");
+        assert_eq!(name, "___evil_op_id");
+        assert_eq!(sanitize_artifact_name(""), "op");
+        assert_eq!(sanitize_artifact_name("grep-1"), "grep-1");
     }
 }

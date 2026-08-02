@@ -151,6 +151,8 @@ pub fn tool_descriptors() -> Vec<ToolDescriptor> {
     let mut caps = ToolDescriptor::new("capabilities.query");
     caps.expected_latency_class = LatencyClass::Instant;
     caps.maximum_output_bytes = 128 * KIB;
+    // Hosted command, not a batch operation: never eligible for batching.
+    caps.supports_batching = false;
     out.push(caps);
 
     out

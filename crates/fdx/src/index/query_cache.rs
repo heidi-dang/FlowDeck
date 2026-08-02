@@ -187,6 +187,13 @@ impl QueryCache {
         self.state_dir.join(NEGATIVE_CACHE_DIR)
     }
 
+    /// The worktree state directory this cache lives under. Artifacts (full
+    /// payloads spilled by output-bounded responses) are stored next to the
+    /// cache namespaces so they share the worktree lifecycle.
+    pub fn state_dir(&self) -> &Path {
+        &self.state_dir
+    }
+
     /// Look up a cached value. Touches the entry mtime on hit so the LRU
     /// bound evicts least-recently-used entries. Returns None on miss.
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {

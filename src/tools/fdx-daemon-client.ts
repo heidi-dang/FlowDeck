@@ -156,6 +156,10 @@ export interface OperationResponse {
   ok: boolean
   result?: unknown
   error?: BatchOpError
+  /** True when `result` is a truncation marker; full payload at `artifactRef`. */
+  truncated?: boolean
+  /** Absolute path of the artifact holding the full payload when truncated. */
+  artifactRef?: string
 }
 
 /** Whole-batch response (version 1). */
