@@ -464,7 +464,7 @@ Options:
   const isVerbose = doctorArgs.includes("--verbose");
   const applyFix = doctorArgs.includes("--apply-recommended");
   const profileIdx = doctorArgs.indexOf("--profile");
-  const profile = profileIdx >= 0 && profileIdx + 1 < doctorArgs.length ? doctorArgs[profileIdx + 1] : "recommended-dev";
+  const profile = profileIdx >= 0 && profileIdx + 1 < doctorArgs.length ? doctorArgs[profileIdx + 1] : (process.env.FLOWDECK_PROFILE || "recommended-dev");
 
   if (!DOCTOR_KNOWN_PROFILES.has(profile)) {
     process.stderr.write(`Error: Unknown profile "${profile}". Valid profiles: ${[...DOCTOR_KNOWN_PROFILES].join(", ")}\n`);

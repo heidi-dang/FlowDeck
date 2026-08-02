@@ -122,7 +122,7 @@ function runViaBun(directory, options = {}) {
       strict: !!options.strict,
       verbose: !!options.verbose,
       applyRecommended: !!options.applyRecommended,
-      profile: options.profile || "recommended-dev",
+      profile: options.profile || process.env.FLOWDECK_PROFILE || "recommended-dev",
       nonInteractive: !!options.nonInteractive,
     },
   }
@@ -188,7 +188,7 @@ export async function runDoctor(directory = PKG_ROOT, options = {}) {
     strict: !!options.strict,
     verbose: !!options.verbose,
     applyRecommended: !!options.applyRecommended,
-    profile: options.profile || "recommended-dev",
+    profile: options.profile || process.env.FLOWDECK_PROFILE || "recommended-dev",
     nonInteractive: !!options.nonInteractive,
   })
 }
