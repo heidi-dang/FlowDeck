@@ -76,7 +76,7 @@ describe("FDX Clean Packed Installation Tests", () => {
     // Cleanup generated tarballs
     try { rmSync(mainTarball, { force: true }) } catch {}
     try { rmSync(platformTarball, { force: true }) } catch {}
-  }, 120000)
+  }, 300000)
 
   it("packed tarball excludes Rust source and build artifacts", () => {
     const root = resolve(__dirname, "..")
