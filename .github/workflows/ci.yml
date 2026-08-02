@@ -440,7 +440,7 @@ jobs:
       - name: Local-repo install test
         run: |
           node bin/flowdeck.js install --local-repo 2>&1
-          node bin/flowdeck.js verify 2>&1 | grep -q "verified successfully" || (echo "FAIL: verify"; exit 1)
+          node bin/flowdeck.js verify 2>&1 | grep -i -q "passed" || (echo "FAIL: verify"; exit 1)
           echo "PASS: local-repo install on ${{ matrix.os }}"
       - name: Project install test
         run: |

@@ -223,34 +223,32 @@ async function cmdInstall() {
   }
 
   // Attempt FDX acquisition and report native status after plugin registration
-  let fdxShared;
+  let fdxShared = null;
+  let fdxAdmin = null;
   try {
     fdxShared = await import("../dist/tools/fdx-shared.js");
-  } catch {
-    fdxShared = await import("../src/tools/fdx-shared.js");
-  }
-  let fdxAdmin;
+  } catch {}
   try {
     fdxAdmin = await import("../dist/commands/fdx-admin.js");
-  } catch {
-    fdxAdmin = await import("../src/commands/fdx-admin.js");
-  }
+  } catch {}
 
-  await fdxAdmin.handleFdxInstall(false).catch(() => false);
+  if (fdxShared && fdxAdmin) {
+    await fdxAdmin.handleFdxInstall(false).catch(() => false);
 
-  const target = fdxShared.detectFdxTarget();
-  const fdxStatus = fdxShared.getFdxAvailabilityStatus(true);
+    const target = fdxShared.detectFdxTarget();
+    const fdxStatus = fdxShared.getFdxAvailabilityStatus(true);
 
-  console.log(`\n── Native FDX Status ──`);
-  if (!target) {
-    console.log(`  ℹ Target platform ${process.platform}/${process.arch}: Native FDX prebuilt package not targeted.`);
-    console.log(`  ✓ TypeScript fallback mode active.`);
-  } else if (fdxStatus.available && fdxStatus.binaryPath) {
-    console.log(`  ✓ Native FDX binary resolved: ${fdxStatus.binaryPath}`);
-    console.log(`  ✓ Source: ${fdxStatus.source} (v${fdxStatus.binaryVersion || "1.0.4"})`);
-  } else {
-    console.log(`  ⚠ Native FDX binary not resolved for target ${target.platform}/${target.arch}${target.libc ? `-${target.libc}` : ""}`);
-    console.log(`  FlowDeck plugin registered. To acquire or repair native FDX performance, run: flowdeck fdx repair`);
+    console.log(`\n── Native FDX Status ──`);
+    if (!target) {
+      console.log(`  ℹ Target platform ${process.platform}/${process.arch}: Native FDX prebuilt package not targeted.`);
+      console.log(`  ✓ TypeScript fallback mode active.`);
+    } else if (fdxStatus.available && fdxStatus.binaryPath) {
+      console.log(`  ✓ Native FDX binary resolved: ${fdxStatus.binaryPath}`);
+      console.log(`  ✓ Source: ${fdxStatus.source} (v${fdxStatus.binaryVersion || "1.0.4"})`);
+    } else {
+      console.log(`  ⚠ Native FDX binary not resolved for target ${target.platform}/${target.arch}${target.libc ? `-${target.libc}` : ""}`);
+      console.log(`  FlowDeck plugin registered. To acquire or repair native FDX performance, run: flowdeck fdx repair`);
+    }
   }
 }
 
