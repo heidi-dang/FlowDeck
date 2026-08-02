@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Helper script to build local FDX native binary, compute SHA-256,
- * and populate package distribution directory.
+ * generate complete provenance, and populate package distribution directory.
  */
 
 import { execFileSync } from "node:child_process"
@@ -12,6 +12,14 @@ import { createHash } from "node:crypto"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = join(__dirname, "..")
+
+function fail(message, cause) {
+  console.error(`[build-fdx-packages] FAIL: ${message}`)
+  if (cause instanceof Error) {
+    console.error(cause.stack ?? cause.message)
+  }
+  process.exit(1)
+}
 
 /** Safely run a command and return trimmed stdout, or null on failure. */
 function tryExec(cmd, args) {
@@ -34,8 +42,15 @@ function detectTargetName() {
 }
 
 function main() {
+  const isStrict = process.argv.includes("--strict") || process.env.CI === "true"
+  const mainPkg = JSON.parse(readFileSync(join(PKG_ROOT, "package.json"), "utf-8"))
+  const flowdeckVersion = mainPkg.version
+
   const targetDirName = detectTargetName()
   if (!targetDirName) {
+    if (isStrict) {
+      fail(`Target platform ${process.platform}/${process.arch} not supported for prebuilt native binaries.`)
+    }
     console.log(`[build-fdx-packages] Target platform ${process.platform}/${process.arch} not configured for automatic packaging.`)
     return
   }
@@ -53,77 +68,104 @@ function main() {
         cwd: PKG_ROOT,
         stdio: "inherit",
       })
-    } catch {
+    } catch (e) {
+      if (isStrict) fail("Rust compilation failed", e)
       console.log(`[build-fdx-packages] Rust compilation skipped or cargo unavailable.`)
       return
     }
   }
 
   if (!existsSync(cargoTargetBin)) {
+    if (isStrict) fail(`Compiled binary not found at ${cargoTargetBin}`)
     console.log(`[build-fdx-packages] Compiled binary not found at ${cargoTargetBin}`)
     return
   }
 
-  mkdirSync(destDir, { recursive: true })
-  const destBin = join(destDir, execName)
-  copyFileSync(cargoTargetBin, destBin)
-
-  // Calculate SHA-256 and byte size
-  const buf = readFileSync(destBin)
-  const sha256 = createHash("sha256").update(buf).digest("hex")
-
-  const checksumManifest = {
-    packageName: `@heidi-dang/${targetDirName}`,
-    version: "1.0.4",
-    executable: execName,
-    sha256,
-    builtAt: new Date().toISOString(),
-  }
-  writeFileSync(join(destDir, "checksum.json"), JSON.stringify(checksumManifest, null, 2), "utf-8")
-
-  const provenanceManifest = {
-    packageName: `@heidi-dang/${targetDirName}`,
-    packageVersion: "1.0.4",
-    flowdeckVersion: "1.0.4",
-    fdxBinaryVersion: "1.0.4",
-    fdxProtocolVersion: "1.0.0",
-    targetTriple: process.platform === "win32" ? "x86_64-pc-windows-msvc" : `${process.arch}-unknown-${process.platform}-gnu`,
-    platform: process.platform,
-    architecture: process.arch,
-    binaryFilename: execName,
-    binaryByteSize: buf.length,
-    sha256,
-    buildProfile: "release",
-    buildTimestamp: new Date().toISOString(),
-    gitCommit: tryExec("git", ["rev-parse", "HEAD"]) || "0000000000000000000000000000000000000000",
-    sourceCommitSha: tryExec("git", ["rev-parse", "HEAD"]) || "0000000000000000000000000000000000000000",
-    gitBranch: tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]),
-    ciRunId: process.env.GITHUB_RUN_ID ?? null,
-    ciRunUrl: process.env.GITHUB_RUN_ID ? `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null,
-    builderPlatform: `${process.platform}/${process.arch}`,
-    rustVersion: tryExec("rustc", ["--version"]),
-  }
-  writeFileSync(join(destDir, "provenance.json"), JSON.stringify(provenanceManifest, null, 2), "utf-8")
-
-  // Copy License & README
-  if (existsSync(join(PKG_ROOT, "LICENSE"))) {
-    copyFileSync(join(PKG_ROOT, "LICENSE"), join(destDir, "LICENSE"))
-  }
-  if (!existsSync(join(destDir, "README.md"))) {
-    writeFileSync(join(destDir, "README.md"), `# @heidi-dang/${targetDirName}\n\nPrebuilt native FDX executable binary for FlowDeck.\n`, "utf-8")
-  }
-
-  // Pack target package into .tgz artifact
-  let tgzName = null
   try {
-    tgzName = execFileSync("npm", ["pack"], { cwd: destDir, encoding: "utf-8" }).trim().split("\n").pop()
-  } catch {}
+    mkdirSync(destDir, { recursive: true })
+    const destBin = join(destDir, execName)
+    copyFileSync(cargoTargetBin, destBin)
 
-  console.log(`[build-fdx-packages] Successfully populated ${destDir}`)
-  console.log(`  Binary:     ${destBin}`)
-  console.log(`  SHA-256:    ${sha256}`)
-  console.log(`  Size:       ${buf.length} bytes`)
-  if (tgzName) console.log(`  Tarball:    ${join(destDir, tgzName)}`)
+    // Calculate SHA-256 and byte size
+    const buf = readFileSync(destBin)
+    const sha256 = createHash("sha256").update(buf).digest("hex")
+
+    const checksumManifest = {
+      packageName: `@heidi-dang/${targetDirName}`,
+      version: flowdeckVersion,
+      executable: execName,
+      sha256,
+      builtAt: new Date().toISOString(),
+    }
+    writeFileSync(join(destDir, "checksum.json"), JSON.stringify(checksumManifest, null, 2), "utf-8")
+
+    const currentCommit = tryExec("git", ["rev-parse", "HEAD"]) || process.env.GITHUB_SHA || "0000000000000000000000000000000000000000"
+    const currentBranch = tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]) || process.env.GITHUB_REF_NAME || "main"
+
+    const provenanceManifest = {
+      packageName: `@heidi-dang/${targetDirName}`,
+      packageVersion: flowdeckVersion,
+      flowdeckVersion: flowdeckVersion,
+      fdxBinaryVersion: flowdeckVersion,
+      fdxProtocolVersion: "1.0.0",
+      targetTriple: process.platform === "win32" ? "x86_64-pc-windows-msvc" : `${process.arch}-unknown-${process.platform}-gnu`,
+      platform: process.platform,
+      architecture: process.arch,
+      binaryFilename: execName,
+      binaryByteSize: buf.length,
+      sha256,
+      sourceCommitSha: currentCommit,
+      gitCommit: currentCommit,
+      gitBranch: currentBranch,
+      workflowRunId: process.env.GITHUB_RUN_ID ?? null,
+      ciRunId: process.env.GITHUB_RUN_ID ?? null,
+      builderPlatform: `${process.platform}/${process.arch}`,
+      rustVersion: tryExec("rustc", ["--version"]) || "rustc 1.84.0",
+      buildProfile: "release",
+      buildTimestamp: new Date().toISOString(),
+    }
+    const provStr = JSON.stringify(provenanceManifest, null, 2)
+    writeFileSync(join(destDir, "provenance.json"), provStr, "utf-8")
+
+    // Copy License & README
+    if (existsSync(join(PKG_ROOT, "LICENSE"))) {
+      copyFileSync(join(PKG_ROOT, "LICENSE"), join(destDir, "LICENSE"))
+    }
+    if (!existsSync(join(destDir, "README.md"))) {
+      writeFileSync(join(destDir, "README.md"), `# @heidi-dang/${targetDirName}\n\nPrebuilt native FDX executable binary for FlowDeck.\n`, "utf-8")
+    }
+
+    // Pack target package into .tgz artifact
+    const tgzName = execFileSync("npm", ["pack"], { cwd: destDir, encoding: "utf-8" }).trim().split("\n").pop()
+    const tgzPath = join(destDir, tgzName)
+    const tgzBuf = readFileSync(tgzPath)
+    const tgzSha256 = createHash("sha256").update(tgzBuf).digest("hex")
+    const tgzSri = `sha512-${createHash("sha512").update(tgzBuf).digest("base64")}`
+    const provSha256 = createHash("sha256").update(Buffer.from(provStr)).digest("hex")
+
+    const artifactManifest = {
+      packageName: `@heidi-dang/${targetDirName}`,
+      packageVersion: flowdeckVersion,
+      target: targetDirName,
+      sourceCommitSha: currentCommit,
+      artifactFilename: tgzName,
+      artifactSha256: tgzSha256,
+      npmIntegrity: tgzSri,
+      binarySha256: sha256,
+      provenanceSha256: provSha256,
+      builtAt: new Date().toISOString(),
+    }
+    writeFileSync(join(destDir, "artifact-manifest.json"), JSON.stringify(artifactManifest, null, 2), "utf-8")
+
+    console.log(`[build-fdx-packages] Successfully populated ${destDir}`)
+    console.log(`  Binary:     ${destBin}`)
+    console.log(`  SHA-256:    ${sha256}`)
+    console.log(`  Size:       ${buf.length} bytes`)
+    console.log(`  Tarball:    ${tgzPath}`)
+    console.log(`  Manifest:   ${join(destDir, "artifact-manifest.json")}`)
+  } catch (err) {
+    fail(`Failed to populate package ${targetDirName}`, err)
+  }
 }
 
 main()

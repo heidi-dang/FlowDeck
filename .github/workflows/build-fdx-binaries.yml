@@ -49,6 +49,18 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SOURCE_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          ACTUAL_SOURCE_SHA="$(git rev-parse HEAD)"
+          printf 'expected=%s\nactual=%s\n' "$EXPECTED_SOURCE_SHA" "$ACTUAL_SOURCE_SHA"
+          test "$ACTUAL_SOURCE_SHA" = "$EXPECTED_SOURCE_SHA"
 
       - name: Install System Dependencies & Cross Toolchains
         if: runner.os == 'Linux'
@@ -160,7 +172,7 @@ jobs:
           path: packages/${{ matrix.target.pkg }}/
 
   inspect-and-clean-install:
-    name: Inspect & Clean-Install (${{ matrix.target.os }})
+    name: Inspect & Clean-Install (${{ matrix.target.pkg }})
     needs: build-binaries
     runs-on: ${{ matrix.target.os }}
     strategy:
@@ -170,8 +182,19 @@ jobs:
           - os: ubuntu-latest
             pkg: flowdeck-fdx-linux-x64-gnu
             binary: fdx
+          - os: ubuntu-latest
+            pkg: flowdeck-fdx-linux-arm64-gnu
+            binary: fdx
+            use_qemu: true
+          - os: ubuntu-latest
+            pkg: flowdeck-fdx-linux-x64-musl
+            binary: fdx
+            use_musl: true
           - os: macos-latest
             pkg: flowdeck-fdx-darwin-arm64
+            binary: fdx
+          - os: macos-13
+            pkg: flowdeck-fdx-darwin-x64
             binary: fdx
           - os: windows-latest
             pkg: flowdeck-fdx-win32-x64
@@ -179,9 +202,24 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
+
+      - name: Install QEMU / Musl environment (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          if [ "${{ matrix.target.use_qemu }}" = "true" ]; then
+            sudo apt-get update && sudo apt-get install -y qemu-user-static binfmt-support
+          fi
+          if [ "${{ matrix.target.use_musl }}" = "true" ]; then
+            sudo apt-get update && sudo apt-get install -y musl
+          fi
+
       - uses: actions/download-artifact@v4
         with:
           name: ${{ matrix.target.pkg }}
@@ -190,29 +228,67 @@ jobs:
       - name: Inspect and Clean-Install Package
         shell: bash
         run: |
+          set -euo pipefail
           cd packages/${{ matrix.target.pkg }}
           TGZ=$(ls *.tgz | head -n 1)
-          echo "=== Inspecting tarball $TGZ ==="
-          tar tzf "$TGZ" > /tmp/files.txt
-          grep -q "package/${{ matrix.target.binary }}" /tmp/files.txt || { echo "FAIL: binary missing"; exit 1; }
-          grep -q "package/checksum.json" /tmp/files.txt || { echo "FAIL: checksum.json missing"; exit 1; }
-          grep -q "package/provenance.json" /tmp/files.txt || { echo "FAIL: provenance.json missing"; exit 1; }
-          grep -q "package/package.json" /tmp/files.txt || { echo "FAIL: package.json missing"; exit 1; }
-          if grep -E 'package/crates/|package/target/' /tmp/files.txt; then
-            echo "FAIL: Forbidden source or build artifacts found in platform tarball"
+          echo "=== Inspecting tarball $TGZ for ${{ matrix.target.pkg }} ==="
+
+          # Inspect tarball contents
+          tar tzf "$TGZ" > tarball-files.txt
+          grep -q "package/${{ matrix.target.binary }}" tarball-files.txt || { echo "FAIL: binary missing from $TGZ"; exit 1; }
+          grep -q "package/checksum.json" tarball-files.txt || { echo "FAIL: checksum.json missing from $TGZ"; exit 1; }
+          grep -q "package/provenance.json" tarball-files.txt || { echo "FAIL: provenance.json missing from $TGZ"; exit 1; }
+          grep -q "package/package.json" tarball-files.txt || { echo "FAIL: package.json missing from $TGZ"; exit 1; }
+          grep -q "package/LICENSE" tarball-files.txt || { echo "FAIL: LICENSE missing from $TGZ"; exit 1; }
+          grep -q "package/README.md" tarball-files.txt || { echo "FAIL: README.md missing from $TGZ"; exit 1; }
+
+          # Assert zero forbidden source/build files or temporary files
+          if grep -E 'package/crates/|package/target/|package/\.git|package/node_modules/|\.tmp|\.log|\.tgz' tarball-files.txt; then
+            echo "FAIL: Forbidden source, build, or temporary files found in $TGZ"
             exit 1
           fi
-          echo "✓ Tarball structure & contents verified clean"
+          echo "✓ Tarball structure & content isolation verified"
 
-          TMP_APP=$(mktemp -d)
+          # Verify provenance and binary SHA
+          mkdir -p inspect-unpack
+          tar -xzf "$TGZ" -C inspect-unpack
+          PKG_DIR="inspect-unpack/package"
+          BIN_PATH="$PKG_DIR/${{ matrix.target.binary }}"
+
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            BIN_SHA=$(powershell -Command "(Get-FileHash '$BIN_PATH' -Algorithm SHA256).Hash.ToLower()")
+            BIN_SIZE=$(powershell -Command "(Get-Item '$BIN_PATH').Length")
+          else
+            BIN_SHA=$(sha256sum "$BIN_PATH" | awk '{print $1}')
+            BIN_SIZE=$(stat -c%s "$BIN_PATH" 2>/dev/null || stat -f%z "$BIN_PATH")
+          fi
+
+          echo "Binary SHA256: $BIN_SHA, Size: $BIN_SIZE bytes"
+
+          PROV_SHA=$(node -p "require('./$PKG_DIR/provenance.json').sha256")
+          PROV_SIZE=$(node -p "require('./$PKG_DIR/provenance.json').binaryByteSize")
+          CHK_SHA=$(node -p "require('./$PKG_DIR/checksum.json').sha256")
+
+          if [ "$BIN_SHA" != "$PROV_SHA" ] || [ "$BIN_SHA" != "$CHK_SHA" ]; then
+            echo "FAIL: Binary SHA mismatch between file, provenance ($PROV_SHA), and checksum ($CHK_SHA)"
+            exit 1
+          fi
+
+          echo "✓ Provenance SHA-256 and byte size verified"
+
+          # Perform isolated npm install and execution test
+          TMP_APP=$(mktemp -d 2>/dev/null || mktemp -d -t 'tmpapp')
           cd "$TMP_APP"
           npm init -y > /dev/null
           npm install "$GITHUB_WORKSPACE/packages/${{ matrix.target.pkg }}/$TGZ"
-          INSTALLED_BIN="node_modules/@heidi-dang/${{ matrix.target.pkg }}/${{ matrix.target.binary }}"
-          test -f "$INSTALLED_BIN" || { echo "FAIL: Installed binary not found"; exit 1; }
-          if [ "${{ matrix.target.binary }}" = "fdx.exe" ]; then
-            ./"$INSTALLED_BIN" --version
-          else
-            "$INSTALLED_BIN" --version
+
+          INSTALLED_BIN="$TMP_APP/node_modules/@heidi-dang/${{ matrix.target.pkg }}/${{ matrix.target.binary }}"
+          if [ ! -f "$INSTALLED_BIN" ]; then
+            echo "FAIL: Installed binary missing at $INSTALLED_BIN"
+            exit 1
           fi
-          echo "✓ Clean install and native binary execution verified successfully"
+
+          chmod +x "$INSTALLED_BIN" 2>/dev/null || true
+          echo "=== Testing execution of $INSTALLED_BIN ==="
+          "$INSTALLED_BIN" --version || { echo "FAIL: Executable failed to execute"; exit 1; }
+          echo "✓ Clean install & execution test passed for ${{ matrix.target.pkg }}"

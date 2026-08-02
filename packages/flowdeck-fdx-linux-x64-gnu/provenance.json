@@ -10,13 +10,13 @@
   "binaryFilename": "fdx",
   "binaryByteSize": 10605848,
   "sha256": "3db48a0b85dbb8074f996ffa167486b49d1c25e1e80dcfa85aba28a4570a33f0",
-  "buildProfile": "release",
-  "buildTimestamp": "2026-08-02T06:49:49.319Z",
-  "gitCommit": "729f1b84381035dbe122341e64ae4fc97b1809ad",
-  "sourceCommitSha": "729f1b84381035dbe122341e64ae4fc97b1809ad",
+  "sourceCommitSha": "b271fdff00aa695976765907077e38ece7ed2c02",
+  "gitCommit": "b271fdff00aa695976765907077e38ece7ed2c02",
   "gitBranch": "fix/fdx-native-binary-distribution",
+  "workflowRunId": null,
   "ciRunId": null,
-  "ciRunUrl": null,
   "builderPlatform": "linux/x64",
-  "rustVersion": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
+  "rustVersion": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "buildProfile": "release",
+  "buildTimestamp": "2026-08-02T07:21:13.660Z"
 }

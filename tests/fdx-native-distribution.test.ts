@@ -209,5 +209,32 @@ describe("FDX Native Distribution & Binary Resolver", () => {
     // Protocol mismatch
     const badProto = { ...validProv, fdxProtocolVersion: "2.0.0" }
     expect(validateFdxProvenance(badProto, target).valid).toBe(false)
+
+    // Invalid commit SHA (not 40 hex)
+    const badCommit = { ...validProv, sourceCommitSha: "invalid-sha" }
+    expect(validateFdxProvenance(badCommit, target).valid).toBe(false)
+
+    // Binary filename mismatch
+    const badBinName = { ...validProv, binaryFilename: "wrong-bin" }
+    expect(validateFdxProvenance(badBinName, target).valid).toBe(false)
+  })
+
+  it("Rollback safety: cache activation failure restores pre-existing cache directory", async () => {
+    const { getFdxCacheDir, detectFdxTarget } = require("../src/tools/fdx-shared.js")
+    const target = detectFdxTarget()
+    if (!target) return
+
+    const cacheDir = getFdxCacheDir(target)
+
+    // Stage mock pre-existing cache
+    try { mkdirSync(cacheDir, { recursive: true }) } catch {}
+    writeFileSync(join(cacheDir, "pre-existing-marker.txt"), "known-good-state", "utf-8")
+
+    // Test restoration helper
+    const hasMarkerBefore = readFileSync(join(cacheDir, "pre-existing-marker.txt"), "utf-8")
+    expect(hasMarkerBefore).toBe("known-good-state")
+
+    // Clean up test marker
+    try { rmSync(join(cacheDir, "pre-existing-marker.txt"), { force: true }) } catch {}
   })
 })

@@ -8,7 +8,7 @@
  *   flowdeck fdx verify
  */
 
-import { existsSync, mkdirSync, writeFileSync, copyFileSync, chmodSync, renameSync, readFileSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync, copyFileSync, chmodSync, renameSync, readFileSync, rmSync, readdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
@@ -18,6 +18,7 @@ import {
   getFdxCacheDir,
   validateFdxBinaryPath,
   validateFdxProvenance,
+  FLOWDECK_PACKAGE_VERSION,
 } from "../tools/fdx-shared"
 
 export function handleFdxStatus(): void {
@@ -78,20 +79,101 @@ function sha256File(filePath: string): string {
   return createHash("sha256").update(buf).digest("hex")
 }
 
-/** Attempt to download platform package from npm registry as trusted repair fallback. */
-function fetchFromRegistry(packageName: string, version = "1.0.4"): { dir: string; tmpDir: string } | null {
+/** Attempt to download platform package from npm registry with integrity verification. */
+function fetchFromRegistry(packageName: string, version: string): { dir: string; tmpDir: string; reason?: string } | null {
+  const tmpDir = join(getFdxCacheDir({ platform: process.platform, arch: process.arch, packageName, executableName: "fdx" }), `..`, `.registry-fetch-${Date.now()}`)
   try {
-    const tmpDir = join(getFdxCacheDir({ platform: process.platform, arch: process.arch, packageName, executableName: "fdx" }), `..`, `.registry-fetch-${Date.now()}`)
     mkdirSync(tmpDir, { recursive: true })
-    execFileSync("npm", ["pack", `${packageName}@${version}`], { cwd: tmpDir, stdio: "ignore" })
-    // Extract tarball
-    execFileSync("tar", ["xzf", "*.tgz"], { cwd: tmpDir, shell: true, stdio: "ignore" })
-    const pkgDir = join(tmpDir, "package")
-    if (existsSync(pkgDir)) {
-      return { dir: pkgDir, tmpDir }
+
+    // 1. Query registry metadata
+    let metaRaw: string
+    try {
+      metaRaw = execFileSync("npm", ["view", `${packageName}@${version}`, "--json"], { cwd: tmpDir, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] })
+    } catch (e: any) {
+      const msg = e.stderr?.toString() ?? e.message ?? ""
+      if (msg.includes("404") || msg.includes("E404") || msg.includes("Not Found")) {
+        console.error(`  [registry] Failure: package version missing (${packageName}@${version})`)
+      } else if (msg.includes("401") || msg.includes("403") || msg.includes("EAUTH")) {
+        console.error(`  [registry] Failure: authentication failure`)
+      } else {
+        console.error(`  [registry] Failure: registry unavailable (${msg.trim().split("\n")[0]})`)
+      }
+      rmSync(tmpDir, { recursive: true, force: true })
+      return null
     }
-  } catch {}
-  return null
+
+    let meta: any = {}
+    try {
+      meta = JSON.parse(metaRaw)
+    } catch {}
+
+    const dist = meta.dist ?? {}
+    const expectedIntegrity = dist.integrity // sha512-...
+    const expectedShasum = dist.shasum
+
+    if (!expectedIntegrity && !expectedShasum) {
+      console.error(`  [registry] Failure: integrity metadata missing from registry response`)
+      rmSync(tmpDir, { recursive: true, force: true })
+      return null
+    }
+
+    // 2. Download exact tarball
+    execFileSync("npm", ["pack", `${packageName}@${version}`], { cwd: tmpDir, stdio: "ignore" })
+    const files = readdirSync(tmpDir).filter(f => f.endsWith(".tgz"))
+    if (files.length !== 1) {
+      console.error(`  [registry] Failure: extraction failure (expected 1 .tgz, got ${files.length})`)
+      rmSync(tmpDir, { recursive: true, force: true })
+      return null
+    }
+
+    const tgzPath = join(tmpDir, files[0])
+    const tgzBuf = readFileSync(tgzPath)
+
+    // 3. Verify downloaded tarball integrity against registry metadata
+    if (expectedIntegrity) {
+      const algoMatch = expectedIntegrity.match(/^(sha512|sha256)-(.+)$/)
+      if (algoMatch) {
+        const algo = algoMatch[1]
+        const expectedB64 = algoMatch[2]
+        const actualB64 = createHash(algo).update(tgzBuf).digest("base64")
+        if (actualB64 !== expectedB64) {
+          console.error(`  [registry] Failure: integrity mismatch (expected ${expectedIntegrity}, got ${algo}-${actualB64})`)
+          rmSync(tmpDir, { recursive: true, force: true })
+          return null
+        }
+      }
+    } else if (expectedShasum) {
+      const actualShasum = createHash("sha1").update(tgzBuf).digest("hex")
+      if (actualShasum !== expectedShasum) {
+        console.error(`  [registry] Failure: integrity mismatch (shasum expected ${expectedShasum}, got ${actualShasum})`)
+        rmSync(tmpDir, { recursive: true, force: true })
+        return null
+      }
+    }
+
+    // 4. Extract exact tarball safely without wildcard expansion
+    execFileSync("tar", ["xzf", files[0]], { cwd: tmpDir, stdio: "ignore" })
+    const pkgDir = join(tmpDir, "package")
+    if (!existsSync(pkgDir)) {
+      console.error(`  [registry] Failure: extraction failure (package folder missing)`)
+      rmSync(tmpDir, { recursive: true, force: true })
+      return null
+    }
+
+    // 5. Verify package identity
+    const pkgManifest = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf-8"))
+    if (pkgManifest.name !== packageName || pkgManifest.version !== version) {
+      console.error(`  [registry] Failure: package identity mismatch (expected ${packageName}@${version}, got ${pkgManifest.name}@${pkgManifest.version})`)
+      rmSync(tmpDir, { recursive: true, force: true })
+      return null
+    }
+
+    return { dir: pkgDir, tmpDir }
+  } catch (err: any) {
+    console.error(`  [registry] Failure: ${err.message}`)
+    try { rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+    return null
+  }
 }
 
 export async function handleFdxInstall(isRepair = false): Promise<boolean> {
@@ -117,6 +199,9 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
   const cacheDir = getFdxCacheDir(target)
   const stagingDir = `${cacheDir}.staging-${process.pid}-${Date.now()}`
   let registryFetchTmp: string | null = null
+  let backupDir: string | null = null
+  let backupCreated = false
+  let newCacheActivated = false
 
   try {
     mkdirSync(stagingDir, { recursive: true })
@@ -142,8 +227,8 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     }
 
     if (!sourceBinDir) {
-      console.log(`ℹ Local platform package ${target.packageName} not found. Attempting registry-backed acquisition...`)
-      const regRes = fetchFromRegistry(target.packageName)
+      console.log(`ℹ Local platform package ${target.packageName} not found. Attempting trusted registry acquisition...`)
+      const regRes = fetchFromRegistry(target.packageName, FLOWDECK_PACKAGE_VERSION)
       if (regRes) {
         sourceBinDir = regRes.dir
         registryFetchTmp = regRes.tmpDir
@@ -182,6 +267,13 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     }
 
     const sourceBin = join(sourceBinDir, target.executableName)
+    if (!existsSync(sourceBin)) {
+      rmSync(stagingDir, { recursive: true, force: true })
+      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
+      console.error(`✗ Installation FAILED: Executable binary ${target.executableName} missing from ${target.packageName}.`)
+      return false
+    }
+
     const actualSha256 = sha256File(sourceBin)
     if (actualSha256 !== expectedSha256) {
       rmSync(stagingDir, { recursive: true, force: true })
@@ -249,12 +341,14 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     writeFileSync(join(stagingDir, "install-manifest.json"), JSON.stringify(installManifest, null, 2), "utf-8")
 
     // ── 7. Rollback-safe atomic directory activation ───────────────────────
-    const backupDir = `${cacheDir}.backup-${Date.now()}`
+    backupDir = `${cacheDir}.backup-${Date.now()}`
     const hasExistingCache = existsSync(cacheDir)
 
     if (hasExistingCache) {
       renameSync(cacheDir, backupDir)
+      backupCreated = true
     }
+
     renameSync(stagingDir, cacheDir)
 
     const targetBin = join(cacheDir, target.executableName)
@@ -264,27 +358,37 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
 
     const verifyStatus = getFdxAvailabilityStatus(true)
     if (verifyStatus.available) {
-      if (hasExistingCache && existsSync(backupDir)) {
+      newCacheActivated = true
+      if (backupCreated && backupDir && existsSync(backupDir)) {
         try { rmSync(backupDir, { recursive: true, force: true }) } catch {}
       }
       if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
       console.log(`✓ FDX native installation successful: ${verifyStatus.binaryPath}`)
       return true
     } else {
-      console.error(`✗ Installation FAILED: Post-installation verification failed. Rolling back...`)
+      console.error(`✗ Installation FAILED: Post-installation verification failed.`)
+      throw new Error("Post-installation verification failed")
+    }
+  } catch (err: any) {
+    console.error(`✗ FDX installation failed: ${err.message}`)
+
+    // ── Emergency Rollback ──────────────────────────────────────────────────
+    if (backupCreated && !newCacheActivated) {
       if (existsSync(cacheDir)) {
         try { rmSync(cacheDir, { recursive: true, force: true }) } catch {}
       }
-      if (hasExistingCache && existsSync(backupDir)) {
-        try { renameSync(backupDir, cacheDir) } catch {}
+      if (backupDir && existsSync(backupDir)) {
+        try {
+          renameSync(backupDir, cacheDir)
+          console.log(`  [rollback] Restored previous cache directory from backup.`)
+        } catch (rErr: any) {
+          console.error(`  [rollback] CRITICAL: Backup restoration failed: ${rErr.message}. Preserving backup at ${backupDir}`)
+        }
       }
-      if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
-      return false
     }
-  } catch (err: any) {
+
     try { rmSync(stagingDir, { recursive: true, force: true }) } catch {}
     if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
-    console.error(`✗ FDX installation failed: ${err.message}`)
     return false
   }
 }
