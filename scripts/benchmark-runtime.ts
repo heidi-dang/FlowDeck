@@ -473,11 +473,35 @@ function averageSummaries(a: MetricSummary, b: MetricSummary): MetricSummary {
   };
 }
 
+/** Number of independent ABBA rounds to aggregate (median-of-medians). */
+const BENCHMARK_ROUNDS = 3;
+
+function medianOf(ns: number[]): number {
+  const sorted = [...ns].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
+
+/**
+ * Aggregate multiple summaries into one, taking the median of the per-round
+ * medians (robust against a single noisy round on a shared machine).
+ */
+function aggregateSummaries(rounds: MetricSummary[]): MetricSummary {
+  return {
+    meanMs: round(rounds.reduce((a, s) => a + s.meanMs, 0) / rounds.length),
+    medianMs: round(medianOf(rounds.map((s) => s.medianMs))),
+    p95Ms: round(rounds.reduce((a, s) => a + s.p95Ms, 0) / rounds.length),
+    minMs: Math.min(...rounds.map((s) => s.minMs)),
+    maxMs: Math.max(...rounds.map((s) => s.maxMs)),
+    iterations: rounds.reduce((a, s) => a + s.iterations, 0),
+  };
+}
+
 /**
  * ABBA measurement: run candidate-first AND baseline-first, then average the
  * per-metric medians. A single pass always measures the first module cold and
  * the second warm, which biases the comparison on noisy machines; averaging
- * both orders cancels that bias.
+ * both orders cancels that bias. Multiple rounds are aggregated with
+ * median-of-medians so a single scheduling hiccup cannot flip the gate.
  */
 async function measureABBA(
   candidateMod: RuntimeModule,
@@ -489,16 +513,29 @@ async function measureABBA(
   await measureAll(candidateMod);
   await measureAll(baselineMod);
 
-  const c1 = await measureAll(candidateMod);
-  const b1 = await measureAll(baselineMod);
-  const b2 = await measureAll(baselineMod);
-  const c2 = await measureAll(candidateMod);
+  const candidateRounds: Metrics[] = [];
+  const baselineRounds: Metrics[] = [];
+  for (let round = 0; round < BENCHMARK_ROUNDS; round++) {
+    const c1 = await measureAll(candidateMod);
+    const b1 = await measureAll(baselineMod);
+    const b2 = await measureAll(baselineMod);
+    const c2 = await measureAll(candidateMod);
+
+    const candidateRound = {} as Metrics;
+    const baselineRound = {} as Metrics;
+    for (const id of METRIC_IDS) {
+      candidateRound[id] = averageSummaries(c1[id], c2[id]);
+      baselineRound[id] = averageSummaries(b1[id], b2[id]);
+    }
+    candidateRounds.push(candidateRound);
+    baselineRounds.push(baselineRound);
+  }
 
   const candidate = {} as Metrics;
   const baseline = {} as Metrics;
   for (const id of METRIC_IDS) {
-    candidate[id] = averageSummaries(c1[id], c2[id]);
-    baseline[id] = averageSummaries(b1[id], b2[id]);
+    candidate[id] = aggregateSummaries(candidateRounds.map((r) => r[id]));
+    baseline[id] = aggregateSummaries(baselineRounds.map((r) => r[id]));
   }
   return { candidate, baseline };
 }
