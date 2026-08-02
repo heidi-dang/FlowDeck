@@ -16,31 +16,56 @@ const BENCHMARK_ARTIFACTS = [
   "runtime-benchmark.txt",
 ]
 
+const RUNTIME_METRICS = [
+  "runtimeInit",
+  "commitTransition",
+  "loadRunAfterRestart",
+  "completePath",
+  "cancellationPhase",
+]
+
+const FROZEN_BASELINE_SHA = "5809fcf1230ff349ff0d7f5b53ed75403f44573b"
+const RUNTIME_IMPLEMENTATION_BASELINE_SHA = "e22e04b38e45405b4ae9f15115012d0dce99c241"
+
 describe("Phase 8 — Benchmark Artifacts", () => {
   it.each(BENCHMARK_ARTIFACTS)("%s exists", (file) => {
     expect(existsSync(join(BENCHMARK_DIR, file))).toBe(true)
   })
 
-  it("runtime-benchmark.json is valid JSON with expected metrics", () => {
+  it("runtime-benchmark.json is fail-closed baseline-vs-candidate evidence", () => {
     const path = join(BENCHMARK_DIR, "runtime-benchmark.json")
     expect(existsSync(path)).toBe(true)
-    const raw = readFileSync(path, "utf-8")
-    const parsed = JSON.parse(raw) as {
+    const parsed = JSON.parse(readFileSync(path, "utf-8")) as {
+      mode: string
+      candidateSha: string
       baselineSha: string
+      frozenBaselineSha: string
+      runtimeImplementationBaselineSha: string
       metrics: Record<string, { meanMs: number; medianMs: number }>
+      baselineMetrics: Record<string, { meanMs: number; medianMs: number }>
+      comparison: { regressions: unknown[]; passed: boolean } | null
     }
-    expect(parsed.baselineSha).toBe("5809fcf1230ff349ff0d7f5b53ed75403f44573b")
-    expect(parsed.metrics).toBeDefined()
-    for (const metric of [
-      "runtimeInit",
-      "commitTransition",
-      "loadRunAfterRestart",
-      "completePath",
-      "cancellationPhase",
-    ]) {
+
+    // Fail-closed contract: never candidate-only, comparison always present.
+    expect(parsed.mode).toBe("baseline-vs-candidate")
+    expect(parsed.comparison).not.toBeNull()
+    expect(parsed.comparison?.passed).toBe(true)
+    expect(parsed.comparison?.regressions).toEqual([])
+
+    // Exact-SHA evidence: distinct baseline constants recorded.
+    expect(parsed.frozenBaselineSha).toBe(FROZEN_BASELINE_SHA)
+    expect(parsed.runtimeImplementationBaselineSha).toBe(RUNTIME_IMPLEMENTATION_BASELINE_SHA)
+    expect(parsed.candidateSha).toMatch(/^[0-9a-f]{40}$/)
+    expect(parsed.baselineSha).toMatch(/^[0-9a-f]{40}$/)
+
+    // Required metrics present on both candidate and baseline, positive.
+    for (const metric of RUNTIME_METRICS) {
       expect(parsed.metrics[metric]).toBeDefined()
       expect(parsed.metrics[metric].meanMs).toBeGreaterThan(0)
       expect(parsed.metrics[metric].medianMs).toBeGreaterThan(0)
+      expect(parsed.baselineMetrics[metric]).toBeDefined()
+      expect(parsed.baselineMetrics[metric].meanMs).toBeGreaterThan(0)
+      expect(parsed.baselineMetrics[metric].medianMs).toBeGreaterThan(0)
     }
   })
 
@@ -49,6 +74,9 @@ describe("Phase 8 — Benchmark Artifacts", () => {
     expect(existsSync(path)).toBe(true)
     const content = readFileSync(path, "utf-8")
     expect(content).toContain("Runtime Benchmark Report")
+    expect(content).toContain("Mode: baseline-vs-candidate")
+    expect(content).toContain("Candidate SHA:")
+    expect(content).toContain("Baseline SHA:")
     expect(content).toContain("runtimeInit")
     expect(content).toContain("commitTransition")
     expect(content).toContain("loadRunAfterRestart")
