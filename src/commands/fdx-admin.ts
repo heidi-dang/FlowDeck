@@ -8,8 +8,9 @@
  *   flowdeck fdx verify
  */
 
-import { existsSync, mkdirSync, writeFileSync, copyFileSync, chmodSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync, copyFileSync, chmodSync, renameSync, readFileSync, rmSync } from "node:fs"
 import { join, dirname } from "node:path"
+import { createHash } from "node:crypto"
 import {
   detectFdxTarget,
   getFdxAvailabilityStatus,
@@ -69,6 +70,12 @@ export function handleFdxVerify(): boolean {
   return true
 }
 
+/** Compute SHA-256 of a file and return the hex digest. */
+function sha256File(filePath: string): string {
+  const buf = readFileSync(filePath)
+  return createHash("sha256").update(buf).digest("hex")
+}
+
 export async function handleFdxInstall(isRepair = false): Promise<boolean> {
   const target = detectFdxTarget()
   console.log(`\n=== FlowDeck FDX ${isRepair ? "Repair" : "Installer"} ===`)
@@ -90,12 +97,13 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
   console.log(`Package: ${target.packageName}`)
 
   const cacheDir = getFdxCacheDir(target)
-  const targetBin = join(cacheDir, target.executableName)
-  const tmpDir = `${cacheDir}.tmp-${Date.now()}`
+  // Stage into a sibling directory; atomic rename at the end.
+  const stagingDir = `${cacheDir}.staging-${process.pid}-${Date.now()}`
 
   try {
-    mkdirSync(tmpDir, { recursive: true })
+    mkdirSync(stagingDir, { recursive: true })
 
+    // ── 1. Locate source platform package ──────────────────────────────────
     let sourceBinDir: string | null = null
     const searchDirs = [
       process.cwd(),
@@ -116,69 +124,94 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     }
 
     if (!sourceBinDir) {
-      // Clean temp
-      try {
-        const fs = await import("node:fs")
-        fs.rmSync(tmpDir, { recursive: true, force: true })
-      } catch {}
+      rmSync(stagingDir, { recursive: true, force: true })
       console.error(`✗ Installation FAILED: Could not locate platform package ${target.packageName}.`)
-      console.error(`  Ensure ${target.packageName} is installed or present in node_modules/packages directory.`)
+      console.error(`  Ensure ${target.packageName} is installed or present in node_modules.`)
+      console.error(`  Run: npm install ${target.packageName}`)
       return false
     }
 
-    const tmpBin = join(tmpDir, target.executableName)
-    copyFileSync(join(sourceBinDir, target.executableName), tmpBin)
-    if (existsSync(join(sourceBinDir, "checksum.json"))) {
-      copyFileSync(join(sourceBinDir, "checksum.json"), join(tmpDir, "checksum.json"))
+    // ── 2. Trusted acquisition — verify checksum before staging ────────────
+    const sourceChecksumPath = join(sourceBinDir, "checksum.json")
+    if (!existsSync(sourceChecksumPath)) {
+      rmSync(stagingDir, { recursive: true, force: true })
+      console.error(`✗ Installation FAILED: checksum.json missing from ${target.packageName}.`)
+      console.error(`  The platform package appears to be corrupt or tampered.`)
+      return false
     }
-    if (existsSync(join(sourceBinDir, "provenance.json"))) {
-      copyFileSync(join(sourceBinDir, "provenance.json"), join(tmpDir, "provenance.json"))
+
+    let expectedSha256: string
+    try {
+      const checksum = JSON.parse(readFileSync(sourceChecksumPath, "utf-8"))
+      expectedSha256 = checksum.sha256
+      if (!expectedSha256 || typeof expectedSha256 !== "string" || expectedSha256.length !== 64) {
+        throw new Error("sha256 field missing or malformed")
+      }
+    } catch (e: any) {
+      rmSync(stagingDir, { recursive: true, force: true })
+      console.error(`✗ Installation FAILED: checksum.json is corrupt: ${e.message}`)
+      return false
     }
+
+    const sourceBin = join(sourceBinDir, target.executableName)
+    const actualSha256 = sha256File(sourceBin)
+    if (actualSha256 !== expectedSha256) {
+      rmSync(stagingDir, { recursive: true, force: true })
+      console.error(`✗ Installation FAILED: Binary checksum mismatch for ${target.packageName}.`)
+      console.error(`  Expected: ${expectedSha256}`)
+      console.error(`  Actual:   ${actualSha256}`)
+      console.error(`  The binary may be corrupt or tampered. Re-install the platform package.`)
+      return false
+    }
+
+    // ── 3. Require provenance ───────────────────────────────────────────────
+    const sourceProvenancePath = join(sourceBinDir, "provenance.json")
+    if (!existsSync(sourceProvenancePath)) {
+      rmSync(stagingDir, { recursive: true, force: true })
+      console.error(`✗ Installation FAILED: provenance.json missing from ${target.packageName}.`)
+      console.error(`  The platform package is missing build provenance. Re-install the package.`)
+      return false
+    }
+
+    // ── 4. Stage all files ─────────────────────────────────────────────────
+    const stagedBin = join(stagingDir, target.executableName)
+    copyFileSync(sourceBin, stagedBin)
+    copyFileSync(sourceChecksumPath, join(stagingDir, "checksum.json"))
+    copyFileSync(sourceProvenancePath, join(stagingDir, "provenance.json"))
 
     if (process.platform !== "win32") {
-      chmodSync(tmpBin, 0o755)
+      chmodSync(stagedBin, 0o755)
     }
 
-    // Validate binary inside temporary directory before activation
-    const val = validateFdxBinaryPath(tmpBin, tmpDir, true)
+    // ── 5. Validate staged binary before activation ────────────────────────
+    const val = validateFdxBinaryPath(stagedBin, stagingDir, true)
     if (!val.valid) {
-      try {
-        const fs = await import("node:fs")
-        fs.rmSync(tmpDir, { recursive: true, force: true })
-      } catch {}
-      console.error(`✗ Installation FAILED: Validation of acquired binary failed: ${val.reason}`)
+      rmSync(stagingDir, { recursive: true, force: true })
+      console.error(`✗ Installation FAILED: Validation of staged binary failed: ${val.reason}`)
       return false
     }
 
-    // Write installation manifest
+    // ── 6. Write install manifest into staging dir ─────────────────────────
     const installManifest = {
       packageName: target.packageName,
       target: `${target.platform}-${target.arch}${target.libc ? `-${target.libc}` : ""}`,
       installedAt: new Date().toISOString(),
       installedBy: "flowdeck-cli",
+      sha256: actualSha256,
     }
-    writeFileSync(join(tmpDir, "install-manifest.json"), JSON.stringify(installManifest, null, 2), "utf-8")
+    writeFileSync(join(stagingDir, "install-manifest.json"), JSON.stringify(installManifest, null, 2), "utf-8")
 
-    // Atomic activation
-    mkdirSync(cacheDir, { recursive: true })
-    copyFileSync(tmpBin, targetBin)
-    if (existsSync(join(tmpDir, "checksum.json"))) {
-      copyFileSync(join(tmpDir, "checksum.json"), join(cacheDir, "checksum.json"))
+    // ── 7. Atomic activation via rename ───────────────────────────────────
+    // Remove existing cache dir so rename can succeed on all platforms.
+    if (existsSync(cacheDir)) {
+      rmSync(cacheDir, { recursive: true, force: true })
     }
-    if (existsSync(join(tmpDir, "provenance.json"))) {
-      copyFileSync(join(tmpDir, "provenance.json"), join(cacheDir, "provenance.json"))
-    }
-    writeFileSync(join(cacheDir, "install-manifest.json"), JSON.stringify(installManifest, null, 2), "utf-8")
+    renameSync(stagingDir, cacheDir)
 
+    const targetBin = join(cacheDir, target.executableName)
     if (process.platform !== "win32") {
       chmodSync(targetBin, 0o755)
     }
-
-    // Clean temp
-    try {
-      const fs = await import("node:fs")
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    } catch {}
 
     const verifyStatus = getFdxAvailabilityStatus(true)
     if (verifyStatus.available) {
@@ -189,10 +222,7 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
       return false
     }
   } catch (err: any) {
-    try {
-      const fs = await import("node:fs")
-      fs.rmSync(tmpDir, { recursive: true, force: true })
-    } catch {}
+    try { rmSync(stagingDir, { recursive: true, force: true }) } catch {}
     console.error(`✗ FDX installation failed: ${err.message}`)
     return false
   }

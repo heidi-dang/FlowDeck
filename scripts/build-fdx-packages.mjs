@@ -13,6 +13,15 @@ import { createHash } from "node:crypto"
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = join(__dirname, "..")
 
+/** Safely run a command and return trimmed stdout, or null on failure. */
+function tryExec(cmd, args) {
+  try {
+    return execFileSync(cmd, args, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim()
+  } catch {
+    return null
+  }
+}
+
 function detectTargetName() {
   const platform = process.platform
   const arch = process.arch
@@ -86,6 +95,12 @@ function main() {
     sha256,
     buildProfile: "release",
     buildTimestamp: new Date().toISOString(),
+    gitCommit: tryExec("git", ["rev-parse", "HEAD"]),
+    gitBranch: tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]),
+    ciRunId: process.env.GITHUB_RUN_ID ?? null,
+    ciRunUrl: process.env.GITHUB_RUN_ID ? `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : null,
+    builderPlatform: `${process.platform}/${process.arch}`,
+    rustVersion: tryExec("rustc", ["--version"]),
   }
   writeFileSync(join(destDir, "provenance.json"), JSON.stringify(provenanceManifest, null, 2), "utf-8")
 

@@ -83,6 +83,9 @@ jobs:
             console.log('Package contents verified: ' + out.files.length + ' files, ' + out.size + ' bytes');
           "
 
+      - name: Build Platform Packages
+        run: node scripts/build-fdx-packages.mjs
+
       # Never attempt a duplicate-version publish. A registry lookup failure
       # must fail the workflow — do not hide it, do not publish blindly.
       #
@@ -119,7 +122,32 @@ jobs:
 
           echo "Registry availability verified: @heidi-dang/flowdeck@${PKG_VERSION} is not published"
 
-      - name: Publish to npm
+      - name: Publish Platform Packages First
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          PLATFORM_PKGS=(
+            "flowdeck-fdx-darwin-arm64"
+            "flowdeck-fdx-darwin-x64"
+            "flowdeck-fdx-linux-arm64-gnu"
+            "flowdeck-fdx-linux-x64-gnu"
+            "flowdeck-fdx-linux-x64-musl"
+            "flowdeck-fdx-win32-x64"
+          )
+
+          for pkg in "${PLATFORM_PKGS[@]}"; do
+            echo "=== Publishing platform package @heidi-dang/${pkg}@${PKG_VERSION} ==="
+            cd "packages/${pkg}"
+            npm publish --provenance --access public || { echo "FAIL: Failed to publish @heidi-dang/${pkg}"; exit 1; }
+            cd "$GITHUB_WORKSPACE"
+
+            echo "Verifying availability of @heidi-dang/${pkg}@${PKG_VERSION} on npm..."
+            npm view "@heidi-dang/${pkg}@${PKG_VERSION}" version || { echo "FAIL: @heidi-dang/${pkg}@${PKG_VERSION} not found on registry after publish"; exit 1; }
+          done
+          echo "ALL SIX PLATFORM PACKAGES PUBLISHED AND VERIFIED SUCCESSFULLY"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish Main Package to npm
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

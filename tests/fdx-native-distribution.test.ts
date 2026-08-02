@@ -141,16 +141,18 @@ describe("FDX Native Distribution & Binary Resolver", () => {
     expect(typeof installOk).toBe("boolean")
   })
 
-  it("Clean packed install test: npm pack includes crates/fdx source and excludes target build artifacts", () => {
+  it("Clean packed install test: npm pack excludes crates/fdx source and excludes target build artifacts", () => {
     const root = resolve(__dirname, "..")
     const packOut = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf-8" })
     const packJson = JSON.parse(packOut)
     const files: string[] = packJson[0]?.files?.map((f: any) => f.path) ?? []
 
     const hasCargoToml = files.some(f => f === "crates/fdx/Cargo.toml")
+    const hasCratesSrc = files.some(f => f.startsWith("crates/fdx/src"))
     const hasTargetArtifacts = files.some(f => f.startsWith("crates/fdx/target"))
 
-    expect(hasCargoToml).toBe(true)
+    expect(hasCargoToml).toBe(false)
+    expect(hasCratesSrc).toBe(false)
     expect(hasTargetArtifacts).toBe(false)
   })
 })

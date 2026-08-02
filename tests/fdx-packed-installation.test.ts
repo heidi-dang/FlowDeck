@@ -22,7 +22,7 @@ describe("FDX Clean Packed Installation Tests", () => {
     } catch {}
   })
 
-  it.skipIf(process.platform === "win32")("packed CLI modules execute correctly from installed main tarball", () => {
+  it("packed CLI modules execute correctly from installed main tarball", () => {
     const root = resolve(__dirname, "..")
 
     // Build & pack local main package
@@ -78,15 +78,19 @@ describe("FDX Clean Packed Installation Tests", () => {
     try { rmSync(platformTarball, { force: true }) } catch {}
   }, 120000)
 
-  it("packed tarball includes crates/fdx source and excludes target build artifacts", () => {
+  it("packed tarball excludes Rust source and build artifacts", () => {
     const root = resolve(__dirname, "..")
     const packOut = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf-8" })
     const files: string[] = JSON.parse(packOut)[0]?.files?.map((f: any) => f.path) ?? []
 
+    // Rust source must not ship in the consumer tarball — binaries are
+    // distributed through the six platform-specific optional packages.
     const hasCargoToml = files.some(f => f === "crates/fdx/Cargo.toml")
+    const hasCratesSrc = files.some(f => f.startsWith("crates/fdx/src"))
     const hasTargetArtifacts = files.some(f => f.startsWith("crates/fdx/target"))
 
-    expect(hasCargoToml).toBe(true)
+    expect(hasCargoToml).toBe(false)
+    expect(hasCratesSrc).toBe(false)
     expect(hasTargetArtifacts).toBe(false)
   })
 })

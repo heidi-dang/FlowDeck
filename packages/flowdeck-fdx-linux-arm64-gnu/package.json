@@ -21,6 +21,7 @@
     "fdx",
     "checksum.json",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "provenance.json"
   ]
 }

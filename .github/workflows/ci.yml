@@ -102,7 +102,7 @@ jobs:
       - run: npm run validate:docs
       - name: Pack and inspect tarball
         run: |
-          node scripts/build-fdx-packages.mjs || true
+          node scripts/build-fdx-packages.mjs
           PACKAGE=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
           echo "Package: $PACKAGE"
           echo "FLOWDECK_TARBALL_PATH=$GITHUB_WORKSPACE/$PACKAGE" >> $GITHUB_ENV
@@ -111,10 +111,12 @@ jobs:
             echo "FAIL: Forbidden build or backup artifacts found in npm package"
             exit 1
           fi
-          grep -q "package/crates/fdx/Cargo.toml" /tmp/tarball-files.txt || { echo "FAIL: Cargo.toml missing"; exit 1; }
-          grep -q "package/crates/fdx/src/" /tmp/tarball-files.txt || { echo "FAIL: crates/fdx/src missing"; exit 1; }
+          if grep -E 'package/crates/' /tmp/tarball-files.txt; then
+            echo "FAIL: Rust source (crates/) found in consumer package"
+            exit 1
+          fi
           tar xzf "$PACKAGE" -O package/package.json | node -e "process.stdin.on('data',d=>{const p=JSON.parse(d);console.assert(p.name==='@heidi-dang/flowdeck','Wrong: '+p.name);console.log('PASS: '+p.name+' v'+p.version)})"
-          echo "PASS: tarball contents verified clean"
+          echo "PASS: tarball contents verified clean (no Rust source)"
           rm -f /tmp/tarball-files.txt
 
       - name: Packed tarball doctor gate (extracted layout, not repo checkout)
@@ -153,19 +155,23 @@ jobs:
         run: |
           set -e
           echo "Package path: $FLOWDECK_TARBALL_PATH"
+          cd "$GITHUB_WORKSPACE/packages/flowdeck-fdx-linux-x64-gnu"
+          PLATFORM_PKG=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
+          PLATFORM_TARBALL_PATH="$GITHUB_WORKSPACE/packages/flowdeck-fdx-linux-x64-gnu/$PLATFORM_PKG"
+
           TMP_ROOT=$(mktemp -d)
           TMP_APP="$TMP_ROOT/app"
           TMP_HOME="$TMP_ROOT/home"
           mkdir -p "$TMP_APP" "$TMP_HOME"
           cd "$TMP_APP"
           npm init -y > /dev/null 2>&1
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" npm install "$FLOWDECK_TARBALL_PATH" 2>&1
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" npm install "$FLOWDECK_TARBALL_PATH" "$PLATFORM_TARBALL_PATH" 2>&1
           echo "=== Running packed CLI ==="
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck --help || { echo "FAIL: --help"; exit 1; }
           echo "PASS: --help"
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js install || { echo "FAIL: install"; exit 1; }
           echo "PASS: install"
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js fdx repair || true
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js fdx repair || { echo "FAIL: fdx repair"; exit 1; }
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js verify || { echo "FAIL: verify"; exit 1; }
           echo "PASS: verify"
           set +e
@@ -462,18 +468,42 @@ jobs:
       - name: Packed CLI test with spaces
         run: |
           set -e
-          node scripts/build-fdx-packages.mjs || true
+          node scripts/build-fdx-packages.mjs
           PACKAGE=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
           TARBALL_PATH="$GITHUB_WORKSPACE/$PACKAGE"
+
+          TARGET_DIR=$(node -e '
+            const p = process.platform, a = process.arch;
+            let t = null;
+            if (p==="linux" && a==="x64") t="flowdeck-fdx-linux-x64-gnu";
+            else if (p==="linux" && a==="arm64") t="flowdeck-fdx-linux-arm64-gnu";
+            else if (p==="darwin" && a==="x64") t="flowdeck-fdx-darwin-x64";
+            else if (p==="darwin" && a==="arm64") t="flowdeck-fdx-darwin-arm64";
+            else if (p==="win32" && a==="x64") t="flowdeck-fdx-win32-x64";
+            console.log(t || "");
+          ')
+
+          PLATFORM_TARBALL_PATH=""
+          if [ -n "$TARGET_DIR" ] && [ -d "packages/$TARGET_DIR" ]; then
+            cd "packages/$TARGET_DIR"
+            PLATFORM_PKG=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
+            PLATFORM_TARBALL_PATH="$GITHUB_WORKSPACE/packages/$TARGET_DIR/$PLATFORM_PKG"
+            cd "$GITHUB_WORKSPACE"
+          fi
+
           TMP_ROOT=$(mktemp -d)
           SPACE_DIR="$TMP_ROOT/My Project With Spaces"
           mkdir -p "$SPACE_DIR/app" "$SPACE_DIR/home"
           cd "$SPACE_DIR/app"
           npm init -y > /dev/null 2>&1
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$TARBALL_PATH" 2>&1
+          if [ -n "$PLATFORM_TARBALL_PATH" ] && [ -f "$PLATFORM_TARBALL_PATH" ]; then
+            HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$TARBALL_PATH" "$PLATFORM_TARBALL_PATH" 2>&1
+          else
+            HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$TARBALL_PATH" 2>&1
+          fi
           echo "=== Testing packed CLI ==="
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js install || { echo "FAIL: install"; exit 1; }
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js fdx repair || true
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js fdx repair || { echo "FAIL: fdx repair"; exit 1; }
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js verify || { echo "FAIL: verify"; exit 1; }
           set +e
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js doctor --profile minimal

@@ -11,5 +11,11 @@
   "binaryByteSize": 10605848,
   "sha256": "3db48a0b85dbb8074f996ffa167486b49d1c25e1e80dcfa85aba28a4570a33f0",
   "buildProfile": "release",
-  "buildTimestamp": "2026-08-02T05:14:44.447Z"
+  "buildTimestamp": "2026-08-02T06:19:18.070Z",
+  "gitCommit": "ea5d2ec77c05a5e9ae3f53d8fff655a773cab59d",
+  "gitBranch": "fix/fdx-native-binary-distribution",
+  "ciRunId": null,
+  "ciRunUrl": null,
+  "builderPlatform": "linux/x64",
+  "rustVersion": "rustc 1.97.1 (8bab26f4f 2026-07-14)"
 }
