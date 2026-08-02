@@ -201,16 +201,13 @@ impl Server {
                 // input-order responses. Mutating/unknown ops are per-op
                 // errors; structural issues (empty, >64, dup ids) reject the
                 // whole batch with E_BAD_REQUEST.
-                let typed = !params.operations.is_empty();
-                let legacy = !params.requests.is_empty();
-                if !typed && !legacy {
-                    return Response::error(
-                        req.id,
-                        err::E_BAD_REQUEST,
-                        "batch.params must contain either operations (typed) or requests (legacy)",
-                    );
-                }
-                if typed {
+                let has_ops = !params.operations.is_empty();
+                let has_reqs = !params.requests.is_empty();
+                if has_ops || !has_reqs {
+                    // Typed path. An empty `operations` array with no legacy
+                    // requests reaches `execute_batch`, whose canonical
+                    // rejection matches the one-shot `batch-query` CLI and the
+                    // TS fallback ("batch.operations must not be empty").
                     let cwd = params.cwd.as_deref();
                     // Resolve the worktree index only when a testsFor op is
                     // present (other ops never need it).

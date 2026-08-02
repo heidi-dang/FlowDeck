@@ -181,7 +181,7 @@ describe("FDX capability metadata (daemon)", () => {
     expect(r.artifactRef).toBeDefined()
     const marker = r.result as { truncated: boolean; artifactRef: string; byteCount: number; limitBytes: number }
     expect(marker.truncated).toBe(true)
-    expect(marker.artifactRef).toBe(r.artifactRef)
+    expect(marker.artifactRef).toBe(r.artifactRef as string)
     expect(marker.limitBytes).toBeLessThanOrEqual(40 * 1024) // batch budget cap
     // Artifact holds the full payload; byte count matches the file size
     // (serialized JSON ≥ raw content).

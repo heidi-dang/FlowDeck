@@ -31,6 +31,13 @@ import {
   nativeGitFallback,
 } from "./fdx-shared"
 
+import {
+  BatchRejectError,
+  executeBatchFallback,
+  tsCapabilitiesPayload,
+  type BatchFallbackOptions,
+} from "./fdx-batch-fallback"
+
 // ─── Constants ─────────────────────────────────────────────────────────────
 
 /** Protocol version the client speaks. Must match the daemon's `v` field. */
@@ -203,6 +210,8 @@ export interface ClientResult<T> {
   value?: T
   fallback: FallbackReason
   reason?: string
+  /** Structural batch rejection (whole request failed, no BatchResponse). */
+  error?: { code: string; message: string }
   metrics?: {
     transport: "daemon" | "one-shot" | "ts-fallback"
     durationMs: number
@@ -911,6 +920,8 @@ function tsFallback(command: string, argv: string[]): string | null {
         return nativeOutlineFallback(argv.length ? argv : ["."])
       case "git":
         return nativeGitFallback(argv)
+      case "capabilities.query":
+        return JSON.stringify(tsCapabilitiesPayload())
       default:
         return null
     }
@@ -923,6 +934,193 @@ function parseNum(argv: string[], flag: string): number | undefined {
   const i = argv.indexOf(flag)
   const v = i >= 0 ? Number(argv[i + 1]) : NaN
   return Number.isFinite(v) ? v : undefined
+}
+
+// ─── High-level batch ladder (Phase 7: native/JS fallback parity) ──────────
+
+/**
+ * Execute a typed read-only batch through the same three-rung ladder as
+ * `runViaDaemon`: daemon `batch` method → one-shot `fdx batch-query` stdin
+ * spawn → pure-TS `executeBatchFallback`. The pure-TS rung emits
+ * wire-identical `BatchResponse` JSON, so results are interchangeable.
+ *
+ * A whole-batch structural rejection (empty / over-capacity / duplicate ids)
+ * is returned as `ClientResult.error` — the daemon reports it as a failed
+ * response and the one-shot/TS rungs normalize it to the same
+ * `{code, message}` pair, so callers never need to distinguish transports.
+ */
+export async function runBatchViaDaemon(
+  projectDir: string,
+  operations: BatchOperation[],
+  opts: {
+    cwd?: string
+    failFast?: boolean
+    client?: string
+    clientVersion?: string
+    timeoutMs?: number
+    allowTsFallback?: boolean
+  } = {},
+): Promise<ClientResult<BatchResponse>> {
+  const started = Date.now()
+  const client = daemonRegistry.get(projectDir)
+
+  try {
+    await client.ensureStarted()
+    await client.connect()
+    await client.hello(opts.client || "flowdeck", opts.clientVersion || "0.0.0")
+    const resp = await client.batch(operations, opts.cwd, opts.timeoutMs || DEFAULT_TIMEOUT_MS)
+    if (!resp.ok) {
+      const err = resp.error as DaemonError | undefined
+      if (err?.code === "E_UNSUPPORTED") {
+        // The daemon does not host the typed batch method (too old):
+        // fall through to the one-shot / TS rungs.
+        daemonRegistry.setFallback("command-not-hosted", err.message)
+        return fallbackToOneShotBatch(operations, opts, started)
+      }
+      // Definitive whole-batch rejection from a healthy daemon.
+      daemonRegistry.setFallback("ok")
+      return {
+        error: { code: err?.code ?? "E_INTERNAL", message: err?.message ?? "batch rejected" },
+        fallback: "ok",
+        metrics: { transport: "daemon", durationMs: Date.now() - started },
+      }
+    }
+    daemonRegistry.setFallback("ok")
+    return {
+      value: resp.result as BatchResponse,
+      fallback: "ok",
+      metrics: { transport: "daemon", durationMs: Date.now() - started },
+    }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    const reason: FallbackReason = msg.includes("protocol mismatch")
+      ? "daemon-incompatible"
+      : msg.includes("timed out")
+        ? "daemon-timeout"
+        : msg.includes("did not become ready") || msg.includes("during startup")
+          ? "daemon-not-ready"
+          : "daemon-unavailable"
+    daemonRegistry.setFallback(reason, msg)
+    await client.close().catch(() => undefined)
+    return fallbackToOneShotBatch(operations, opts, started)
+  }
+}
+
+/** One-shot `fdx batch-query` stdin spawn, then the pure-TS executor. */
+function fallbackToOneShotBatch(
+  operations: BatchOperation[],
+  opts: { cwd?: string; failFast?: boolean; allowTsFallback?: boolean },
+  started: number,
+): ClientResult<BatchResponse> {
+  if (shouldDisableFallback()) {
+    daemonRegistry.setFallback("disabled")
+    return {
+      fallback: "disabled",
+      reason: daemonRegistry.getFallbackState().lastDetail,
+      metrics: { transport: "one-shot", durationMs: Date.now() - started },
+    }
+  }
+
+  // Rung 2: one-shot native batch-query (same executor as the daemon).
+  if (resolveFdxBinaryPath()) {
+    try {
+      const out = runFdxWithStdin(
+        ["batch-query", "--cwd", opts.cwd ?? ".", ...(opts.failFast ? ["--fail-fast"] : [])],
+        JSON.stringify(operations),
+      )
+      const parsed = JSON.parse(out) as BatchResponse
+      if (parsed && Array.isArray(parsed.responses)) {
+        daemonRegistry.setFallback("ok")
+        return {
+          value: parsed,
+          fallback: "ok",
+          metrics: { transport: "one-shot", durationMs: Date.now() - started },
+        }
+      }
+    } catch (e) {
+      const reject = parseNativeRejection(e)
+      if (reject) {
+        // Native produced the same structural rejection the daemon would:
+        // normalize it instead of falling further.
+        daemonRegistry.setFallback("ok")
+        return {
+          error: reject,
+          fallback: "ok",
+          metrics: { transport: "one-shot", durationMs: Date.now() - started },
+        }
+      }
+      daemonRegistry.setFallback("native-unavailable", e instanceof Error ? e.message : String(e))
+    }
+  } else {
+    daemonRegistry.setFallback("native-unavailable", "no fdx binary on PATH")
+  }
+
+  // Rung 3: pure-TS canonical executor.
+  if (opts.allowTsFallback !== false) {
+    try {
+      const value = executeBatchFallback(operations, opts.cwd, {
+        failFast: opts.failFast === true,
+      } satisfies BatchFallbackOptions)
+      daemonRegistry.setFallback("ok")
+      return {
+        value,
+        fallback: "ok",
+        metrics: { transport: "ts-fallback", durationMs: Date.now() - started },
+      }
+    } catch (e) {
+      if (e instanceof BatchRejectError) {
+        daemonRegistry.setFallback("ok")
+        return {
+          error: { code: e.code, message: e.message },
+          fallback: "ok",
+          metrics: { transport: "ts-fallback", durationMs: Date.now() - started },
+        }
+      }
+      daemonRegistry.setFallback("native-unavailable", e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  return {
+    fallback: "native-unavailable",
+    reason: daemonRegistry.getFallbackState().lastDetail,
+    metrics: { transport: "ts-fallback", durationMs: Date.now() - started },
+  }
+}
+
+/** Spawn the resolved fdx binary with a stdin payload (batch-query contract). */
+function runFdxWithStdin(args: string[], input: string): string {
+  const bin = resolveFdxBinaryPath()
+  if (!bin) throw new Error("fdx binary not available")
+  const res = spawnSync(bin, args, {
+    encoding: "utf-8",
+    input,
+    timeout: DEFAULT_TIMEOUT_MS,
+    maxBuffer: 50 * 1024 * 1024,
+    shell: false,
+    stdio: ["pipe", "pipe", "pipe"],
+  })
+  if (res.status !== 0) {
+    const err = new Error((res.stderr || "").trim() || `fdx batch-query exited ${res.status}`)
+    ;(err as Error & { status?: number }).status = res.status ?? undefined
+    ;(err as Error & { stderr?: string }).stderr = (res.stderr || "").toString()
+    throw err
+  }
+  return res.stdout ?? ""
+}
+
+/** Normalize a native `Error: batch rejected (CODE): msg` stderr into an error
+ * payload, matching the daemon's `Response::error` and the TS BatchRejectError.
+ * The spawn error's message and stderr can both carry the rejection text, so
+ * each candidate is checked independently (never concatenated — that would
+ * duplicate the captured message). */
+function parseNativeRejection(e: unknown): { code: string; message: string } | null {
+  if (!(e instanceof Error)) return null
+  const candidates = [e.message, (e as Error & { stderr?: string }).stderr ?? ""]
+  for (const text of candidates) {
+    const m = /batch rejected \(([A-Z_]+)\):\s*(.+)/.exec(text)
+    if (m) return { code: m[1], message: m[2].trim() }
+  }
+  return null
 }
 
 function sleep(ms: number): Promise<void> {

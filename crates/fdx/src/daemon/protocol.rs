@@ -266,14 +266,10 @@ pub fn validate_request(req: &Request) -> Result<(), (&'static str, String)> {
         RequestBody::Batch { params } => {
             let typed = !params.operations.is_empty();
             let legacy = !params.requests.is_empty();
-            if !typed && !legacy {
-                return Err((
-                    err::E_BAD_REQUEST,
-                    "batch.params must contain either operations (typed) or requests (legacy)"
-                        .into(),
-                ));
-            }
-            if typed {
+            if typed || !legacy {
+                // Typed path. An empty `operations` array with no legacy
+                // requests reaches `execute_batch`, whose canonical rejection
+                // matches the one-shot CLI and the TS fallback.
                 if let Some(v) = params.version {
                     if v != 1 {
                         return Err((
@@ -427,11 +423,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_batch() {
+    fn empty_batch_defers_rejection_to_executor() {
+        // An empty batch (no operations, no legacy requests) passes request
+        // validation so it reaches `execute_batch`, whose canonical
+        // E_BAD_REQUEST matches the one-shot CLI and the TS fallback
+        // ("batch.operations must not be empty"). The executor-layer
+        // rejection is asserted in `batch::tests`.
         let line = r#"{"v":1,"id":4,"method":"batch","params":{"requests":[]}}"#;
         let req: Request = parse(line).unwrap();
-        let (code, _) = validate_request(&req).unwrap_err();
-        assert_eq!(code, err::E_BAD_REQUEST);
+        assert!(validate_request(&req).is_ok());
+        let typed_line = r#"{"v":1,"id":5,"method":"batch","params":{"operations":[]}}"#;
+        let typed: Request = parse(typed_line).unwrap();
+        assert!(validate_request(&typed).is_ok());
     }
 
     #[test]
