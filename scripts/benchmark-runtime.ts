@@ -46,7 +46,7 @@
  * Results are written to runtime-benchmark.txt and runtime-benchmark.json.
  */
 
-import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -183,17 +183,25 @@ async function benchRuntimeInit(mod: RuntimeModule): Promise<number[]> {
   // Warm up: the first open creates the schema and is much slower than steady-state.
   await warmup(mod, 15, async () => {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-init-warm-"));
-    const store = mod.openSqliteStateStore(join(dir, "bench.db"));
-    await store.close?.();
+    try {
+      const store = mod.openSqliteStateStore(join(dir, "bench.db"));
+      await store.close?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   const samples: number[] = [];
   for (let i = 0; i < 100; i++) {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-init-"));
-    const dbPath = join(dir, "bench.db");
-    const t0 = performance.now();
-    const store = mod.openSqliteStateStore(dbPath);
-    samples.push(performance.now() - t0);
-    await store.close?.();
+    try {
+      const dbPath = join(dir, "bench.db");
+      const t0 = performance.now();
+      const store = mod.openSqliteStateStore(dbPath);
+      samples.push(performance.now() - t0);
+      await store.close?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }
   return samples;
 }
@@ -253,45 +261,53 @@ async function benchCommitTransition(mod: RuntimeModule): Promise<number[]> {
 async function benchLoadRunAfterRestart(mod: RuntimeModule): Promise<number[]> {
   await warmup(mod, 3, async () => {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-restart-warm-"));
-    const dbPath = join(dir, "bench.db");
-    const runId = "bench-restart-warm";
-    const store1 = mod.openSqliteStateStore(dbPath);
-    await store1.createRun({
-      runId,
-      initialState: "created" as State,
-      contract: makeContract("bench-ct-restart-warm"),
-      creationEvent: makeCreationEvent(runId, "created" as State, "planning" as State),
-    });
-    await store1.saveCancellationPhase(runId, "active", { reason: "bench" });
-    await store1.close?.();
-    const store2 = mod.openSqliteStateStore(dbPath);
-    await store2.loadRun(runId);
-    await store2.close?.();
+    try {
+      const dbPath = join(dir, "bench.db");
+      const runId = "bench-restart-warm";
+      const store1 = mod.openSqliteStateStore(dbPath);
+      await store1.createRun({
+        runId,
+        initialState: "created" as State,
+        contract: makeContract("bench-ct-restart-warm"),
+        creationEvent: makeCreationEvent(runId, "created" as State, "planning" as State),
+      });
+      await store1.saveCancellationPhase(runId, "active", { reason: "bench" });
+      await store1.close?.();
+      const store2 = mod.openSqliteStateStore(dbPath);
+      await store2.loadRun(runId);
+      await store2.close?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
   const samples: number[] = [];
   for (let i = 0; i < 30; i++) {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-restart-"));
-    const dbPath = join(dir, "bench.db");
-    const runId = `bench-restart-${i}`;
+    try {
+      const dbPath = join(dir, "bench.db");
+      const runId = `bench-restart-${i}`;
 
-    const store1 = mod.openSqliteStateStore(dbPath);
-    await store1.createRun({
-      runId,
-      initialState: "created" as State,
-      contract: makeContract(`bench-ct-restart-${i}`),
-      creationEvent: makeCreationEvent(runId, "created" as State, "planning" as State),
-    });
-    await store1.saveCancellationPhase(runId, "active", { reason: "bench" });
-    await store1.close?.();
+      const store1 = mod.openSqliteStateStore(dbPath);
+      await store1.createRun({
+        runId,
+        initialState: "created" as State,
+        contract: makeContract(`bench-ct-restart-${i}`),
+        creationEvent: makeCreationEvent(runId, "created" as State, "planning" as State),
+      });
+      await store1.saveCancellationPhase(runId, "active", { reason: "bench" });
+      await store1.close?.();
 
-    const store2 = mod.openSqliteStateStore(dbPath);
-    const t0 = performance.now();
-    const loaded = await store2.loadRun(runId);
-    samples.push(performance.now() - t0);
-    if (!loaded) {
-      throw new Error("benchmark loadRunAfterRestart returned null");
+      const store2 = mod.openSqliteStateStore(dbPath);
+      const t0 = performance.now();
+      const loaded = await store2.loadRun(runId);
+      samples.push(performance.now() - t0);
+      if (!loaded) {
+        throw new Error("benchmark loadRunAfterRestart returned null");
+      }
+      await store2.close?.();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
-    await store2.close?.();
   }
   return samples;
 }
