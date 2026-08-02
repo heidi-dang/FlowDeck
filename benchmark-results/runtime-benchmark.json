@@ -1,50 +1,108 @@
 {
-  "baselineSha": "5809fcf1230ff349ff0d7f5b53ed75403f44573b",
-  "timestamp": "2026-08-01T14:00:15.987Z",
-  "candidateDir": "/home/shacker/Desktop/flowdeck-trae",
-  "baselineDir": null,
-  "mode": "candidate-only",
+  "mode": "baseline-vs-candidate",
+  "generatedAt": "2026-08-02T04:18:46.686Z",
+  "candidateDir": "/root/flowdeck",
+  "baselineDir": "/tmp/rt-baseline-1785643870",
+  "candidateSha": "d2f4333b241c3fa35a0d76b9a7f8c5e14d966ecc",
+  "baselineSha": "e22e04b38e45405b4ae9f15115012d0dce99c241",
+  "frozenBaselineSha": "5809fcf1230ff349ff0d7f5b53ed75403f44573b",
+  "runtimeImplementationBaselineSha": "e22e04b38e45405b4ae9f15115012d0dce99c241",
+  "thresholdPercent": 20,
+  "worktreeStatus": {
+    "candidateClean": true,
+    "baselineClean": true
+  },
+  "environment": {
+    "platform": "linux",
+    "arch": "x64",
+    "bun": "1.3.14"
+  },
   "metrics": {
     "runtimeInit": {
-      "meanMs": 1.236,
-      "medianMs": 1.123,
-      "p95Ms": 1.543,
-      "minMs": 1.085,
-      "maxMs": 2.682,
-      "iterations": 20
-    },
-    "commitTransition": {
-      "meanMs": 0.019,
-      "medianMs": 0.015,
-      "p95Ms": 0.03,
-      "minMs": 0.011,
-      "maxMs": 0.189,
+      "meanMs": 2.73,
+      "medianMs": 2.327,
+      "p95Ms": 4.48,
+      "minMs": 1.211,
+      "maxMs": 6.301,
       "iterations": 100
     },
+    "commitTransition": {
+      "meanMs": 0.036,
+      "medianMs": 0.013,
+      "p95Ms": 0.023,
+      "minMs": 0.009,
+      "maxMs": 4.035,
+      "iterations": 400
+    },
     "loadRunAfterRestart": {
-      "meanMs": 0.283,
-      "medianMs": 0.228,
-      "p95Ms": 0.786,
-      "minMs": 0.202,
-      "maxMs": 0.786,
-      "iterations": 10
+      "meanMs": 0.519,
+      "medianMs": 0.249,
+      "p95Ms": 1.95,
+      "minMs": 0.208,
+      "maxMs": 2.371,
+      "iterations": 30
     },
     "completePath": {
-      "meanMs": 0.064,
-      "medianMs": 0.066,
-      "p95Ms": 0.078,
-      "minMs": 0.054,
-      "maxMs": 0.078,
-      "iterations": 10
+      "meanMs": 0.141,
+      "medianMs": 0.06,
+      "p95Ms": 0.621,
+      "minMs": 0.05,
+      "maxMs": 1.116,
+      "iterations": 20
     },
     "cancellationPhase": {
-      "meanMs": 0.033,
+      "meanMs": 0.038,
       "medianMs": 0.032,
-      "p95Ms": 0.045,
-      "minMs": 0.028,
-      "maxMs": 0.045,
-      "iterations": 10
+      "p95Ms": 0.076,
+      "minMs": 0.027,
+      "maxMs": 0.079,
+      "iterations": 20
     }
   },
-  "comparison": null
+  "baselineMetrics": {
+    "runtimeInit": {
+      "meanMs": 2.647,
+      "medianMs": 2.304,
+      "p95Ms": 3.742,
+      "minMs": 1.234,
+      "maxMs": 4.251,
+      "iterations": 100
+    },
+    "commitTransition": {
+      "meanMs": 0.031,
+      "medianMs": 0.012,
+      "p95Ms": 0.019,
+      "minMs": 0.009,
+      "maxMs": 2.122,
+      "iterations": 400
+    },
+    "loadRunAfterRestart": {
+      "meanMs": 0.409,
+      "medianMs": 0.218,
+      "p95Ms": 1.414,
+      "minMs": 0.193,
+      "maxMs": 2.239,
+      "iterations": 30
+    },
+    "completePath": {
+      "meanMs": 0.162,
+      "medianMs": 0.057,
+      "p95Ms": 1.083,
+      "minMs": 0.051,
+      "maxMs": 1.115,
+      "iterations": 20
+    },
+    "cancellationPhase": {
+      "meanMs": 0.032,
+      "medianMs": 0.029,
+      "p95Ms": 0.041,
+      "minMs": 0.027,
+      "maxMs": 0.046,
+      "iterations": 20
+    }
+  },
+  "comparison": {
+    "regressions": [],
+    "passed": true
+  }
 }

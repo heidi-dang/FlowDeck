@@ -1,14 +1,27 @@
 === Runtime Benchmark Report ===
-Baseline SHA: 5809fcf1230ff349ff0d7f5b53ed75403f44573b
-Generated: 2026-08-01T14:00:15.987Z
-Candidate: /home/shacker/Desktop/flowdeck-trae
-Baseline: (none — candidate only)
-Mode: candidate-only
+Generated: 2026-08-02T04:18:46.686Z
+Mode: baseline-vs-candidate
+Candidate: /root/flowdeck
+Baseline: /tmp/rt-baseline-1785643870
+Candidate SHA: d2f4333b241c3fa35a0d76b9a7f8c5e14d966ecc
+Baseline SHA: e22e04b38e45405b4ae9f15115012d0dce99c241
+Frozen baseline SHA (provenance): 5809fcf1230ff349ff0d7f5b53ed75403f44573b
+Runtime implementation baseline SHA: e22e04b38e45405b4ae9f15115012d0dce99c241
+Regression threshold: >20% relative AND >2 ms absolute
 
 Metric                     | Mean (ms) | Median (ms) | p95 (ms) | Iterations
 ---------------------------|-----------|-------------|----------|-----------
- runtimeInit                |     1.236 |       1.123 |    1.543 |         20
- commitTransition           |     0.019 |       0.015 |     0.03 |        100
- loadRunAfterRestart        |     0.283 |       0.228 |    0.786 |         10
- completePath               |     0.064 |       0.066 |    0.078 |         10
- cancellationPhase          |     0.033 |       0.032 |    0.045 |         10
+ runtimeInit                |      2.73 |       2.327 |     4.48 |        100
+ commitTransition           |     0.036 |       0.013 |    0.023 |        400
+ loadRunAfterRestart        |     0.519 |       0.249 |     1.95 |         30
+ completePath               |     0.141 |        0.06 |    0.621 |         20
+ cancellationPhase          |     0.038 |       0.032 |    0.076 |         20
+
+Comparison (candidate vs baseline, median):
+  runtimeInit            baseline    2.304 ms -> candidate    2.327 ms  (1.0%)
+  commitTransition       baseline    0.012 ms -> candidate    0.013 ms  (8.3%)
+  loadRunAfterRestart    baseline    0.218 ms -> candidate    0.249 ms  (14.2%)
+  completePath           baseline    0.057 ms -> candidate     0.06 ms  (5.3%)
+  cancellationPhase      baseline    0.029 ms -> candidate    0.032 ms  (10.3%)
+
+Overall: PASS — no regressions > 20%
