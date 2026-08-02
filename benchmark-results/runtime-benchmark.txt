@@ -1,23 +1,23 @@
 === Runtime Benchmark Report ===
 Baseline SHA: 5809fcf1230ff349ff0d7f5b53ed75403f44573b
-Generated: 2026-08-02T05:22:18.150Z
+Generated: 2026-08-02T05:32:41.720Z
 Candidate: /root/flowdeck
 Baseline: /tmp/opencode/bench-baseline
 Mode: baseline-vs-candidate
 
 Metric                     | Mean (ms) | Median (ms) | p95 (ms) | Iterations
 ---------------------------|-----------|-------------|----------|-----------
- runtimeInit                |     1.525 |       1.402 |    2.175 |        240
- commitTransition           |     0.014 |       0.013 |    0.022 |       1800
- loadRunAfterRestart        |     0.272 |       0.257 |    0.356 |        180
- completePath               |     0.064 |       0.059 |    0.086 |        300
- cancellationPhase          |     0.045 |       0.033 |    0.059 |        300
+ runtimeInit                |      1.57 |       1.513 |    1.893 |        240
+ commitTransition           |     0.013 |       0.012 |    0.022 |       1800
+ loadRunAfterRestart        |      0.32 |       0.291 |    0.648 |        180
+ completePath               |      0.08 |       0.066 |    0.106 |        300
+ cancellationPhase          |      0.04 |       0.037 |    0.058 |        300
 
 Comparison (candidate vs baseline, median):
-  runtimeInit            baseline    1.398 ms -> candidate    1.402 ms  (0.3%)
-  commitTransition       baseline    0.011 ms -> candidate    0.013 ms  (18.2%)
-  loadRunAfterRestart    baseline    0.254 ms -> candidate    0.257 ms  (1.2%)
-  completePath           baseline    0.064 ms -> candidate    0.059 ms  (-7.8%)
-  cancellationPhase      baseline    0.033 ms -> candidate    0.033 ms  (0.0%)
+  runtimeInit            baseline    1.554 ms -> candidate    1.513 ms  (-2.6%)
+  commitTransition       baseline    0.012 ms -> candidate    0.012 ms  (0.0%)
+  loadRunAfterRestart    baseline    0.255 ms -> candidate    0.291 ms  (14.1%)
+  completePath           baseline    0.063 ms -> candidate    0.066 ms  (4.8%)
+  cancellationPhase      baseline    0.031 ms -> candidate    0.037 ms  (19.4%)
 
 Overall: PASS — no regressions > 20%
