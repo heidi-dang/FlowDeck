@@ -24,7 +24,7 @@
  * Results are written to benchmark-results/runtime-benchmark.txt and .json.
  */
 
-import { mkdtempSync, mkdirSync, existsSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, existsSync, writeFileSync, rmSync } from "node:fs";
 import { execSync } from "node:child_process";
 import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -134,6 +134,16 @@ async function loadRuntimeModule(dir: string): Promise<RuntimeModule | null> {
   }
 }
 
+
+/** Remove a benchmark temp dir, including SQLite -wal/-shm sidecars. */
+function cleanupTempDir(dir: string): void {
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {
+    // Best effort — a stale dir on tmpfs is preferable to failing the run.
+  }
+}
+
 async function benchRuntimeInit(mod: RuntimeModule): Promise<number[]> {
   const samples: number[] = [];
   // Warmup: JIT + OS page cache are not the measured subject.
@@ -141,6 +151,7 @@ async function benchRuntimeInit(mod: RuntimeModule): Promise<number[]> {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-init-"));
     const store = mod.openSqliteStateStore(join(dir, "bench.db"));
     await store.close?.();
+    cleanupTempDir(dir);
   }
   for (let i = 0; i < 40; i++) {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-init-"));
@@ -149,6 +160,7 @@ async function benchRuntimeInit(mod: RuntimeModule): Promise<number[]> {
     const store = mod.openSqliteStateStore(dbPath);
     samples.push(performance.now() - t0);
     await store.close?.();
+    cleanupTempDir(dir);
   }
   return samples;
 }
@@ -208,6 +220,7 @@ async function benchLoadRunAfterRestart(mod: RuntimeModule): Promise<number[]> {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-restart-"));
     const store = mod.openSqliteStateStore(join(dir, "bench.db"));
     await store.close?.();
+    cleanupTempDir(dir);
   }
   for (let i = 0; i < 30; i++) {
     const dir = mkdtempSync(join(tmpdir(), "rt-bench-restart-"));
@@ -232,6 +245,7 @@ async function benchLoadRunAfterRestart(mod: RuntimeModule): Promise<number[]> {
       throw new Error("benchmark loadRunAfterRestart returned null");
     }
     await store2.close?.();
+    cleanupTempDir(dir);
   }
   return samples;
 }
