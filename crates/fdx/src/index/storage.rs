@@ -130,6 +130,10 @@ pub enum LoadOutcome {
         generation: u64,
         schema_version: u32,
     },
+    /// The cross-process writer lock could not be acquired (another writer is
+    /// mid-publication or the state dir is unavailable). No mutation or
+    /// recovery was attempted — the caller decides how to proceed.
+    LockBusy(String),
 }
 
 /// Cross-process writer lock for one worktree state directory.
@@ -251,6 +255,56 @@ fn read_owner(path: &Path) -> Option<String> {
     std::fs::read_to_string(path).ok()
 }
 
+/// Monotonic per-process counter for unique temp names.
+fn tmp_counter() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Exclusive OS lock on `<tmp>/OWNER.lock` held for the duration of a
+/// temp-build.
+///
+/// Cleanup skips temp build dirs whose OWNER.lock is live-held, so a racing
+/// writer can never delete a live build; on process death the OS releases
+/// the lock and the dir becomes collectable. `release()` (or Drop) drops the
+/// handle first and then removes the marker file, so the renamed final
+/// generation never contains OWNER.lock and Windows can remove the file.
+struct TmpOwnerLock {
+    path: PathBuf,
+    file: Option<std::fs::File>,
+}
+
+impl TmpOwnerLock {
+    fn acquire(tmp: &Path) -> std::io::Result<TmpOwnerLock> {
+        use fs2::FileExt;
+        let path = tmp.join("OWNER.lock");
+        let f = std::fs::File::create(&path)?;
+        f.try_lock_exclusive().map_err(|e| {
+            std::io::Error::new(
+                e.kind(),
+                format!("cannot claim temp build dir {}: {e}", tmp.display()),
+            )
+        })?;
+        Ok(TmpOwnerLock {
+            path,
+            file: Some(f),
+        })
+    }
+
+    /// Release the lock and drop the marker file.
+    fn release(&mut self) {
+        self.file.take();
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+impl Drop for TmpOwnerLock {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
 /// The storage layer: knows how to persist and load index generations.
 pub struct GenerationStore {
     /// Resolved state root (contains `fdx-index/...`). Retained for
@@ -366,16 +420,57 @@ impl GenerationStore {
         Ok(())
     }
 
-    /// Remove stale `.tmp` generation dirs and abandoned `CURRENT.tmp`
-    /// pointer files (called on refresh, including the no-change path, so
-    /// interrupted writes never accumulate). Matches any entry containing
-    /// `.tmp` (covers both `gen-N.tmp` and unique `gen-N.tmp-<pid>-<n>`).
+    /// Remove stale `.tmp` generation dirs and abandoned pointer files.
+    ///
+    /// Writer-locked: cleanup must never run while another writer is in its
+    /// publication critical section (its `CURRENT.tmp`/rename would be
+    /// removed) or while a live writer's temp build is in progress (its
+    /// `OWNER.lock` is live-held and skipped). Called on refresh, including
+    /// the no-change path, so interrupted writes never accumulate.
     pub fn cleanup_stale_tmp(&self) {
+        // Best-effort: a busy lock only defers cleanup to the next pass.
+        let _lock = match WriterLock::acquire(&self.worktree) {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        self.cleanup_stale_tmp_locked();
+    }
+
+    /// Cleanup while already holding the writer lock (called from publish's
+    /// critical section, which serializes all writers).
+    fn cleanup_stale_tmp_locked(&self) {
         if let Ok(entries) = std::fs::read_dir(&self.worktree) {
             for entry in entries.flatten() {
+                let path = entry.path();
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name.contains(".tmp") {
-                    let _ = std::fs::remove_dir_all(entry.path());
+                if !name.contains(".tmp") {
+                    continue;
+                }
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    // Candidate stale build dir. A live writer's temp build
+                    // dir holds an exclusive OS lock on OWNER.lock for the
+                    // whole build; if we can take the lock, the owner is
+                    // gone (crashed) and the dir is collectable.
+                    let owner_lock = path.join("OWNER.lock");
+                    let live = match std::fs::OpenOptions::new().read(true).open(&owner_lock) {
+                        Ok(f) => {
+                            use fs2::FileExt;
+                            // Any failure to acquire is treated as "live" —
+                            // leaking a stale dir beats deleting a live one.
+                            f.try_lock_exclusive().is_err()
+                        }
+                        Err(_) => false, // no OWNER.lock → legacy tmp dir → stale
+                    };
+                    if live {
+                        continue;
+                    }
+                    let _ = std::fs::remove_dir_all(&path);
+                } else {
+                    // Abandoned pointer temp (`CURRENT.tmp`,
+                    // `CURRENT.tmp-<pid>-<n>`) or stray file. Under the
+                    // writer lock no live writer is mid-`set_current`, so
+                    // these are always stale.
+                    let _ = std::fs::remove_file(&path);
                 }
             }
         }
@@ -385,15 +480,26 @@ impl GenerationStore {
     /// Load and validate the current generation (or the newest valid one).
     ///
     /// Strict, fail-closed, and self-recovering:
-    /// 1. read CURRENT (missing or malformed is handled);
-    /// 2. validate the referenced generation through the full chain
+    /// 1. acquire the cross-process writer lock — recovery mutates shared
+    ///    state (quarantine renames, CURRENT repair) and must serialize with
+    ///    concurrent writers, or two processes could repair/publish the same
+    ///    pointer concurrently;
+    /// 2. read CURRENT (missing or malformed is handled);
+    /// 3. validate the referenced generation through the full chain
     ///    (manifest → schema → identity → presence → checksums → strict
     ///    deserialization → semantic validation → counts);
-    /// 3. quarantine invalid generations (evidence retained, never retried);
-    /// 4. scan remaining generations newest to oldest;
-    /// 5. select the newest fully valid generation;
-    /// 6. atomically repair CURRENT to point at it.
+    /// 4. quarantine invalid generations (evidence retained, never retried);
+    /// 5. scan remaining generations newest to oldest;
+    /// 6. select the newest fully valid generation;
+    /// 7. atomically repair CURRENT to point at it.
     pub fn load(&self) -> LoadOutcome {
+        // Recovery mutates shared state, so it must serialize with other
+        // writers (publish's critical section). A busy lock means the state
+        // is being actively rewritten: report it instead of mutating.
+        let _lock = match WriterLock::acquire(&self.worktree) {
+            Ok(l) => l,
+            Err(e) => return LoadOutcome::LockBusy(e.to_string()),
+        };
         let pointer = match self.current_generation() {
             Ok(Some(n)) => Some(n),
             Ok(None) => None,
@@ -485,16 +591,19 @@ impl GenerationStore {
     /// sibling directory (so two racing processes can build the same
     /// generation number without clobbering each other) and returns the
     /// manifest. This function then:
-    /// 1. validates the manifest's schema and identity;
-    /// 2. verifies every listed component checksum + required presence;
-    /// 3. fsyncs the tmp dir;
-    /// 4. acquires the cross-process writer lock;
-    /// 5. detects a generation conflict (another writer already published
+    /// 1. claims the tmp dir with an OWNER.lock held for the whole build
+    ///    (cleanup never deletes a live-owned build dir);
+    /// 2. validates the manifest's schema and identity;
+    /// 3. verifies every listed component checksum + required presence;
+    /// 4. fsyncs the tmp dir;
+    /// 5. acquires the cross-process writer lock and releases the owner lock;
+    /// 6. detects a generation conflict (another writer already published
     ///    this or a newer generation — reject, never clobber);
-    /// 6. publishes the final dir (reusing a validated existing final on
+    /// 7. publishes the final dir (reusing a validated existing final on
     ///    Windows instead of renaming over it);
-    /// 7. atomically updates CURRENT with bounded retry;
-    /// 8. retains the previous valid generation and cleans stale tmp dirs.
+    /// 8. atomically updates CURRENT with a unique temp pointer + bounded
+    ///    retry;
+    /// 9. retains the previous valid generation and cleans stale tmp dirs.
     ///
     /// The lock is held only for the critical publication section (conflict
     /// check → rename → CURRENT), never for the build, so a long build does
@@ -511,12 +620,12 @@ impl GenerationStore {
         F: FnOnce(&Path) -> std::io::Result<FdxIndexManifest>,
     {
         // Build into a unique tmp dir (no lock required — builders of the
-        // same generation never touch each other's tmp dirs).
+        // same generation never touch each other's tmp dirs). A same-named
+        // leftover from a crashed predecessor (pid reuse) is safely reused:
+        // we take over its (dead) OWNER.lock and overwrite its contents.
         let tmp = self.unique_tmp_dir(generation);
-        if tmp.exists() {
-            let _ = std::fs::remove_dir_all(&tmp);
-        }
         std::fs::create_dir_all(&tmp)?;
+        let mut owner = TmpOwnerLock::acquire(&tmp)?;
         barrier("build");
 
         // 1. Build components in the tmp dir.
@@ -524,6 +633,7 @@ impl GenerationStore {
 
         // 2. Validate schema + identity before anything is persisted.
         if manifest.schema_version > INDEX_SCHEMA_VERSION {
+            owner.release();
             let _ = std::fs::remove_dir_all(&tmp);
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -533,9 +643,11 @@ impl GenerationStore {
                 ),
             ));
         }
-        verify_manifest_identity(identity, &manifest).inspect_err(|_| {
+        if let Err(e) = verify_manifest_identity(identity, &manifest) {
+            owner.release();
             let _ = std::fs::remove_dir_all(&tmp);
-        })?;
+            return Err(e);
+        }
 
         // 3. Write the manifest file last (the commit point of the
         //    generation), then verify all component checksums + presence +
@@ -556,6 +668,10 @@ impl GenerationStore {
         // 5. Critical publication section — serialize with all other
         //    writers (CLI vs CLI, CLI vs daemon, daemon vs daemon).
         let _lock = WriterLock::acquire(&self.worktree)?;
+        // We now hold the writer lock: no other process's cleanup can run,
+        // so the build-ownership lock is redundant — release it so the
+        // renamed final generation never carries OWNER.lock inside.
+        owner.release();
 
         // Generation conflict detection under the lock: a concurrent writer
         // may have already published this or a newer generation.
@@ -591,8 +707,8 @@ impl GenerationStore {
         }
         sync_dir(&self.worktree)?;
 
-        // 7. Atomically update CURRENT (bounded retry for Windows file
-        //    handles that temporarily prevent replacement).
+        // 7. Atomically update CURRENT (unique temp pointer; bounded retry
+        //    for Windows file handles that temporarily prevent replacement).
         barrier("publish");
         self.set_current(generation)?;
         barrier("current");
@@ -606,19 +722,23 @@ impl GenerationStore {
     /// A unique per-process temporary generation directory name, so racing
     /// writers building the same generation never clobber each other.
     fn unique_tmp_dir(&self, generation: u64) -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         self.worktree
-            .join(format!("gen-{generation}.tmp-{}-{n}", std::process::id()))
+            .join(format!("gen-{generation}.tmp-{}-{}", std::process::id(), tmp_counter()))
     }
 
-    /// Atomically set the CURRENT pointer with bounded retry. Uses a temp
-    /// pointer + atomic rename so a reader always sees either the previous
-    /// valid pointer or the new one — never a missing/partial pointer.
+    /// A unique per-process temp sibling of `path` (used for the CURRENT
+    /// pointer), so racing writers never share a temp path.
+    fn unique_tmp_sibling(&self, path: &Path) -> PathBuf {
+        path.with_extension(format!("tmp-{}-{}", std::process::id(), tmp_counter()))
+    }
+
+    /// Atomically set the CURRENT pointer with bounded retry. Uses a unique
+    /// temp pointer + atomic rename so a reader always sees either the
+    /// previous valid pointer or the new one — never a missing/partial
+    /// pointer — and two racing writers never share a temp path.
     fn set_current(&self, generation: u64) -> std::io::Result<()> {
         let ptr = current_pointer(&self.worktree);
-        let tmp_ptr = ptr.with_extension("tmp");
+        let tmp_ptr = self.unique_tmp_sibling(&ptr);
         {
             let mut f = std::fs::File::create(&tmp_ptr)?;
             f.write_all(generation.to_string().as_bytes())?;
@@ -649,8 +769,10 @@ impl GenerationStore {
     /// old generations (besides the just-published one).
     fn retain_previous(&self, published: &Path, generation: u64) {
         let _ = published;
-        // Clean stale tmp dirs + abandoned pointer files.
-        self.cleanup_stale_tmp();
+        // Clean stale tmp dirs + abandoned pointer files. The caller
+        // (publish) holds the writer lock for the whole critical section,
+        // so the lock-free variant is used here.
+        self.cleanup_stale_tmp_locked();
         // Keep newest RETAIN_GENERATIONS + the current one.
         let mut gens = self.persisted_generations();
         gens.retain(|g| *g != generation);

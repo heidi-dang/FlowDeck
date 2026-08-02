@@ -238,6 +238,56 @@ describe("FDX index cross-process coordination (real processes)", () => {
     rmSync(dir, { recursive: true, force: true })
   })
 
+  it("a live writer's temp build survives another writer's cleanup", async () => {
+    // Deterministic live temp-build ownership: writer A is paused mid-build
+    // (holding the OWNER.lock on its unique `gen-N.tmp-<pid>-<n>` dir) while
+    // writer B refreshes the same dirty tree. B's publish-time cleanup must
+    // NOT delete A's live build dir; after A is released, both finish and no
+    // temp debris remains.
+    const dir = makeRepo()
+    refreshOnce(dir)
+    const bar = mkdtempSync(join(tmpdir(), "fdx-live-tmp-"))
+    // Dirty the tree so the paused writer actually rebuilds.
+    writeFileSync(join(dir, "lib.ts"), 'export function greet(): string { return "live-owner" }\nexport class Widget {}\n')
+    const writer = spawnFdx(dir, ["refresh"], { FDX_TEST_BARRIER: bar })
+    let stderr = ""
+    writer.stderr!.on("data", (d) => (stderr += d.toString()))
+    // Release phases until the build phase, then stop (writer stays paused).
+    const deadline = Date.now() + 30_000
+    while (!existsSync(join(bar, "phase-build")) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20))
+    }
+    if (!existsSync(join(bar, "phase-build"))) {
+      writer.kill("SIGKILL")
+      allowAll(bar)
+      throw new Error(`build barrier not reached; stderr=${stderr}`)
+    }
+    // The paused writer owns a unique temp build dir with a live OWNER.lock.
+    const wt = worktreeStateDir(dir)
+    const liveTmp = readdirSync(wt).find((e) => e.includes(".tmp") && e.startsWith("gen-"))
+    expect(liveTmp).toBeDefined()
+    const liveTmpPath = join(wt, liveTmp!)
+    expect(existsSync(join(liveTmpPath, "OWNER.lock"))).toBe(true)
+    // A second writer refreshes the same dirty tree: its publish-time cleanup
+    // must skip the live owner's temp build dir.
+    const r = refreshOnce(dir)
+    expect(r.generation).toBeGreaterThanOrEqual(1)
+    expect(existsSync(liveTmpPath)).toBe(true)
+    // Release the paused writer: it finishes by publishing or resolving the
+    // generation conflict (loading the winner), never by failing.
+    for (const phase of ["build", "manifest", "publish", "current"]) {
+      const p = join(bar, `go-${phase}`)
+      if (!existsSync(p)) writeFileSync(p, "go")
+    }
+    const code = await new Promise<number | null>((res) => writer.on("close", (c) => res(c)))
+    expect(code).toBe(0)
+    // Final state: valid index, no temp debris anywhere.
+    expect(status(dir).available).toBe(true)
+    expect(readdirSync(wt).some((e) => e.includes(".tmp"))).toBe(false)
+    rmSync(bar, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true })
+  })
+
   it("stale lock file from a dead owner never blocks a refresh", async () => {
     const dir = makeRepo()
     refreshOnce(dir)

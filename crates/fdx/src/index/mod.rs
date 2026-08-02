@@ -197,6 +197,7 @@ impl IndexService {
             LoadOutcome::Empty => Ok(false),
             LoadOutcome::Corrupt { .. } => Ok(false),
             LoadOutcome::FutureSchema { .. } => Ok(false),
+            LoadOutcome::LockBusy(_) => Ok(false),
         }
     }
 
