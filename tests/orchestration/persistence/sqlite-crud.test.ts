@@ -13,7 +13,6 @@ import {
   type VerificationResultData,
   type EvidenceData,
   type CompletionDecisionData,
-  type CircuitBreakerRow,
 } from "@/orchestration/runtime/index.js";
 
 function makeContract(contractId: string): ContractRecord {

@@ -16,7 +16,6 @@ function openConn(p, ro = false) {
   d.exec('PRAGMA journal_mode = WAL'); d.exec('PRAGMA foreign_keys = ON'); d.exec('PRAGMA busy_timeout = 5000'); d.exec('PRAGMA synchronous = NORMAL');
   conns.set(p, d); return d;
 }
-function closeConn(p) { const d = conns.get(p); if (d) { d.close(); conns.delete(p); } }
 function closeAll() { for (const [,d] of conns) { d.close(); } conns.clear(); }
 
 function ok(c, m) { if (c) { pass++; console.log(`  ✅ ${m}`); } else { fail++; console.error(`  ❌ ${m}`); } }

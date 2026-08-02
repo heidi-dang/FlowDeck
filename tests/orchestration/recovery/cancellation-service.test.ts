@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from "bun:test";
+import { describe, it, expect, beforeEach } from "bun:test";
 import { CancellationService } from "../../../src/orchestration/recovery/cancellation-service";
 import type {
   CheckpointRepositoryPort,
