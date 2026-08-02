@@ -2087,6 +2087,31 @@ mod tests {
     }
 
     #[test]
+    fn unique_temp_names_never_collide_and_pointer_is_atomic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ident = identity("unique");
+        let store = GenerationStore::open(tmp.path(), &ident).unwrap();
+        let ptr = current_pointer(store.worktree_path());
+        // The unique temp-sibling and temp-dir names are distinct on every
+        // call, so racing writers never share a temp path (pid + atomic
+        // counter). Same-process colliders would be a cross-writer hazard.
+        let sibs: Vec<PathBuf> = (0..8).map(|_| store.unique_tmp_sibling(&ptr)).collect();
+        let dirs: Vec<PathBuf> = (0..8).map(|g| store.unique_tmp_dir(g)).collect();
+        assert_eq!(sibs.iter().collect::<std::collections::HashSet<_>>().len(), sibs.len());
+        assert_eq!(dirs.iter().collect::<std::collections::HashSet<_>>().len(), dirs.len());
+        // set_current swaps in a new generation atomically and leaves no temp
+        // pointer behind; a reader observes exactly one pointer value.
+        build_manifest(&store, &ident, 1, &"1".repeat(40));
+        store.set_current(1).unwrap();
+        assert_eq!(store.current_generation().unwrap(), Some(1));
+        let entries: Vec<String> = std::fs::read_dir(store.worktree_path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(!entries.iter().any(|e| e.contains("CURRENT.tmp")));
+    }
+
+    #[test]
     fn missing_component_is_rejected_not_emptied() {
         let tmp = tempfile::tempdir().unwrap();
         let ident = identity("missingcomp");
