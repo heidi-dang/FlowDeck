@@ -25,10 +25,11 @@ describe("FDX Clean Packed Installation Tests", () => {
   it("packed CLI modules execute correctly from installed main tarball", () => {
     const root = resolve(__dirname, "..")
     const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
+    const shellOpt = process.platform === "win32"
 
     // Build & pack local main package
-    execFileSync(npmCmd, ["run", "build"], { cwd: root, stdio: "ignore" })
-    const mainPackOut = execFileSync(npmCmd, ["pack", "--json"], { cwd: root, encoding: "utf-8" })
+    execFileSync(npmCmd, ["run", "build"], { cwd: root, stdio: "ignore", shell: shellOpt })
+    const mainPackOut = execFileSync(npmCmd, ["pack", "--json"], { cwd: root, encoding: "utf-8", shell: shellOpt })
     const mainPackJson = JSON.parse(mainPackOut)
     const mainTarball = join(root, mainPackJson[0].filename)
 
@@ -37,7 +38,7 @@ describe("FDX Clean Packed Installation Tests", () => {
     const target = detectFdxTarget()
     const pkgFolderName = target?.packageName ? target.packageName.replace("@heidi-dang/", "") : "flowdeck-fdx-linux-x64-gnu"
     const pkgDir = join(root, "packages", pkgFolderName)
-    const pkgPackOut = execFileSync(npmCmd, ["pack", "--json"], { cwd: pkgDir, encoding: "utf-8" })
+    const pkgPackOut = execFileSync(npmCmd, ["pack", "--json"], { cwd: pkgDir, encoding: "utf-8", shell: shellOpt })
     const pkgPackJson = JSON.parse(pkgPackOut)
     const platformTarball = join(pkgDir, pkgPackJson[0].filename)
 
@@ -45,33 +46,33 @@ describe("FDX Clean Packed Installation Tests", () => {
     writeFileSync(join(projectDir, "package.json"), JSON.stringify({ name: "test-consumer", version: "1.0.0", type: "module" }), "utf-8")
 
     // Install packed tarballs
-    execFileSync(npmCmd, ["install", mainTarball, platformTarball], { cwd: projectDir, stdio: "ignore" })
+    execFileSync(npmCmd, ["install", mainTarball, platformTarball], { cwd: projectDir, stdio: "ignore", shell: shellOpt })
 
     const binName = process.platform === "win32" ? "flowdeck.cmd" : "flowdeck"
     const cliBin = join(projectDir, "node_modules", ".bin", binName)
 
     // 1. flowdeck fdx status
-    const statusOut = execFileSync(cliBin, ["fdx", "status"], { cwd: projectDir, encoding: "utf-8" })
+    const statusOut = execFileSync(cliBin, ["fdx", "status"], { cwd: projectDir, encoding: "utf-8", shell: shellOpt })
     expect(statusOut).toContain("=== FlowDeck FDX Native Status ===")
     expect(statusOut).toContain("Native Available:   Yes")
 
     // 2. flowdeck fdx verify
-    const verifyOut = execFileSync(cliBin, ["fdx", "verify"], { cwd: projectDir, encoding: "utf-8" })
+    const verifyOut = execFileSync(cliBin, ["fdx", "verify"], { cwd: projectDir, encoding: "utf-8", shell: shellOpt })
     expect(verifyOut).toContain("✓ FDX native binary verified successfully")
 
     // 3. flowdeck fdx install
-    const installOut = execFileSync(cliBin, ["fdx", "install"], { cwd: projectDir, encoding: "utf-8" })
+    const installOut = execFileSync(cliBin, ["fdx", "install"], { cwd: projectDir, encoding: "utf-8", shell: shellOpt })
     expect(installOut).toContain("Compatible native FDX binary already available")
 
     // 4. flowdeck fdx repair
-    const repairOut = execFileSync(cliBin, ["fdx", "repair"], { cwd: projectDir, encoding: "utf-8" })
+    const repairOut = execFileSync(cliBin, ["fdx", "repair"], { cwd: projectDir, encoding: "utf-8", shell: shellOpt })
     expect(repairOut).toContain("✓ FDX native installation successful")
 
     // 5. flowdeck doctor profiles
-    const docMinimal = execFileSync(cliBin, ["doctor"], { cwd: projectDir, env: { ...process.env, FLOWDECK_PROFILE: "minimal" }, encoding: "utf-8" })
+    const docMinimal = execFileSync(cliBin, ["doctor"], { cwd: projectDir, env: { ...process.env, FLOWDECK_PROFILE: "minimal" }, encoding: "utf-8", shell: shellOpt })
     expect(docMinimal).toBeDefined()
 
-    const docRec = execFileSync(cliBin, ["doctor"], { cwd: projectDir, env: { ...process.env, FLOWDECK_PROFILE: "recommended-dev" }, encoding: "utf-8" })
+    const docRec = execFileSync(cliBin, ["doctor"], { cwd: projectDir, env: { ...process.env, FLOWDECK_PROFILE: "recommended-dev" }, encoding: "utf-8", shell: shellOpt })
     expect(docRec).toBeDefined()
 
     // Cleanup generated tarballs

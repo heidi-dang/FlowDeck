@@ -137,7 +137,8 @@ function main() {
 
     // Pack target package into .tgz artifact
     const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
-    const tgzName = execFileSync(npmCmd, ["pack"], { cwd: destDir, encoding: "utf-8" }).trim().split("\n").pop()
+    const npmOpts = { cwd: destDir, encoding: "utf-8", shell: process.platform === "win32" }
+    const tgzName = execFileSync(npmCmd, ["pack"], npmOpts).trim().split("\n").pop()
     const tgzPath = join(destDir, tgzName)
     const tgzBuf = readFileSync(tgzPath)
     const tgzSha256 = createHash("sha256").update(tgzBuf).digest("hex")
