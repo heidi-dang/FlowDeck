@@ -14,7 +14,8 @@ const CI_WORKFLOW = join(ROOT, ".github", "workflows", "ci.yml")
  * key/value pairs inside a given block instead of counting string matches.
  */
 function extractBlockLines(content: string, topKey: string): string[] {
-  const lines = content.split("\n")
+  // Normalize CRLF to LF so exact key matches work on Windows checkouts.
+  const lines = content.replace(/\r\n/g, "\n").split("\n")
   const topIndex = lines.findIndex((l) => l === topKey || l.startsWith(topKey + " "))
   if (topIndex === -1) return []
   const topIndent = topKey.length - topKey.trimStart().length
@@ -32,8 +33,9 @@ function extractBlockLines(content: string, topKey: string): string[] {
 /** Parse block lines into [indent, key, value] triples, preserving nesting. */
 function parseBlock(blockLines: string[]): Array<{ indent: number; key: string; value: string }> {
   return blockLines.map((line) => {
-    const indent = line.length - line.trimStart().length
-    const trimmed = line.trim()
+    const normalized = line.replace(/\r$/, "")
+    const indent = normalized.length - normalized.trimStart().length
+    const trimmed = normalized.trim()
     const colon = trimmed.indexOf(":")
     if (colon === -1) return { indent, key: trimmed, value: "" }
     return { indent, key: trimmed.slice(0, colon).trim(), value: trimmed.slice(colon + 1).trim() }
