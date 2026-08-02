@@ -230,8 +230,7 @@ impl Refresher {
                     cache.invalidate_path(old);
                     cache.invalidate_path(new);
                     if let Ok(content) = std::str::from_utf8(&g.bytes) {
-                        let syms =
-                            build_symbols_for_file(&abs, new, content, self.generation);
+                        let syms = build_symbols_for_file(&abs, new, content, self.generation);
                         symbols.replace_file(new, syms);
                         stats.symbols_reindexed += 1;
                     }

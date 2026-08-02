@@ -722,8 +722,11 @@ impl GenerationStore {
     /// A unique per-process temporary generation directory name, so racing
     /// writers building the same generation never clobber each other.
     fn unique_tmp_dir(&self, generation: u64) -> PathBuf {
-        self.worktree
-            .join(format!("gen-{generation}.tmp-{}-{}", std::process::id(), tmp_counter()))
+        self.worktree.join(format!(
+            "gen-{generation}.tmp-{}-{}",
+            std::process::id(),
+            tmp_counter()
+        ))
     }
 
     /// A unique per-process temp sibling of `path` (used for the CURRENT
@@ -2097,8 +2100,14 @@ mod tests {
         // counter). Same-process colliders would be a cross-writer hazard.
         let sibs: Vec<PathBuf> = (0..8).map(|_| store.unique_tmp_sibling(&ptr)).collect();
         let dirs: Vec<PathBuf> = (0..8).map(|g| store.unique_tmp_dir(g)).collect();
-        assert_eq!(sibs.iter().collect::<std::collections::HashSet<_>>().len(), sibs.len());
-        assert_eq!(dirs.iter().collect::<std::collections::HashSet<_>>().len(), dirs.len());
+        assert_eq!(
+            sibs.iter().collect::<std::collections::HashSet<_>>().len(),
+            sibs.len()
+        );
+        assert_eq!(
+            dirs.iter().collect::<std::collections::HashSet<_>>().len(),
+            dirs.len()
+        );
         // set_current swaps in a new generation atomically and leaves no temp
         // pointer behind; a reader observes exactly one pointer value.
         build_manifest(&store, &ident, 1, &"1".repeat(40));

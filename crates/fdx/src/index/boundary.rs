@@ -125,7 +125,8 @@ fn guard_resolve(
 
     // 4. The resolved target itself must be a regular file (a symlink may
     //    point at a directory, device, socket, ...).
-    let target_meta = std::fs::metadata(&canon).map_err(|_| RepositoryReadRejection::Unresolvable)?;
+    let target_meta =
+        std::fs::metadata(&canon).map_err(|_| RepositoryReadRejection::Unresolvable)?;
     if !target_meta.is_file() {
         return Err(RepositoryReadRejection::NotRegularFile);
     }
@@ -181,7 +182,8 @@ pub fn read_repository_file(
     use std::io::Read;
     let mut f = std::fs::File::open(&canon).map_err(|_| RepositoryReadRejection::Io)?;
     let mut bytes = Vec::new();
-    f.read_to_end(&mut bytes).map_err(|_| RepositoryReadRejection::Io)?;
+    f.read_to_end(&mut bytes)
+        .map_err(|_| RepositoryReadRejection::Io)?;
     let opened_meta = f.metadata().map_err(|_| RepositoryReadRejection::Io)?;
 
     // 6. The file actually opened must be the file validated at step 4 (a
@@ -261,10 +263,7 @@ impl RepositoryReader {
 
     /// Guarded read with per-pass caching. Each candidate path is read at
     /// most once; later calls return the cached guarded bytes.
-    pub fn read(
-        &self,
-        abs: &Path,
-    ) -> Result<Arc<GuardedRepositoryFile>, RepositoryReadRejection> {
+    pub fn read(&self, abs: &Path) -> Result<Arc<GuardedRepositoryFile>, RepositoryReadRejection> {
         if let Some(cached) = self.reads.borrow().get(abs) {
             return match cached {
                 Ok(g) => Ok(g.clone()),
