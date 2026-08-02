@@ -1,13 +1,14 @@
 {
   "mode": "baseline-vs-candidate",
-  "generatedAt": "2026-08-02T04:18:46.686Z",
+  "generatedAt": "2026-08-02T05:06:35.563Z",
   "candidateDir": "/root/flowdeck",
-  "baselineDir": "/tmp/rt-baseline-1785643870",
-  "candidateSha": "d2f4333b241c3fa35a0d76b9a7f8c5e14d966ecc",
+  "baselineDir": "/tmp/rt-verify/e22e04b-baseline",
+  "candidateSha": "5bd7af793200f2ec40b307c86e6b4c83c2e23f9f",
   "baselineSha": "e22e04b38e45405b4ae9f15115012d0dce99c241",
   "frozenBaselineSha": "5809fcf1230ff349ff0d7f5b53ed75403f44573b",
   "runtimeImplementationBaselineSha": "e22e04b38e45405b4ae9f15115012d0dce99c241",
   "thresholdPercent": 20,
+  "sampleProfile": "full",
   "worktreeStatus": {
     "candidateClean": true,
     "baselineClean": true
@@ -19,85 +20,85 @@
   },
   "metrics": {
     "runtimeInit": {
-      "meanMs": 2.73,
-      "medianMs": 2.327,
-      "p95Ms": 4.48,
-      "minMs": 1.211,
-      "maxMs": 6.301,
+      "meanMs": 2.773,
+      "medianMs": 2.484,
+      "p95Ms": 4.362,
+      "minMs": 1.23,
+      "maxMs": 6.373,
       "iterations": 100
     },
     "commitTransition": {
-      "meanMs": 0.036,
+      "meanMs": 0.042,
       "medianMs": 0.013,
-      "p95Ms": 0.023,
-      "minMs": 0.009,
-      "maxMs": 4.035,
+      "p95Ms": 0.028,
+      "minMs": 0.01,
+      "maxMs": 3.837,
       "iterations": 400
     },
     "loadRunAfterRestart": {
-      "meanMs": 0.519,
-      "medianMs": 0.249,
-      "p95Ms": 1.95,
-      "minMs": 0.208,
-      "maxMs": 2.371,
+      "meanMs": 0.566,
+      "medianMs": 0.258,
+      "p95Ms": 1.408,
+      "minMs": 0.202,
+      "maxMs": 1.546,
       "iterations": 30
     },
     "completePath": {
-      "meanMs": 0.141,
+      "meanMs": 0.11,
       "medianMs": 0.06,
-      "p95Ms": 0.621,
-      "minMs": 0.05,
-      "maxMs": 1.116,
+      "p95Ms": 0.072,
+      "minMs": 0.051,
+      "maxMs": 1.073,
       "iterations": 20
     },
     "cancellationPhase": {
-      "meanMs": 0.038,
-      "medianMs": 0.032,
-      "p95Ms": 0.076,
-      "minMs": 0.027,
-      "maxMs": 0.079,
+      "meanMs": 0.101,
+      "medianMs": 0.034,
+      "p95Ms": 0.216,
+      "minMs": 0.029,
+      "maxMs": 1.136,
       "iterations": 20
     }
   },
   "baselineMetrics": {
     "runtimeInit": {
-      "meanMs": 2.647,
-      "medianMs": 2.304,
-      "p95Ms": 3.742,
-      "minMs": 1.234,
-      "maxMs": 4.251,
+      "meanMs": 2.615,
+      "medianMs": 2.311,
+      "p95Ms": 3.764,
+      "minMs": 1.27,
+      "maxMs": 4.829,
       "iterations": 100
     },
     "commitTransition": {
-      "meanMs": 0.031,
+      "meanMs": 0.02,
       "medianMs": 0.012,
-      "p95Ms": 0.019,
+      "p95Ms": 0.025,
       "minMs": 0.009,
-      "maxMs": 2.122,
+      "maxMs": 1.552,
       "iterations": 400
     },
     "loadRunAfterRestart": {
-      "meanMs": 0.409,
-      "medianMs": 0.218,
-      "p95Ms": 1.414,
-      "minMs": 0.193,
-      "maxMs": 2.239,
+      "meanMs": 0.487,
+      "medianMs": 0.222,
+      "p95Ms": 1.536,
+      "minMs": 0.191,
+      "maxMs": 1.936,
       "iterations": 30
     },
     "completePath": {
-      "meanMs": 0.162,
-      "medianMs": 0.057,
-      "p95Ms": 1.083,
+      "meanMs": 0.161,
+      "medianMs": 0.058,
+      "p95Ms": 1.056,
       "minMs": 0.051,
-      "maxMs": 1.115,
+      "maxMs": 1.108,
       "iterations": 20
     },
     "cancellationPhase": {
-      "meanMs": 0.032,
-      "medianMs": 0.029,
-      "p95Ms": 0.041,
-      "minMs": 0.027,
-      "maxMs": 0.046,
+      "meanMs": 0.086,
+      "medianMs": 0.03,
+      "p95Ms": 0.066,
+      "minMs": 0.028,
+      "maxMs": 1.049,
       "iterations": 20
     }
   },
