@@ -211,7 +211,40 @@ impl QueryCache {
         if std::fs::write(&path, value).is_err() {
             return;
         }
-        self.enforce_lru();
+        self.enforce_lru(&dir);
+    }
+
+    /// Look up a negative cache entry. A negative entry is only valid for
+    /// `NEGATIVE_TTL_SECS` after it was written; expired entries are deleted
+    /// so the next query re-runs. mtime is NOT touched on hit — negative
+    /// entries have a fixed TTL, not an LRU-based lifetime.
+    pub fn get_negative(&self, key: &str) -> Option<Vec<u8>> {
+        let path = self.negative_dir().join(key);
+        let data = std::fs::read(&path).ok()?;
+        let meta = std::fs::metadata(&path).ok()?;
+        let written = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let age = SystemTime::now().duration_since(written).ok();
+        let expired = age.is_none_or(|a| a.as_secs() >= NEGATIVE_TTL_SECS);
+        if expired {
+            let _ = std::fs::remove_file(&path);
+            return None;
+        }
+        Some(data)
+    }
+
+    /// Store a negative cache entry (definitive-empty result). The mtime is
+    /// the TTL anchor: `get_negative` rejects entries older than
+    /// `NEGATIVE_TTL_SECS`. Same LRU bounds as the positive cache.
+    pub fn put_negative(&self, key: &str, value: &[u8]) {
+        let dir = self.negative_dir();
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let path = dir.join(key);
+        if std::fs::write(&path, value).is_err() {
+            return;
+        }
+        self.enforce_lru(&dir);
     }
 
     /// Remove every cache entry (positive and negative). Used by
@@ -225,10 +258,10 @@ impl QueryCache {
         Ok(())
     }
 
-    /// Evict least-recently-used entries until both bounds hold. Best-effort.
-    fn enforce_lru(&self) {
-        let dir = self.query_dir();
-        let read_dir = match std::fs::read_dir(&dir) {
+    /// Evict least-recently-used entries from `dir` until both bounds hold.
+    /// Best-effort. Applies to both the positive and negative cache dirs.
+    fn enforce_lru(&self, dir: &Path) {
+        let read_dir = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
             Err(_) => return,
         };
@@ -257,7 +290,7 @@ impl QueryCache {
             if std::fs::remove_file(&path).is_ok() {
                 total_bytes = total_bytes.saturating_sub(size);
             }
-            let remaining: usize = std::fs::read_dir(&dir)
+            let remaining: usize = std::fs::read_dir(dir)
                 .map(|rd| rd.flatten().filter(|e| e.metadata().is_ok()).count())
                 .unwrap_or(0);
             if remaining <= self.max_items && (total_bytes as usize) <= self.max_bytes {
@@ -447,5 +480,79 @@ mod tests {
         let other_present = cache.get("other").is_some();
         // Only one of them can fit; the other was evicted.
         assert!(big_present ^ other_present);
+    }
+
+    #[test]
+    fn negative_entries_roundtrip_within_ttl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        assert_eq!(cache.get_negative("k"), None);
+        cache.put_negative("k", b"none-found");
+        assert_eq!(
+            cache.get_negative("k").as_deref(),
+            Some(b"none-found".as_slice())
+        );
+        // Negative entries live in negative-cache/, positive in query-cache/.
+        assert!(cache.negative_dir().join("k").exists());
+        assert!(!cache.query_dir().exists());
+    }
+
+    #[test]
+    fn negative_entries_expire_after_ttl() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put_negative("k", b"none-found");
+        // Backdate the mtime beyond the TTL (30s) — the entry must expire.
+        let path = cache.negative_dir().join("k");
+        let backdated = SystemTime::now() - std::time::Duration::from_secs(NEGATIVE_TTL_SECS + 5);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|f| f.set_modified(backdated))
+            .expect("backdate mtime");
+        assert_eq!(
+            cache.get_negative("k"),
+            None,
+            "expired negative entry is a miss"
+        );
+        // Expired entries are removed, not left to accumulate.
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn negative_entries_honor_lru_bounds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache {
+            state_dir: tmp.path().to_path_buf(),
+            max_items: 2,
+            max_bytes: usize::MAX,
+        };
+        cache.put_negative("a", b"1");
+        cache.put_negative("b", b"2");
+        // Negative reads never touch mtime, so make "b" unambiguously the
+        // oldest entry by backdating it (deterministic eviction order).
+        let b_path = cache.negative_dir().join("b");
+        std::fs::File::options()
+            .write(true)
+            .open(&b_path)
+            .and_then(|f| f.set_modified(SystemTime::now() - std::time::Duration::from_secs(60)))
+            .expect("backdate mtime");
+        cache.put_negative("c", b"3");
+        // Bound is 2: oldest negative entry (b) is evicted.
+        assert_eq!(cache.get_negative("b"), None);
+        assert_eq!(cache.get_negative("c").as_deref(), Some(b"3".as_slice()));
+    }
+
+    #[test]
+    fn clear_drops_negative_entries_too() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put("pos", b"p");
+        cache.put_negative("neg", b"n");
+        cache.clear().unwrap();
+        assert_eq!(cache.get("pos"), None);
+        assert_eq!(cache.get_negative("neg"), None);
+        assert!(!cache.query_dir().exists());
+        assert!(!cache.negative_dir().exists());
     }
 }

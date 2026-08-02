@@ -365,7 +365,7 @@ fn run_operation(
     // Every batch operation must be read-only and known. `index.*` commands
     // are marked non-read-only in the registry: they are rejected here.
     let descriptor = tool_descriptor(&op.op);
-    match descriptor {
+    match descriptor.as_ref() {
         None => {
             return OperationResponse {
                 id,
@@ -396,9 +396,25 @@ fn run_operation(
 
     // Query cache: serve Repository-cacheable ops from disk when the key
     // matches the current repository state. The key is `None` for ops that
-    // are not cacheable or opted out via `no_cache`.
+    // are not cacheable or opted out via `no_cache`. Negative-cache-eligible
+    // ops check the negative namespace first (definitive-empty results only).
     let cache_key = cache_ctx.and_then(|ctx| ctx.key_for(op));
     if let (Some(ctx), Some(key)) = (&cache_ctx, &cache_key) {
+        let negative_eligible = descriptor
+            .as_ref()
+            .is_some_and(|d| d.negative_cache_eligible);
+        if negative_eligible {
+            if let Some(bytes) = ctx.cache.get_negative(key) {
+                if let Ok(value) = serde_json::from_slice(&bytes) {
+                    return OperationResponse {
+                        id,
+                        ok: true,
+                        result: Some(value),
+                        error: None,
+                    };
+                }
+            }
+        }
         if let Some(bytes) = ctx.cache.get(key) {
             if let Ok(value) = serde_json::from_slice(&bytes) {
                 return OperationResponse {
@@ -427,11 +443,17 @@ fn run_operation(
     match outcome {
         Ok(value) => {
             // Cache the fresh result only when the snapshot is not stale and
-            // the op is Repository-cacheable.
+            // the op is Repository-cacheable. Definitive-empty outcomes of
+            // negative-cache-eligible ops go to the negative namespace (TTL-
+            // bounded); everything else to the positive namespace.
             if let (Some(ctx), Some(key)) = (&cache_ctx, &cache_key) {
                 if !stale_snapshot {
                     if let Ok(bytes) = serde_json::to_vec(&value) {
-                        ctx.cache.put(key, &bytes);
+                        if is_definitive_empty(&op.op, &value) {
+                            ctx.cache.put_negative(key, &bytes);
+                        } else {
+                            ctx.cache.put(key, &bytes);
+                        }
                     }
                 }
             }
@@ -448,6 +470,27 @@ fn run_operation(
             result: None,
             error: Some(serde_json::json!({ "code": code, "message": message })),
         },
+    }
+}
+
+/// Whether a result is a definitive-empty outcome — the only kind that may be
+/// negatively cached. A `grep`/`search` with zero matches, or a `testsFor`
+/// with no rows, is a definitive answer (nothing was found NOW); error or
+/// partial results are never negative-cached.
+fn is_definitive_empty(op: &str, value: &Value) -> bool {
+    match op {
+        "grep" | "search" => {
+            value
+                .get("total_matches")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1)
+                == 0
+        }
+        "testsFor" => value
+            .as_array()
+            .map(|rows| rows.is_empty())
+            .unwrap_or(false),
+        _ => false,
     }
 }
 
@@ -894,19 +937,20 @@ mod tests {
         }
     }
 
-    /// Number of cached result files under the given FDX_INDEX_DIR root.
-    fn cache_entry_count(state_root: &std::path::Path) -> usize {
+    /// Number of cache files in a given namespace (`query-cache` or
+    /// `negative-cache`) under the given FDX_INDEX_DIR root.
+    fn cache_entry_count_in(state_root: &std::path::Path, namespace: &str) -> usize {
         let qc = state_root.join(crate::index::paths::INDEX_NAMESPACE);
         if !qc.exists() {
             return 0;
         }
         let mut count = 0;
-        // <root>/fdx-index/<repo>/<worktree>/query-cache/*.json
+        // <root>/fdx-index/<repo>/<worktree>/<namespace>/*
         if let Ok(repos) = std::fs::read_dir(&qc) {
             for repo in repos.flatten() {
                 if let Ok(worktrees) = std::fs::read_dir(repo.path()) {
                     for wt in worktrees.flatten() {
-                        let dir = wt.path().join(crate::index::query_cache::QUERY_CACHE_DIR);
+                        let dir = wt.path().join(namespace);
                         count += std::fs::read_dir(&dir)
                             .map(|e| e.flatten().count())
                             .unwrap_or(0);
@@ -915,6 +959,11 @@ mod tests {
             }
         }
         count
+    }
+
+    /// Number of positive query-cache entries.
+    fn cache_entry_count(state_root: &std::path::Path) -> usize {
+        cache_entry_count_in(state_root, crate::index::query_cache::QUERY_CACHE_DIR)
     }
 
     #[test]
@@ -1007,6 +1056,80 @@ mod tests {
             cache_entry_count(state.path()),
             0,
             "non-git cwd must not touch the query cache"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn definitive_empty_results_use_the_negative_cache() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(
+            tmp.path().join("lib.ts"),
+            "export const greeting = \"hi\"\n",
+        )
+        .unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        // grep with zero matches → definitive-empty → negative namespace only.
+        let grep_none = || {
+            vec![op(
+                "g1",
+                "grep",
+                serde_json::json!({ "pattern": "no-such-symbol", "paths": ["."] }),
+            )]
+        };
+        let resp = execute_batch(&grep_none(), Some(cwd), None, false).unwrap();
+        assert_eq!(ok_result(&resp.responses[0])["total_matches"], 0);
+        assert_eq!(
+            cache_entry_count_in(state.path(), crate::index::query_cache::NEGATIVE_CACHE_DIR),
+            1,
+            "definitive-empty grep is stored in the negative namespace"
+        );
+        assert_eq!(
+            cache_entry_count(state.path()),
+            0,
+            "definitive-empty grep never lands in the positive namespace"
+        );
+
+        // Repeat: served from the negative cache (still one entry).
+        let resp2 = execute_batch(&grep_none(), Some(cwd), None, false).unwrap();
+        assert_eq!(ok_result(&resp2.responses[0])["total_matches"], 0);
+        assert_eq!(
+            cache_entry_count_in(state.path(), crate::index::query_cache::NEGATIVE_CACHE_DIR),
+            1,
+            "repeat negative hit adds no entry"
+        );
+
+        // grep WITH matches → positive namespace (not negative).
+        let grep_hit = || {
+            vec![op(
+                "g2",
+                "grep",
+                serde_json::json!({ "pattern": "greeting", "paths": ["."] }),
+            )]
+        };
+        let resp3 = execute_batch(&grep_hit(), Some(cwd), None, false).unwrap();
+        assert_eq!(ok_result(&resp3.responses[0])["total_matches"], 1);
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "non-empty grep is stored in the positive namespace"
+        );
+        assert_eq!(
+            cache_entry_count_in(state.path(), crate::index::query_cache::NEGATIVE_CACHE_DIR),
+            1,
+            "non-empty grep must not touch the negative namespace"
         );
 
         match prev {
