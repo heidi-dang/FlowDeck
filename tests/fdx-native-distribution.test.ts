@@ -141,13 +141,16 @@ describe("FDX Native Distribution & Binary Resolver", () => {
     expect(typeof installOk).toBe("boolean")
   })
 
-  it("Clean packed install test: npm pack contains no Rust source in crates/fdx", () => {
+  it("Clean packed install test: npm pack includes crates/fdx source and excludes target build artifacts", () => {
     const root = resolve(__dirname, "..")
     const packOut = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf-8" })
     const packJson = JSON.parse(packOut)
     const files: string[] = packJson[0]?.files?.map((f: any) => f.path) ?? []
 
-    const rustSourceInTarball = files.some(f => f.startsWith("crates/fdx"))
-    expect(rustSourceInTarball).toBe(false)
+    const hasCargoToml = files.some(f => f === "crates/fdx/Cargo.toml")
+    const hasTargetArtifacts = files.some(f => f.startsWith("crates/fdx/target"))
+
+    expect(hasCargoToml).toBe(true)
+    expect(hasTargetArtifacts).toBe(false)
   })
 })

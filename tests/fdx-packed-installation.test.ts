@@ -73,12 +73,15 @@ describe("FDX Clean Packed Installation Tests", () => {
     try { rmSync(platformTarball, { force: true }) } catch {}
   }, 60000)
 
-  it("packed tarball contents exclude uncompiled crates/fdx Rust source", () => {
+  it("packed tarball includes crates/fdx source and excludes target build artifacts", () => {
     const root = resolve(__dirname, "..")
     const packOut = execFileSync("npm", ["pack", "--dry-run", "--json"], { cwd: root, encoding: "utf-8" })
     const files: string[] = JSON.parse(packOut)[0]?.files?.map((f: any) => f.path) ?? []
 
-    const rustSourceInTarball = files.some(f => f.startsWith("crates/fdx"))
-    expect(rustSourceInTarball).toBe(false)
+    const hasCargoToml = files.some(f => f === "crates/fdx/Cargo.toml")
+    const hasTargetArtifacts = files.some(f => f.startsWith("crates/fdx/target"))
+
+    expect(hasCargoToml).toBe(true)
+    expect(hasTargetArtifacts).toBe(false)
   })
 })
