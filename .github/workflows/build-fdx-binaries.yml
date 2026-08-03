@@ -286,7 +286,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          FLOWDECK_VERSION="$(node -p "require('$GITHUB_WORKSPACE/package.json').version")"
+          FLOWDECK_VERSION="$(node -p "require('./package.json').version")"
           test -n "$FLOWDECK_VERSION"
           echo "FLOWDECK_VERSION=$FLOWDECK_VERSION" >> "$GITHUB_ENV"
 
