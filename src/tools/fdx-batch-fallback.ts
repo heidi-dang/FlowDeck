@@ -1189,6 +1189,12 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
 
 /** Best-effort directory fsync (supported on Linux/macOS; no-op where not). */
 function fsyncDir(dir: string): void {
+  // P2-4 durability with documented platform handling: directory fsync is
+  // unsupported on Windows (a directory cannot be opened for sync) — a
+  // platform limitation, not a durability failure, so it is skipped there.
+  // On Unix, genuine failures (EIO, EACCES, ENOSPC, EROFS, EBUSY) MUST
+  // propagate; only documented filesystem-unsupported signals are ignored.
+  if (process.platform === "win32") return
   try {
     const fd = openSync(dir, "r")
     try {
@@ -1198,11 +1204,9 @@ function fsyncDir(dir: string): void {
     }
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
-    // P2-4: ignore ONLY the documented unsupported-platform signals
-    // (directory fsync is not supported on Windows / some filesystems).
-    // Genuine failures — EIO, EACCES (permission), ENOSPC, EROFS, EBUSY —
-    // MUST propagate so durability failures are never suppressed.
-    const unsupported = ["EISDIR", "EINVAL", "ENOTSUP", "EOPNOTSUPP", "EBADF"]
+    // Ignore ONLY documented unsupported-filesystem signals (some
+    // filesystems cannot fsync a directory); propagate everything else.
+    const unsupported = ["EINVAL", "ENOTSUP", "EOPNOTSUPP", "EISDIR", "EBADF"]
     if (!unsupported.includes(code ?? "")) {
       throw e
     }
