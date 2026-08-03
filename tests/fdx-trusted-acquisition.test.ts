@@ -837,21 +837,25 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       process.env = savedEnv
     })
 
-    it("P1-1: switching XDG_CACHE_HOME (cache root) invalidates the resolution cache identity", () => {
+    it("P1-1: switching the cache root invalidates the resolution cache identity", () => {
       const target = detectFdxTarget()
       if (!target) return
       const savedEnv = { ...process.env }
-      process.env.XDG_CACHE_HOME = join(tempDir, "root-a")
-      const keyA = buildResolutionCacheKey()
-      process.env.XDG_CACHE_HOME = join(tempDir, "root-b")
-      const keyB = buildResolutionCacheKey()
-      expect(keyA).not.toBe(keyB)
-      // LOCALAPPDATA also drives the cache root on win32.
+      // The cache root is driven by XDG_CACHE_HOME on POSIX and by
+      // LOCALAPPDATA on win32 (see getFdxCacheDir). Switch the platform-relevant
+      // variable and verify the key changes — a long-running process must not
+      // serve a resolution computed for a different cache root.
       if (process.platform === "win32") {
         process.env.LOCALAPPDATA = join(tempDir, "localappdata-a")
         const keyC = buildResolutionCacheKey()
         process.env.LOCALAPPDATA = join(tempDir, "localappdata-b")
         expect(buildResolutionCacheKey()).not.toBe(keyC)
+      } else {
+        process.env.XDG_CACHE_HOME = join(tempDir, "root-a")
+        const keyA = buildResolutionCacheKey()
+        process.env.XDG_CACHE_HOME = join(tempDir, "root-b")
+        const keyB = buildResolutionCacheKey()
+        expect(keyA).not.toBe(keyB)
       }
       process.env = savedEnv
     })
@@ -860,9 +864,16 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       const target = detectFdxTarget()
       if (!target) return
       const savedEnv = { ...process.env }
-      process.env.XDG_CACHE_HOME = join(tempDir, "embed-root")
+      const root = join(tempDir, "embed-root")
+      if (process.platform === "win32") {
+        process.env.LOCALAPPDATA = root
+      } else {
+        process.env.XDG_CACHE_HOME = root
+      }
       const key = buildResolutionCacheKey()
-      expect(key).toContain(join(tempDir, "embed-root"))
+      // The resolved cache dir is derived from the platform cache root and is
+      // embedded in the key regardless of which variable drives it.
+      expect(key).toContain(join(root, "flowdeck"))
       process.env = savedEnv
     })
 
