@@ -32,6 +32,7 @@ import {
   writeFileSync,
   readFileSync,
   readdirSync,
+  statSync,
 } from "node:fs"
 import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
@@ -400,14 +401,17 @@ describe("FDX native/JS fallback parity", () => {
     // an injectable probe. The daemon rung is exercised by the Rust unit
     // tests (ScriptedProbe); here the same semantics are asserted on the
     // fallback with a scripted probe.
+    //
+    // Deferred-activation transaction semantics: every op passes the pre-op
+    // check (0,2), the post-execution check (1,3) and the per-op final
+    // barrier — both ops stage successfully. The state flips at the BATCH
+    // FINAL FENCE (call 4): with drift detected before any activation, the
+    // whole batch is void — BOTH provisional successes are rolled back to
+    // E_STALE_SNAPSHOT and no artifact becomes visible. This mirrors the
+    // native batch fence behavior.
     let calls = 0
     const scripted: BatchStateProbe = {
-      // op1 passes the pre-op check (0), the post-execution check (1), AND
-      // the final state-commit barrier (2); the state flips before op2 (3),
-      // so op1's result survives and op2 aborts with E_STALE_SNAPSHOT.
-      // Mirrors the native ScriptedProbe semantics where the final commit
-      // barrier is the last gate before a response is accepted.
-      stateUnchanged: () => calls++ < 3,
+      stateUnchanged: () => calls++ < 4,
     }
     const dir = freshProject()
     try {
@@ -417,12 +421,15 @@ describe("FDX native/JS fallback parity", () => {
       ]
       const ts = executeBatchFallback(ops, dir, { probe: scripted })
       expect(ts.staleSnapshot).toBe(true)
-      expect(ts.responses[0].ok).toBe(true)
+      // Both staged successes are rolled back when the batch fence fails.
+      expect(ts.responses[0].ok).toBe(false)
       expect(ts.responses[1].ok).toBe(false)
-      expect(ts.responses[1].error).toEqual({
-        code: E_STALE_SNAPSHOT,
-        message: "operation aborted: repository state changed mid-batch",
-      })
+      for (const r of ts.responses) {
+        expect(r.error).toEqual({
+          code: E_STALE_SNAPSHOT,
+          message: "operation result discarded: repository state changed during execution",
+        })
+      }
       // Cardinality preserved: one response per input op, ids in order.
       expect(ts.responses.map((r) => r.id)).toEqual(["ok1", "ok2"])
     } finally {
@@ -839,6 +846,84 @@ describe("FDX native/JS fallback parity", () => {
       // Each artifact holds its own full content (a-repeats vs b-repeats).
       expect(parsedA.lines[0].startsWith("a")).toBe(true)
       expect(parsedB.lines[0].startsWith("b")).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("TS envelope drift rolls back the provisional artifact (no file remains)", () => {
+    // Audit P1-1 closure for the fallback: a state change detected at the
+    // batch final fence must not leave a visible artifact. The oversized
+    // result stages a provisional temp; the fence then flips and the temp is
+    // discarded — no final artifact, no temp file.
+    let calls = 0
+    const scripted: BatchStateProbe = {
+      // Both ops pass pre-op (0), post-exec (1) and per-op barrier (2); the
+      // state flips at the batch fence (call 6 for two ops: 0-5 pass).
+      stateUnchanged: () => calls++ < 6,
+    }
+    const dir = freshProject()
+    try {
+      writeBigFile(dir)
+      const id = `drift-${Date.now().toString(36)}`
+      const ops: BatchOperation[] = [
+        { id, op: "read", params: { file: "big.txt", mode: "raw" } },
+        { id: `${id}-2`, op: "read", params: { file: "big.txt", mode: "raw" } },
+      ]
+      const base = join(dir, "ts-artifacts-drift")
+      const ts = executeBatchFallback(ops, dir, { artifactBase: base, probe: scripted })
+      expect(ts.staleSnapshot).toBe(true)
+      for (const r of ts.responses) {
+        expect(r.ok).toBe(false)
+        expect(r.error?.code).toBe(E_STALE_SNAPSHOT)
+        expect(r.artifactRef).toBeUndefined()
+      }
+      const arts = join(base, "artifacts")
+      if (existsSync(arts)) {
+        const files = readdirSync(arts)
+        const ours = files.filter((f) => f.includes(id))
+        expect(ours).toEqual([])
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("TS no-clobber publish: existing correct file reused, conflicting file rejected", () => {
+    // Audit P1-2 closure for the fallback: the final path is created only
+    // when absent. Pre-publish a winner at the content-addressed path; a
+    // batch producing IDENTICAL content must reuse it (no rewrite, mtime
+    // unchanged); producing DIFFERENT content at the same op id must fail
+    // closed (distinct content hash → distinct path, so we verify by writing
+    // a conflicting file directly at the same path).
+    const dir = freshProject()
+    try {
+      writeBigFile(dir)
+      const id = `noclob-${Date.now().toString(36)}`
+      const ops: BatchOperation[] = [{ id, op: "read", params: { file: "big.txt", mode: "raw" } }]
+      const base = join(dir, "ts-artifacts-noclob")
+      // First batch publishes the artifact.
+      const first = executeBatchFallback(ops, dir, { artifactBase: base })
+      expect(first.responses[0].ok).toBe(true)
+      const marker = first.responses[0].result as { artifactRef: string }
+      const publishedPath = marker.artifactRef
+      expect(existsSync(publishedPath)).toBe(true)
+      const mtime = statSync(publishedPath).mtimeMs
+
+      // Second identical batch reuses the same immutable artifact (same ref).
+      const second = executeBatchFallback(ops, dir, { artifactBase: base })
+      const marker2 = second.responses[0].result as { artifactRef: string }
+      expect(marker2.artifactRef).toBe(publishedPath)
+      expect(statSync(publishedPath).mtimeMs).toBe(mtime)
+
+      // A conflicting file at the same path must be rejected (fail closed).
+      // Write tampered bytes over the artifact, then run a fresh batch with
+      // the same op id + content: prepareArtifact reads the existing file,
+      // detects the conflict and throws — the op fails closed.
+      writeFileSync(publishedPath, "tampered-not-json")
+      const tampered = executeBatchFallback(ops, dir, { artifactBase: base })
+      expect(tampered.responses[0].ok).toBe(false)
+      expect(tampered.responses[0].error?.code).toBe(E_INTERNAL)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

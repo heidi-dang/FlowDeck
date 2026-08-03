@@ -32,11 +32,11 @@ import {
   closeSync,
   existsSync,
   fsyncSync,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
   readdirSync,
-  renameSync,
   statSync,
   unlinkSync,
   writeSync,
@@ -950,141 +950,27 @@ export function artifactFileName(id: string, contentHash: string): string {
   return `${prefix}-${opIdHash}-${contentHash}.json`
 }
 
-/**
- * Enforce the per-op output bound with atomic artifact publication under the
- * final state-commit barrier.
- *
- * Lifecycle (mirrors batch::commit_result):
- *   execute into provisional memory (caller)
- *   → post-operation state check (caller)
- *   → serialize into provisional bytes
- *   → prepare provisional artifact data (exclusive temp write + fsync, NOT
- *     yet visible)
- *   → FINAL state check
- *   → atomically activate artifact (rename)
- *   → accept operation response
- *
- * A state change detected at the final check (after preparation, before
- * activation) discards the result with E_STALE_SNAPSHOT and removes the
- * provisional temp file.
- */
-function finalizeFallbackResponse(
-  id: string,
-  value: unknown,
-  limit: number,
-  artifactBase: string | undefined,
-  probe: BatchStateProbe | null,
-): { resp: OperationResponse; used: number } {
-  let bytes: Buffer
-  try {
-    bytes = Buffer.from(JSON.stringify(value))
-  } catch {
-    return {
-      resp: { id, ok: false, error: { code: E_INTERNAL, message: "failed to serialize operation result" } },
-      used: 0,
-    }
-  }
-  const used = bytes.length
-
-  if (used <= limit) {
-    // In-budget result: no cache/artifact activation. The final state check
-    // below is the ONLY gate between computation and acceptance — no
-    // successful response is accepted before it.
-    if (probe !== null && !probe.stateUnchanged()) {
-      return {
-        resp: {
-          id,
-          ok: false,
-          error: {
-            code: E_STALE_SNAPSHOT,
-            message: "operation result discarded: repository state changed during execution",
-          },
-        },
-        used,
-      }
-    }
-    return { resp: { id, ok: true, result: value }, used }
-  }
-
-  const dir = artifactBase
-    ? join(artifactBase, "artifacts")
-    : join(tmpdir(), "fdx-batch-artifacts")
-  const contentHash = sha256Hex(bytes)
-  const fileName = artifactFileName(id, contentHash)
-  const finalPath = join(dir, fileName)
-
-  // Prepare provisional artifact data (exclusive temp write + fsync). The
-  // temp file is NOT yet visible at the final path.
-  let provisional: ProvisionalArtifact
-  try {
-    provisional = prepareArtifact(finalPath, bytes, contentHash)
-  } catch (e) {
-    return {
-      resp: {
-        id,
-        ok: false,
-        error: { code: E_INTERNAL, message: `failed to write artifact: ${errorText(e)}` },
-      },
-      used,
-    }
-  }
-
-  // FINAL state check: the commit barrier. A repository mutation detected
-  // here — after computation, after artifact preparation — discards the
-  // result and removes the provisional temp file. No artifact is activated
-  // before this check.
-  if (probe !== null && !probe.stateUnchanged()) {
-    provisional.discard()
-    return {
-      resp: {
-        id,
-        ok: false,
-        error: {
-          code: E_STALE_SNAPSHOT,
-          message: "operation result discarded: repository state changed during execution",
-        },
-      },
-      used,
-    }
-  }
-
-  // Activate the artifact (atomic rename, race-safe).
-  let artifactRef: string
-  try {
-    artifactRef = provisional.activate(bytes, contentHash)
-  } catch (e) {
-    provisional.discard()
-    return {
-      resp: {
-        id,
-        ok: false,
-        error: { code: E_INTERNAL, message: `failed to write artifact: ${errorText(e)}` },
-      },
-      used,
-    }
-  }
-
-  return {
-    resp: {
-      id,
-      ok: true,
-      result: {
-        truncated: true,
-        artifactRef,
-        byteCount: used,
-        limitBytes: limit,
-        contentHash,
-      },
-      truncated: true,
-      artifactRef,
-    },
-    used,
-  }
-}
-
 /** Human-readable error message (mirrors ioErrorText semantics for artifacts). */
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
+}
+
+/**
+ * Write `bytes` to `fd` in a loop until the ENTIRE buffer is stored (P1-4).
+ * A single writeSync may legally complete fewer bytes than requested; only
+ * looping from the returned offset guarantees a complete artifact file. Fails
+ * closed on zero progress or any write error — a partial file must never be
+ * activated under a hash computed from the intended full payload.
+ */
+function writeExact(fd: number, bytes: Buffer): void {
+  let offset = 0
+  while (offset < bytes.length) {
+    const written = writeSync(fd, bytes, offset, bytes.length - offset)
+    if (written <= 0) {
+      throw new Error(`write made no progress after ${offset}/${bytes.length} bytes`)
+    }
+    offset += written
+  }
 }
 
 /**
@@ -1153,7 +1039,7 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
     let fd: number | null = null
     try {
       fd = openSync(tempPath, "wx")
-      writeSync(fd, bytes)
+      writeExact(fd, bytes)
       fsyncSync(fd)
       closeSync(fd)
       fd = null
@@ -1170,50 +1056,70 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
         },
         activate(targetBytes, targetHash) {
           if (tempPath === finalPath) return finalPath
+          // No-clobber publish: link the fully-written+fsynced temp into the
+          // final name, then remove the temp name. linkSync fails with EEXIST
+          // when a competing writer already activated the final path — unlike
+          // renameSync, which silently REPLACES the destination on POSIX. A
+          // racing writer therefore always enters winner verification.
           try {
-            renameSync(tempPath, finalPath)
+            linkSync(tempPath, finalPath)
+            try {
+              unlinkSync(tempPath)
+            } catch {
+              // temp already gone
+            }
             try {
               fsyncDir(join(finalPath, ".."))
             } catch {
               // directory fsync not supported on this platform — best effort
             }
             return finalPath
-          } catch (renameErr) {
-            // Rename lost to a concurrent writer (or an unexpected error).
-            // Read the final artifact and verify identity before reuse.
-            try {
-              const existing = readFileSync(finalPath)
-              if (sha256Hex(existing) === targetHash && existing.length === targetBytes.length) {
-                // Identical content: safely reuse the winner.
-                try {
-                  unlinkSync(tempPath)
-                } catch {
-                  // temp already gone
+          } catch (linkErr) {
+            if (linkErr instanceof Error && (linkErr as NodeJS.ErrnoException).code === "EEXIST") {
+              // A competing winner activated the final path first. Read and
+              // verify it before reuse; never clobber it.
+              try {
+                const existing = readFileSync(finalPath)
+                if (sha256Hex(existing) === targetHash && existing.length === targetBytes.length) {
+                  // Identical content: safely reuse the winner.
+                  try {
+                    unlinkSync(tempPath)
+                  } catch {
+                    // temp already gone
+                  }
+                  return finalPath
                 }
-                return finalPath
-              }
-              throw new Error(`artifact path already exists with different content: ${finalPath}`)
-            } catch (readErr) {
-              if (
-                readErr instanceof Error &&
-                readErr.message.includes("artifact path already exists with different content")
-              ) {
+                throw new Error(`artifact path already exists with different content: ${finalPath}`)
+              } catch (readErr) {
+                if (
+                  readErr instanceof Error &&
+                  readErr.message.includes("artifact path already exists with different content")
+                ) {
+                  try {
+                    unlinkSync(tempPath)
+                  } catch {
+                    // best effort
+                  }
+                  throw readErr
+                }
                 try {
                   unlinkSync(tempPath)
                 } catch {
                   // best effort
                 }
-                throw readErr
+                throw new Error(
+                  `failed to publish artifact (no-clobber): ${errorText(linkErr)}; final unreadable: ${errorText(readErr)}`,
+                )
               }
-              try {
-                unlinkSync(tempPath)
-              } catch {
-                // best effort
-              }
-              throw new Error(
-                `failed to rename artifact: ${errorText(renameErr)}; final unreadable: ${errorText(readErr)}`,
-              )
             }
+            // Unexpected link failure (permission, I/O, unsupported FS):
+            // fail closed; never fall back to a clobbering rename.
+            try {
+              unlinkSync(tempPath)
+            } catch {
+              // best effort
+            }
+            throw new Error(`failed to publish artifact (no-clobber): ${errorText(linkErr)}`)
           }
         },
       }
@@ -1514,32 +1420,46 @@ export function executeBatchFallback(
   const probe: BatchStateProbe | null =
     options.probe !== undefined ? options.probe : createRepoStateProbe(cwd)
 
-  const responses: OperationResponse[] = []
   let usedOutputBytes = 0
   let failedFast = false
   let staleSnapshot = false
+  // Deferred-activation transaction: each op stages either a final response or
+  // a PENDING activation (provisional artifact temp). Pending activations are
+  // committed ONLY after the final state fence passes; on drift they are
+  // discarded so no artifact from this batch becomes visible. The per-op
+  // outcomes keep input order for exact response reconstruction.
+  type StagedOutcome =
+    | { kind: "final"; resp: OperationResponse }
+    | { kind: "pending"; pending: PendingFallbackActivation }
+  const staged: StagedOutcome[] = []
   for (const op of operations) {
     if (failedFast) {
       // Cardinality contract: every input operation gets exactly one
       // response. Operations that never started (fail-fast) return an
       // explicit cancellation response and are never executed — mirroring
       // the native executor (batch::execute_batch).
-      responses.push({
-        id: op.id,
-        ok: false,
-        error: { code: E_CANCELLED, message: "operation cancelled by fail-fast" },
+      staged.push({
+        kind: "final",
+        resp: {
+          id: op.id,
+          ok: false,
+          error: { code: E_CANCELLED, message: "operation cancelled by fail-fast" },
+        },
       })
       continue
     }
     // Repository-state drift: once the captured state no longer matches the
     // worktree, every remaining operation is ABORTED — never executed.
     if (staleSnapshot) {
-      responses.push({
-        id: op.id,
-        ok: false,
-        error: {
-          code: E_STALE_SNAPSHOT,
-          message: "operation aborted: repository state changed mid-batch",
+      staged.push({
+        kind: "final",
+        resp: {
+          id: op.id,
+          ok: false,
+          error: {
+            code: E_STALE_SNAPSHOT,
+            message: "operation aborted: repository state changed mid-batch",
+          },
         },
       })
       continue
@@ -1548,52 +1468,97 @@ export function executeBatchFallback(
     // drift is detected even for ops that never touch the cache.
     if (probe !== null && !probe.stateUnchanged()) {
       staleSnapshot = true
-      responses.push({
-        id: op.id,
-        ok: false,
-        error: {
-          code: E_STALE_SNAPSHOT,
-          message: "operation aborted: repository state changed mid-batch",
+      staged.push({
+        kind: "final",
+        resp: {
+          id: op.id,
+          ok: false,
+          error: {
+            code: E_STALE_SNAPSHOT,
+            message: "operation aborted: repository state changed mid-batch",
+          },
         },
       })
       continue
     }
     const budget = TS_MAX_BATCH_OUTPUT_BYTES - usedOutputBytes
-    const { resp, used } = runFallbackOperation(op, cwd, budget, options.artifactBase, probe)
-    usedOutputBytes += used
-    responses.push(resp)
-    if (!resp.ok && options.failFast === true) {
-      failedFast = true
+    const outcome = runFallbackOperation(op, cwd, budget, options.artifactBase, probe)
+    if (outcome.kind === "final") {
+      usedOutputBytes += outcome.used
+      staged.push({ kind: "final", resp: outcome.resp })
+      if (!outcome.resp.ok && options.failFast === true) {
+        failedFast = true
+      }
+    } else {
+      usedOutputBytes += outcome.pending.used
+      staged.push({ kind: "pending", pending: outcome.pending })
     }
   }
 
-  // Revalidate once more before the final response is emitted. This outer
-  // check is NOT merely a flag: when the drift is first detected HERE (no
-  // mid-loop drift was seen, so every accepted success is still a provisional
-  // result that has not passed a batch-level final commit barrier), every
-  // accepted success is invalidated to E_STALE_SNAPSHOT. Ops already
-  // discarded mid-batch (stale aborts, fail-fast cancellations) are untouched.
-  let envelopeDrift = false
+  // FINAL STATE FENCE — the batch commit decision. A repository mutation
+  // detected here (or earlier, mid-batch) invalidates EVERY pending
+  // activation: no artifact from this batch becomes visible.
   if (!staleSnapshot && probe !== null && !probe.stateUnchanged()) {
     staleSnapshot = true
-    envelopeDrift = true
   }
-  if (envelopeDrift) {
-    for (const resp of responses) {
-      if (resp.ok) {
-        resp.ok = false
-        resp.result = undefined
-        resp.error = {
+
+  // Resolve staged outcomes into responses, preserving input order. On fence
+  // failure every pending artifact temp is discarded and its response becomes
+  // E_STALE_SNAPSHOT. On success artifacts are committed (no-clobber,
+  // race-safe); an activation failure fails that op closed.
+  const responses: OperationResponse[] = []
+  for (const outcome of staged) {
+    if (outcome.kind === "final") {
+      responses.push(outcome.resp)
+      continue
+    }
+    const pending = outcome.pending
+    if (staleSnapshot) {
+      pending.discard()
+      responses.push({
+        id: pending.id,
+        ok: false,
+        error: {
           code: E_STALE_SNAPSHOT,
           message: "operation result discarded: repository state changed during execution",
-        }
-        resp.truncated = false
-        resp.artifactRef = undefined
-      }
+        },
+      })
+      continue
+    }
+    try {
+      responses.push(pending.commit())
+    } catch (e) {
+      pending.discard()
+      responses.push({
+        id: pending.id,
+        ok: false,
+        error: { code: E_INTERNAL, message: `failed to write artifact: ${errorText(e)}` },
+      })
     }
   }
 
   return { version: 1, responses, failedFast, staleSnapshot }
+}
+
+/**
+ * A provisional artifact activation staged by an operation, awaiting the batch
+ * final state fence. The temp file is fully written (write-exact), fsynced and
+ * closed, but NOT yet published at the final path.
+ */
+interface PendingFallbackActivation {
+  id: string
+  used: number
+  limit: number
+  bytes: Buffer
+  contentHash: string
+  artifact: ProvisionalArtifact | null
+  value: unknown
+
+  /** Discard the provisional temp (no-op when null). */
+  discard(): void
+
+  /** Commit: publish the artifact (no-clobber) and build the response. */
+  commit(): OperationResponse
 }
 
 function runFallbackOperation(
@@ -1602,7 +1567,9 @@ function runFallbackOperation(
   budget: number,
   artifactBase: string | undefined,
   probe: BatchStateProbe | null,
-): { resp: OperationResponse; used: number } {
+):
+  | { kind: "final"; resp: OperationResponse; used: number }
+  | { kind: "pending"; pending: PendingFallbackActivation } {
   // The whole-batch preflight in executeBatchFallback has already validated
   // that this op is a known, read-only, batchable operation; the descriptor
   // is only consulted here for its output bound.
@@ -1611,6 +1578,7 @@ function runFallbackOperation(
   const outcome = runOp(op.op, op.params, cwd)
   if (!outcome.ok) {
     return {
+      kind: "final",
       resp: { id: op.id, ok: false, error: { code: outcome.code, message: outcome.message } },
       used: 0,
     }
@@ -1621,6 +1589,7 @@ function runFallbackOperation(
   // result, mark the batch stale, and return E_STALE_SNAPSHOT.
   if (probe !== null && !probe.stateUnchanged()) {
     return {
+      kind: "final",
       resp: {
         id: op.id,
         ok: false,
@@ -1633,12 +1602,118 @@ function runFallbackOperation(
     }
   }
 
-  // Commit under the final state-commit barrier: the value is serialized into
-  // provisional artifact data, the repository state is re-checked one last
-  // time, and only then is the artifact atomically activated and the response
-  // accepted. A state change before that final check discards the result and
-  // removes any provisional files.
-  return finalizeFallbackResponse(op.id, outcome.value, effectiveLimit, artifactBase, probe)
+  // Per-op final barrier (fast abort): one more state check before the result
+  // is staged as a pending activation. The authoritative commit decision still
+  // happens at the batch fence.
+  if (probe !== null && !probe.stateUnchanged()) {
+    return {
+      kind: "final",
+      resp: {
+        id: op.id,
+        ok: false,
+        error: {
+          code: E_STALE_SNAPSHOT,
+          message: "operation result discarded: repository state changed during execution",
+        },
+      },
+      used: 0,
+    }
+  }
+
+  // Stage the provisional result: serialize, prepare the artifact temp
+  // (write-exact + fsync), but DO NOT publish yet. Preparation failure
+  // (conflict/corruption/permission) fails the op closed.
+  return prepareFallbackResponse(op.id, outcome.value, effectiveLimit, artifactBase)
+}
+
+/**
+ * Stage a provisional fallback response without publishing anything. When the
+ * payload exceeds `limit`, a provisional artifact temp is written (exclusive,
+ * write-exact, fsynced) but NOT renamed. The caller commits or discards it at
+ * the batch fence.
+ */
+function prepareFallbackResponse(
+  id: string,
+  value: unknown,
+  limit: number,
+  artifactBase: string | undefined,
+):
+  | { kind: "pending"; pending: PendingFallbackActivation }
+  | { kind: "final"; resp: OperationResponse; used: number } {
+  let bytes: Buffer
+  try {
+    bytes = Buffer.from(JSON.stringify(value))
+  } catch {
+    return {
+      kind: "final",
+      resp: { id, ok: false, error: { code: E_INTERNAL, message: "failed to serialize operation result" } },
+      used: 0,
+    }
+  }
+  const used = bytes.length
+  let artifact: ProvisionalArtifact | null = null
+  let contentHash = ""
+  if (used > limit) {
+    const dir = artifactBase
+      ? join(artifactBase, "artifacts")
+      : join(tmpdir(), "fdx-batch-artifacts")
+    contentHash = sha256Hex(bytes)
+    const fileName = artifactFileName(id, contentHash)
+    const finalPath = join(dir, fileName)
+    try {
+      artifact = prepareArtifact(finalPath, bytes, contentHash)
+    } catch (e) {
+      // Preparation failure (conflict, corruption, permission, I/O) fails
+      // this op closed with a clear message — never an escaped throw.
+      return {
+        kind: "final",
+        resp: {
+          id,
+          ok: false,
+          error: { code: E_INTERNAL, message: `failed to write artifact: ${errorText(e)}` },
+        },
+        used,
+      }
+    }
+  }
+  return {
+    kind: "pending",
+    pending: {
+      id,
+      used,
+      limit,
+      bytes,
+      contentHash,
+      artifact,
+      value,
+      discard() {
+        artifact?.discard()
+      },
+      commit(): OperationResponse {
+        let artifactRef: string | null = null
+        if (artifact !== null) {
+          artifactRef = artifact.activate(bytes, contentHash)
+        }
+        if (used <= limit) {
+          return { id, ok: true, result: value }
+        }
+        const ref = artifactRef ?? ""
+        return {
+          id,
+          ok: true,
+          result: {
+            truncated: true,
+            artifactRef: ref,
+            byteCount: used,
+            limitBytes: limit,
+            contentHash,
+          },
+          truncated: true,
+          artifactRef: ref,
+        }
+      },
+    },
+  }
 }
 
 function runOp(op: string, params: OperationParams, cwd: string | undefined): OpResult {
