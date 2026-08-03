@@ -314,6 +314,8 @@ describe("FDX Native Distribution & Binary Resolver", () => {
       writeFileSync(join(repo, "file.txt"), "x", "utf-8")
       const git = (args: string[]) => execSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim()
       git(["init", "-q", "-b", "main"])
+      git(["config", "user.email", "test@example.com"])
+      git(["config", "user.name", "FlowDeck Test"])
       git(["add", "file.txt"])
       git(["commit", "-q", "-m", "initial"])
       git(["checkout", "-q", "--detach"])
