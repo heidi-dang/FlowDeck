@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, readFileSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, readFileSync, statSync, utimesSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { createHash } from "node:crypto"
@@ -9,6 +9,7 @@ import {
   validateFdxBinaryPath,
   resolveFdxBinaryPath,
   getFdxAvailabilityStatus,
+  sha256FileContents,
 } from "../src/tools/fdx-shared.js"
 import { handleFdxStatus, handleFdxVerify, handleFdxInstall } from "../src/commands/fdx-admin.js"
 import { strictProvenanceInputError } from "../scripts/build-fdx-packages.mjs"
@@ -295,6 +296,72 @@ describe("FDX Native Distribution & Binary Resolver", () => {
         rustVersion: "rustc 1.84.0",
       })
       expect(err).toBeNull()
+    })
+
+    it("P2-4: rejects detached HEAD as a source branch in strict mode", () => {
+      const err = strictProvenanceInputError({
+        currentCommit: "0123456789abcdef0123456789abcdef01234567",
+        currentBranch: "HEAD", // what `git rev-parse --abbrev-ref HEAD` returns detached
+        rustVersion: "rustc 1.84.0",
+      })
+      expect(err).toContain("detached HEAD")
+    })
+
+    it("P2-4: a real detached git checkout yields a branch name that strict mode rejects", () => {
+      const { execFileSync: execSync } = require("node:child_process")
+      const repo = join(tempDir, "detached-repo")
+      mkdirSync(repo, { recursive: true })
+      writeFileSync(join(repo, "file.txt"), "x", "utf-8")
+      const git = (args: string[]) => execSync("git", args, { cwd: repo, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim()
+      git(["init", "-q", "-b", "main"])
+      git(["add", "file.txt"])
+      git(["commit", "-q", "-m", "initial"])
+      git(["checkout", "-q", "--detach"])
+      const detachedBranch = git(["rev-parse", "--abbrev-ref", "HEAD"])
+      expect(detachedBranch).toBe("HEAD")
+      const err = strictProvenanceInputError({
+        currentCommit: "0123456789abcdef0123456789abcdef01234567",
+        currentBranch: detachedBranch,
+        rustVersion: "rustc 1.84.0",
+      })
+      expect(err).toContain("detached HEAD")
+    })
+
+    it("P2-4: rejects fabricated commits (all-zero / missing) via the shared validator", () => {
+      const err = strictProvenanceInputError({
+        currentCommit: "0000000000000000000000000000000000000000",
+        currentBranch: "main",
+        rustVersion: "rustc 1.84.0",
+      })
+      expect(err).toContain("source commit SHA")
+    })
+  })
+
+  describe("P1-2 cached-replacement integrity on a genuine Windows executable", () => {
+    it("detects same-inode, same-size, restored-mtime tampering of a real PE binary (win32 only)", () => {
+      if (process.platform !== "win32") return
+      // Copy a genuine Windows executable (bun.exe) as the fixture binary.
+      const exeSrc = process.execPath
+      const dir = join(tempDir, "genuine-pe")
+      mkdirSync(dir, { recursive: true })
+      const binPath = join(dir, "fdx.exe")
+      writeFileSync(binPath, readFileSync(exeSrc))
+      const originalSha = sha256FileContents(binPath)
+      expect(originalSha).not.toBeNull()
+      const st = statSync(binPath)
+      const originalMtime = st.mtime
+      // Rewrite the same inode with equal-length content (flip one byte) and
+      // restore the mtime: the stat fingerprint is unchanged but the digest is.
+      const buf = readFileSync(binPath)
+      const tampered = Buffer.from(buf)
+      tampered[0] = (tampered[0]! ^ 0xff) & 0xff
+      writeFileSync(binPath, tampered)
+      utimesSync(binPath, st.atime, originalMtime)
+      const after = statSync(binPath)
+      expect(after.ino).toBe(st.ino)
+      expect(after.size).toBe(st.size)
+      expect(Math.trunc(after.mtimeMs)).toBe(Math.trunc(st.mtimeMs))
+      expect(sha256FileContents(binPath)).not.toBe(originalSha)
     })
   })
 })

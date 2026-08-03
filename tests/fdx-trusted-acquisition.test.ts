@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import {
-  mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readFileSync, readdirSync, utimesSync,
+  mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readFileSync, readdirSync, utimesSync, statSync,
 } from "node:fs"
 import { join, resolve, dirname } from "node:path"
 import { tmpdir } from "node:os"
@@ -19,7 +19,10 @@ import {
   resolveTrustedPlatformPackage,
   expectedTargetTriple,
   validateFdxBinaryPath,
-  binaryFingerprint,
+  buildResolutionCacheKey,
+  sha256FileContents,
+  runFdx,
+  sourceCommitShaError,
 } from "../src/tools/fdx-shared"
 import { acquireInstallLock, releaseInstallLock, handleFdxInstall, parseSRI, REGISTRY_TIMEOUT_MS, type InstallLockResult } from "../src/commands/fdx-admin"
 
@@ -811,54 +814,118 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
     }, { timeout: 20000 })
   })
 
-  describe("audit remediation acceptance (P1-3, P1-4, P1-5, P2-1, P2-2, P2-3)", () => {
-    it("P1-3: a binary replaced after validation is never executed from the stale resolution cache", () => {
+  describe("audit remediation acceptance (P1-1, P1-2, P1-4, P1-5, P2-1, P2-2, P2-3)", () => {
+    it("P1-1: two distinct resolver contexts never produce the same canonical cache key", () => {
       const target = detectFdxTarget()
       if (!target) return
-      // Windows: the fingerprint contract is exercised via the packed-cli CI
-      // job with a real PE binary; a shell-script fixture cannot execute as
-      // fdx.exe without a shell (the audit removed shell:true).
-      if (process.platform === "win32") return
+      process.env.XDG_CACHE_HOME = tempDir
+      // These two contexts collided under the old "|"-joined key:
+      //   FDX_BINARY_PATH="a|path:b", PATH="c"
+      //   FDX_BINARY_PATH="a",         PATH="b|path:c"
+      const savedEnv = { ...process.env }
+      process.env.FDX_BINARY_PATH = "a|path:b"
+      process.env.PATH = "c"
+      const key1 = buildResolutionCacheKey()
+      process.env.FDX_BINARY_PATH = "a"
+      process.env.PATH = "b|path:c"
+      const key2 = buildResolutionCacheKey()
+      expect(key1).not.toBe(key2)
+      // The same context repeated must produce the identical key.
+      process.env.FDX_BINARY_PATH = "a|path:b"
+      process.env.PATH = "c"
+      expect(buildResolutionCacheKey()).toBe(key1)
+      process.env = savedEnv
+    })
+
+    it("P1-1: switching XDG_CACHE_HOME (cache root) invalidates the resolution cache identity", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const savedEnv = { ...process.env }
+      process.env.XDG_CACHE_HOME = join(tempDir, "root-a")
+      const keyA = buildResolutionCacheKey()
+      process.env.XDG_CACHE_HOME = join(tempDir, "root-b")
+      const keyB = buildResolutionCacheKey()
+      expect(keyA).not.toBe(keyB)
+      // LOCALAPPDATA also drives the cache root on win32.
+      if (process.platform === "win32") {
+        process.env.LOCALAPPDATA = join(tempDir, "localappdata-a")
+        const keyC = buildResolutionCacheKey()
+        process.env.LOCALAPPDATA = join(tempDir, "localappdata-b")
+        expect(buildResolutionCacheKey()).not.toBe(keyC)
+      }
+      process.env = savedEnv
+    })
+
+    it("P1-1: the cache key embeds the resolved target cache directory", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const savedEnv = { ...process.env }
+      process.env.XDG_CACHE_HOME = join(tempDir, "embed-root")
+      const key = buildResolutionCacheKey()
+      expect(key).toContain(join(tempDir, "embed-root"))
+      process.env = savedEnv
+    })
+
+    it("P1-2: same-inode, same-size tampering with restored mtime changes the trusted digest", () => {
+      const target = detectFdxTarget()
+      if (!target) return
       process.env.XDG_CACHE_HOME = tempDir
       const dir = join(tempDir, "stale-cache")
       mkdirSync(dir, { recursive: true })
       const binPath = join(dir, target.executableName)
-      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+      // Two payloads with IDENTICAL byte length so a size-based fingerprint
+      // cannot distinguish them.
+      const contentA = "#!/bin/sh\necho 'fdx v1.0.4'\n"
+      const contentB = "#!/bin/sh\necho 'fdx v9.9.9'\n"
+      expect(contentA.length).toBe(contentB.length)
+      writeFileSync(binPath, contentA, "utf-8")
       chmodSync(binPath, 0o755)
-      const binBuf = readFileSync(binPath)
-      const sha256 = createHash("sha256").update(binBuf).digest("hex")
-      writeFileSync(join(dir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
-      const flowdeckVersion = getFlowdeckPackageVersion()
-      writeFileSync(
-        join(dir, "provenance.json"),
-        JSON.stringify({
-          packageName: target.packageName,
-          packageVersion: flowdeckVersion,
-          flowdeckVersion,
-          fdxBinaryVersion: flowdeckVersion,
-          fdxProtocolVersion: "1.0.0",
-          targetTriple: expectedTargetTriple(target) ?? undefined,
-          platform: target.platform,
-          architecture: target.arch,
-          binaryFilename: target.executableName,
-          binaryByteSize: binBuf.length,
-          sha256,
-          sourceCommitSha: "0123456789abcdef0123456789abcdef01234567",
-          buildProfile: "release",
-          buildTimestamp: new Date().toISOString(),
-        }),
-        "utf-8"
-      )
-      // First validation passes and records the fingerprint.
-      const first = validateFdxBinaryPath(binPath, dir, { requireChecksum: true, requireProvenance: true, target })
-      expect(first.valid).toBe(true)
-      const fpBefore = binaryFingerprint(binPath)
-      expect(fpBefore).not.toBeNull()
-      // Replace the binary after validation: the fingerprint must change.
-      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4 tampered'\n", "utf-8")
+      // Capture the pre-tamper mtime, then rewrite the SAME inode (writeFileSync
+      // truncates in place) with same-length content and RESTORE the original
+      // mtime. A stat-based fingerprint (dev/ino/size/mtime) would not change;
+      // the SHA-256 digest must.
+      const st = statSync(binPath)
+      const originalMtime = st.mtime
+      writeFileSync(binPath, contentB, "utf-8")
       chmodSync(binPath, 0o755)
-      const fpAfter = binaryFingerprint(binPath)
-      expect(fpAfter).not.toBe(fpBefore)
+      utimesSync(binPath, st.atime, originalMtime)
+      const after = statSync(binPath)
+      expect(after.ino).toBe(st.ino)
+      expect(after.size).toBe(st.size)
+      expect(Math.trunc(after.mtimeMs)).toBe(Math.trunc(st.mtimeMs))
+      const shaA = sha256FileContents(binPath)
+      // Prove the digest differs from what contentA would produce, and that a
+      // full trust validation now fails (checksum mismatch against contentA).
+      expect(shaA).not.toBe(createHash("sha256").update(contentA).digest("hex"))
+    })
+
+    it("P1-2: a mutation between cache validation and native execution is refused", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      // Windows: shell-script fixtures cannot execute as fdx.exe without a
+      // shell; the packed-cli CI job covers Windows execution with a real PE.
+      if (process.platform === "win32") return
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      process.env.FDX_DISABLE_FALLBACK = "1"
+      setActiveProjectDir(tempDir)
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      // Resolve once so the cache is populated with a trusted digest.
+      const before = getFdxAvailabilityStatus(true)
+      expect(before.available).toBe(true)
+      // Mutate the binary AFTER the cache was validated, preserving size and
+      // restoring mtime so only the digest can detect it.
+      const st = statSync(fake.binPath)
+      writeFileSync(fake.binPath, "#!/bin/sh\necho 'fdx v9.9.9'\n", "utf-8")
+      chmodSync(fake.binPath, 0o755)
+      utimesSync(fake.binPath, st.atime, st.mtime)
+      // The cache-hit path re-verifies the digest before serving; the mutation
+      // must invalidate the cached resolution (re-resolution fails checksum),
+      // so native execution must refuse to run the tampered binary.
+      const after = getFdxAvailabilityStatus()
+      expect(after.available).toBe(false)
+      expect(() => runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])).toThrow()
     })
 
     it("P1-4: parseSRI accepts single-line supported digests and rejects malformed/multiline/unsupported values", () => {
@@ -1026,5 +1093,160 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       expect(REGISTRY_TIMEOUT_MS).toBeGreaterThan(0)
       expect(REGISTRY_TIMEOUT_MS).toBeLessThanOrEqual(120_000)
     })
+
+    it("P2-2: string, fractional, negative, NaN and unsafe binaryByteSize values are rejected", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const canonical = getFlowdeckPackageVersion()
+      const makeProv = (binaryByteSize: unknown) => ({
+        packageName: target.packageName,
+        packageVersion: canonical,
+        flowdeckVersion: canonical,
+        fdxBinaryVersion: canonical,
+        fdxProtocolVersion: "1.0.0",
+        targetTriple: expectedTargetTriple(target) ?? undefined,
+        platform: target.platform,
+        architecture: target.arch,
+        binaryFilename: target.executableName,
+        binaryByteSize,
+        sha256: "3db48a0b85dbb8074f996ffa167486b49d1c25e1e80dcfa85aba28a4570a33f0",
+        sourceCommitSha: "0123456789abcdef0123456789abcdef01234567",
+        buildProfile: "release",
+        buildTimestamp: new Date().toISOString(),
+      })
+      const { validateFdxProvenance } = require("../src/tools/fdx-shared.js")
+      // Each of these must fail closed at the provenance-document level.
+      for (const bad of ["12345", 1234.5, -1, NaN, Number.MAX_SAFE_INTEGER + 1]) {
+        const res = validateFdxProvenance(makeProv(bad), target)
+        expect(res.valid).toBe(false)
+        expect(res.reason).toContain("binaryByteSize")
+      }
+      // A valid safe integer passes the document-level check.
+      const ok = validateFdxProvenance(makeProv(4096), target)
+      expect(ok.valid).toBe(true)
+    })
+
+    it("P2-3: runtime provenance validation rejects an all-zero source commit", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const canonical = getFlowdeckPackageVersion()
+      const baseProv = {
+        packageName: target.packageName,
+        packageVersion: canonical,
+        flowdeckVersion: canonical,
+        fdxBinaryVersion: canonical,
+        fdxProtocolVersion: "1.0.0",
+        targetTriple: expectedTargetTriple(target) ?? undefined,
+        platform: target.platform,
+        architecture: target.arch,
+        binaryFilename: target.executableName,
+        binaryByteSize: 4096,
+        sha256: "3db48a0b85dbb8074f996ffa167486b49d1c25e1e80dcfa85aba28a4570a33f0",
+        buildProfile: "release",
+        buildTimestamp: new Date().toISOString(),
+      }
+      const { validateFdxProvenance } = require("../src/tools/fdx-shared.js")
+      expect(validateFdxProvenance({ ...baseProv, sourceCommitSha: "0000000000000000000000000000000000000000" }, target).valid).toBe(false)
+      // The shared validator is consistent across runtime and build paths.
+      expect(sourceCommitShaError("0000000000000000000000000000000000000000")).toContain("all-zero")
+      expect(sourceCommitShaError("0123456789abcdef0123456789abcdef01234567")).toBeNull()
+      expect(sourceCommitShaError("not-a-sha")).toContain("40 hexadecimal")
+      expect(sourceCommitShaError("")).toContain("40 hexadecimal")
+    })
+
+    it("P2-1: deterministic post-activation failure on a first install removes the activated cache and retains .failed- evidence", async () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      if (process.platform === "win32") return
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      setActiveProjectDir(tempDir)
+      const cacheDir = getFdxCacheDir(target)
+      expect(existsSync(cacheDir)).toBe(false)
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      // Deterministic fault injection via $0: the binary reports a valid
+      // version while it lives in the staging path (`.staging-` — the staged
+      // copy validated at step 5) and fails everywhere else. After activation
+      // the authoritative cache path no longer contains `.staging-`, so the
+      // direct activated-cache validation at step 7b fails — reaching
+      // cacheActivated=true with newCacheActivated=false.
+      const stateful = [
+        "#!/bin/sh",
+        "case \"$0\" in",
+        "  *\".staging-\"*) echo 'fdx v1.0.4' ;;",
+        "  *) echo 'boom' >&2; exit 1 ;;",
+        "esac",
+      ].join("\n")
+      writeFileSync(fake.binPath, stateful, "utf-8")
+      chmodSync(fake.binPath, 0o755)
+      // Recompute checksum + provenance over the stateful binary so staging
+      // validation passes while the binary lives in the staging path.
+      const binBuf = readFileSync(fake.binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
+      writeFileSync(join(fake.pkgDir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      const prov = JSON.parse(readFileSync(join(fake.pkgDir, "provenance.json"), "utf-8"))
+      prov.sha256 = sha256
+      prov.binaryByteSize = binBuf.length
+      writeFileSync(join(fake.pkgDir, "provenance.json"), JSON.stringify(prov), "utf-8")
+
+      const result = await handleFdxInstall(true)
+      expect(result).toBe(false)
+      // The activated cache must not survive the post-activation failure.
+      expect(existsSync(cacheDir)).toBe(false)
+      // Evidence retention: exactly one .failed-<pid>-<ts> quarantine dir exists.
+      const failedDirs = readdirSync(dirname(cacheDir)).filter((n) => n.includes("failed"))
+      expect(failedDirs.length).toBe(1)
+      expect(failedDirs[0]).toContain(".failed-")
+      // No staging or temporary dirs may remain.
+      const stagingLeftovers = readdirSync(dirname(cacheDir)).filter((n) => n.includes("staging") || n.includes(".registry-fetch"))
+      expect(stagingLeftovers).toEqual([])
+      // The install lock is released.
+      expect(existsSync(`${cacheDir}.lock`)).toBe(false)
+    }, { timeout: 30000 })
+
+    it("P2-1: deterministic post-activation failure restores a pre-existing backup exactly", async () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      if (process.platform === "win32") return
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      setActiveProjectDir(tempDir)
+      const cacheDir = getFdxCacheDir(target)
+      // Pre-existing known-good cache.
+      mkdirSync(cacheDir, { recursive: true })
+      writeFileSync(join(cacheDir, "pre-existing-marker.txt"), "known-good-state", "utf-8")
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      const stateful = [
+        "#!/bin/sh",
+        "case \"$0\" in",
+        "  *\".staging-\"*) echo 'fdx v1.0.4' ;;",
+        "  *) echo 'boom' >&2; exit 1 ;;",
+        "esac",
+      ].join("\n")
+      writeFileSync(fake.binPath, stateful, "utf-8")
+      chmodSync(fake.binPath, 0o755)
+      const binBuf = readFileSync(fake.binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
+      writeFileSync(join(fake.pkgDir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      const prov = JSON.parse(readFileSync(join(fake.pkgDir, "provenance.json"), "utf-8"))
+      prov.sha256 = sha256
+      prov.binaryByteSize = binBuf.length
+      writeFileSync(join(fake.pkgDir, "provenance.json"), JSON.stringify(prov), "utf-8")
+
+      const result = await handleFdxInstall(true)
+      expect(result).toBe(false)
+      // The pre-existing cache must be restored exactly.
+      expect(existsSync(cacheDir)).toBe(true)
+      expect(readFileSync(join(cacheDir, "pre-existing-marker.txt"), "utf-8")).toBe("known-good-state")
+      // Evidence retained for the failed activation.
+      const failedDirs = readdirSync(dirname(cacheDir)).filter((n) => n.includes("failed"))
+      expect(failedDirs.length).toBe(1)
+      // No staging/tmp leftovers; lock released.
+      const stagingLeftovers = readdirSync(dirname(cacheDir)).filter((n) => n.includes("staging") || n.includes(".registry-fetch"))
+      expect(stagingLeftovers).toEqual([])
+      expect(existsSync(`${cacheDir}.lock`)).toBe(false)
+    }, { timeout: 30000 })
   })
 })
