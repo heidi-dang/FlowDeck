@@ -9,7 +9,7 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync, readdirSync, statSync, accessSync, constants, promises as fsPromises } from "fs"
+import { existsSync, readFileSync, readdirSync, statSync, accessSync, constants, promises as fsPromises, openSync, fstatSync, closeSync } from "fs"
 import { join, resolve, dirname } from "path"
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
@@ -305,6 +305,13 @@ export interface FdxResolutionResult {
   fallbackAvailable: boolean;
   diagnostics: string[];
   repairCommand?: string;
+  /**
+   * The SHA-256 of the exact bytes that passed the trust contract during
+   * validation. The resolver never re-reads the path to compute a fresh
+   * digest after validation (P1-1): this is the digest the execution path
+   * must match.
+   */
+  validatedSha256?: string | null;
 }
 
 export const STRICT_SEMVER_REGEX = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/
@@ -557,6 +564,8 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
   versionCompatible: boolean;
   checksumStatus: "pass" | "fail" | "missing" | "unverified";
   integrity: FdxIntegrityResult;
+  /** The SHA-256 of the exact bytes that passed the checksum contract (P1-1). */
+  validatedSha256: string | null;
   reason?: string;
 } {
   const opts: FdxBinaryValidateOpts = typeof requireManagedChecksum === "object"
@@ -571,6 +580,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       version: null,
       versionCompatible: false,
       checksumStatus: "missing",
+      validatedSha256: null,
       integrity: { status: "fail", checksumStatus: "missing", checksumMatch: false, provenanceValid: false, reason: "Binary file does not exist" },
       reason: "File does not exist",
     }
@@ -584,6 +594,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
         version: null,
         versionCompatible: false,
         checksumStatus: "fail",
+        validatedSha256: null,
         integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, provenanceValid: false, reason: "Path is not a regular file" },
         reason: "Path is a directory or not a regular file",
       }
@@ -594,6 +605,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       version: null,
       versionCompatible: false,
       checksumStatus: "fail",
+      validatedSha256: null,
       integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, provenanceValid: false, reason: "Cannot stat file" },
       reason: "Cannot stat file",
     }
@@ -608,6 +620,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
         version: null,
         versionCompatible: false,
         checksumStatus: "fail",
+        validatedSha256: null,
         integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, provenanceValid: false, reason: "Missing POSIX executable permission (X_OK)" },
         reason: "Missing POSIX executable permission (X_OK)",
       }
@@ -622,6 +635,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
   let checksumMatch = false
   let expectedSha: string | undefined
   let actualSha: string | undefined
+  let validatedSha: string | null = null
   let provenanceValid = false
   let hasProvenance = false
   let declaredFdxBinaryVersion: string | null = null
@@ -645,6 +659,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
             version: null,
             versionCompatible: false,
             checksumStatus: "fail",
+            validatedSha256: null,
             integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, provenanceValid: false, reason: `Provenance validation failed: ${provRes.reason}` },
             reason: `Provenance validation failed: ${provRes.reason}`,
           }
@@ -657,8 +672,13 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
 
       expectedSha = manifest.sha256 || manifest.checksum
       if (expectedSha) {
+        // P1-1: the digest captured here comes from the EXACT bytes read for
+        // the checksum comparison. This validated digest is what the resolver
+        // must trust — never a later re-read of the path, which could observe
+        // a different generation swapped in after validation.
         const fileBuf = readFileSync(binPath)
         actualSha = createHash("sha256").update(fileBuf).digest("hex")
+        validatedSha = actualSha
         // P2-2: the provenance-declared binary byte size must be a non-negative
         // safe integer that exactly matches the actual file size. Any present
         // value that is not a valid size — or a size that differs from the
@@ -670,6 +690,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
             version: null,
             versionCompatible: false,
             checksumStatus: "fail",
+            validatedSha256: null,
             integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, expectedSha256: expectedSha, actualSha256: actualSha, provenanceValid, reason: `Provenance binaryByteSize ${JSON.stringify(manifest.binaryByteSize)} is not a non-negative safe integer` },
             reason: `Provenance binaryByteSize ${JSON.stringify(manifest.binaryByteSize)} is not a non-negative safe integer`,
           }
@@ -680,6 +701,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
             version: null,
             versionCompatible: false,
             checksumStatus: "fail",
+            validatedSha256: null,
             integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, expectedSha256: expectedSha, actualSha256: actualSha, provenanceValid, reason: `Provenance binaryByteSize ${manifest.binaryByteSize} does not match actual binary size ${fileBuf.length}` },
             reason: `Provenance binaryByteSize ${manifest.binaryByteSize} does not match actual binary size ${fileBuf.length}`,
           }
@@ -690,11 +712,13 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
         } else {
           checksumStatus = "fail"
           checksumMatch = false
+          validatedSha = null
           return {
             valid: false,
             version: null,
             versionCompatible: false,
             checksumStatus: "fail",
+            validatedSha256: null,
             integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, expectedSha256: expectedSha, actualSha256: actualSha, provenanceValid, reason: `Checksum mismatch: expected ${expectedSha}, got ${actualSha}` },
             reason: `Checksum mismatch: expected ${expectedSha}, got ${actualSha}`,
           }
@@ -705,6 +729,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
           version: null,
           versionCompatible: false,
           checksumStatus: "missing",
+          validatedSha256: null,
           integrity: { status: "fail", checksumStatus: "missing", checksumMatch: false, provenanceValid: false, reason: "Checksum manifest missing sha256 field" },
           reason: "Checksum manifest missing sha256 field",
         }
@@ -715,6 +740,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
         version: null,
         versionCompatible: false,
         checksumStatus: "fail",
+        validatedSha256: null,
         integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, provenanceValid: false, reason: "Corrupt checksum/provenance manifest" },
         reason: "Corrupt checksum/provenance manifest",
       }
@@ -725,6 +751,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       version: null,
       versionCompatible: false,
       checksumStatus: requireChecksum ? "missing" : "unverified",
+      validatedSha256: null,
       integrity: {
         status: "fail",
         checksumStatus: requireChecksum ? "missing" : "unverified",
@@ -751,9 +778,47 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       version: null,
       versionCompatible: false,
       checksumStatus,
+      validatedSha256: null,
       integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid, reason: `Binary execution failed: ${err.message}` },
       reason: `Binary execution failed: ${err.message}`,
     }
+  }
+
+  // P1-1: the --version probe must have operated on the same immutable
+  // generation that was hashed. Re-read the path now and require the digest to
+  // be unchanged from the checksum-validated bytes. If the path was replaced
+  // between the checksum read and the probe, this re-read differs and the
+  // validation fails — the replacement can never become the trusted digest.
+  if (validatedSha !== null) {
+    const postProbeSha = sha256FileContents(binPath)
+    if (postProbeSha === null || postProbeSha !== validatedSha) {
+      return {
+        valid: false,
+        version: null,
+        versionCompatible: false,
+        checksumStatus,
+        validatedSha256: null,
+        integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid: false, reason: "Binary generation changed during --version probe (path replaced between checksum read and execution)" },
+        reason: "Binary generation changed during --version probe (path replaced between checksum read and execution)",
+      }
+    }
+  } else {
+    // Unmanaged source (env/PATH with no checksum manifest): capture the
+    // digest of the bytes that the probe executed, verified stable across
+    // the probe, so the resolver still has a trusted generation digest.
+    const preProbeSha = sha256FileContents(binPath)
+    if (preProbeSha === null) {
+      return {
+        valid: false,
+        version: null,
+        versionCompatible: false,
+        checksumStatus,
+        validatedSha256: null,
+        integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid: false, reason: "Cannot read binary bytes before --version probe" },
+        reason: "Cannot read binary bytes before --version probe",
+      }
+    }
+    validatedSha = preProbeSha
   }
 
   if (!version) {
@@ -762,6 +827,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       version: null,
       versionCompatible: false,
       checksumStatus,
+      validatedSha256: null,
       integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid, reason: "Binary returned malformed --version output" },
       reason: "Binary returned malformed --version output",
     }
@@ -774,6 +840,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       version,
       versionCompatible: false,
       checksumStatus,
+      validatedSha256: null,
       integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid, reason: verCheck.reason },
       reason: verCheck.reason,
     }
@@ -789,6 +856,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       version,
       versionCompatible: false,
       checksumStatus,
+      validatedSha256: null,
       integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid: false, reason: `Provenance fdxBinaryVersion "${declaredFdxBinaryVersion}" does not match executed binary version "${version}"` },
       reason: `Provenance fdxBinaryVersion "${declaredFdxBinaryVersion}" does not match executed binary version "${version}"`,
     }
@@ -799,6 +867,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
     version,
     versionCompatible: true,
     checksumStatus,
+    validatedSha256: validatedSha,
     integrity: {
       status: ((checksumStatus === "pass" || (!requireChecksum && checksumStatus === "unverified")) && (!hasProvenance || provenanceValid)) ? "pass" : "fail",
       checksumStatus,
@@ -946,6 +1015,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
         binaryVersion: val.version,
         versionCompatible: true,
         checksumStatus: val.checksumStatus,
+        validatedSha256: val.validatedSha256,
         executionStatus: "pass",
         fallbackAvailable: true,
         diagnostics: [`Using environment binary from FDX_BINARY_PATH="${resolvedEnv}"`],
@@ -995,6 +1065,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
           binaryVersion: val.version,
           versionCompatible: true,
           checksumStatus: val.checksumStatus,
+          validatedSha256: val.validatedSha256,
           executionStatus: "pass",
           fallbackAvailable: true,
           diagnostics: [`Resolved compatible platform package binary at "${binPath}" (source: ${resolvedPkg.source})`],
@@ -1034,6 +1105,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
           binaryVersion: val.version,
           versionCompatible: true,
           checksumStatus: val.checksumStatus,
+          validatedSha256: val.validatedSha256,
           executionStatus: "pass",
           fallbackAvailable: true,
           diagnostics: [`Resolved repaired native binary from cache at "${cacheBin}"`],
@@ -1068,6 +1140,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
           binaryVersion: val.version,
           versionCompatible: true,
           checksumStatus: val.checksumStatus,
+          validatedSha256: val.validatedSha256,
           executionStatus: "pass",
           fallbackAvailable: true,
           diagnostics: [`Resolved system PATH binary at "${pathBin}"`],
@@ -1148,6 +1221,115 @@ export function sha256FileContents(binPath: string): string | null {
   }
 }
 
+/**
+ * Open a binary once, hash the bytes of that SAME open descriptor, and return
+ * the digest plus the descriptor's file identity (dev/ino). This binds the
+ * digest to one specific open generation: a pathname that later resolves to a
+ * different inode is a different file, regardless of same-size/same-mtime
+ * tricks (P1-2).
+ */
+export function openAndHash(binPath: string): { sha: string; dev: number; ino: number } | null {
+  let fd: number | null = null
+  try {
+    fd = openSync(binPath, "r")
+    const st = fstatSync(fd)
+    if (!st.isFile()) return null
+    const buf = readFileSync(fd)
+    const sha = createHash("sha256").update(buf).digest("hex")
+    return { sha, dev: st.dev, ino: st.ino }
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd) } catch {}
+    }
+  }
+}
+
+/**
+ * Same-descriptor execution (P1-2, design 3). Opens the binary once, hashes
+ * the bytes of that open descriptor, verifies they match the trusted digest,
+ * then executes the SAME open descriptor via /proc/<pid>/fd/<fd> on Linux.
+ * A pathname replacement after this point is irrelevant: the kernel resolves
+ * the descriptor, not the pathname, so the executed bytes are exactly the
+ * hashed generation. Returns { kind: "executed", out } on success, or a
+ * reject reason string when the generation cannot be proven.
+ *
+ * On non-Linux platforms (no /proc/<pid>/fd) it falls back to an inode
+ * identity re-check immediately before path-based exec, which detects
+ * same-path replacement but cannot fully eliminate the final stat-to-exec
+ * window on those platforms.
+ */
+export function executeHashedBinary(bin: string, args: string[], trustedSha: string): { kind: "executed"; out: string } | { kind: "rejected"; reason: string } {
+  let fd: number | null = null
+  try {
+    fd = openSync(bin, "r")
+    const st = fstatSync(fd)
+    if (!st.isFile()) return { kind: "rejected", reason: "path is not a regular file" }
+    const buf = readFileSync(fd)
+    const sha = createHash("sha256").update(buf).digest("hex")
+    if (sha !== trustedSha) {
+      return { kind: "rejected", reason: `binary digest ${sha} does not match trusted ${trustedSha}` }
+    }
+    if (process.platform === "linux") {
+      // Execute the open descriptor directly: the kernel resolves /proc/<pid>/fd/<fd>
+      // in this process's fd table, so the executed bytes are the hashed generation.
+      const procFdPath = `/proc/${process.pid}/fd/${fd}`
+      // Re-verify the descriptor still points at the hashed inode immediately
+      // before spawn.
+      const stAgain = fstatSync(fd)
+      if (stAgain.dev !== st.dev || stAgain.ino !== st.ino) {
+        return { kind: "rejected", reason: "descriptor generation changed after hashing" }
+      }
+      const out = execFileSync(procFdPath, args, {
+        encoding: "utf-8",
+        timeout: FDX_TIMEOUT_MS,
+        maxBuffer: FDX_MAX_BUFFER,
+        shell: false,
+        stdio: ["pipe", "pipe", "pipe"],
+      })
+      return { kind: "executed", out }
+    }
+    // Portable fallback: inode identity re-check then path-based exec.
+    const pathStat = statSyncSafe(bin)
+    if (pathStat === null || pathStat.dev !== st.dev || pathStat.ino !== st.ino) {
+      return { kind: "rejected", reason: "path replaced between digest check and execution" }
+    }
+    const out = execFileSync(bin, args, {
+      encoding: "utf-8",
+      timeout: FDX_TIMEOUT_MS,
+      maxBuffer: FDX_MAX_BUFFER,
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    return { kind: "executed", out }
+  } catch (err: any) {
+    if (err?.code === "ENOBUFS") {
+      return {
+        kind: "rejected",
+        reason: `fdx output exceeded ${FDX_MAX_BUFFER / 1024 / 1024}MB. ` +
+          `Narrow the query: lower --max-matches, use a more specific pattern, ` +
+          `or scope --path to a smaller file/directory.`,
+      }
+    }
+    return { kind: "rejected", reason: err?.message ?? String(err) }
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd) } catch {}
+    }
+  }
+}
+
+/** statSync that returns null instead of throwing (missing/vanished path). */
+function statSyncSafe(binPath: string): { dev: number; ino: number } | null {
+  try {
+    const st = statSync(binPath)
+    return { dev: st.dev, ino: st.ino }
+  } catch {
+    return null
+  }
+}
+
 export function resolveFdxBinaryPath(forceRefresh = false): string | null {
   const status = getFdxAvailabilityStatus(forceRefresh)
   return status.binaryPath
@@ -1185,7 +1367,12 @@ export function getFdxAvailabilityStatus(forceRefresh = false): FdxResolutionRes
   const res = resolveFdxBinaryPathDetailed()
   fdxCacheKey = currentKey
   fdxCacheValue = res
-  fdxCacheBinarySha256 = res.binaryPath ? sha256FileContents(res.binaryPath) : null
+  // P1-1: never re-read the path to bless a fresh digest after validation.
+  // The trusted digest is the one carried out of validation — the exact bytes
+  // that passed the checksum contract. A post-validation re-read could observe
+  // a different generation swapped in after the probe and would wrongly bless
+  // it as trusted.
+  fdxCacheBinarySha256 = res.validatedSha256 ?? null
   return res
 }
 
@@ -1205,44 +1392,48 @@ function fdxBin(): string {
 const FDX_TIMEOUT_MS = 30_000
 const FDX_MAX_BUFFER = 50 * 1024 * 1024
 
+/**
+ * Test-only hook: when set, invoked immediately before execFileSync in
+ * runFdx, after the final digest + inode verification. Lets a deterministic
+ * acceptance test replace/mutate the binary in the exact check-to-execution
+ * window and assert that execution is refused (P1-2 race).
+ */
+let fdxPreExecTestHookValue: ((binPath: string) => void) | null = null
+export function setFdxPreExecTestHook(hook: ((binPath: string) => void) | null): void {
+  fdxPreExecTestHookValue = hook
+}
+
 export function runFdx(args: string[]): string {
   const bin = fdxBin()
   validateExecutable(bin)
   validateArgs(args)
-  // P1-2: close the check-to-execution race. The resolution cache re-verifies
-  // the trusted digest on a cache hit, but the binary could still be mutated
-  // between that check and execFileSync below. Recompute the digest now —
-  // immediately before execution — and force a fresh resolution if it no
-  // longer matches the bytes that passed the trust contract.
-  const execSha = sha256FileContents(bin)
-  if (execSha !== null && fdxCacheBinarySha256 !== null && execSha !== fdxCacheBinarySha256) {
-    fdxCacheKey = null
-    fdxCacheValue = null
-    fdxCacheBinarySha256 = null
-    const reResolved = getFdxAvailabilityStatus(true)
-    if (reResolved.available && reResolved.binaryPath && reResolved.binaryPath !== bin) {
-      return runFdx(args)
-    }
-    throw new Error(`[FDX Integrity] Cached native binary changed between validation and execution: ${bin}`)
+  // P1-2: bind execution to the same immutable generation that passed the
+  // trust contract. The resolution cache re-verifies the trusted digest on a
+  // cache hit, but a binary could still be mutated between that check and
+  // execution below. executeHashedBinary opens the binary once, hashes those
+  // exact bytes, verifies them against the trusted digest, and executes the
+  // same open descriptor (Linux) or re-checks inode identity (fallback) —
+  // failing closed on any mismatch or missing digest.
+  const trustedSha = fdxCacheBinarySha256
+  if (trustedSha === null) {
+    throw new Error(`[FDX Integrity] No trusted digest recorded for ${bin}; refusing to execute unverified binary`)
   }
-  try {
-    return execFileSync(bin, args, {
-      encoding: "utf-8",
-      timeout: FDX_TIMEOUT_MS,
-      maxBuffer: FDX_MAX_BUFFER,
-      shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
-    })
-  } catch (err: any) {
-    if (err?.code === "ENOBUFS") {
-      throw new Error(
-        `fdx output exceeded ${FDX_MAX_BUFFER / 1024 / 1024}MB. ` +
-        `Narrow the query: lower --max-matches, use a more specific pattern, ` +
-        `or scope --path to a smaller file/directory.`
-      )
-    }
-    throw err
+  // Test-only race injection point: mutates the binary after the trusted
+  // digest was captured but before the final identity verification, modeling
+  // the check-to-execution window the audit requires coverage for.
+  if (fdxPreExecTestHookValue) fdxPreExecTestHookValue(bin)
+  const result = executeHashedBinary(bin, args, trustedSha)
+  if (result.kind === "executed") return result.out
+  // Re-resolve once: the fresh resolution re-runs the full trust contract and
+  // may observe a legitimate replacement (e.g. a repair installed a new binary).
+  fdxCacheKey = null
+  fdxCacheValue = null
+  fdxCacheBinarySha256 = null
+  const reResolved = getFdxAvailabilityStatus(true)
+  if (reResolved.available && reResolved.binaryPath && reResolved.binaryPath !== bin) {
+    return runFdx(args)
   }
+  throw new Error(`[FDX Integrity] ${result.reason} (${bin})`)
 }
 
 // ─── Native TS Fallbacks ──────────────────────────────────────────────────

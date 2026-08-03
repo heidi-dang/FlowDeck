@@ -70,6 +70,43 @@ export function strictProvenanceInputError({ currentCommit, currentBranch, rustV
   return null
 }
 
+/**
+ * P2-2/P2-3: resolve the provenance commit and branch from git + CI inputs.
+ *
+ * - Strict mode requires the checked-out commit and rejects a GITHUB_SHA that
+ *   does not match it (a syntactically valid but spoofed SHA is refused).
+ * - Branch resolution prefers GITHUB_REF_NAME; a detached checkout is tracked
+ *   separately so it can be recorded as "detached" rather than "HEAD" or a
+ *   fabricated branch.
+ * Exported so acceptance tests can exercise it without a full build.
+ */
+export function resolveProvenanceRefs({ isStrict, gitCommit, gitBranchRaw, githubSha, githubRefName }) {
+  const isDetached = gitBranchRaw === "HEAD"
+  let currentCommit = null
+  let currentBranch = null
+  let strictError = null
+
+  if (isStrict) {
+    if (!gitCommit) {
+      strictError = `Strict build cannot determine the checked-out commit; git rev-parse HEAD failed.`
+    } else {
+      currentCommit = gitCommit
+      if (githubSha && githubSha !== gitCommit) {
+        strictError = `GITHUB_SHA (${githubSha}) does not match checked-out HEAD (${gitCommit}). Refusing to record a fabricated source commit.`
+      }
+      currentBranch = githubRefName || (isDetached ? null : gitBranchRaw) || null
+    }
+  } else {
+    currentCommit = githubSha || gitCommit || null
+    currentBranch = githubRefName || (isDetached ? null : gitBranchRaw) || null
+  }
+
+  // gitBranch records a real branch, "detached" for a detached checkout, or
+  // "unknown" when no branch information is available.
+  const gitBranch = currentBranch || (isDetached ? "detached" : "unknown")
+  return { currentCommit, currentBranch, gitBranch, isDetached, strictError }
+}
+
 function detectTargetName() {
   const platform = process.platform
   const arch = process.arch
@@ -168,13 +205,24 @@ function main() {
 
     // P2-4: prefer validated CI refs when present. GitHub Actions checks out a
     // detached HEAD, so `git rev-parse --abbrev-ref HEAD` returns the literal
-    // "HEAD" even though the workflow knows the real branch. GITHUB_SHA /
-    // GITHUB_REF_NAME are authoritative provenance inputs when set.
+    // "HEAD" even though the workflow knows the real branch.
     const gitCommit = tryExec("git", ["rev-parse", "HEAD"]) || null
     const gitBranchRaw = tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]) || null
-    const currentCommit = process.env.GITHUB_SHA || gitCommit || null
-    const currentBranch = process.env.GITHUB_REF_NAME || (gitBranchRaw === "HEAD" ? null : gitBranchRaw) || null
     const rustVersion = tryExec("rustc", ["--version"]) || null
+
+    // P2-2/P2-3: resolve commit/branch from git + CI inputs, rejecting a
+    // spoofed GITHUB_SHA in strict mode and modeling detached builds as
+    // "detached" rather than recording "HEAD" as a branch.
+    const refs = resolveProvenanceRefs({
+      isStrict,
+      gitCommit,
+      gitBranchRaw,
+      githubSha: process.env.GITHUB_SHA ?? null,
+      githubRefName: process.env.GITHUB_REF_NAME ?? null,
+    })
+    if (refs.strictError) fail(refs.strictError)
+    const currentCommit = refs.currentCommit
+    const gitBranch = refs.gitBranch
 
     // P2-4: never emit fabricated provenance. A zero/absent source commit, a
     // missing branch, a detached-HEAD branch, or a missing rustc version would
@@ -182,12 +230,9 @@ function main() {
     // unacceptable in strict (release/CI) mode, which must fail instead of
     // writing the artifact.
     if (isStrict) {
-      const strictError = strictProvenanceInputError({ currentCommit, currentBranch, rustVersion })
+      const strictError = strictProvenanceInputError({ currentCommit, currentBranch: refs.currentBranch, rustVersion })
       if (strictError) fail(strictError)
     }
-    // Even outside strict mode, a detached HEAD must never be recorded as a
-    // branch name in provenance: model it explicitly as a detached build.
-    const gitBranch = currentBranch === "HEAD" ? "detached" : (currentBranch || "unknown")
 
     const provenanceManifest = {
       packageName: `@heidi-dang/${targetDirName}`,

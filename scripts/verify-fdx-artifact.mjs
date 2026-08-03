@@ -34,7 +34,10 @@ export function computeSha256(buf) {
 // Canonical source-commit-SHA validator, shared with the runtime trust path.
 // The canonical implementation lives in src/tools/fdx-commit-sha.mjs so the
 // runtime bundle can import it without violating the build rootDir (P2-3).
-export { sourceCommitShaError, isValidSourceCommitSha } from "../src/tools/fdx-commit-sha.mjs"
+// Import as a local binding (usable inside this module) and re-export for
+// callers that import this module.
+import { sourceCommitShaError, isValidSourceCommitSha } from "../src/tools/fdx-commit-sha.mjs"
+export { sourceCommitShaError, isValidSourceCommitSha }
 
 export function computeSri(buf) {
   return `sha512-${createHash("sha512").update(buf).digest("base64")}`
@@ -83,23 +86,35 @@ function fail(message) {
  *
  * @param {{ dir: string, packageName: string, version: string, sourceCommitSha?: string, builtAt?: string }} options
  */
-export function generateArtifactManifest({ dir, packageName, version, sourceCommitSha, builtAt }) {
-  const expectedName = deriveArtifactFilename(packageName, version)
-  const tgzFiles = findTgzFiles(dir)
-  if (tgzFiles.length !== 1) {
-    throw new Error(`expected exactly one archive (${expectedName}) in ${dir}, found: ${tgzFiles.join(", ")}`)
-  }
-  if (tgzFiles[0] !== expectedName) {
-    throw new Error(`archive name mismatch: expected ${expectedName}, found ${tgzFiles[0]}`)
-  }
+ export function generateArtifactManifest({ dir, packageName, version, sourceCommitSha, builtAt }) {
+   const expectedName = deriveArtifactFilename(packageName, version)
+   const tgzFiles = findTgzFiles(dir)
+   if (tgzFiles.length !== 1) {
+     throw new Error(`expected exactly one archive (${expectedName}) in ${dir}, found: ${tgzFiles.join(", ")}`)
+   }
+   if (tgzFiles[0] !== expectedName) {
+     throw new Error(`archive name mismatch: expected ${expectedName}, found ${tgzFiles[0]}`)
+   }
 
-  const provenancePath = join(dir, "provenance.json")
-  if (!existsSync(provenancePath)) throw new Error(`provenance.json missing in ${dir}`)
-  const provenance = readJson(provenancePath)
-  const binaryFilename = provenance.binaryFilename
-  if (typeof binaryFilename !== "string" || binaryFilename.length === 0) {
-    throw new Error(`provenance.json is missing a valid binaryFilename in ${dir}`)
-  }
+   // P2-1: generation must never write an invalid/fabricated source SHA.
+   if (sourceCommitSha !== undefined && sourceCommitSha !== null) {
+     const sourceError = sourceCommitShaError(sourceCommitSha)
+     if (sourceError) throw new Error(`cannot generate artifact manifest: ${sourceError}`)
+   }
+
+   const provenancePath = join(dir, "provenance.json")
+   if (!existsSync(provenancePath)) throw new Error(`provenance.json missing in ${dir}`)
+   const provenance = readJson(provenancePath)
+   // The provenance document's own source commit must be valid (fabricated
+   // provenance is rejected at generation time too).
+   if (provenance.sourceCommitSha !== undefined && provenance.sourceCommitSha !== null) {
+     const provError = sourceCommitShaError(provenance.sourceCommitSha)
+     if (provError) throw new Error(`provenance.json contains invalid sourceCommitSha: ${provError}`)
+   }
+   const binaryFilename = provenance.binaryFilename
+   if (typeof binaryFilename !== "string" || binaryFilename.length === 0) {
+     throw new Error(`provenance.json is missing a valid binaryFilename in ${dir}`)
+   }
 
   const binaryPath = join(dir, binaryFilename)
   if (!existsSync(binaryPath)) throw new Error(`binary ${binaryFilename} missing in ${dir}`)
@@ -209,9 +224,27 @@ export function verifyArtifactDir({ dir, packageName, version, sourceSha }) {
       `expected ${binaryBuf.length}, got ${JSON.stringify(provenance.binaryByteSize)}`)
   }
 
-  // Source SHA binding (when the expected release source SHA is known)
+  // Source SHA binding (P2-1). Every source field must be a valid, real,
+  // non-fabricated SHA on its own — even when no expected release SHA is
+  // supplied. Then they must all agree with each other and, when known, with
+  // the expected source SHA.
+  const sourceFields = [
+    ["manifest.sourceCommitSha", manifest.sourceCommitSha],
+    ["provenance.sourceCommitSha", provenance.sourceCommitSha],
+    ["provenance.gitCommit", provenance.gitCommit],
+  ]
+  for (const [label, value] of sourceFields) {
+    const sourceError = sourceCommitShaError(value)
+    report(`${label}-valid`, sourceError === null, sourceError ?? JSON.stringify(value))
+  }
+  // All present source fields must be mutually consistent.
+  const presentSources = sourceFields.map(([, v]) => v).filter((v) => v !== undefined && v !== null)
+  if (presentSources.length > 0) {
+    const first = presentSources[0]
+    report("source-fields-consistent", presentSources.every((v) => v === first), `expected all equal ${JSON.stringify(first)}, got ${JSON.stringify(presentSources)}`)
+  }
   if (sourceSha) {
-    for (const [label, value] of [["manifest.sourceCommitSha", manifest.sourceCommitSha], ["provenance.sourceCommitSha", provenance.sourceCommitSha], ["provenance.gitCommit", provenance.gitCommit]]) {
+    for (const [label, value] of sourceFields) {
       report(label, value === sourceSha, `expected ${sourceSha}, got ${JSON.stringify(value)}`)
     }
   }
