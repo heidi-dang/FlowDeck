@@ -12,7 +12,8 @@ import {
   sha256FileContents,
 } from "../src/tools/fdx-shared.js"
 import { handleFdxStatus, handleFdxVerify, handleFdxInstall } from "../src/commands/fdx-admin.js"
-import { strictProvenanceInputError } from "../scripts/build-fdx-packages.mjs"
+import { strictProvenanceInputError, resolveProvenanceRefs } from "../scripts/build-fdx-packages.mjs"
+import { generateArtifactManifest, verifyArtifactDir, deriveArtifactFilename } from "../scripts/verify-fdx-artifact.mjs"
 
 describe("FDX Native Distribution & Binary Resolver", () => {
   let tempDir: string
@@ -364,6 +365,155 @@ describe("FDX Native Distribution & Binary Resolver", () => {
       expect(after.size).toBe(st.size)
       expect(Math.trunc(after.mtimeMs)).toBe(Math.trunc(st.mtimeMs))
       expect(sha256FileContents(binPath)).not.toBe(originalSha)
+    })
+
+    it("P1-2: a genuine Windows executable passes the full resolver-cache and execution path (win32 only)", async () => {
+      if (process.platform !== "win32") return
+      const { getFdxAvailabilityStatus: status, runFdx: run, setActiveProjectDir: setDir } = await import("../src/tools/fdx-shared.js")
+      const { writeFileSync, readFileSync } = await import("node:fs")
+      const { join: j } = await import("node:path")
+      // A genuine PE (bun.exe) as an env-source binary: the resolver validates
+      // it (executes --version, checks semver compatibility) and runFdx must
+      // execute it through the digest-checked path.
+      const exeBytes = readFileSync(process.execPath)
+      const binPath = j(tempDir, "fdx.exe")
+      writeFileSync(binPath, exeBytes)
+      setDir(tempDir)
+      process.env.FDX_BINARY_PATH = binPath
+      process.env.FDX_DISABLE_FALLBACK = "1"
+      process.env.XDG_CACHE_HOME = tempDir
+      const before = status(true)
+      expect(before.available).toBe(true)
+      expect(before.source).toBe("env")
+      expect(before.validatedSha256).not.toBeNull()
+      // runFdx executes the validated binary (bun.exe --version works as a PE).
+      const out = run(["--version"])
+      expect(typeof out).toBe("string")
+      expect(out.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe("P2-1 artifact tooling: source-SHA validation", () => {
+    const PKG = "@heidi-dang/flowdeck-fdx-linux-x64-gnu"
+    const VERSION = "1.0.4"
+    const VALID_SHA = "8498ac260defa952adb40281f16c6e361dde3cb8"
+
+    function makePkgDir(sourceCommitSha: string): string {
+      const dir = mkdtempSync(join(tmpdir(), "fdx-srcsha-"))
+      const binary = Buffer.from("x".repeat(4096))
+      writeFileSync(join(dir, "fdx"), binary)
+      const sha256 = createHash("sha256").update(binary).digest("hex")
+      writeFileSync(join(dir, "checksum.json"), JSON.stringify({ packageName: PKG, version: VERSION, executable: "fdx", sha256 }, null, 2))
+      writeFileSync(join(dir, "provenance.json"), JSON.stringify({
+        packageName: PKG, packageVersion: VERSION, flowdeckVersion: VERSION, fdxBinaryVersion: VERSION,
+        fdxProtocolVersion: "1.0.0", targetTriple: "x86_64-unknown-linux-gnu", platform: "linux", architecture: "x64",
+        binaryFilename: "fdx", binaryByteSize: binary.length, sha256, sourceCommitSha, gitCommit: sourceCommitSha,
+        gitBranch: "main", buildProfile: "release", buildTimestamp: "2026-08-03T00:00:00.000Z",
+      }, null, 2))
+      const tgz = deriveArtifactFilename(PKG, VERSION)
+      writeFileSync(join(dir, tgz), Buffer.from("faketarball-content"))
+      return dir
+    }
+
+    it("P2-1: artifact generation rejects an invalid source SHA", () => {
+      const dir = makePkgDir(VALID_SHA)
+      try {
+        expect(() => generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: "0000000000000000000000000000000000000000" })).toThrow(/source commit SHA/)
+        expect(() => generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: "short" })).toThrow(/source commit SHA/)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("P2-1: artifact generation rejects a provenance document with an invalid source SHA", () => {
+      const dir = makePkgDir("0000000000000000000000000000000000000000")
+      try {
+        expect(() => generateArtifactManifest({ dir, packageName: PKG, version: VERSION })).toThrow(/invalid sourceCommitSha/)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("P2-1: verification rejects all-zero / malformed source SHAs without --source-sha", () => {
+      // Generation itself rejects an invalid SHA (see the generation test), so
+      // to exercise VERIFICATION without --source-sha we tamper the written
+      // manifest after generation.
+      const dir = makePkgDir(VALID_SHA)
+      try {
+        generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: VALID_SHA })
+        const manifestPath = join(dir, "artifact-manifest.json")
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"))
+        manifest.sourceCommitSha = "0000000000000000000000000000000000000000"
+        writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8")
+        const result = verifyArtifactDir({ dir, packageName: PKG, version: VERSION })
+        expect(result.ok).toBe(false)
+        expect(result.errors.some(e => e.startsWith("manifest.sourceCommitSha-valid"))).toBe(true)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("P2-1: verification accepts a fully-consistent package with valid SHAs", () => {
+      const dir = makePkgDir(VALID_SHA)
+      try {
+        generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: VALID_SHA })
+        const result = verifyArtifactDir({ dir, packageName: PKG, version: VERSION, sourceSha: VALID_SHA })
+        expect(result.ok).toBe(true)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  })
+
+  describe("P2-2 / P2-3 build provenance refs", () => {
+    const REAL = "0123456789abcdef0123456789abcdef01234567"
+
+    it("P2-2: strict mode rejects a GITHUB_SHA that differs from checked-out HEAD", () => {
+      const refs = resolveProvenanceRefs({
+        isStrict: true,
+        gitCommit: REAL,
+        gitBranchRaw: "main",
+        githubSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        githubRefName: "main",
+      })
+      expect(refs.strictError).toContain("does not match checked-out HEAD")
+    })
+
+    it("P2-2: strict mode accepts a GITHUB_SHA that equals checked-out HEAD", () => {
+      const refs = resolveProvenanceRefs({
+        isStrict: true,
+        gitCommit: REAL,
+        gitBranchRaw: "main",
+        githubSha: REAL,
+        githubRefName: "main",
+      })
+      expect(refs.strictError).toBeNull()
+      expect(refs.currentCommit).toBe(REAL)
+    })
+
+    it("P2-3: non-strict detached build records gitBranch 'detached'", () => {
+      const refs = resolveProvenanceRefs({
+        isStrict: false,
+        gitCommit: REAL,
+        gitBranchRaw: "HEAD",
+        githubSha: null,
+        githubRefName: null,
+      })
+      expect(refs.gitBranch).toBe("detached")
+      expect(refs.isDetached).toBe(true)
+    })
+
+    it("P2-3: strict mode still rejects a detached checkout with no CI ref", () => {
+      const refs = resolveProvenanceRefs({
+        isStrict: true,
+        gitCommit: REAL,
+        gitBranchRaw: "HEAD",
+        githubSha: null,
+        githubRefName: null,
+      })
+      expect(refs.strictError).toBeNull() // commit is real
+      const err = strictProvenanceInputError({ currentCommit: refs.currentCommit, currentBranch: refs.currentBranch, rustVersion: "rustc 1.84.0" })
+      expect(err).toContain("source branch")
     })
   })
 })
