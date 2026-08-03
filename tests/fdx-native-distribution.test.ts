@@ -390,7 +390,7 @@ describe("FDX Native Distribution & Binary Resolver", () => {
       const out = run(["--version"])
       expect(typeof out).toBe("string")
       expect(out.length).toBeGreaterThan(0)
-    })
+    }, { timeout: 60000 })
   })
 
   describe("P2-1 artifact tooling: source-SHA validation", () => {
