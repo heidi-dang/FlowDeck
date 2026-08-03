@@ -14,6 +14,7 @@ import { join, resolve, dirname } from "path"
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import { createRequire } from "node:module"
+import { fileURLToPath } from "node:url"
 import {
   topicContextPath,
   topicDecisionsPath,
@@ -190,7 +191,55 @@ export function setActiveProjectDir(dir: string): void {
 export const MINIMUM_SUPPORTED_FDX_VERSION = "1.0.0"
 export const MAXIMUM_SUPPORTED_FDX_MAJOR = 1
 export const EXPECTED_FDX_PROTOCOL_VERSION = "1.0.0"
-export const FLOWDECK_PACKAGE_VERSION = "1.0.4"
+
+let cachedPackageVersion: string | null = null
+
+/**
+ * Locate the installed @heidi-dang/flowdeck package manifest by walking up from
+ * this module's location. Works from the repository source tree
+ * (src/tools → repo root), the built bundle (dist/tools or dist/commands →
+ * package root), and an installed npm package.
+ */
+function findFlowdeckPackageManifest(startDir: string): { version: string } | null {
+  let dir = startDir
+  for (let depth = 0; depth < 10; depth++) {
+    const candidate = join(dir, "package.json")
+    if (existsSync(candidate)) {
+      try {
+        const pkg = JSON.parse(readFileSync(candidate, "utf-8")) as { name?: unknown; version?: unknown }
+        if (pkg.name === "@heidi-dang/flowdeck" && typeof pkg.version === "string" && pkg.version.length > 0) {
+          return { version: pkg.version }
+        }
+      } catch {
+        // Malformed package.json — keep walking upward.
+      }
+    }
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return null
+}
+
+/**
+ * Canonical FlowDeck release version, derived from the installed
+ * @heidi-dang/flowdeck package manifest (the repository root package.json when
+ * running from the source tree). Production code never hardcodes the release
+ * version; the package manifest is the single source of truth shared by the
+ * runtime, build scripts, and CI workflows.
+ */
+export function getFlowdeckPackageVersion(): string {
+  if (cachedPackageVersion) return cachedPackageVersion
+  const manifest = findFlowdeckPackageManifest(dirname(fileURLToPath(import.meta.url)))
+  if (!manifest) {
+    throw new Error(
+      "Unable to determine the @heidi-dang/flowdeck package version: no package manifest found. " +
+      "Reinstall FlowDeck or ensure package.json is present next to the installed package."
+    )
+  }
+  cachedPackageVersion = manifest.version
+  return manifest.version
+}
 
 export interface FdxTarget {
   platform: NodeJS.Platform;
@@ -373,7 +422,7 @@ export function detectFdxTarget(): FdxTarget | null {
   return null
 }
 
-export function getFdxCacheDir(target: FdxTarget, version = "1.0.4"): string {
+export function getFdxCacheDir(target: FdxTarget, version = getFlowdeckPackageVersion()): string {
   const targetName = `${target.platform}-${target.arch}${target.libc ? `-${target.libc}` : ""}`
   if (process.env.XDG_CACHE_HOME) {
     return join(process.env.XDG_CACHE_HOME, "flowdeck", "fdx", version, targetName)
@@ -573,6 +622,117 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
   }
 }
 
+/**
+ * True when the runtime is a release profile, where untrusted local dev
+ * sources must never be consulted — even with FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE set.
+ */
+export function isReleaseProfile(): boolean {
+  return process.env.FLOWDECK_PROFILE === "release" || process.env.NODE_ENV === "production"
+}
+
+/**
+ * Whether caller-controlled local dev sources (cwd/packages, cwd/node_modules,
+ * active project node_modules) may be consulted for binary resolution.
+ * Opt-in via FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE=1; default off; always
+ * rejected in release profiles. FlowDeck's own resolved optional dependency
+ * and the managed repair cache are trusted regardless of this flag.
+ */
+export function localDevSourcesAllowed(): boolean {
+  if (isReleaseProfile()) return false
+  return process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE === "1"
+}
+
+export interface ResolvedPlatformPackage {
+  pkgDir: string
+  source: "own" | "local-dev"
+}
+
+/**
+ * Verify an actual package manifest, never directory-name resemblance.
+ * Identity (exact name) and the canonical FlowDeck version are both required.
+ */
+function verifyPackageIdentity(pkgDir: string, expectedName: string, expectedVersion: string): boolean {
+  try {
+    const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf-8"))
+    return pkg?.name === expectedName && pkg?.version === expectedVersion
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Resolve FlowDeck's own installed optional dependency, anchored exclusively
+ * to FlowDeck's own installed module location. The caller's project, cwd,
+ * active project, and node_modules are never part of this resolution.
+ */
+function resolveOwnOptionalDependency(ownDir: string, target: FdxTarget, canonicalVersion: string): string | null {
+  let pkgDir: string | null = null
+  try {
+    const req = createRequire(join(ownDir, "package.json"))
+    const jsonPath = req.resolve(`${target.packageName}/package.json`)
+    pkgDir = dirname(jsonPath)
+  } catch {
+    // Fall back to FlowDeck's own conventional node_modules layout. This path
+    // lives inside FlowDeck's install tree and is not caller-influenced.
+    const candidate = join(ownDir, "node_modules", target.packageName)
+    if (existsSync(candidate)) pkgDir = candidate
+  }
+  if (!pkgDir || !existsSync(pkgDir)) return null
+  if (!verifyPackageIdentity(pkgDir, target.packageName, canonicalVersion)) return null
+  return pkgDir
+}
+
+/**
+ * Resolve the platform package for `target` from trusted sources only.
+ *
+ * Trusted order:
+ *  1. FlowDeck's own installed optional dependency — resolved via createRequire
+ *     anchored exclusively to FlowDeck's own installed module location. The
+ *     caller's project, its active project, its node_modules, and any other
+ *     caller-influenced module search path are never part of this resolution.
+ *  2. (opt-in only, never in release profiles) Caller-controlled local dev
+ *     directories, discovered by direct path checks only (no module-resolution
+ *     traversal): <dir>/node_modules/<pkg> and <dir>/packages/<localName>.
+ *
+ * Every candidate must pass exact package identity (name) and canonical
+ * FlowDeck version verification before it is accepted; directory-name
+ * resemblance alone is never trusted.
+ */
+export function resolveTrustedPlatformPackage(
+  target: FdxTarget,
+  opts: { includeLocalDev?: boolean } = {}
+): ResolvedPlatformPackage | null {
+  const ownDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")
+  const canonicalVersion = getFlowdeckPackageVersion()
+  // Local dev sources are never consulted in release profiles, even when an
+  // explicit includeLocalDev override is requested.
+  const includeLocalDev = (opts.includeLocalDev ?? localDevSourcesAllowed()) && !isReleaseProfile()
+
+  const ownCandidate = resolveOwnOptionalDependency(ownDir, target, canonicalVersion)
+  if (ownCandidate) return { pkgDir: ownCandidate, source: "own" }
+
+  if (includeLocalDev) {
+    const devDirs = [activeProjectDir, process.cwd()]
+    const seen = new Set<string>()
+    for (const dir of devDirs) {
+      const resolvedDir = resolve(dir)
+      if (seen.has(resolvedDir)) continue
+      seen.add(resolvedDir)
+      const localName = target.packageName.replace("@heidi-dang/", "")
+      for (const candidate of [
+        join(resolvedDir, "node_modules", target.packageName),
+        join(resolvedDir, "packages", localName),
+      ]) {
+        if (existsSync(candidate) && verifyPackageIdentity(candidate, target.packageName, canonicalVersion)) {
+          return { pkgDir: candidate, source: "local-dev" }
+        }
+      }
+    }
+  }
+
+  return null
+}
+
 export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
   const target = detectFdxTarget()
   const diagnostics: string[] = []
@@ -626,55 +786,40 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
     }
   }
 
-  // 2. Compatible FlowDeck platform package
+  // 2. Compatible FlowDeck platform package (trusted sources only)
   if (target) {
-    const execName = target.executableName
-    const pkgName = target.packageName
-    const searchDirs: string[] = [
-      activeProjectDir,
-      process.cwd(),
-      resolve(dirname(new URL(import.meta.url).pathname), "..", ".."),
-    ]
-
-    for (const searchDir of searchDirs) {
-      let pkgDir: string | null = null
-      try {
-        const req = createRequire(join(searchDir, "package.json"))
-        const jsonPath = req.resolve(`${pkgName}/package.json`)
-        pkgDir = dirname(jsonPath)
-      } catch {
-        const candidate = join(searchDir, "node_modules", pkgName)
-        if (existsSync(candidate)) pkgDir = candidate
-        const localDev = join(searchDir, "packages", pkgName.replace("@heidi-dang/", ""))
-        if (existsSync(localDev)) pkgDir = localDev
-      }
-
-      if (pkgDir && existsSync(pkgDir)) {
-        const binPath = join(pkgDir, execName)
-        const val = validateFdxBinaryPath(binPath, pkgDir, true)
-        if (val.valid) {
-          return {
-            available: true,
-            binary: binPath,
-            binaryPath: binPath,
-            message: `FDX native binary is available at "${binPath}".`,
-            source: "package",
-            target,
-            targetSupported: true,
-            packagePresent: true,
-            binaryPresent: true,
-            binaryIntegrity: "pass",
-            binaryVersion: val.version,
-            versionCompatible: true,
-            checksumStatus: val.checksumStatus,
-            executionStatus: "pass",
-            fallbackAvailable: true,
-            diagnostics: [`Resolved compatible platform package binary at "${binPath}"`],
-            repairCommand,
-          }
+    const resolvedPkg = resolveTrustedPlatformPackage(target)
+    if (resolvedPkg) {
+      const binPath = join(resolvedPkg.pkgDir, target.executableName)
+      const val = validateFdxBinaryPath(binPath, resolvedPkg.pkgDir, true)
+      if (val.valid) {
+        return {
+          available: true,
+          binary: binPath,
+          binaryPath: binPath,
+          message: `FDX native binary is available at "${binPath}".`,
+          source: "package",
+          target,
+          targetSupported: true,
+          packagePresent: true,
+          binaryPresent: true,
+          binaryIntegrity: "pass",
+          binaryVersion: val.version,
+          versionCompatible: true,
+          checksumStatus: val.checksumStatus,
+          executionStatus: "pass",
+          fallbackAvailable: true,
+          diagnostics: [`Resolved compatible platform package binary at "${binPath}" (source: ${resolvedPkg.source})`],
+          repairCommand,
         }
-        diagnostics.push(`Platform package "${pkgName}" found at "${pkgDir}" but binary validation failed: ${val.reason}`)
       }
+      diagnostics.push(`Platform package "${target.packageName}" found at "${resolvedPkg.pkgDir}" (source: ${resolvedPkg.source}) but binary validation failed: ${val.reason}`)
+    } else if (process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE === "1") {
+      diagnostics.push(
+        isReleaseProfile()
+          ? `FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE is set but local dev sources are rejected (release profile: true). Ignoring caller project/node_modules directories.`
+          : `Local dev sources are enabled but no platform package passed identity/version verification in the caller directories.`
+      )
     }
   } else {
     diagnostics.push(`Platform target not supported for prebuilt binary distribution: ${process.platform}/${process.arch}`)

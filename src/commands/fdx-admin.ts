@@ -8,17 +8,18 @@
  *   flowdeck fdx verify
  */
 
-import { existsSync, mkdirSync, writeFileSync, copyFileSync, chmodSync, renameSync, readFileSync, rmSync, readdirSync } from "node:fs"
-import { join, dirname } from "node:path"
-import { createHash } from "node:crypto"
+import { existsSync, mkdirSync, writeFileSync, copyFileSync, chmodSync, renameSync, readFileSync, rmSync, readdirSync, openSync, closeSync, fsyncSync, linkSync, statSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { createHash, randomBytes } from "node:crypto"
 import { execFileSync } from "node:child_process"
 import {
   detectFdxTarget,
   getFdxAvailabilityStatus,
   getFdxCacheDir,
+  getFlowdeckPackageVersion,
+  resolveTrustedPlatformPackage,
   validateFdxBinaryPath,
   validateFdxProvenance,
-  FLOWDECK_PACKAGE_VERSION,
 } from "../tools/fdx-shared"
 
 export function handleFdxStatus(): void {
@@ -79,11 +80,249 @@ function sha256File(filePath: string): string {
   return createHash("sha256").update(buf).digest("hex")
 }
 
+const INSTALL_LOCK_SCHEMA_VERSION = 1
+/** Bounded grace interval for newly observed empty/partial/malformed lock files. */
+const INSTALL_LOCK_INIT_GRACE_MS = 30_000
+
+export type InstallLockResult =
+  | { ok: true; token: string }
+  | { ok: false; reason: string; detail?: string }
+
+/** Returns "alive" | "dead" | "unknown" for the given pid. */
+function pidLiveness(pid: number): "alive" | "dead" | "unknown" {
+  try {
+    process.kill(pid, 0)
+    return "alive"
+  } catch (e: any) {
+    if (e?.code === "EPERM") return "alive"
+    if (e?.code === "ESRCH") return "dead"
+    return "unknown"
+  }
+}
+
+type LockClassification =
+  | { recoverable: false; reason: string; detail?: string }
+  | { recoverable: true; raw: string | null }
+
+/**
+ * Classify an existing lock file at `lockPath`.
+ *
+ * Deterministic rules:
+ *  - Valid schema + confirmed live owner  → blocked, never broken (age never
+ *    overrides a confirmed live PID).
+ *  - Valid schema + confirmed dead owner  → recoverable.
+ *  - Valid schema + unknown liveness      → blocked (fail closed).
+ *  - Empty / partially written / malformed + freshly created → blocked
+ *    (indeterminate: the owner may still be initializing within the bounded
+ *    grace interval — never break a fresh lock).
+ *  - Empty / partially written / malformed + older than grace → recoverable.
+ *  - Unsupported schema version           → blocked (fail closed).
+ */
+function classifyExistingLock(lockPath: string): LockClassification {
+  let mtimeMs: number | null = null
+  let raw: string | null = null
+  try {
+    mtimeMs = statSync(lockPath).mtimeMs
+    raw = readFileSync(lockPath, "utf-8")
+  } catch {
+    // Lock vanished between EEXIST and read — retry the exclusive create.
+    return { recoverable: true, raw: null }
+  }
+
+  const ageMs = Date.now() - mtimeMs
+  let data: any
+  try {
+    data = JSON.parse(raw)
+  } catch {
+    if (ageMs < INSTALL_LOCK_INIT_GRACE_MS) {
+      return { recoverable: false, reason: "lock-indeterminate-fresh", detail: "Lock file is empty, partially written, or malformed and was created recently; the owner may still be initializing it." }
+    }
+    return { recoverable: true, raw }
+  }
+
+  if (data === null || typeof data !== "object" || Array.isArray(data)) {
+    if (ageMs < INSTALL_LOCK_INIT_GRACE_MS) {
+      return { recoverable: false, reason: "lock-indeterminate-fresh", detail: "Lock file content is malformed and was created recently; the owner may still be initializing it." }
+    }
+    return { recoverable: true, raw }
+  }
+
+  if (data.schemaVersion !== INSTALL_LOCK_SCHEMA_VERSION) {
+    return { recoverable: false, reason: "lock-incompatible-schema", detail: `Lock schema version ${JSON.stringify(data.schemaVersion)} is not supported by this FlowDeck version.` }
+  }
+
+  const pid = Number(data.pid)
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return { recoverable: false, reason: "lock-unknown-liveness", detail: `Lock references an invalid pid (${JSON.stringify(data.pid)}); liveness cannot be determined.` }
+  }
+
+  const liveness = pidLiveness(pid)
+  if (liveness === "alive") {
+    return { recoverable: false, reason: "lock-held-live", detail: `Lock is held by live process ${pid}.` }
+  }
+  if (liveness === "dead") {
+    return { recoverable: true, raw }
+  }
+  return { recoverable: false, reason: "lock-unknown-liveness", detail: `Liveness of lock owner process ${pid} could not be determined.` }
+}
+
+/**
+ * Atomically recover a stale lock without ever assuming ownership from a
+ * deletion. The lock is first renamed to a unique quarantine path (atomic —
+ * there is exactly one winner per stale lock), then the quarantined bytes are
+ * re-verified against the content that was classified. If a fresh owner
+ * replaced the lock between classification and rename, the quarantine holds
+ * the *new* lock: it is restored for its true owner and recovery fails closed.
+ * Only after identity confirmation is the stale lock removed; the subsequent
+ * exclusive create is what actually grants ownership.
+ */
+function recoverStaleLock(lockPath: string, expectedRaw: string): "recovered" | "contended" | "error" {
+  const claim = randomBytes(16).toString("hex")
+  const quarantinePath = `${lockPath}.stale-${process.pid}-${claim}`
+  try {
+    renameSync(lockPath, quarantinePath)
+  } catch (e: any) {
+    // ENOENT: another contender already quarantined it — retry the create.
+    if (e?.code === "ENOENT") return "contended"
+    return "error"
+  }
+  let quarantinedRaw: string
+  try {
+    quarantinedRaw = readFileSync(quarantinePath, "utf-8")
+  } catch {
+    // Unreadable quarantine: preserve it as evidence; fail closed.
+    return "error"
+  }
+  if (quarantinedRaw !== expectedRaw) {
+    // A different lock was quarantined — restore it for its true owner.
+    try { renameSync(quarantinePath, lockPath) } catch {}
+    return "contended"
+  }
+  rmSync(quarantinePath, { force: true })
+  return "recovered"
+}
+
+/**
+ * Acquire a per-target install lock.
+ *
+ * Ownership-safe protocol:
+ *   1. Write the complete lock metadata (schema, pid, timestamp, random
+ *      ownership token, target identity) to a unique sibling temporary file and
+ *      fsync it — observers never see a partially written lock.
+ *   2. Atomically activate the lock without replacing an existing lock
+ *      (hard-link creation; direct O_EXCL fallback for platforms without hard
+ *      links, where the bounded grace interval protects observers).
+ *   3. On contention, classify the existing lock:
+ *        - live owner, unknown liveness, fresh malformed/empty, or
+ *          incompatible schema → fail closed;
+ *        - confirmed dead owner or old malformed lock → atomic recovery via
+ *          quarantine + identity re-verification, then retry the exclusive
+ *          create. Ownership is granted only by the exclusive create, never by
+ *          deleting a lock.
+ * The returned token is the only credential that may release the lock.
+ */
+export function acquireInstallLock(lockPath: string, targetId: string): InstallLockResult {
+  const token = randomBytes(32).toString("hex")
+  const tmpPath = `${lockPath}.tmp-${process.pid}-${token.slice(0, 8)}`
+  const payload = JSON.stringify({
+    schemaVersion: INSTALL_LOCK_SCHEMA_VERSION,
+    pid: process.pid,
+    createdAt: Date.now(),
+    token,
+    target: targetId,
+  })
+
+  // The lock lives beside the target cache directory; on a fresh machine that
+  // parent directory does not exist yet, so create it before any lock I/O.
+  try {
+    mkdirSync(dirname(lockPath), { recursive: true })
+  } catch (e: any) {
+    return { ok: false, reason: "lock-dir-error", detail: e?.message }
+  }
+
+  try {
+    const fd = openSync(tmpPath, "wx")
+    try {
+      writeFileSync(fd, payload, "utf-8")
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+  } catch (e: any) {
+    return { ok: false, reason: "lock-tmp-write-error", detail: e?.message }
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      linkSync(tmpPath, lockPath)
+      rmSync(tmpPath, { force: true })
+      return { ok: true, token }
+    } catch (e: any) {
+      if (e?.code !== "EEXIST") {
+        // Hard links unavailable (e.g. non-NTFS volumes on Windows): fall back
+        // to direct exclusive creation. The bounded grace interval protects
+        // observers from the brief window before the metadata is written.
+        try {
+          const fd = openSync(lockPath, "wx")
+          try {
+            writeFileSync(fd, payload, "utf-8")
+            fsyncSync(fd)
+          } finally {
+            closeSync(fd)
+          }
+          rmSync(tmpPath, { force: true })
+          return { ok: true, token }
+        } catch (e2: any) {
+          rmSync(tmpPath, { force: true })
+          if (e2?.code === "EEXIST") continue
+          return { ok: false, reason: "lock-activation-error", detail: e2?.message }
+        }
+      }
+
+      const cls = classifyExistingLock(lockPath)
+      if (!cls.recoverable) {
+        rmSync(tmpPath, { force: true })
+        return { ok: false, reason: cls.reason, detail: cls.detail }
+      }
+      if (cls.raw === null) continue // Lock vanished — retry the exclusive create.
+
+      const rec = recoverStaleLock(lockPath, cls.raw)
+      if (rec === "error") {
+        rmSync(tmpPath, { force: true })
+        return { ok: false, reason: "lock-recovery-error", detail: "Stale lock recovery failed; preserved evidence and failed closed." }
+      }
+      // "recovered" or "contended" → retry the exclusive create; the create is
+      // the single arbiter of ownership.
+      continue
+    }
+  }
+  rmSync(tmpPath, { force: true })
+  return { ok: false, reason: "lock-contention-exhausted", detail: "Repeated contention with other installers; giving up." }
+}
+
+/**
+ * Release a per-target install lock. The ownership token is the only valid
+ * credential: a stale token (e.g. from an old process after a replacement
+ * owner took over) never deletes the lock. Returns true only when the lock was
+ * actually removed by this caller.
+ */
+export function releaseInstallLock(lockPath: string, token: string): boolean {
+  try {
+    const data = JSON.parse(readFileSync(lockPath, "utf-8"))
+    if (data?.schemaVersion !== INSTALL_LOCK_SCHEMA_VERSION) return false
+    if (data.token !== token) return false
+    rmSync(lockPath, { force: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
 /** Attempt to download platform package from npm registry with integrity verification. */
 function fetchFromRegistry(packageName: string, version: string): { dir: string; tmpDir: string; reason?: string } | null {
   const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm"
   const npmShell = process.platform === "win32"
-  const tmpDir = join(getFdxCacheDir({ platform: process.platform, arch: process.arch, packageName, executableName: "fdx" }), `..`, `.registry-fetch-${Date.now()}`)
+  const tmpDir = join(getFdxCacheDir({ platform: process.platform, arch: process.arch, packageName, executableName: "fdx" }), `..`, `.registry-fetch-${process.pid}-${Date.now()}`)
   try {
     mkdirSync(tmpDir, { recursive: true })
 
@@ -199,38 +438,51 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
   console.log(`Package: ${target.packageName}`)
 
   const cacheDir = getFdxCacheDir(target)
+  const lockPath = `${cacheDir}.lock`
+  const lockTargetId = `${target.platform}-${target.arch}${target.libc ? `-${target.libc}` : ""}@${getFlowdeckPackageVersion()}`
   const stagingDir = `${cacheDir}.staging-${process.pid}-${Date.now()}`
+  let lockToken: string | null = null
   let registryFetchTmp: string | null = null
   let backupDir: string | null = null
   let backupCreated = false
   let newCacheActivated = false
 
+  // Per-target lock: serialize installs for the same platform package so two
+  // concurrent flows cannot race on the cache directory activation. The lock
+  // is token-based: only the acquirer may release it, and stale locks are
+  // recovered atomically (see acquireInstallLock).
+  const lock = acquireInstallLock(lockPath, lockTargetId)
+  if (!lock.ok) {
+    console.error(`✗ Installation FAILED: Another FDX install/repair is already in progress for this target.`)
+    console.error(`  Lock file: ${lockPath}`)
+    console.error(`  Reason: ${lock.reason}`)
+    if (lock.detail) console.error(`  Detail: ${lock.detail}`)
+    console.error(`  If no other install is running, delete the stale lock file and retry.`)
+    return false
+  }
+  lockToken = lock.token
+
   try {
     mkdirSync(stagingDir, { recursive: true })
 
-    // ── 1. Locate source platform package (local search, then registry fallback) ──
+    // ── 1. Locate source platform package (trusted resolution, then registry fallback) ──
+    // FlowDeck's own resolved optional dependency is always trusted and is
+    // resolved exclusively through FlowDeck's own installed module location.
+    // Caller project/cwd directories are consulted only when local dev sources
+    // are explicitly allowed (opt-in, default off, never in release profiles),
+    // and only via direct path checks with full identity/version verification.
     let sourceBinDir: string | null = null
-    const searchDirs = [
-      process.cwd(),
-      join(dirname(new URL(import.meta.url).pathname), "..", ".."),
-    ]
-
-    for (const searchDir of searchDirs) {
-      const candidateLocal = join(searchDir, "packages", target.packageName.replace("@heidi-dang/", ""))
-      if (existsSync(join(candidateLocal, target.executableName))) {
-        sourceBinDir = candidateLocal
-        break
-      }
-      const candidateNodeModules = join(searchDir, "node_modules", target.packageName)
-      if (existsSync(join(candidateNodeModules, target.executableName))) {
-        sourceBinDir = candidateNodeModules
-        break
+    const resolvedPkg = resolveTrustedPlatformPackage(target)
+    if (resolvedPkg && existsSync(join(resolvedPkg.pkgDir, target.executableName))) {
+      sourceBinDir = resolvedPkg.pkgDir
+      if (resolvedPkg.source === "local-dev") {
+        console.log(`ℹ Using local dev platform package from: ${resolvedPkg.pkgDir}`)
       }
     }
 
     if (!sourceBinDir) {
       console.log(`ℹ Local platform package ${target.packageName} not found. Attempting trusted registry acquisition...`)
-      const regRes = fetchFromRegistry(target.packageName, FLOWDECK_PACKAGE_VERSION)
+      const regRes = fetchFromRegistry(target.packageName, getFlowdeckPackageVersion())
       if (regRes) {
         sourceBinDir = regRes.dir
         registryFetchTmp = regRes.tmpDir
@@ -343,7 +595,7 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     writeFileSync(join(stagingDir, "install-manifest.json"), JSON.stringify(installManifest, null, 2), "utf-8")
 
     // ── 7. Rollback-safe atomic directory activation ───────────────────────
-    backupDir = `${cacheDir}.backup-${Date.now()}`
+    backupDir = `${cacheDir}.backup-${process.pid}-${Date.now()}`
     const hasExistingCache = existsSync(cacheDir)
 
     if (hasExistingCache) {
@@ -392,5 +644,7 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     try { rmSync(stagingDir, { recursive: true, force: true }) } catch {}
     if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
     return false
+  } finally {
+    if (lockToken) releaseInstallLock(lockPath, lockToken)
   }
 }
