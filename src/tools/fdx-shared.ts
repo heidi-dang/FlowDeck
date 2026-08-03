@@ -22,6 +22,8 @@ import {
   readOrMissing,
   clearFileWithLock,
 } from "./planning-state-lib"
+import { sourceCommitShaError } from "./fdx-commit-sha.mjs"
+export { sourceCommitShaError }
 export { redactSecrets, containsSecrets } from "../lib/secret-redaction"
 export { codebaseDir } from "./planning-state-lib"
 
@@ -345,6 +347,14 @@ export function validateFdxProvenance(
     }
   }
 
+  // P2-2: binaryByteSize must be a non-negative safe integer. A string,
+  // fractional, negative, NaN, or unsafe-integer value is a malformed
+  // provenance contract and must fail closed — never silently pass the
+  // required-field presence check and bypass the size comparison.
+  if (!Number.isSafeInteger(provenance.binaryByteSize) || provenance.binaryByteSize < 0) {
+    return { valid: false, reason: `Provenance binaryByteSize ${JSON.stringify(provenance.binaryByteSize)} is not a non-negative safe integer` }
+  }
+
   if (target) {
     if (provenance.packageName !== target.packageName) {
       return { valid: false, reason: `Provenance packageName "${provenance.packageName}" mismatch with target "${target.packageName}"` }
@@ -413,11 +423,15 @@ export function validateFdxProvenance(
       return { valid: false, reason: `Provenance flowdeckVersion "${provenance.flowdeckVersion}" does not match canonical FlowDeck version "${canonicalVersion}"` }
     }
 
-    if (!provenance.sourceCommitSha || !/^[0-9a-fA-F]{40}$/.test(provenance.sourceCommitSha)) {
-      return { valid: false, reason: "Provenance sourceCommitSha is missing or not a valid 40-character SHA" }
+    // P2-3: the source commit must be a real, non-fabricated SHA — exactly 40
+    // hex characters and not an all-zero/placeholder value. Shares the
+    // canonical validator with the build and verify paths.
+    const commitError = sourceCommitShaError(provenance.sourceCommitSha)
+    if (commitError) {
+      return { valid: false, reason: `Provenance ${commitError}` }
     }
-  } else if (provenance.sourceCommitSha && !/^[0-9a-fA-F]{40}$/.test(provenance.sourceCommitSha)) {
-    return { valid: false, reason: `Provenance commit SHA "${provenance.sourceCommitSha}" is not a valid 40-character SHA` }
+  } else if (provenance.sourceCommitSha && sourceCommitShaError(provenance.sourceCommitSha)) {
+    return { valid: false, reason: `Provenance ${sourceCommitShaError(provenance.sourceCommitSha)}` }
   }
 
   return { valid: true }
@@ -645,11 +659,22 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       if (expectedSha) {
         const fileBuf = readFileSync(binPath)
         actualSha = createHash("sha256").update(fileBuf).digest("hex")
-        // P2-2: the provenance-declared binary byte size must match the actual
-        // file size. A provenance that passes checksum but declares a size
-        // inconsistent with the file is rejected — prevents tampering that
-        // keeps a valid checksum while the provenance document is inconsistent.
-        if (typeof manifest.binaryByteSize === "number" && manifest.binaryByteSize !== fileBuf.length) {
+        // P2-2: the provenance-declared binary byte size must be a non-negative
+        // safe integer that exactly matches the actual file size. Any present
+        // value that is not a valid size — or a size that differs from the
+        // file — is a hard failure; a string/fractional/negative/NaN/unsafe
+        // value must never bypass the size comparison.
+        if (manifest.binaryByteSize !== undefined && !Number.isSafeInteger(manifest.binaryByteSize)) {
+          return {
+            valid: false,
+            version: null,
+            versionCompatible: false,
+            checksumStatus: "fail",
+            integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, expectedSha256: expectedSha, actualSha256: actualSha, provenanceValid, reason: `Provenance binaryByteSize ${JSON.stringify(manifest.binaryByteSize)} is not a non-negative safe integer` },
+            reason: `Provenance binaryByteSize ${JSON.stringify(manifest.binaryByteSize)} is not a non-negative safe integer`,
+          }
+        }
+        if (manifest.binaryByteSize !== undefined && manifest.binaryByteSize !== fileBuf.length) {
           return {
             valid: false,
             version: null,
@@ -1077,18 +1102,47 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
 
 let fdxCacheKey: string | null = null
 let fdxCacheValue: FdxResolutionResult | null = null
-let fdxCacheBinaryFingerprint: string | null = null
+let fdxCacheBinarySha256: string | null = null
 
 /**
- * Stable-file-identity fingerprint of a validated binary. Combines device,
- * inode, size and mtime so a binary replaced after validation (stale-cache
- * binary replacement, P1-3) is detected on the next resolution cache hit.
- * Exported for acceptance tests.
+ * Canonical, collision-free serialization of the resolution-cache identity.
+ *
+ * The identity is an ordered list of [field, value] tuples whose values may
+ * contain arbitrary characters (including the "|" delimiter used by the old
+ * string-joined key). A tuple list serialized with JSON.stringify is
+ * unambiguous: two distinct inputs can never produce the same key.
+ *
+ * Beyond the environment inputs that change source eligibility, the identity
+ * includes the resolved target cache directory. getFdxCacheDir() derives that
+ * path from XDG_CACHE_HOME / LOCALAPPDATA / the home directory, so a switch of
+ * any of those inputs (or a home-directory change) must invalidate the cache —
+ * a long-running process must never serve a binary resolution computed for a
+ * different cache root (P1-1).
  */
-export function binaryFingerprint(binPath: string): string | null {
+export function buildResolutionCacheKey(): string {
+  const target = detectFdxTarget()
+  const identity: Array<[string, string]> = [
+    ["env", process.env.FDX_BINARY_PATH ?? ""],
+    ["path", process.env.PATH ?? ""],
+    ["profile", process.env.FLOWDECK_PROFILE ?? ""],
+    ["nodeEnv", process.env.NODE_ENV ?? ""],
+    ["localDev", process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE ?? ""],
+    ["project", activeProjectDir],
+    ["cwd", process.cwd()],
+    ["version", getFlowdeckPackageVersion()],
+    ["cacheRoot", target ? getFdxCacheDir(target) : ""],
+  ]
+  return JSON.stringify(identity)
+}
+
+/**
+ * SHA-256 of a file, or null when the file cannot be read. Used to verify
+ * that a cached binary is byte-for-byte identical to the one that passed the
+ * trust contract immediately before execution (P1-2).
+ */
+export function sha256FileContents(binPath: string): string | null {
   try {
-    const st = statSync(binPath)
-    return `${st.dev}:${st.ino}:${st.size}:${Math.trunc(st.mtimeMs)}`
+    return createHash("sha256").update(readFileSync(binPath)).digest("hex")
   } catch {
     return null
   }
@@ -1104,36 +1158,25 @@ export function checkFdxAvailability(forceRefresh = false): boolean {
 }
 
 export function getFdxAvailabilityStatus(forceRefresh = false): FdxResolutionResult {
-  // Cache identity must capture every input that changes which sources are
-  // eligible: the explicit binary override, PATH (for caller-local dev
-  // sources), the release/profile gates, the local-dev-source opt-in, the
-  // caller project directory, the current working directory, and the
-  // canonical FlowDeck version (P1-2: cache-gating bypass).
-  const currentKey = [
-    `env:${process.env.FDX_BINARY_PATH || ""}`,
-    `path:${process.env.PATH || ""}`,
-    `profile:${process.env.FLOWDECK_PROFILE || ""}`,
-    `nodeEnv:${process.env.NODE_ENV || ""}`,
-    `localDev:${process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE || ""}`,
-    `project:${activeProjectDir}`,
-    `cwd:${process.cwd()}`,
-    `version:${getFlowdeckPackageVersion()}`,
-  ].join("|")
+  const currentKey = buildResolutionCacheKey()
   if (!forceRefresh && fdxCacheKey === currentKey && fdxCacheValue !== null) {
-    // P1-3: the cached binary must be revalidated before every native
-    // execution. If the validated binary was replaced on disk (identity,
-    // size or mtime changed) the cache is stale and must be recomputed —
-    // never execute a binary whose fingerprint no longer matches the one
-    // that passed the full trust contract.
+    // P1-2: the cached binary must be re-verified before every native
+    // execution. The stat fingerprint (dev/ino/size/mtime) can be bypassed by
+    // rewriting the same inode with equal-length content and a restored mtime,
+    // so the trusted SHA-256 is recomputed now and compared against the digest
+    // captured when the binary passed the full trust contract. Any mismatch —
+    // including a mutation between this check and execFileSync — fails closed
+    // by dropping the cache and re-resolving.
     if (fdxCacheValue.binaryPath) {
-      const fp = binaryFingerprint(fdxCacheValue.binaryPath)
-      if (fdxCacheBinaryFingerprint !== null && fp !== null && fp === fdxCacheBinaryFingerprint) {
+      const currentSha = sha256FileContents(fdxCacheValue.binaryPath)
+      if (fdxCacheBinarySha256 !== null && currentSha !== null && currentSha === fdxCacheBinarySha256) {
         return fdxCacheValue
       }
-      // Fingerprint changed or vanished: drop the cache and re-resolve.
+      // Digest changed, vanished, or was never captured: drop the cache and
+      // re-resolve from scratch.
       fdxCacheKey = null
       fdxCacheValue = null
-      fdxCacheBinaryFingerprint = null
+      fdxCacheBinarySha256 = null
       return getFdxAvailabilityStatus(true)
     }
     return fdxCacheValue
@@ -1142,7 +1185,7 @@ export function getFdxAvailabilityStatus(forceRefresh = false): FdxResolutionRes
   const res = resolveFdxBinaryPathDetailed()
   fdxCacheKey = currentKey
   fdxCacheValue = res
-  fdxCacheBinaryFingerprint = res.binaryPath ? binaryFingerprint(res.binaryPath) : null
+  fdxCacheBinarySha256 = res.binaryPath ? sha256FileContents(res.binaryPath) : null
   return res
 }
 
@@ -1166,6 +1209,22 @@ export function runFdx(args: string[]): string {
   const bin = fdxBin()
   validateExecutable(bin)
   validateArgs(args)
+  // P1-2: close the check-to-execution race. The resolution cache re-verifies
+  // the trusted digest on a cache hit, but the binary could still be mutated
+  // between that check and execFileSync below. Recompute the digest now —
+  // immediately before execution — and force a fresh resolution if it no
+  // longer matches the bytes that passed the trust contract.
+  const execSha = sha256FileContents(bin)
+  if (execSha !== null && fdxCacheBinarySha256 !== null && execSha !== fdxCacheBinarySha256) {
+    fdxCacheKey = null
+    fdxCacheValue = null
+    fdxCacheBinarySha256 = null
+    const reResolved = getFdxAvailabilityStatus(true)
+    if (reResolved.available && reResolved.binaryPath && reResolved.binaryPath !== bin) {
+      return runFdx(args)
+    }
+    throw new Error(`[FDX Integrity] Cached native binary changed between validation and execution: ${bin}`)
+  }
   try {
     return execFileSync(bin, args, {
       encoding: "utf-8",

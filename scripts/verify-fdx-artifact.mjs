@@ -31,6 +31,11 @@ export function computeSha256(buf) {
   return createHash("sha256").update(buf).digest("hex")
 }
 
+// Canonical source-commit-SHA validator, shared with the runtime trust path.
+// The canonical implementation lives in src/tools/fdx-commit-sha.mjs so the
+// runtime bundle can import it without violating the build rootDir (P2-3).
+export { sourceCommitShaError, isValidSourceCommitSha } from "../src/tools/fdx-commit-sha.mjs"
+
 export function computeSri(buf) {
   return `sha512-${createHash("sha512").update(buf).digest("base64")}`
 }

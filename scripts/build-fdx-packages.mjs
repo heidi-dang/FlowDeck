@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, copyFileSync, writeFileSync, readFileSync } from
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { createHash } from "node:crypto"
+import { sourceCommitShaError } from "../src/tools/fdx-commit-sha.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PKG_ROOT = join(__dirname, "..")
@@ -50,11 +51,18 @@ function isMuslHost() {
  * Exported so the acceptance tests can exercise it without a full build.
  */
 export function strictProvenanceInputError({ currentCommit, currentBranch, rustVersion }) {
-  if (!currentCommit || !/^[0-9a-fA-F]{40}$/.test(currentCommit) || currentCommit === "0000000000000000000000000000000000000000") {
-    return `Strict build requires a real source commit SHA; got ${JSON.stringify(currentCommit)}. Set GITHUB_SHA or build inside a git checkout.`
+  const commitError = sourceCommitShaError(currentCommit)
+  if (commitError) {
+    return `Strict build requires a real source commit SHA; ${commitError}. Set GITHUB_SHA or build inside a git checkout.`
   }
   if (!currentBranch) {
     return `Strict build requires a real source branch; none detected. Set GITHUB_REF_NAME or build inside a git checkout.`
+  }
+  // P2-4: a detached checkout reports the literal branch name "HEAD" via
+  // `git rev-parse --abbrev-ref HEAD`. That is not a real source branch and
+  // must never be recorded as one in provenance.
+  if (currentBranch === "HEAD") {
+    return `Strict build cannot record a detached HEAD as a source branch. Check out a real branch or provide a validated CI ref (GITHUB_REF_NAME).`
   }
   if (!rustVersion) {
     return `Strict build requires a real rustc version; 'rustc --version' failed.`
@@ -163,13 +171,17 @@ function main() {
     const rustVersion = tryExec("rustc", ["--version"]) || null
 
     // P2-4: never emit fabricated provenance. A zero/absent source commit, a
-    // missing branch, or a missing rustc version would produce a provenance
-    // document that is not traceable to a real build — unacceptable in strict
-    // (release/CI) mode, which must fail instead of writing the artifact.
+    // missing branch, a detached-HEAD branch, or a missing rustc version would
+    // produce a provenance document that is not traceable to a real build —
+    // unacceptable in strict (release/CI) mode, which must fail instead of
+    // writing the artifact.
     if (isStrict) {
       const strictError = strictProvenanceInputError({ currentCommit, currentBranch, rustVersion })
       if (strictError) fail(strictError)
     }
+    // Even outside strict mode, a detached HEAD must never be recorded as a
+    // branch name in provenance: model it explicitly as a detached build.
+    const gitBranch = currentBranch === "HEAD" ? "detached" : (currentBranch || "unknown")
 
     const provenanceManifest = {
       packageName: `@heidi-dang/${targetDirName}`,
@@ -185,7 +197,7 @@ function main() {
       sha256,
       sourceCommitSha: currentCommit || "0000000000000000000000000000000000000000",
       gitCommit: currentCommit || "0000000000000000000000000000000000000000",
-      gitBranch: currentBranch || "unknown",
+      gitBranch,
       workflowRunId: process.env.GITHUB_RUN_ID ?? null,
       ciRunId: process.env.GITHUB_RUN_ID ?? null,
       builderPlatform: `${process.platform}/${process.arch}`,
