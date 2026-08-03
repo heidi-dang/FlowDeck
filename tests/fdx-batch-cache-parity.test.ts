@@ -928,4 +928,144 @@ describe("FDX native/JS fallback parity", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("TS post-activation drift rolls back all owned artifacts (P1-1 mirror)", () => {
+    // A repository mutation detected AFTER the final fence but DURING
+    // activation must roll back every owned artifact and convert every
+    // provisional response to E_STALE_SNAPSHOT — the pre-activation probe
+    // alone is not a commit fence.
+    let calls = 0
+    const scripted: BatchStateProbe = {
+      // Two over-budget ops: op1 pre-op(0), post-exec(1), per-op barrier(2);
+      // op2 pre-op(3), post-exec(4), per-op barrier(5); fence(6); then the
+      // POST-ACTIVATION probe (7). flip_after = 7 passes everything through
+      // the fence and fails at post-activation.
+      stateUnchanged: () => calls++ < 7,
+    }
+    const dir = freshProject()
+    try {
+      writeBigFile(dir)
+      const base = join(dir, "ts-artifacts-postdrift")
+      const id = `postdrift-${Date.now().toString(36)}`
+      const ops: BatchOperation[] = [
+        { id: `${id}-1`, op: "read", params: { file: "big.txt", mode: "raw" } },
+        { id: `${id}-2`, op: "read", params: { file: "big.txt", mode: "raw" } },
+      ]
+      const ts = executeBatchFallback(ops, dir, { artifactBase: base, probe: scripted })
+      expect(ts.staleSnapshot).toBe(true)
+      for (const r of ts.responses) {
+        expect(r.ok).toBe(false)
+        expect(r.error?.code).toBe(E_STALE_SNAPSHOT)
+        expect(r.artifactRef).toBeUndefined()
+      }
+      // No artifact (created by this batch) remains.
+      const arts = join(base, "artifacts")
+      if (existsSync(arts)) {
+        const files = readdirSync(arts).filter((f) => f.includes(id))
+        expect(files).toEqual([])
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("TS all-or-nothing: post-activation failure converts every provisional response to an error", () => {
+    // P1-5: on ANY transaction failure, EVERY provisional op becomes a stable
+    // error and no success response references a rolled-back output. The
+    // deterministic failure is a post-activation drift (repo state changes
+    // during activation): both staged ops must roll back together — an
+    // all-or-nothing batch, not per-op publication.
+    let calls = 0
+    const scripted: BatchStateProbe = {
+      // Two over-budget ops: op1 pre-op(0), post-exec(1), per-op barrier(2);
+      // op2 pre-op(3), post-exec(4), per-op barrier(5); fence(6); then the
+      // POST-ACTIVATION probe (7). flip_after = 7 passes everything through
+      // the fence and fails at post-activation.
+      stateUnchanged: () => calls++ < 7,
+    }
+    const dir = freshProject()
+    try {
+      writeBigFile(dir)
+      const base = join(dir, "ts-artifacts-allornothing")
+      const id = `aon-${Date.now().toString(36)}`
+      const ops: BatchOperation[] = [
+        { id: `${id}-1`, op: "read", params: { file: "big.txt", mode: "raw" } },
+        { id: `${id}-2`, op: "read", params: { file: "big.txt", mode: "raw" } },
+      ]
+      const ts = executeBatchFallback(ops, dir, { artifactBase: base, probe: scripted })
+      expect(ts.staleSnapshot).toBe(true)
+      for (const r of ts.responses) {
+        expect(r.ok).toBe(false)
+        expect(r.error?.code).toBe(E_STALE_SNAPSHOT)
+        expect(r.artifactRef).toBeUndefined()
+      }
+      // No artifact created by this batch remains (all-or-nothing rollback).
+      const arts = join(base, "artifacts")
+      if (existsSync(arts)) {
+        const files = readdirSync(arts).filter((f) => f.includes(id))
+        expect(files).toEqual([])
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("TS cross-process contention: two workers race the same exact artifact path", async () => {
+    // Audit P2-4: real multi-thread contention on the SAME final path via
+    // worker_threads. Both workers run the TS fallback against the same
+    // artifact base with identical content; the no-clobber publish must let
+    // both succeed, produce one immutable artifact, and leave no temp files.
+    const { Worker } = await import("node:worker_threads")
+    const dir = freshProject()
+    try {
+      writeBigFile(dir)
+      const base = join(dir, "ts-artifacts-race")
+      const id = `race-${Date.now().toString(36)}`
+      const ops: BatchOperation[] = [{ id, op: "read", params: { file: "big.txt", mode: "raw" } }]
+      const workerSrc = `
+        const { parentPort, workerData } = require("node:worker_threads")
+        const { join } = require("node:path")
+        const { executeBatchFallback } = require(workerData.entry)
+        const ts = executeBatchFallback(workerData.ops, workerData.dir, { artifactBase: workerData.base })
+        const r = ts.responses[0]
+        parentPort.postMessage({
+          ok: r.ok,
+          code: r.error ? r.error.code : null,
+          artifactRef: r.result && typeof r.result === "object" && "artifactRef" in r.result ? (r.result as any).artifactRef : null,
+          contentHash: r.result && typeof r.result === "object" && "contentHash" in r.result ? (r.result as any).contentHash : null,
+        })
+      `
+      const entry = join(ROOT, "src/tools/fdx-batch-fallback.ts")
+      const runWorker = (): Promise<{ ok: boolean; code: string | null; artifactRef: string | null; contentHash: string | null }> =>
+        new Promise((resolve, reject) => {
+          const w = new Worker(workerSrc, {
+            eval: true,
+            workerData: { entry, ops, dir, base },
+          })
+          w.on("message", resolve)
+          w.on("error", reject)
+          w.on("exit", (code) => {
+            if (code !== 0) reject(new Error(`worker exited ${code}`))
+          })
+        })
+      const [r1, r2] = await Promise.all([runWorker(), runWorker()])
+      expect(r1.ok).toBe(true)
+      expect(r2.ok).toBe(true)
+      // Same content → same immutable artifact path (both reference it).
+      expect(r1.artifactRef).toBe(r2.artifactRef)
+      expect(r1.contentHash).toBe(r2.contentHash)
+      const ref = r1.artifactRef!
+      expect(existsSync(ref)).toBe(true)
+      const parsed = JSON.parse(readFileSync(ref, "utf-8")) as { lines: string[] }
+      expect(parsed.lines.length).toBeGreaterThan(400)
+      // No temp files remain.
+      const arts = join(base, "artifacts")
+      if (existsSync(arts)) {
+        const temps = readdirSync(arts).filter((f) => f.endsWith(".tmp"))
+        expect(temps).toEqual([])
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

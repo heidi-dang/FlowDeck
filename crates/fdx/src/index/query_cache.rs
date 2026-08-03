@@ -298,6 +298,46 @@ impl QueryCache {
         Ok(())
     }
 
+    /// Begin a transactional batch of cache writes. Entries are staged in
+    /// transaction-private temp files and become visible ONLY on [`commit`],
+    /// at which point all renames succeed (or are rolled back). LRU
+    /// maintenance runs once after a successful commit — never during
+    /// staging — so a failed transaction cannot evict live entries.
+    pub fn begin(&self) -> CacheTransaction<'_> {
+        CacheTransaction {
+            cache: self,
+            staged: Vec::new(),
+        }
+    }
+
+    /// Restore cache entries to a captured prior state (from
+    /// [`CacheTransaction::take_priors`]): write back the prior bytes
+    /// atomically, or remove the entry when no prior existed. Used by the
+    /// batch transaction to roll back committed entries after a failed
+    /// post-activation validation. Associated function (no self needed).
+    pub fn restore_priors(priors: &[(PathBuf, Option<Vec<u8>>)]) {
+        for (path, prior) in priors {
+            match prior {
+                Some(bytes) => atomic_write(path, bytes),
+                None => {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+        }
+    }
+
+    /// Read the raw bytes currently published at `key` WITHOUT touching mtime,
+    /// quarantine or LRU. Used by the transaction to capture prior state so a
+    /// commit failure can restore exactly what was there.
+    fn read_raw(&self, key: &str, negative: bool) -> Option<Vec<u8>> {
+        let path = if negative {
+            self.negative_dir().join(key)
+        } else {
+            self.query_dir().join(key)
+        };
+        std::fs::read(&path).ok()
+    }
+
     /// Evict least-recently-used entries from `dir` until both bounds hold.
     /// Best-effort. Applies to both the positive and negative cache dirs.
     /// Also sweeps abandoned temp files from interrupted writers.
@@ -359,6 +399,181 @@ impl QueryCache {
 
 /// Marker embedded in every temp file name (also used by the LRU sweep).
 const TMP_MARKER: &str = ".tmp-";
+
+/// One staged cache write inside a [`CacheTransaction`]: the new bytes live in
+/// a transaction-private temp file; the prior published bytes (if any) are
+/// captured so a partial commit can restore exactly what was there.
+struct StagedCacheEntry {
+    /// Final entry path (visible only after commit).
+    final_path: PathBuf,
+    /// Transaction-private temp holding the new bytes.
+    staged_path: PathBuf,
+    /// Prior published bytes captured before staging (None = no prior entry).
+    prior: Option<Vec<u8>>,
+    /// True once this entry was renamed into place during commit.
+    published: bool,
+}
+
+/// A transactional group of cache writes. Staging is invisible (private temp
+/// files, no LRU); `commit` renames every staged temp into its final entry
+/// path and only then runs LRU maintenance; `abort` deletes the staged temps,
+/// leaving prior published entries untouched.
+///
+/// Commit is all-or-nothing at the entry level: if any rename fails, every
+/// entry already published by this transaction is restored to its captured
+/// prior state (or removed if no prior existed).
+pub struct CacheTransaction<'a> {
+    cache: &'a QueryCache,
+    staged: Vec<StagedCacheEntry>,
+}
+
+impl CacheTransaction<'_> {
+    /// Stage a write for `key`. The bytes are written to a private temp file;
+    /// the existing published entry (if any) is captured for rollback. The
+    /// entry does NOT become visible and LRU is NOT touched here.
+    pub fn stage_write(&mut self, key: &str, negative: bool, bytes: &[u8]) -> Result<(), String> {
+        let dir = if negative {
+            self.cache.negative_dir()
+        } else {
+            self.cache.query_dir()
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create cache dir: {e}"))?;
+        // Unique private temp in the same directory (same filesystem for the
+        // final rename). The nonce makes it unguessable and exclusive.
+        let final_path = dir.join(key);
+        let mut attempts = 0;
+        let staged_path = loop {
+            if attempts >= 100 {
+                return Err("too many cache temp collisions".into());
+            }
+            let candidate = dir.join(format!(
+                "{key}{TMP_MARKER}{:x}-{attempts}",
+                fast_cache_nonce()
+            ));
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&candidate)
+            {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    file.write_all(bytes)
+                        .map_err(|e| format!("failed to stage cache entry: {e}"))?;
+                    file.sync_all()
+                        .map_err(|e| format!("failed to sync staged cache entry: {e}"))?;
+                    break candidate;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    attempts += 1;
+                    continue;
+                }
+                Err(e) => {
+                    return Err(format!("failed to create staged cache entry: {e}"));
+                }
+            }
+        };
+        let prior = self.cache.read_raw(key, negative);
+        self.staged.push(StagedCacheEntry {
+            final_path,
+            staged_path,
+            prior,
+            published: false,
+        });
+        Ok(())
+    }
+
+    /// Publish every staged entry atomically-ish: rename each temp into its
+    /// final path. If any rename fails, restore every already-published entry
+    /// to its captured prior state and return the error. LRU maintenance runs
+    /// once after all renames succeed.
+    /// Publish every staged entry atomically-ish: rename each temp into its
+    /// final path. If any rename fails, restore every already-published entry
+    /// to its captured prior state and return the error. LRU maintenance runs
+    /// once after all renames succeed. After a successful commit the prior
+    /// state remains available via [`take_priors`] so a caller performing
+    /// post-activation validation can restore replaced entries exactly.
+    pub fn commit(&mut self) -> Result<(), String> {
+        let mut first_error: Option<String> = None;
+        for entry in self.staged.iter_mut() {
+            match std::fs::rename(&entry.staged_path, &entry.final_path) {
+                Ok(()) => entry.published = true,
+                Err(e) => {
+                    first_error = Some(format!(
+                        "failed to publish cache entry {}: {e}",
+                        entry.final_path.display()
+                    ));
+                    break;
+                }
+            }
+        }
+        if let Some(err) = first_error {
+            // Roll back everything published so far in this transaction
+            // (restore prior bytes or remove the entry), and remove every
+            // staged temp — including the one whose rename failed — so no
+            // private file leaks.
+            self.rollback_published();
+            for entry in &self.staged {
+                let _ = std::fs::remove_file(&entry.staged_path);
+            }
+            return Err(err);
+        }
+        // LRU runs only after a successful commit.
+        self.cache.enforce_lru(&self.cache.query_dir());
+        self.cache.enforce_lru(&self.cache.negative_dir());
+        Ok(())
+    }
+
+    /// After a successful commit, return the captured prior state of every
+    /// entry so a caller performing post-activation validation can restore
+    /// replaced entries exactly (write back the prior bytes, or remove the
+    /// entry when no prior existed).
+    pub fn take_priors(&mut self) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+        self.staged
+            .iter()
+            .map(|e| (e.final_path.clone(), e.prior.clone()))
+            .collect()
+    }
+
+    /// Discard every staged entry WITHOUT publishing anything. Prior published
+    /// entries are untouched (they were never overwritten during staging).
+    pub fn abort(&mut self) {
+        for entry in &self.staged {
+            let _ = std::fs::remove_file(&entry.staged_path);
+        }
+        self.staged.clear();
+    }
+
+    /// Restore every entry this transaction already published (during a
+    /// failed commit) to its captured prior state: write back the prior bytes
+    /// or remove the entry when no prior existed.
+    fn rollback_published(&mut self) {
+        for entry in self.staged.iter_mut() {
+            if !entry.published {
+                continue;
+            }
+            match &entry.prior {
+                Some(prior) => {
+                    // Restore the exact prior bytes via an atomic sibling
+                    // write so readers never observe a partial restore.
+                    atomic_write(&entry.final_path, prior);
+                }
+                None => {
+                    let _ = std::fs::remove_file(&entry.final_path);
+                }
+            }
+            entry.published = false;
+        }
+    }
+}
+
+/// Cheap unpredictable nonce for transaction temp names.
+fn fast_cache_nonce() -> u64 {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    t ^ ((std::process::id() as u64) << 32)
+}
 
 /// Validate that `data` parses as JSON. Corrupt entries are quarantined:
 /// moved to `<namespace>/quarantine/<key>` so they are never served, never

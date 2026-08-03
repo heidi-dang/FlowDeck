@@ -913,63 +913,149 @@ fn execute_batch_with_probe(
     }
     let fence_failed = stale_snapshot || state_changed;
 
-    // Resolve outcomes into responses. On fence failure every pending
-    // activation is discarded (temps removed, nothing activated). On success
-    // pending activations are committed through a shared journal; if any
-    // activation fails, the journal rolls back every already-activated output
-    // so the batch never exposes a partial commit.
-    let mut responses = Vec::with_capacity(outcomes.len());
-    let mut journal = ActivationJournal::new();
-    let mut activation_failed = false;
+    // Resolve outcomes into responses with a true all-or-nothing transaction.
+    //
+    // Two-phase commit (P1-1, P1-2, P1-3, P1-4):
+    //   Phase A — activate every artifact (ownership-aware: only CREATED
+    //     artifacts are journaled for rollback; reused existing winners are
+    //     never deleted).
+    //   Phase B — stage and commit ALL cache writes through a CacheTransaction
+    //     (LRU runs only after a successful commit; prior entries are restored
+    //     on failure).
+    //   Phase C — POST-ACTIVATION state probe: the repository may have changed
+    //     during activation. If so, roll back every owned output and convert
+    //     every provisional response to E_STALE_SNAPSHOT.
+    //   Only when all three phases succeed are responses finalized as success.
+    //   Any failure converts EVERY provisional operation to a stable error —
+    //   no success response ever references a rolled-back output.
+    let mut pendings: Vec<PendingActivation> = Vec::new();
+    let mut final_responses: Vec<Option<OperationResponse>> = Vec::with_capacity(outcomes.len());
     for outcome in outcomes {
         match outcome {
-            OpOutcome::Final(resp) => responses.push(resp),
+            OpOutcome::Final(resp) => final_responses.push(Some(resp)),
             OpOutcome::Pending(pending) => {
                 let id = pending.id.clone();
                 if fence_failed {
-                    discard_pending(&pending);
-                    responses.push(pending_stale_response(&id));
-                    continue;
+                    pending.discard();
+                    final_responses.push(Some(pending_stale_response(&id)));
+                } else {
+                    final_responses.push(None);
+                    pendings.push(pending);
                 }
-                if activation_failed {
-                    // A previous activation failed and the journal was rolled
-                    // back; the whole batch is void — fail this op closed.
-                    discard_pending(&pending);
-                    responses.push(OperationResponse {
-                        id,
-                        ok: false,
-                        result: None,
-                        error: Some(serde_json::json!({
-                            "code": err::E_INTERNAL,
-                            "message": "batch activation failed; results not committed",
-                        })),
-                        truncated: false,
-                        artifact_ref: None,
-                    });
-                    continue;
+            }
+        }
+    }
+
+    if !fence_failed && !pendings.is_empty() {
+        let mut journal = ActivationJournal::new();
+        let mut txn_error: Option<String> = None;
+
+        // Phase A: activate every artifact first (no-clobber, ownership-aware).
+        for pending in pendings.iter_mut() {
+            match pending.activate_artifact(&mut journal) {
+                Ok(()) => {}
+                Err(e) => {
+                    txn_error = Some(e);
+                    break;
                 }
-                match activate_pending(pending, cache_ctx.as_ref().map(|c| &c.cache), &mut journal)
-                {
-                    Ok(resp) => responses.push(resp),
-                    Err(e) => {
-                        journal.rollback();
-                        activation_failed = true;
-                        responses.push(OperationResponse {
+            }
+        }
+
+        // Phase B: stage + commit all cache writes only after all artifacts
+        // can commit. Cache entries are invisible until the transaction
+        // commits; LRU runs only after success. The captured prior state is
+        // retained so a post-activation drift can restore replaced entries
+        // exactly (P1-4).
+        let mut cache_priors: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::new();
+        if txn_error.is_none() {
+            if let Some(cache) = cache_ctx.as_ref().map(|c| &c.cache) {
+                let mut tx = cache.begin();
+                for pending in pendings.iter() {
+                    if let Some((key, negative)) = &pending.cache_write {
+                        if let Err(e) = tx.stage_write(key, *negative, &pending.bytes) {
+                            txn_error = Some(e);
+                            break;
+                        }
+                    }
+                }
+                if txn_error.is_none() {
+                    if let Err(e) = tx.commit() {
+                        txn_error = Some(e);
+                    } else {
+                        cache_priors = tx.take_priors();
+                    }
+                } else {
+                    tx.abort();
+                }
+            }
+        }
+
+        // Phase C: POST-ACTIVATION state probe. The repository may have
+        // changed while artifacts/cache were being activated; every owned
+        // output must be rolled back if it did.
+        let mut post_activation_drift = false;
+        if txn_error.is_none() {
+            if let Some(p) = eff_probe {
+                if !p.state_unchanged() {
+                    state_changed = true;
+                    post_activation_drift = true;
+                }
+            }
+        }
+
+        // Roll back owned outputs on any failure: created artifacts (never
+        // reused-existing winners) and cache entries committed by THIS batch
+        // (restored to their exact prior state, or removed when no prior
+        // existed — never a destructive deletion of a pre-existing entry).
+        if txn_error.is_some() || post_activation_drift {
+            // Artifacts: remove only CREATED files (ownership-aware journal).
+            journal.rollback();
+            // Cache: restore exactly what was there before this batch staged
+            // its writes. Prior entries are preserved, not deleted.
+            QueryCache::restore_priors(&cache_priors);
+        }
+
+        // Finalize responses. On any failure every provisional op becomes a
+        // stable error; NO success response references a rolled-back output.
+        let failed = txn_error.is_some() || post_activation_drift;
+        let mut pending_idx = 0;
+        for slot in final_responses.iter_mut() {
+            if slot.is_some() {
+                continue;
+            }
+            let pending = &pendings[pending_idx];
+            pending_idx += 1;
+            let id = pending.id.clone();
+            if failed {
+                if let Some(e) = &txn_error {
+                    if post_activation_drift {
+                        *slot = Some(pending_stale_response(&id));
+                    } else {
+                        *slot = Some(OperationResponse {
                             id,
                             ok: false,
                             result: None,
                             error: Some(serde_json::json!({
                                 "code": err::E_INTERNAL,
-                                "message": format!("failed to activate batch output: {e}"),
+                                "message": format!("batch activation failed; results not committed: {e}"),
                             })),
                             truncated: false,
                             artifact_ref: None,
                         });
                     }
+                } else {
+                    *slot = Some(pending_stale_response(&id));
                 }
+            } else {
+                *slot = Some(pending.build_response());
             }
         }
     }
+
+    let responses: Vec<OperationResponse> = final_responses
+        .into_iter()
+        .map(|r| r.expect("every slot filled"))
+        .collect();
 
     Ok(BatchResponse {
         version: 1,
@@ -1251,8 +1337,8 @@ enum OpOutcome {
 
 /// Provisional batch output staged by one operation, awaiting the final state
 /// fence before activation. Holding this struct is the ONLY state: no cache
-/// entry is written and no artifact is renamed until [`activate_pending`]
-/// runs (or [`discard_pending`] removes the temp on stale detection).
+/// entry is written and no artifact is renamed until the batch's two-phase
+/// commit runs (or `discard` removes the temp on stale detection).
 struct PendingActivation {
     id: String,
     bytes: Vec<u8>,
@@ -1262,6 +1348,8 @@ struct PendingActivation {
     cache_write: Option<(String, bool)>,
     /// Provisional artifact temp + content hash (None when in budget).
     artifact: Option<PreparedArtifact>,
+    /// Final artifact path once activated (set during commit).
+    artifact_ref: Option<String>,
 }
 
 /// Prepare provisional output data for a successful op without activating it.
@@ -1305,89 +1393,74 @@ fn prepare_pending(
             limit,
             cache_write,
             artifact,
+            artifact_ref: None,
         },
         used,
     ))
 }
 
-/// Activate a pending operation output: write the cache entry (positive or
-/// negative namespace) and atomically rename the provisional artifact. Called
-/// only after the batch's final state fence passed. On failure the activation
-/// journal is rolled back so no partial output remains visible.
-fn activate_pending(
-    pending: PendingActivation,
-    cache: Option<&QueryCache>,
-    journal: &mut ActivationJournal,
-) -> Result<OperationResponse, String> {
-    // Activate the cache entry first; if artifact activation then fails the
-    // journal rollback removes the cache entry (no partial commit).
-    if let (Some((key, negative)), Some(cache)) = (pending.cache_write.as_ref(), cache) {
-        if *negative {
-            cache.put_negative(key, &pending.bytes);
-            journal
-                .cache_entries
-                .push((cache.negative_dir().join(key), true));
-        } else {
-            cache.put(key, &pending.bytes);
-            journal
-                .cache_entries
-                .push((cache.query_dir().join(key), false));
+impl PendingActivation {
+    /// Discard the provisional artifact temp without activating anything.
+    /// Called when the batch's final state fence fails (drift detected) or on
+    /// any commit failure before activation.
+    fn discard(&self) {
+        if let Some(prepared) = &self.artifact {
+            let _ = prepared.discard();
         }
     }
-    // Activate the artifact (no-clobber, race-safe). If it fails, roll back
-    // the cache entry staged above (and anything earlier in the batch).
-    let artifact_ref = match pending.artifact {
-        Some(prepared) => {
-            let res = prepared.activate(&pending.bytes);
-            match res {
-                Ok(path) => {
-                    journal.artifacts.push(path.clone());
-                    Some(path)
+
+    /// Phase A of the two-phase commit: activate the artifact with
+    /// no-clobber, ownership-aware semantics. Records ONLY created artifacts
+    /// in the journal — reused-existing winners are never rolled back (they
+    /// are owned by an earlier writer or a concurrent batch).
+    fn activate_artifact(&mut self, journal: &mut ActivationJournal) -> Result<(), String> {
+        if let Some(prepared) = &self.artifact {
+            let outcome = prepared.activate(&self.bytes)?;
+            match outcome {
+                ActivationOutcome::Created(path) => {
+                    journal.record_created(PathBuf::from(&path));
+                    self.artifact_ref = Some(path);
                 }
-                Err(e) => {
-                    journal.rollback();
-                    return Err(e);
+                ActivationOutcome::ReusedExisting(path) => {
+                    // Not owned by this transaction — never journaled.
+                    self.artifact_ref = Some(path);
                 }
             }
         }
-        None => None,
-    };
-
-    if pending.used <= pending.limit {
-        Ok(OperationResponse {
-            id: pending.id,
-            ok: true,
-            result: serde_json::from_slice(&pending.bytes).ok(),
-            error: None,
-            truncated: false,
-            artifact_ref: None,
-        })
-    } else {
-        let content_hash = sha256_hex(&pending.bytes);
-        let artifact_ref = artifact_ref.unwrap_or_default();
-        Ok(OperationResponse {
-            id: pending.id,
-            ok: true,
-            result: Some(serde_json::json!({
-                "truncated": true,
-                "artifactRef": artifact_ref,
-                "byteCount": pending.used,
-                "limitBytes": pending.limit,
-                "contentHash": content_hash,
-            })),
-            error: None,
-            truncated: true,
-            artifact_ref: Some(artifact_ref),
-        })
+        Ok(())
     }
-}
 
-/// Discard a pending activation without activating anything: removes the
-/// provisional artifact temp file (cache writes were never performed). Called
-/// when the batch's final state fence fails (drift detected).
-fn discard_pending(pending: &PendingActivation) {
-    if let Some(prepared) = &pending.artifact {
-        let _ = prepared.discard();
+    /// Build the final success response. Called ONLY after the entire
+    /// transaction committed (artifacts activated, cache committed, no
+    /// post-activation drift). Never called for a rolled-back transaction.
+    fn build_response(&self) -> OperationResponse {
+        if self.used <= self.limit {
+            OperationResponse {
+                id: self.id.clone(),
+                ok: true,
+                result: serde_json::from_slice(&self.bytes).ok(),
+                error: None,
+                truncated: false,
+                artifact_ref: None,
+            }
+        } else {
+            let content_hash = sha256_hex(&self.bytes);
+            let artifact_ref = self.artifact_ref.clone().unwrap_or_default();
+            OperationResponse {
+                id: self.id.clone(),
+                ok: true,
+                result: Some(serde_json::json!({
+                    "truncated": true,
+                    "artifactRef": artifact_ref,
+                    "byteCount": self.used,
+                    "limitBytes": self.limit,
+                    "contentHash": content_hash,
+                })),
+                error: None,
+                truncated: true,
+                artifact_ref: Some(artifact_ref),
+            }
+        }
     }
 }
 
@@ -1407,28 +1480,31 @@ fn pending_stale_response(id: &str) -> OperationResponse {
     }
 }
 
-/// Journal of outputs activated by this batch. If a later activation fails or
-/// the final state fence fails, every activated output is rolled back so no
-/// partial batch result remains visible.
+/// Ownership-aware activation journal: records ONLY artifacts this batch
+/// CREATED. Reused-existing winners (identical content already published) and
+/// pre-existing artifacts are never journaled, so a rollback can never delete
+/// a file owned by another operation, a concurrent batch, or a previous run.
 struct ActivationJournal {
-    cache_entries: Vec<(std::path::PathBuf, bool)>,
-    artifacts: Vec<String>,
+    created_artifacts: Vec<PathBuf>,
 }
 
 impl ActivationJournal {
     fn new() -> Self {
         Self {
-            cache_entries: Vec::new(),
-            artifacts: Vec::new(),
+            created_artifacts: Vec::new(),
         }
     }
 
-    /// Remove every cache entry and artifact activated by this batch so far.
+    /// Record an artifact this batch created (owns). Never call this for a
+    /// reused-existing winner.
+    fn record_created(&mut self, path: PathBuf) {
+        self.created_artifacts.push(path);
+    }
+
+    /// Remove every artifact THIS batch created. Reused-existing winners are
+    /// untouched (they are not owned by this batch).
     fn rollback(&self) {
-        for (path, _negative) in &self.cache_entries {
-            let _ = std::fs::remove_file(path);
-        }
-        for artifact in &self.artifacts {
+        for artifact in &self.created_artifacts {
             let _ = std::fs::remove_file(artifact);
         }
     }
@@ -1474,11 +1550,20 @@ impl PreparedArtifact {
     /// is read and verified (SHA-256 AND byte size); it is reused only when
     /// both match. Conflicting content or unexpected errors fail closed. The
     /// losing temp file is always removed. The parent directory is fsynced
-    /// after activation where supported (rename durability).
-    fn activate(&self, bytes: &[u8]) -> Result<String, String> {
+    /// after activation where supported (rename durability); a fsync failure
+    /// is propagated (the publish is not reported durable).
+    ///
+    /// Returns the ownership outcome: `Created` when THIS call published the
+    /// file (the caller owns it and may roll it back), or `ReusedExisting`
+    /// when the path already held identical content (the caller does NOT own
+    /// it and must never delete it).
+    fn activate(&self, bytes: &[u8]) -> Result<ActivationOutcome, String> {
         if self.temp_path == self.final_path {
-            // Reuse case: the correct artifact is already published.
-            return Ok(self.final_path.to_string_lossy().into_owned());
+            // Reuse case: the correct artifact was already published by an
+            // earlier writer (or a previous run). We do not own it.
+            return Ok(ActivationOutcome::ReusedExisting(
+                self.final_path.to_string_lossy().into_owned(),
+            ));
         }
         // No-clobber publish: hard-link the temp to the final name. Fails with
         // AlreadyExists if a competing writer already activated the path.
@@ -1486,8 +1571,15 @@ impl PreparedArtifact {
             Ok(()) => {
                 // We won the race: remove the temp name, keep the final name.
                 let _ = self.discard();
-                sync_parent_dir(&self.final_path);
-                Ok(self.final_path.to_string_lossy().into_owned())
+                // Directory durability: propagate fsync failure so activation
+                // is not reported durable when it was not.
+                if let Some(parent) = self.final_path.parent() {
+                    sync_parent_dir(parent)
+                        .map_err(|e| format!("failed to fsync artifact dir: {e}"))?;
+                }
+                Ok(ActivationOutcome::Created(
+                    self.final_path.to_string_lossy().into_owned(),
+                ))
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 // A competing writer activated the final path first. Read and
@@ -1499,8 +1591,11 @@ impl PreparedArtifact {
                         if sha256_hex(&existing) == self.content_hash
                             && existing.len() == bytes.len() =>
                     {
-                        // Identical content: safely reuse the winner.
-                        Ok(self.final_path.to_string_lossy().into_owned())
+                        // Identical content: reuse the winner. We do not own
+                        // it, so it is never journaled for rollback.
+                        Ok(ActivationOutcome::ReusedExisting(
+                            self.final_path.to_string_lossy().into_owned(),
+                        ))
                     }
                     Ok(_) => Err(format!(
                         "artifact path already exists with different content: {}",
@@ -1519,22 +1614,33 @@ impl PreparedArtifact {
     }
 }
 
-/// Best-effort directory fsync after artifact activation: on filesystems
-/// where rename/link durability requires syncing the parent directory, a
-/// successful publish must survive crash/power loss. Opening a directory for
-/// fsync is supported on Unix (O_RDONLY on a directory); on Windows it is
-/// skipped (not supported by the std File API).
+/// Ownership outcome of an artifact activation. `Created` means this call
+/// published the file and the transaction owns it (rollback-eligible).
+/// `ReusedExisting` means the path already held identical content (a
+/// pre-existing artifact or a concurrent winner) — the transaction does NOT
+/// own it and rollback must never remove it.
+enum ActivationOutcome {
+    Created(String),
+    ReusedExisting(String),
+}
+
+/// Directory fsync after artifact activation: on filesystems where
+/// rename/link durability requires syncing the parent directory, a successful
+/// publish must survive crash/power loss. Returns `io::Result` so a fsync
+/// failure propagates — activation is not reported durable when the directory
+/// could not be synced. Opening a directory for fsync is supported on Unix
+/// (O_RDONLY on a directory); on Windows it is skipped (not supported by the
+/// std File API).
 #[cfg(unix)]
-fn sync_parent_dir(path: &Path) {
-    if let Some(parent) = path.parent() {
-        if let Ok(dir) = std::fs::File::open(parent) {
-            let _ = dir.sync_all();
-        }
-    }
+fn sync_parent_dir(parent: &Path) -> std::io::Result<()> {
+    let dir = std::fs::File::open(parent)?;
+    dir.sync_all()
 }
 
 #[cfg(not(unix))]
-fn sync_parent_dir(_path: &Path) {}
+fn sync_parent_dir(_parent: &Path) -> std::io::Result<()> {
+    Ok(())
+}
 
 /// Prepare a provisional artifact: write `bytes` to a unique sibling temp file
 /// (same directory, `create_new` exclusive) and fsync it. If `final_path`
@@ -1633,7 +1739,9 @@ fn prepare_artifact(final_path: &Path, bytes: &[u8]) -> Result<PreparedArtifact,
 #[cfg(test)]
 fn atomic_write_artifact(final_path: &Path, bytes: &[u8]) -> Result<String, String> {
     let prepared = prepare_artifact(final_path, bytes)?;
-    prepared.activate(bytes)
+    match prepared.activate(bytes)? {
+        ActivationOutcome::Created(path) | ActivationOutcome::ReusedExisting(path) => Ok(path),
+    }
 }
 
 /// A sibling temp path in the same directory as `final_path` (same filesystem
@@ -3402,7 +3510,182 @@ mod tests {
         }
     }
 
-    // ─── Concurrent artifact publication (P1 #3) ────────────────────────────
+    #[test]
+    fn post_activation_drift_rolls_back_all_owned_outputs() {
+        // Audit P1-1 acceptance #1: repository state changing AFTER the final
+        // fence but DURING activation must roll back every owned output and
+        // convert the response to E_STALE_SNAPSHOT — the pre-activation probe
+        // alone is not a final commit fence.
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        let ops = vec![op(
+            "r1",
+            "read",
+            serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+        )];
+        // One cacheable op: pre-op (0), read-gate (1), post-exec (2), per-op
+        // barrier (3), fence (4), then POST-ACTIVATION (5). flip_after = 5
+        // passes everything up to and including the fence, then fails the
+        // post-activation probe: the cache was committed, the response was
+        // provisional — it must be rolled back to E_STALE_SNAPSHOT and no
+        // cache entry may remain.
+        let probe = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: 5,
+        };
+        let resp = execute_batch_with_probe(&ops, Some(cwd), None, false, Some(&probe)).unwrap();
+        assert!(resp.stale_snapshot, "post-activation drift must flag stale");
+        assert!(
+            !resp.responses[0].ok,
+            "post-activation drift must not accept the provisional success"
+        );
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_STALE_SNAPSHOT
+        );
+        assert_eq!(
+            cache_entry_count(state.path()),
+            0,
+            "no cache entry may remain after post-activation drift"
+        );
+        assert_eq!(
+            cache_entry_count_in(state.path(), crate::index::query_cache::NEGATIVE_CACHE_DIR),
+            0,
+            "no negative cache entry may remain after post-activation drift"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn real_negative_cache_candidate_is_invalidated_by_post_activation_drift() {
+        // Audit P2-3: a REAL negative-cache candidate (definitive-empty grep)
+        // staged before the state changes must be rolled back when drift is
+        // detected at the post-activation probe — the negative cache must not
+        // retain a stale empty result.
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        // grep with a pattern that matches nothing → definitive empty →
+        // negative-cache eligible.
+        let ops = vec![op(
+            "g1",
+            "grep",
+            serde_json::json!({ "pattern": "zzz-no-match", "paths": ["."] }),
+        )];
+        // Grep op (negative-eligible): pre-op (0), cache read gate (1),
+        // post-exec (2), per-op barrier (3), fence (4), post-activation (5).
+        let probe = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: 5,
+        };
+        let resp = execute_batch_with_probe(&ops, Some(cwd), None, false, Some(&probe)).unwrap();
+        assert!(resp.stale_snapshot);
+        assert!(!resp.responses[0].ok);
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_STALE_SNAPSHOT
+        );
+        assert_eq!(
+            cache_entry_count_in(state.path(), crate::index::query_cache::NEGATIVE_CACHE_DIR),
+            0,
+            "the staged negative entry must be rolled back on drift"
+        );
+        assert_eq!(
+            cache_entry_count(state.path()),
+            0,
+            "no positive entry either"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn pre_existing_artifact_survives_rollback_of_unrelated_created_artifact() {
+        // Audit P1-3 acceptance #3: a pre-existing identical artifact that a
+        // batch REUSES must never be deleted by that batch's rollback — the
+        // ownership-aware journal removes only files THIS batch created.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let content = serde_json::to_vec(&serde_json::json!({ "lines": ["shared"] })).unwrap();
+        let hash = sha256_hex(&content);
+        let final_path = dir.join(artifact_file_name("reuse-op", &hash));
+
+        // Pre-existing artifact published by an EARLIER writer.
+        atomic_write_artifact(&final_path, &content).unwrap();
+        assert!(final_path.exists());
+        let mtime = std::fs::metadata(&final_path).unwrap().modified().unwrap();
+
+        // A batch reuses it (ReusedExisting) and ALSO creates another artifact
+        // (Created), then rolls back: only the created one is removed.
+        let mut journal = ActivationJournal::new();
+
+        // Pending 1: reuses the pre-existing artifact (temp == final).
+        let reused = PreparedArtifact {
+            temp_path: final_path.clone(),
+            final_path: final_path.clone(),
+            content_hash: hash.clone(),
+        };
+        match reused.activate(&content).unwrap() {
+            ActivationOutcome::ReusedExisting(_) => {}
+            ActivationOutcome::Created(_) => panic!("reuse must be detected as ReusedExisting"),
+        }
+
+        // Pending 2: creates a NEW artifact (different content).
+        let other_content = serde_json::to_vec(&serde_json::json!({ "lines": ["other"] })).unwrap();
+        let other_hash = sha256_hex(&other_content);
+        let other_final = dir.join(artifact_file_name("other-op", &other_hash));
+        let other_prepared = prepare_artifact(&other_final, &other_content).unwrap();
+        match other_prepared.activate(&other_content).unwrap() {
+            ActivationOutcome::Created(path) => {
+                journal.record_created(PathBuf::from(&path));
+            }
+            ActivationOutcome::ReusedExisting(_) => panic!("other artifact must be created"),
+        }
+        assert!(other_final.exists());
+
+        // Rollback: the created artifact is removed; the reused pre-existing
+        // artifact survives untouched.
+        journal.rollback();
+        assert!(
+            final_path.exists(),
+            "reused pre-existing artifact must survive rollback"
+        );
+        assert_eq!(
+            std::fs::metadata(&final_path).unwrap().modified().unwrap(),
+            mtime,
+            "the pre-existing artifact is byte-identical and untouched"
+        );
+        assert!(
+            !other_final.exists(),
+            "the created artifact is removed by rollback"
+        );
+    }
 
     #[test]
     fn concurrent_artifact_writes_same_content_succeed() {
@@ -3558,140 +3841,179 @@ mod tests {
 
     #[test]
     fn failed_artifact_activation_leaves_no_cache_side_effect() {
-        // The audit's partial-commit finding: if artifact activation fails
-        // after the cache entry was staged, the cache entry must be rolled
-        // back — an op must never return an error while its cache write
-        // remains visible.
+        // Audit P1-2/P2-2: an op whose artifact activation fails must not
+        // leave a visible cache entry, and its response must be an error —
+        // never a success referencing a rolled-back output. Uses a REAL cache
+        // context (git repo) so the transaction stages and must roll back an
+        // actual positive cache entry.
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
         let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
 
-        // Build a real cache context so the pending activation can stage a
-        // cache write. We exercise activate_pending directly with a
-        // PreparedArtifact whose final path is a DIRECTORY: prepare_artifact
-        // fails at read time (EISDIR), so we simulate the post-cache-write
-        // activation failure by crafting the artifact manually.
-        let content = b"{\"payload\":\"x\"}".to_vec();
-        let content_hash = sha256_hex(&content);
-        let dir = tmp.path().join("artifacts");
-        std::fs::create_dir_all(&dir).unwrap();
-        // temp holds the payload; final is a directory → hard_link fails.
-        let temp_path = dir.join(".failing-op.tmp");
-        std::fs::write(&temp_path, &content).unwrap();
-        let final_path = dir.join(artifact_file_name("failing-op", &content_hash));
-        std::fs::create_dir_all(&final_path).unwrap();
+        let big = "x".repeat(300 * 1024);
+        std::fs::write(tmp.path().join("big.txt"), &big).unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
 
-        let failing_artifact = PreparedArtifact {
-            temp_path: temp_path.clone(),
-            final_path: final_path.clone(),
-            content_hash: content_hash.clone(),
+        // Force the artifact activation to FAIL by pre-creating a DIRECTORY at
+        // the exact content-addressed final path (hard_link into a directory
+        // fails). The content hash is deterministic from the serialized read
+        // result, which we compute by first running once to learn the path,
+        // then blocking it and re-running.
+        let ops = || {
+            vec![op(
+                "r1",
+                "read",
+                serde_json::json!({ "file": "big.txt", "mode": "raw" }),
+            )]
         };
+        // Run once to learn the artifact path (and warm the cache key).
+        let first = execute_batch(&ops(), Some(cwd), None, false).unwrap();
+        assert!(first.responses[0].ok);
+        let marker = first.responses[0].result.as_ref().unwrap();
+        let artifact_ref = marker["artifactRef"].as_str().unwrap().to_string();
+        let artifact_path = std::path::PathBuf::from(&artifact_ref);
+        // Remove the artifact and put a DIRECTORY in its place so the next
+        // batch's hard_link fails.
+        let _ = std::fs::remove_file(&artifact_path);
+        std::fs::create_dir_all(&artifact_path).unwrap();
 
-        let pending = PendingActivation {
-            id: "failing-op".into(),
-            bytes: content.clone(),
-            used: content.len(),
-            limit: content.len() - 1, // force the artifact path
-            cache_write: Some(("some-key".into(), false)),
-            artifact: Some(failing_artifact),
-        };
+        let resp = execute_batch(&ops(), Some(cwd), None, false).unwrap();
+        assert!(
+            !resp.responses[0].ok,
+            "artifact activation failure must fail the op closed"
+        );
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_INTERNAL
+        );
+        // The failed transaction must not have staged a cache entry that
+        // stays visible. The cache key is content-addressed per op+state; we
+        // assert the count did not grow beyond the first run's entry.
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "failed activation must not leave a NEW cache entry"
+        );
 
-        // No cache context → cache write is skipped; the artifact activation
-        // must still fail closed and the temp must be cleaned up.
-        let mut journal = ActivationJournal::new();
-        let res = activate_pending(pending, None, &mut journal);
-        assert!(
-            res.is_err(),
-            "artifact activation into a directory fails closed"
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn cache_transaction_restores_replaced_entries_and_preserves_lru() {
+        // Audit P1-4/P2-2: a cache entry that existed BEFORE a transaction
+        // must survive rollback exactly (restore, not delete), LRU state must
+        // not change during staging, and a replacement is only visible after
+        // commit.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+
+        // Prior entry exists (published before any transaction).
+        cache.put("key-a", br#"{"k":"prior-bytes"}"#);
+        assert!(cache.get("key-a").is_some());
+
+        // Stage a replacement WITHOUT committing: the prior entry must still
+        // be what readers see (staging is invisible, LRU untouched).
+        {
+            let mut tx = cache.begin();
+            tx.stage_write("key-a", false, br#"{"k":"replacement"}"#)
+                .unwrap();
+            assert_eq!(
+                cache.get("key-a").as_deref(),
+                Some(br#"{"k":"prior-bytes"}"#.as_slice()),
+                "staged writes are invisible until commit"
+            );
+            // Abort: staged temp is removed, prior entry untouched.
+            tx.abort();
+        }
+        assert_eq!(
+            cache.get("key-a").as_deref(),
+            Some(br#"{"k":"prior-bytes"}"#.as_slice()),
+            "abort leaves the prior entry intact"
         );
-        assert!(
-            !temp_path.exists(),
-            "the losing temp file must be removed on activation failure"
+
+        // Commit a replacement, then restore the prior from take_priors:
+        // the exact prior bytes come back.
+        {
+            let mut tx = cache.begin();
+            tx.stage_write("key-a", false, br#"{"k":"replacement"}"#)
+                .unwrap();
+            tx.commit().unwrap();
+            assert_eq!(
+                cache.get("key-a").as_deref(),
+                Some(br#"{"k":"replacement"}"#.as_slice()),
+                "commit makes the replacement visible"
+            );
+            let priors = tx.take_priors();
+            assert_eq!(priors.len(), 1);
+            QueryCache::restore_priors(&priors);
+        }
+        assert_eq!(
+            cache.get("key-a").as_deref(),
+            Some(br#"{"k":"prior-bytes"}"#.as_slice()),
+            "restore returns the exact prior bytes"
         );
+
+        // A key with NO prior: commit then restore must REMOVE it.
+        {
+            let mut tx = cache.begin();
+            tx.stage_write("key-new", false, br#"{"k":"fresh"}"#)
+                .unwrap();
+            tx.commit().unwrap();
+            assert!(cache.get("key-new").is_some());
+            let priors = tx.take_priors();
+            QueryCache::restore_priors(&priors);
+        }
         assert!(
-            journal.artifacts.is_empty(),
-            "a failed activation is never journaled"
+            cache.get("key-new").is_none(),
+            "restore removes entries that had no prior"
         );
     }
 
     #[test]
-    fn activation_failure_rolls_back_prior_batch_outputs() {
-        // Journal rollback: if a LATER op's activation fails, every output
-        // activated earlier in the same batch is removed — the batch never
-        // exposes a partial commit. We simulate by staging two pending
-        // activations: the first activates cleanly (cache entry journaled),
-        // the second fails artifact activation; the journal must roll back the
-        // first op's cache entry.
+    fn cache_transaction_commit_failure_restores_partial_publishes() {
+        // Audit P1-4: if a commit fails partway (a rename error), every entry
+        // already published by that transaction is restored to its prior
+        // state — no partial cache commit survives.
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join("state");
-        std::fs::create_dir_all(&dir).unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put("key-1", br#"{"k":"prior-1"}"#);
 
-        // A minimal QueryCache over the temp state dir.
-        let cache = QueryCache::new(&dir);
+        let mut tx = cache.begin();
+        tx.stage_write("key-1", false, br#"{"k":"new-1"}"#).unwrap();
+        // Force the second stage's commit to fail by replacing its final path
+        // with a DIRECTORY after staging (rename onto a non-empty dir fails).
+        tx.stage_write("key-2", false, br#"{"k":"new-2"}"#).unwrap();
+        // key-2's final path is currently a temp; commit renames key-1 first
+        // (publishes), then key-2. To force failure deterministically we make
+        // key-2's FINAL path a non-empty directory so the rename fails.
+        let final2 = cache.query_dir().join("key-2");
+        std::fs::create_dir_all(&final2).unwrap();
+        std::fs::write(final2.join("blocker"), b"x").unwrap();
 
-        let content = b"{\"a\":1}".to_vec();
-        let hash = sha256_hex(&content);
-
-        // Pending 1: activates cleanly (cache entry + artifact).
-        let ok_artifact_dir = tmp.path().join("artifacts-ok");
-        std::fs::create_dir_all(&ok_artifact_dir).unwrap();
-        let ok_temp = ok_artifact_dir.join(".ok.tmp");
-        std::fs::write(&ok_temp, &content).unwrap();
-        let ok_final = ok_artifact_dir.join(artifact_file_name("ok-op", &hash));
-        let pending1 = PendingActivation {
-            id: "ok-op".into(),
-            bytes: content.clone(),
-            used: content.len(),
-            limit: content.len() - 1,
-            cache_write: Some(("key-ok".into(), false)),
-            artifact: Some(PreparedArtifact {
-                temp_path: ok_temp.clone(),
-                final_path: ok_final.clone(),
-                content_hash: hash.clone(),
-            }),
-        };
-
-        // Pending 2: artifact activation fails (final path is a directory).
-        let fail_dir = tmp.path().join("artifacts-fail");
-        std::fs::create_dir_all(&fail_dir).unwrap();
-        let fail_temp = fail_dir.join(".fail.tmp");
-        std::fs::write(&fail_temp, &content).unwrap();
-        let fail_final = fail_dir.join(artifact_file_name("fail-op", &hash));
-        std::fs::create_dir_all(&fail_final).unwrap();
-        let pending2 = PendingActivation {
-            id: "fail-op".into(),
-            bytes: content.clone(),
-            used: content.len(),
-            limit: content.len() - 1,
-            cache_write: Some(("key-fail".into(), false)),
-            artifact: Some(PreparedArtifact {
-                temp_path: fail_temp.clone(),
-                final_path: fail_final.clone(),
-                content_hash: hash.clone(),
-            }),
-        };
-
-        // Activate pending1 through the real cache (simulating the batch
-        // loop's cache borrow).
-        let mut journal = ActivationJournal::new();
-        let r1 = activate_pending(pending1, Some(&cache), &mut journal);
-        assert!(r1.is_ok(), "first op activates cleanly");
-        assert!(
-            cache.get("key-ok").is_some(),
-            "first op's cache entry is visible"
+        let res = tx.commit();
+        assert!(res.is_err(), "commit fails on the blocked entry");
+        // key-1 (published before the failure) must be restored to prior-1.
+        assert_eq!(
+            cache.get("key-1").as_deref(),
+            Some(br#"{"k":"prior-1"}"#.as_slice()),
+            "partially-published entry restored to its prior state"
         );
-        assert!(ok_final.exists(), "first op's artifact is published");
-
-        // Activate pending2 — fails; journal rolls back pending1's outputs.
-        let r2 = activate_pending(pending2, Some(&cache), &mut journal);
-        assert!(r2.is_err(), "second op's activation fails");
-        // The rollback happens in the batch loop; here we verify the journal
-        // can remove what was activated. Simulate the loop's rollback.
-        journal.rollback();
-        assert!(
-            cache.get("key-ok").is_none(),
-            "rolled-back cache entry is gone"
-        );
-        assert!(!ok_final.exists(), "rolled-back artifact is gone");
-        assert!(!fail_temp.exists(), "the failed op's temp is cleaned up");
+        // No staged temp files remain.
+        let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
+            .map(|e| {
+                e.flatten()
+                    .filter(|f| f.file_name().to_string_lossy().contains(".tmp-"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(leftovers.is_empty(), "no staged temps leak: {leftovers:?}");
     }
 
     // ─── Audit P1-2 closure: deterministic no-clobber race ──────────────────
@@ -3723,7 +4045,9 @@ mod tests {
                 std::thread::spawn(move || {
                     let prepared = prepare_artifact(&fp, &bytes).unwrap();
                     barrier.wait();
-                    prepared.activate(&bytes)
+                    prepared.activate(&bytes).map(|o| match o {
+                        ActivationOutcome::Created(p) | ActivationOutcome::ReusedExisting(p) => p,
+                    })
                 })
             })
             .collect();
@@ -3790,11 +4114,17 @@ mod tests {
 
         let wres = winner.join().unwrap();
         let lres = loser.join().unwrap();
-        // Exactly one ordering is possible: the winner's path holds the
-        // winner content. The loser either wins the race (its content is at
-        // the path — but then it's the "winner" here) or fails closed. The
-        // invariant: the final file is one of the two COMPLETE payloads, never
-        // a mix, never partial, and the path holds whatever won.
+        // Ownership outcomes (P2-5): at most one writer CREATES the file; the
+        // other either fails closed (conflict) or reuses the winner — it must
+        // NEVER report a path it did not verify.
+        let winner_created = matches!(wres, Ok(ActivationOutcome::Created(_)));
+        let loser_created = matches!(lres, Ok(ActivationOutcome::Created(_)));
+        assert!(
+            winner_created != loser_created || (!winner_created && !loser_created),
+            "exactly one conflicting writer may report Created (or both reused)"
+        );
+        // A loser that succeeded must have REUSED the winner (identical
+        // content) — it must never have clobbered it.
         let on_disk = std::fs::read(&final_path).unwrap();
         assert!(
             on_disk == winner_bytes || on_disk == loser_bytes,
@@ -3802,6 +4132,20 @@ mod tests {
         );
         serde_json::from_slice::<serde_json::Value>(&on_disk)
             .expect("the final artifact parses as complete JSON");
-        let _ = (wres, lres, loser_hash);
+        // The path referenced by any successful outcome must still exist and
+        // match that outcome's content (no dangling/rolled-back reference).
+        for res in [wres, lres] {
+            let Ok(outcome) = res else {
+                continue;
+            };
+            let path = match outcome {
+                ActivationOutcome::Created(p) | ActivationOutcome::ReusedExisting(p) => p,
+            };
+            assert!(
+                std::path::Path::new(&path).exists(),
+                "a successful activation must reference an existing file"
+            );
+        }
+        let _ = loser_hash;
     }
 }

@@ -986,8 +986,19 @@ interface ProvisionalArtifact {
   /** Remove the provisional temp file (no-op for the reuse marker). */
   discard(): void
 
-  /** Atomically activate: rename temp → final, race-safe, verified. */
-  activate(bytes: Buffer, contentHash: string): string
+  /**
+   * Atomically activate with no-clobber semantics. Returns an ownership
+   * outcome: `created` when THIS call published the file (the transaction
+   * owns it and may roll it back), or `reused-existing` when the path already
+   * held identical content (the transaction does NOT own it).
+   */
+  activate(bytes: Buffer, contentHash: string): ArtifactActivation
+}
+
+/** Ownership outcome of an artifact activation (P1-3, TS mirror). */
+interface ArtifactActivation {
+  kind: "created" | "reused-existing"
+  path: string
 }
 
 /**
@@ -1012,7 +1023,7 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
         contentHash,
         discard() {},
         activate() {
-          return finalPath
+          return { kind: "reused-existing", path: finalPath }
         },
       }
     }
@@ -1055,7 +1066,11 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
           }
         },
         activate(targetBytes, targetHash) {
-          if (tempPath === finalPath) return finalPath
+          if (tempPath === finalPath) {
+            // Reuse case: the correct artifact was already published by an
+            // earlier writer. This transaction does NOT own it.
+            return { kind: "reused-existing", path: finalPath }
+          }
           // No-clobber publish: link the fully-written+fsynced temp into the
           // final name, then remove the temp name. linkSync fails with EEXIST
           // when a competing writer already activated the final path — unlike
@@ -1073,7 +1088,7 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
             } catch {
               // directory fsync not supported on this platform — best effort
             }
-            return finalPath
+            return { kind: "created", path: finalPath }
           } catch (linkErr) {
             if (linkErr instanceof Error && (linkErr as NodeJS.ErrnoException).code === "EEXIST") {
               // A competing winner activated the final path first. Read and
@@ -1081,13 +1096,14 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
               try {
                 const existing = readFileSync(finalPath)
                 if (sha256Hex(existing) === targetHash && existing.length === targetBytes.length) {
-                  // Identical content: safely reuse the winner.
+                  // Identical content: safely reuse the winner. We do not own
+                  // it, so it is never journaled for rollback.
                   try {
                     unlinkSync(tempPath)
                   } catch {
                     // temp already gone
                   }
-                  return finalPath
+                  return { kind: "reused-existing", path: finalPath }
                 }
                 throw new Error(`artifact path already exists with different content: ${finalPath}`)
               } catch (readErr) {
@@ -1502,10 +1518,39 @@ export function executeBatchFallback(
     staleSnapshot = true
   }
 
-  // Resolve staged outcomes into responses, preserving input order. On fence
-  // failure every pending artifact temp is discarded and its response becomes
-  // E_STALE_SNAPSHOT. On success artifacts are committed (no-clobber,
-  // race-safe); an activation failure fails that op closed.
+  // Resolve staged outcomes with a true all-or-nothing transaction (P1-5):
+  //   Phase A — activate every pending artifact (no-clobber, ownership-aware;
+  //     only created artifacts are rollback-owned).
+  //   Phase B — POST-ACTIVATION state probe: the repository may have changed
+  //     during activation. If so, roll back every owned artifact.
+  //   Only when both phases succeed are responses built as success. On any
+  //   failure EVERY provisional op becomes a stable error and NO success
+  //   response references a rolled-back output.
+  const pendings: PendingFallbackActivation[] = []
+  for (const outcome of staged) {
+    if (outcome.kind === "pending") {
+      pendings.push(outcome.pending)
+    }
+  }
+
+  let txnError: string | null = null
+  if (!staleSnapshot && pendings.length > 0) {
+    // Phase A: activate every artifact.
+    for (const pending of pendings) {
+      try {
+        pending.activateArtifact()
+      } catch (e) {
+        txnError = `failed to write artifact: ${errorText(e)}`
+        break
+      }
+    }
+    // Phase B: POST-ACTIVATION state probe.
+    if (txnError === null && probe !== null && !probe.stateUnchanged()) {
+      staleSnapshot = true
+    }
+  }
+
+  const failed = staleSnapshot || txnError !== null
   const responses: OperationResponse[] = []
   for (const outcome of staged) {
     if (outcome.kind === "final") {
@@ -1513,8 +1558,14 @@ export function executeBatchFallback(
       continue
     }
     const pending = outcome.pending
+    if (!failed) {
+      responses.push(pending.buildResponse())
+      continue
+    }
+    // Roll back owned outputs (created artifacts only) and convert the
+    // provisional op to a stable error.
+    pending.rollback()
     if (staleSnapshot) {
-      pending.discard()
       responses.push({
         id: pending.id,
         ok: false,
@@ -1523,16 +1574,11 @@ export function executeBatchFallback(
           message: "operation result discarded: repository state changed during execution",
         },
       })
-      continue
-    }
-    try {
-      responses.push(pending.commit())
-    } catch (e) {
-      pending.discard()
+    } else {
       responses.push({
         id: pending.id,
         ok: false,
-        error: { code: E_INTERNAL, message: `failed to write artifact: ${errorText(e)}` },
+        error: { code: E_INTERNAL, message: txnError ?? "batch activation failed" },
       })
     }
   }
@@ -1553,12 +1599,22 @@ interface PendingFallbackActivation {
   contentHash: string
   artifact: ProvisionalArtifact | null
   value: unknown
+  /** Final artifact path once activated (null until commit). */
+  artifactRef: string | null
+  /** Path of the artifact THIS transaction created (rollback-owned). */
+  createdArtifact: string | null
 
   /** Discard the provisional temp (no-op when null). */
   discard(): void
 
-  /** Commit: publish the artifact (no-clobber) and build the response. */
-  commit(): OperationResponse
+  /** Phase A: activate the artifact (no-clobber, ownership-aware). */
+  activateArtifact(): void
+
+  /** Roll back owned outputs: remove only created artifacts. */
+  rollback(): void
+
+  /** Build the final response — only after the whole transaction commits. */
+  buildResponse(): OperationResponse
 }
 
 function runFallbackOperation(
@@ -1686,18 +1742,38 @@ function prepareFallbackResponse(
       contentHash,
       artifact,
       value,
+      artifactRef: null,
+      createdArtifact: null,
       discard() {
         artifact?.discard()
       },
-      commit(): OperationResponse {
-        let artifactRef: string | null = null
-        if (artifact !== null) {
-          artifactRef = artifact.activate(bytes, contentHash)
+      activateArtifact() {
+        if (artifact !== null && this.artifactRef === null) {
+          const outcome = artifact.activate(bytes, contentHash)
+          this.artifactRef = outcome.path
+          if (outcome.kind === "created") {
+            this.createdArtifact = outcome.path
+          }
         }
+      },
+      rollback() {
+        // Remove ONLY the artifact this transaction created; reused-existing
+        // winners are owned by another writer and never deleted.
+        if (this.createdArtifact !== null) {
+          try {
+            unlinkSync(this.createdArtifact)
+          } catch {
+            // best effort
+          }
+          this.createdArtifact = null
+        }
+        this.artifact?.discard()
+      },
+      buildResponse(): OperationResponse {
         if (used <= limit) {
           return { id, ok: true, result: value }
         }
-        const ref = artifactRef ?? ""
+        const ref = this.artifactRef ?? ""
         return {
           id,
           ok: true,
