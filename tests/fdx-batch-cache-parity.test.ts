@@ -31,6 +31,7 @@ import {
   rmSync,
   writeFileSync,
   readFileSync,
+  readdirSync,
 } from "node:fs"
 import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
@@ -318,6 +319,20 @@ describe("FDX native/JS fallback parity", () => {
         { id: "pt1", op: "testsFor", params: {} },
         { code: E_BAD_REQUEST, message: "operation 'testsFor': testsFor requires 'source'" },
       ],
+      // Canonical enum policy (P1 #1): lowercase wire values only. Mixed-case
+      // values are rejected identically on every rung — no silent lowercasing.
+      [
+        { id: "pm2", op: "read", params: { file: "src/greeter.ts", mode: "RAW" } },
+        { code: E_BAD_REQUEST, message: "operation 'read': invalid read mode: RAW" },
+      ],
+      [
+        { id: "pm3", op: "impact", params: { targets: ["src/greeter.ts"], direction: "IN" } },
+        { code: E_BAD_REQUEST, message: "operation 'impact': invalid impact direction: IN" },
+      ],
+      [
+        { id: "pm4", op: "search", params: { pattern: "greet", kindFilter: "FUNCTION" } },
+        { code: E_BAD_REQUEST, message: "operation 'search': search 'kind_filter' is not supported: FUNCTION" },
+      ],
     ]
     for (const [op, expected] of cases) {
       // Rung 1 (daemon): definitive whole-batch rejection.
@@ -387,11 +402,12 @@ describe("FDX native/JS fallback parity", () => {
     // fallback with a scripted probe.
     let calls = 0
     const scripted: BatchStateProbe = {
-      // op1 passes BOTH the pre-op and post-execution state checks (calls 0,1);
-      // the state flips before op2 (call 2), so op1's result survives and op2
-      // aborts with E_STALE_SNAPSHOT. Mirrors the ScriptedProbe(flip_after=2)
-      // semantics of the native post-execution drift test.
-      stateUnchanged: () => calls++ < 2,
+      // op1 passes the pre-op check (0), the post-execution check (1), AND
+      // the final state-commit barrier (2); the state flips before op2 (3),
+      // so op1's result survives and op2 aborts with E_STALE_SNAPSHOT.
+      // Mirrors the native ScriptedProbe semantics where the final commit
+      // barrier is the last gate before a response is accepted.
+      stateUnchanged: () => calls++ < 3,
     }
     const dir = freshProject()
     try {
@@ -691,6 +707,133 @@ describe("FDX native/JS fallback parity", () => {
           rmSync(dir, { recursive: true, force: true })
         }
       })
+    }
+  })
+
+  it("canonical enum parity: lowercase accepted, mixed case rejected on every rung", async () => {
+    // Canonical policy (P1 #1): wire enum values are lowercase-only. Canonical
+    // values execute on all rungs; mixed-case values are rejected identically
+    // (code + message) on the daemon, one-shot, and TS fallback.
+    const canonical: BatchOperation[] = [
+      { id: "ok1", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
+      { id: "ok2", op: "impact", params: { targets: ["src/greeter.ts"], direction: "both", depth: 1 } },
+    ]
+    if (HAVE_DAEMON) {
+      const daemon = asBatch(await conn.batch(canonical, projectDir))
+      expect(daemon.responses.map((r) => r.ok)).toEqual([true, true])
+    }
+    const ts = executeBatchFallback(canonical, projectDir)
+    expect(ts.responses.map((r) => r.ok)).toEqual([true, true])
+    if (HAVE_FDX) {
+      const oneShot = oneShotBatch(FDX!, projectDir, canonical)
+      expect(oneShot.responses.map((r) => r.ok)).toEqual([true, true])
+    }
+
+    // Mixed-case rejection: identical across all rungs.
+    const mixedCases: Array<[BatchOperation, { code: string; message: string }]> = [
+      [
+        { id: "b1", op: "read", params: { file: "src/greeter.ts", mode: "Raw" } },
+        { code: E_BAD_REQUEST, message: "operation 'read': invalid read mode: Raw" },
+      ],
+      [
+        { id: "b2", op: "impact", params: { targets: ["src/greeter.ts"], direction: "Both" } },
+        { code: E_BAD_REQUEST, message: "operation 'impact': invalid impact direction: Both" },
+      ],
+      [
+        { id: "b3", op: "search", params: { pattern: "greet", kindFilter: "Function" } },
+        { code: E_BAD_REQUEST, message: "operation 'search': search 'kind_filter' is not supported: Function" },
+      ],
+    ]
+    for (const [op, expected] of mixedCases) {
+      expect(() => executeBatchFallback([op], projectDir)).toThrow(
+        new BatchRejectError(expected.code, expected.message),
+      )
+      if (HAVE_DAEMON) {
+        const daemon = await conn.batch([op], projectDir)
+        expect(daemon.ok).toBe(false)
+        expect(daemon.error).toEqual(expected)
+      }
+      if (HAVE_FDX) {
+        expect(() => oneShotBatch(FDX!, projectDir, [op])).toThrow(
+          new RegExp(expected.message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+        )
+      }
+    }
+  })
+
+  it("concurrent TS artifact writes: same id + same content succeed and dedupe", async () => {
+    // Two concurrent fallback batches spill the SAME oversized id+content to
+    // the same content-addressed path. Both must succeed and reference the
+    // same immutable artifact; readers must never observe partial JSON.
+    const dir = freshProject()
+    try {
+      writeBigFile(dir)
+      const id = `conc-${Date.now().toString(36)}`
+      const ops: BatchOperation[] = [{ id, op: "read", params: { file: "big.txt", mode: "raw" } }]
+      const baseA = join(dir, "ts-artifacts-a")
+      const baseB = join(dir, "ts-artifacts-b")
+
+      const [ra, rb] = await Promise.all([
+        Promise.resolve().then(() => executeBatchFallback(ops, dir, { artifactBase: baseA })),
+        Promise.resolve().then(() => executeBatchFallback(ops, dir, { artifactBase: baseB })),
+      ])
+      const ma = ra.responses[0].result as { artifactRef: string; contentHash: string }
+      const mb = rb.responses[0].result as { artifactRef: string; contentHash: string }
+      expect(ra.responses[0].ok).toBe(true)
+      expect(rb.responses[0].ok).toBe(true)
+      expect(ma.contentHash).toBe(mb.contentHash)
+
+      // Both artifacts are complete, valid JSON regardless of which base won.
+      for (const ref of [ma.artifactRef, mb.artifactRef]) {
+        expect(existsSync(ref)).toBe(true)
+        const parsed = JSON.parse(readFileSync(ref, "utf-8")) as { lines: string[] }
+        expect(parsed.lines.length).toBeGreaterThan(400)
+      }
+      // No temp files remain in either base.
+      for (const base of [baseA, baseB]) {
+        const arts = join(base, "artifacts")
+        if (existsSync(arts)) {
+          const temps = readdirSync(arts).filter((f) => f.endsWith(".tmp"))
+          expect(temps).toEqual([])
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("concurrent TS artifact writes: same id + different content never collide", async () => {
+    // Two concurrent writers use the same op id but different file content:
+    // the content hash differs, so the content-addressed paths differ and
+    // neither overwrites the other.
+    const dir = freshProject()
+    try {
+      const id = `diff-${Date.now().toString(36)}`
+      writeFileSync(join(dir, "big-a.txt"), "a".repeat(300 * 1024))
+      writeFileSync(join(dir, "big-b.txt"), "b".repeat(300 * 1024))
+      const opsA: BatchOperation[] = [{ id, op: "read", params: { file: "big-a.txt", mode: "raw" } }]
+      const opsB: BatchOperation[] = [{ id, op: "read", params: { file: "big-b.txt", mode: "raw" } }]
+      const baseA = join(dir, "ts-artifacts-a")
+      const baseB = join(dir, "ts-artifacts-b")
+
+      const [ra, rb] = await Promise.all([
+        Promise.resolve().then(() => executeBatchFallback(opsA, dir, { artifactBase: baseA })),
+        Promise.resolve().then(() => executeBatchFallback(opsB, dir, { artifactBase: baseB })),
+      ])
+      const ma = ra.responses[0].result as { artifactRef: string; contentHash: string }
+      const mb = rb.responses[0].result as { artifactRef: string; contentHash: string }
+      expect(ra.responses[0].ok).toBe(true)
+      expect(rb.responses[0].ok).toBe(true)
+      expect(ma.contentHash).not.toBe(mb.contentHash)
+      expect(ma.artifactRef).not.toBe(mb.artifactRef)
+
+      const parsedA = JSON.parse(readFileSync(ma.artifactRef, "utf-8")) as { lines: string[] }
+      const parsedB = JSON.parse(readFileSync(mb.artifactRef, "utf-8")) as { lines: string[] }
+      // Each artifact holds its own full content (a-repeats vs b-repeats).
+      expect(parsedA.lines[0].startsWith("a")).toBe(true)
+      expect(parsedB.lines[0].startsWith("b")).toBe(true)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })

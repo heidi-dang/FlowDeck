@@ -886,11 +886,33 @@ fn execute_batch_with_probe(
 
     // Repository-state revalidation before the final response is emitted: a
     // change detected after the last op (or during any op) still marks the
-    // whole batch stale, so clients never persist cross-state results.
+    // whole batch stale, so clients never persist cross-state results. This
+    // outer check is NOT merely a flag: when the drift is first detected HERE
+    // (no mid-loop drift was seen, so every accepted success is still a
+    // provisional result that has not passed a batch-level final commit
+    // barrier), every accepted success is invalidated to E_STALE_SNAPSHOT.
+    // Ops that were already discarded mid-batch (stale aborts, fail-fast
+    // cancellations) are untouched.
+    let mut envelope_drift = false;
     if !state_changed {
         if let Some(p) = eff_probe {
             if !p.state_unchanged() {
                 state_changed = true;
+                envelope_drift = true;
+            }
+        }
+    }
+    if envelope_drift {
+        for resp in &mut responses {
+            if resp.ok {
+                resp.ok = false;
+                resp.result = None;
+                resp.error = Some(serde_json::json!({
+                    "code": err::E_STALE_SNAPSHOT,
+                    "message": "operation result discarded: repository state changed during execution",
+                }));
+                resp.truncated = false;
+                resp.artifact_ref = None;
             }
         }
     }
@@ -1012,12 +1034,21 @@ fn run_operation(
             });
             if let Some(value) = cached {
                 // Cached values were stored in full; re-enforce the current
-                // bounds before returning (descriptor limits can change).
-                return finalize_response(
+                // bounds before returning (descriptor limits can change). A
+                // cached result must still pass the final state-commit
+                // barrier after reading and before acceptance or artifact
+                // spill: a mutation between the read gate and this point must
+                // discard the cached value (never serve cross-state data).
+                let artifact_dir = cache_ctx.map(|c| c.cache.state_dir());
+                return commit_result(
                     id,
                     value,
                     effective_limit,
-                    cache_ctx.map(|c| c.cache.state_dir()),
+                    artifact_dir,
+                    None,
+                    probe,
+                    stale_snapshot,
+                    state_changed,
                 );
             }
         }
@@ -1047,55 +1078,47 @@ fn run_operation(
                 if let Some(p) = probe {
                     if !p.state_unchanged() {
                         *state_changed = true;
-                        return (
-                            OperationResponse {
-                                id,
-                                ok: false,
-                                result: None,
-                                error: Some(serde_json::json!({
-                                    "code": err::E_STALE_SNAPSHOT,
-                                    "message": "operation result discarded: repository state changed during execution",
-                                })),
-                                truncated: false,
-                                artifact_ref: None,
-                            },
-                            0,
-                        );
                     }
                 }
             }
-            // Cache the fresh result only when the batch snapshot is not
-            // stale AND the repository state still matches the state captured
-            // at batch start. The repository-state revalidation happens right
-            // before the write so a mid-batch mutation (file edit, HEAD move,
-            // config change) aborts the write and marks the batch stale.
+            if stale_snapshot || *state_changed {
+                return (
+                    OperationResponse {
+                        id,
+                        ok: false,
+                        result: None,
+                        error: Some(serde_json::json!({
+                            "code": err::E_STALE_SNAPSHOT,
+                            "message": "operation result discarded: repository state changed during execution",
+                        })),
+                        truncated: false,
+                        artifact_ref: None,
+                    },
+                    0,
+                );
+            }
+            // Commit the computed value under the final state-commit barrier
+            // (commit_result): serialized into provisional cache/artifact
+            // data, one last repository-state check, then atomic activation
+            // of the cache entry and/or artifact, then response acceptance.
             // Definitive-empty outcomes of negative-cache-eligible ops go to
             // the negative namespace (TTL-bounded); everything else to the
             // positive namespace. The cache always stores the FULL payload;
             // truncation is a response-time concern.
-            if let (Some(ctx), Some(key)) = (&cache_ctx, &cache_key) {
-                if !stale_snapshot && !*state_changed {
-                    if let Some(p) = probe {
-                        if !p.state_unchanged() {
-                            *state_changed = true;
-                        }
-                    }
-                }
-                if !stale_snapshot && !*state_changed {
-                    if let Ok(bytes) = serde_json::to_vec(&value) {
-                        if is_definitive_empty(&op.op, &value) {
-                            ctx.cache.put_negative(key, &bytes);
-                        } else {
-                            ctx.cache.put(key, &bytes);
-                        }
-                    }
-                }
-            }
-            finalize_response(
+            let artifact_dir = cache_ctx.map(|c| c.cache.state_dir());
+            let cache_write = cache_ctx
+                .as_ref()
+                .zip(cache_key.as_deref())
+                .map(|(ctx, key)| (*ctx, key, is_definitive_empty(&op.op, &value)));
+            commit_result(
                 id,
                 value,
                 effective_limit,
-                cache_ctx.map(|c| c.cache.state_dir()),
+                artifact_dir,
+                cache_write,
+                probe,
+                stale_snapshot,
+                state_changed,
             )
         }
         Err((code, message)) => (
@@ -1112,19 +1135,40 @@ fn run_operation(
     }
 }
 
-/// Build the success response for an op's value, enforcing the output bound.
+/// Commit an operation result under the final state-commit barrier.
 ///
-/// When the serialized payload exceeds `limit`, the full payload is written to
-/// an artifact file (next to the query cache namespaces, or a temp dir when no
-/// worktree cache context exists) and `result` is replaced by a small marker
-/// describing the truncation. The reported `used` bytes always reflect the
-/// full payload, so the batch budget stays conservative even across repeated
-/// truncations.
-fn finalize_response(
+/// Lifecycle (mirrors the TS fallback `commitFallbackResult`):
+///   execute into provisional memory (done by the caller)
+///   → post-operation state check (done by the caller)
+///   → serialize into provisional bytes
+///   → prepare provisional cache/artifact data (temp artifact written + fsync,
+///     NOT yet visible)
+///   → FINAL state check
+///   → atomically activate cache entry and/or artifact (rename)
+///   → accept operation response
+///
+/// Hard guarantees:
+/// - No cache entry is visible before the final state check.
+/// - No artifact is visible before the final state check.
+/// - No successful response is accepted before the final state check.
+/// - A state change at any point before activation converts the operation to
+///   E_STALE_SNAPSHOT and removes any provisional temp files.
+/// - The cache always stores the FULL payload; truncation is a response-time
+///   concern.
+///
+/// `cache_write` carries the (context, key, negative-eligible) triple when the
+/// computed result should be persisted. `None` means the value came from the
+/// cache (a cache hit is never re-written).
+#[allow(clippy::too_many_arguments)]
+fn commit_result(
     id: String,
     value: Value,
     limit: usize,
     artifact_base: Option<&Path>,
+    cache_write: Option<(&QueryCacheContext, &str, bool)>,
+    probe: Option<&dyn BatchStateProbe>,
+    stale_snapshot: bool,
+    state_changed: &mut bool,
 ) -> (OperationResponse, usize) {
     let Ok(bytes) = serde_json::to_vec(&value) else {
         return (
@@ -1143,8 +1187,109 @@ fn finalize_response(
         );
     };
     let used = bytes.len();
-    if used <= limit {
+
+    // Prepare provisional artifact data when the payload exceeds the bound.
+    // The temp file is written and fsynced but NOT renamed: it becomes visible
+    // only after the final state check passes (activation below).
+    let mut provisional: Option<PreparedArtifact> = None;
+    if used > limit {
+        let dir = artifact_base
+            .map(|p| p.join("artifacts"))
+            .unwrap_or_else(|| std::env::temp_dir().join("fdx-batch-artifacts"));
+        let content_hash = sha256_hex(&bytes);
+        let file_name = artifact_file_name(&id, &content_hash);
+        let final_path = dir.join(&file_name);
+        match prepare_artifact(&final_path, &bytes) {
+            Ok(prepared) => provisional = Some(prepared),
+            Err(e) => {
+                return (
+                    OperationResponse {
+                        id,
+                        ok: false,
+                        result: None,
+                        error: Some(serde_json::json!({
+                            "code": err::E_INTERNAL,
+                            "message": format!("failed to write artifact: {e}"),
+                        })),
+                        truncated: false,
+                        artifact_ref: None,
+                    },
+                    used,
+                );
+            }
+        }
+    }
+
+    // FINAL state check: the commit barrier. A repository mutation detected
+    // here — after computation, after cache/artifact preparation — discards
+    // the result (E_STALE_SNAPSHOT) and removes any provisional files.
+    if !stale_snapshot && !*state_changed {
+        if let Some(p) = probe {
+            if !p.state_unchanged() {
+                *state_changed = true;
+            }
+        }
+    }
+    if stale_snapshot || *state_changed {
+        if let Some(p) = &provisional {
+            let _ = p.discard();
+        }
         return (
+            OperationResponse {
+                id,
+                ok: false,
+                result: None,
+                error: Some(serde_json::json!({
+                    "code": err::E_STALE_SNAPSHOT,
+                    "message": "operation result discarded: repository state changed during execution",
+                })),
+                truncated: false,
+                artifact_ref: None,
+            },
+            used,
+        );
+    }
+
+    // Activate the cache entry (only after the final check). The cache write
+    // itself is atomic (temp sibling + rename inside QueryCache), so no reader
+    // observes a partial entry and nothing is visible before this point.
+    if let Some((ctx, key, negative)) = cache_write {
+        if negative {
+            ctx.cache.put_negative(key, &bytes);
+        } else {
+            ctx.cache.put(key, &bytes);
+        }
+    }
+
+    // Activate the artifact (atomic rename). On a rename race the winner's
+    // file is verified (SHA-256 + byte size) and reused only when identical;
+    // conflicting content fails closed and the losing temp is removed.
+    let artifact_ref = match provisional {
+        Some(p) => match p.activate(&bytes) {
+            Ok(path) => Some(path),
+            Err(e) => {
+                let _ = p.discard();
+                return (
+                    OperationResponse {
+                        id,
+                        ok: false,
+                        result: None,
+                        error: Some(serde_json::json!({
+                            "code": err::E_INTERNAL,
+                            "message": format!("failed to write artifact: {e}"),
+                        })),
+                        truncated: false,
+                        artifact_ref: None,
+                    },
+                    used,
+                );
+            }
+        },
+        None => None,
+    };
+
+    if used <= limit {
+        (
             OperationResponse {
                 id,
                 ok: true,
@@ -1154,137 +1299,166 @@ fn finalize_response(
                 artifact_ref: None,
             },
             used,
-        );
+        )
+    } else {
+        let content_hash = sha256_hex(&bytes);
+        let artifact_ref = artifact_ref.unwrap_or_default();
+        (
+            OperationResponse {
+                id,
+                ok: true,
+                result: Some(serde_json::json!({
+                    "truncated": true,
+                    "artifactRef": artifact_ref,
+                    "byteCount": used,
+                    "limitBytes": limit,
+                    "contentHash": content_hash,
+                })),
+                error: None,
+                truncated: true,
+                artifact_ref: Some(artifact_ref),
+            },
+            used,
+        )
     }
-
-    // Over budget: spill the full payload to an artifact and return a marker.
-    // The file name is content-addressed: `<safe-prefix>-<op-id-hash>-<content-hash>.json`.
-    // This guarantees:
-    // - Different operation IDs never collide (op-id-hash is unique per ID).
-    // - The same operation ID with different content never overwrites another
-    //   artifact (content-hash changes).
-    // - Concurrent batches with the same ID and content safely reuse the file.
-    // - Concurrent batches with the same ID but different content fail closed.
-    let dir = artifact_base
-        .map(|p| p.join("artifacts"))
-        .unwrap_or_else(|| std::env::temp_dir().join("fdx-batch-artifacts"));
-    let content_hash = sha256_hex(&bytes);
-    let file_name = artifact_file_name(&id, &content_hash);
-    let final_path = dir.join(&file_name);
-
-    // Atomic write sequence: create a unique sibling temp file, write the
-    // complete content, flush, sync, then atomically rename to the final
-    // content-addressed path. Readers never observe partial JSON.
-    let artifact_ref = match atomic_write_artifact(&final_path, &bytes) {
-        Ok(path) => path,
-        Err(e) => {
-            return (
-                OperationResponse {
-                    id,
-                    ok: false,
-                    result: None,
-                    error: Some(serde_json::json!({
-                        "code": err::E_INTERNAL,
-                        "message": format!("failed to write artifact: {e}"),
-                    })),
-                    truncated: false,
-                    artifact_ref: None,
-                },
-                used,
-            );
-        }
-    };
-    (
-        OperationResponse {
-            id,
-            ok: true,
-            result: Some(serde_json::json!({
-                "truncated": true,
-                "artifactRef": artifact_ref,
-                "byteCount": used,
-                "limitBytes": limit,
-                "contentHash": content_hash,
-            })),
-            error: None,
-            truncated: true,
-            artifact_ref: Some(artifact_ref),
-        },
-        used,
-    )
 }
 
-/// Atomically write `bytes` to `final_path` with a temp-file-then-rename
-/// sequence. If `final_path` already exists and its content hash matches,
-/// the existing file is reused (safe deduplication). If it exists with a
-/// different content hash, the write fails closed.
-fn atomic_write_artifact(final_path: &Path, bytes: &[u8]) -> Result<String, String> {
+/// A provisional artifact prepared for atomic activation: the temp file holds
+/// the complete, fsynced payload but is NOT yet visible at the final path.
+struct PreparedArtifact {
+    temp_path: PathBuf,
+    final_path: PathBuf,
+    content_hash: String,
+}
+
+impl PreparedArtifact {
+    /// Remove the provisional temp file (best-effort). Called on stale
+    /// detection or any failure before activation. No-op when the artifact is
+    /// a reuse of an already-published file (temp == final).
+    fn discard(&self) -> Result<(), String> {
+        if self.temp_path == self.final_path {
+            return Ok(());
+        }
+        std::fs::remove_file(&self.temp_path).map_err(|e| {
+            format!(
+                "failed to remove provisional artifact temp {}: {e}",
+                self.temp_path.display()
+            )
+        })
+    }
+
+    /// Atomically activate the artifact: rename the temp file to the final
+    /// content-addressed path. When the artifact is a reuse of an
+    /// already-published correct file (temp == final), this is a no-op.
+    /// When another writer already activated the final path, the winner's
+    /// file is read and verified (SHA-256 AND byte size); it is reused only
+    /// when both match. Conflicting content or unexpected errors fail closed.
+    /// The losing temp file is always removed.
+    fn activate(&self, bytes: &[u8]) -> Result<String, String> {
+        if self.temp_path == self.final_path {
+            // Reuse case: the correct artifact is already published.
+            return Ok(self.final_path.to_string_lossy().into_owned());
+        }
+        match std::fs::rename(&self.temp_path, &self.final_path) {
+            Ok(()) => Ok(self.final_path.to_string_lossy().into_owned()),
+            Err(rename_err) => {
+                // Rename lost to a concurrent writer (or an unexpected error).
+                // Read the final artifact and verify identity before reuse.
+                let read = std::fs::read(&self.final_path);
+                let _ = self.discard();
+                match read {
+                    Ok(existing)
+                        if sha256_hex(&existing) == self.content_hash
+                            && existing.len() == bytes.len() =>
+                    {
+                        // Identical content: safely reuse the winner.
+                        Ok(self.final_path.to_string_lossy().into_owned())
+                    }
+                    Ok(_) => Err(format!(
+                        "artifact path already exists with different content: {}",
+                        self.final_path.display()
+                    )),
+                    Err(read_err) => Err(format!(
+                        "failed to rename artifact: {rename_err}; final unreadable: {read_err}"
+                    )),
+                }
+            }
+        }
+    }
+}
+
+/// Prepare a provisional artifact: write `bytes` to a unique sibling temp file
+/// (same directory, `create_new` exclusive) and fsync it. If `final_path`
+/// already exists with identical content the file is reused (no temp write);
+/// if it exists with different content the write fails closed. Only ENOENT
+/// permits creation to proceed — permission, I/O, corruption, and unexpected
+/// read errors all fail closed.
+fn prepare_artifact(final_path: &Path, bytes: &[u8]) -> Result<PreparedArtifact, String> {
     let content_hash = sha256_hex(bytes);
-    // Check for existing file: reuse if content matches, fail closed if it
-    // conflicts.
-    if final_path.exists() {
-        match std::fs::read(final_path) {
-            Ok(existing) if sha256_hex(&existing) == content_hash => {
-                // Exact match: safe to reuse.
-                return Ok(final_path.to_string_lossy().into_owned());
-            }
-            Ok(_) => {
-                return Err(format!(
-                    "artifact path already exists with different content: {}",
-                    final_path.display()
-                ));
-            }
-            Err(e) => return Err(format!("failed to read existing artifact: {e}")),
+    // Reuse an existing correct artifact (content-addressed deduplication).
+    match std::fs::read(final_path) {
+        Ok(existing) if sha256_hex(&existing) == content_hash => {
+            // Identical content already published: reuse it. We still return a
+            // PreparedArtifact whose temp is not written; `activate` must be
+            // skipped for the reuse case, so signal reuse via a temp path that
+            // does not exist yet is WRONG — instead, mark reuse by writing no
+            // temp and returning an artifact whose activation is a no-op.
+            return Ok(PreparedArtifact {
+                temp_path: final_path.to_path_buf(),
+                final_path: final_path.to_path_buf(),
+                content_hash,
+            });
+        }
+        Ok(_) => {
+            return Err(format!(
+                "artifact path already exists with different content: {}",
+                final_path.display()
+            ));
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(format!(
+                "failed to read existing artifact: {}: {e}",
+                final_path.display()
+            ));
         }
     }
 
-    // Ensure the parent directory exists.
     if let Some(parent) = final_path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create artifact dir: {e}"))?;
     }
 
-    // Create a unique sibling temp file in the same directory so the atomic
-    // rename is guaranteed to be on the same filesystem.
-    let temp_path = final_path.with_extension("tmp");
+    // Exclusive sibling temp creation (O_CREAT|O_EXCL via create_new). The
+    // temp name embeds a random nonce so it cannot be guessed or shared
+    // unsafely, and create_new guarantees we never truncate another writer's
+    // temp file.
     let mut attempts = 0;
     loop {
         if attempts >= 100 {
             return Err("too many temp file collisions".into());
         }
-        let unique_temp = if attempts == 0 {
-            temp_path.clone()
-        } else {
-            temp_path.with_file_name(format!(
-                "{}.{}.tmp",
-                temp_path
-                    .file_stem()
-                    .unwrap()
-                    .to_str()
-                    .unwrap_or("artifact"),
-                attempts
-            ))
-        };
+        let temp_path = unique_temp_path(final_path, attempts);
         match std::fs::OpenOptions::new()
             .create_new(true)
             .write(true)
-            .open(&unique_temp)
+            .open(&temp_path)
         {
             Ok(mut file) => {
                 if let Err(e) = file.write_all(bytes) {
-                    let _ = std::fs::remove_file(&unique_temp);
+                    let _ = std::fs::remove_file(&temp_path);
                     return Err(format!("failed to write temp artifact: {e}"));
                 }
                 if let Err(e) = file.sync_all() {
-                    let _ = std::fs::remove_file(&unique_temp);
+                    let _ = std::fs::remove_file(&temp_path);
                     return Err(format!("failed to sync temp artifact: {e}"));
                 }
                 drop(file);
-                // Atomic rename to final content-addressed path.
-                if let Err(e) = std::fs::rename(&unique_temp, final_path) {
-                    let _ = std::fs::remove_file(&unique_temp);
-                    return Err(format!("failed to rename artifact: {e}"));
-                }
-                return Ok(final_path.to_string_lossy().into_owned());
+                return Ok(PreparedArtifact {
+                    temp_path,
+                    final_path: final_path.to_path_buf(),
+                    content_hash,
+                });
             }
             Err(_) => {
                 attempts += 1;
@@ -1292,6 +1466,41 @@ fn atomic_write_artifact(final_path: &Path, bytes: &[u8]) -> Result<String, Stri
             }
         }
     }
+}
+
+/// Single-shot atomic artifact write: prepare a provisional artifact and
+/// immediately activate it (no separate final state check — callers that
+/// need the state-commit barrier must use `prepare_artifact` + `activate`
+/// explicitly around their final check). Reuses an existing correct file,
+/// fails closed on conflicts, and wins/loses rename races safely.
+#[cfg(test)]
+fn atomic_write_artifact(final_path: &Path, bytes: &[u8]) -> Result<String, String> {
+    let prepared = prepare_artifact(final_path, bytes)?;
+    prepared.activate(bytes)
+}
+
+/// A sibling temp path in the same directory as `final_path` (same filesystem
+/// for the atomic rename), with a random nonce so concurrent writers never
+/// collide on a shared guessable name.
+fn unique_temp_path(final_path: &Path, attempt: usize) -> PathBuf {
+    let file_name = final_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("artifact");
+    let parent = final_path.parent().unwrap_or_else(|| Path::new("."));
+    // The nonce is combined with the attempt counter; create_new (O_EXCL)
+    // guarantees exclusivity regardless of nonce uniqueness.
+    let nonce = format!("{:x}", fast_nonce());
+    parent.join(format!(".{file_name}.{nonce}.{attempt}.tmp"))
+}
+
+/// Cheap unpredictable nonce for temp file names (time + address entropy).
+fn fast_nonce() -> u64 {
+    let t = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    t ^ ((std::process::id() as u64) << 32)
 }
 
 /// SHA-256 hex digest of a byte slice (used for artifact content integrity).
@@ -2798,5 +3007,368 @@ mod tests {
             mtime1, mtime2,
             "identical content must not rewrite the file"
         );
+    }
+
+    // ─── Final state-commit barrier (P1 #2) ────────────────────────────────
+
+    #[test]
+    fn drift_at_final_barrier_discards_result_and_writes_no_cache() {
+        // The probe stays unchanged through pre-op (0), cache read gate (1)
+        // and post-execution check (2), then flips at the FINAL commit barrier
+        // (3): the computation succeeded but the state changed after it,
+        // before cache/artifact activation. The result is discarded, no cache
+        // entry becomes visible, and the batch is flagged stale.
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        let ops = vec![op(
+            "r1",
+            "read",
+            serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+        )];
+        let probe = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: 3,
+        };
+        let resp = execute_batch_with_probe(&ops, Some(cwd), None, false, Some(&probe)).unwrap();
+        assert!(resp.stale_snapshot, "final-barrier drift must flag stale");
+        assert!(
+            !resp.responses[0].ok,
+            "result must be discarded at the final commit barrier"
+        );
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_STALE_SNAPSHOT
+        );
+        assert_eq!(
+            cache_entry_count(state.path()),
+            0,
+            "no cache entry becomes visible before the final state check"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn drift_after_cache_read_discards_cached_value() {
+        // A cached value is read, then the probe flips at the final commit
+        // barrier (after the read gate, before acceptance): the cached result
+        // must NOT be served across a state boundary.
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+        let read_a = || {
+            vec![op(
+                "r1",
+                "read",
+                serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+            )]
+        };
+
+        // Prime the cache under a steady state.
+        let steady = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: usize::MAX,
+        };
+        execute_batch_with_probe(&read_a(), Some(cwd), None, false, Some(&steady)).unwrap();
+        assert_eq!(cache_entry_count(state.path()), 1);
+
+        // Now drift at the final barrier AFTER the cache read: pre-op (0) and
+        // read gate (1) pass, final barrier (2) flips.
+        let flipped = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: 2,
+        };
+        let resp =
+            execute_batch_with_probe(&read_a(), Some(cwd), None, false, Some(&flipped)).unwrap();
+        assert!(resp.stale_snapshot);
+        assert!(
+            !resp.responses[0].ok,
+            "cached result must not be served across a state change"
+        );
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_STALE_SNAPSHOT
+        );
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "no new cache write on drift; the existing entry stays"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn drift_before_artifact_activation_leaves_no_artifact() {
+        // An oversized result prepares a provisional artifact, then the probe
+        // flips at the final commit barrier: no final artifact may become
+        // visible and the provisional temp file is removed.
+        let tmp = tempfile::tempdir().unwrap();
+        let big = "x".repeat(300 * 1024);
+        std::fs::write(tmp.path().join("big.txt"), &big).unwrap();
+
+        // A unique op id so we can assert on OUR artifact path without
+        // colliding with other tests that share the global temp artifacts dir.
+        let id = "final-barrier-drift-op";
+        let ops = vec![op(
+            id,
+            "read",
+            serde_json::json!({ "file": "big.txt", "mode": "raw" }),
+        )];
+        // Non-git cwd → no cache context → probe is the injected one. Calls:
+        // pre-op (0), post-execution (1), final barrier (2).
+        let probe = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: 2,
+        };
+        let resp =
+            execute_batch_with_probe(&ops, tmp.path().to_str(), None, false, Some(&probe)).unwrap();
+        assert!(resp.stale_snapshot);
+        assert!(!resp.responses[0].ok);
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_STALE_SNAPSHOT
+        );
+        assert!(resp.responses[0].artifact_ref.is_none());
+
+        // No artifact or provisional temp for THIS op id may exist. The
+        // content-addressed file name embeds the sanitized op id, and
+        // provisional temps embed the final file name, so any file containing
+        // our unique id string is ours.
+        let artifacts_dir = std::env::temp_dir().join("fdx-batch-artifacts");
+        let leftovers: Vec<_> = std::fs::read_dir(&artifacts_dir)
+            .map(|e| {
+                e.flatten()
+                    .filter(|f| f.file_name().to_string_lossy().contains(id))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            leftovers.is_empty(),
+            "no final artifact or provisional temp may remain after stale detection: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn final_envelope_drift_invalidates_accepted_responses() {
+        // Every per-op check passes (pre-op, read gate, post-exec, final
+        // barrier), so the response is accepted. The probe then flips at the
+        // OUTER final-envelope check: the accepted success must be converted
+        // to E_STALE_SNAPSHOT — the outer check is not merely a flag.
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        let ops = vec![op(
+            "r1",
+            "read",
+            serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+        )];
+        // A single cacheable read op makes 5 probe calls: pre-op (0), read
+        // gate (1), post-exec (2), final barrier (3), then the outer
+        // final-envelope check (4). flip_after = 4 passes every per-op check
+        // (calls 0-3 all < 4) and fails exactly at the envelope (call 4), so
+        // the accepted success must be invalidated to E_STALE_SNAPSHOT.
+        let envelope_probe = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: 4,
+        };
+        let resp =
+            execute_batch_with_probe(&ops, Some(cwd), None, false, Some(&envelope_probe)).unwrap();
+        assert!(resp.stale_snapshot);
+        assert!(
+            !resp.responses[0].ok,
+            "envelope drift must invalidate the accepted response"
+        );
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_STALE_SNAPSHOT
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    // ─── Concurrent artifact publication (P1 #3) ────────────────────────────
+
+    #[test]
+    fn concurrent_artifact_writes_same_content_succeed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Artifacts hold serialized JSON payloads; use a JSON-valid body so
+        // the "readers never observe partial JSON" invariant is meaningful.
+        let content = serde_json::to_vec(&serde_json::json!({
+            "lines": ["concurrent identical payload"],
+            "byteCount": 42,
+        }))
+        .unwrap();
+        let content_hash = sha256_hex(&content);
+        let final_path = dir.join(artifact_file_name("shared-op", &content_hash));
+        let path = std::sync::Arc::new(final_path.clone());
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let p = std::sync::Arc::clone(&path);
+                let c = content.clone();
+                std::thread::spawn(move || atomic_write_artifact(&p, &c))
+            })
+            .collect();
+        for h in handles {
+            let res = h.join().unwrap();
+            assert!(res.is_ok(), "same-content writer must succeed: {res:?}");
+        }
+        let on_disk = std::fs::read(&final_path).unwrap();
+        assert_eq!(on_disk, content, "artifact holds the full payload");
+        let parsed: serde_json::Value = serde_json::from_slice(&on_disk).unwrap();
+        assert_eq!(
+            parsed["lines"][0], "concurrent identical payload",
+            "readers observe complete, valid JSON"
+        );
+        // No leftover temp files after any race.
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .map(|e| {
+                e.flatten()
+                    .filter(|f| {
+                        let name = f.file_name();
+                        name.to_string_lossy().ends_with(".tmp")
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            leftovers.is_empty(),
+            "temp files must be cleaned: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn concurrent_artifact_writes_different_content_do_not_collide() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let content_a = b"content variant A".to_vec();
+        let content_b = b"content variant B".to_vec();
+        let hash_a = sha256_hex(&content_a);
+        let hash_b = sha256_hex(&content_b);
+        let path_a = dir.join(artifact_file_name("same-id", &hash_a));
+        let path_b = dir.join(artifact_file_name("same-id", &hash_b));
+        assert_ne!(path_a, path_b, "different content → different paths");
+
+        let pa = std::sync::Arc::new(path_a.clone());
+        let pb = std::sync::Arc::new(path_b.clone());
+        let ha = std::sync::Arc::new(path_a.clone());
+        let hb = std::sync::Arc::new(path_b.clone());
+
+        let ta = {
+            let p = std::sync::Arc::clone(&pa);
+            let c = content_a.clone();
+            std::thread::spawn(move || atomic_write_artifact(&p, &c))
+        };
+        let tb = {
+            let p = std::sync::Arc::clone(&pb);
+            let c = content_b.clone();
+            std::thread::spawn(move || atomic_write_artifact(&p, &c))
+        };
+        assert!(ta.join().unwrap().is_ok());
+        assert!(tb.join().unwrap().is_ok());
+        assert_eq!(std::fs::read(&path_a).unwrap(), content_a);
+        assert_eq!(std::fs::read(&path_b).unwrap(), content_b);
+        // Neither overwrote the other (both contents present on disk).
+        let _ = (ha, hb);
+    }
+
+    #[test]
+    fn final_rename_winner_is_verified_and_reused() {
+        // Winner publishes first; the loser's rename fails (or lands after)
+        // and must verify + reuse the winner instead of overwriting it.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = b"winner content".to_vec();
+        let content_hash = sha256_hex(&content);
+        let final_path = dir.join(artifact_file_name("win-op", &content_hash));
+
+        // Winner activates first.
+        atomic_write_artifact(&final_path, &content).unwrap();
+        let mtime = std::fs::metadata(&final_path).unwrap().modified().unwrap();
+
+        // Loser attempts the same write; the existing correct file is reused.
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        atomic_write_artifact(&final_path, &content).unwrap();
+        let mtime2 = std::fs::metadata(&final_path).unwrap().modified().unwrap();
+        assert_eq!(mtime, mtime2, "reuse must not rewrite the winner's file");
+        assert_eq!(std::fs::read(&final_path).unwrap(), content);
+    }
+
+    #[test]
+    fn existing_conflicting_artifact_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let expected = b"expected content".to_vec();
+        let conflicting = b"tampered content".to_vec();
+        let hash = sha256_hex(&expected);
+        let final_path = dir.join(artifact_file_name("c-op", &hash));
+
+        // A file exists at the final path with WRONG content.
+        std::fs::write(&final_path, &conflicting).unwrap();
+        let res = atomic_write_artifact(&final_path, &expected);
+        assert!(
+            res.is_err(),
+            "corrupt/conflicting artifact must fail closed"
+        );
+        let on_disk = std::fs::read(&final_path).unwrap();
+        assert_eq!(on_disk, conflicting, "original file must not be touched");
+    }
+
+    #[test]
+    fn non_enoent_read_failure_fails_closed() {
+        // A directory at the final path makes the "does it exist" probe fail
+        // with EISDIR (not ENOENT): creation must NOT proceed; the write must
+        // fail closed rather than truncating through the directory.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = b"payload".to_vec();
+        let hash = sha256_hex(&content);
+        let final_path = dir.join(artifact_file_name("d-op", &hash));
+        std::fs::create_dir_all(&final_path).unwrap();
+
+        let res = atomic_write_artifact(&final_path, &content);
+        assert!(res.is_err(), "non-ENOENT read failure must fail closed");
+        assert!(final_path.is_dir(), "the directory must not be destroyed");
     }
 }

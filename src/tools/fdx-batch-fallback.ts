@@ -28,7 +28,19 @@
  */
 
 import { spawnSync } from "node:child_process"
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, writeFileSync } from "node:fs"
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -516,7 +528,7 @@ function opRead(params: OperationParams, cwd: string | undefined): OpResult {
     // Mirror Rust io::Error Display: "No such file or directory (os error 2)".
     return errResult(E_INTERNAL, `read failed: ${ioErrorText(e)}`)
   }
-  const mode = (params.mode ?? "auto").toLowerCase()
+  const mode = params.mode ?? "auto"
   if (!["auto", "raw", "prototype", "deep"].includes(mode)) {
     return errResult(E_BAD_REQUEST, `invalid read mode: Unknown read mode: ${params.mode}`)
   }
@@ -778,7 +790,7 @@ function opImpact(params: OperationParams, cwd: string | undefined): OpResult {
     return errResult(E_BAD_REQUEST, "impact requires at least one 'targets' entry")
   }
   const root = params.root ? resolvePath(params.root, cwd) : (cwd ?? ".")
-  const direction = (params.direction ?? "both").toLowerCase()
+  const direction = params.direction ?? "both"
   if (!["in", "out", "both"].includes(direction)) {
     return errResult(E_BAD_REQUEST, `invalid impact direction: Unknown direction: ${direction}`)
   }
@@ -939,16 +951,29 @@ export function artifactFileName(id: string, contentHash: string): string {
 }
 
 /**
- * Enforce the per-op output bound with atomic artifact publication.
- * When the serialized payload exceeds `limit`, the full payload is spilled
- * to a content-addressed path and `result` is replaced by the truncation
- * marker — mirroring the native `finalize_response` with atomic writes.
+ * Enforce the per-op output bound with atomic artifact publication under the
+ * final state-commit barrier.
+ *
+ * Lifecycle (mirrors batch::commit_result):
+ *   execute into provisional memory (caller)
+ *   → post-operation state check (caller)
+ *   → serialize into provisional bytes
+ *   → prepare provisional artifact data (exclusive temp write + fsync, NOT
+ *     yet visible)
+ *   → FINAL state check
+ *   → atomically activate artifact (rename)
+ *   → accept operation response
+ *
+ * A state change detected at the final check (after preparation, before
+ * activation) discards the result with E_STALE_SNAPSHOT and removes the
+ * provisional temp file.
  */
 function finalizeFallbackResponse(
   id: string,
   value: unknown,
   limit: number,
   artifactBase: string | undefined,
+  probe: BatchStateProbe | null,
 ): { resp: OperationResponse; used: number } {
   let bytes: Buffer
   try {
@@ -960,7 +985,24 @@ function finalizeFallbackResponse(
     }
   }
   const used = bytes.length
+
   if (used <= limit) {
+    // In-budget result: no cache/artifact activation. The final state check
+    // below is the ONLY gate between computation and acceptance — no
+    // successful response is accepted before it.
+    if (probe !== null && !probe.stateUnchanged()) {
+      return {
+        resp: {
+          id,
+          ok: false,
+          error: {
+            code: E_STALE_SNAPSHOT,
+            message: "operation result discarded: repository state changed during execution",
+          },
+        },
+        used,
+      }
+    }
     return { resp: { id, ok: true, result: value }, used }
   }
 
@@ -971,8 +1013,56 @@ function finalizeFallbackResponse(
   const fileName = artifactFileName(id, contentHash)
   const finalPath = join(dir, fileName)
 
-  // Atomic write sequence: temp file in same directory → write → rename.
-  const artifactRef = atomicWriteArtifact(finalPath, bytes, contentHash)
+  // Prepare provisional artifact data (exclusive temp write + fsync). The
+  // temp file is NOT yet visible at the final path.
+  let provisional: ProvisionalArtifact
+  try {
+    provisional = prepareArtifact(finalPath, bytes, contentHash)
+  } catch (e) {
+    return {
+      resp: {
+        id,
+        ok: false,
+        error: { code: E_INTERNAL, message: `failed to write artifact: ${errorText(e)}` },
+      },
+      used,
+    }
+  }
+
+  // FINAL state check: the commit barrier. A repository mutation detected
+  // here — after computation, after artifact preparation — discards the
+  // result and removes the provisional temp file. No artifact is activated
+  // before this check.
+  if (probe !== null && !probe.stateUnchanged()) {
+    provisional.discard()
+    return {
+      resp: {
+        id,
+        ok: false,
+        error: {
+          code: E_STALE_SNAPSHOT,
+          message: "operation result discarded: repository state changed during execution",
+        },
+      },
+      used,
+    }
+  }
+
+  // Activate the artifact (atomic rename, race-safe).
+  let artifactRef: string
+  try {
+    artifactRef = provisional.activate(bytes, contentHash)
+  } catch (e) {
+    provisional.discard()
+    return {
+      resp: {
+        id,
+        ok: false,
+        error: { code: E_INTERNAL, message: `failed to write artifact: ${errorText(e)}` },
+      },
+      used,
+    }
+  }
 
   return {
     resp: {
@@ -992,63 +1082,188 @@ function finalizeFallbackResponse(
   }
 }
 
+/** Human-readable error message (mirrors ioErrorText semantics for artifacts). */
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e)
+}
+
 /**
- * Atomically write `bytes` to `finalPath` with a temp-file-then-rename
- * sequence. If `finalPath` already exists and its content hash matches,
- * the existing file is reused. If it exists with a different content hash,
- * the write fails closed.
+ * A provisional artifact: an exclusively-created, fully-written and fsynced
+ * temp file that is NOT yet visible at the final content-addressed path.
  */
-function atomicWriteArtifact(finalPath: string, bytes: Buffer, contentHash: string): string {
-  // Check for existing file: reuse if content matches, fail closed if it
-  // conflicts.
+interface ProvisionalArtifact {
+  /** Temp path (same directory as final, so rename is same-filesystem). */
+  tempPath: string
+  finalPath: string
+  contentHash: string
+
+  /** Remove the provisional temp file (no-op for the reuse marker). */
+  discard(): void
+
+  /** Atomically activate: rename temp → final, race-safe, verified. */
+  activate(bytes: Buffer, contentHash: string): string
+}
+
+/**
+ * Prepare a provisional artifact: create a unique sibling temp file with
+ * exclusive creation (O_CREAT|O_EXCL via the `wx` flag), write the complete
+ * bytes, fsync the file, and close it. If `finalPath` already exists with
+ * identical content the file is reused (no temp write); if it exists with
+ * different content the write fails closed. Only ENOENT permits creation to
+ * proceed — permission, I/O, corruption, and unexpected read errors all fail
+ * closed. Temp names embed a random nonce and cannot be guessed or shared
+ * unsafely; exclusive creation guarantees we never truncate another writer's
+ * temp file.
+ */
+function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string): ProvisionalArtifact {
+  // Reuse an existing correct artifact (content-addressed deduplication).
   try {
     const existing = readFileSync(finalPath)
-    if (sha256Hex(existing) === contentHash) {
-      return finalPath
+    if (sha256Hex(existing) === contentHash && existing.length === bytes.length) {
+      return {
+        tempPath: finalPath, // reuse marker: activation is a no-op
+        finalPath,
+        contentHash,
+        discard() {},
+        activate() {
+          return finalPath
+        },
+      }
     }
     throw new Error(`artifact path already exists with different content: ${finalPath}`)
   } catch (e) {
-    if (e instanceof Error && e.message.includes("already exists with different content")) {
+    if (e instanceof Error && e.message.includes("artifact path already exists with different content")) {
       throw e
     }
-    // ENOENT or other read errors: proceed with write.
+    // Only ENOENT permits creation to proceed.
+    if (e instanceof Error && "code" in e && (e as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error(`failed to read existing artifact: ${errorText(e)}`)
+    }
   }
 
-  // Ensure the parent directory exists.
+  mkdirSync(join(finalPath, ".."), { recursive: true })
+
+  // Exclusive sibling temp creation (wx = O_CREAT|O_EXCL). The name embeds a
+  // random nonce so it cannot be guessed or shared unsafely.
   const dir = join(finalPath, "..")
-  mkdirSync(dir, { recursive: true })
-
-  // Create a unique sibling temp file in the same directory so the atomic
-  // rename is on the same filesystem.
-  const tempBase = finalPath.replace(/\.json$/, ".tmp")
-  let tempPath = tempBase
-  let attempts = 0
-  while (existsSync(tempPath)) {
-    if (attempts >= 100) {
-      throw new Error("too many temp file collisions")
-    }
-    attempts++
-    tempPath = `${tempBase}.${attempts}`
-  }
-
-  try {
-    writeFileSync(tempPath, bytes)
-    // Atomic rename to final content-addressed path.
-    const { renameSync } = require("node:fs")
-    renameSync(tempPath, finalPath)
-    return finalPath
-  } catch (e) {
-    // Clean up temp file on failure.
+  const base = join(dir, `.${finalPath.split(/[/\\]/).pop()}`)
+  let lastErr: unknown
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const tempPath = `${base}.${cryptoRandomNonce()}.${attempt}.tmp`
+    let fd: number | null = null
     try {
-      if (existsSync(tempPath)) {
-        const { unlinkSync } = require("node:fs")
-        unlinkSync(tempPath)
+      fd = openSync(tempPath, "wx")
+      writeSync(fd, bytes)
+      fsyncSync(fd)
+      closeSync(fd)
+      fd = null
+      return {
+        tempPath,
+        finalPath,
+        contentHash,
+        discard() {
+          try {
+            unlinkSync(tempPath)
+          } catch {
+            // best-effort cleanup
+          }
+        },
+        activate(targetBytes, targetHash) {
+          if (tempPath === finalPath) return finalPath
+          try {
+            renameSync(tempPath, finalPath)
+            try {
+              fsyncDir(join(finalPath, ".."))
+            } catch {
+              // directory fsync not supported on this platform — best effort
+            }
+            return finalPath
+          } catch (renameErr) {
+            // Rename lost to a concurrent writer (or an unexpected error).
+            // Read the final artifact and verify identity before reuse.
+            try {
+              const existing = readFileSync(finalPath)
+              if (sha256Hex(existing) === targetHash && existing.length === targetBytes.length) {
+                // Identical content: safely reuse the winner.
+                try {
+                  unlinkSync(tempPath)
+                } catch {
+                  // temp already gone
+                }
+                return finalPath
+              }
+              throw new Error(`artifact path already exists with different content: ${finalPath}`)
+            } catch (readErr) {
+              if (
+                readErr instanceof Error &&
+                readErr.message.includes("artifact path already exists with different content")
+              ) {
+                try {
+                  unlinkSync(tempPath)
+                } catch {
+                  // best effort
+                }
+                throw readErr
+              }
+              try {
+                unlinkSync(tempPath)
+              } catch {
+                // best effort
+              }
+              throw new Error(
+                `failed to rename artifact: ${errorText(renameErr)}; final unreadable: ${errorText(readErr)}`,
+              )
+            }
+          }
+        },
       }
-    } catch {
-      // Best-effort cleanup.
+    } catch (e) {
+      if (fd !== null) {
+        try {
+          closeSync(fd)
+        } catch {
+          // ignore close failure during error path
+        }
+      }
+      try {
+        unlinkSync(tempPath)
+      } catch {
+        // temp may not exist
+      }
+      if (e instanceof Error && "code" in e && (e as NodeJS.ErrnoException).code === "EEXIST") {
+        lastErr = e
+        continue // another writer holds this temp name; try the next nonce
+      }
+      throw new Error(`failed to write temp artifact: ${errorText(e)}`)
     }
-    throw e
   }
+  throw new Error(`too many temp file collisions: ${errorText(lastErr)}`)
+}
+
+/** Best-effort directory fsync (supported on Linux/macOS; no-op where not). */
+function fsyncDir(dir: string): void {
+  try {
+    const fd = openSync(dir, "r")
+    try {
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code
+    // EISDIR/EPERM/EINVAL/ENOTSUP mean the platform cannot fsync directories.
+    if (code !== "EISDIR" && code !== "EPERM" && code !== "EINVAL" && code !== "ENOTSUP" && code !== "EACCES") {
+      throw e
+    }
+  }
+}
+
+/** Unpredictable nonce for temp file names (time + pid + random). */
+function cryptoRandomNonce(): string {
+  const t = Date.now().toString(36)
+  const p = (process.pid || 0).toString(36)
+  const r = Math.random().toString(36).slice(2, 10)
+  return `${t}-${p}-${r}`
 }
 
 /** SHA-256 hex digest of a byte slice (artifact content integrity). */
@@ -1095,7 +1310,7 @@ function validateReadParams(params: OperationParams): void {
   if (params.file.includes("\0")) {
     throw new BatchRejectError(E_BAD_REQUEST, "operation 'read': read 'file' contains embedded NUL")
   }
-  const mode = (params.mode ?? "auto").toLowerCase()
+  const mode = params.mode ?? "auto"
   if (!["auto", "raw", "prototype", "deep"].includes(mode)) {
     throw new BatchRejectError(E_BAD_REQUEST, `operation 'read': invalid read mode: ${mode}`)
   }
@@ -1185,7 +1400,7 @@ function validateImpactParams(params: OperationParams): void {
   if (!params.targets || params.targets.length === 0) {
     throw new BatchRejectError(E_BAD_REQUEST, "operation 'impact': impact requires at least one 'targets' entry")
   }
-  const direction = (params.direction ?? "both").toLowerCase()
+  const direction = params.direction ?? "both"
   if (!["in", "out", "both"].includes(direction)) {
     throw new BatchRejectError(E_BAD_REQUEST, `operation 'impact': invalid impact direction: ${direction}`)
   }
@@ -1352,10 +1567,30 @@ export function executeBatchFallback(
     }
   }
 
-  // Revalidate once more before the final response is emitted: a change
-  // detected after the last op still marks the whole batch stale.
+  // Revalidate once more before the final response is emitted. This outer
+  // check is NOT merely a flag: when the drift is first detected HERE (no
+  // mid-loop drift was seen, so every accepted success is still a provisional
+  // result that has not passed a batch-level final commit barrier), every
+  // accepted success is invalidated to E_STALE_SNAPSHOT. Ops already
+  // discarded mid-batch (stale aborts, fail-fast cancellations) are untouched.
+  let envelopeDrift = false
   if (!staleSnapshot && probe !== null && !probe.stateUnchanged()) {
     staleSnapshot = true
+    envelopeDrift = true
+  }
+  if (envelopeDrift) {
+    for (const resp of responses) {
+      if (resp.ok) {
+        resp.ok = false
+        resp.result = undefined
+        resp.error = {
+          code: E_STALE_SNAPSHOT,
+          message: "operation result discarded: repository state changed during execution",
+        }
+        resp.truncated = false
+        resp.artifactRef = undefined
+      }
+    }
   }
 
   return { version: 1, responses, failedFast, staleSnapshot }
@@ -1398,7 +1633,12 @@ function runFallbackOperation(
     }
   }
 
-  return finalizeFallbackResponse(op.id, outcome.value, effectiveLimit, artifactBase)
+  // Commit under the final state-commit barrier: the value is serialized into
+  // provisional artifact data, the repository state is re-checked one last
+  // time, and only then is the artifact atomically activated and the response
+  // accepted. A state change before that final check discards the result and
+  // removes any provisional files.
+  return finalizeFallbackResponse(op.id, outcome.value, effectiveLimit, artifactBase, probe)
 }
 
 function runOp(op: string, params: OperationParams, cwd: string | undefined): OpResult {
