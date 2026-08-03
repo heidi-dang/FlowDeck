@@ -1018,11 +1018,25 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
     const existing = readFileSync(finalPath)
     if (sha256Hex(existing) === contentHash && existing.length === bytes.length) {
       return {
-        tempPath: finalPath, // reuse marker: activation is a no-op
+        tempPath: finalPath, // reuse marker: activation revalidates
         finalPath,
         contentHash,
         discard() {},
-        activate() {
+        activate(targetBytes, targetHash) {
+          // P2-1: the early-return reuse object MUST revalidate independently
+          // — the artifact may have been deleted or replaced between
+          // preparation and activation. Regular-file identity, size and
+          // digest must all still match.
+          const st = statSync(finalPath)
+          if (!st.isFile() || st.size !== targetBytes.length) {
+            throw new Error(
+              `reused artifact ${finalPath} no longer valid (size or type changed)`,
+            )
+          }
+          const data = readFileSync(finalPath)
+          if (sha256Hex(data) !== targetHash) {
+            throw new Error(`reused artifact ${finalPath} content changed (digest mismatch)`)
+          }
           return { kind: "reused-existing", path: finalPath }
         },
       }
@@ -1598,9 +1612,22 @@ export function executeBatchFallback(
   }
 
   const failed = staleSnapshot || txnError !== null
-  // P2-5: rollback returns a structured report; an incomplete rollback is
-  // surfaced distinctly as ROLLBACK INCOMPLETE.
+
+  // P2-6: two-pass rollback. First roll back EVERY pending operation and
+  // aggregate ALL cleanup issues; then construct every provisional error
+  // response using the FINAL aggregate — so a cleanup failure from a later
+  // pending op appears in every response, and both E_INTERNAL and
+  // E_STALE_SNAPSHOT responses disclose incomplete rollback.
   const rollbackIssues: string[] = []
+  if (failed) {
+    for (const outcome of staged) {
+      if (outcome.kind === "pending") {
+        rollbackIssues.push(...outcome.pending.rollback())
+      }
+    }
+  }
+  const rollbackIncomplete = rollbackIssues.length > 0
+
   const responses: OperationResponse[] = []
   for (const outcome of staged) {
     if (outcome.kind === "final") {
@@ -1612,29 +1639,21 @@ export function executeBatchFallback(
       responses.push(pending.buildResponse())
       continue
     }
-    // Roll back (temps only; published artifacts are immutable) and collect
-    // any cleanup failure.
-    rollbackIssues.push(...pending.rollback())
-    if (staleSnapshot) {
-      responses.push({
-        id: pending.id,
-        ok: false,
-        error: {
-          code: E_STALE_SNAPSHOT,
-          message: "operation result discarded: repository state changed during execution",
-        },
-      })
-    } else {
-      let msg = txnError ?? "batch activation failed"
-      if (rollbackIssues.length > 0) {
-        msg = `${msg}; ROLLBACK INCOMPLETE: ${rollbackIssues.join("; ")}`
-      }
-      responses.push({
-        id: pending.id,
-        ok: false,
-        error: { code: E_INTERNAL, message: msg },
-      })
+    let msg = txnError ?? "batch activation failed"
+    if (rollbackIncomplete) {
+      msg = `${msg}; ROLLBACK INCOMPLETE: ${rollbackIssues.join("; ")}`
     }
+    responses.push({
+      id: pending.id,
+      ok: false,
+      error: {
+        code: staleSnapshot ? E_STALE_SNAPSHOT : E_INTERNAL,
+        message: staleSnapshot
+          ? "operation result discarded: repository state changed during execution" +
+            (rollbackIncomplete ? `; ROLLBACK INCOMPLETE: ${rollbackIssues.join("; ")}` : "")
+          : msg,
+      },
+    })
   }
 
   return { version: 1, responses, failedFast, staleSnapshot }

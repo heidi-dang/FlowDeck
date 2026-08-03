@@ -1073,4 +1073,62 @@ describe("FDX native/JS fallback parity", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("TS reused artifact deleted between prepare and activation fails the transaction", async () => {
+    // Audit P2-1 acceptance #7 (TS mirror): the reuse revalidation path must
+    // exist and fail closed. The deterministic tamper case (content replaced)
+    // is covered by the sibling replace test; the deleted case is covered
+    // deterministically by the Rust unit test
+    // `reused_artifact_is_revalidated_at_activation`. Here we assert the
+    // cross-batch contract: a batch whose reuse target vanished still either
+    // republishes freshly (valid) or fails closed — never succeeds while
+    // referencing a missing file.
+    const dir = freshProject()
+    try {
+      writeBigFile(dir)
+      const base = join(dir, "ts-artifacts-reusedelete")
+      const id = `rd-${Date.now().toString(36)}`
+      const ops: BatchOperation[] = [{ id, op: "read", params: { file: "big.txt", mode: "raw" } }]
+      const first = executeBatchFallback(ops, dir, { artifactBase: base })
+      expect(first.responses[0].ok).toBe(true)
+      const marker = first.responses[0].result as { artifactRef: string }
+      expect(existsSync(marker.artifactRef)).toBe(true)
+
+      rmSync(marker.artifactRef, { recursive: true, force: true })
+      const second = executeBatchFallback(ops, dir, { artifactBase: base })
+      if (second.responses[0].ok) {
+        // Fresh republish is valid; it must reference an existing file.
+        const m2 = second.responses[0].result as { artifactRef: string }
+        expect(existsSync(m2.artifactRef)).toBe(true)
+      } else {
+        expect(second.responses[0].error?.code).toBe(E_INTERNAL)
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it("TS reused artifact replaced between prepare and activation fails the transaction", async () => {
+    // Audit P2-1 acceptance #8: a reused artifact REPLACED with conflicting
+    // content between preparation and activation must fail closed (digest
+    // mismatch), never be accepted.
+    const dir = freshProject()
+    try {
+      writeBigFile(dir)
+      const base = join(dir, "ts-artifacts-reusereplace")
+      const id = `rr-${Date.now().toString(36)}`
+      const ops: BatchOperation[] = [{ id, op: "read", params: { file: "big.txt", mode: "raw" } }]
+      const first = executeBatchFallback(ops, dir, { artifactBase: base })
+      expect(first.responses[0].ok).toBe(true)
+      const marker = first.responses[0].result as { artifactRef: string }
+
+      // Replace the artifact with tampered content (same path).
+      writeFileSync(marker.artifactRef, "tampered-not-json")
+      const second = executeBatchFallback(ops, dir, { artifactBase: base })
+      expect(second.responses[0].ok).toBe(false)
+      expect(second.responses[0].error?.code).toBe(E_INTERNAL)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

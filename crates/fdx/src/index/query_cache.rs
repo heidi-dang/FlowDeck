@@ -434,13 +434,17 @@ impl CacheTransaction<'_> {
         std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create cache dir: {e}"))?;
         let final_path = dir.join(key);
         // Deduplicate same-key writes: remove the displaced entry's temp
-        // BEFORE discarding it (P2-1).
-        self.staged.retain(|e| {
-            e.final_path != final_path || {
-                let _ = std::fs::remove_file(&e.staged_path);
-                false
-            }
-        });
+        // BEFORE discarding it (P2-1). A failed displaced-temp removal is
+        // PROPAGATED (P2-3) — never swallowed — so a leak cannot hide.
+        if let Some(pos) = self.staged.iter().position(|e| e.final_path == final_path) {
+            let displaced = self.staged.remove(pos);
+            std::fs::remove_file(&displaced.staged_path).map_err(|e| {
+                format!(
+                    "failed to remove displaced staged temp {} (same-key dedupe): {e}",
+                    displaced.staged_path.display()
+                )
+            })?;
+        }
         // Unique private temp in the same directory (same filesystem for the
         // final hard-link). The nonce makes it unguessable and exclusive.
         let mut attempts = 0;
@@ -496,18 +500,23 @@ impl CacheTransaction<'_> {
     /// publication (P2-2 — the directory that actually changed). LRU is NOT
     /// run here.
     ///
-    /// On failure, every remaining staged temp is removed; any removal failure
-    /// is included in the returned report so an incomplete cleanup surfaces as
-    /// ROLLBACK INCOMPLETE (P1-5/P2-3). Published finals are immutable and are
-    /// never rolled back.
+    /// On failure, every entry THIS transaction Created is removed so no
+    /// partial batch result remains reader-visible (P1-2); pre-existing
+    /// identical winners (ReusedExisting) are never touched. Every
+    /// independent failure — temp removal, namespace fsync, remaining-temp
+    /// cleanup — is preserved in the returned report (P2-5), and
+    /// identical-winner staged-temp removal failures are reported (P2-4).
     pub fn publish(&mut self) -> Result<Vec<CachePublishOutcome>, PublishFailure> {
         let mut outcomes = Vec::with_capacity(self.staged.len());
+        // Final paths of entries THIS transaction Created (hard-linked). On
+        // failure these are removed so no partial batch result is visible.
+        let mut created_paths: Vec<PathBuf> = Vec::new();
+        let mut issues: Vec<String> = Vec::new();
         for entry in self.staged.iter_mut() {
             match std::fs::hard_link(&entry.staged_path, &entry.final_path) {
                 Ok(()) => {
                     // We created the entry (atomic hard-link). Remove the temp
-                    // name; a removal failure is recorded as incomplete
-                    // cleanup (P2-4).
+                    // name; a removal failure is recorded (P2-4/P2-5).
                     let temp_issue = std::fs::remove_file(&entry.staged_path).err().map(|e| {
                         format!(
                             "failed to remove staged temp {}: {e}",
@@ -525,59 +534,88 @@ impl CacheTransaction<'_> {
                     });
                     entry.published = true;
                     outcomes.push(CachePublishOutcome::Created);
-                    if let Some(issue) = temp_issue.or(sync_issue) {
-                        return Err(PublishFailure {
-                            message: format!(
-                                "failed to publish cache entry {}: {issue}",
-                                entry.final_path.display()
-                            ),
-                            temp_cleanup_issues: self.collect_temp_cleanup_issues(),
-                            published_before_failure: outcomes.len(),
-                        });
+                    created_paths.push(entry.final_path.clone());
+                    // Preserve BOTH independent failures (P2-5); do not
+                    // collapse via .or().
+                    for issue in temp_issue.into_iter().chain(sync_issue) {
+                        issues.push(format!(
+                            "cache entry {}: {issue}",
+                            entry.final_path.display()
+                        ));
+                    }
+                    if !issues.is_empty() {
+                        break;
                     }
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                     // Another writer already published this key. Read and
                     // verify the winner: identical → reuse (never owned);
-                    // conflicting → fail closed (never replace).
-                    let _ = std::fs::remove_file(&entry.staged_path);
+                    // conflicting → fail closed (never replace). The losing
+                    // staged-temp removal failure is reported (P2-4).
+                    let temp_issue = std::fs::remove_file(&entry.staged_path).err().map(|e| {
+                        format!(
+                            "failed to remove staged temp {}: {e}",
+                            entry.staged_path.display()
+                        )
+                    });
                     match std::fs::read(&entry.final_path) {
                         Ok(existing) if sha256_hex(&existing) == entry.content_hash => {
                             outcomes.push(CachePublishOutcome::ReusedExisting);
+                            if let Some(issue) = temp_issue {
+                                issues.push(format!(
+                                    "cache entry {}: {issue}",
+                                    entry.final_path.display()
+                                ));
+                            }
                         }
                         Ok(_) => {
-                            return Err(PublishFailure {
-                                message: format!(
-                                    "cache entry {} exists with different content",
+                            issues.push(format!(
+                                "cache entry {} exists with different content",
+                                entry.final_path.display()
+                            ));
+                            if let Some(issue) = temp_issue {
+                                issues.push(format!(
+                                    "cache entry {}: {issue}",
                                     entry.final_path.display()
-                                ),
-                                temp_cleanup_issues: self.collect_temp_cleanup_issues(),
-                                published_before_failure: outcomes.len(),
-                            });
+                                ));
+                            }
+                            break;
                         }
                         Err(read_err) => {
-                            return Err(PublishFailure {
-                                message: format!(
-                                    "cache entry {} winner unreadable: {read_err}",
+                            issues.push(format!(
+                                "cache entry {} winner unreadable: {read_err}",
+                                entry.final_path.display()
+                            ));
+                            if let Some(issue) = temp_issue {
+                                issues.push(format!(
+                                    "cache entry {}: {issue}",
                                     entry.final_path.display()
-                                ),
-                                temp_cleanup_issues: self.collect_temp_cleanup_issues(),
-                                published_before_failure: outcomes.len(),
-                            });
+                                ));
+                            }
+                            break;
                         }
                     }
                 }
                 Err(e) => {
-                    return Err(PublishFailure {
-                        message: format!(
-                            "failed to publish cache entry {}: {e}",
-                            entry.final_path.display()
-                        ),
-                        temp_cleanup_issues: self.collect_temp_cleanup_issues(),
-                        published_before_failure: outcomes.len(),
-                    });
+                    issues.push(format!(
+                        "failed to publish cache entry {}: {e}",
+                        entry.final_path.display()
+                    ));
+                    break;
                 }
             }
+        }
+        if !issues.is_empty() {
+            // Roll back every Created entry so no partial batch result
+            // remains visible (P1-2), and clean every remaining staged temp.
+            let mut all = issues;
+            all.extend(remove_created_paths(&created_paths));
+            all.extend(self.collect_temp_cleanup_issues());
+            return Err(PublishFailure {
+                message: all.join("; "),
+                temp_cleanup_issues: all,
+                published_before_failure: outcomes.len(),
+            });
         }
         Ok(outcomes)
     }
@@ -617,6 +655,25 @@ impl CacheTransaction<'_> {
         self.staged.clear();
         issues
     }
+}
+
+/// Remove the cache entries THIS transaction Created (hard-linked into the
+/// live namespace) so a failed publish leaves no partial reader-visible batch
+/// results (P1-2). ReusedExisting winners are never in `created_paths`.
+/// Returns removal failures for the rollback report (P2-3).
+fn remove_created_paths(created_paths: &[PathBuf]) -> Vec<String> {
+    let mut issues = Vec::new();
+    for path in created_paths {
+        if let Err(e) = std::fs::remove_file(path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                issues.push(format!(
+                    "failed to remove created cache entry {}: {e}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    issues
 }
 
 /// Structured failure from [`CacheTransaction::publish`]: the primary

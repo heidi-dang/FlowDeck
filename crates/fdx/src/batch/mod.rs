@@ -962,18 +962,13 @@ fn execute_batch_with_probe(
             }
         }
 
-        // Phase B: stage + publish all cache writes only after all artifacts
-        // can commit. Publication is a single ATOMIC hard-link per entry —
-        // never a rename-over — so a concurrent writer is never clobbered and
-        // there is no check-then-rename window (P1-1). Cache entries are
-        // content-addressed and IMMUTABLE: published finals are never
-        // restored or deleted on rollback (P1-2 — only Created entries are
-        // owned; ReusedExisting winners are never touched). LRU is NOT run
-        // here — it runs only after the post-activation probe AND final
-        // artifact validation pass.
+        // Phase B: STAGE all cache writes privately. Entries are written to
+        // transaction-private temp files and are NOT yet visible to readers.
+        // Publication is deferred until after Phase C (drift probe) and
+        // Phase C2 (artifact validation) both succeed (P1-1): a stale or
+        // failed batch must leave zero reader-visible positive or negative
+        // cache entries.
         let mut cache_tx_holder: Option<CacheTransaction<'_>> = None;
-        let mut cache_publish_outcomes: Vec<crate::index::query_cache::CachePublishOutcome> =
-            Vec::new();
         if txn_error.is_none() {
             if let Some(cache) = cache_ctx.as_ref().map(|c| &c.cache) {
                 let mut tx = cache.begin();
@@ -985,38 +980,13 @@ fn execute_batch_with_probe(
                         }
                     }
                 }
-                if txn_error.is_none() {
-                    match tx.publish() {
-                        Ok(outcomes) => cache_publish_outcomes = outcomes,
-                        Err(f) => {
-                            txn_error = Some(f.message.clone());
-                            if !f.temp_cleanup_issues.is_empty() {
-                                txn_error = Some(format!(
-                                    "{}; STAGED-TEMP CLEANUP FAILED: {}",
-                                    f.message,
-                                    f.temp_cleanup_issues.join("; ")
-                                ));
-                            }
-                        }
-                    }
-                } else {
-                    let abort_issues = tx.abort();
-                    if !abort_issues.is_empty() {
-                        txn_error = Some(format!(
-                            "{}; STAGED-TEMP CLEANUP FAILED: {}",
-                            txn_error.as_deref().unwrap_or("staging failed"),
-                            abort_issues.join("; ")
-                        ));
-                    }
-                }
                 cache_tx_holder = Some(tx);
             }
         }
-        let _ = &cache_publish_outcomes;
 
         // Phase C: POST-ACTIVATION state probe. The repository may have
-        // changed while artifacts/cache were being activated; every owned
-        // output must be rolled back if it did.
+        // changed while artifacts were being activated; every owned output
+        // must be rolled back if it did.
         let mut post_activation_drift = false;
         if txn_error.is_none() {
             if let Some(p) = eff_probe {
@@ -1029,10 +999,9 @@ fn execute_batch_with_probe(
 
         // Phase C2 (P1-3): revalidate EVERY activated artifact BEFORE global
         // success. A final-validation failure is a TRANSACTION failure — it
-        // rolls back all cache publications (immutable finals are left, but
-        // the batch is void), leaves LRU untouched, and converts every
-        // provisional response to a stable error. Success responses are only
-        // constructed after ALL validations pass.
+        // converts every provisional response to a stable error, leaves LRU
+        // untouched, and (with deferred cache publication) leaves zero
+        // reader-visible cache entries.
         let mut final_revalidation_error: Option<String> = None;
         if txn_error.is_none() && !post_activation_drift {
             for pending in pendings.iter() {
@@ -1058,26 +1027,54 @@ fn execute_batch_with_probe(
 
         let failed =
             txn_error.is_some() || post_activation_drift || final_revalidation_error.is_some();
+        let mut cache_publish_issues: Vec<String> = Vec::new();
         if !failed {
-            // Global commit succeeded: run LRU maintenance ONLY now, after the
-            // post-activation probe AND final artifact revalidation (P1-1,
-            // P1-3). A failed batch never reaches here, so unrelated entries
-            // are never evicted by a failed transaction.
+            // Phase B2: NOW publish the staged cache entries — only after the
+            // drift probe AND artifact revalidation passed. Publication is a
+            // single ATOMIC hard-link per entry; on failure it removes every
+            // entry THIS transaction Created so no partial batch result
+            // remains reader-visible (P1-2); pre-existing identical winners
+            // (ReusedExisting) are never touched.
+            if let Some(tx) = cache_tx_holder.as_mut() {
+                match tx.publish() {
+                    Ok(_) => {}
+                    Err(f) => {
+                        txn_error = Some(f.message.clone());
+                        cache_publish_issues.extend(f.temp_cleanup_issues.clone());
+                    }
+                }
+            }
+        }
+
+        // LRU runs ONLY after cache publication succeeded AND all validations
+        // passed (P1-1). A failed batch never reaches here.
+        if failed {
+            // Staged cache temps are discarded (nothing was published).
+            if let Some(tx) = cache_tx_holder.as_mut() {
+                cache_publish_issues.extend(tx.abort());
+            }
+        } else {
             if let Some(tx) = cache_tx_holder.as_ref() {
                 tx.enforce_lru();
             }
         }
 
-        // Roll back owned outputs on any failure. Artifacts and cache entries
-        // are content-addressed and IMMUTABLE (P1-4): published finals are
-        // never deleted (they may already be reused by another successful
-        // transaction). We dispose of every TEMP/staging file — including
-        // pendings whose artifacts were prepared but never activated (P2-1).
+        // Roll back owned outputs on any failure. Artifacts are content-
+        // addressed and IMMUTABLE (P1-4): published artifact finals are never
+        // deleted (they may already be reused by another successful
+        // transaction). Cache entries published by THIS batch were removed by
+        // publish() itself on failure (P1-2 — no partial reader-visible batch
+        // results). We dispose of every TEMP/staging file — including pendings
+        // whose artifacts were prepared but never activated (P2-1).
         //
         // P2-3: rollback returns a structured report; an INCOMPLETE rollback
         // (a temp that could not be removed) is surfaced distinctly — never
         // described as a clean abort.
         let mut rollback_issues: Vec<String> = Vec::new();
+        // Consume the cache-publication report: `published_before_failure`
+        // counts the entries publish() attempted; its cleanup issues are part
+        // of the rollback evidence (P2-5 acceptance #13).
+        rollback_issues.extend(cache_publish_issues.iter().cloned());
         if failed {
             for pending in pendings.iter() {
                 let before = pending
@@ -1728,7 +1725,25 @@ impl PreparedArtifact {
         match std::fs::hard_link(&self.temp_path, &self.final_path) {
             Ok(()) => {
                 // We won the race: remove the temp name, keep the final name.
-                let _ = self.discard();
+                // P2-2: a failed provisional-temp removal must NOT be ignored.
+                // The activation cannot report clean Created while a temp
+                // remains — we remove the just-created final (the temp still
+                // holds the only copy) and return the combined error, so the
+                // transaction fails before global success.
+                if let Err(temp_err) = self.discard() {
+                    let cleanup = std::fs::remove_file(&self.final_path);
+                    if let Some(parent) = self.final_path.parent() {
+                        let _ = sync_parent_dir(parent);
+                    }
+                    return Err(match cleanup {
+                        Ok(()) => format!(
+                            "provisional temp removal failed ({temp_err}); created artifact removed"
+                        ),
+                        Err(cleanup_err) => format!(
+                            "provisional temp removal failed ({temp_err}) AND artifact cleanup failed ({cleanup_err})"
+                        ),
+                    });
+                }
                 // Directory durability: propagate fsync failure so activation
                 // is not reported durable when it was not. If the final
                 // artifact was already published but the directory sync
@@ -3726,19 +3741,17 @@ mod tests {
             resp.responses[0].error.as_ref().unwrap()["code"],
             err::E_STALE_SNAPSHOT
         );
-        // Published cache finals are content-addressed IMMUTABLE data: a
-        // rollback never deletes them (they may be reused by any identical
-        // future batch). The batch is void — no success response references
-        // them — and no staged temp remains.
+        // Cache publication is DEFERRED until after the drift probe (P1-1):
+        // a stale batch publishes nothing, so zero reader-visible entries.
         assert_eq!(
             cache_entry_count(state.path()),
-            1,
-            "the immutable published cache entry persists (never deleted on rollback)"
+            0,
+            "no positive cache entry may be visible after post-activation drift"
         );
         assert_eq!(
             cache_entry_count_in(state.path(), crate::index::query_cache::NEGATIVE_CACHE_DIR),
             0,
-            "no negative cache entry staged by this op"
+            "no negative cache entry may be visible after post-activation drift"
         );
 
         match prev {
@@ -3784,13 +3797,14 @@ mod tests {
             resp.responses[0].error.as_ref().unwrap()["code"],
             err::E_STALE_SNAPSHOT
         );
-        // The negative entry is content-addressed IMMUTABLE data: it persists
-        // after drift (never deleted on rollback) but the batch is void and no
-        // response references it.
+        // Cache publication is DEFERRED until after the drift probe (P1-1):
+        // a stale negative-cache operation publishes nothing — zero negative
+        // entries visible, so a stale empty result can never suppress a later
+        // query until TTL expiry.
         assert_eq!(
             cache_entry_count_in(state.path(), crate::index::query_cache::NEGATIVE_CACHE_DIR),
-            1,
-            "the immutable negative entry persists (never deleted on rollback)"
+            0,
+            "no negative cache entry may be visible after drift"
         );
         assert_eq!(
             cache_entry_count(state.path()),
@@ -4263,10 +4277,11 @@ mod tests {
 
         let res = tx.publish();
         assert!(res.is_err(), "publish fails on the blocked entry");
-        // key-1 was published (immutable final) — it stays (valid data).
+        // key-1 was Created before the failure — it must be REMOVED so no
+        // partial reader-visible batch result remains (P1-2 all-or-nothing).
         assert!(
-            cache.query_dir().join("key-1").exists(),
-            "the published immutable final remains"
+            !cache.query_dir().join("key-1").exists(),
+            "a created entry is removed when publication fails partway (P1-2)"
         );
         // No staged temp files remain.
         let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
@@ -4535,30 +4550,40 @@ mod tests {
 
     #[test]
     fn incomplete_rollback_is_surfaced_distinctly() {
-        // Audit P2-3: a rollback whose cleanup fails must NOT be described as
-        // a clean abort. We exercise the CacheTransaction publish-failure path
-        // where a blocked entry forces partial publish + rollback; the
-        // transaction must report the failure (which the batch surfaces as
-        // ROLLBACK INCOMPLETE evidence).
+        // Audit P2-3/P2-5: a publish failure whose cleanup has issues must NOT
+        // be described as a clean abort. Cache entries are immutable and never
+        // replaced: a conflicting pre-existing entry fails closed, the Created
+        // entries are removed (no partial visibility, P1-2), and the
+        // PublishFailure report carries the cleanup evidence.
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
         cache.put("key-1", br#"{"k":"prior-1"}"#);
 
         let mut tx = cache.begin();
+        // key-1 already exists with DIFFERENT content → immutable conflict:
+        // the existing winner is never replaced.
         tx.stage_write("key-1", false, br#"{"k":"new-1"}"#).unwrap();
-        tx.stage_write("key-2", false, br#"{"k":"new-2"}"#).unwrap();
+        // A fresh key that WILL be created before the conflict on key-2.
+        tx.stage_write("key-0", false, br#"{"k":"new-0"}"#).unwrap();
         // Block key-2's final path so publish fails partway.
+        tx.stage_write("key-2", false, br#"{"k":"new-2"}"#).unwrap();
         let final2 = cache.query_dir().join("key-2");
         std::fs::create_dir_all(&final2).unwrap();
         std::fs::write(final2.join("blocker"), b"x").unwrap();
 
         let res = tx.publish();
         assert!(res.is_err(), "publish failure is reported, not suppressed");
-        // The partially-published key-1 was CAS-restored to its prior state.
+        // key-1's pre-existing winner is never replaced (immutable conflict).
         assert_eq!(
             cache.get("key-1").as_deref(),
             Some(br#"{"k":"prior-1"}"#.as_slice()),
-            "partial publish rolled back to prior state"
+            "a conflicting pre-existing winner is never replaced"
+        );
+        // key-0 was Created before the failure — it must be removed so no
+        // partial reader-visible batch result remains (P1-2).
+        assert!(
+            !cache.query_dir().join("key-0").exists(),
+            "a created entry is removed when publication fails (P1-2)"
         );
         // No staged temp leaked.
         let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
