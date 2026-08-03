@@ -173,7 +173,7 @@ describe("FDX Native Distribution & Binary Resolver", () => {
   })
 
   it("validateFdxProvenance validates schema and field relationships strictly", () => {
-    const { validateFdxProvenance, detectFdxTarget } = require("../src/tools/fdx-shared.js")
+    const { validateFdxProvenance, detectFdxTarget, expectedTargetTriple } = require("../src/tools/fdx-shared.js")
     const target = detectFdxTarget() ?? { platform: "linux", arch: "x64", packageName: "@heidi-dang/flowdeck-fdx-linux-x64-gnu", executableName: "fdx" }
 
     const validProv = {
@@ -182,9 +182,9 @@ describe("FDX Native Distribution & Binary Resolver", () => {
       flowdeckVersion: "1.0.4",
       fdxBinaryVersion: "1.0.4",
       fdxProtocolVersion: "1.0.0",
-      targetTriple: "x86_64-unknown-linux-gnu",
+      targetTriple: expectedTargetTriple(target) ?? "x86_64-unknown-linux-gnu",
       platform: target.platform,
-      architecture: "x64",
+      architecture: target.arch,
       binaryFilename: target.executableName,
       binaryByteSize: 1000,
       sha256: "3db48a0b85dbb8074f996ffa167486b49d1c25e1e80dcfa85aba28a4570a33f0",
@@ -194,7 +194,7 @@ describe("FDX Native Distribution & Binary Resolver", () => {
     }
 
     // Valid
-    expect(validateFdxProvenance(validProv, target, "3db48a0b85dbb8074f996ffa167486b49d1c25e1e80dcfa85aba28a4570a33f0", 1000).valid).toBe(true)
+    expect(validateFdxProvenance(validProv, target).valid).toBe(true)
 
     // Missing field
     const missingField = { ...validProv, sha256: "" }
@@ -204,8 +204,10 @@ describe("FDX Native Distribution & Binary Resolver", () => {
     const pkgMismatch = { ...validProv, packageName: "@heidi-dang/wrong-package" }
     expect(validateFdxProvenance(pkgMismatch, target).valid).toBe(false)
 
-    // Checksum mismatch
-    expect(validateFdxProvenance(validProv, target, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff").valid).toBe(false)
+    // Byte-level checksum enforcement is NOT part of provenance-document
+    // validation: it happens in validateFdxBinaryPath against the actual file
+    // (covered by the dedicated "rejects checksum mismatch" test).
+    expect(validateFdxProvenance(validProv, target).valid).toBe(true)
 
     // Protocol mismatch
     const badProto = { ...validProv, fdxProtocolVersion: "2.0.0" }

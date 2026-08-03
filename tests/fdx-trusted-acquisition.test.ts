@@ -17,6 +17,8 @@ import {
   detectFdxTarget,
   setActiveProjectDir,
   resolveTrustedPlatformPackage,
+  expectedTargetTriple,
+  validateFdxBinaryPath,
 } from "../src/tools/fdx-shared"
 import { acquireInstallLock, releaseInstallLock, handleFdxInstall, type InstallLockResult } from "../src/commands/fdx-admin"
 
@@ -64,8 +66,32 @@ describe("FDX Trusted Acquisition (Phase 6)", () => {
       writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
       chmodSync(binPath, 0o755)
     }
-    const sha256 = createHash("sha256").update(readFileSync(binPath)).digest("hex")
+    const binBuf = readFileSync(binPath)
+    const sha256 = createHash("sha256").update(binBuf).digest("hex")
     writeFileSync(join(pkgDir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+    // Compliant provenance: models a real release package so the full trust
+    // contract (checksum + provenance) can be exercised end-to-end.
+    const flowdeckVersion = getFlowdeckPackageVersion()
+    writeFileSync(
+      join(pkgDir, "provenance.json"),
+      JSON.stringify({
+        packageName: overrides.name ?? target.packageName,
+        packageVersion: flowdeckVersion,
+        flowdeckVersion,
+        fdxBinaryVersion: flowdeckVersion,
+        fdxProtocolVersion: "1.0.0",
+        targetTriple: expectedTargetTriple(target) ?? undefined,
+        platform: target.platform,
+        architecture: target.arch,
+        binaryFilename: target.executableName,
+        binaryByteSize: binBuf.length,
+        sha256,
+        sourceCommitSha: "0123456789abcdef0123456789abcdef01234567",
+        buildProfile: "release",
+        buildTimestamp: new Date().toISOString(),
+      }),
+      "utf-8"
+    )
     return { pkgDir, binPath }
   }
 
@@ -288,6 +314,48 @@ await new Promise(() => {})
       const res = requireOk(acquireInstallLock(lockPath, TARGET_ID))
       expect(releaseInstallLock(lockPath, res.token)).toBe(true)
       expect(existsSync(lockPath)).toBe(false)
+    })
+
+    it("recovers a stale lock through the direct exclusive-creation fallback (no hard links)", () => {
+      const lockPath = join(tempDir, "fallback-stale.lock")
+      writeFileSync(lockPath, JSON.stringify(makeLockPayload({ pid: 2147483647 })), "utf-8")
+      process.env.FLOWDECK_FDX_LOCK_FORCE_FALLBACK = "1"
+      const res = requireOk(acquireInstallLock(lockPath, TARGET_ID))
+      expect(releaseInstallLock(lockPath, res.token)).toBe(true)
+      expect(existsSync(lockPath)).toBe(false)
+    })
+
+    it("fails closed on the fallback path when the lock owner is live", () => {
+      const lockPath = join(tempDir, "fallback-live.lock")
+      writeFileSync(lockPath, JSON.stringify(makeLockPayload({ pid: process.pid })), "utf-8")
+      process.env.FLOWDECK_FDX_LOCK_FORCE_FALLBACK = "1"
+      const res = acquireInstallLock(lockPath, TARGET_ID)
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.reason).toBe("lock-held-live")
+      expect(existsSync(lockPath)).toBe(true)
+    })
+
+    it("leaves no temporary or quarantine files behind after fallback recovery", () => {
+      const lockPath = join(tempDir, "fallback-cleanup.lock")
+      writeFileSync(lockPath, JSON.stringify(makeLockPayload({ pid: 2147483647 })), "utf-8")
+      process.env.FLOWDECK_FDX_LOCK_FORCE_FALLBACK = "1"
+      const res = requireOk(acquireInstallLock(lockPath, TARGET_ID))
+      releaseInstallLock(lockPath, res.token)
+      const leftovers = readdirSync(tempDir).filter((f) => f.includes(".tmp-") || f.includes(".stale-"))
+      expect(leftovers).toEqual([])
+    })
+
+    it("fails closed when an existing lock cannot be read (permission denied)", () => {
+      if (typeof process.getuid === "function" && process.getuid() === 0) return // root can read 000 files
+      const lockPath = join(tempDir, "unreadable.lock")
+      writeFileSync(lockPath, JSON.stringify(makeLockPayload({ pid: 2147483647 })), "utf-8")
+      chmodSync(lockPath, 0o000)
+      const res = acquireInstallLock(lockPath, TARGET_ID)
+      expect(res.ok).toBe(false)
+      if (!res.ok) expect(res.reason).toBe("lock-read-error")
+      // The unreadable lock is never deleted or modified.
+      expect(existsSync(lockPath)).toBe(true)
+      chmodSync(lockPath, 0o600)
     })
 
     it("fails closed on a lock with an invalid pid (unknown liveness)", () => {
@@ -555,5 +623,175 @@ await new Promise(() => {})
       expect(stagingLeftovers).toEqual([])
       expect(releaseInstallLock(lockPath, "h".repeat(64))).toBe(true)
     })
+  })
+
+  describe("install trust contract (provenance, execution, activated cache)", () => {
+    it("installs a compliant local-dev package end-to-end and directly validates the activated cache", async () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      setActiveProjectDir(tempDir)
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      const result = await handleFdxInstall(true)
+      expect(result).toBe(true)
+      const cacheDir = getFdxCacheDir(target)
+      expect(existsSync(join(cacheDir, target.executableName))).toBe(true)
+      expect(existsSync(join(cacheDir, "checksum.json"))).toBe(true)
+      expect(existsSync(join(cacheDir, "provenance.json"))).toBe(true)
+      const manifest = JSON.parse(readFileSync(join(cacheDir, "install-manifest.json"), "utf-8"))
+      expect(manifest.packageName).toBe(target.packageName)
+      expect(manifest.sha256).toMatch(/^[0-9a-f]{64}$/)
+      // The activated cache satisfies the full trust contract on its own:
+      // post-activation direct validation of the cached binary (the P2-4
+      // gate) passes with checksum AND provenance required.
+      const cacheBin = join(cacheDir, target.executableName)
+      const direct = validateFdxBinaryPath(cacheBin, cacheDir, { requireChecksum: true, requireProvenance: true, target })
+      expect(direct.valid).toBe(true)
+      expect(direct.integrity.status).toBe("pass")
+      // Once the transient local-dev source is removed, the resolver serves
+      // a trusted managed source — either the activated cache or the repo's
+      // own local-dev package (both pass the full trust contract).
+      rmSync(fake.pkgDir, { recursive: true, force: true })
+      const status = getFdxAvailabilityStatus(true)
+      expect(status.available).toBe(true)
+      expect(["cache", "package"]).toContain(status.source)
+    }, { timeout: 30000 })
+
+    it("rejects an install when provenance fails the trust contract (tampered packageName)", async () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      setActiveProjectDir(tempDir)
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      const prov = JSON.parse(readFileSync(join(fake.pkgDir, "provenance.json"), "utf-8"))
+      prov.packageName = "@heidi-dang/evil-fdx"
+      writeFileSync(join(fake.pkgDir, "provenance.json"), JSON.stringify(prov), "utf-8")
+      const result = await handleFdxInstall(true)
+      expect(result).toBe(false)
+      // Nothing may be activated for a failed install.
+      const cacheDir = getFdxCacheDir(target)
+      expect(existsSync(cacheDir)).toBe(false)
+    }, { timeout: 30000 })
+
+    it("rejects an install when the source binary does not match its checksum", async () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      setActiveProjectDir(tempDir)
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      // Corrupt the binary AFTER checksum/provenance generation: the checksum
+      // and provenance both reference the original bytes, so the mismatch is
+      // detected before anything is staged.
+      writeFileSync(fake.binPath, "#!/bin/sh\necho 'tampered'\n", "utf-8")
+      chmodSync(fake.binPath, 0o755)
+      const result = await handleFdxInstall(true)
+      expect(result).toBe(false)
+      expect(existsSync(getFdxCacheDir(target))).toBe(false)
+    }, { timeout: 30000 })
+
+    it("never copies an FDX_BINARY_PATH / PATH binary into the managed repair cache", async () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FDX_BINARY_PATH = fake.binPath
+      const status = getFdxAvailabilityStatus(true)
+      expect(status.source).toBe("env")
+      // A repair install never imports the unmanaged env binary into the
+      // managed cache. Without a trusted managed/local source to repair from,
+      // the install fails closed and leaves the cache untouched.
+      const result = await handleFdxInstall(true)
+      expect(result).toBe(false)
+      const cacheDir = getFdxCacheDir(target)
+      expect(existsSync(cacheDir)).toBe(false)
+    })
+
+    it("validates binaries at paths containing spaces (shell-free execution)", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const spaceDir = join(tempDir, "My Project With Spaces", "app")
+      mkdirSync(spaceDir, { recursive: true })
+      const binPath = join(spaceDir, target.executableName)
+      if (process.platform === "win32") {
+        writeFileSync(binPath, "@echo fdx v1.0.4\r\n", "utf-8")
+      } else {
+        writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+        chmodSync(binPath, 0o755)
+      }
+      const binBuf = readFileSync(binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
+      writeFileSync(join(spaceDir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      const val = validateFdxBinaryPath(binPath, spaceDir, { requireChecksum: true })
+      expect(val.valid).toBe(true)
+      expect(val.version).toBe("1.0.4")
+    })
+
+    it("a present-but-invalid provenance invalidates an otherwise checksum-valid binary", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const dir = join(tempDir, "bad-prov")
+      mkdirSync(dir, { recursive: true })
+      const binPath = join(dir, target.executableName)
+      if (process.platform === "win32") {
+        writeFileSync(binPath, "@echo fdx v1.0.4\r\n", "utf-8")
+      } else {
+        writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+        chmodSync(binPath, 0o755)
+      }
+      const binBuf = readFileSync(binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
+      writeFileSync(join(dir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      const flowdeckVersion = getFlowdeckPackageVersion()
+      writeFileSync(
+        join(dir, "provenance.json"),
+        JSON.stringify({
+          packageName: "@heidi-dang/evil-fdx", // wrong identity
+          packageVersion: flowdeckVersion,
+          flowdeckVersion,
+          fdxBinaryVersion: flowdeckVersion,
+          fdxProtocolVersion: "1.0.0",
+          targetTriple: expectedTargetTriple(target) ?? undefined,
+          platform: target.platform,
+          architecture: target.arch,
+          binaryFilename: target.executableName,
+          binaryByteSize: binBuf.length,
+          sha256,
+          sourceCommitSha: "0123456789abcdef0123456789abcdef01234567",
+          buildProfile: "release",
+          buildTimestamp: new Date().toISOString(),
+        }),
+        "utf-8"
+      )
+      const val = validateFdxBinaryPath(binPath, dir, { requireChecksum: true, requireProvenance: true, target })
+      expect(val.valid).toBe(false)
+      expect(val.reason).toContain("Provenance validation failed")
+    })
+
+    it("rejects local dev sources in a release profile in a fresh process", async () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      buildFakePlatformPackage(tempDir, {})
+      const script = `
+import { resolveTrustedPlatformPackage, detectFdxTarget, setActiveProjectDir } from ${JSON.stringify(join(REPO_ROOT, "src/tools/fdx-shared.ts"))}
+setActiveProjectDir(${JSON.stringify(tempDir)})
+const target = detectFdxTarget()
+const res = target ? resolveTrustedPlatformPackage(target, { includeLocalDev: true }) : null
+console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev: res?.source === "local-dev" }))
+`
+      const h = spawnScript(script, { FLOWDECK_PROFILE: "release", FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE: "1" })
+      await waitForResult(h)
+      const line = h.stdout.split("RESULT:")[1]?.split("\n")[0]
+      expect(line).toBeDefined()
+      const r = JSON.parse(line!)
+      expect(r.isLocalDev).toBe(false)
+      await killChild(h)
+    }, { timeout: 20000 })
   })
 })

@@ -492,6 +492,11 @@ jobs:
           fi
 
           TMP_ROOT=$(mktemp -d)
+          # Cleanup trap: removes temp dirs on success AND failure. On Windows
+          # a shell whose cwd is still inside TMP_ROOT cannot remove it
+          # ("Device or resource busy"), so the trap steps out to the workspace
+          # first. Cleanup failures must not mask the actual command result.
+          trap 'cd "$GITHUB_WORKSPACE" 2>/dev/null || true; rm -rf "$TMP_ROOT" "$TARBALL_PATH" 2>/dev/null || true' EXIT
           SPACE_DIR="$TMP_ROOT/My Project With Spaces"
           mkdir -p "$SPACE_DIR/app" "$SPACE_DIR/home"
           cd "$SPACE_DIR/app"
@@ -518,7 +523,10 @@ jobs:
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js rollback || { echo "FAIL: rollback"; exit 1; }
           HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js uninstall --force || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: all commands"
-          rm -rf "$TMP_ROOT" "$TARBALL_PATH"
+          # Step out of TMP_ROOT before cleanup; the EXIT trap removes the
+          # temp files (a shell inside the directory being removed cannot
+          # remove it on Windows).
+          cd "$GITHUB_WORKSPACE"
 
   completion:
     name: Pipeline Completion

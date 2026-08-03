@@ -124,9 +124,19 @@ function classifyExistingLock(lockPath: string): LockClassification {
   try {
     mtimeMs = statSync(lockPath).mtimeMs
     raw = readFileSync(lockPath, "utf-8")
-  } catch {
-    // Lock vanished between EEXIST and read — retry the exclusive create.
-    return { recoverable: true, raw: null }
+  } catch (e: any) {
+    if (e?.code === "ENOENT") {
+      // Lock vanished between EEXIST and read — retry the exclusive create.
+      return { recoverable: true, raw: null }
+    }
+    // Any other failure (EACCES, EPERM, EIO, ENOTDIR, EISDIR, ...) is NOT a
+    // disappearance: the lock may exist but be uninspectable. Fail closed —
+    // never classify a lock we could not read, and never hint at deletion.
+    return {
+      recoverable: false,
+      reason: "lock-read-error",
+      detail: `Existing lock could not be inspected (${e?.code ?? e?.message}); the owning process is unknown.`,
+    }
   }
 
   const ageMs = Date.now() - mtimeMs
@@ -194,12 +204,106 @@ function recoverStaleLock(lockPath: string, expectedRaw: string): "recovered" | 
     return "error"
   }
   if (quarantinedRaw !== expectedRaw) {
-    // A different lock was quarantined — restore it for its true owner.
-    try { renameSync(quarantinePath, lockPath) } catch {}
+    // We quarantined a DIFFERENT lock (a fresh owner won after our classify,
+    // or another contender's quarantine). Restore it WITHOUT ever replacing a
+    // lock that may now exist at lockPath: POSIX rename replaces any existing
+    // destination, which would clobber a valid replacement owner's lock.
+    restoreQuarantinedLock(quarantinePath, lockPath, quarantinedRaw)
     return "contended"
   }
   rmSync(quarantinePath, { force: true })
   return "recovered"
+}
+
+/**
+ * No-clobber restore of a quarantined lock. Only places the quarantined
+ * content back if lockPath is still free: `linkSync` is atomic and fails with
+ * EEXIST when a newer lock exists — it never replaces an existing lock. On
+ * filesystems without hard links, an exclusive create carrying the quarantined
+ * content is the equivalent no-replace primitive. If a newer lock occupies the
+ * path, the quarantined (superseded) lock is discarded; the newest lock is
+ * authoritative, and the superseded owner's later release attempt simply fails
+ * its token check instead of deleting another owner's lock.
+ */
+function restoreQuarantinedLock(quarantinePath: string, lockPath: string, content: string): void {
+  try {
+    linkSync(quarantinePath, lockPath)
+    try { rmSync(quarantinePath, { force: true }) } catch {}
+    return
+  } catch (e: any) {
+    if (e?.code === "EEXIST") {
+      // A newer lock exists at lockPath — it is authoritative. Discard the
+      // superseded quarantine.
+      try { rmSync(quarantinePath, { force: true }) } catch {}
+      return
+    }
+    // Hard links unavailable or denied — fall through to exclusive creation.
+  }
+  try {
+    const fd = openSync(lockPath, "wx")
+    try {
+      writeFileSync(fd, content, "utf-8")
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    try { rmSync(quarantinePath, { force: true }) } catch {}
+  } catch (e: any) {
+    if (e?.code === "EEXIST") {
+      try { rmSync(quarantinePath, { force: true }) } catch {}
+      return
+    }
+    // Restore failed for a non-contention reason: keep the quarantine file as
+    // evidence and fail closed (the caller treats "contended" as a retry).
+  }
+}
+
+type ActivationResult =
+  | { state: "acquired" }
+  | { state: "contended" }
+  | { state: "tmp-missing" }
+  | { state: "fatal"; reason: string; detail?: string }
+
+/**
+ * Common lock activation used by BOTH the hard-link path and the direct
+ * exclusive-creation fallback. Activation is atomic and never replaces an
+ * existing lock:
+ *  - linkSync(tmpPath, lockPath): atomic no-replace on hard-link filesystems.
+ *  - openSync(lockPath, "wx"): fallback when hard links are unavailable or
+ *    denied (EPERM/ENOTSUP/EACCES/...); observers are protected by the bounded
+ *    grace interval while the metadata is written.
+ * EEXIST from either primitive is the single "contended" outcome and always
+ * feeds the same classify/recover path — stale recovery therefore behaves
+ * identically on filesystems without hard links (previously the fallback loop
+ * deleted the tmp payload and never reached classification, permanently
+ * blocking dead-owner locks). The tmp payload is preserved across retries.
+ */
+function tryActivate(tmpPath: string, lockPath: string, payload: string, tryHardLink: boolean): ActivationResult {
+  if (tryHardLink) {
+    try {
+      linkSync(tmpPath, lockPath)
+      try { rmSync(tmpPath, { force: true }) } catch {}
+      return { state: "acquired" }
+    } catch (e: any) {
+      if (e?.code === "EEXIST") return { state: "contended" }
+      if (e?.code === "ENOENT") return { state: "tmp-missing" }
+      // Hard links unavailable or denied — fall through to exclusive create.
+    }
+  }
+  try {
+    const fd = openSync(lockPath, "wx")
+    try {
+      writeFileSync(fd, payload, "utf-8")
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    try { rmSync(tmpPath, { force: true }) } catch {}
+    return { state: "acquired" }
+  } catch (e: any) {
+    if (e?.code === "EEXIST") return { state: "contended" }
+    return { state: "fatal", reason: "lock-activation-error", detail: e?.message }
+  }
 }
 
 /**
@@ -208,17 +312,20 @@ function recoverStaleLock(lockPath: string, expectedRaw: string): "recovered" | 
  * Ownership-safe protocol:
  *   1. Write the complete lock metadata (schema, pid, timestamp, random
  *      ownership token, target identity) to a unique sibling temporary file and
- *      fsync it — observers never see a partially written lock.
- *   2. Atomically activate the lock without replacing an existing lock
- *      (hard-link creation; direct O_EXCL fallback for platforms without hard
- *      links, where the bounded grace interval protects observers).
+ *      fsync it — observers never see a partially written lock. The tmp
+ *      payload is preserved across contention retries and only rewritten if
+ *      it was actually lost; it is never deleted on contention.
+ *   2. Atomically activate the lock without replacing an existing lock via a
+ *      common activation primitive (hard-link creation; direct O_EXCL
+ *      fallback for platforms without hard links, where the bounded grace
+ *      interval protects observers).
  *   3. On contention, classify the existing lock:
- *        - live owner, unknown liveness, fresh malformed/empty, or
- *          incompatible schema → fail closed;
+ *        - live owner, unknown liveness, fresh malformed/empty, incompatible
+ *          schema, or an uninspectable lock (read error) → fail closed;
  *        - confirmed dead owner or old malformed lock → atomic recovery via
- *          quarantine + identity re-verification, then retry the exclusive
- *          create. Ownership is granted only by the exclusive create, never by
- *          deleting a lock.
+ *          quarantine + identity re-verification with no-clobber restores,
+ *          then retry the exclusive create. Ownership is granted only by the
+ *          exclusive create, never by deleting a lock.
  * The returned token is the only credential that may release the lock.
  */
 export function acquireInstallLock(lockPath: string, targetId: string): InstallLockResult {
@@ -240,63 +347,65 @@ export function acquireInstallLock(lockPath: string, targetId: string): InstallL
     return { ok: false, reason: "lock-dir-error", detail: e?.message }
   }
 
-  try {
-    const fd = openSync(tmpPath, "wx")
+  const writeTmp = (): InstallLockResult => {
     try {
-      writeFileSync(fd, payload, "utf-8")
-      fsyncSync(fd)
-    } finally {
-      closeSync(fd)
-    }
-  } catch (e: any) {
-    return { ok: false, reason: "lock-tmp-write-error", detail: e?.message }
-  }
-
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      linkSync(tmpPath, lockPath)
-      rmSync(tmpPath, { force: true })
+      const fd = openSync(tmpPath, "wx")
+      try {
+        writeFileSync(fd, payload, "utf-8")
+        fsyncSync(fd)
+      } finally {
+        closeSync(fd)
+      }
       return { ok: true, token }
     } catch (e: any) {
-      if (e?.code !== "EEXIST") {
-        // Hard links unavailable (e.g. non-NTFS volumes on Windows): fall back
-        // to direct exclusive creation. The bounded grace interval protects
-        // observers from the brief window before the metadata is written.
-        try {
-          const fd = openSync(lockPath, "wx")
-          try {
-            writeFileSync(fd, payload, "utf-8")
-            fsyncSync(fd)
-          } finally {
-            closeSync(fd)
-          }
-          rmSync(tmpPath, { force: true })
-          return { ok: true, token }
-        } catch (e2: any) {
-          rmSync(tmpPath, { force: true })
-          if (e2?.code === "EEXIST") continue
-          return { ok: false, reason: "lock-activation-error", detail: e2?.message }
-        }
-      }
-
-      const cls = classifyExistingLock(lockPath)
-      if (!cls.recoverable) {
-        rmSync(tmpPath, { force: true })
-        return { ok: false, reason: cls.reason, detail: cls.detail }
-      }
-      if (cls.raw === null) continue // Lock vanished — retry the exclusive create.
-
-      const rec = recoverStaleLock(lockPath, cls.raw)
-      if (rec === "error") {
-        rmSync(tmpPath, { force: true })
-        return { ok: false, reason: "lock-recovery-error", detail: "Stale lock recovery failed; preserved evidence and failed closed." }
-      }
-      // "recovered" or "contended" → retry the exclusive create; the create is
-      // the single arbiter of ownership.
-      continue
+      return { ok: false, reason: "lock-tmp-write-error", detail: e?.message }
     }
   }
-  rmSync(tmpPath, { force: true })
+
+  let tmpWrite = writeTmp()
+  if (!tmpWrite.ok) return tmpWrite
+
+  // Test hook (never set in production): force the direct exclusive-creation
+  // path so stale recovery through the fallback is exercised deterministically
+  // even on filesystems where hard links exist.
+  const tryHardLink = process.env.FLOWDECK_FDX_LOCK_FORCE_FALLBACK !== "1"
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const act = tryActivate(tmpPath, lockPath, payload, tryHardLink)
+    if (act.state === "acquired") return { ok: true, token }
+    if (act.state === "fatal") {
+      try { rmSync(tmpPath, { force: true }) } catch {}
+      return { ok: false, reason: act.reason, detail: act.detail }
+    }
+    if (act.state === "tmp-missing") {
+      // The tmp payload was lost (external cleanup or an exotic filesystem) —
+      // rewrite it and retry; bounded retries keep this from looping forever.
+      tmpWrite = writeTmp()
+      if (!tmpWrite.ok) {
+        try { rmSync(tmpPath, { force: true }) } catch {}
+        return tmpWrite
+      }
+      continue
+    }
+
+    // Contended: classify the existing lock (ENOENT-only vanish detection;
+    // any other read failure fails closed as lock-read-error).
+    const cls = classifyExistingLock(lockPath)
+    if (!cls.recoverable) {
+      try { rmSync(tmpPath, { force: true }) } catch {}
+      return { ok: false, reason: cls.reason, detail: cls.detail }
+    }
+    if (cls.raw === null) continue // Lock vanished — retry the exclusive create.
+
+    const rec = recoverStaleLock(lockPath, cls.raw)
+    if (rec === "error") {
+      try { rmSync(tmpPath, { force: true }) } catch {}
+      return { ok: false, reason: "lock-recovery-error", detail: "Stale lock recovery failed; preserved evidence and failed closed." }
+    }
+    // "recovered" or "contended" → retry the exclusive create; the create is
+    // the single arbiter of ownership.
+  }
+  try { rmSync(tmpPath, { force: true }) } catch {}
   return { ok: false, reason: "lock-contention-exhausted", detail: "Repeated contention with other installers; giving up." }
 }
 
@@ -457,7 +566,22 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     console.error(`  Lock file: ${lockPath}`)
     console.error(`  Reason: ${lock.reason}`)
     if (lock.detail) console.error(`  Detail: ${lock.detail}`)
-    console.error(`  If no other install is running, delete the stale lock file and retry.`)
+    if (lock.reason === "lock-held-live") {
+      console.error(`  The lock is held by a live process; it will be released when that process finishes.`)
+    } else if (
+      lock.reason === "lock-read-error" ||
+      lock.reason === "lock-unknown-liveness" ||
+      lock.reason === "lock-indeterminate-fresh" ||
+      lock.reason === "lock-incompatible-schema"
+    ) {
+      console.error(`  The lock's owner state is unknown or the lock is incompatible — do NOT delete it.`)
+      console.error(`  Investigate the owning process before taking any action.`)
+    } else {
+      // Confirmed-stale cases (dead owner / old malformed content) are normally
+      // recovered automatically; this guidance applies only when recovery was
+      // blocked or exhausted (e.g. lock-recovery-error, lock-contention-exhausted).
+      console.error(`  If no other install is running and the owner is confirmed dead, delete the stale lock file and retry.`)
+    }
     return false
   }
   lockToken = lock.token
@@ -557,7 +681,7 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
       return false
     }
 
-    const provVal = validateFdxProvenance(provenanceData, target, actualSha256, readFileSync(sourceBin).length)
+    const provVal = validateFdxProvenance(provenanceData, target)
     if (!provVal.valid) {
       rmSync(stagingDir, { recursive: true, force: true })
       if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
@@ -576,7 +700,10 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     }
 
     // ── 5. Validate staged binary before activation ────────────────────────
-    const val = validateFdxBinaryPath(stagedBin, stagingDir, true)
+    // The staged copy must satisfy the FULL trust contract: checksum AND
+    // provenance (identity, triple, profile, version, source commit) against
+    // the expected target — a present-but-invalid provenance is a hard failure.
+    const val = validateFdxBinaryPath(stagedBin, stagingDir, { requireChecksum: true, requireProvenance: true, target })
     if (!val.valid) {
       rmSync(stagingDir, { recursive: true, force: true })
       if (registryFetchTmp) try { rmSync(registryFetchTmp, { recursive: true, force: true }) } catch {}
@@ -608,6 +735,29 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     const targetBin = join(cacheDir, target.executableName)
     if (process.platform !== "win32") {
       chmodSync(targetBin, 0o755)
+    }
+
+    // ── 7b. Direct activation verification ─────────────────────────────────
+    // Verify the activated cache ITSELF against the full trust contract —
+    // executable, checksum, provenance, and install manifest — before any
+    // higher-priority source (FDX_BINARY_PATH, optional dependency) is
+    // consulted. This prevents a broken cache from being masked by an
+    // unrelated "available" binary elsewhere.
+    const activatedManifestPath = join(cacheDir, "install-manifest.json")
+    let directCacheOk = false
+    try {
+      const manifest = JSON.parse(readFileSync(activatedManifestPath, "utf-8"))
+      const manifestTarget = `${target.platform}-${target.arch}${target.libc ? `-${target.libc}` : ""}`
+      const manifestOk = manifest?.sha256 === actualSha256 && manifest?.target === manifestTarget
+      if (manifestOk) {
+        const val = validateFdxBinaryPath(targetBin, cacheDir, { requireChecksum: true, requireProvenance: true, target })
+        directCacheOk = val.valid && val.checksumStatus === "pass"
+      }
+    } catch {
+      directCacheOk = false
+    }
+    if (!directCacheOk) {
+      throw new Error("Post-installation verification failed: activated cache failed direct trust validation")
     }
 
     const verifyStatus = getFdxAvailabilityStatus(true)

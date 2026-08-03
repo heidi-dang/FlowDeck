@@ -104,16 +104,15 @@ jobs:
               exit 1
             fi
 
-            TGZ=$(find "$ART_DIR" -maxdepth 1 -name "*.tgz" | head -n 1)
             MANIFEST="$ART_DIR/artifact-manifest.json"
+            if [ ! -f "$MANIFEST" ]; then
+              echo "FAIL: Missing artifact-manifest.json for package $pkg in $ART_DIR"
+              exit 1
+            fi
+            TGZ="$ART_DIR/$(node -p "require('./$MANIFEST').artifactFilename")"
 
             if [ -z "$TGZ" ] || [ ! -f "$TGZ" ]; then
               echo "FAIL: Missing .tgz archive for package $pkg in $ART_DIR"
-              exit 1
-            fi
-
-            if [ ! -f "$MANIFEST" ]; then
-              echo "FAIL: Missing artifact-manifest.json for package $pkg in $ART_DIR"
               exit 1
             fi
 
@@ -175,8 +174,8 @@ jobs:
 
           for pkg in "${PLATFORM_PKGS[@]}"; do
             ART_DIR="release-artifacts/fdx-tgz-${pkg}"
-            EXACT_TGZ=$(find "$ART_DIR" -maxdepth 1 -name "*.tgz" | head -n 1)
             MANIFEST="$ART_DIR/artifact-manifest.json"
+            EXACT_TGZ="$ART_DIR/$(node -p "require('./$MANIFEST').artifactFilename")"
 
             if [ -z "$EXACT_TGZ" ] || [ ! -f "$EXACT_TGZ" ]; then
               echo "FAIL: Expected tarball $EXACT_TGZ missing. Directory-publish fallback is strictly prohibited."
@@ -280,7 +279,7 @@ jobs:
       - name: Compile Native FDX Binary
         shell: bash
         run: |
-          cargo build --manifest-path crates/fdx/Cargo.toml --target ${{ matrix.target.rust_target }} --release
+          cargo build --manifest-path crates/fdx/Cargo.toml --target ${{ matrix.target.rust_target }} --release --locked
 
       - name: Populate Platform Distribution Directory
         shell: bash
@@ -347,25 +346,23 @@ jobs:
           fi
 
           cd "$DEST_DIR"
-          TGZ_NAME=$(npm pack | tail -n 1)
-          TGZ_SHA=$(sha256sum "$TGZ_NAME" | awk '{print $1}' || powershell -Command "(Get-FileHash '$TGZ_NAME' -Algorithm SHA256).Hash.ToLower()")
-          TGZ_SRI="sha512-$(openssl dgst -sha512 -binary "$TGZ_NAME" | openssl base64)"
-          PROV_SHA=$(sha256sum provenance.json | awk '{print $1}' || powershell -Command "(Get-FileHash 'provenance.json' -Algorithm SHA256).Hash.ToLower()")
-
-          cat <<EOF > artifact-manifest.json
-          {
-            "packageName": "@heidi-dang/${{ matrix.target.pkg }}",
-            "packageVersion": "$PKG_VERSION",
-            "target": "${{ matrix.target.pkg }}",
-            "sourceCommitSha": "$HEAD_SHA",
-            "artifactFilename": "$TGZ_NAME",
-            "artifactSha256": "$TGZ_SHA",
-            "npmIntegrity": "$TGZ_SRI",
-            "binarySha256": "$SHA",
-            "provenanceSha256": "$PROV_SHA",
-            "builtAt": "$NOW"
-          }
-          EOF
+          # Pack the exact archive, then let the shared tooling generate the
+          # manifest (canonical single-line sha512- SRI, sha256, all cross-hashes).
+          # Archive name is derived from package name + version — never parsed
+          # from npm pack output, never glob-discovered.
+          npm pack
+          node "$GITHUB_WORKSPACE/scripts/verify-fdx-artifact.mjs" generate \
+            --dir "$PWD" \
+            --package-name "@heidi-dang/${{ matrix.target.pkg }}" \
+            --version "$PKG_VERSION" \
+            --source-sha "$HEAD_SHA" \
+            --built-at "$NOW"
+          # Fail-closed cross-manifest verification before upload.
+          node "$GITHUB_WORKSPACE/scripts/verify-fdx-artifact.mjs" verify \
+            --dir "$PWD" \
+            --package-name "@heidi-dang/${{ matrix.target.pkg }}" \
+            --version "$PKG_VERSION" \
+            --source-sha "$HEAD_SHA"
 
       - name: Upload Native Release Artifact
         uses: actions/upload-artifact@v4

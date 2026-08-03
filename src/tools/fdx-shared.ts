@@ -321,9 +321,7 @@ export function isSemverCompatible(version: string | null): { compatible: boolea
 
 export function validateFdxProvenance(
   provenance: any,
-  target?: FdxTarget | null,
-  expectedSha256?: string,
-  expectedByteSize?: number
+  target?: FdxTarget | null
 ): { valid: boolean; reason?: string } {
   if (!provenance || typeof provenance !== "object") {
     return { valid: false, reason: "Provenance manifest is missing or non-object" }
@@ -349,28 +347,54 @@ export function validateFdxProvenance(
     if (provenance.binaryFilename !== target.executableName) {
       return { valid: false, reason: `Provenance binaryFilename "${provenance.binaryFilename}" mismatch with target executable "${target.executableName}"` }
     }
-  }
 
-  if (expectedSha256 && provenance.sha256 !== expectedSha256) {
-    return { valid: false, reason: `Provenance sha256 "${provenance.sha256}" mismatch with binary SHA-256 "${expectedSha256}"` }
-  }
+    // Full trust contract: every trust-critical field must match the expected
+    // provenance exactly. Checksum success never outweighs a provenance
+    // violation on a managed source.
+    const expected = buildExpectedProvenance(target)
 
-  if (expectedByteSize !== undefined && Number(provenance.binaryByteSize) !== expectedByteSize) {
-    return { valid: false, reason: `Provenance binaryByteSize "${provenance.binaryByteSize}" mismatch with binary byte size "${expectedByteSize}"` }
-  }
+    if (expected.targetTriple && provenance.targetTriple !== expected.targetTriple) {
+      return { valid: false, reason: `Provenance targetTriple "${provenance.targetTriple}" mismatch with expected "${expected.targetTriple}" for target ${targetNameOf(target)}` }
+    }
 
-  const verCheck = isSemverCompatible(provenance.fdxBinaryVersion)
-  if (!verCheck.compatible) {
-    return { valid: false, reason: `Provenance fdxBinaryVersion invalid: ${verCheck.reason}` }
-  }
+    if (String(provenance.platform).toLowerCase() !== expected.platform) {
+      return { valid: false, reason: `Provenance platform "${provenance.platform}" mismatch with expected "${expected.platform}"` }
+    }
 
-  if (provenance.fdxProtocolVersion !== "1.0.0") {
-    return { valid: false, reason: `Provenance fdxProtocolVersion "${provenance.fdxProtocolVersion}" unsupported (expected "1.0.0")` }
-  }
+    const archTokens = String(provenance.architecture ?? "").split(/[-_]/).filter(Boolean)
+    if (!archTokens.includes(target.arch)) {
+      return { valid: false, reason: `Provenance architecture "${provenance.architecture}" does not identify ${target.arch}` }
+    }
 
-  const commit = provenance.sourceCommitSha || provenance.gitCommit
-  if (commit && !/^[0-9a-fA-F]{40}$/.test(commit)) {
-    return { valid: false, reason: `Provenance commit SHA "${commit}" is not a valid 40-character SHA` }
+    if (expected.libc && provenance.libc !== undefined && provenance.libc !== expected.libc) {
+      return { valid: false, reason: `Provenance libc "${provenance.libc}" mismatch with expected "${expected.libc}"` }
+    }
+
+    if (provenance.buildProfile !== "release") {
+      return { valid: false, reason: `Provenance buildProfile "${provenance.buildProfile}" is not "release"` }
+    }
+
+    if (provenance.fdxProtocolVersion !== EXPECTED_FDX_PROTOCOL_VERSION) {
+      return { valid: false, reason: `Provenance fdxProtocolVersion "${provenance.fdxProtocolVersion}" does not match expected "${EXPECTED_FDX_PROTOCOL_VERSION}"` }
+    }
+
+    const flowVer = isSemverCompatible(provenance.flowdeckVersion)
+    if (!flowVer.compatible) {
+      return { valid: false, reason: `Provenance flowdeckVersion invalid: ${flowVer.reason}` }
+    }
+    if (provenance.flowdeckVersion !== provenance.fdxBinaryVersion) {
+      return { valid: false, reason: `Provenance flowdeckVersion "${provenance.flowdeckVersion}" does not match fdxBinaryVersion "${provenance.fdxBinaryVersion}"` }
+    }
+    const pkgVer = isSemverCompatible(provenance.packageVersion)
+    if (!pkgVer.compatible) {
+      return { valid: false, reason: `Provenance packageVersion invalid: ${pkgVer.reason}` }
+    }
+
+    if (!provenance.sourceCommitSha || !/^[0-9a-fA-F]{40}$/.test(provenance.sourceCommitSha)) {
+      return { valid: false, reason: "Provenance sourceCommitSha is missing or not a valid 40-character SHA" }
+    }
+  } else if (provenance.sourceCommitSha && !/^[0-9a-fA-F]{40}$/.test(provenance.sourceCommitSha)) {
+    return { valid: false, reason: `Provenance commit SHA "${provenance.sourceCommitSha}" is not a valid 40-character SHA` }
   }
 
   return { valid: true }
@@ -422,8 +446,57 @@ export function detectFdxTarget(): FdxTarget | null {
   return null
 }
 
+/** Canonical target key (mirrors the cache directory naming convention). */
+export function targetNameOf(target: FdxTarget): string {
+  return `${target.platform}-${target.arch}${target.libc ? `-${target.libc}` : ""}`
+}
+
+/**
+ * Canonical Rust target triples per platform target. These match the triples
+ * emitted by the production CI build (.github/workflows/build-fdx-binaries.yml)
+ * and the local packaging script; targetTriple in provenance.json must equal
+ * them exactly.
+ */
+export const FDX_TARGET_TRIPLES: Record<string, string> = {
+  "linux-x64-gnu": "x86_64-unknown-linux-gnu",
+  "linux-arm64-gnu": "aarch64-unknown-linux-gnu",
+  "linux-x64-musl": "x86_64-unknown-linux-musl",
+  "darwin-x64": "x86_64-apple-darwin",
+  "darwin-arm64": "aarch64-apple-darwin",
+  "win32-x64": "x86_64-pc-windows-msvc",
+}
+
+/** The canonical target triple for a platform target, or null if unsupported. */
+export function expectedTargetTriple(target: FdxTarget): string | null {
+  return FDX_TARGET_TRIPLES[targetNameOf(target)] ?? null
+}
+
+/**
+ * The exact provenance contract a managed FDX source must satisfy. Every field
+ * is enforced by validateFdxProvenance when a target is supplied.
+ */
+export function buildExpectedProvenance(target: FdxTarget): {
+  packageName: string
+  binaryFilename: string
+  targetTriple: string | null
+  platform: string
+  architecture: string
+  libc?: string
+  buildProfile: "release"
+} {
+  return {
+    packageName: target.packageName,
+    binaryFilename: target.executableName,
+    targetTriple: expectedTargetTriple(target),
+    platform: target.platform,
+    architecture: target.arch,
+    ...(target.libc ? { libc: target.libc } : {}),
+    buildProfile: "release",
+  }
+}
+
 export function getFdxCacheDir(target: FdxTarget, version = getFlowdeckPackageVersion()): string {
-  const targetName = `${target.platform}-${target.arch}${target.libc ? `-${target.libc}` : ""}`
+  const targetName = targetNameOf(target)
   if (process.env.XDG_CACHE_HOME) {
     return join(process.env.XDG_CACHE_HOME, "flowdeck", "fdx", version, targetName)
   }
@@ -433,7 +506,15 @@ export function getFdxCacheDir(target: FdxTarget, version = getFlowdeckPackageVe
   return join(homedir(), ".cache", "flowdeck", "fdx", version, targetName)
 }
 
-export function validateFdxBinaryPath(binPath: string, expectedDir?: string, requireManagedChecksum = false): {
+export interface FdxBinaryValidateOpts {
+  requireChecksum?: boolean
+  /** Managed sources must carry a provenance.json that satisfies the full contract. */
+  requireProvenance?: boolean
+  /** When supplied, provenance is validated against this exact target contract. */
+  target?: FdxTarget | null
+}
+
+export function validateFdxBinaryPath(binPath: string, expectedDir?: string, requireManagedChecksum: boolean | FdxBinaryValidateOpts = false): {
   valid: boolean;
   version: string | null;
   versionCompatible: boolean;
@@ -441,6 +522,12 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
   integrity: FdxIntegrityResult;
   reason?: string;
 } {
+  const opts: FdxBinaryValidateOpts = typeof requireManagedChecksum === "object"
+    ? requireManagedChecksum
+    : requireManagedChecksum ? { requireChecksum: true } : {}
+  const requireChecksum = opts.requireChecksum ?? false
+  const requireProvenance = opts.requireProvenance ?? false
+
   if (!existsSync(binPath)) {
     return {
       valid: false,
@@ -499,16 +586,28 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
   let expectedSha: string | undefined
   let actualSha: string | undefined
   let provenanceValid = false
+  let hasProvenance = false
 
   if (existsSync(checksumPath) || existsSync(provenancePath)) {
     try {
       let manifest: any = {}
       if (existsSync(provenancePath)) {
+        hasProvenance = true
         manifest = JSON.parse(readFileSync(provenancePath, "utf-8"))
-        const fileBuf = readFileSync(binPath)
-        const fileSha = createHash("sha256").update(fileBuf).digest("hex")
-        const provRes = validateFdxProvenance(manifest, null, fileSha, fileBuf.length)
+        const provRes = validateFdxProvenance(manifest, opts.target ?? null)
         provenanceValid = provRes.valid
+        if (!provRes.valid) {
+          // A present-but-invalid provenance is a hard trust failure: checksum
+          // success never outweighs a provenance violation on a managed source.
+          return {
+            valid: false,
+            version: null,
+            versionCompatible: false,
+            checksumStatus: "fail",
+            integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, provenanceValid: false, reason: `Provenance validation failed: ${provRes.reason}` },
+            reason: `Provenance validation failed: ${provRes.reason}`,
+          }
+        }
       }
       if (existsSync(checksumPath)) {
         const cManifest = JSON.parse(readFileSync(checksumPath, "utf-8"))
@@ -534,7 +633,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
             reason: `Checksum mismatch: expected ${expectedSha}, got ${actualSha}`,
           }
         }
-      } else if (requireManagedChecksum) {
+      } else if (requireChecksum) {
         return {
           valid: false,
           version: null,
@@ -554,20 +653,28 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
         reason: "Corrupt checksum/provenance manifest",
       }
     }
-  } else if (requireManagedChecksum) {
+  } else if (requireChecksum || requireProvenance) {
     return {
       valid: false,
       version: null,
       versionCompatible: false,
-      checksumStatus: "missing",
-      integrity: { status: "fail", checksumStatus: "missing", checksumMatch: false, provenanceValid: false, reason: "Managed source missing mandatory checksum.json" },
-      reason: "Managed source missing mandatory checksum.json",
+      checksumStatus: requireChecksum ? "missing" : "unverified",
+      integrity: {
+        status: "fail",
+        checksumStatus: requireChecksum ? "missing" : "unverified",
+        checksumMatch: false,
+        provenanceValid: false,
+        reason: requireProvenance ? "Managed source missing mandatory provenance.json" : "Managed source missing mandatory checksum.json",
+      },
+      reason: requireProvenance ? "Managed source missing mandatory provenance.json" : "Managed source missing mandatory checksum.json",
     }
   }
 
   let version: string | null = null
   try {
-    const out = execFileSync(binPath, ["--version"], { encoding: "utf-8", timeout: 3000, shell: process.platform === "win32" })
+    // Direct execution with explicit argv (no shell): shell:true would defeat
+    // argument-boundary safety and break paths containing spaces on Windows.
+    const out = execFileSync(binPath, ["--version"], { encoding: "utf-8", timeout: 3000 })
     const match = out.match(/fdx\s+v?([0-9]+\.[0-9]+\.[0-9]+)/i) || out.match(/v?([0-9]+\.[0-9]+\.[0-9]+)/)
     if (match && match[1]) {
       version = match[1]
@@ -612,7 +719,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
     versionCompatible: true,
     checksumStatus,
     integrity: {
-      status: (checksumStatus === "pass" || (!requireManagedChecksum && checksumStatus === "unverified")) ? "pass" : "fail",
+      status: ((checksumStatus === "pass" || (!requireChecksum && checksumStatus === "unverified")) && (!hasProvenance || provenanceValid)) ? "pass" : "fail",
       checksumStatus,
       checksumMatch,
       expectedSha256: expectedSha,
@@ -791,7 +898,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
     const resolvedPkg = resolveTrustedPlatformPackage(target)
     if (resolvedPkg) {
       const binPath = join(resolvedPkg.pkgDir, target.executableName)
-      const val = validateFdxBinaryPath(binPath, resolvedPkg.pkgDir, true)
+      const val = validateFdxBinaryPath(binPath, resolvedPkg.pkgDir, { requireChecksum: true, requireProvenance: true, target })
       if (val.valid) {
         return {
           available: true,
@@ -830,7 +937,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
     const cacheDir = getFdxCacheDir(target)
     const cacheBin = join(cacheDir, target.executableName)
     if (existsSync(cacheBin)) {
-      const val = validateFdxBinaryPath(cacheBin, cacheDir, true)
+      const val = validateFdxBinaryPath(cacheBin, cacheDir, { requireChecksum: true, requireProvenance: true, target })
       if (val.valid) {
         return {
           available: true,

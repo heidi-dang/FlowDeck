@@ -30,15 +30,43 @@ function tryExec(cmd, args) {
   }
 }
 
+function isMuslHost() {
+  try {
+    if (existsSync("/etc/alpine-release")) return true
+    for (const loader of ["/lib/ld-musl-x86_64.so.1", "/lib/ld-musl-aarch64.so.1"]) {
+      if (existsSync(loader)) return true
+    }
+    // Linux without a glibc version in the runtime report is musl-based.
+    const report = process.report?.getReport?.()
+    if (report && report.header && report.header.glibcVersionRuntime === undefined) return true
+  } catch {}
+  return false
+}
+
 function detectTargetName() {
   const platform = process.platform
   const arch = process.arch
-  if (platform === "linux" && arch === "x64") return "flowdeck-fdx-linux-x64-gnu"
-  if (platform === "linux" && arch === "arm64") return "flowdeck-fdx-linux-arm64-gnu"
+  if (platform === "linux" && arch === "x64") return isMuslHost() ? "flowdeck-fdx-linux-x64-musl" : "flowdeck-fdx-linux-x64-gnu"
+  if (platform === "linux" && arch === "arm64") return isMuslHost() ? "flowdeck-fdx-linux-arm64-musl" : "flowdeck-fdx-linux-arm64-gnu"
   if (platform === "darwin" && arch === "x64") return "flowdeck-fdx-darwin-x64"
   if (platform === "darwin" && arch === "arm64") return "flowdeck-fdx-darwin-arm64"
   if (platform === "win32" && arch === "x64") return "flowdeck-fdx-win32-x64"
   return null
+}
+
+/**
+ * Canonical Rust target triples, matching the production CI build
+ * (.github/workflows/build-fdx-binaries.yml). provenance.json must carry the
+ * same triples the runtime's provenance contract enforces.
+ */
+const TARGET_TRIPLES = {
+  "flowdeck-fdx-linux-x64-gnu": "x86_64-unknown-linux-gnu",
+  "flowdeck-fdx-linux-arm64-gnu": "aarch64-unknown-linux-gnu",
+  "flowdeck-fdx-linux-x64-musl": "x86_64-unknown-linux-musl",
+  "flowdeck-fdx-linux-arm64-musl": "aarch64-unknown-linux-musl",
+  "flowdeck-fdx-darwin-x64": "x86_64-apple-darwin",
+  "flowdeck-fdx-darwin-arm64": "aarch64-apple-darwin",
+  "flowdeck-fdx-win32-x64": "x86_64-pc-windows-msvc",
 }
 
 function main() {
@@ -108,7 +136,7 @@ function main() {
       flowdeckVersion: flowdeckVersion,
       fdxBinaryVersion: flowdeckVersion,
       fdxProtocolVersion: "1.0.0",
-      targetTriple: process.platform === "win32" ? "x86_64-pc-windows-msvc" : `${process.arch}-unknown-${process.platform}-gnu`,
+      targetTriple: TARGET_TRIPLES[targetDirName] || (process.platform === "win32" ? "x86_64-pc-windows-msvc" : `${process.arch}-unknown-${process.platform}-gnu`),
       platform: process.platform,
       architecture: process.arch,
       binaryFilename: execName,
