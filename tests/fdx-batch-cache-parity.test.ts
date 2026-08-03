@@ -714,50 +714,57 @@ describe("FDX native/JS fallback parity", () => {
     // Canonical policy (P1 #1): wire enum values are lowercase-only. Canonical
     // values execute on all rungs; mixed-case values are rejected identically
     // (code + message) on the daemon, one-shot, and TS fallback.
-    const canonical: BatchOperation[] = [
-      { id: "ok1", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
-      { id: "ok2", op: "impact", params: { targets: ["src/greeter.ts"], direction: "both", depth: 1 } },
-    ]
-    if (HAVE_DAEMON) {
-      const daemon = asBatch(await conn.batch(canonical, projectDir))
-      expect(daemon.responses.map((r) => r.ok)).toEqual([true, true])
-    }
-    const ts = executeBatchFallback(canonical, projectDir)
-    expect(ts.responses.map((r) => r.ok)).toEqual([true, true])
-    if (HAVE_FDX) {
-      const oneShot = oneShotBatch(FDX!, projectDir, canonical)
-      expect(oneShot.responses.map((r) => r.ok)).toEqual([true, true])
-    }
-
-    // Mixed-case rejection: identical across all rungs.
-    const mixedCases: Array<[BatchOperation, { code: string; message: string }]> = [
-      [
-        { id: "b1", op: "read", params: { file: "src/greeter.ts", mode: "Raw" } },
-        { code: E_BAD_REQUEST, message: "operation 'read': invalid read mode: Raw" },
-      ],
-      [
-        { id: "b2", op: "impact", params: { targets: ["src/greeter.ts"], direction: "Both" } },
-        { code: E_BAD_REQUEST, message: "operation 'impact': invalid impact direction: Both" },
-      ],
-      [
-        { id: "b3", op: "search", params: { pattern: "greet", kindFilter: "Function" } },
-        { code: E_BAD_REQUEST, message: "operation 'search': search 'kind_filter' is not supported: Function" },
-      ],
-    ]
-    for (const [op, expected] of mixedCases) {
-      expect(() => executeBatchFallback([op], projectDir)).toThrow(
-        new BatchRejectError(expected.code, expected.message),
-      )
+    // Uses a local fresh project dir (not the shared beforeAll `projectDir`,
+    // which is undefined on win32) so the pure-TS rung runs on every platform.
+    const dir = freshProject()
+    try {
+      const canonical: BatchOperation[] = [
+        { id: "ok1", op: "read", params: { file: "src/greeter.ts", mode: "raw", limit: 2 } },
+        { id: "ok2", op: "impact", params: { targets: ["src/greeter.ts"], direction: "both", depth: 1 } },
+      ]
       if (HAVE_DAEMON) {
-        const daemon = await conn.batch([op], projectDir)
-        expect(daemon.ok).toBe(false)
-        expect(daemon.error).toEqual(expected)
+        const daemon = asBatch(await conn.batch(canonical, dir))
+        expect(daemon.responses.map((r) => r.ok)).toEqual([true, true])
       }
+      const ts = executeBatchFallback(canonical, dir)
+      expect(ts.responses.map((r) => r.ok)).toEqual([true, true])
       if (HAVE_FDX) {
-        expect(() => oneShotBatch(FDX!, projectDir, [op])).toThrow(
-          new RegExp(expected.message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
-        )
+        const oneShot = oneShotBatch(FDX!, dir, canonical)
+        expect(oneShot.responses.map((r) => r.ok)).toEqual([true, true])
       }
+
+      // Mixed-case rejection: identical across all rungs.
+      const mixedCases: Array<[BatchOperation, { code: string; message: string }]> = [
+        [
+          { id: "b1", op: "read", params: { file: "src/greeter.ts", mode: "Raw" } },
+          { code: E_BAD_REQUEST, message: "operation 'read': invalid read mode: Raw" },
+        ],
+        [
+          { id: "b2", op: "impact", params: { targets: ["src/greeter.ts"], direction: "Both" } },
+          { code: E_BAD_REQUEST, message: "operation 'impact': invalid impact direction: Both" },
+        ],
+        [
+          { id: "b3", op: "search", params: { pattern: "greet", kindFilter: "Function" } },
+          { code: E_BAD_REQUEST, message: "operation 'search': search 'kind_filter' is not supported: Function" },
+        ],
+      ]
+      for (const [op, expected] of mixedCases) {
+        expect(() => executeBatchFallback([op], dir)).toThrow(
+          new BatchRejectError(expected.code, expected.message),
+        )
+        if (HAVE_DAEMON) {
+          const daemon = await conn.batch([op], dir)
+          expect(daemon.ok).toBe(false)
+          expect(daemon.error).toEqual(expected)
+        }
+        if (HAVE_FDX) {
+          expect(() => oneShotBatch(FDX!, dir, [op])).toThrow(
+            new RegExp(expected.message.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+          )
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
