@@ -1295,6 +1295,10 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
     it("P1-1: the validated digest comes from the checksum-verified bytes, not a post-validation reread", () => {
       const target = detectFdxTarget()
       if (!target) return
+      // Windows: the shell-script fixture cannot execute as fdx.exe without a
+      // shell (the audit removed shell:true); the genuine-PE test covers the
+      // Windows execution path.
+      if (process.platform === "win32") return
       const dir = join(tempDir, "digest-propagation")
       mkdirSync(dir, { recursive: true })
       const binPath = join(dir, target.executableName)

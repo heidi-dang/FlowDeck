@@ -31,6 +31,7 @@ export { codebaseDir } from "./planning-state-lib"
 
 export const DEFAULT_EXECUTABLE_ALLOWLIST = [
   "fdx",
+  "fdx.exe",
   "git",
   "npm",
   "bun",

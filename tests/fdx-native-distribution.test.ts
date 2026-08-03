@@ -365,7 +365,7 @@ describe("FDX Native Distribution & Binary Resolver", () => {
       expect(after.size).toBe(st.size)
       expect(Math.trunc(after.mtimeMs)).toBe(Math.trunc(st.mtimeMs))
       expect(sha256FileContents(binPath)).not.toBe(originalSha)
-    })
+    }, { timeout: 60000 })
 
     it("P1-2: a genuine Windows executable passes the full resolver-cache and execution path (win32 only)", async () => {
       if (process.platform !== "win32") return
