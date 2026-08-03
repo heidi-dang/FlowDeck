@@ -268,15 +268,15 @@ describe("FDX native/JS fallback parity", () => {
   it("testsFor parity between one-shot and TS (no index — both E_INTERNAL)", async () => {
     if (!HAVE_FDX) return
     const msg = "testsFor requires an index snapshot; run index.refresh first"
+
+    // Structurally valid source with no index → per-op E_INTERNAL on both
+    // rungs: parameter preflight passes, but the runtime index is missing.
+    // (A missing `source` is now a whole-batch parameter preflight rejection,
+    // covered by the preflight parity test.)
     const ops: BatchOperation[] = [
-      // Missing source is validated first, before the index check.
-      { id: "t0", op: "testsFor", params: {} },
       { id: "t1", op: "testsFor", params: { source: "src/greeter.ts" } },
     ]
-    const expected = [
-      { code: E_BAD_REQUEST, message: "testsFor requires 'source'" },
-      { code: E_INTERNAL, message: msg },
-    ]
+    const expected = [{ code: E_INTERNAL, message: msg }]
 
     const oneShot = oneShotBatch(FDX!, projectDir, ops)
     for (let i = 0; i < ops.length; i++) {
@@ -307,6 +307,16 @@ describe("FDX native/JS fallback parity", () => {
       [
         { id: "c1", op: "capabilities.query", params: {} },
         { code: E_BAD_REQUEST, message: "operation 'capabilities.query' does not support batching" },
+      ],
+      // Parameter preflight: structurally invalid parameters reject the
+      // ENTIRE batch before execution, with one stable message per rung.
+      [
+        { id: "pm1", op: "read", params: { file: "src/greeter.ts", mode: "bogus" } },
+        { code: E_BAD_REQUEST, message: "operation 'read': invalid read mode: bogus" },
+      ],
+      [
+        { id: "pt1", op: "testsFor", params: {} },
+        { code: E_BAD_REQUEST, message: "operation 'testsFor': testsFor requires 'source'" },
       ],
     ]
     for (const [op, expected] of cases) {
@@ -342,15 +352,15 @@ describe("FDX native/JS fallback parity", () => {
 
   it("per-op execution error parity across daemon, one-shot, and TS", async () => {
     if (!HAVE_DAEMON) return
-    // Valid ops with runtime failures stay per-op errors (not preflight):
-    // missing file and invalid read mode.
+    // Structurally valid ops that fail at runtime stay per-op errors, NOT
+    // whole-batch preflight rejections: parameter preflight only rejects
+    // malformed parameters before execution, so a missing file (present,
+    // non-empty `file` param) surfaces as a per-op E_INTERNAL.
     const ops: BatchOperation[] = [
       { id: "nf1", op: "read", params: { file: "src/missing.ts", mode: "raw" } },
-      { id: "bm1", op: "read", params: { file: "src/greeter.ts", mode: "bogus" } },
     ]
     const expected = [
       { code: E_INTERNAL, message: "read failed: No such file or directory (os error 2)" },
-      { code: E_BAD_REQUEST, message: "invalid read mode: Unknown read mode: bogus" },
     ]
     const daemon = asBatch(await conn.batch(ops, projectDir))
     const ts = executeBatchFallback(ops, projectDir)
@@ -377,7 +387,11 @@ describe("FDX native/JS fallback parity", () => {
     // fallback with a scripted probe.
     let calls = 0
     const scripted: BatchStateProbe = {
-      stateUnchanged: () => calls++ < 1, // unchanged for op1, then flips
+      // op1 passes BOTH the pre-op and post-execution state checks (calls 0,1);
+      // the state flips before op2 (call 2), so op1's result survives and op2
+      // aborts with E_STALE_SNAPSHOT. Mirrors the ScriptedProbe(flip_after=2)
+      // semantics of the native post-execution drift test.
+      stateUnchanged: () => calls++ < 2,
     }
     const dir = freshProject()
     try {
