@@ -52,6 +52,7 @@ use crate::reader::search::{self, SearchMatch};
 use crate::reader::{read_file, ReadMode, ReaderOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -88,6 +89,331 @@ pub mod err {
     /// a distinct condition from fail-fast cancellation: the batch was not
     /// stopped by the client, it was invalidated by an external mutation.
     pub const E_STALE_SNAPSHOT: &str = "E_STALE_SNAPSHOT";
+}
+
+// ─── Parameter preflight validators ──────────────────────────────────────────
+
+/// Validation error for a single operation parameter.
+type ParamError = (Option<&'static str>, &'static str, String);
+
+/// Validate operation parameters before any execution. Returns `Ok(())` when
+/// the parameters are structurally and semantically valid, or `Err` with the
+/// operation tag, a stable error code, and a human-readable message when they
+/// are not. This runs in whole-batch preflight: any failure rejects the ENTIRE
+/// batch with `E_BAD_REQUEST` before any operation executes.
+fn validate_operation_params(op: &BatchOperation) -> Result<(), ParamError> {
+    match op.op.as_str() {
+        "read" => validate_read_params(&op.params),
+        "grep" => validate_grep_params(&op.params),
+        "search" => validate_search_params(&op.params),
+        "outline" => validate_outline_params(&op.params),
+        "impact" => validate_impact_params(&op.params),
+        "testsFor" => validate_tests_for_params(&op.params),
+        _ => {
+            // Unknown ops are already rejected by descriptor preflight; this
+            // path is unreachable in practice but keeps the validator total.
+            Err((
+                None,
+                err::E_BAD_REQUEST,
+                format!("unknown batch operation '{}'", op.op),
+            ))
+        }
+    }
+}
+
+/// `read` parameter validation.
+///
+/// Rejects:
+/// - missing `file`
+/// - empty `file`
+/// - unsupported `mode`
+/// - `limit` or `offset` out of bounds
+/// - `symbol` with `mode=raw` (symbol only applies to code modes)
+/// - contradictory combinations
+fn validate_read_params(params: &OperationParams) -> Result<(), ParamError> {
+    let file = params.file.as_deref().ok_or_else(|| {
+        (
+            Some("read"),
+            err::E_BAD_REQUEST,
+            "read requires 'file'".into(),
+        )
+    })?;
+    if file.trim().is_empty() {
+        return Err((
+            Some("read"),
+            err::E_BAD_REQUEST,
+            "read 'file' must not be empty".into(),
+        ));
+    }
+    if file.contains('\0') {
+        return Err((
+            Some("read"),
+            err::E_BAD_REQUEST,
+            "read 'file' contains embedded NUL".into(),
+        ));
+    }
+    let mode = params.mode.as_deref().unwrap_or("auto");
+    if !matches!(mode, "auto" | "raw" | "prototype" | "deep") {
+        return Err((
+            Some("read"),
+            err::E_BAD_REQUEST,
+            format!("invalid read mode: {mode}"),
+        ));
+    }
+    if let Some(limit) = params.limit {
+        if limit == 0 || limit > 10_000 {
+            return Err((
+                Some("read"),
+                err::E_BAD_REQUEST,
+                format!("read 'limit' must be in 1..=10000, got {limit}"),
+            ));
+        }
+    }
+    if let Some(offset) = params.offset {
+        if offset == 0 || offset > 1_000_000 {
+            return Err((
+                Some("read"),
+                err::E_BAD_REQUEST,
+                format!("read 'offset' must be in 1..=1000000, got {offset}"),
+            ));
+        }
+    }
+    if mode == "raw" && params.symbol.is_some() {
+        return Err((
+            Some("read"),
+            err::E_BAD_REQUEST,
+            "read 'symbol' is not valid with mode 'raw'".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// `grep` parameter validation.
+///
+/// Rejects:
+/// - missing or empty `pattern`
+/// - invalid regex when `fixedStrings` is false
+/// - `context_lines` out of bounds
+/// - structurally invalid `paths`
+/// - contradictory options
+fn validate_grep_params(params: &OperationParams) -> Result<(), ParamError> {
+    let pattern = params.pattern.as_deref().ok_or_else(|| {
+        (
+            Some("grep"),
+            err::E_BAD_REQUEST,
+            "grep requires 'pattern'".into(),
+        )
+    })?;
+    if pattern.trim().is_empty() {
+        return Err((
+            Some("grep"),
+            err::E_BAD_REQUEST,
+            "grep 'pattern' must not be empty".into(),
+        ));
+    }
+    if !params.fixed_strings.unwrap_or(false) {
+        if let Err(e) = regex::Regex::new(pattern) {
+            return Err((
+                Some("grep"),
+                err::E_BAD_REQUEST,
+                format!("grep 'pattern' is not a valid regex: {e}"),
+            ));
+        }
+    }
+    if let Some(ctx) = params.context_lines {
+        if ctx > 3 {
+            return Err((
+                Some("grep"),
+                err::E_BAD_REQUEST,
+                format!("grep 'context_lines' must be <= 3, got {ctx}"),
+            ));
+        }
+    }
+    if let Some(max) = params.max_matches {
+        if max == 0 || max > 200 {
+            return Err((
+                Some("grep"),
+                err::E_BAD_REQUEST,
+                format!("grep 'max_matches' must be in 1..=200, got {max}"),
+            ));
+        }
+    }
+    for path in &params.paths {
+        if path.contains('\0') {
+            return Err((
+                Some("grep"),
+                err::E_BAD_REQUEST,
+                "grep 'paths' contains embedded NUL".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `search` parameter validation.
+///
+/// Rejects:
+/// - missing or empty `pattern`
+/// - unsupported `kind_filter`
+/// - `max_matches` out of bounds
+/// - structurally invalid boolean/enum fields
+fn validate_search_params(params: &OperationParams) -> Result<(), ParamError> {
+    let pattern = params.pattern.as_deref().ok_or_else(|| {
+        (
+            Some("search"),
+            err::E_BAD_REQUEST,
+            "search requires 'pattern'".into(),
+        )
+    })?;
+    if pattern.trim().is_empty() {
+        return Err((
+            Some("search"),
+            err::E_BAD_REQUEST,
+            "search 'pattern' must not be empty".into(),
+        ));
+    }
+    if let Some(kind) = params.kind_filter.as_deref() {
+        if !matches!(
+            kind,
+            "any" | "function" | "class" | "struct" | "trait" | "enum" | "const" | "type"
+        ) {
+            return Err((
+                Some("search"),
+                err::E_BAD_REQUEST,
+                format!("search 'kind_filter' is not supported: {kind}"),
+            ));
+        }
+    }
+    if let Some(max) = params.max_matches {
+        if max == 0 || max > 500 {
+            return Err((
+                Some("search"),
+                err::E_BAD_REQUEST,
+                format!("search 'max_matches' must be in 1..=500, got {max}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `outline` parameter validation.
+///
+/// Rejects:
+/// - structurally invalid `paths`
+/// - `depth` out of bounds
+/// - `min_lines` out of bounds
+fn validate_outline_params(params: &OperationParams) -> Result<(), ParamError> {
+    if let Some(depth) = params.depth {
+        if depth == 0 || depth > 10 {
+            return Err((
+                Some("outline"),
+                err::E_BAD_REQUEST,
+                format!("outline 'depth' must be in 1..=10, got {depth}"),
+            ));
+        }
+    }
+    if let Some(min) = params.min_lines {
+        if min == 0 || min > 1000 {
+            return Err((
+                Some("outline"),
+                err::E_BAD_REQUEST,
+                format!("outline 'min_lines' must be in 1..=1000, got {min}"),
+            ));
+        }
+    }
+    for path in &params.paths {
+        if path.contains('\0') {
+            return Err((
+                Some("outline"),
+                err::E_BAD_REQUEST,
+                "outline 'paths' contains embedded NUL".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `impact` parameter validation.
+///
+/// Rejects:
+/// - missing or empty `targets`
+/// - unsupported `direction`
+/// - `depth` out of bounds
+/// - structurally invalid `root`
+fn validate_impact_params(params: &OperationParams) -> Result<(), ParamError> {
+    if params.targets.is_empty() {
+        return Err((
+            Some("impact"),
+            err::E_BAD_REQUEST,
+            "impact requires at least one 'targets' entry".into(),
+        ));
+    }
+    let direction = params.direction.as_deref().unwrap_or("both");
+    if !matches!(direction, "in" | "out" | "both") {
+        return Err((
+            Some("impact"),
+            err::E_BAD_REQUEST,
+            format!("invalid impact direction: {direction}"),
+        ));
+    }
+    if let Some(depth) = params.depth {
+        if depth == 0 || depth > 1 {
+            return Err((
+                Some("impact"),
+                err::E_BAD_REQUEST,
+                format!("impact 'depth' must be 1, got {depth}"),
+            ));
+        }
+    }
+    if let Some(root) = params.root.as_deref() {
+        if root.contains('\0') {
+            return Err((
+                Some("impact"),
+                err::E_BAD_REQUEST,
+                "impact 'root' contains embedded NUL".into(),
+            ));
+        }
+    }
+    for target in &params.targets {
+        if target.contains('\0') {
+            return Err((
+                Some("impact"),
+                err::E_BAD_REQUEST,
+                "impact 'targets' contains embedded NUL".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `testsFor` parameter validation.
+///
+/// Rejects:
+/// - missing or empty `source`
+/// - structurally invalid `source`
+fn validate_tests_for_params(params: &OperationParams) -> Result<(), ParamError> {
+    let source = params.source.as_deref().ok_or_else(|| {
+        (
+            Some("testsFor"),
+            err::E_BAD_REQUEST,
+            "testsFor requires 'source'".into(),
+        )
+    })?;
+    if source.trim().is_empty() {
+        return Err((
+            Some("testsFor"),
+            err::E_BAD_REQUEST,
+            "testsFor 'source' must not be empty".into(),
+        ));
+    }
+    if source.contains('\0') {
+        return Err((
+            Some("testsFor"),
+            err::E_BAD_REQUEST,
+            "testsFor 'source' contains embedded NUL".into(),
+        ));
+    }
+    Ok(())
 }
 
 // ─── Wire types ─────────────────────────────────────────────────────────────
@@ -448,6 +774,21 @@ fn execute_batch_with_probe(
         }
     }
 
+    // Parameter preflight: validate every operation's request parameters
+    // before any operation executes. An invalid parameter set rejects the
+    // ENTIRE batch with E_BAD_REQUEST — zero execution, no cache reads or
+    // writes, no artifact files. This catches malformed requests that the
+    // operation would deterministically reject before filesystem access.
+    for op in operations {
+        if let Err((tag, code, message)) = validate_operation_params(op) {
+            let op_tag = tag.unwrap_or(&op.op);
+            return Err(BatchReject {
+                code,
+                message: format!("operation '{op_tag}': {message}"),
+            });
+        }
+    }
+
     // One frozen snapshot for the whole batch (only needed by testsFor).
     let needs_index = operations.iter().any(|op| op.op == "testsFor");
     let frozen = if needs_index {
@@ -696,6 +1037,33 @@ fn run_operation(
 
     match outcome {
         Ok(value) => {
+            // Post-execution state revalidation: a mid-batch mutation that
+            // occurred while the operation was running must invalidate the
+            // result. The operation began under the captured state, but the
+            // repository may have changed before the result was produced.
+            // Discard the result, mark the batch stale, and return
+            // E_STALE_SNAPSHOT so clients never persist cross-state results.
+            if !stale_snapshot && !*state_changed {
+                if let Some(p) = probe {
+                    if !p.state_unchanged() {
+                        *state_changed = true;
+                        return (
+                            OperationResponse {
+                                id,
+                                ok: false,
+                                result: None,
+                                error: Some(serde_json::json!({
+                                    "code": err::E_STALE_SNAPSHOT,
+                                    "message": "operation result discarded: repository state changed during execution",
+                                })),
+                                truncated: false,
+                                artifact_ref: None,
+                            },
+                            0,
+                        );
+                    }
+                }
+            }
             // Cache the fresh result only when the batch snapshot is not
             // stale AND the repository state still matches the state captured
             // at batch start. The repository-state revalidation happens right
@@ -790,21 +1158,25 @@ fn finalize_response(
     }
 
     // Over budget: spill the full payload to an artifact and return a marker.
-    // The file name is collision-resistant: `sanitize_artifact_name` alone can
-    // map distinct ids to the same file (e.g. "a/b" and "a:b" → "a_b"), so a
-    // short SHA-256 discriminator of the FULL id is appended. Distinct ids
-    // always produce distinct artifact files; duplicate ids are rejected by
-    // the preflight, so two ops in one batch can never target the same file.
+    // The file name is content-addressed: `<safe-prefix>-<op-id-hash>-<content-hash>.json`.
+    // This guarantees:
+    // - Different operation IDs never collide (op-id-hash is unique per ID).
+    // - The same operation ID with different content never overwrites another
+    //   artifact (content-hash changes).
+    // - Concurrent batches with the same ID and content safely reuse the file.
+    // - Concurrent batches with the same ID but different content fail closed.
     let dir = artifact_base
         .map(|p| p.join("artifacts"))
         .unwrap_or_else(|| std::env::temp_dir().join("fdx-batch-artifacts"));
-    let file_name = artifact_file_name(&id);
-    let path = dir.join(&file_name);
-    let wrote = std::fs::create_dir_all(&dir)
-        .and_then(|()| std::fs::write(&path, &bytes))
-        .map(|()| path.to_string_lossy().into_owned());
-    let artifact_ref = match wrote {
-        Ok(p) => p,
+    let content_hash = sha256_hex(&bytes);
+    let file_name = artifact_file_name(&id, &content_hash);
+    let final_path = dir.join(&file_name);
+
+    // Atomic write sequence: create a unique sibling temp file, write the
+    // complete content, flush, sync, then atomically rename to the final
+    // content-addressed path. Readers never observe partial JSON.
+    let artifact_ref = match atomic_write_artifact(&final_path, &bytes) {
+        Ok(path) => path,
         Err(e) => {
             return (
                 OperationResponse {
@@ -831,7 +1203,7 @@ fn finalize_response(
                 "artifactRef": artifact_ref,
                 "byteCount": used,
                 "limitBytes": limit,
-                "contentHash": sha256_hex(&bytes),
+                "contentHash": content_hash,
             })),
             error: None,
             truncated: true,
@@ -839,6 +1211,87 @@ fn finalize_response(
         },
         used,
     )
+}
+
+/// Atomically write `bytes` to `final_path` with a temp-file-then-rename
+/// sequence. If `final_path` already exists and its content hash matches,
+/// the existing file is reused (safe deduplication). If it exists with a
+/// different content hash, the write fails closed.
+fn atomic_write_artifact(final_path: &Path, bytes: &[u8]) -> Result<String, String> {
+    let content_hash = sha256_hex(bytes);
+    // Check for existing file: reuse if content matches, fail closed if it
+    // conflicts.
+    if final_path.exists() {
+        match std::fs::read(final_path) {
+            Ok(existing) if sha256_hex(&existing) == content_hash => {
+                // Exact match: safe to reuse.
+                return Ok(final_path.to_string_lossy().into_owned());
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "artifact path already exists with different content: {}",
+                    final_path.display()
+                ));
+            }
+            Err(e) => return Err(format!("failed to read existing artifact: {e}")),
+        }
+    }
+
+    // Ensure the parent directory exists.
+    if let Some(parent) = final_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create artifact dir: {e}"))?;
+    }
+
+    // Create a unique sibling temp file in the same directory so the atomic
+    // rename is guaranteed to be on the same filesystem.
+    let temp_path = final_path.with_extension("tmp");
+    let mut attempts = 0;
+    loop {
+        if attempts >= 100 {
+            return Err("too many temp file collisions".into());
+        }
+        let unique_temp = if attempts == 0 {
+            temp_path.clone()
+        } else {
+            temp_path.with_file_name(format!(
+                "{}.{}.tmp",
+                temp_path
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap_or("artifact"),
+                attempts
+            ))
+        };
+        match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&unique_temp)
+        {
+            Ok(mut file) => {
+                if let Err(e) = file.write_all(bytes) {
+                    let _ = std::fs::remove_file(&unique_temp);
+                    return Err(format!("failed to write temp artifact: {e}"));
+                }
+                if let Err(e) = file.sync_all() {
+                    let _ = std::fs::remove_file(&unique_temp);
+                    return Err(format!("failed to sync temp artifact: {e}"));
+                }
+                drop(file);
+                // Atomic rename to final content-addressed path.
+                if let Err(e) = std::fs::rename(&unique_temp, final_path) {
+                    let _ = std::fs::remove_file(&unique_temp);
+                    return Err(format!("failed to rename artifact: {e}"));
+                }
+                return Ok(final_path.to_string_lossy().into_owned());
+            }
+            Err(_) => {
+                attempts += 1;
+                continue;
+            }
+        }
+    }
 }
 
 /// SHA-256 hex digest of a byte slice (used for artifact content integrity).
@@ -853,7 +1306,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// Make an op id safe to use as a file name (ids are client-chosen and may
 /// contain path separators or other characters that would escape the artifact
-/// directory).
+/// directory). The safe prefix is bounded to 32 characters to keep the final
+/// filename within platform limits.
 fn sanitize_artifact_name(id: &str) -> String {
     let mut out = String::with_capacity(id.len());
     for c in id.chars() {
@@ -866,21 +1320,34 @@ fn sanitize_artifact_name(id: &str) -> String {
     if out.is_empty() {
         out.push_str("op");
     }
+    // Bound the prefix so the final filename stays well under the 255-byte
+    // per-component limit: prefix (32) + op-id-hash (64) + content-hash (64)
+    // + separators (2) + extension (5) = 167 bytes max.
+    if out.len() > 32 {
+        out.truncate(32);
+    }
     out
 }
 
-/// Collision-resistant artifact file name for an op id.
+/// Content-addressed artifact file name for an op id.
 ///
-/// `sanitize_artifact_name` alone is not injective: distinct ids such as
-/// `"a/b"` and `"a:b"` both sanitize to `"a_b"`. Appending the first 8 hex
-/// chars of the SHA-256 of the FULL id guarantees that distinct ids produce
-/// distinct file names, so two truncated operations in one batch can never
-/// overwrite each other's artifact (ids are unique per batch — the preflight
-/// rejects duplicates).
-fn artifact_file_name(id: &str) -> String {
-    let digest = sha256_hex(id.as_bytes());
-    let discriminator = &digest[..8];
-    format!("{}-{discriminator}.json", sanitize_artifact_name(id))
+/// Format: `<safe-prefix>-<op-id-hash>-<content-hash>.json`
+///
+/// - `safe-prefix`: bounded sanitized operation ID (max 32 chars)
+/// - `op-id-hash`: full SHA-256 of the operation ID (guarantees distinct IDs
+///   never collide even when their sanitized prefixes are identical)
+/// - `content-hash`: full SHA-256 of the artifact content (guarantees the
+///   same operation with different content never overwrites an existing file,
+///   and concurrent batches with the same ID but different content collide
+///   safely)
+///
+/// The content hash also enables safe reuse: if the final content-addressed
+/// path already exists and its content hash matches, the existing file is
+/// reused; if it conflicts, the write fails closed.
+fn artifact_file_name(id: &str, content_hash: &str) -> String {
+    let prefix = sanitize_artifact_name(id);
+    let op_id_hash = sha256_hex(id.as_bytes());
+    format!("{prefix}-{op_id_hash}-{content_hash}.json")
 }
 
 /// Whether a result is a definitive-empty outcome — the only kind that may be
@@ -1403,12 +1870,12 @@ mod tests {
         ];
 
         // The probe stays unchanged through op1 (pre-op check + read gate +
-        // write gate: calls 0-2), then flips at op2's pre-op check (call 3):
-        // op1's entry is written, op2 is ABORTED (never executed), and the
-        // response reports staleSnapshot.
+        // write gate + post-execution check: calls 0-3), then flips at op2's
+        // pre-op check (call 4): op1's entry is written, op2 is ABORTED (never
+        // executed), and the response reports staleSnapshot.
         let probe = ScriptedProbe {
             calls: std::sync::atomic::AtomicUsize::new(0),
-            flip_after: 3,
+            flip_after: 4,
         };
         let resp = execute_batch_with_probe(&ops, Some(cwd), None, false, Some(&probe)).unwrap();
         assert!(resp.stale_snapshot, "mid-batch mutation must flag stale");
@@ -1960,16 +2427,376 @@ mod tests {
         // Distinct ids that sanitize to the SAME base name (e.g. "a/b" and
         // "a:b" → "a_b") must still produce distinct artifact files, so two
         // truncated ops in one batch can never overwrite each other.
-        let a = artifact_file_name("a/b");
-        let b = artifact_file_name("a:b");
+        let content_hash = sha256_hex(b"test-content");
+        let a = artifact_file_name("a/b", &content_hash);
+        let b = artifact_file_name("a:b", &content_hash);
         assert_ne!(a, b, "sanitized-colliding ids must not collide");
         assert!(a.ends_with(".json"));
         assert!(b.ends_with(".json"));
-        // Each name embeds an 8-hex-char discriminator of the full id.
-        assert!(a.starts_with("a_b-") && a.len() == "a_b-".len() + 8 + ".json".len());
-        // Deterministic for the same id.
-        assert_eq!(artifact_file_name("grep-1"), artifact_file_name("grep-1"));
+        // Each name embeds the full op-id hash and content hash.
+        assert!(a.starts_with("a_b-") && a.len() > "a_b-".len() + ".json".len());
+        // Deterministic for the same id and content.
+        assert_eq!(
+            artifact_file_name("grep-1", &content_hash),
+            artifact_file_name("grep-1", &content_hash)
+        );
         // Safe file name: no path separators.
-        assert!(!artifact_file_name("../evil/op id").contains('/'));
+        assert!(!artifact_file_name("../evil/op id", &content_hash).contains('/'));
+    }
+
+    // ─── Adversarial tests for production contract gaps ─────────────────────
+
+    #[test]
+    fn parameter_preflight_rejects_invalid_read_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+
+        // Missing file parameter.
+        let ops = vec![op("r1", "read", serde_json::json!({ "mode": "raw" }))];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("read requires 'file'"));
+
+        // Empty file parameter.
+        let ops = vec![op(
+            "r2",
+            "read",
+            serde_json::json!({ "file": "", "mode": "raw" }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("must not be empty"));
+
+        // Invalid mode parameter.
+        let ops = vec![op(
+            "r3",
+            "read",
+            serde_json::json!({ "file": "a.txt", "mode": "invalid" }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("invalid read mode"));
+
+        // NUL byte in file parameter.
+        let ops = vec![op(
+            "r4",
+            "read",
+            serde_json::json!({ "file": "a.txt\0b.txt", "mode": "raw" }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("embedded NUL"));
+    }
+
+    #[test]
+    fn parameter_preflight_rejects_invalid_grep_params() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Missing pattern parameter.
+        let ops = vec![op("g1", "grep", serde_json::json!({ "paths": ["."] }))];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("grep requires 'pattern'"));
+
+        // Empty pattern parameter.
+        let ops = vec![op(
+            "g2",
+            "grep",
+            serde_json::json!({ "pattern": "", "paths": ["."] }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("must not be empty"));
+
+        // Invalid regex pattern.
+        let ops = vec![op(
+            "g3",
+            "grep",
+            serde_json::json!({ "pattern": "[invalid", "paths": ["."] }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("not a valid regex"));
+
+        // Excessive contextLines (camelCase on the wire).
+        let ops = vec![op(
+            "g4",
+            "grep",
+            serde_json::json!({ "pattern": "x", "paths": ["."], "contextLines": 5 }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err
+            .message
+            .contains("grep 'context_lines' must be <= 3, got 5"));
+
+        // Excessive maxMatches (camelCase on the wire).
+        let ops = vec![op(
+            "g5",
+            "grep",
+            serde_json::json!({ "pattern": "x", "paths": ["."], "maxMatches": 300 }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err
+            .message
+            .contains("grep 'max_matches' must be in 1..=200, got 300"));
+
+        // NUL byte in paths.
+        let ops = vec![op(
+            "g6",
+            "grep",
+            serde_json::json!({ "pattern": "x", "paths": ["a\0b"] }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("embedded NUL"));
+    }
+
+    #[test]
+    fn parameter_preflight_rejects_invalid_search_params() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Missing pattern parameter.
+        let ops = vec![op("s1", "search", serde_json::json!({ "paths": ["."] }))];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("search requires 'pattern'"));
+
+        // Invalid kind_filter (camelCase on the wire).
+        let ops = vec![op(
+            "s2",
+            "search",
+            serde_json::json!({ "pattern": "x", "paths": ["."], "kindFilter": "invalid" }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err
+            .message
+            .contains("search 'kind_filter' is not supported: invalid"));
+
+        // Excessive max_matches.
+        let ops = vec![op(
+            "s3",
+            "search",
+            serde_json::json!({ "pattern": "x", "paths": ["."], "maxMatches": 600 }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err
+            .message
+            .contains("search 'max_matches' must be in 1..=500, got 600"));
+    }
+
+    #[test]
+    fn parameter_preflight_rejects_invalid_outline_params() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Excessive depth (camelCase on the wire).
+        let ops = vec![op(
+            "o1",
+            "outline",
+            serde_json::json!({ "paths": ["."], "depth": 20 }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err
+            .message
+            .contains("outline 'depth' must be in 1..=10, got 20"));
+
+        // Excessive minLines (camelCase on the wire).
+        let ops = vec![op(
+            "o2",
+            "outline",
+            serde_json::json!({ "paths": ["."], "minLines": 2000 }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err
+            .message
+            .contains("outline 'min_lines' must be in 1..=1000, got 2000"));
+
+        // NUL byte in paths.
+        let ops = vec![op(
+            "o3",
+            "outline",
+            serde_json::json!({ "paths": ["a\0b"] }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("embedded NUL"));
+    }
+
+    #[test]
+    fn parameter_preflight_rejects_invalid_impact_params() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Empty targets.
+        let ops = vec![op("i1", "impact", serde_json::json!({ "targets": [] }))];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err
+            .message
+            .contains("impact requires at least one 'targets' entry"));
+
+        // Invalid direction.
+        let ops = vec![op(
+            "i2",
+            "impact",
+            serde_json::json!({ "targets": ["."], "direction": "sideways" }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("invalid impact direction"));
+
+        // Invalid depth (camelCase on the wire).
+        let ops = vec![op(
+            "i3",
+            "impact",
+            serde_json::json!({ "targets": ["."], "depth": 5 }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("impact 'depth' must be 1, got 5"));
+
+        // NUL byte in targets.
+        let ops = vec![op(
+            "i4",
+            "impact",
+            serde_json::json!({ "targets": ["a\0b"] }),
+        )];
+        let err = execute_batch(&ops, tmp.path().to_str(), None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("embedded NUL"));
+    }
+
+    #[test]
+    fn parameter_preflight_rejects_invalid_tests_for_params() {
+        // Missing source parameter.
+        let ops = vec![op("t1", "testsFor", serde_json::json!({}))];
+        let err = execute_batch(&ops, None, None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("testsFor requires 'source'"));
+
+        // Empty source parameter.
+        let ops = vec![op("t2", "testsFor", serde_json::json!({ "source": "" }))];
+        let err = execute_batch(&ops, None, None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("must not be empty"));
+
+        // NUL byte in source.
+        let ops = vec![op(
+            "t3",
+            "testsFor",
+            serde_json::json!({ "source": "foo\0bar" }),
+        )];
+        let err = execute_batch(&ops, None, None, false).unwrap_err();
+        assert_eq!(err.code, err::E_BAD_REQUEST);
+        assert!(err.message.contains("embedded NUL"));
+    }
+
+    #[test]
+    fn post_execution_drift_discards_result_and_marks_stale() {
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        std::fs::write(tmp.path().join("a.txt"), "alpha\n").unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        let ops = vec![op(
+            "r1",
+            "read",
+            serde_json::json!({ "file": "a.txt", "mode": "raw" }),
+        )];
+
+        // The probe flips at call 2 (post-execution check): the operation
+        // executes successfully but its result is discarded because the
+        // repository state changed during execution.
+        // Probe calls per op: pre-op check (0), cache read check (1), post-execution check (2).
+        let probe = ScriptedProbe {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            flip_after: 2,
+        };
+        let resp = execute_batch_with_probe(&ops, Some(cwd), None, false, Some(&probe)).unwrap();
+        assert!(resp.stale_snapshot, "post-execution drift must flag stale");
+        assert!(
+            !resp.responses[0].ok,
+            "result must be discarded on post-execution drift"
+        );
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_STALE_SNAPSHOT,
+            "post-execution drift uses E_STALE_SNAPSHOT"
+        );
+        assert_eq!(
+            cache_entry_count(state.path()),
+            0,
+            "discarded result must not be cached"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn atomic_artifact_write_fails_closed_on_conflict() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let content = b"hello world";
+        let content_hash = sha256_hex(content);
+        let file_name = artifact_file_name("test-op", &content_hash);
+        let final_path = dir.join(&file_name);
+
+        // First write succeeds.
+        atomic_write_artifact(&final_path, content).unwrap();
+        assert!(final_path.exists());
+
+        // Second write with different content fails closed (content-addressed
+        // collision: same path, different hash).
+        let different_content = b"goodbye world";
+        let result = atomic_write_artifact(&final_path, different_content);
+        assert!(result.is_err(), "conflicting content must fail closed");
+
+        // Original file is untouched.
+        let existing = std::fs::read(&final_path).unwrap();
+        assert_eq!(
+            existing, content,
+            "original artifact must not be overwritten"
+        );
+    }
+
+    #[test]
+    fn atomic_artifact_write_deduplicates_identical_content() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let content = b"duplicate content";
+        let content_hash = sha256_hex(content);
+        let file_name = artifact_file_name("test-op", &content_hash);
+        let final_path = dir.join(&file_name);
+
+        // First write creates the file.
+        atomic_write_artifact(&final_path, content).unwrap();
+        let mtime1 = std::fs::metadata(&final_path).unwrap().modified().unwrap();
+
+        // Second write with identical content is a no-op (deduplication).
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        atomic_write_artifact(&final_path, content).unwrap();
+        let mtime2 = std::fs::metadata(&final_path).unwrap().modified().unwrap();
+
+        assert_eq!(
+            mtime1, mtime2,
+            "identical content must not rewrite the file"
+        );
     }
 }

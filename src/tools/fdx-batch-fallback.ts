@@ -917,26 +917,32 @@ function ioErrorText(e: unknown): string {
 /** Make an op id safe as a file name (mirror batch::sanitize_artifact_name). */
 export function sanitizeArtifactName(id: string): string {
   const out = id.replace(/[^A-Za-z0-9_-]/g, "_")
-  return out.length > 0 ? out : "op"
+  const bounded = out.length > 32 ? out.slice(0, 32) : out
+  return bounded.length > 0 ? bounded : "op"
 }
 
 /**
- * Collision-resistant artifact file name for an op id (mirror
- * batch::artifact_file_name): the sanitized id plus an 8-hex-char SHA-256
- * discriminator of the FULL id, so distinct ids that sanitize to the same
- * base (e.g. "a/b" and "a:b" → "a_b") still produce distinct files and two
- * truncated ops in one batch can never overwrite each other.
+ * Content-addressed artifact file name for an op id (mirror
+ * batch::artifact_file_name): `<safe-prefix>-<op-id-hash>-<content-hash>.json`
+ *
+ * - safe-prefix: bounded sanitized operation ID (max 32 chars)
+ * - op-id-hash: full SHA-256 of the operation ID
+ * - content-hash: full SHA-256 of the artifact content
+ *
+ * Guarantees distinct IDs never collide, same ID with different content never
+ * overwrites, and concurrent batches with identical ID+content safely reuse.
  */
-export function artifactFileName(id: string): string {
-  const digest = sha256Hex(Buffer.from(id, "utf-8"))
-  return `${sanitizeArtifactName(id)}-${digest.slice(0, 8)}.json`
+export function artifactFileName(id: string, contentHash: string): string {
+  const prefix = sanitizeArtifactName(id)
+  const opIdHash = sha256Hex(Buffer.from(id, "utf-8"))
+  return `${prefix}-${opIdHash}-${contentHash}.json`
 }
 
 /**
- * Enforce the per-op output bound. When the serialized payload exceeds
- * `limit`, the full payload is spilled to `<artifactBase>/artifacts/<id>.json`
- * and `result` is replaced by the truncation marker — mirroring the native
- * `finalize_response`.
+ * Enforce the per-op output bound with atomic artifact publication.
+ * When the serialized payload exceeds `limit`, the full payload is spilled
+ * to a content-addressed path and `result` is replaced by the truncation
+ * marker — mirroring the native `finalize_response` with atomic writes.
  */
 function finalizeFallbackResponse(
   id: string,
@@ -961,22 +967,13 @@ function finalizeFallbackResponse(
   const dir = artifactBase
     ? join(artifactBase, "artifacts")
     : join(tmpdir(), "fdx-batch-artifacts")
-  const filePath = join(dir, artifactFileName(id))
-  let artifactRef: string
-  try {
-    mkdirSync(dir, { recursive: true })
-    writeFileSync(filePath, bytes)
-    artifactRef = filePath
-  } catch (e) {
-    return {
-      resp: {
-        id,
-        ok: false,
-        error: { code: E_INTERNAL, message: `failed to write artifact: ${e instanceof Error ? e.message : String(e)}` },
-      },
-      used,
-    }
-  }
+  const contentHash = sha256Hex(bytes)
+  const fileName = artifactFileName(id, contentHash)
+  const finalPath = join(dir, fileName)
+
+  // Atomic write sequence: temp file in same directory → write → rename.
+  const artifactRef = atomicWriteArtifact(finalPath, bytes, contentHash)
+
   return {
     resp: {
       id,
@@ -986,7 +983,7 @@ function finalizeFallbackResponse(
         artifactRef,
         byteCount: used,
         limitBytes: limit,
-        contentHash: sha256Hex(bytes),
+        contentHash,
       },
       truncated: true,
       artifactRef,
@@ -995,10 +992,226 @@ function finalizeFallbackResponse(
   }
 }
 
+/**
+ * Atomically write `bytes` to `finalPath` with a temp-file-then-rename
+ * sequence. If `finalPath` already exists and its content hash matches,
+ * the existing file is reused. If it exists with a different content hash,
+ * the write fails closed.
+ */
+function atomicWriteArtifact(finalPath: string, bytes: Buffer, contentHash: string): string {
+  // Check for existing file: reuse if content matches, fail closed if it
+  // conflicts.
+  try {
+    const existing = readFileSync(finalPath)
+    if (sha256Hex(existing) === contentHash) {
+      return finalPath
+    }
+    throw new Error(`artifact path already exists with different content: ${finalPath}`)
+  } catch (e) {
+    if (e instanceof Error && e.message.includes("already exists with different content")) {
+      throw e
+    }
+    // ENOENT or other read errors: proceed with write.
+  }
+
+  // Ensure the parent directory exists.
+  const dir = join(finalPath, "..")
+  mkdirSync(dir, { recursive: true })
+
+  // Create a unique sibling temp file in the same directory so the atomic
+  // rename is on the same filesystem.
+  const tempBase = finalPath.replace(/\.json$/, ".tmp")
+  let tempPath = tempBase
+  let attempts = 0
+  while (existsSync(tempPath)) {
+    if (attempts >= 100) {
+      throw new Error("too many temp file collisions")
+    }
+    attempts++
+    tempPath = `${tempBase}.${attempts}`
+  }
+
+  try {
+    writeFileSync(tempPath, bytes)
+    // Atomic rename to final content-addressed path.
+    const { renameSync } = require("node:fs")
+    renameSync(tempPath, finalPath)
+    return finalPath
+  } catch (e) {
+    // Clean up temp file on failure.
+    try {
+      if (existsSync(tempPath)) {
+        const { unlinkSync } = require("node:fs")
+        unlinkSync(tempPath)
+      }
+    } catch {
+      // Best-effort cleanup.
+    }
+    throw e
+  }
+}
+
 /** SHA-256 hex digest of a byte slice (artifact content integrity). */
 function sha256Hex(bytes: Buffer): string {
   const crypto = require("node:crypto") as typeof import("node:crypto")
   return crypto.createHash("sha256").update(bytes).digest("hex")
+}
+
+// ─── Parameter preflight validators (mirror batch::validate_operation_params) ──
+
+function validateOperationParams(op: BatchOperation): void {
+  switch (op.op) {
+    case "read":
+      validateReadParams(op.params)
+      break
+    case "grep":
+      validateGrepParams(op.params)
+      break
+    case "search":
+      validateSearchParams(op.params)
+      break
+    case "outline":
+      validateOutlineParams(op.params)
+      break
+    case "impact":
+      validateImpactParams(op.params)
+      break
+    case "testsFor":
+      validateTestsForParams(op.params)
+      break
+    default:
+      // Unknown ops are already rejected by descriptor preflight.
+      break
+  }
+}
+
+function validateReadParams(params: OperationParams): void {
+  if (!params.file) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'read': read requires 'file'")
+  }
+  if (params.file.trim().length === 0) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'read': read 'file' must not be empty")
+  }
+  if (params.file.includes("\0")) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'read': read 'file' contains embedded NUL")
+  }
+  const mode = (params.mode ?? "auto").toLowerCase()
+  if (!["auto", "raw", "prototype", "deep"].includes(mode)) {
+    throw new BatchRejectError(E_BAD_REQUEST, `operation 'read': invalid read mode: ${mode}`)
+  }
+  if (mode === "raw" && params.symbol) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'read': read 'symbol' is not valid with mode 'raw'")
+  }
+  if (params.limit !== undefined) {
+    if (params.limit <= 0 || params.limit > 10_000) {
+      throw new BatchRejectError(E_BAD_REQUEST, `operation 'read': read 'limit' must be in 1..=10000, got ${params.limit}`)
+    }
+  }
+  if (params.offset !== undefined) {
+    if (params.offset <= 0 || params.offset > 1_000_000) {
+      throw new BatchRejectError(E_BAD_REQUEST, `operation 'read': read 'offset' must be in 1..=1000000, got ${params.offset}`)
+    }
+  }
+}
+
+function validateGrepParams(params: OperationParams): void {
+  if (!params.pattern) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'grep': grep requires 'pattern'")
+  }
+  if (params.pattern.trim().length === 0) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'grep': grep 'pattern' must not be empty")
+  }
+  if (!params.fixedStrings) {
+    try {
+      new RegExp(params.pattern)
+    } catch (e) {
+      throw new BatchRejectError(E_BAD_REQUEST, `operation 'grep': grep 'pattern' is not a valid regex: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+  if (params.contextLines !== undefined && params.contextLines > 3) {
+    throw new BatchRejectError(E_BAD_REQUEST, `operation 'grep': grep 'context_lines' must be <= 3, got ${params.contextLines}`)
+  }
+  if (params.maxMatches !== undefined) {
+    if (params.maxMatches <= 0 || params.maxMatches > 200) {
+      throw new BatchRejectError(E_BAD_REQUEST, `operation 'grep': grep 'max_matches' must be in 1..=200, got ${params.maxMatches}`)
+    }
+  }
+  for (const path of params.paths ?? []) {
+    if (path.includes("\0")) {
+      throw new BatchRejectError(E_BAD_REQUEST, "operation 'grep': grep 'paths' contains embedded NUL")
+    }
+  }
+}
+
+function validateSearchParams(params: OperationParams): void {
+  if (!params.pattern) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'search': search requires 'pattern'")
+  }
+  if (params.pattern.trim().length === 0) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'search': search 'pattern' must not be empty")
+  }
+  if (params.kindFilter) {
+    const supported = ["any", "function", "class", "struct", "trait", "enum", "const", "type"]
+    if (!supported.includes(params.kindFilter)) {
+      throw new BatchRejectError(E_BAD_REQUEST, `operation 'search': search 'kind_filter' is not supported: ${params.kindFilter}`)
+    }
+  }
+  if (params.maxMatches !== undefined) {
+    if (params.maxMatches <= 0 || params.maxMatches > 500) {
+      throw new BatchRejectError(E_BAD_REQUEST, `operation 'search': search 'max_matches' must be in 1..=500, got ${params.maxMatches}`)
+    }
+  }
+}
+
+function validateOutlineParams(params: OperationParams): void {
+  if (params.depth !== undefined) {
+    if (params.depth <= 0 || params.depth > 10) {
+      throw new BatchRejectError(E_BAD_REQUEST, `operation 'outline': outline 'depth' must be in 1..=10, got ${params.depth}`)
+    }
+  }
+  if (params.minLines !== undefined) {
+    if (params.minLines <= 0 || params.minLines > 1000) {
+      throw new BatchRejectError(E_BAD_REQUEST, `operation 'outline': outline 'min_lines' must be in 1..=1000, got ${params.minLines}`)
+    }
+  }
+  for (const path of params.paths ?? []) {
+    if (path.includes("\0")) {
+      throw new BatchRejectError(E_BAD_REQUEST, "operation 'outline': outline 'paths' contains embedded NUL")
+    }
+  }
+}
+
+function validateImpactParams(params: OperationParams): void {
+  if (!params.targets || params.targets.length === 0) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'impact': impact requires at least one 'targets' entry")
+  }
+  const direction = (params.direction ?? "both").toLowerCase()
+  if (!["in", "out", "both"].includes(direction)) {
+    throw new BatchRejectError(E_BAD_REQUEST, `operation 'impact': invalid impact direction: ${direction}`)
+  }
+  if (params.depth !== undefined && params.depth !== 1) {
+    throw new BatchRejectError(E_BAD_REQUEST, `operation 'impact': impact 'depth' must be 1, got ${params.depth}`)
+  }
+  if (params.root && params.root.includes("\0")) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'impact': impact 'root' contains embedded NUL")
+  }
+  for (const target of params.targets) {
+    if (target.includes("\0")) {
+      throw new BatchRejectError(E_BAD_REQUEST, "operation 'impact': impact 'targets' contains embedded NUL")
+    }
+  }
+}
+
+function validateTestsForParams(params: OperationParams): void {
+  if (!params.source) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'testsFor': testsFor requires 'source'")
+  }
+  if (params.source.trim().length === 0) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'testsFor': testsFor 'source' must not be empty")
+  }
+  if (params.source.includes("\0")) {
+    throw new BatchRejectError(E_BAD_REQUEST, "operation 'testsFor': testsFor 'source' contains embedded NUL")
+  }
 }
 
 // ─── Executor (mirror batch::execute_batch) ────────────────────────────────
@@ -1071,6 +1284,14 @@ export function executeBatchFallback(
     }
   }
 
+  // Parameter preflight: validate every operation's request parameters
+  // before any operation executes. An invalid parameter set rejects the
+  // ENTIRE batch with E_BAD_REQUEST — zero execution, no cache reads or
+  // writes, no artifact files.
+  for (const op of operations) {
+    validateOperationParams(op)
+  }
+
   // Repository-state probe: an explicitly injected probe wins; otherwise a
   // git-backed probe for the cwd; pass null to disable. The probe is
   // consulted before each operation and once more before the final response
@@ -1123,7 +1344,7 @@ export function executeBatchFallback(
       continue
     }
     const budget = TS_MAX_BATCH_OUTPUT_BYTES - usedOutputBytes
-    const { resp, used } = runFallbackOperation(op, cwd, budget, options.artifactBase)
+    const { resp, used } = runFallbackOperation(op, cwd, budget, options.artifactBase, probe)
     usedOutputBytes += used
     responses.push(resp)
     if (!resp.ok && options.failFast === true) {
@@ -1145,6 +1366,7 @@ function runFallbackOperation(
   cwd: string | undefined,
   budget: number,
   artifactBase: string | undefined,
+  probe: BatchStateProbe | null,
 ): { resp: OperationResponse; used: number } {
   // The whole-batch preflight in executeBatchFallback has already validated
   // that this op is a known, read-only, batchable operation; the descriptor
@@ -1158,6 +1380,24 @@ function runFallbackOperation(
       used: 0,
     }
   }
+
+  // Post-execution state revalidation: a mid-batch mutation that occurred
+  // while the operation was running must invalidate the result. Discard the
+  // result, mark the batch stale, and return E_STALE_SNAPSHOT.
+  if (probe !== null && !probe.stateUnchanged()) {
+    return {
+      resp: {
+        id: op.id,
+        ok: false,
+        error: {
+          code: E_STALE_SNAPSHOT,
+          message: "operation result discarded: repository state changed during execution",
+        },
+      },
+      used: 0,
+    }
+  }
+
   return finalizeFallbackResponse(op.id, outcome.value, effectiveLimit, artifactBase)
 }
 

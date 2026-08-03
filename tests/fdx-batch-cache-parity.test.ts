@@ -32,6 +32,7 @@ import {
   writeFileSync,
   readFileSync,
 } from "node:fs"
+import { createHash } from "node:crypto"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -451,17 +452,18 @@ describe("FDX native/JS fallback parity", () => {
     // "a/b" and "a:b" both sanitize to "a_b"; the SHA-256 discriminator must
     // keep their artifact files distinct so two truncated ops in one batch
     // never overwrite each other.
-    const nameA = artifactFileName("a/b")
-    const nameB = artifactFileName("a:b")
+    const contentHash = createHash("sha256").update("test-content").digest("hex")
+    const nameA = artifactFileName("a/b", contentHash)
+    const nameB = artifactFileName("a:b", contentHash)
     expect(nameA).not.toBe(nameB)
     expect(nameA.startsWith("a_b-")).toBe(true)
     expect(nameB.startsWith("a_b-")).toBe(true)
     expect(nameA.endsWith(".json")).toBe(true)
     expect(nameB.endsWith(".json")).toBe(true)
-    // Deterministic for the same id.
-    expect(artifactFileName("grep-1")).toBe(artifactFileName("grep-1"))
+    // Deterministic for the same id and content.
+    expect(artifactFileName("grep-1", contentHash)).toBe(artifactFileName("grep-1", contentHash))
     // No path separators escape the artifact directory.
-    expect(artifactFileName("../evil/op id")).not.toMatch(/[/\\]/)
+    expect(artifactFileName("../evil/op id", contentHash)).not.toMatch(/[/\\]/)
   })
 
   it("truncation marker + artifact parity between one-shot and TS", async () => {
