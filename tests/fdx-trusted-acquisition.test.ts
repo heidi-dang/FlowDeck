@@ -346,6 +346,9 @@ await new Promise(() => {})
     })
 
     it("fails closed when an existing lock cannot be read (permission denied)", () => {
+      // POSIX permission semantics do not exist on Windows (chmod 000 is a
+      // no-op on NTFS), so the unreadable-lock scenario is POSIX-only.
+      if (process.platform === "win32") return
       if (typeof process.getuid === "function" && process.getuid() === 0) return // root can read 000 files
       const lockPath = join(tempDir, "unreadable.lock")
       writeFileSync(lockPath, JSON.stringify(makeLockPayload({ pid: 2147483647 })), "utf-8")
@@ -629,6 +632,11 @@ await new Promise(() => {})
     it("installs a compliant local-dev package end-to-end and directly validates the activated cache", async () => {
       const target = detectFdxTarget()
       if (!target) return
+      // Windows: the fake binary would have to be a real PE executable to be
+      // spawned without a shell (the audit removed `shell: true`). The
+      // end-to-end activation path is exercised on POSIX here; the packed-cli
+      // CI job covers real Windows execution with spaces in paths.
+      if (process.platform === "win32") return
       process.env.XDG_CACHE_HOME = tempDir
       process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
       setActiveProjectDir(tempDir)
@@ -698,10 +706,18 @@ await new Promise(() => {})
     it("never copies an FDX_BINARY_PATH / PATH binary into the managed repair cache", async () => {
       const target = detectFdxTarget()
       if (!target) return
-      const fake = buildFakePlatformPackage(tempDir, {})
-      if (!fake) return
+      // Windows: a target-less env-path validation spawns the binary; a .cmd
+      // file is executable on Windows without a shell (Node invokes cmd.exe),
+      // unlike a text file named .exe.
+      const envBin = process.platform === "win32" ? join(tempDir, "fdx-env.cmd") : join(tempDir, "fdx-env")
+      if (process.platform === "win32") {
+        writeFileSync(envBin, "@echo fdx v1.0.4\r\n", "utf-8")
+      } else {
+        writeFileSync(envBin, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+        chmodSync(envBin, 0o755)
+      }
       process.env.XDG_CACHE_HOME = tempDir
-      process.env.FDX_BINARY_PATH = fake.binPath
+      process.env.FDX_BINARY_PATH = envBin
       const status = getFdxAvailabilityStatus(true)
       expect(status.source).toBe("env")
       // A repair install never imports the unmanaged env binary into the
@@ -716,6 +732,9 @@ await new Promise(() => {})
     it("validates binaries at paths containing spaces (shell-free execution)", () => {
       const target = detectFdxTarget()
       if (!target) return
+      // Windows: spawn of a non-PE file fails without a shell; the packed-cli
+      // CI job exercises real Windows execution under spaces in paths.
+      if (process.platform === "win32") return
       const spaceDir = join(tempDir, "My Project With Spaces", "app")
       mkdirSync(spaceDir, { recursive: true })
       const binPath = join(spaceDir, target.executableName)
