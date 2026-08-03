@@ -1105,26 +1105,43 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
           // racing writer therefore always enters winner verification.
           try {
             linkSync(tempPath, finalPath)
+            // P2-6: a failed provisional-temp unlink after a successful link
+            // must NOT be swallowed — the activation cannot report clean
+            // Created while a temp remains. Remove the just-created final
+            // (the temp still holds the only copy) and throw.
             try {
               unlinkSync(tempPath)
-            } catch {
-              // temp already gone
+            } catch (tempErr) {
+              let cleanupMsg = ""
+              try {
+                unlinkSync(finalPath)
+                cleanupMsg = "; created artifact removed"
+              } catch (cleanupErr) {
+                cleanupMsg = `; AND artifact cleanup failed: ${errorText(cleanupErr)}`
+              }
+              throw new Error(
+                `failed to remove provisional temp ${tempPath} (${errorText(tempErr)})${cleanupMsg}`,
+              )
             }
             // Directory durability (P2-4): fsyncDir ignores only documented
             // unsupported-platform signals and propagates genuine failures.
             // On a genuine fsync failure the just-created final artifact is
             // removed and the combined activation/cleanup error returned, so
             // the publish is never reported durable when it was not (P1-3).
+            // P2-6: if the final removal ALSO fails, BOTH errors are
+            // preserved — never claim removal that did not happen.
             try {
               fsyncDir(join(finalPath, ".."))
             } catch (syncErr) {
+              let cleanupMsg = ""
               try {
                 unlinkSync(finalPath)
-              } catch {
-                // best-effort cleanup
+                cleanupMsg = " (artifact removed)"
+              } catch (cleanupErr) {
+                cleanupMsg = ` AND artifact cleanup FAILED: ${errorText(cleanupErr)}`
               }
               throw new Error(
-                `failed to fsync artifact dir after publish (artifact removed): ${errorText(syncErr)}`,
+                `failed to fsync artifact dir after publish${cleanupMsg}: ${errorText(syncErr)}`,
               )
             }
             return { kind: "created", path: finalPath }
@@ -1136,11 +1153,16 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
                 const existing = readFileSync(finalPath)
                 if (sha256Hex(existing) === targetHash && existing.length === targetBytes.length) {
                   // Identical content: safely reuse the winner. We do not own
-                  // it, so it is never journaled for rollback.
+                  // it, so it is never journaled for rollback. P2-6: a failed
+                  // losing-temp unlink must not produce an unqualified success.
                   try {
                     unlinkSync(tempPath)
-                  } catch {
-                    // temp already gone
+                  } catch (tempErr) {
+                    if ((tempErr as NodeJS.ErrnoException).code !== "ENOENT") {
+                      throw new Error(
+                        `failed to remove losing temp ${tempPath} (${errorText(tempErr)})`,
+                      )
+                    }
                   }
                   return { kind: "reused-existing", path: finalPath }
                 }
@@ -1844,13 +1866,18 @@ function prepareFallbackResponse(
       },
       rollback(): string[] {
         // Discard the provisional TEMP only; report any cleanup failure
-        // (P2-5). Published finals survive (immutable, P1-4).
+        // (P2-5). Published finals survive (immutable, P1-4). P2-7: ENOENT
+        // (already absent) is SUCCESSFUL cleanup — only genuine errors are
+        // rollback issues.
         const issues: string[] = []
         if (artifact !== null && artifact.tempPath !== artifact.finalPath) {
           try {
             unlinkSync(artifact.tempPath)
           } catch (e) {
-            issues.push(`failed to remove provisional temp ${artifact.tempPath}: ${errorText(e)}`)
+            const code = (e as NodeJS.ErrnoException).code
+            if (code !== "ENOENT") {
+              issues.push(`failed to remove provisional temp ${artifact.tempPath}: ${errorText(e)}`)
+            }
           }
         }
         return issues

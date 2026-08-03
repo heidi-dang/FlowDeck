@@ -1131,4 +1131,33 @@ describe("FDX native/JS fallback parity", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("TS rollback treats an already-removed temp as completed cleanup (P2-7)", () => {
+    // P2-7: after successful activation the provisional temp is normally
+    // already removed. A later stale decision triggers rollback; unlink of an
+    // already-absent temp (ENOENT) must NOT produce ROLLBACK INCOMPLETE.
+    let calls = 0
+    const scripted: BatchStateProbe = {
+      // One over-budget op: pre-op(0), post-exec(1), per-op barrier(2),
+      // fence(3), post-activation probe(4). flip_after=4 makes the fence pass
+      // and the post-activation probe fail → stale → rollback.
+      stateUnchanged: () => calls++ < 4,
+    }
+    const dir = freshProject()
+    try {
+      writeBigFile(dir)
+      const base = join(dir, "ts-artifacts-enoent")
+      const id = `enoent-${Date.now().toString(36)}`
+      const ops: BatchOperation[] = [{ id, op: "read", params: { file: "big.txt", mode: "raw" } }]
+      const ts = executeBatchFallback(ops, dir, { artifactBase: base, probe: scripted })
+      expect(ts.staleSnapshot).toBe(true)
+      expect(ts.responses[0].ok).toBe(false)
+      expect(ts.responses[0].error?.code).toBe(E_STALE_SNAPSHOT)
+      // The temp was already removed at activation (ENOENT on rollback) —
+      // no ROLLBACK INCOMPLETE may be reported.
+      expect(ts.responses[0].error?.message).not.toContain("ROLLBACK INCOMPLETE")
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

@@ -997,11 +997,31 @@ fn execute_batch_with_probe(
             }
         }
 
-        // Phase C2 (P1-3): revalidate EVERY activated artifact BEFORE global
-        // success. A final-validation failure is a TRANSACTION failure — it
-        // converts every provisional response to a stable error, leaves LRU
-        // untouched, and (with deferred cache publication) leaves zero
-        // reader-visible cache entries.
+        // Phase B2: publish the staged cache entries — only after the drift
+        // probe passed. Publication is a single ATOMIC hard-link per entry.
+        // On failure it records the publication error and every cleanup
+        // issue; the authoritative `failed` decision is recomputed AFTER this
+        // stage (P1-1) so a publish failure can never be followed by LRU or
+        // success responses.
+        let mut cache_publish_issues: Vec<String> = Vec::new();
+        if txn_error.is_none() && !post_activation_drift {
+            if let Some(tx) = cache_tx_holder.as_mut() {
+                match tx.publish() {
+                    Ok(_) => {}
+                    Err(f) => {
+                        txn_error = Some(f.message.clone());
+                        cache_publish_issues.extend(f.temp_cleanup_issues.clone());
+                    }
+                }
+            }
+        }
+
+        // Phase C2 (P1-3 + P1-2): revalidate EVERY referenced artifact AFTER
+        // cache publication — immediately before LRU and success responses.
+        // A final-validation failure is a TRANSACTION failure that converts
+        // every provisional response to a stable error; with deferred cache
+        // publication the batch is void and (on publish failure) partial
+        // entries were already rolled back by publish().
         let mut final_revalidation_error: Option<String> = None;
         if txn_error.is_none() && !post_activation_drift {
             for pending in pendings.iter() {
@@ -1025,31 +1045,20 @@ fn execute_batch_with_probe(
             }
         }
 
-        let failed =
-            txn_error.is_some() || post_activation_drift || final_revalidation_error.is_some();
-        let mut cache_publish_issues: Vec<String> = Vec::new();
-        if !failed {
-            // Phase B2: NOW publish the staged cache entries — only after the
-            // drift probe AND artifact revalidation passed. Publication is a
-            // single ATOMIC hard-link per entry; on failure it removes every
-            // entry THIS transaction Created so no partial batch result
-            // remains reader-visible (P1-2); pre-existing identical winners
-            // (ReusedExisting) are never touched.
-            if let Some(tx) = cache_tx_holder.as_mut() {
-                match tx.publish() {
-                    Ok(_) => {}
-                    Err(f) => {
-                        txn_error = Some(f.message.clone());
-                        cache_publish_issues.extend(f.temp_cleanup_issues.clone());
-                    }
-                }
-            }
-        }
+        // AUTHORITATIVE commit decision (P1-1): recomputed after EVERY commit
+        // stage — activation, drift probe, cache publication, and final
+        // artifact revalidation. LRU and success responses run ONLY when this
+        // final value is false.
+        let failed = txn_error.is_some()
+            || post_activation_drift
+            || final_revalidation_error.is_some()
+            || !cache_publish_issues.is_empty();
 
-        // LRU runs ONLY after cache publication succeeded AND all validations
-        // passed (P1-1). A failed batch never reaches here.
+        // LRU runs ONLY after the authoritative success decision. A failed
+        // batch never reaches here, so unrelated entries are never evicted by
+        // a failed transaction (P1-1).
         if failed {
-            // Staged cache temps are discarded (nothing was published).
+            // Staged cache temps are discarded (nothing should be visible).
             if let Some(tx) = cache_tx_holder.as_mut() {
                 cache_publish_issues.extend(tx.abort());
             }
@@ -4277,11 +4286,14 @@ mod tests {
 
         let res = tx.publish();
         assert!(res.is_err(), "publish fails on the blocked entry");
-        // key-1 was Created before the failure — it must be REMOVED so no
-        // partial reader-visible batch result remains (P1-2 all-or-nothing).
+        // key-1 was Created before the failure. Under the immutable-objects
+        // model (P2-2), published cache finals are NEVER unlinked by pathname
+        // — a concurrent transaction may already have reused key-1 as its
+        // winner. The immutable entry remains as valid reusable data; the
+        // batch's responses (visibility metadata) are rolled back to errors.
         assert!(
-            !cache.query_dir().join("key-1").exists(),
-            "a created entry is removed when publication fails partway (P1-2)"
+            cache.query_dir().join("key-1").exists(),
+            "a created cache final remains as immutable reusable data (P2-2)"
         );
         // No staged temp files remain.
         let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
@@ -4560,11 +4572,11 @@ mod tests {
         cache.put("key-1", br#"{"k":"prior-1"}"#);
 
         let mut tx = cache.begin();
+        // A fresh key created FIRST (before the conflict) so it is published.
+        tx.stage_write("key-0", false, br#"{"k":"new-0"}"#).unwrap();
         // key-1 already exists with DIFFERENT content → immutable conflict:
         // the existing winner is never replaced.
         tx.stage_write("key-1", false, br#"{"k":"new-1"}"#).unwrap();
-        // A fresh key that WILL be created before the conflict on key-2.
-        tx.stage_write("key-0", false, br#"{"k":"new-0"}"#).unwrap();
         // Block key-2's final path so publish fails partway.
         tx.stage_write("key-2", false, br#"{"k":"new-2"}"#).unwrap();
         let final2 = cache.query_dir().join("key-2");
@@ -4579,11 +4591,12 @@ mod tests {
             Some(br#"{"k":"prior-1"}"#.as_slice()),
             "a conflicting pre-existing winner is never replaced"
         );
-        // key-0 was Created before the failure — it must be removed so no
-        // partial reader-visible batch result remains (P1-2).
+        // key-0 was Created before the failure. Under the immutable-objects
+        // model (P2-2) it remains as valid reusable data — never unlinked by
+        // pathname, because a concurrent transaction may have reused it.
         assert!(
-            !cache.query_dir().join("key-0").exists(),
-            "a created entry is removed when publication fails (P1-2)"
+            cache.query_dir().join("key-0").exists(),
+            "a created cache final remains as immutable reusable data (P2-2)"
         );
         // No staged temp leaked.
         let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
@@ -4594,5 +4607,105 @@ mod tests {
             })
             .unwrap_or_default();
         assert!(leftovers.is_empty(), "no staged temps leak: {leftovers:?}");
+    }
+
+    #[test]
+    fn batch_level_publish_failure_voids_all_provisional_responses() {
+        // Audit acceptance #1-4: a batch-level Phase B2 cache publication
+        // failure must (a) convert EVERY provisional response to an error,
+        // (b) leave LRU untouched, (c) produce no successful artifact
+        // reference, and (d) surface cleanup findings as ROLLBACK INCOMPLETE.
+        //
+        // We force Phase B2 to fail by blocking a cache key's final path with
+        // a non-empty DIRECTORY (hard-link onto it fails on every platform).
+        // The batch uses a cacheable over-budget op so both cache write and
+        // artifact paths are exercised.
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        let big = "x".repeat(300 * 1024);
+        std::fs::write(tmp.path().join("big.txt"), &big).unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        let ops = || {
+            vec![op(
+                "r1",
+                "read",
+                serde_json::json!({ "file": "big.txt", "mode": "raw" }),
+            )]
+        };
+        // Run once to learn the cache key's final path, then block it.
+        let first = execute_batch(&ops(), Some(cwd), None, false).unwrap();
+        assert!(first.responses[0].ok);
+        // Locate the single cache entry file and block its path with a dir.
+        let qc = state.path().join(crate::index::paths::INDEX_NAMESPACE);
+        let mut blocked_key: Option<PathBuf> = None;
+        if let Ok(repos) = std::fs::read_dir(&qc) {
+            for repo in repos.flatten() {
+                if let Ok(wts) = std::fs::read_dir(repo.path()) {
+                    for wt in wts.flatten() {
+                        let dir = wt.path().join(crate::index::query_cache::QUERY_CACHE_DIR);
+                        if let Ok(entries) = std::fs::read_dir(&dir) {
+                            for e in entries.flatten() {
+                                let p = e.path();
+                                if p.is_file() {
+                                    blocked_key = Some(p);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(blocked_key.is_some(), "a cache entry exists after warm-up");
+        // Remove the entry file and put a non-empty DIRECTORY in its place so
+        // the next batch's hard-link fails (immutable conflict path: a
+        // directory is not a regular file and hard-linking onto it fails).
+        let blocked = blocked_key.unwrap();
+        std::fs::remove_file(&blocked).unwrap();
+        std::fs::create_dir_all(&blocked).unwrap();
+        std::fs::write(blocked.join("blocker"), b"x").unwrap();
+
+        let resp = execute_batch(&ops(), Some(cwd), None, false).unwrap();
+        // (a) every provisional response is an error.
+        assert!(
+            !resp.responses[0].ok,
+            "a Phase B2 publication failure must void the provisional response"
+        );
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_INTERNAL
+        );
+        // (c) no successful artifact reference is emitted.
+        assert!(resp.responses[0].artifact_ref.is_none());
+        assert!(resp.responses[0].result.is_none());
+        // The failure message surfaces the publication/cleanup issue.
+        let msg = resp.responses[0].error.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            msg.contains("not committed")
+                || msg.contains("publish")
+                || msg.contains("ROLLBACK INCOMPLETE"),
+            "the response surfaces the publication failure: {msg}"
+        );
+        // (b) the failed batch published no NEW reader-visible entry: the
+        // count stays at exactly the blocked placeholder (the pre-existing
+        // key path, now a directory) — the batch added nothing.
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "the failed batch published no new reader-visible entries"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
     }
 }

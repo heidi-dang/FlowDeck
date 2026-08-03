@@ -433,17 +433,21 @@ impl CacheTransaction<'_> {
         };
         std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create cache dir: {e}"))?;
         let final_path = dir.join(key);
-        // Deduplicate same-key writes: remove the displaced entry's temp
-        // BEFORE discarding it (P2-1). A failed displaced-temp removal is
-        // PROPAGATED (P2-3) — never swallowed — so a leak cannot hide.
+        // Deduplicate same-key writes (P2-4): attempt the displaced temp
+        // removal FIRST while the entry is still tracked; only on SUCCESS is
+        // the ownership record removed. On failure the entry remains in
+        // self.staged so abort() can retry/report the still-owned temp.
         if let Some(pos) = self.staged.iter().position(|e| e.final_path == final_path) {
-            let displaced = self.staged.remove(pos);
-            std::fs::remove_file(&displaced.staged_path).map_err(|e| {
-                format!(
-                    "failed to remove displaced staged temp {} (same-key dedupe): {e}",
-                    displaced.staged_path.display()
-                )
-            })?;
+            let displaced_temp = self.staged[pos].staged_path.clone();
+            if let Err(e) = std::fs::remove_file(&displaced_temp) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    return Err(format!(
+                        "failed to remove displaced staged temp {} (same-key dedupe): {e}",
+                        displaced_temp.display()
+                    ));
+                }
+            }
+            self.staged.remove(pos);
         }
         // Unique private temp in the same directory (same filesystem for the
         // final hard-link). The nonce makes it unguessable and exclusive.
@@ -495,22 +499,22 @@ impl CacheTransaction<'_> {
     /// Publish every staged entry with a single ATOMIC hard-link per entry —
     /// there is no check-then-rename window (P1-1), so a concurrent writer can
     /// never be clobbered. An identical existing winner is reused
-    /// (`ReusedExisting`, never rollback-owned, P1-2); a conflicting existing
-    /// entry fails closed. The cache namespace directory is fsynced after each
-    /// publication (P2-2 — the directory that actually changed). LRU is NOT
-    /// run here.
+    /// (`ReusedExisting`, never rollback-owned); a conflicting existing entry
+    /// fails closed. The cache namespace directory is fsynced after each
+    /// publication (the directory that actually changed). LRU is NOT run
+    /// here.
     ///
-    /// On failure, every entry THIS transaction Created is removed so no
-    /// partial batch result remains reader-visible (P1-2); pre-existing
-    /// identical winners (ReusedExisting) are never touched. Every
+    /// On failure, published cache finals are content-addressed IMMUTABLE
+    /// objects and are NEVER unlinked by pathname (P2-2): a concurrent
+    /// transaction may already have reused them as its authoritative winner.
+    /// The batch's responses (its visibility metadata) are rolled back to
+    /// errors; the immutable entries remain as valid reusable data. Every
     /// independent failure — temp removal, namespace fsync, remaining-temp
-    /// cleanup — is preserved in the returned report (P2-5), and
-    /// identical-winner staged-temp removal failures are reported (P2-4).
+    /// cleanup — is preserved in the returned report, and identical-winner
+    /// staged-temp removal failures are reported. The staged-temp cleanup
+    /// path fsyncs the affected namespace after removal (P2-1).
     pub fn publish(&mut self) -> Result<Vec<CachePublishOutcome>, PublishFailure> {
         let mut outcomes = Vec::with_capacity(self.staged.len());
-        // Final paths of entries THIS transaction Created (hard-linked). On
-        // failure these are removed so no partial batch result is visible.
-        let mut created_paths: Vec<PathBuf> = Vec::new();
         let mut issues: Vec<String> = Vec::new();
         for entry in self.staged.iter_mut() {
             match std::fs::hard_link(&entry.staged_path, &entry.final_path) {
@@ -534,7 +538,6 @@ impl CacheTransaction<'_> {
                     });
                     entry.published = true;
                     outcomes.push(CachePublishOutcome::Created);
-                    created_paths.push(entry.final_path.clone());
                     // Preserve BOTH independent failures (P2-5); do not
                     // collapse via .or().
                     for issue in temp_issue.into_iter().chain(sync_issue) {
@@ -606,10 +609,13 @@ impl CacheTransaction<'_> {
             }
         }
         if !issues.is_empty() {
-            // Roll back every Created entry so no partial batch result
-            // remains visible (P1-2), and clean every remaining staged temp.
+            // P2-2: created cache finals are content-addressed IMMUTABLE
+            // objects — they are NEVER unlinked by pathname on rollback,
+            // because a concurrent transaction may have already reused them as
+            // its authoritative winner. The batch's responses (its visibility
+            // metadata) are rolled back to errors; the immutable entries
+            // remain as valid reusable data. Only staged temps are cleaned.
             let mut all = issues;
-            all.extend(remove_created_paths(&created_paths));
             all.extend(self.collect_temp_cleanup_issues());
             return Err(PublishFailure {
                 message: all.join("; "),
@@ -620,10 +626,13 @@ impl CacheTransaction<'_> {
         Ok(outcomes)
     }
 
-    /// Remove every un-published staged temp. Returns a list of removal
-    /// failures so an incomplete cleanup is surfaced (P1-5/P2-3).
+    /// Remove every un-published staged temp, fsyncing each affected
+    /// namespace directory afterwards (P2-1 — rollback deletion is held to
+    /// the same durability standard as publication). Returns a list of removal
+    /// and sync failures so an incomplete cleanup is surfaced (P1-5/P2-3).
     fn collect_temp_cleanup_issues(&self) -> Vec<String> {
         let mut issues = Vec::new();
+        let mut affected: Vec<PathBuf> = Vec::new();
         for entry in &self.staged {
             if entry.published {
                 continue;
@@ -635,6 +644,17 @@ impl CacheTransaction<'_> {
                         entry.staged_path.display()
                     ));
                 }
+            } else if !affected.contains(&entry.namespace_dir) {
+                affected.push(entry.namespace_dir.clone());
+            }
+        }
+        // Fsync every namespace that lost a staged temp (P2-1).
+        for dir in &affected {
+            if let Err(e) = sync_cache_dir(dir) {
+                issues.push(format!(
+                    "failed to sync cache dir {} after cleanup: {e}",
+                    dir.display()
+                ));
             }
         }
         issues
@@ -655,25 +675,6 @@ impl CacheTransaction<'_> {
         self.staged.clear();
         issues
     }
-}
-
-/// Remove the cache entries THIS transaction Created (hard-linked into the
-/// live namespace) so a failed publish leaves no partial reader-visible batch
-/// results (P1-2). ReusedExisting winners are never in `created_paths`.
-/// Returns removal failures for the rollback report (P2-3).
-fn remove_created_paths(created_paths: &[PathBuf]) -> Vec<String> {
-    let mut issues = Vec::new();
-    for path in created_paths {
-        if let Err(e) = std::fs::remove_file(path) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                issues.push(format!(
-                    "failed to remove created cache entry {}: {e}",
-                    path.display()
-                ));
-            }
-        }
-    }
-    issues
 }
 
 /// Structured failure from [`CacheTransaction::publish`]: the primary
