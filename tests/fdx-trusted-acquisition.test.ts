@@ -815,6 +815,10 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
     it("P1-3: a binary replaced after validation is never executed from the stale resolution cache", () => {
       const target = detectFdxTarget()
       if (!target) return
+      // Windows: the fingerprint contract is exercised via the packed-cli CI
+      // job with a real PE binary; a shell-script fixture cannot execute as
+      // fdx.exe without a shell (the audit removed shell:true).
+      if (process.platform === "win32") return
       process.env.XDG_CACHE_HOME = tempDir
       const dir = join(tempDir, "stale-cache")
       mkdirSync(dir, { recursive: true })
