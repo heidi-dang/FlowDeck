@@ -186,6 +186,11 @@ let activeProjectDir = process.cwd()
 
 export function setActiveProjectDir(dir: string): void {
   activeProjectDir = dir
+  // The resolution cache is keyed on the caller project directory: switching
+  // the active project must never serve a resolution computed for a different
+  // caller context (P1-2: cache-gating bypass).
+  fdxCacheKey = null
+  fdxCacheValue = null
 }
 
 export const MINIMUM_SUPPORTED_FDX_VERSION = "1.0.0"
@@ -390,6 +395,24 @@ export function validateFdxProvenance(
       return { valid: false, reason: `Provenance packageVersion invalid: ${pkgVer.reason}` }
     }
 
+    // P2-1: version bindings. The provenance's package and FlowDeck versions
+    // must equal the canonical FlowDeck version the binary was built for, and
+    // the declared binary version must equal the package version. This closes
+    // the gap where a provenance claiming an unrelated (but semver-valid)
+    // version could pass validation.
+    let canonicalVersion: string
+    try {
+      canonicalVersion = getFlowdeckPackageVersion()
+    } catch {
+      return { valid: false, reason: "Provenance version binding unverifiable: cannot determine canonical FlowDeck version" }
+    }
+    if (provenance.packageVersion !== canonicalVersion) {
+      return { valid: false, reason: `Provenance packageVersion "${provenance.packageVersion}" does not match canonical FlowDeck version "${canonicalVersion}"` }
+    }
+    if (provenance.flowdeckVersion !== canonicalVersion) {
+      return { valid: false, reason: `Provenance flowdeckVersion "${provenance.flowdeckVersion}" does not match canonical FlowDeck version "${canonicalVersion}"` }
+    }
+
     if (!provenance.sourceCommitSha || !/^[0-9a-fA-F]{40}$/.test(provenance.sourceCommitSha)) {
       return { valid: false, reason: "Provenance sourceCommitSha is missing or not a valid 40-character SHA" }
     }
@@ -587,6 +610,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
   let actualSha: string | undefined
   let provenanceValid = false
   let hasProvenance = false
+  let declaredFdxBinaryVersion: string | null = null
 
   if (existsSync(checksumPath) || existsSync(provenancePath)) {
     try {
@@ -594,6 +618,9 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       if (existsSync(provenancePath)) {
         hasProvenance = true
         manifest = JSON.parse(readFileSync(provenancePath, "utf-8"))
+        if (typeof manifest.fdxBinaryVersion === "string" && manifest.fdxBinaryVersion.length > 0) {
+          declaredFdxBinaryVersion = manifest.fdxBinaryVersion
+        }
         const provRes = validateFdxProvenance(manifest, opts.target ?? null)
         provenanceValid = provRes.valid
         if (!provRes.valid) {
@@ -618,6 +645,20 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       if (expectedSha) {
         const fileBuf = readFileSync(binPath)
         actualSha = createHash("sha256").update(fileBuf).digest("hex")
+        // P2-2: the provenance-declared binary byte size must match the actual
+        // file size. A provenance that passes checksum but declares a size
+        // inconsistent with the file is rejected — prevents tampering that
+        // keeps a valid checksum while the provenance document is inconsistent.
+        if (typeof manifest.binaryByteSize === "number" && manifest.binaryByteSize !== fileBuf.length) {
+          return {
+            valid: false,
+            version: null,
+            versionCompatible: false,
+            checksumStatus: "fail",
+            integrity: { status: "fail", checksumStatus: "fail", checksumMatch: false, expectedSha256: expectedSha, actualSha256: actualSha, provenanceValid, reason: `Provenance binaryByteSize ${manifest.binaryByteSize} does not match actual binary size ${fileBuf.length}` },
+            reason: `Provenance binaryByteSize ${manifest.binaryByteSize} does not match actual binary size ${fileBuf.length}`,
+          }
+        }
         if (actualSha === expectedSha) {
           checksumStatus = "pass"
           checksumMatch = true
@@ -710,6 +751,21 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       checksumStatus,
       integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid, reason: verCheck.reason },
       reason: verCheck.reason,
+    }
+  }
+
+  // P2-1: the provenance-declared binary version must equal the version the
+  // binary actually reports. A provenance claiming a different binary version
+  // than the one executing fails closed even when checksum and provenance
+  // documents otherwise pass.
+  if (hasProvenance && declaredFdxBinaryVersion !== null && declaredFdxBinaryVersion !== version) {
+    return {
+      valid: false,
+      version,
+      versionCompatible: false,
+      checksumStatus,
+      integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid: false, reason: `Provenance fdxBinaryVersion "${declaredFdxBinaryVersion}" does not match executed binary version "${version}"` },
+      reason: `Provenance fdxBinaryVersion "${declaredFdxBinaryVersion}" does not match executed binary version "${version}"`,
     }
   }
 
@@ -1021,6 +1077,22 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
 
 let fdxCacheKey: string | null = null
 let fdxCacheValue: FdxResolutionResult | null = null
+let fdxCacheBinaryFingerprint: string | null = null
+
+/**
+ * Stable-file-identity fingerprint of a validated binary. Combines device,
+ * inode, size and mtime so a binary replaced after validation (stale-cache
+ * binary replacement, P1-3) is detected on the next resolution cache hit.
+ * Exported for acceptance tests.
+ */
+export function binaryFingerprint(binPath: string): string | null {
+  try {
+    const st = statSync(binPath)
+    return `${st.dev}:${st.ino}:${st.size}:${Math.trunc(st.mtimeMs)}`
+  } catch {
+    return null
+  }
+}
 
 export function resolveFdxBinaryPath(forceRefresh = false): string | null {
   const status = getFdxAvailabilityStatus(forceRefresh)
@@ -1032,14 +1104,45 @@ export function checkFdxAvailability(forceRefresh = false): boolean {
 }
 
 export function getFdxAvailabilityStatus(forceRefresh = false): FdxResolutionResult {
-  const currentKey = `${process.env.FDX_BINARY_PATH || ""}:${process.env.PATH || ""}`
+  // Cache identity must capture every input that changes which sources are
+  // eligible: the explicit binary override, PATH (for caller-local dev
+  // sources), the release/profile gates, the local-dev-source opt-in, the
+  // caller project directory, the current working directory, and the
+  // canonical FlowDeck version (P1-2: cache-gating bypass).
+  const currentKey = [
+    `env:${process.env.FDX_BINARY_PATH || ""}`,
+    `path:${process.env.PATH || ""}`,
+    `profile:${process.env.FLOWDECK_PROFILE || ""}`,
+    `nodeEnv:${process.env.NODE_ENV || ""}`,
+    `localDev:${process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE || ""}`,
+    `project:${activeProjectDir}`,
+    `cwd:${process.cwd()}`,
+    `version:${getFlowdeckPackageVersion()}`,
+  ].join("|")
   if (!forceRefresh && fdxCacheKey === currentKey && fdxCacheValue !== null) {
+    // P1-3: the cached binary must be revalidated before every native
+    // execution. If the validated binary was replaced on disk (identity,
+    // size or mtime changed) the cache is stale and must be recomputed —
+    // never execute a binary whose fingerprint no longer matches the one
+    // that passed the full trust contract.
+    if (fdxCacheValue.binaryPath) {
+      const fp = binaryFingerprint(fdxCacheValue.binaryPath)
+      if (fdxCacheBinaryFingerprint !== null && fp !== null && fp === fdxCacheBinaryFingerprint) {
+        return fdxCacheValue
+      }
+      // Fingerprint changed or vanished: drop the cache and re-resolve.
+      fdxCacheKey = null
+      fdxCacheValue = null
+      fdxCacheBinaryFingerprint = null
+      return getFdxAvailabilityStatus(true)
+    }
     return fdxCacheValue
   }
 
   const res = resolveFdxBinaryPathDetailed()
   fdxCacheKey = currentKey
   fdxCacheValue = res
+  fdxCacheBinaryFingerprint = res.binaryPath ? binaryFingerprint(res.binaryPath) : null
   return res
 }
 

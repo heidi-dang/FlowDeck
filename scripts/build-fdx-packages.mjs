@@ -43,6 +43,25 @@ function isMuslHost() {
   return false
 }
 
+/**
+ * P2-4: strict-mode guard against fabricated provenance. Returns an error
+ * message when any provenance input is fabricated (missing/zero source commit,
+ * missing branch, missing rustc version), or null when all inputs are real.
+ * Exported so the acceptance tests can exercise it without a full build.
+ */
+export function strictProvenanceInputError({ currentCommit, currentBranch, rustVersion }) {
+  if (!currentCommit || !/^[0-9a-fA-F]{40}$/.test(currentCommit) || currentCommit === "0000000000000000000000000000000000000000") {
+    return `Strict build requires a real source commit SHA; got ${JSON.stringify(currentCommit)}. Set GITHUB_SHA or build inside a git checkout.`
+  }
+  if (!currentBranch) {
+    return `Strict build requires a real source branch; none detected. Set GITHUB_REF_NAME or build inside a git checkout.`
+  }
+  if (!rustVersion) {
+    return `Strict build requires a real rustc version; 'rustc --version' failed.`
+  }
+  return null
+}
+
 function detectTargetName() {
   const platform = process.platform
   const arch = process.arch
@@ -80,6 +99,18 @@ function main() {
       fail(`Target platform ${process.platform}/${process.arch} not supported for prebuilt native binaries.`)
     }
     console.log(`[build-fdx-packages] Target platform ${process.platform}/${process.arch} not configured for automatic packaging.`)
+    return
+  }
+
+  // P2-4: the production distribution matrix ships six prebuilt targets; the
+  // runtime trust contract (FDX_TARGET_TRIPLES / detectFdxTarget) has no
+  // consumer for linux-arm64-musl. In strict mode, reject it explicitly
+  // rather than emitting a package no runtime target can ever validate.
+  if (targetDirName === "flowdeck-fdx-linux-arm64-musl") {
+    if (isStrict) {
+      fail(`Target flowdeck-fdx-linux-arm64-musl is not part of the production distribution matrix; cannot package in strict mode.`)
+    }
+    console.log(`[build-fdx-packages] Target flowdeck-fdx-linux-arm64-musl is not part of the production distribution matrix; skipping.`)
     return
   }
 
@@ -127,8 +158,18 @@ function main() {
     }
     writeFileSync(join(destDir, "checksum.json"), JSON.stringify(checksumManifest, null, 2), "utf-8")
 
-    const currentCommit = tryExec("git", ["rev-parse", "HEAD"]) || process.env.GITHUB_SHA || "0000000000000000000000000000000000000000"
-    const currentBranch = tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]) || process.env.GITHUB_REF_NAME || "main"
+    const currentCommit = tryExec("git", ["rev-parse", "HEAD"]) || process.env.GITHUB_SHA || null
+    const currentBranch = tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]) || process.env.GITHUB_REF_NAME || null
+    const rustVersion = tryExec("rustc", ["--version"]) || null
+
+    // P2-4: never emit fabricated provenance. A zero/absent source commit, a
+    // missing branch, or a missing rustc version would produce a provenance
+    // document that is not traceable to a real build — unacceptable in strict
+    // (release/CI) mode, which must fail instead of writing the artifact.
+    if (isStrict) {
+      const strictError = strictProvenanceInputError({ currentCommit, currentBranch, rustVersion })
+      if (strictError) fail(strictError)
+    }
 
     const provenanceManifest = {
       packageName: `@heidi-dang/${targetDirName}`,
@@ -142,13 +183,13 @@ function main() {
       binaryFilename: execName,
       binaryByteSize: buf.length,
       sha256,
-      sourceCommitSha: currentCommit,
-      gitCommit: currentCommit,
-      gitBranch: currentBranch,
+      sourceCommitSha: currentCommit || "0000000000000000000000000000000000000000",
+      gitCommit: currentCommit || "0000000000000000000000000000000000000000",
+      gitBranch: currentBranch || "unknown",
       workflowRunId: process.env.GITHUB_RUN_ID ?? null,
       ciRunId: process.env.GITHUB_RUN_ID ?? null,
       builderPlatform: `${process.platform}/${process.arch}`,
-      rustVersion: tryExec("rustc", ["--version"]) || "rustc 1.84.0",
+      rustVersion: rustVersion || "unknown",
       buildProfile: "release",
       buildTimestamp: new Date().toISOString(),
     }
@@ -198,4 +239,7 @@ function main() {
   }
 }
 
-main()
+// Only run the CLI when invoked directly as a script, so importing this
+// module (e.g. from tests) does not build or exit the process.
+const isEntrypoint = import.meta.main === true || (import.meta.filename && process.argv[1] && import.meta.filename === process.argv[1])
+if (isEntrypoint) main()

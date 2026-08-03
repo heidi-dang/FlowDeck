@@ -84,6 +84,34 @@ const INSTALL_LOCK_SCHEMA_VERSION = 1
 /** Bounded grace interval for newly observed empty/partial/malformed lock files. */
 const INSTALL_LOCK_INIT_GRACE_MS = 30_000
 
+/** Bounded timeout for registry metadata, download, and extract subprocesses. */
+export const REGISTRY_TIMEOUT_MS = 60_000
+
+/**
+ * Canonical single-value SRI parser. Accepts exactly one supported digest
+ * (sha512 or sha256) with a valid base64 value on a single line. Rejects
+ * multiline, whitespace-padded, unsupported-algorithm, or malformed values.
+ * Used to fail closed on registry `dist.integrity` metadata (P1-4).
+ */
+export function parseSRI(sri: string): { ok: true; algo: "sha512" | "sha256"; digest: string } | { ok: false; reason: string } {
+  if (typeof sri !== "string" || sri.length === 0) {
+    return { ok: false, reason: "empty integrity value" }
+  }
+  if (/\s/.test(sri)) {
+    return { ok: false, reason: "multiline or whitespace-separated integrity value" }
+  }
+  const match = sri.match(/^(sha512|sha256)-([A-Za-z0-9+/=]+)$/)
+  if (!match) {
+    return { ok: false, reason: "unsupported or malformed integrity value" }
+  }
+  const algo = match[1] as "sha512" | "sha256"
+  const digest = match[2]
+  if (digest.length < 32) {
+    return { ok: false, reason: "integrity digest too short to be valid" }
+  }
+  return { ok: true, algo, digest }
+}
+
 export type InstallLockResult =
   | { ok: true; token: string }
   | { ok: false; reason: string; detail?: string }
@@ -438,13 +466,23 @@ function fetchFromRegistry(packageName: string, version: string): { dir: string;
     // 1. Query registry metadata
     let metaRaw: string
     try {
-      metaRaw = execFileSync(npmCmd, ["view", `${packageName}@${version}`, "--json"], { cwd: tmpDir, encoding: "utf-8", shell: npmShell, stdio: ["pipe", "pipe", "pipe"] })
+      metaRaw = execFileSync(npmCmd, ["view", `${packageName}@${version}`, "--json"], { cwd: tmpDir, encoding: "utf-8", shell: npmShell, stdio: ["pipe", "pipe", "pipe"], timeout: REGISTRY_TIMEOUT_MS })
     } catch (e: any) {
       const msg = e.stderr?.toString() ?? e.message ?? ""
-      if (msg.includes("404") || msg.includes("E404") || msg.includes("Not Found")) {
+      if (e?.killed || e?.code === "ETIMEDOUT" || /timed out|timeout/i.test(msg)) {
+        console.error(`  [registry] Failure: registry metadata request timed out (${packageName}@${version})`)
+      } else if (msg.includes("404") || msg.includes("E404") || msg.includes("Not Found")) {
         console.error(`  [registry] Failure: package version missing (${packageName}@${version})`)
       } else if (msg.includes("401") || msg.includes("403") || msg.includes("EAUTH")) {
         console.error(`  [registry] Failure: authentication failure`)
+      } else if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(msg)) {
+        console.error(`  [registry] Failure: DNS resolution failed (${packageName}@${version})`)
+      } else if (/certificate|SSL|TLS|UNABLE_TO_VERIFY/i.test(msg)) {
+        console.error(`  [registry] Failure: TLS/certificate error`)
+      } else if (/ECONNRESET|EADDRNOTAVAIL|EACCES|socket hang/i.test(msg)) {
+        console.error(`  [registry] Failure: network error (${msg.trim().split("\n")[0]})`)
+      } else if (/rate.?limit|429/i.test(msg)) {
+        console.error(`  [registry] Failure: rate limited by registry`)
       } else {
         console.error(`  [registry] Failure: registry unavailable (${msg.trim().split("\n")[0]})`)
       }
@@ -455,11 +493,15 @@ function fetchFromRegistry(packageName: string, version: string): { dir: string;
     let meta: any = {}
     try {
       meta = JSON.parse(metaRaw)
-    } catch {}
+    } catch {
+      console.error(`  [registry] Failure: registry returned malformed JSON metadata`)
+      rmSync(tmpDir, { recursive: true, force: true })
+      return null
+    }
 
     const dist = meta.dist ?? {}
-    const expectedIntegrity = dist.integrity // sha512-...
-    const expectedShasum = dist.shasum
+    const expectedIntegrity = typeof dist.integrity === "string" && dist.integrity.length > 0 ? dist.integrity : null
+    const expectedShasum = typeof dist.shasum === "string" && dist.shasum.length > 0 ? dist.shasum : null
 
     if (!expectedIntegrity && !expectedShasum) {
       console.error(`  [registry] Failure: integrity metadata missing from registry response`)
@@ -468,7 +510,22 @@ function fetchFromRegistry(packageName: string, version: string): { dir: string;
     }
 
     // 2. Download exact tarball
-    execFileSync(npmCmd, ["pack", `${packageName}@${version}`], { cwd: tmpDir, shell: npmShell, stdio: "ignore" })
+    try {
+      execFileSync(npmCmd, ["pack", `${packageName}@${version}`], { cwd: tmpDir, shell: npmShell, stdio: "ignore", timeout: REGISTRY_TIMEOUT_MS })
+    } catch (e: any) {
+      const msg = e?.stderr?.toString() ?? e?.message ?? ""
+      if (e?.killed || e?.code === "ETIMEDOUT" || /timed out|timeout/i.test(msg)) {
+        console.error(`  [registry] Failure: tarball download timed out (${packageName}@${version})`)
+      } else if (/rate.?limit|429/i.test(msg)) {
+        console.error(`  [registry] Failure: rate limited by registry while downloading tarball`)
+      } else if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(msg)) {
+        console.error(`  [registry] Failure: DNS resolution failed while downloading tarball`)
+      } else {
+        console.error(`  [registry] Failure: tarball download failed (${msg.trim().split("\n")[0] || "unknown error"})`)
+      }
+      rmSync(tmpDir, { recursive: true, force: true })
+      return null
+    }
     const files = readdirSync(tmpDir).filter(f => f.endsWith(".tgz"))
     if (files.length !== 1) {
       console.error(`  [registry] Failure: extraction failure (expected 1 .tgz, got ${files.length})`)
@@ -479,20 +536,25 @@ function fetchFromRegistry(packageName: string, version: string): { dir: string;
     const tgzPath = join(tmpDir, files[0])
     const tgzBuf = readFileSync(tgzPath)
 
-    // 3. Verify downloaded tarball integrity against registry metadata
+    // 3. Verify downloaded tarball integrity against registry metadata.
+    //    Fail closed: a non-empty but malformed/unsupported/multiline SRI is a
+    //    hard failure, never silently skipped (P1-4: SRI fail-open).
     if (expectedIntegrity) {
-      const algoMatch = expectedIntegrity.match(/^(sha512|sha256)-(.+)$/)
-      if (algoMatch) {
-        const algo = algoMatch[1]
-        const expectedB64 = algoMatch[2]
-        const actualB64 = createHash(algo).update(tgzBuf).digest("base64")
-        if (actualB64 !== expectedB64) {
-          console.error(`  [registry] Failure: integrity mismatch (expected ${expectedIntegrity}, got ${algo}-${actualB64})`)
-          rmSync(tmpDir, { recursive: true, force: true })
-          return null
-        }
+      const sriResult = parseSRI(expectedIntegrity)
+      if (!sriResult.ok) {
+        console.error(`  [registry] Failure: invalid integrity metadata (${sriResult.reason})`)
+        rmSync(tmpDir, { recursive: true, force: true })
+        return null
+      }
+      const actualB64 = createHash(sriResult.algo).update(tgzBuf).digest("base64")
+      if (actualB64 !== sriResult.digest) {
+        console.error(`  [registry] Failure: integrity mismatch (expected ${expectedIntegrity}, got ${sriResult.algo}-${actualB64})`)
+        rmSync(tmpDir, { recursive: true, force: true })
+        return null
       }
     } else if (expectedShasum) {
+      // shasum (SHA-1) is a validated legacy fallback used only when the
+      // registry exposes no SRI integrity value at all.
       const actualShasum = createHash("sha1").update(tgzBuf).digest("hex")
       if (actualShasum !== expectedShasum) {
         console.error(`  [registry] Failure: integrity mismatch (shasum expected ${expectedShasum}, got ${actualShasum})`)
@@ -502,7 +564,18 @@ function fetchFromRegistry(packageName: string, version: string): { dir: string;
     }
 
     // 4. Extract exact tarball safely without wildcard expansion
-    execFileSync("tar", ["xzf", files[0]], { cwd: tmpDir, stdio: "ignore" })
+    try {
+      execFileSync("tar", ["xzf", files[0]], { cwd: tmpDir, stdio: "ignore", timeout: REGISTRY_TIMEOUT_MS })
+    } catch (e: any) {
+      const msg = e?.stderr?.toString() ?? e?.message ?? ""
+      if (e?.killed || e?.code === "ETIMEDOUT" || /timed out|timeout/i.test(msg)) {
+        console.error(`  [registry] Failure: tarball extraction timed out`)
+      } else {
+        console.error(`  [registry] Failure: tarball extraction failed (${msg.trim().split("\n")[0] || "unknown error"})`)
+      }
+      rmSync(tmpDir, { recursive: true, force: true })
+      return null
+    }
     const pkgDir = join(tmpDir, "package")
     if (!existsSync(pkgDir)) {
       console.error(`  [registry] Failure: extraction failure (package folder missing)`)
@@ -554,6 +627,8 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
   let registryFetchTmp: string | null = null
   let backupDir: string | null = null
   let backupCreated = false
+  /** True once the staging dir has been renamed into the authoritative cache path. */
+  let cacheActivated = false
   let newCacheActivated = false
 
   // Per-target lock: serialize installs for the same platform package so two
@@ -731,6 +806,7 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     }
 
     renameSync(stagingDir, cacheDir)
+    cacheActivated = true
 
     const targetBin = join(cacheDir, target.executableName)
     if (process.platform !== "win32") {
@@ -777,17 +853,37 @@ export async function handleFdxInstall(isRepair = false): Promise<boolean> {
     console.error(`✗ FDX installation failed: ${err.message}`)
 
     // ── Emergency Rollback ──────────────────────────────────────────────────
-    if (backupCreated && !newCacheActivated) {
+    // P1-5: track cache activation independently from backup creation. On
+    // failure, remove any cache directory WE newly activated — including a
+    // first install where no backup exists — then restore the backup if one
+    // was taken. Evidence of the failed activation is preserved at a separate
+    // non-authoritative recovery path rather than deleted outright.
+    if (cacheActivated && !newCacheActivated) {
       if (existsSync(cacheDir)) {
-        try { rmSync(cacheDir, { recursive: true, force: true }) } catch {}
+        const failedDir = `${cacheDir}.failed-${process.pid}-${Date.now()}`
+        try {
+          renameSync(cacheDir, failedDir)
+          console.log(`  [rollback] Quarantined newly-activated cache to ${failedDir} for inspection.`)
+        } catch {
+          try { rmSync(cacheDir, { recursive: true, force: true }) } catch {}
+        }
       }
-      if (backupDir && existsSync(backupDir)) {
+      if (backupCreated && backupDir && existsSync(backupDir)) {
         try {
           renameSync(backupDir, cacheDir)
           console.log(`  [rollback] Restored previous cache directory from backup.`)
         } catch (rErr: any) {
           console.error(`  [rollback] CRITICAL: Backup restoration failed: ${rErr.message}. Preserving backup at ${backupDir}`)
         }
+      }
+    } else if (backupCreated && backupDir && existsSync(backupDir)) {
+      // Failure occurred before activation: leave the untouched cache path
+      // alone and simply restore the moved-aside backup.
+      try {
+        renameSync(backupDir, cacheDir)
+        console.log(`  [rollback] Restored previous cache directory from backup.`)
+      } catch (rErr: any) {
+        console.error(`  [rollback] CRITICAL: Backup restoration failed: ${rErr.message}. Preserving backup at ${backupDir}`)
       }
     }
 
