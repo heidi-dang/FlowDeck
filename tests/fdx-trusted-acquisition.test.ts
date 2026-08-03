@@ -871,9 +871,14 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
         process.env.XDG_CACHE_HOME = root
       }
       const key = buildResolutionCacheKey()
+      // The key is JSON-serialized, so backslashes are escaped on win32.
+      // Decode it and check the resolved cache-root tuple value directly.
+      const decoded: Array<[string, string]> = JSON.parse(key)
+      const cacheRootEntry = decoded.find(([field]) => field === "cacheRoot")
+      expect(cacheRootEntry).toBeDefined()
       // The resolved cache dir is derived from the platform cache root and is
       // embedded in the key regardless of which variable drives it.
-      expect(key).toContain(join(root, "flowdeck"))
+      expect(cacheRootEntry![1]).toContain(join(root, "flowdeck"))
       process.env = savedEnv
     })
 
