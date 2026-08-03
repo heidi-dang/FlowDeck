@@ -11,6 +11,7 @@ import {
   getFdxAvailabilityStatus,
 } from "../src/tools/fdx-shared.js"
 import { handleFdxStatus, handleFdxVerify, handleFdxInstall } from "../src/commands/fdx-admin.js"
+import { strictProvenanceInputError } from "../scripts/build-fdx-packages.mjs"
 
 describe("FDX Native Distribution & Binary Resolver", () => {
   let tempDir: string
@@ -239,5 +240,61 @@ describe("FDX Native Distribution & Binary Resolver", () => {
 
     // Clean up test marker
     try { rmSync(join(cacheDir, "pre-existing-marker.txt"), { force: true }) } catch {}
+  })
+
+  describe("build strict-mode provenance integrity (P2-4)", () => {
+    it("rejects a zero source commit SHA as fabricated provenance", () => {
+      const err = strictProvenanceInputError({
+        currentCommit: "0000000000000000000000000000000000000000",
+        currentBranch: "main",
+        rustVersion: "rustc 1.84.0",
+      })
+      expect(err).toContain("source commit SHA")
+    })
+
+    it("rejects a missing source commit as fabricated provenance", () => {
+      const err = strictProvenanceInputError({
+        currentCommit: null,
+        currentBranch: "main",
+        rustVersion: "rustc 1.84.0",
+      })
+      expect(err).toContain("source commit SHA")
+    })
+
+    it("rejects a non-40-hex commit as fabricated provenance", () => {
+      const err = strictProvenanceInputError({
+        currentCommit: "not-a-sha",
+        currentBranch: "main",
+        rustVersion: "rustc 1.84.0",
+      })
+      expect(err).toContain("source commit SHA")
+    })
+
+    it("rejects a missing branch as fabricated provenance", () => {
+      const err = strictProvenanceInputError({
+        currentCommit: "0123456789abcdef0123456789abcdef01234567",
+        currentBranch: null,
+        rustVersion: "rustc 1.84.0",
+      })
+      expect(err).toContain("source branch")
+    })
+
+    it("rejects a missing rustc version as fabricated provenance", () => {
+      const err = strictProvenanceInputError({
+        currentCommit: "0123456789abcdef0123456789abcdef01234567",
+        currentBranch: "main",
+        rustVersion: null,
+      })
+      expect(err).toContain("rustc")
+    })
+
+    it("accepts a fully-real provenance input set", () => {
+      const err = strictProvenanceInputError({
+        currentCommit: "0123456789abcdef0123456789abcdef01234567",
+        currentBranch: "main",
+        rustVersion: "rustc 1.84.0",
+      })
+      expect(err).toBeNull()
+    })
   })
 })

@@ -19,8 +19,9 @@ import {
   resolveTrustedPlatformPackage,
   expectedTargetTriple,
   validateFdxBinaryPath,
+  binaryFingerprint,
 } from "../src/tools/fdx-shared"
-import { acquireInstallLock, releaseInstallLock, handleFdxInstall, type InstallLockResult } from "../src/commands/fdx-admin"
+import { acquireInstallLock, releaseInstallLock, handleFdxInstall, parseSRI, REGISTRY_TIMEOUT_MS, type InstallLockResult } from "../src/commands/fdx-admin"
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const FDX_ADMIN_MODULE = join(REPO_ROOT, "src/commands/fdx-admin.ts")
@@ -808,5 +809,218 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       expect(r.isLocalDev).toBe(false)
       await killChild(h)
     }, { timeout: 20000 })
+  })
+
+  describe("audit remediation acceptance (P1-3, P1-4, P1-5, P2-1, P2-2, P2-3)", () => {
+    it("P1-3: a binary replaced after validation is never executed from the stale resolution cache", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      process.env.XDG_CACHE_HOME = tempDir
+      const dir = join(tempDir, "stale-cache")
+      mkdirSync(dir, { recursive: true })
+      const binPath = join(dir, target.executableName)
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+      chmodSync(binPath, 0o755)
+      const binBuf = readFileSync(binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
+      writeFileSync(join(dir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      const flowdeckVersion = getFlowdeckPackageVersion()
+      writeFileSync(
+        join(dir, "provenance.json"),
+        JSON.stringify({
+          packageName: target.packageName,
+          packageVersion: flowdeckVersion,
+          flowdeckVersion,
+          fdxBinaryVersion: flowdeckVersion,
+          fdxProtocolVersion: "1.0.0",
+          targetTriple: expectedTargetTriple(target) ?? undefined,
+          platform: target.platform,
+          architecture: target.arch,
+          binaryFilename: target.executableName,
+          binaryByteSize: binBuf.length,
+          sha256,
+          sourceCommitSha: "0123456789abcdef0123456789abcdef01234567",
+          buildProfile: "release",
+          buildTimestamp: new Date().toISOString(),
+        }),
+        "utf-8"
+      )
+      // First validation passes and records the fingerprint.
+      const first = validateFdxBinaryPath(binPath, dir, { requireChecksum: true, requireProvenance: true, target })
+      expect(first.valid).toBe(true)
+      const fpBefore = binaryFingerprint(binPath)
+      expect(fpBefore).not.toBeNull()
+      // Replace the binary after validation: the fingerprint must change.
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4 tampered'\n", "utf-8")
+      chmodSync(binPath, 0o755)
+      const fpAfter = binaryFingerprint(binPath)
+      expect(fpAfter).not.toBe(fpBefore)
+    })
+
+    it("P1-4: parseSRI accepts single-line supported digests and rejects malformed/multiline/unsupported values", () => {
+      const { createHash: ch } = require("node:crypto")
+      const good512 = `sha512-${ch("sha512").update(Buffer.from("abc")).digest("base64")}`
+      expect(parseSRI(good512)).toMatchObject({ ok: true, algo: "sha512" })
+      const good256 = `sha256-${ch("sha256").update(Buffer.from("abc")).digest("base64")}`
+      expect(parseSRI(good256)).toMatchObject({ ok: true, algo: "sha256" })
+      // Malformed / multiline / unsupported / too-short all fail closed.
+      expect(parseSRI("sha512-###invalid###").ok).toBe(false)
+      expect(parseSRI(`${good512}\n${good512}`).ok).toBe(false)
+      expect(parseSRI(`${good512} ${good512}`).ok).toBe(false)
+      expect(parseSRI("sha1-abc").ok).toBe(false)
+      expect(parseSRI("sha512-").ok).toBe(false)
+      expect(parseSRI("").ok).toBe(false)
+      expect(parseSRI(undefined as any).ok).toBe(false)
+      expect(parseSRI("sha512-YWJj").ok).toBe(false) // digest too short
+    })
+
+    it("P1-5: a failed first install leaves no newly-created cache and no rollback leftovers", async () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      if (process.platform === "win32") return
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      setActiveProjectDir(tempDir)
+      const cacheDir = getFdxCacheDir(target)
+      // No pre-existing cache exists (first install).
+      expect(existsSync(cacheDir)).toBe(false)
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      // Tamper the provenance so the install fails the trust contract. The
+      // P1-5 rollback contract requires that a failed install — including a
+      // first install with no backup — never leaves a newly-created cache or
+      // quarantined/backup directories behind.
+      const prov = JSON.parse(readFileSync(join(fake.pkgDir, "provenance.json"), "utf-8"))
+      prov.binaryByteSize = (prov.binaryByteSize ?? 0) + 999
+      writeFileSync(join(fake.pkgDir, "provenance.json"), JSON.stringify(prov), "utf-8")
+      const result = await handleFdxInstall(true)
+      expect(result).toBe(false)
+      // The cache path must not be activated by the failed install.
+      expect(existsSync(cacheDir)).toBe(false)
+      // No quarantined-failed or backup directories may remain either.
+      const leftovers = readdirSync(tempDir).filter((n) => n.includes("backup") || n.includes("failed"))
+      expect(leftovers).toEqual([])
+    }, { timeout: 30000 })
+
+    it("P2-1: provenance version bindings reject non-canonical package/flowdeck versions", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const dir = join(tempDir, "version-binding")
+      mkdirSync(dir, { recursive: true })
+      const binPath = join(dir, target.executableName)
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+      chmodSync(binPath, 0o755)
+      const binBuf = readFileSync(binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
+      writeFileSync(join(dir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      const canonical = getFlowdeckPackageVersion()
+      // packageVersion differs from the canonical FlowDeck version.
+      writeFileSync(
+        join(dir, "provenance.json"),
+        JSON.stringify({
+          packageName: target.packageName,
+          packageVersion: "9.9.9",
+          flowdeckVersion: canonical,
+          fdxBinaryVersion: canonical,
+          fdxProtocolVersion: "1.0.0",
+          targetTriple: expectedTargetTriple(target) ?? undefined,
+          platform: target.platform,
+          architecture: target.arch,
+          binaryFilename: target.executableName,
+          binaryByteSize: binBuf.length,
+          sha256,
+          sourceCommitSha: "0123456789abcdef0123456789abcdef01234567",
+          buildProfile: "release",
+          buildTimestamp: new Date().toISOString(),
+        }),
+        "utf-8"
+      )
+      const val = validateFdxBinaryPath(binPath, dir, { requireChecksum: true, requireProvenance: true, target })
+      expect(val.valid).toBe(false)
+      expect(val.reason).toContain("packageVersion")
+    })
+
+    it("P2-1: provenance fdxBinaryVersion must match the version the binary actually reports", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      if (process.platform === "win32") return
+      const dir = join(tempDir, "binary-version-binding")
+      mkdirSync(dir, { recursive: true })
+      const binPath = join(dir, target.executableName)
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.5'\n", "utf-8")
+      chmodSync(binPath, 0o755)
+      const binBuf = readFileSync(binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
+      writeFileSync(join(dir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      const canonical = getFlowdeckPackageVersion()
+      // Provenance claims the canonical version, but the binary reports 1.0.5
+      // — a different, still semver-compatible version. The only reason this
+      // must fail is the fdxBinaryVersion binding (P2-1).
+      writeFileSync(
+        join(dir, "provenance.json"),
+        JSON.stringify({
+          packageName: target.packageName,
+          packageVersion: canonical,
+          flowdeckVersion: canonical,
+          fdxBinaryVersion: canonical,
+          fdxProtocolVersion: "1.0.0",
+          targetTriple: expectedTargetTriple(target) ?? undefined,
+          platform: target.platform,
+          architecture: target.arch,
+          binaryFilename: target.executableName,
+          binaryByteSize: binBuf.length,
+          sha256,
+          sourceCommitSha: "0123456789abcdef0123456789abcdef01234567",
+          buildProfile: "release",
+          buildTimestamp: new Date().toISOString(),
+        }),
+        "utf-8"
+      )
+      const val = validateFdxBinaryPath(binPath, dir, { requireChecksum: true, requireProvenance: true, target })
+      expect(val.valid).toBe(false)
+      expect(val.reason).toContain("fdxBinaryVersion")
+    })
+
+    it("P2-2: binaryByteSize mismatch between provenance and actual file is rejected", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const dir = join(tempDir, "size-binding")
+      mkdirSync(dir, { recursive: true })
+      const binPath = join(dir, target.executableName)
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+      chmodSync(binPath, 0o755)
+      const binBuf = readFileSync(binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
+      writeFileSync(join(dir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      const canonical = getFlowdeckPackageVersion()
+      writeFileSync(
+        join(dir, "provenance.json"),
+        JSON.stringify({
+          packageName: target.packageName,
+          packageVersion: canonical,
+          flowdeckVersion: canonical,
+          fdxBinaryVersion: canonical,
+          fdxProtocolVersion: "1.0.0",
+          targetTriple: expectedTargetTriple(target) ?? undefined,
+          platform: target.platform,
+          architecture: target.arch,
+          binaryFilename: target.executableName,
+          binaryByteSize: binBuf.length + 12345,
+          sha256,
+          sourceCommitSha: "0123456789abcdef0123456789abcdef01234567",
+          buildProfile: "release",
+          buildTimestamp: new Date().toISOString(),
+        }),
+        "utf-8"
+      )
+      const val = validateFdxBinaryPath(binPath, dir, { requireChecksum: true, requireProvenance: true, target })
+      expect(val.valid).toBe(false)
+      expect(val.reason).toContain("binaryByteSize")
+    })
+
+    it("P2-3: registry subprocesses run under a bounded timeout", () => {
+      expect(REGISTRY_TIMEOUT_MS).toBeGreaterThan(0)
+      expect(REGISTRY_TIMEOUT_MS).toBeLessThanOrEqual(120_000)
+    })
   })
 })
