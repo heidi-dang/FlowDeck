@@ -311,19 +311,20 @@ impl QueryCache {
     }
 
     /// Restore cache entries to a captured prior state (from
-    /// [`CacheTransaction::take_priors`]): write back the prior bytes
-    /// atomically, or remove the entry when no prior existed. Used by the
-    /// batch transaction to roll back committed entries after a failed
-    /// post-activation validation. Associated function (no self needed).
-    pub fn restore_priors(priors: &[(PathBuf, Option<Vec<u8>>)]) {
-        for (path, prior) in priors {
-            match prior {
-                Some(bytes) => atomic_write(path, bytes),
-                None => {
-                    let _ = std::fs::remove_file(path);
-                }
-            }
-        }
+    /// [`CacheTransaction::take_priors`]) with compare-and-swap semantics:
+    /// write back the prior bytes atomically, or remove the entry when no
+    /// prior existed — but only when the current entry still matches the
+    /// generation this transaction published (P1-2). Used by the batch
+    /// transaction to roll back published entries after a failed
+    /// post-activation validation. Returns restore failures so an incomplete
+    /// rollback is surfaced (P2-3).
+    pub fn restore_priors(priors: &[(PathBuf, Option<Vec<u8>>, String)]) -> Vec<String> {
+        CacheTransaction::restore_priors(priors)
+    }
+
+    /// Alias for callers that want the failure list under a distinct name.
+    pub fn restore_priors_reported(priors: &[(PathBuf, Option<Vec<u8>>, String)]) -> Vec<String> {
+        CacheTransaction::restore_priors(priors)
     }
 
     /// Read the raw bytes currently published at `key` WITHOUT touching mtime,
@@ -402,7 +403,8 @@ const TMP_MARKER: &str = ".tmp-";
 
 /// One staged cache write inside a [`CacheTransaction`]: the new bytes live in
 /// a transaction-private temp file; the prior published bytes (if any) are
-/// captured so a partial commit can restore exactly what was there.
+/// captured so a compare-and-swap rollback can restore exactly what was there
+/// — and only when the current entry still belongs to this transaction.
 struct StagedCacheEntry {
     /// Final entry path (visible only after commit).
     final_path: PathBuf,
@@ -410,27 +412,42 @@ struct StagedCacheEntry {
     staged_path: PathBuf,
     /// Prior published bytes captured before staging (None = no prior entry).
     prior: Option<Vec<u8>>,
-    /// True once this entry was renamed into place during commit.
+    /// Hash of the bytes THIS transaction publishes (CAS generation token).
+    published_hash: String,
+    /// True once this entry was published during commit.
     published: bool,
 }
 
 /// A transactional group of cache writes. Staging is invisible (private temp
-/// files, no LRU); `commit` renames every staged temp into its final entry
-/// path and only then runs LRU maintenance; `abort` deletes the staged temps,
-/// leaving prior published entries untouched.
+/// files, no LRU); [`publish`] hard-links staged temps into their final entry
+/// paths with no-clobber semantics and does NOT run LRU; [`enforce_lru`] must
+/// be called separately, only after the enclosing batch's global commit
+/// decision succeeds (P1-1).
 ///
-/// Commit is all-or-nothing at the entry level: if any rename fails, every
-/// entry already published by this transaction is restored to its captured
-/// prior state (or removed if no prior existed).
+/// Publication is platform-neutral (P2-5): the staged temp is hard-linked into
+/// the final path (fails when the destination exists, on every OS), so
+/// concurrent same-key writers never silently replace each other — an
+/// identical winner is reused, a conflicting winner fails closed.
+///
+/// Rollback is compare-and-swap (P1-2): a prior entry is restored only when
+/// the current final entry still matches the generation this transaction
+/// published. A newer concurrent writer's value is never overwritten or
+/// deleted by a stale rollback.
 pub struct CacheTransaction<'a> {
     cache: &'a QueryCache,
     staged: Vec<StagedCacheEntry>,
 }
 
 impl CacheTransaction<'_> {
-    /// Stage a write for `key`. The bytes are written to a private temp file;
-    /// the existing published entry (if any) is captured for rollback. The
-    /// entry does NOT become visible and LRU is NOT touched here.
+    /// Stage a write for `key`. The bytes are written to a private temp file
+    /// (RAII-guarded: a write/sync failure removes the temp so it cannot
+    /// leak); the existing published entry (if any) is captured for rollback.
+    /// The entry does NOT become visible and LRU is NOT touched here.
+    ///
+    /// Same-key writes are deduplicated: staging the same final path again
+    /// replaces the earlier staged entry (last write wins within the
+    /// transaction), so publication never depends on OS rename-replacement
+    /// behavior.
     pub fn stage_write(&mut self, key: &str, negative: bool, bytes: &[u8]) -> Result<(), String> {
         let dir = if negative {
             self.cache.negative_dir()
@@ -438,9 +455,11 @@ impl CacheTransaction<'_> {
             self.cache.query_dir()
         };
         std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create cache dir: {e}"))?;
-        // Unique private temp in the same directory (same filesystem for the
-        // final rename). The nonce makes it unguessable and exclusive.
         let final_path = dir.join(key);
+        // Deduplicate same-key writes within the transaction.
+        self.staged.retain(|e| e.final_path != final_path);
+        // Unique private temp in the same directory (same filesystem for the
+        // final hard-link). The nonce makes it unguessable and exclusive.
         let mut attempts = 0;
         let staged_path = loop {
             if attempts >= 100 {
@@ -457,10 +476,14 @@ impl CacheTransaction<'_> {
             {
                 Ok(mut file) => {
                     use std::io::Write;
-                    file.write_all(bytes)
-                        .map_err(|e| format!("failed to stage cache entry: {e}"))?;
-                    file.sync_all()
-                        .map_err(|e| format!("failed to sync staged cache entry: {e}"))?;
+                    let write_res = file.write_all(bytes).and_then(|_| file.sync_all());
+                    drop(file);
+                    if let Err(e) = write_res {
+                        // RAII guard (P2-2): the temp is removed so a failed
+                        // stage can never leak a private file.
+                        let _ = std::fs::remove_file(&candidate);
+                        return Err(format!("failed to stage cache entry: {e}"));
+                    }
                     break candidate;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -473,30 +496,98 @@ impl CacheTransaction<'_> {
             }
         };
         let prior = self.cache.read_raw(key, negative);
+        let published_hash = sha256_hex(bytes);
         self.staged.push(StagedCacheEntry {
             final_path,
             staged_path,
             prior,
+            published_hash,
             published: false,
         });
         Ok(())
     }
 
-    /// Publish every staged entry atomically-ish: rename each temp into its
-    /// final path. If any rename fails, restore every already-published entry
-    /// to its captured prior state and return the error. LRU maintenance runs
-    /// once after all renames succeed.
-    /// Publish every staged entry atomically-ish: rename each temp into its
-    /// final path. If any rename fails, restore every already-published entry
-    /// to its captured prior state and return the error. LRU maintenance runs
-    /// once after all renames succeed. After a successful commit the prior
-    /// state remains available via [`take_priors`] so a caller performing
-    /// post-activation validation can restore replaced entries exactly.
-    pub fn commit(&mut self) -> Result<(), String> {
+    /// Publish every staged entry with platform-neutral no-clobber semantics
+    /// (hard-link into the final path; fails when the destination exists on
+    /// every OS). An identical winner is reused; a conflicting winner fails
+    /// closed. Parent directories are fsynced after publication (P2-4). LRU
+    /// is NOT run here — call [`enforce_lru`] only after the enclosing
+    /// batch's global commit decision succeeds (P1-1).
+    pub fn publish(&mut self) -> Result<(), String> {
         let mut first_error: Option<String> = None;
         for entry in self.staged.iter_mut() {
-            match std::fs::rename(&entry.staged_path, &entry.final_path) {
-                Ok(()) => entry.published = true,
+            match std::fs::hard_link(&entry.staged_path, &entry.final_path) {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&entry.staged_path);
+                    // Directory durability after publication (P2-4): a
+                    // propagation failure marks the publish as not durable.
+                    if let Some(parent) = entry.final_path.parent() {
+                        if let Err(e) = sync_cache_dir(parent) {
+                            first_error = Some(format!(
+                                "failed to sync cache dir after publishing {}: {e}",
+                                entry.final_path.display()
+                            ));
+                            entry.published = true;
+                            break;
+                        }
+                    }
+                    entry.published = true;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // The final path exists. Two cases:
+                    // 1. It is the PRIOR entry captured at stage time — a
+                    //    legitimate replacement owned by this transaction. We
+                    //    atomically rename over it (POSIX replace / Windows
+                    //    remove+rename are both fine because we verified the
+                    //    prior generation matches).
+                    // 2. A concurrent writer published a NEWER generation —
+                    //    compare-and-swap: reuse an identical winner, fail
+                    //    closed on a conflicting one.
+                    let current = std::fs::read(&entry.final_path).ok();
+                    let current_hash = current.as_deref().map(sha256_hex);
+                    let prior_hash = entry.prior.as_deref().map(sha256_hex);
+                    if current_hash.is_some() && current_hash == prior_hash {
+                        // Still our prior generation: safe to replace.
+                        match std::fs::rename(&entry.staged_path, &entry.final_path) {
+                            Ok(()) => {
+                                if let Some(parent) = entry.final_path.parent() {
+                                    if let Err(e) = sync_cache_dir(parent) {
+                                        first_error = Some(format!(
+                                            "failed to sync cache dir after replacing {}: {e}",
+                                            entry.final_path.display()
+                                        ));
+                                        entry.published = true;
+                                        break;
+                                    }
+                                }
+                                entry.published = true;
+                            }
+                            Err(rename_err) => {
+                                let _ = std::fs::remove_file(&entry.staged_path);
+                                first_error = Some(format!(
+                                    "failed to replace cache entry {}: {rename_err}",
+                                    entry.final_path.display()
+                                ));
+                                break;
+                            }
+                        }
+                    } else if current_hash.is_some()
+                        && current_hash == Some(entry.published_hash.clone())
+                    {
+                        // Identical winner already published concurrently: reuse.
+                        let _ = std::fs::remove_file(&entry.staged_path);
+                        entry.published = true;
+                    } else {
+                        // Conflicting concurrent winner: fail closed, never
+                        // clobber another transaction's generation.
+                        let _ = std::fs::remove_file(&entry.staged_path);
+                        first_error = Some(format!(
+                            "cache entry {} exists with different content",
+                            entry.final_path.display()
+                        ));
+                        break;
+                    }
+                }
                 Err(e) => {
                     first_error = Some(format!(
                         "failed to publish cache entry {}: {e}",
@@ -507,31 +598,73 @@ impl CacheTransaction<'_> {
             }
         }
         if let Some(err) = first_error {
-            // Roll back everything published so far in this transaction
-            // (restore prior bytes or remove the entry), and remove every
-            // staged temp — including the one whose rename failed — so no
-            // private file leaks.
+            // Roll back everything published so far (CAS-restored to prior
+            // state) and remove every staged temp so no private file leaks.
             self.rollback_published();
             for entry in &self.staged {
                 let _ = std::fs::remove_file(&entry.staged_path);
             }
             return Err(err);
         }
-        // LRU runs only after a successful commit.
-        self.cache.enforce_lru(&self.cache.query_dir());
-        self.cache.enforce_lru(&self.cache.negative_dir());
         Ok(())
     }
 
-    /// After a successful commit, return the captured prior state of every
-    /// entry so a caller performing post-activation validation can restore
-    /// replaced entries exactly (write back the prior bytes, or remove the
-    /// entry when no prior existed).
-    pub fn take_priors(&mut self) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    /// Run LRU maintenance over both namespaces. Must be called ONLY after the
+    /// enclosing batch's global commit decision succeeds — never during
+    /// staging, never before the post-activation probe (P1-1).
+    pub fn enforce_lru(&self) {
+        self.cache.enforce_lru(&self.cache.query_dir());
+        self.cache.enforce_lru(&self.cache.negative_dir());
+    }
+
+    /// After a successful publish, return the captured prior state and the
+    /// published generation token (content hash) of every entry, so a caller
+    /// performing post-activation validation can restore replaced entries
+    /// with compare-and-swap semantics (P1-2).
+    pub fn take_priors(&mut self) -> Vec<(PathBuf, Option<Vec<u8>>, String)> {
         self.staged
             .iter()
-            .map(|e| (e.final_path.clone(), e.prior.clone()))
+            .map(|e| {
+                (
+                    e.final_path.clone(),
+                    e.prior.clone(),
+                    e.published_hash.clone(),
+                )
+            })
             .collect()
+    }
+
+    /// Compare-and-swap restore (P1-2): restore `priors` (from
+    /// [`take_priors`]) only when the current final entry still matches the
+    /// generation token (content hash) THIS transaction published. A newer
+    /// concurrent writer's value is never overwritten or deleted.
+    /// Returns a list of restore failures so an incomplete rollback can be
+    /// surfaced distinctly (P2-3).
+    pub fn restore_priors(priors: &[(PathBuf, Option<Vec<u8>>, String)]) -> Vec<String> {
+        let mut issues = Vec::new();
+        for (path, prior, published_hash) in priors {
+            let current = std::fs::read(path).ok();
+            match current {
+                Some(bytes) if sha256_hex(&bytes) == *published_hash => {
+                    let res = match prior {
+                        Some(bytes) => atomic_write_checked(path, bytes),
+                        None => std::fs::remove_file(path),
+                    };
+                    if let Err(e) = res {
+                        issues.push(format!(
+                            "failed to restore cache entry {}: {e}",
+                            path.display()
+                        ));
+                    }
+                    let _ = sync_cache_dir_opt(path);
+                }
+                _ => {
+                    // Another writer owns the current generation (or the file
+                    // is gone) — leave it untouched.
+                }
+            }
+        }
+        issues
     }
 
     /// Discard every staged entry WITHOUT publishing anything. Prior published
@@ -544,26 +677,66 @@ impl CacheTransaction<'_> {
     }
 
     /// Restore every entry this transaction already published (during a
-    /// failed commit) to its captured prior state: write back the prior bytes
-    /// or remove the entry when no prior existed.
+    /// failed publish) with compare-and-swap semantics: restore the exact
+    /// prior bytes or remove the entry, but ONLY when the current final entry
+    /// still matches the generation this transaction published.
     fn rollback_published(&mut self) {
         for entry in self.staged.iter_mut() {
             if !entry.published {
                 continue;
             }
-            match &entry.prior {
-                Some(prior) => {
-                    // Restore the exact prior bytes via an atomic sibling
-                    // write so readers never observe a partial restore.
-                    atomic_write(&entry.final_path, prior);
+            let current = std::fs::read(&entry.final_path).ok();
+            match current {
+                Some(bytes) if sha256_hex(&bytes) == entry.published_hash => {
+                    match &entry.prior {
+                        Some(prior) => {
+                            atomic_write(&entry.final_path, prior);
+                        }
+                        None => {
+                            let _ = std::fs::remove_file(&entry.final_path);
+                        }
+                    }
+                    let _ = sync_cache_dir_opt(&entry.final_path);
                 }
-                None => {
-                    let _ = std::fs::remove_file(&entry.final_path);
+                _ => {
+                    // A concurrent writer took over — never clobber.
                 }
             }
             entry.published = false;
         }
     }
+}
+
+/// SHA-256 hex digest of a byte slice (cache generation token).
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(bytes);
+    digest
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+}
+
+/// Parent-directory fsync for cache operations. Returns the io result so
+/// genuine failures (EIO, permission, ENOSPC) propagate (P2-4).
+#[cfg(unix)]
+fn sync_cache_dir(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        let dir = std::fs::File::open(parent)?;
+        dir.sync_all()
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_cache_dir(_path: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Non-propagating variant for best-effort cleanup paths.
+fn sync_cache_dir_opt(path: &Path) -> Option<std::io::Error> {
+    sync_cache_dir(path).err()
 }
 
 /// Cheap unpredictable nonce for transaction temp names.
@@ -642,6 +815,44 @@ fn atomic_write(path: &Path, value: &[u8]) {
         // Cleanup in the failure path: never leave a partial temp behind.
         let _ = std::fs::remove_file(&tmp);
     }
+}
+
+/// Checked variant of [`atomic_write`] that returns the io result so callers
+/// can surface restore failures (P2-3). Same atomic sibling-write semantics.
+fn atomic_write_checked(path: &Path, value: &[u8]) -> io::Result<()> {
+    let dir = match path.parent() {
+        Some(d) => d.to_path_buf(),
+        None => return Err(io::Error::new(io::ErrorKind::InvalidInput, "no parent dir")),
+    };
+    let key = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "entry".into());
+    let tmp = dir.join(format!(
+        "{key}{TMP_MARKER}{}-{}",
+        std::process::id(),
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+
+    let result = (|| {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(value)?;
+        f.sync_all()?;
+        drop(f);
+        match std::fs::rename(&tmp, path) {
+            Ok(()) => Ok(()),
+            Err(e) if cfg!(windows) && e.kind() == io::ErrorKind::AlreadyExists => {
+                std::fs::remove_file(path)?;
+                std::fs::rename(&tmp, path)?;
+                Ok(())
+            }
+            Err(e) => Err(e),
+        }
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]

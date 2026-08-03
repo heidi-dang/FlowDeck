@@ -1068,7 +1068,20 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
         activate(targetBytes, targetHash) {
           if (tempPath === finalPath) {
             // Reuse case: the correct artifact was already published by an
-            // earlier writer. This transaction does NOT own it.
+            // earlier writer. This transaction does NOT own it — but it is
+            // REVALIDATED now (P1-5): another process may have deleted or
+            // replaced the file between preparation and activation. Regular
+            // file identity, size and digest must all still match.
+            const st = statSync(finalPath)
+            if (!st.isFile() || st.size !== targetBytes.length) {
+              throw new Error(
+                `reused artifact ${finalPath} no longer valid (size or type changed)`,
+              )
+            }
+            const existing = readFileSync(finalPath)
+            if (sha256Hex(existing) !== targetHash) {
+              throw new Error(`reused artifact ${finalPath} content changed (digest mismatch)`)
+            }
             return { kind: "reused-existing", path: finalPath }
           }
           // No-clobber publish: link the fully-written+fsynced temp into the
@@ -1083,10 +1096,22 @@ function prepareArtifact(finalPath: string, bytes: Buffer, contentHash: string):
             } catch {
               // temp already gone
             }
+            // Directory durability (P2-4): fsyncDir ignores only documented
+            // unsupported-platform signals and propagates genuine failures.
+            // On a genuine fsync failure the just-created final artifact is
+            // removed and the combined activation/cleanup error returned, so
+            // the publish is never reported durable when it was not (P1-3).
             try {
               fsyncDir(join(finalPath, ".."))
-            } catch {
-              // directory fsync not supported on this platform — best effort
+            } catch (syncErr) {
+              try {
+                unlinkSync(finalPath)
+              } catch {
+                // best-effort cleanup
+              }
+              throw new Error(
+                `failed to fsync artifact dir after publish (artifact removed): ${errorText(syncErr)}`,
+              )
             }
             return { kind: "created", path: finalPath }
           } catch (linkErr) {
@@ -1173,8 +1198,12 @@ function fsyncDir(dir: string): void {
     }
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
-    // EISDIR/EPERM/EINVAL/ENOTSUP mean the platform cannot fsync directories.
-    if (code !== "EISDIR" && code !== "EPERM" && code !== "EINVAL" && code !== "ENOTSUP" && code !== "EACCES") {
+    // P2-4: ignore ONLY the documented unsupported-platform signals
+    // (directory fsync is not supported on Windows / some filesystems).
+    // Genuine failures — EIO, EACCES (permission), ENOSPC, EROFS, EBUSY —
+    // MUST propagate so durability failures are never suppressed.
+    const unsupported = ["EISDIR", "EINVAL", "ENOTSUP", "EOPNOTSUPP", "EBADF"]
+    if (!unsupported.includes(code ?? "")) {
       throw e
     }
   }
@@ -1601,8 +1630,6 @@ interface PendingFallbackActivation {
   value: unknown
   /** Final artifact path once activated (null until commit). */
   artifactRef: string | null
-  /** Path of the artifact THIS transaction created (rollback-owned). */
-  createdArtifact: string | null
 
   /** Discard the provisional temp (no-op when null). */
   discard(): void
@@ -1743,7 +1770,6 @@ function prepareFallbackResponse(
       artifact,
       value,
       artifactRef: null,
-      createdArtifact: null,
       discard() {
         artifact?.discard()
       },
@@ -1751,27 +1777,38 @@ function prepareFallbackResponse(
         if (artifact !== null && this.artifactRef === null) {
           const outcome = artifact.activate(bytes, contentHash)
           this.artifactRef = outcome.path
-          if (outcome.kind === "created") {
-            this.createdArtifact = outcome.path
-          }
+          // P1-4: published finals are content-addressed and IMMUTABLE —
+          // rollback NEVER deletes them (another transaction may reuse them).
+          // Only temp/staging files are disposed on rollback.
         }
       },
       rollback() {
-        // Remove ONLY the artifact this transaction created; reused-existing
-        // winners are owned by another writer and never deleted.
-        if (this.createdArtifact !== null) {
-          try {
-            unlinkSync(this.createdArtifact)
-          } catch {
-            // best effort
-          }
-          this.createdArtifact = null
-        }
+        // Discard the provisional TEMP only. Published finals survive (P1-4).
         this.artifact?.discard()
       },
       buildResponse(): OperationResponse {
         if (used <= limit) {
           return { id, ok: true, result: value }
+        }
+        // P1-5: revalidate the published artifact immediately before success
+        // is finalized — regular file identity, size and digest must all
+        // still match; otherwise the op fails closed rather than referencing
+        // a stale artifact.
+        if (this.artifactRef !== null) {
+          let valid = false
+          try {
+            const st = statSync(this.artifactRef)
+            valid = st.isFile() && st.size === bytes.length && sha256Hex(readFileSync(this.artifactRef)) === contentHash
+          } catch {
+            valid = false
+          }
+          if (!valid) {
+            return {
+              id,
+              ok: false,
+              error: { code: E_INTERNAL, message: `artifact ${this.artifactRef} no longer valid at finalization` },
+            }
+          }
         }
         const ref = this.artifactRef ?? ""
         return {

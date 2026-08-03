@@ -878,11 +878,14 @@ describe("FDX native/JS fallback parity", () => {
         expect(r.error?.code).toBe(E_STALE_SNAPSHOT)
         expect(r.artifactRef).toBeUndefined()
       }
+      // P1-4: published artifacts are content-addressed and IMMUTABLE — a
+      // rolled-back batch's finals may persist (never referenced by its
+      // responses), but every provisional TEMP file must be gone.
       const arts = join(base, "artifacts")
       if (existsSync(arts)) {
         const files = readdirSync(arts)
-        const ours = files.filter((f) => f.includes(id))
-        expect(ours).toEqual([])
+        const temps = files.filter((f) => f.endsWith(".tmp"))
+        expect(temps).toEqual([])
       }
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -958,11 +961,12 @@ describe("FDX native/JS fallback parity", () => {
         expect(r.error?.code).toBe(E_STALE_SNAPSHOT)
         expect(r.artifactRef).toBeUndefined()
       }
-      // No artifact (created by this batch) remains.
+      // P1-4: published artifacts are immutable and may persist after a
+      // rollback; no provisional TEMP may remain.
       const arts = join(base, "artifacts")
       if (existsSync(arts)) {
-        const files = readdirSync(arts).filter((f) => f.includes(id))
-        expect(files).toEqual([])
+        const temps = readdirSync(arts).filter((f) => f.endsWith(".tmp"))
+        expect(temps).toEqual([])
       }
     } finally {
       rmSync(dir, { recursive: true, force: true })
@@ -999,11 +1003,12 @@ describe("FDX native/JS fallback parity", () => {
         expect(r.error?.code).toBe(E_STALE_SNAPSHOT)
         expect(r.artifactRef).toBeUndefined()
       }
-      // No artifact created by this batch remains (all-or-nothing rollback).
+      // P1-4: published artifacts are immutable and may persist; no
+      // provisional TEMP may remain (all-or-nothing rollback disposes temps).
       const arts = join(base, "artifacts")
       if (existsSync(arts)) {
-        const files = readdirSync(arts).filter((f) => f.includes(id))
-        expect(files).toEqual([])
+        const temps = readdirSync(arts).filter((f) => f.endsWith(".tmp"))
+        expect(temps).toEqual([])
       }
     } finally {
       rmSync(dir, { recursive: true, force: true })

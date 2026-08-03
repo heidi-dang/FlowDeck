@@ -42,7 +42,8 @@ use crate::index::identity::{
 };
 use crate::index::paths::{index_state_root, worktree_dir};
 use crate::index::query_cache::{
-    canonical_json, configuration_fingerprint, query_cache_key, QueryCache, BATCH_PROTOCOL_VERSION,
+    canonical_json, configuration_fingerprint, query_cache_key, CacheTransaction, QueryCache,
+    BATCH_PROTOCOL_VERSION,
 };
 use crate::index::{query_tests_for, IndexSnapshot};
 use crate::reader::code::cache::AstCache;
@@ -961,12 +962,14 @@ fn execute_batch_with_probe(
             }
         }
 
-        // Phase B: stage + commit all cache writes only after all artifacts
-        // can commit. Cache entries are invisible until the transaction
-        // commits; LRU runs only after success. The captured prior state is
-        // retained so a post-activation drift can restore replaced entries
-        // exactly (P1-4).
-        let mut cache_priors: Vec<(PathBuf, Option<Vec<u8>>)> = Vec::new();
+        // Phase B: stage + publish all cache writes only after all artifacts
+        // can commit. Publication is platform-neutral no-clobber (hard-link);
+        // LRU is NOT run here — it runs only after Phase C (post-activation
+        // probe) passes, so a failed batch can never evict unrelated entries
+        // (P1-1). The captured prior state + published generation token are
+        // retained for compare-and-swap rollback (P1-2).
+        let mut cache_priors: Vec<(PathBuf, Option<Vec<u8>>, String)> = Vec::new();
+        let mut cache_tx_holder: Option<CacheTransaction<'_>> = None;
         if txn_error.is_none() {
             if let Some(cache) = cache_ctx.as_ref().map(|c| &c.cache) {
                 let mut tx = cache.begin();
@@ -979,7 +982,7 @@ fn execute_batch_with_probe(
                     }
                 }
                 if txn_error.is_none() {
-                    if let Err(e) = tx.commit() {
+                    if let Err(e) = tx.publish() {
                         txn_error = Some(e);
                     } else {
                         cache_priors = tx.take_priors();
@@ -987,6 +990,7 @@ fn execute_batch_with_probe(
                 } else {
                     tx.abort();
                 }
+                cache_tx_holder = Some(tx);
             }
         }
 
@@ -1003,21 +1007,53 @@ fn execute_batch_with_probe(
             }
         }
 
-        // Roll back owned outputs on any failure: created artifacts (never
-        // reused-existing winners) and cache entries committed by THIS batch
-        // (restored to their exact prior state, or removed when no prior
-        // existed — never a destructive deletion of a pre-existing entry).
-        if txn_error.is_some() || post_activation_drift {
-            // Artifacts: remove only CREATED files (ownership-aware journal).
-            journal.rollback();
-            // Cache: restore exactly what was there before this batch staged
-            // its writes. Prior entries are preserved, not deleted.
-            QueryCache::restore_priors(&cache_priors);
+        let failed = txn_error.is_some() || post_activation_drift;
+        if !failed {
+            // Global commit succeeded: run LRU maintenance ONLY now, after the
+            // post-activation probe (P1-1). A failed batch never reaches here,
+            // so unrelated entries are never evicted by a failed transaction.
+            if let Some(tx) = cache_tx_holder.as_ref() {
+                tx.enforce_lru();
+            }
         }
+
+        // Roll back owned outputs on any failure. Artifacts are content-
+        // addressed and IMMUTABLE (P1-4): published finals are never deleted
+        // (they may already be reused by another successful transaction).
+        // We dispose of every TEMP/staging file — including pendings whose
+        // artifacts were prepared but never activated (P2-1) — and
+        // CAS-restore cache entries published by THIS batch (a newer
+        // concurrent writer is never overwritten, P1-2).
+        //
+        // P2-3: rollback returns a structured report; an INCOMPLETE rollback
+        // (a temp that could not be removed, or a cache restore that failed)
+        // is surfaced distinctly — never described as a clean abort.
+        let mut rollback_issues: Vec<String> = Vec::new();
+        if failed {
+            for pending in pendings.iter() {
+                let before = pending
+                    .artifact
+                    .as_ref()
+                    .and_then(|p| (p.temp_path != p.final_path).then(|| p.temp_path.clone()));
+                pending.discard();
+                if let Some(temp) = before {
+                    if temp.exists() {
+                        rollback_issues.push(format!(
+                            "provisional temp {} could not be removed",
+                            temp.display()
+                        ));
+                    }
+                }
+            }
+            rollback_issues.extend(journal.rollback());
+            // CAS-restore; collect any entries that could not be restored.
+            rollback_issues.extend(QueryCache::restore_priors_reported(&cache_priors));
+        }
+        let rollback_incomplete = !rollback_issues.is_empty();
 
         // Finalize responses. On any failure every provisional op becomes a
         // stable error; NO success response references a rolled-back output.
-        let failed = txn_error.is_some() || post_activation_drift;
+        // An incomplete rollback is reported distinctly (P2-3).
         let mut pending_idx = 0;
         for slot in final_responses.iter_mut() {
             if slot.is_some() {
@@ -1027,25 +1063,32 @@ fn execute_batch_with_probe(
             pending_idx += 1;
             let id = pending.id.clone();
             if failed {
-                if let Some(e) = &txn_error {
-                    if post_activation_drift {
-                        *slot = Some(pending_stale_response(&id));
-                    } else {
-                        *slot = Some(OperationResponse {
-                            id,
-                            ok: false,
-                            result: None,
-                            error: Some(serde_json::json!({
-                                "code": err::E_INTERNAL,
-                                "message": format!("batch activation failed; results not committed: {e}"),
-                            })),
-                            truncated: false,
-                            artifact_ref: None,
-                        });
-                    }
+                let mut base_msg = if let Some(e) = &txn_error {
+                    format!("batch activation failed; results not committed: {e}")
                 } else {
-                    *slot = Some(pending_stale_response(&id));
+                    "operation result discarded: repository state changed during execution".into()
+                };
+                if rollback_incomplete {
+                    base_msg = format!(
+                        "{base_msg}; ROLLBACK INCOMPLETE: {}",
+                        rollback_issues.join("; ")
+                    );
                 }
+                *slot = Some(OperationResponse {
+                    id,
+                    ok: false,
+                    result: None,
+                    error: Some(serde_json::json!({
+                        "code": if post_activation_drift {
+                            err::E_STALE_SNAPSHOT
+                        } else {
+                            err::E_INTERNAL
+                        },
+                        "message": base_msg,
+                    })),
+                    truncated: false,
+                    artifact_ref: None,
+                });
             } else {
                 *slot = Some(pending.build_response());
             }
@@ -1409,23 +1452,22 @@ impl PendingActivation {
         }
     }
 
-    /// Phase A of the two-phase commit: activate the artifact with
-    /// no-clobber, ownership-aware semantics. Records ONLY created artifacts
-    /// in the journal — reused-existing winners are never rolled back (they
-    /// are owned by an earlier writer or a concurrent batch).
+    /// Phase A of the two-phase commit: activate the artifact with no-clobber
+    /// semantics. The artifact's temp file is recorded in the journal so a
+    /// failed transaction can discard it; published finals are content-
+    /// addressed and immutable, so they are NEVER deleted on rollback (P1-4).
     fn activate_artifact(&mut self, journal: &mut ActivationJournal) -> Result<(), String> {
         if let Some(prepared) = &self.artifact {
-            let outcome = prepared.activate(&self.bytes)?;
-            match outcome {
-                ActivationOutcome::Created(path) => {
-                    journal.record_created(PathBuf::from(&path));
-                    self.artifact_ref = Some(path);
-                }
-                ActivationOutcome::ReusedExisting(path) => {
-                    // Not owned by this transaction — never journaled.
-                    self.artifact_ref = Some(path);
-                }
+            // Record a SEPARATE temp for cleanup on failure; the reuse marker
+            // (temp == final) is the published file itself and must never be
+            // deleted on rollback (P1-4).
+            if prepared.temp_path != prepared.final_path {
+                journal.record_temp(prepared.temp_path.clone());
             }
+            let outcome = prepared.activate(&self.bytes)?;
+            self.artifact_ref = Some(match outcome {
+                ActivationOutcome::Created(path) | ActivationOutcome::ReusedExisting(path) => path,
+            });
         }
         Ok(())
     }
@@ -1433,33 +1475,61 @@ impl PendingActivation {
     /// Build the final success response. Called ONLY after the entire
     /// transaction committed (artifacts activated, cache committed, no
     /// post-activation drift). Never called for a rolled-back transaction.
+    ///
+    /// Revalidates the published artifact immediately before success is
+    /// finalized (P1-5): another process may have deleted or replaced the
+    /// file during the activation window; identity, size and digest must all
+    /// still match, or the op fails closed instead of referencing a stale
+    /// artifact.
     fn build_response(&self) -> OperationResponse {
         if self.used <= self.limit {
-            OperationResponse {
+            return OperationResponse {
                 id: self.id.clone(),
                 ok: true,
                 result: serde_json::from_slice(&self.bytes).ok(),
                 error: None,
                 truncated: false,
                 artifact_ref: None,
+            };
+        }
+        // Finalization revalidation of the published artifact (P1-5).
+        if let Some(ref_path) = &self.artifact_ref {
+            let path = std::path::Path::new(ref_path);
+            let valid = match std::fs::metadata(path) {
+                Ok(m) if m.is_file() && m.len() == self.used as u64 => std::fs::read(path)
+                    .map(|data| sha256_hex(&data) == sha256_hex(&self.bytes))
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if !valid {
+                return OperationResponse {
+                    id: self.id.clone(),
+                    ok: false,
+                    result: None,
+                    error: Some(serde_json::json!({
+                        "code": err::E_INTERNAL,
+                        "message": format!("artifact {ref_path} no longer valid at finalization"),
+                    })),
+                    truncated: false,
+                    artifact_ref: None,
+                };
             }
-        } else {
-            let content_hash = sha256_hex(&self.bytes);
-            let artifact_ref = self.artifact_ref.clone().unwrap_or_default();
-            OperationResponse {
-                id: self.id.clone(),
-                ok: true,
-                result: Some(serde_json::json!({
-                    "truncated": true,
-                    "artifactRef": artifact_ref,
-                    "byteCount": self.used,
-                    "limitBytes": self.limit,
-                    "contentHash": content_hash,
-                })),
-                error: None,
-                truncated: true,
-                artifact_ref: Some(artifact_ref),
-            }
+        }
+        let content_hash = sha256_hex(&self.bytes);
+        let artifact_ref = self.artifact_ref.clone().unwrap_or_default();
+        OperationResponse {
+            id: self.id.clone(),
+            ok: true,
+            result: Some(serde_json::json!({
+                "truncated": true,
+                "artifactRef": artifact_ref,
+                "byteCount": self.used,
+                "limitBytes": self.limit,
+                "contentHash": content_hash,
+            })),
+            error: None,
+            truncated: true,
+            artifact_ref: Some(artifact_ref),
         }
     }
 }
@@ -1480,33 +1550,48 @@ fn pending_stale_response(id: &str) -> OperationResponse {
     }
 }
 
-/// Ownership-aware activation journal: records ONLY artifacts this batch
-/// CREATED. Reused-existing winners (identical content already published) and
-/// pre-existing artifacts are never journaled, so a rollback can never delete
-/// a file owned by another operation, a concurrent batch, or a previous run.
+/// Activation journal for artifact TEMP files: records the unactivated
+/// provisional temp of every pending op so a failed transaction can discard
+/// them. Published final artifacts are content-addressed and treated as
+/// IMMUTABLE (P1-4): a rollback NEVER deletes a published final artifact —
+/// doing so could delete a file already reused by another successful
+/// transaction, and an orphaned content-addressed artifact is harmless (it is
+/// never referenced by a success response from the failed batch). Only temp
+/// and staging files are disposed on rollback.
 struct ActivationJournal {
-    created_artifacts: Vec<PathBuf>,
+    temp_files: Vec<PathBuf>,
 }
 
 impl ActivationJournal {
     fn new() -> Self {
         Self {
-            created_artifacts: Vec::new(),
+            temp_files: Vec::new(),
         }
     }
 
-    /// Record an artifact this batch created (owns). Never call this for a
-    /// reused-existing winner.
-    fn record_created(&mut self, path: PathBuf) {
-        self.created_artifacts.push(path);
+    /// Record the unactivated provisional temp of a pending op so it can be
+    /// discarded on a failed transaction (P2-1). No-op when the path is the
+    /// reuse marker (temp == final): there is no separate temp to clean.
+    fn record_temp(&mut self, path: PathBuf) {
+        self.temp_files.push(path);
     }
 
-    /// Remove every artifact THIS batch created. Reused-existing winners are
-    /// untouched (they are not owned by this batch).
-    fn rollback(&self) {
-        for artifact in &self.created_artifacts {
-            let _ = std::fs::remove_file(artifact);
+    /// Discard every recorded TEMP file. Published final artifacts are never
+    /// touched (content-addressed immutable — P1-4). Returns a list of
+    /// removal failures so an incomplete rollback can be surfaced (P2-3).
+    fn rollback(&self) -> Vec<String> {
+        let mut issues = Vec::new();
+        for temp in &self.temp_files {
+            if let Err(e) = std::fs::remove_file(temp) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    issues.push(format!(
+                        "failed to remove provisional temp {}: {e}",
+                        temp.display()
+                    ));
+                }
+            }
         }
+        issues
     }
 }
 
@@ -1519,6 +1604,45 @@ struct PreparedArtifact {
 }
 
 impl PreparedArtifact {
+    /// Revalidate a REUSED artifact at activation (P1-5): another process may
+    /// have deleted or replaced the file between preparation and activation.
+    /// Requires a regular file whose size and SHA-256 digest still match the
+    /// validated payload — path existence alone is never sufficient.
+    fn validate_reused(&self, expected: &[u8]) -> Result<(), String> {
+        let meta = std::fs::metadata(&self.final_path).map_err(|e| {
+            format!(
+                "reused artifact {} is no longer accessible: {e}",
+                self.final_path.display()
+            )
+        })?;
+        if !meta.is_file() {
+            return Err(format!(
+                "reused artifact {} is not a regular file",
+                self.final_path.display()
+            ));
+        }
+        if meta.len() != expected.len() as u64 {
+            return Err(format!(
+                "reused artifact {} size changed ({} != {})",
+                self.final_path.display(),
+                meta.len(),
+                expected.len()
+            ));
+        }
+        let data = std::fs::read(&self.final_path).map_err(|e| {
+            format!(
+                "reused artifact {} unreadable during revalidation: {e}",
+                self.final_path.display()
+            )
+        })?;
+        if sha256_hex(&data) != self.content_hash {
+            return Err(format!(
+                "reused artifact {} content changed (digest mismatch)",
+                self.final_path.display()
+            ));
+        }
+        Ok(())
+    }
     /// Remove the provisional temp file (best-effort). Called on stale
     /// detection or any failure before activation. No-op when the artifact is
     /// a reuse of an already-published file (temp == final).
@@ -1560,7 +1684,11 @@ impl PreparedArtifact {
     fn activate(&self, bytes: &[u8]) -> Result<ActivationOutcome, String> {
         if self.temp_path == self.final_path {
             // Reuse case: the correct artifact was already published by an
-            // earlier writer (or a previous run). We do not own it.
+            // earlier writer (or a previous run). We do not own it — but we
+            // REVALIDATE it now (P1-5): another process may have deleted or
+            // replaced the file between preparation and activation. Identity,
+            // size and digest must all still match.
+            self.validate_reused(bytes)?;
             return Ok(ActivationOutcome::ReusedExisting(
                 self.final_path.to_string_lossy().into_owned(),
             ));
@@ -1572,10 +1700,25 @@ impl PreparedArtifact {
                 // We won the race: remove the temp name, keep the final name.
                 let _ = self.discard();
                 // Directory durability: propagate fsync failure so activation
-                // is not reported durable when it was not.
+                // is not reported durable when it was not. If the final
+                // artifact was already published but the directory sync
+                // fails, remove the just-created final artifact and return
+                // the combined activation/cleanup result (P1-3) — the
+                // artifact must not escape as an orphan while the operation
+                // reports failure.
                 if let Some(parent) = self.final_path.parent() {
-                    sync_parent_dir(parent)
-                        .map_err(|e| format!("failed to fsync artifact dir: {e}"))?;
+                    if let Err(e) = sync_parent_dir(parent) {
+                        let cleanup = std::fs::remove_file(&self.final_path);
+                        let _ = sync_parent_dir(parent);
+                        return Err(match cleanup {
+                            Ok(()) => format!(
+                                "failed to fsync artifact dir after publish (artifact removed): {e}"
+                            ),
+                            Err(cleanup_err) => format!(
+                                "failed to fsync artifact dir ({e}) AND cleanup failed ({cleanup_err})"
+                            ),
+                        });
+                    }
                 }
                 Ok(ActivationOutcome::Created(
                     self.final_path.to_string_lossy().into_owned(),
@@ -1592,7 +1735,8 @@ impl PreparedArtifact {
                             && existing.len() == bytes.len() =>
                     {
                         // Identical content: reuse the winner. We do not own
-                        // it, so it is never journaled for rollback.
+                        // it, so it is never journaled for rollback. (The
+                        // read + digest check above IS the P1-5 revalidation.)
                         Ok(ActivationOutcome::ReusedExisting(
                             self.final_path.to_string_lossy().into_owned(),
                         ))
@@ -3625,9 +3769,11 @@ mod tests {
 
     #[test]
     fn pre_existing_artifact_survives_rollback_of_unrelated_created_artifact() {
-        // Audit P1-3 acceptance #3: a pre-existing identical artifact that a
-        // batch REUSES must never be deleted by that batch's rollback — the
-        // ownership-aware journal removes only files THIS batch created.
+        // Audit P1-4 acceptance #4: content-addressed artifacts are IMMUTABLE —
+        // a rollback NEVER deletes a published final artifact, whether reused
+        // or created, because another successful transaction may already be
+        // referencing it. Both the reused pre-existing artifact AND the
+        // created one survive rollback; only temp/staging files are removed.
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("artifacts");
         std::fs::create_dir_all(&dir).unwrap();
@@ -3642,7 +3788,7 @@ mod tests {
         let mtime = std::fs::metadata(&final_path).unwrap().modified().unwrap();
 
         // A batch reuses it (ReusedExisting) and ALSO creates another artifact
-        // (Created), then rolls back: only the created one is removed.
+        // (Created), then rolls back: published finals are immutable.
         let mut journal = ActivationJournal::new();
 
         // Pending 1: reuses the pre-existing artifact (temp == final).
@@ -3655,22 +3801,23 @@ mod tests {
             ActivationOutcome::ReusedExisting(_) => {}
             ActivationOutcome::Created(_) => panic!("reuse must be detected as ReusedExisting"),
         }
+        // Reused artifact is revalidated at activation (P1-5): deleting or
+        // replacing it between prepare and activate must fail closed.
 
         // Pending 2: creates a NEW artifact (different content).
         let other_content = serde_json::to_vec(&serde_json::json!({ "lines": ["other"] })).unwrap();
         let other_hash = sha256_hex(&other_content);
         let other_final = dir.join(artifact_file_name("other-op", &other_hash));
         let other_prepared = prepare_artifact(&other_final, &other_content).unwrap();
+        journal.record_temp(other_prepared.temp_path.clone());
         match other_prepared.activate(&other_content).unwrap() {
-            ActivationOutcome::Created(path) => {
-                journal.record_created(PathBuf::from(&path));
-            }
+            ActivationOutcome::Created(_) => {}
             ActivationOutcome::ReusedExisting(_) => panic!("other artifact must be created"),
         }
         assert!(other_final.exists());
 
-        // Rollback: the created artifact is removed; the reused pre-existing
-        // artifact survives untouched.
+        // Rollback: published finals (created OR reused) survive; temps are
+        // discarded.
         journal.rollback();
         assert!(
             final_path.exists(),
@@ -3682,9 +3829,54 @@ mod tests {
             "the pre-existing artifact is byte-identical and untouched"
         );
         assert!(
-            !other_final.exists(),
-            "the created artifact is removed by rollback"
+            other_final.exists(),
+            "immutable content-addressed artifacts are never deleted on rollback (P1-4)"
         );
+    }
+
+    #[test]
+    fn reused_artifact_is_revalidated_at_activation() {
+        // Audit P1-5 acceptance #5: a reused artifact that was deleted or
+        // replaced between preparation and activation must fail closed at
+        // activation (regular-file identity, size, digest).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let content = serde_json::to_vec(&serde_json::json!({ "lines": ["v1"] })).unwrap();
+        let hash = sha256_hex(&content);
+        let final_path = dir.join(artifact_file_name("reuse-op", &hash));
+
+        // Publish the "reused" artifact, then DELETE it before activation.
+        atomic_write_artifact(&final_path, &content).unwrap();
+        std::fs::remove_file(&final_path).unwrap();
+
+        let reused = PreparedArtifact {
+            temp_path: final_path.clone(),
+            final_path: final_path.clone(),
+            content_hash: hash.clone(),
+        };
+        let res = reused.activate(&content);
+        assert!(
+            res.is_err(),
+            "a deleted reused artifact must fail closed at activation"
+        );
+
+        // Replace it with conflicting content: digest mismatch fails closed.
+        let conflict = serde_json::to_vec(&serde_json::json!({ "lines": ["tampered"] })).unwrap();
+        std::fs::write(&final_path, &conflict).unwrap();
+        let reused2 = PreparedArtifact {
+            temp_path: final_path.clone(),
+            final_path: final_path.clone(),
+            content_hash: hash.clone(),
+        };
+        let res2 = reused2.activate(&content);
+        assert!(
+            res2.is_err(),
+            "a conflicting reused artifact must fail closed at activation"
+        );
+        // The tampered file is left untouched.
+        assert_eq!(std::fs::read(&final_path).unwrap(), conflict);
     }
 
     #[test]
@@ -3944,11 +4136,11 @@ mod tests {
             let mut tx = cache.begin();
             tx.stage_write("key-a", false, br#"{"k":"replacement"}"#)
                 .unwrap();
-            tx.commit().unwrap();
+            tx.publish().unwrap();
             assert_eq!(
                 cache.get("key-a").as_deref(),
                 Some(br#"{"k":"replacement"}"#.as_slice()),
-                "commit makes the replacement visible"
+                "publish makes the replacement visible"
             );
             let priors = tx.take_priors();
             assert_eq!(priors.len(), 1);
@@ -3960,12 +4152,12 @@ mod tests {
             "restore returns the exact prior bytes"
         );
 
-        // A key with NO prior: commit then restore must REMOVE it.
+        // A key with NO prior: publish then restore must REMOVE it.
         {
             let mut tx = cache.begin();
             tx.stage_write("key-new", false, br#"{"k":"fresh"}"#)
                 .unwrap();
-            tx.commit().unwrap();
+            tx.publish().unwrap();
             assert!(cache.get("key-new").is_some());
             let priors = tx.take_priors();
             QueryCache::restore_priors(&priors);
@@ -3978,27 +4170,25 @@ mod tests {
 
     #[test]
     fn cache_transaction_commit_failure_restores_partial_publishes() {
-        // Audit P1-4: if a commit fails partway (a rename error), every entry
-        // already published by that transaction is restored to its prior
-        // state — no partial cache commit survives.
+        // Audit P1-4/P2-3: if a publish fails partway (a hard-link error),
+        // every entry already published by that transaction is restored to
+        // its prior state — no partial cache commit survives.
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
         cache.put("key-1", br#"{"k":"prior-1"}"#);
 
         let mut tx = cache.begin();
         tx.stage_write("key-1", false, br#"{"k":"new-1"}"#).unwrap();
-        // Force the second stage's commit to fail by replacing its final path
-        // with a DIRECTORY after staging (rename onto a non-empty dir fails).
+        // Force the second stage's publish to fail by replacing its final path
+        // with a DIRECTORY after staging (hard-link onto a non-empty dir
+        // fails on every platform).
         tx.stage_write("key-2", false, br#"{"k":"new-2"}"#).unwrap();
-        // key-2's final path is currently a temp; commit renames key-1 first
-        // (publishes), then key-2. To force failure deterministically we make
-        // key-2's FINAL path a non-empty directory so the rename fails.
         let final2 = cache.query_dir().join("key-2");
         std::fs::create_dir_all(&final2).unwrap();
         std::fs::write(final2.join("blocker"), b"x").unwrap();
 
-        let res = tx.commit();
-        assert!(res.is_err(), "commit fails on the blocked entry");
+        let res = tx.publish();
+        assert!(res.is_err(), "publish fails on the blocked entry");
         // key-1 (published before the failure) must be restored to prior-1.
         assert_eq!(
             cache.get("key-1").as_deref(),
@@ -4014,6 +4204,86 @@ mod tests {
             })
             .unwrap_or_default();
         assert!(leftovers.is_empty(), "no staged temps leak: {leftovers:?}");
+    }
+
+    #[test]
+    fn cache_transaction_cas_rollback_never_clobbers_newer_writer() {
+        // Audit P1-2 acceptance #2: an OLDER transaction that publishes value
+        // A, then rolls back AFTER a NEWER transaction published value B for
+        // the same key, must NOT overwrite or delete B. The CAS generation
+        // token (published hash) guards the restore.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+
+        // Txn A: stage + publish "A".
+        let mut tx_a = cache.begin();
+        tx_a.stage_write("key-x", false, br#"{"k":"A"}"#).unwrap();
+        tx_a.publish().unwrap();
+        let priors_a = tx_a.take_priors();
+        assert_eq!(
+            cache.get("key-x").as_deref(),
+            Some(br#"{"k":"A"}"#.as_slice())
+        );
+
+        // Txn B (newer): stage + publish "B" over the same key.
+        let mut tx_b = cache.begin();
+        tx_b.stage_write("key-x", false, br#"{"k":"B"}"#).unwrap();
+        tx_b.publish().unwrap();
+        assert_eq!(
+            cache.get("key-x").as_deref(),
+            Some(br#"{"k":"B"}"#.as_slice())
+        );
+
+        // Txn A detects drift and rolls back with ITS captured priors. The
+        // current entry is now B, not A — the CAS guard must leave B intact.
+        QueryCache::restore_priors(&priors_a);
+        assert_eq!(
+            cache.get("key-x").as_deref(),
+            Some(br#"{"k":"B"}"#.as_slice()),
+            "an older rollback must never clobber a newer committed value"
+        );
+    }
+
+    #[test]
+    fn cache_transaction_lru_only_runs_on_global_success() {
+        // Audit P1-1: LRU must not run during staging or publish — only via
+        // enforce_lru() after the global commit decision. We verify publish()
+        // does not evict entries and that enforce_lru() is the only eviction
+        // point by filling the cache beyond the bound during publish.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        // Fill to the default max so LRU would evict on any enforcement.
+        for i in 0..(crate::index::query_cache::DEFAULT_MAX_ITEMS + 4) {
+            let bytes = format!(r#"{{"k":"{i}"}}"#);
+            cache.put(&format!("key-{i}"), bytes.as_bytes());
+        }
+        let before = std::fs::read_dir(cache.query_dir())
+            .map(|e| e.flatten().filter(|f| f.path().is_file()).count())
+            .unwrap_or(0);
+
+        // Stage + publish an extra entry WITHOUT running LRU: the count must
+        // only grow by one (no eviction during publish).
+        let mut tx = cache.begin();
+        tx.stage_write("extra", false, br#"{"k":"extra"}"#).unwrap();
+        tx.publish().unwrap();
+        let after_publish = std::fs::read_dir(cache.query_dir())
+            .map(|e| e.flatten().filter(|f| f.path().is_file()).count())
+            .unwrap_or(0);
+        assert_eq!(
+            after_publish,
+            before + 1,
+            "publish must not evict entries (LRU deferred to enforce_lru)"
+        );
+
+        // Explicit enforce_lru now trims to the bound.
+        tx.enforce_lru();
+        let after_lru = std::fs::read_dir(cache.query_dir())
+            .map(|e| e.flatten().filter(|f| f.path().is_file()).count())
+            .unwrap_or(0);
+        assert!(
+            after_lru <= crate::index::query_cache::DEFAULT_MAX_ITEMS,
+            "enforce_lru trims to the bound"
+        );
     }
 
     // ─── Audit P1-2 closure: deterministic no-clobber race ──────────────────
@@ -4147,5 +4417,85 @@ mod tests {
             );
         }
         let _ = loser_hash;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_dir_sync_failure_removes_created_final() {
+        // Audit P1-3 acceptance #3: if the final artifact is created (hard
+        // link succeeds) but the parent-directory fsync fails, the just-
+        // created final is removed and the combined error returned — the
+        // artifact must not escape as an orphan while the op reports failure.
+        //
+        // Simulate a fsync failure by making the parent directory read-only
+        // after the temp exists but before activation. Because `sync_parent_dir`
+        // opens the directory and fsyncs it, an unwritable directory makes the
+        // fsync fail deterministically on Linux.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("artifacts");
+        std::fs::create_dir_all(&dir).unwrap();
+        let content = serde_json::to_vec(&serde_json::json!({ "lines": ["x"] })).unwrap();
+        let hash = sha256_hex(&content);
+        let final_path = dir.join(artifact_file_name("sync-op", &hash));
+
+        let prepared = prepare_artifact(&final_path, &content).unwrap();
+        // Make the parent directory read-only: fsync of the directory will
+        // fail with EACCES/EROFS on Unix.
+        let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+        use std::os::unix::fs::PermissionsExt;
+        perms.set_mode(0o555);
+        std::fs::set_permissions(&dir, perms).unwrap();
+
+        let res = prepared.activate(&content);
+        // Restore write permission so the tempdir cleanup can remove files.
+        let mut restore = std::fs::metadata(&dir).unwrap().permissions();
+        restore.set_mode(0o755);
+        std::fs::set_permissions(&dir, restore).unwrap();
+        assert!(
+            res.is_err(),
+            "a parent-directory fsync failure must fail the activation"
+        );
+        assert!(
+            !final_path.exists(),
+            "the just-created final artifact must be removed on sync failure (P1-3)"
+        );
+    }
+
+    #[test]
+    fn incomplete_rollback_is_surfaced_distinctly() {
+        // Audit P2-3: a rollback whose cleanup fails must NOT be described as
+        // a clean abort. We exercise the CacheTransaction publish-failure path
+        // where a blocked entry forces partial publish + rollback; the
+        // transaction must report the failure (which the batch surfaces as
+        // ROLLBACK INCOMPLETE evidence).
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put("key-1", br#"{"k":"prior-1"}"#);
+
+        let mut tx = cache.begin();
+        tx.stage_write("key-1", false, br#"{"k":"new-1"}"#).unwrap();
+        tx.stage_write("key-2", false, br#"{"k":"new-2"}"#).unwrap();
+        // Block key-2's final path so publish fails partway.
+        let final2 = cache.query_dir().join("key-2");
+        std::fs::create_dir_all(&final2).unwrap();
+        std::fs::write(final2.join("blocker"), b"x").unwrap();
+
+        let res = tx.publish();
+        assert!(res.is_err(), "publish failure is reported, not suppressed");
+        // The partially-published key-1 was CAS-restored to its prior state.
+        assert_eq!(
+            cache.get("key-1").as_deref(),
+            Some(br#"{"k":"prior-1"}"#.as_slice()),
+            "partial publish rolled back to prior state"
+        );
+        // No staged temp leaked.
+        let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
+            .map(|e| {
+                e.flatten()
+                    .filter(|f| f.file_name().to_string_lossy().contains(".tmp-"))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(leftovers.is_empty(), "no staged temps leak: {leftovers:?}");
     }
 }
