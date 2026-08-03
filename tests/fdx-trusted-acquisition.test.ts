@@ -738,12 +738,8 @@ await new Promise(() => {})
       const spaceDir = join(tempDir, "My Project With Spaces", "app")
       mkdirSync(spaceDir, { recursive: true })
       const binPath = join(spaceDir, target.executableName)
-      if (process.platform === "win32") {
-        writeFileSync(binPath, "@echo fdx v1.0.4\r\n", "utf-8")
-      } else {
-        writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
-        chmodSync(binPath, 0o755)
-      }
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+      chmodSync(binPath, 0o755)
       const binBuf = readFileSync(binPath)
       const sha256 = createHash("sha256").update(binBuf).digest("hex")
       writeFileSync(join(spaceDir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
