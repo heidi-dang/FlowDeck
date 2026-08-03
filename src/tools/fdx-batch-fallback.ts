@@ -1581,9 +1581,26 @@ export function executeBatchFallback(
     if (txnError === null && probe !== null && !probe.stateUnchanged()) {
       staleSnapshot = true
     }
+    // Phase C2 (P1-3): revalidate EVERY activated artifact BEFORE global
+    // success. A final-validation failure is a TRANSACTION failure — it
+    // converts every provisional response to a stable error; success
+    // responses are only constructed after ALL validations pass.
+    if (txnError === null && !staleSnapshot) {
+      for (const pending of pendings) {
+        try {
+          pending.validateArtifact()
+        } catch (e) {
+          txnError = `artifact no longer valid at finalization: ${errorText(e)}`
+          break
+        }
+      }
+    }
   }
 
   const failed = staleSnapshot || txnError !== null
+  // P2-5: rollback returns a structured report; an incomplete rollback is
+  // surfaced distinctly as ROLLBACK INCOMPLETE.
+  const rollbackIssues: string[] = []
   const responses: OperationResponse[] = []
   for (const outcome of staged) {
     if (outcome.kind === "final") {
@@ -1595,9 +1612,9 @@ export function executeBatchFallback(
       responses.push(pending.buildResponse())
       continue
     }
-    // Roll back owned outputs (created artifacts only) and convert the
-    // provisional op to a stable error.
-    pending.rollback()
+    // Roll back (temps only; published artifacts are immutable) and collect
+    // any cleanup failure.
+    rollbackIssues.push(...pending.rollback())
     if (staleSnapshot) {
       responses.push({
         id: pending.id,
@@ -1608,10 +1625,14 @@ export function executeBatchFallback(
         },
       })
     } else {
+      let msg = txnError ?? "batch activation failed"
+      if (rollbackIssues.length > 0) {
+        msg = `${msg}; ROLLBACK INCOMPLETE: ${rollbackIssues.join("; ")}`
+      }
       responses.push({
         id: pending.id,
         ok: false,
-        error: { code: E_INTERNAL, message: txnError ?? "batch activation failed" },
+        error: { code: E_INTERNAL, message: msg },
       })
     }
   }
@@ -1641,8 +1662,11 @@ interface PendingFallbackActivation {
   /** Phase A: activate the artifact (no-clobber, ownership-aware). */
   activateArtifact(): void
 
-  /** Roll back owned outputs: remove only created artifacts. */
-  rollback(): void
+  /** Phase C2: revalidate the published artifact (regular file, size, digest). */
+  validateArtifact(): void
+
+  /** Roll back owned outputs (temps only) and report any cleanup failure. */
+  rollback(): string[]
 
   /** Build the final response — only after the whole transaction commits. */
   buildResponse(): OperationResponse
@@ -1786,34 +1810,39 @@ function prepareFallbackResponse(
           // Only temp/staging files are disposed on rollback.
         }
       },
-      rollback() {
-        // Discard the provisional TEMP only. Published finals survive (P1-4).
-        this.artifact?.discard()
+      validateArtifact() {
+        if (this.artifactRef === null) return
+        let valid = false
+        try {
+          const st = statSync(this.artifactRef)
+          valid = st.isFile() && st.size === bytes.length && sha256Hex(readFileSync(this.artifactRef)) === contentHash
+        } catch {
+          valid = false
+        }
+        if (!valid) {
+          throw new Error(`artifact ${this.artifactRef} no longer valid (missing, wrong size, or digest mismatch)`)
+        }
+      },
+      rollback(): string[] {
+        // Discard the provisional TEMP only; report any cleanup failure
+        // (P2-5). Published finals survive (immutable, P1-4).
+        const issues: string[] = []
+        if (artifact !== null && artifact.tempPath !== artifact.finalPath) {
+          try {
+            unlinkSync(artifact.tempPath)
+          } catch (e) {
+            issues.push(`failed to remove provisional temp ${artifact.tempPath}: ${errorText(e)}`)
+          }
+        }
+        return issues
       },
       buildResponse(): OperationResponse {
         if (used <= limit) {
           return { id, ok: true, result: value }
         }
-        // P1-5: revalidate the published artifact immediately before success
-        // is finalized — regular file identity, size and digest must all
-        // still match; otherwise the op fails closed rather than referencing
-        // a stale artifact.
-        if (this.artifactRef !== null) {
-          let valid = false
-          try {
-            const st = statSync(this.artifactRef)
-            valid = st.isFile() && st.size === bytes.length && sha256Hex(readFileSync(this.artifactRef)) === contentHash
-          } catch {
-            valid = false
-          }
-          if (!valid) {
-            return {
-              id,
-              ok: false,
-              error: { code: E_INTERNAL, message: `artifact ${this.artifactRef} no longer valid at finalization` },
-            }
-          }
-        }
+        // Validation happened in Phase C2 BEFORE global success (P1-3); the
+        // response is only built after all validations passed, so no
+        // per-op failure can surface post-commit.
         const ref = this.artifactRef ?? ""
         return {
           id,

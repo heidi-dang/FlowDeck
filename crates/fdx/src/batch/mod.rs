@@ -963,13 +963,17 @@ fn execute_batch_with_probe(
         }
 
         // Phase B: stage + publish all cache writes only after all artifacts
-        // can commit. Publication is platform-neutral no-clobber (hard-link);
-        // LRU is NOT run here — it runs only after Phase C (post-activation
-        // probe) passes, so a failed batch can never evict unrelated entries
-        // (P1-1). The captured prior state + published generation token are
-        // retained for compare-and-swap rollback (P1-2).
-        let mut cache_priors: Vec<(PathBuf, Option<Vec<u8>>, String)> = Vec::new();
+        // can commit. Publication is a single ATOMIC hard-link per entry —
+        // never a rename-over — so a concurrent writer is never clobbered and
+        // there is no check-then-rename window (P1-1). Cache entries are
+        // content-addressed and IMMUTABLE: published finals are never
+        // restored or deleted on rollback (P1-2 — only Created entries are
+        // owned; ReusedExisting winners are never touched). LRU is NOT run
+        // here — it runs only after the post-activation probe AND final
+        // artifact validation pass.
         let mut cache_tx_holder: Option<CacheTransaction<'_>> = None;
+        let mut cache_publish_outcomes: Vec<crate::index::query_cache::CachePublishOutcome> =
+            Vec::new();
         if txn_error.is_none() {
             if let Some(cache) = cache_ctx.as_ref().map(|c| &c.cache) {
                 let mut tx = cache.begin();
@@ -982,17 +986,33 @@ fn execute_batch_with_probe(
                     }
                 }
                 if txn_error.is_none() {
-                    if let Err(e) = tx.publish() {
-                        txn_error = Some(e);
-                    } else {
-                        cache_priors = tx.take_priors();
+                    match tx.publish() {
+                        Ok(outcomes) => cache_publish_outcomes = outcomes,
+                        Err(f) => {
+                            txn_error = Some(f.message.clone());
+                            if !f.temp_cleanup_issues.is_empty() {
+                                txn_error = Some(format!(
+                                    "{}; STAGED-TEMP CLEANUP FAILED: {}",
+                                    f.message,
+                                    f.temp_cleanup_issues.join("; ")
+                                ));
+                            }
+                        }
                     }
                 } else {
-                    tx.abort();
+                    let abort_issues = tx.abort();
+                    if !abort_issues.is_empty() {
+                        txn_error = Some(format!(
+                            "{}; STAGED-TEMP CLEANUP FAILED: {}",
+                            txn_error.as_deref().unwrap_or("staging failed"),
+                            abort_issues.join("; ")
+                        ));
+                    }
                 }
                 cache_tx_holder = Some(tx);
             }
         }
+        let _ = &cache_publish_outcomes;
 
         // Phase C: POST-ACTIVATION state probe. The repository may have
         // changed while artifacts/cache were being activated; every owned
@@ -1007,27 +1027,56 @@ fn execute_batch_with_probe(
             }
         }
 
-        let failed = txn_error.is_some() || post_activation_drift;
+        // Phase C2 (P1-3): revalidate EVERY activated artifact BEFORE global
+        // success. A final-validation failure is a TRANSACTION failure — it
+        // rolls back all cache publications (immutable finals are left, but
+        // the batch is void), leaves LRU untouched, and converts every
+        // provisional response to a stable error. Success responses are only
+        // constructed after ALL validations pass.
+        let mut final_revalidation_error: Option<String> = None;
+        if txn_error.is_none() && !post_activation_drift {
+            for pending in pendings.iter() {
+                if let Some(ref_path) = &pending.artifact_ref {
+                    let path = std::path::Path::new(ref_path);
+                    let valid = match std::fs::metadata(path) {
+                        Ok(m) if m.is_file() && m.len() == pending.used as u64 => {
+                            std::fs::read(path)
+                                .map(|data| sha256_hex(&data) == sha256_hex(&pending.bytes))
+                                .unwrap_or(false)
+                        }
+                        _ => false,
+                    };
+                    if !valid {
+                        final_revalidation_error = Some(format!(
+                            "artifact {ref_path} no longer valid at finalization"
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
+        let failed =
+            txn_error.is_some() || post_activation_drift || final_revalidation_error.is_some();
         if !failed {
             // Global commit succeeded: run LRU maintenance ONLY now, after the
-            // post-activation probe (P1-1). A failed batch never reaches here,
-            // so unrelated entries are never evicted by a failed transaction.
+            // post-activation probe AND final artifact revalidation (P1-1,
+            // P1-3). A failed batch never reaches here, so unrelated entries
+            // are never evicted by a failed transaction.
             if let Some(tx) = cache_tx_holder.as_ref() {
                 tx.enforce_lru();
             }
         }
 
-        // Roll back owned outputs on any failure. Artifacts are content-
-        // addressed and IMMUTABLE (P1-4): published finals are never deleted
-        // (they may already be reused by another successful transaction).
-        // We dispose of every TEMP/staging file — including pendings whose
-        // artifacts were prepared but never activated (P2-1) — and
-        // CAS-restore cache entries published by THIS batch (a newer
-        // concurrent writer is never overwritten, P1-2).
+        // Roll back owned outputs on any failure. Artifacts and cache entries
+        // are content-addressed and IMMUTABLE (P1-4): published finals are
+        // never deleted (they may already be reused by another successful
+        // transaction). We dispose of every TEMP/staging file — including
+        // pendings whose artifacts were prepared but never activated (P2-1).
         //
         // P2-3: rollback returns a structured report; an INCOMPLETE rollback
-        // (a temp that could not be removed, or a cache restore that failed)
-        // is surfaced distinctly — never described as a clean abort.
+        // (a temp that could not be removed) is surfaced distinctly — never
+        // described as a clean abort.
         let mut rollback_issues: Vec<String> = Vec::new();
         if failed {
             for pending in pendings.iter() {
@@ -1046,8 +1095,10 @@ fn execute_batch_with_probe(
                 }
             }
             rollback_issues.extend(journal.rollback());
-            // CAS-restore; collect any entries that could not be restored.
-            rollback_issues.extend(QueryCache::restore_priors_reported(&cache_priors));
+            if let Some(tx) = cache_tx_holder.as_mut() {
+                let abort_issues = tx.abort();
+                rollback_issues.extend(abort_issues);
+            }
         }
         let rollback_incomplete = !rollback_issues.is_empty();
 
@@ -1063,7 +1114,9 @@ fn execute_batch_with_probe(
             pending_idx += 1;
             let id = pending.id.clone();
             if failed {
-                let mut base_msg = if let Some(e) = &txn_error {
+                let mut base_msg = if let Some(e) = &final_revalidation_error {
+                    format!("batch activation failed; results not committed: {e}")
+                } else if let Some(e) = &txn_error {
                     format!("batch activation failed; results not committed: {e}")
                 } else {
                     "operation result discarded: repository state changed during execution".into()
@@ -1473,14 +1526,14 @@ impl PendingActivation {
     }
 
     /// Build the final success response. Called ONLY after the entire
-    /// transaction committed (artifacts activated, cache committed, no
-    /// post-activation drift). Never called for a rolled-back transaction.
+    /// transaction committed (artifacts activated, cache published, no
+    /// post-activation drift, ALL artifacts revalidated in Phase C2). Never
+    /// called for a rolled-back transaction.
     ///
-    /// Revalidates the published artifact immediately before success is
-    /// finalized (P1-5): another process may have deleted or replaced the
-    /// file during the activation window; identity, size and digest must all
-    /// still match, or the op fails closed instead of referencing a stale
-    /// artifact.
+    /// Per-op revalidation is NOT repeated here: Phase C2 already revalidated
+    /// every activated artifact BEFORE global success (P1-3), so a failure
+    /// cannot surface after commit. Published finals are immutable
+    /// content-addressed data.
     fn build_response(&self) -> OperationResponse {
         if self.used <= self.limit {
             return OperationResponse {
@@ -1491,29 +1544,6 @@ impl PendingActivation {
                 truncated: false,
                 artifact_ref: None,
             };
-        }
-        // Finalization revalidation of the published artifact (P1-5).
-        if let Some(ref_path) = &self.artifact_ref {
-            let path = std::path::Path::new(ref_path);
-            let valid = match std::fs::metadata(path) {
-                Ok(m) if m.is_file() && m.len() == self.used as u64 => std::fs::read(path)
-                    .map(|data| sha256_hex(&data) == sha256_hex(&self.bytes))
-                    .unwrap_or(false),
-                _ => false,
-            };
-            if !valid {
-                return OperationResponse {
-                    id: self.id.clone(),
-                    ok: false,
-                    result: None,
-                    error: Some(serde_json::json!({
-                        "code": err::E_INTERNAL,
-                        "message": format!("artifact {ref_path} no longer valid at finalization"),
-                    })),
-                    truncated: false,
-                    artifact_ref: None,
-                };
-            }
         }
         let content_hash = sha256_hex(&self.bytes);
         let artifact_ref = self.artifact_ref.clone().unwrap_or_default();
@@ -3696,15 +3726,19 @@ mod tests {
             resp.responses[0].error.as_ref().unwrap()["code"],
             err::E_STALE_SNAPSHOT
         );
+        // Published cache finals are content-addressed IMMUTABLE data: a
+        // rollback never deletes them (they may be reused by any identical
+        // future batch). The batch is void — no success response references
+        // them — and no staged temp remains.
         assert_eq!(
             cache_entry_count(state.path()),
-            0,
-            "no cache entry may remain after post-activation drift"
+            1,
+            "the immutable published cache entry persists (never deleted on rollback)"
         );
         assert_eq!(
             cache_entry_count_in(state.path(), crate::index::query_cache::NEGATIVE_CACHE_DIR),
             0,
-            "no negative cache entry may remain after post-activation drift"
+            "no negative cache entry staged by this op"
         );
 
         match prev {
@@ -3750,10 +3784,13 @@ mod tests {
             resp.responses[0].error.as_ref().unwrap()["code"],
             err::E_STALE_SNAPSHOT
         );
+        // The negative entry is content-addressed IMMUTABLE data: it persists
+        // after drift (never deleted on rollback) but the batch is void and no
+        // response references it.
         assert_eq!(
             cache_entry_count_in(state.path(), crate::index::query_cache::NEGATIVE_CACHE_DIR),
-            0,
-            "the staged negative entry must be rolled back on drift"
+            1,
+            "the immutable negative entry persists (never deleted on rollback)"
         );
         assert_eq!(
             cache_entry_count(state.path()),
@@ -4098,11 +4135,11 @@ mod tests {
     }
 
     #[test]
-    fn cache_transaction_restores_replaced_entries_and_preserves_lru() {
-        // Audit P1-4/P2-2: a cache entry that existed BEFORE a transaction
-        // must survive rollback exactly (restore, not delete), LRU state must
-        // not change during staging, and a replacement is only visible after
-        // commit.
+    fn cache_transaction_immutable_publish_and_lru_deferral() {
+        // Immutable cache entries (P1-1/P1-2/P2-2): staging is invisible,
+        // abort cleans temps, identical-content publish REUSES the winner
+        // (never replaces, never restored), conflicting publish fails closed,
+        // and LRU runs only via enforce_lru().
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
 
@@ -4110,18 +4147,18 @@ mod tests {
         cache.put("key-a", br#"{"k":"prior-bytes"}"#);
         assert!(cache.get("key-a").is_some());
 
-        // Stage a replacement WITHOUT committing: the prior entry must still
-        // be what readers see (staging is invisible, LRU untouched).
+        // Stage an identical write WITHOUT publishing: readers still see the
+        // prior entry (staging invisible), LRU untouched.
         {
             let mut tx = cache.begin();
-            tx.stage_write("key-a", false, br#"{"k":"replacement"}"#)
+            tx.stage_write("key-a", false, br#"{"k":"prior-bytes"}"#)
                 .unwrap();
             assert_eq!(
                 cache.get("key-a").as_deref(),
                 Some(br#"{"k":"prior-bytes"}"#.as_slice()),
-                "staged writes are invisible until commit"
+                "staged writes are invisible until publish"
             );
-            // Abort: staged temp is removed, prior entry untouched.
+            // Abort: staged temp removed, prior entry untouched.
             tx.abort();
         }
         assert_eq!(
@@ -4130,58 +4167,95 @@ mod tests {
             "abort leaves the prior entry intact"
         );
 
-        // Commit a replacement, then restore the prior from take_priors:
-        // the exact prior bytes come back.
+        // Identical-content publish REUSES the existing winner (ReusedExisting)
+        // — it is never replaced and never rollback-owned (P1-2).
         {
             let mut tx = cache.begin();
-            tx.stage_write("key-a", false, br#"{"k":"replacement"}"#)
+            tx.stage_write("key-a", false, br#"{"k":"prior-bytes"}"#)
                 .unwrap();
-            tx.publish().unwrap();
+            let outcomes = tx.publish().unwrap();
+            assert!(
+                matches!(
+                    outcomes.as_slice(),
+                    [crate::index::query_cache::CachePublishOutcome::ReusedExisting]
+                ),
+                "identical winner is reused, not replaced"
+            );
             assert_eq!(
                 cache.get("key-a").as_deref(),
-                Some(br#"{"k":"replacement"}"#.as_slice()),
-                "publish makes the replacement visible"
+                Some(br#"{"k":"prior-bytes"}"#.as_slice()),
+                "identical publish leaves the winner byte-identical"
             );
-            let priors = tx.take_priors();
-            assert_eq!(priors.len(), 1);
-            QueryCache::restore_priors(&priors);
         }
-        assert_eq!(
-            cache.get("key-a").as_deref(),
-            Some(br#"{"k":"prior-bytes"}"#.as_slice()),
-            "restore returns the exact prior bytes"
-        );
 
-        // A key with NO prior: publish then restore must REMOVE it.
+        // A NEW key publishes normally (Created).
         {
             let mut tx = cache.begin();
             tx.stage_write("key-new", false, br#"{"k":"fresh"}"#)
                 .unwrap();
-            tx.publish().unwrap();
+            let outcomes = tx.publish().unwrap();
+            assert!(
+                matches!(
+                    outcomes.as_slice(),
+                    [crate::index::query_cache::CachePublishOutcome::Created]
+                ),
+                "a new key is created"
+            );
             assert!(cache.get("key-new").is_some());
-            let priors = tx.take_priors();
-            QueryCache::restore_priors(&priors);
         }
-        assert!(
-            cache.get("key-new").is_none(),
-            "restore removes entries that had no prior"
-        );
+
+        // Conflicting content at an existing key FAILS CLOSED — the existing
+        // winner is never replaced or clobbered (P1-1 no check-then-rename).
+        {
+            let mut tx = cache.begin();
+            tx.stage_write("key-a", false, br#"{"k":"different"}"#)
+                .unwrap();
+            let res = tx.publish();
+            assert!(
+                res.is_err(),
+                "conflicting same-key publish must fail closed"
+            );
+            assert_eq!(
+                cache.get("key-a").as_deref(),
+                Some(br#"{"k":"prior-bytes"}"#.as_slice()),
+                "the existing winner is untouched by a conflicting publish"
+            );
+        }
+
+        // Same-key staging dedupe leaves zero staged temps (P2-1).
+        {
+            let mut tx = cache.begin();
+            tx.stage_write("key-dedup", false, br#"{"k":"v1"}"#)
+                .unwrap();
+            tx.stage_write("key-dedup", false, br#"{"k":"v2"}"#)
+                .unwrap();
+            tx.publish().unwrap();
+            let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
+                .map(|e| {
+                    e.flatten()
+                        .filter(|f| f.file_name().to_string_lossy().contains(".tmp-"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            assert!(
+                leftovers.is_empty(),
+                "same-key dedupe must not leak staged temps (P2-1): {leftovers:?}"
+            );
+        }
     }
 
     #[test]
-    fn cache_transaction_commit_failure_restores_partial_publishes() {
-        // Audit P1-4/P2-3: if a publish fails partway (a hard-link error),
-        // every entry already published by that transaction is restored to
-        // its prior state — no partial cache commit survives.
+    fn cache_transaction_publish_failure_cleans_temps() {
+        // P1-5/P2-3: if publish fails partway, every remaining staged temp is
+        // removed and the failure report carries the cleanup issues; the
+        // already-published immutable finals remain (never rolled back).
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        cache.put("key-1", br#"{"k":"prior-1"}"#);
 
         let mut tx = cache.begin();
         tx.stage_write("key-1", false, br#"{"k":"new-1"}"#).unwrap();
-        // Force the second stage's publish to fail by replacing its final path
-        // with a DIRECTORY after staging (hard-link onto a non-empty dir
-        // fails on every platform).
+        // Force the second entry's publish to fail by making its final path a
+        // non-empty DIRECTORY (hard-link onto it fails on every platform).
         tx.stage_write("key-2", false, br#"{"k":"new-2"}"#).unwrap();
         let final2 = cache.query_dir().join("key-2");
         std::fs::create_dir_all(&final2).unwrap();
@@ -4189,11 +4263,10 @@ mod tests {
 
         let res = tx.publish();
         assert!(res.is_err(), "publish fails on the blocked entry");
-        // key-1 (published before the failure) must be restored to prior-1.
-        assert_eq!(
-            cache.get("key-1").as_deref(),
-            Some(br#"{"k":"prior-1"}"#.as_slice()),
-            "partially-published entry restored to its prior state"
+        // key-1 was published (immutable final) — it stays (valid data).
+        assert!(
+            cache.query_dir().join("key-1").exists(),
+            "the published immutable final remains"
         );
         // No staged temp files remain.
         let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
@@ -4207,40 +4280,39 @@ mod tests {
     }
 
     #[test]
-    fn cache_transaction_cas_rollback_never_clobbers_newer_writer() {
-        // Audit P1-2 acceptance #2: an OLDER transaction that publishes value
-        // A, then rolls back AFTER a NEWER transaction published value B for
-        // the same key, must NOT overwrite or delete B. The CAS generation
-        // token (published hash) guards the restore.
+    fn cache_transaction_identical_winner_survives_other_transaction_rollback() {
+        // Audit P1-2 acceptance #3/#4: an identical concurrent winner is never
+        // rollback-owned — a later transaction's rollback cannot delete or
+        // restore over it.
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
 
-        // Txn A: stage + publish "A".
+        // Txn A publishes "X".
         let mut tx_a = cache.begin();
-        tx_a.stage_write("key-x", false, br#"{"k":"A"}"#).unwrap();
+        tx_a.stage_write("key-x", false, br#"{"k":"X"}"#).unwrap();
         tx_a.publish().unwrap();
-        let priors_a = tx_a.take_priors();
         assert_eq!(
             cache.get("key-x").as_deref(),
-            Some(br#"{"k":"A"}"#.as_slice())
+            Some(br#"{"k":"X"}"#.as_slice())
         );
 
-        // Txn B (newer): stage + publish "B" over the same key.
+        // Txn B stages the SAME content "X" — publish reuses the winner, and
+        // B's rollback (abort) must not delete or restore over it.
         let mut tx_b = cache.begin();
-        tx_b.stage_write("key-x", false, br#"{"k":"B"}"#).unwrap();
-        tx_b.publish().unwrap();
-        assert_eq!(
-            cache.get("key-x").as_deref(),
-            Some(br#"{"k":"B"}"#.as_slice())
+        tx_b.stage_write("key-x", false, br#"{"k":"X"}"#).unwrap();
+        let outcomes = tx_b.publish().unwrap();
+        assert!(
+            matches!(
+                outcomes.as_slice(),
+                [crate::index::query_cache::CachePublishOutcome::ReusedExisting]
+            ),
+            "B reused the identical winner"
         );
-
-        // Txn A detects drift and rolls back with ITS captured priors. The
-        // current entry is now B, not A — the CAS guard must leave B intact.
-        QueryCache::restore_priors(&priors_a);
+        tx_b.abort();
         assert_eq!(
             cache.get("key-x").as_deref(),
-            Some(br#"{"k":"B"}"#.as_slice()),
-            "an older rollback must never clobber a newer committed value"
+            Some(br#"{"k":"X"}"#.as_slice()),
+            "a reused winner survives another transaction's rollback"
         );
     }
 
