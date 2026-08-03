@@ -166,8 +166,14 @@ function main() {
     }
     writeFileSync(join(destDir, "checksum.json"), JSON.stringify(checksumManifest, null, 2), "utf-8")
 
-    const currentCommit = tryExec("git", ["rev-parse", "HEAD"]) || process.env.GITHUB_SHA || null
-    const currentBranch = tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]) || process.env.GITHUB_REF_NAME || null
+    // P2-4: prefer validated CI refs when present. GitHub Actions checks out a
+    // detached HEAD, so `git rev-parse --abbrev-ref HEAD` returns the literal
+    // "HEAD" even though the workflow knows the real branch. GITHUB_SHA /
+    // GITHUB_REF_NAME are authoritative provenance inputs when set.
+    const gitCommit = tryExec("git", ["rev-parse", "HEAD"]) || null
+    const gitBranchRaw = tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]) || null
+    const currentCommit = process.env.GITHUB_SHA || gitCommit || null
+    const currentBranch = process.env.GITHUB_REF_NAME || (gitBranchRaw === "HEAD" ? null : gitBranchRaw) || null
     const rustVersion = tryExec("rustc", ["--version"]) || null
 
     // P2-4: never emit fabricated provenance. A zero/absent source commit, a
