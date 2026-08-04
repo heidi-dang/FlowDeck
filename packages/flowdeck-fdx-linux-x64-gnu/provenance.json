@@ -1,0 +1,22 @@
+{
+  "packageName": "@heidi-dang/flowdeck-fdx-linux-x64-gnu",
+  "packageVersion": "1.0.4",
+  "flowdeckVersion": "1.0.4",
+  "fdxBinaryVersion": "1.0.4",
+  "fdxProtocolVersion": "1.0.0",
+  "targetTriple": "x86_64-unknown-linux-gnu",
+  "platform": "linux",
+  "architecture": "x64",
+  "binaryFilename": "fdx",
+  "binaryByteSize": 10604000,
+  "sha256": "128014cb938d7f85a1282817c8994acb9a165bb6dab8fdf3d09077a0d0f55574",
+  "sourceCommitSha": "6ddea41c98d30a4c696c12ffece8fb618aac0a63",
+  "gitCommit": "6ddea41c98d30a4c696c12ffece8fb618aac0a63",
+  "gitBranch": "fix/fdx-native-binary-distribution",
+  "workflowRunId": null,
+  "ciRunId": null,
+  "builderPlatform": "linux/x64",
+  "rustVersion": "rustc 1.84.0",
+  "buildProfile": "release",
+  "buildTimestamp": "2026-08-03T05:00:45.902Z"
+}

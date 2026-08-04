@@ -16,8 +16,11 @@ export const DECISIONS_FILE = "decisions.md"
 
 /** Directory names directly under the planning root that are not topics. */
 const RESERVED_PLANNING_ENTRIES = new Set(["phases", "logs", "cache"])
+const CODEBASE_DIR = ".codebase"
 
-export { codebaseDir } from "./codebase-state"
+export function codebaseDir(directory: string): string {
+  return join(directory, CODEBASE_DIR)
+}
 
 // ─── Collision-safe project identity ──────────────────────────────────────
 

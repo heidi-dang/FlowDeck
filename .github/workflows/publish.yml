@@ -8,6 +8,7 @@ on:
 jobs:
   publish:
     name: Publish @heidi-dang/flowdeck
+    needs: build-release-artifacts
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -15,6 +16,19 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SOURCE_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          ACTUAL_SOURCE_SHA="$(git rev-parse HEAD)"
+          printf 'expected=%s\nactual=%s\n' "$EXPECTED_SOURCE_SHA" "$ACTUAL_SOURCE_SHA"
+          test "$ACTUAL_SOURCE_SHA" = "$EXPECTED_SOURCE_SHA"
+
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -22,8 +36,6 @@ jobs:
           cache: "npm"
           cache-dependency-path: package-lock.json
 
-      # Pinned: the tag-triggered publish runs on a fresh checkout, so a
-      # floating Bun version could change test behaviour between releases.
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
@@ -34,8 +46,6 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      # Fail hard when the tag and package version disagree — a v1.0.2 tag
-      # must always publish @heidi-dang/flowdeck@1.0.2.
       - name: Validate Tag/Version Alignment
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
@@ -63,34 +73,67 @@ jobs:
             }
             console.log('Package identity verified: @heidi-dang/flowdeck v' + pkg.version);
           "
-          echo "Validating package contents (npm pack --dry-run --json)..."
-          node -e "
-            const { execFileSync } = require('child_process');
-            const out = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf-8' }))[0];
-            const paths = out.files.map(f => f.path);
-            const required = ['install.sh', 'dist/index.js', 'bin/flowdeck.js', 'postinstall.mjs', 'src/doctor/cli.mjs'];
-            const missing = required.filter(r => !paths.some(p => p === r || p.startsWith(r + '/')));
-            if (missing.length > 0) {
-              console.error('FAIL: required runtime files missing from package:', missing.join(', '));
-              process.exit(1);
-            }
-            const forbidden = ['tsconfig.json', 'uninstall.sh', '.gitignore', 'target', 'coverage', '.env', '.npmrc', 'bun.lock'];
-            const bad = paths.filter(p => forbidden.some(f => p === f || p.startsWith(f + '/')) || /\\.(tgz|tmp|log)$/.test(p));
-            if (bad.length > 0) {
-              console.error('FAIL: development caches, secrets, or build artifacts present in package:', bad.join(', '));
-              process.exit(1);
-            }
-            console.log('Package contents verified: ' + out.files.length + ' files, ' + out.size + ' bytes');
-          "
 
-      # Never attempt a duplicate-version publish. A registry lookup failure
-      # must fail the workflow — do not hide it, do not publish blindly.
-      #
-      # GitHub Actions runs steps with `bash -e` (errexit). `npm view` exits
-      # non-zero with E404 when the version is NOT yet published — the
-      # EXPECTED state here — so errexit is disabled ONLY around the lookup
-      # (set +e ... set -e) so its exit code can be inspected. The scope is
-      # the smallest possible: the assignment and the exit-code capture.
+      - name: Download All Release Matrix Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fdx-tgz-*
+          path: release-artifacts
+          merge-multiple: false
+
+      - name: Verify Six Exact Release Matrix Artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_PKGS=(
+            "flowdeck-fdx-darwin-arm64"
+            "flowdeck-fdx-darwin-x64"
+            "flowdeck-fdx-linux-arm64-gnu"
+            "flowdeck-fdx-linux-x64-gnu"
+            "flowdeck-fdx-linux-x64-musl"
+            "flowdeck-fdx-win32-x64"
+          )
+
+          EXPECTED_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+
+          for pkg in "${EXPECTED_PKGS[@]}"; do
+            ART_DIR="release-artifacts/fdx-tgz-${pkg}"
+            if [ ! -d "$ART_DIR" ]; then
+              echo "FAIL: Missing artifact directory $ART_DIR"
+              exit 1
+            fi
+
+            MANIFEST="$ART_DIR/artifact-manifest.json"
+            if [ ! -f "$MANIFEST" ]; then
+              echo "FAIL: Missing artifact-manifest.json for package $pkg in $ART_DIR"
+              exit 1
+            fi
+            TGZ="$ART_DIR/$(node -p "require('./$MANIFEST').artifactFilename")"
+
+            if [ -z "$TGZ" ] || [ ! -f "$TGZ" ]; then
+              echo "FAIL: Missing .tgz archive for package $pkg in $ART_DIR"
+              exit 1
+            fi
+
+            ART_SOURCE_SHA=$(node -p "require('./$MANIFEST').sourceCommitSha")
+            ART_VERSION=$(node -p "require('./$MANIFEST').packageVersion")
+
+            if [ "$ART_SOURCE_SHA" != "$EXPECTED_SHA" ]; then
+              echo "FAIL: Artifact $pkg source SHA ($ART_SOURCE_SHA) does not match release source SHA ($EXPECTED_SHA)"
+              exit 1
+            fi
+
+            if [ "$ART_VERSION" != "$PKG_VERSION" ]; then
+              echo "FAIL: Artifact $pkg version ($ART_VERSION) does not match release version ($PKG_VERSION)"
+              exit 1
+            fi
+
+            echo "✓ Artifact verified: $pkg (v$ART_VERSION, sha: $ART_SOURCE_SHA)"
+          done
+
+          echo "ALL SIX RELEASE MATRIX ARTIFACTS CONFIRMED PRESENT AND MATCHING RELEASE SOURCE SHA"
+
       - name: Check Registry Availability
         run: |
           PKG_VERSION="$(node -p "require('./package.json').version")"
@@ -106,10 +149,6 @@ jobs:
             exit 1
           fi
 
-          # Accept ONLY a genuine npm E404 "version not found". Authentication
-          # failures, registry/network/DNS failures, timeouts, SSL failures,
-          # malformed responses, and unexpected npm errors must all stop the
-          # workflow — never mask them.
           if ! printf '%s\n' "$LOOKUP_OUTPUT" | grep -q "E404" || \
              ! printf '%s\n' "$LOOKUP_OUTPUT" | grep -q "No match found for version"; then
             echo "FAIL: registry lookup for ${PKG_VERSION} failed unexpectedly:"
@@ -119,7 +158,222 @@ jobs:
 
           echo "Registry availability verified: @heidi-dang/flowdeck@${PKG_VERSION} is not published"
 
-      - name: Publish to npm
+      - name: Publish Platform Packages (Resumable & Idempotent with Integrity Check)
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          PLATFORM_PKGS=(
+            "flowdeck-fdx-darwin-arm64"
+            "flowdeck-fdx-darwin-x64"
+            "flowdeck-fdx-linux-arm64-gnu"
+            "flowdeck-fdx-linux-x64-gnu"
+            "flowdeck-fdx-linux-x64-musl"
+            "flowdeck-fdx-win32-x64"
+          )
+
+          for pkg in "${PLATFORM_PKGS[@]}"; do
+            ART_DIR="release-artifacts/fdx-tgz-${pkg}"
+            MANIFEST="$ART_DIR/artifact-manifest.json"
+            EXACT_TGZ="$ART_DIR/$(node -p "require('./$MANIFEST').artifactFilename")"
+
+            if [ -z "$EXACT_TGZ" ] || [ ! -f "$EXACT_TGZ" ]; then
+              echo "FAIL: Expected tarball $EXACT_TGZ missing. Directory-publish fallback is strictly prohibited."
+              exit 1
+            fi
+
+            INTENDED_SRI=$(node -p "require('./$MANIFEST').npmIntegrity")
+
+            echo "=== Checking registry state for @heidi-dang/${pkg}@${PKG_VERSION} ==="
+            set +e
+            REG_META=$(npm view "@heidi-dang/${pkg}@${PKG_VERSION}" --json)
+            EXISTS_EXIT=$?
+            set -e
+
+            if [ "$EXISTS_EXIT" -eq 0 ] && [ -n "$REG_META" ]; then
+              REG_INTEGRITY=$(echo "$REG_META" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf-8')).dist?.integrity || ''")
+              if [ "$REG_INTEGRITY" = "$INTENDED_SRI" ]; then
+                echo "✓ @heidi-dang/${pkg}@${PKG_VERSION} is already published on npm with matching integrity ($REG_INTEGRITY). Skipping re-publish."
+                continue
+              else
+                echo "FAIL: @heidi-dang/${pkg}@${PKG_VERSION} exists on npm with conflicting integrity ($REG_INTEGRITY vs $INTENDED_SRI)"
+                exit 1
+              fi
+            fi
+
+            echo "=== Publishing exact matrix tarball $EXACT_TGZ ==="
+            npm publish "$EXACT_TGZ" --provenance --access public
+
+            echo "Verifying availability of @heidi-dang/${pkg}@${PKG_VERSION} on npm..."
+            npm view "@heidi-dang/${pkg}@${PKG_VERSION}" version
+          done
+
+          echo "Verifying all six platform packages are available prior to main publish..."
+          for pkg in "${PLATFORM_PKGS[@]}"; do
+            npm view "@heidi-dang/${pkg}@${PKG_VERSION}" version > /dev/null
+          done
+          echo "ALL SIX PLATFORM PACKAGES CONFIRMED AVAILABLE ON NPM"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish Main Package to npm
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  build-release-artifacts:
+    name: Build Release Artifacts Matrix
+    runs-on: ${{ matrix.target.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - os: ubuntu-latest
+            pkg: flowdeck-fdx-linux-x64-gnu
+            rust_target: x86_64-unknown-linux-gnu
+            binary: fdx
+          - os: ubuntu-latest
+            pkg: flowdeck-fdx-linux-arm64-gnu
+            rust_target: aarch64-unknown-linux-gnu
+            binary: fdx
+          - os: ubuntu-latest
+            pkg: flowdeck-fdx-linux-x64-musl
+            rust_target: x86_64-unknown-linux-musl
+            binary: fdx
+          - os: macos-latest
+            pkg: flowdeck-fdx-darwin-arm64
+            rust_target: aarch64-apple-darwin
+            binary: fdx
+          - os: macos-13
+            pkg: flowdeck-fdx-darwin-x64
+            rust_target: x86_64-apple-darwin
+            binary: fdx
+          - os: windows-latest
+            pkg: flowdeck-fdx-win32-x64
+            rust_target: x86_64-pc-windows-msvc
+            binary: fdx.exe
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - name: Verify exact source checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_SOURCE_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          ACTUAL_SOURCE_SHA="$(git rev-parse HEAD)"
+          printf 'expected=%s\nactual=%s\n' "$EXPECTED_SOURCE_SHA" "$ACTUAL_SOURCE_SHA"
+          test "$ACTUAL_SOURCE_SHA" = "$EXPECTED_SOURCE_SHA"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.rust_target }}
+
+      - name: Compile Native FDX Binary
+        shell: bash
+        run: |
+          cargo build --manifest-path crates/fdx/Cargo.toml --target ${{ matrix.target.rust_target }} --release --locked
+
+      - name: Populate Platform Distribution Directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          DEST_DIR="packages/${{ matrix.target.pkg }}"
+          mkdir -p "$DEST_DIR"
+
+          CARGO_BIN="target/${{ matrix.target.rust_target }}/release/${{ matrix.target.binary }}"
+          cp "$CARGO_BIN" "$DEST_DIR/${{ matrix.target.binary }}"
+
+          # Blocker 1: ship the narrow native secure-exec helper next to the
+          # fdx binary (the cargo build above compiles both [[bin]] targets).
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target.rust_target }}/release/fdx-secure-exec.exe" "$DEST_DIR/fdx-secure-exec.exe"
+          else
+            cp "target/${{ matrix.target.rust_target }}/release/fdx-secure-exec" "$DEST_DIR/fdx-secure-exec"
+          fi
+
+          HEAD_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
+          HEAD_REF="${{ github.head_ref || github.ref_name }}"
+          RUST_VER="$(rustc --version)"
+          NOW="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            SIZE=$(powershell -Command "(Get-Item '$DEST_DIR/${{ matrix.target.binary }}').Length")
+            SHA=$(powershell -Command "(Get-FileHash '$DEST_DIR/${{ matrix.target.binary }}' -Algorithm SHA256).Hash.ToLower()")
+          else
+            SIZE=$(stat -c%s "$DEST_DIR/${{ matrix.target.binary }}" || stat -f%z "$DEST_DIR/${{ matrix.target.binary }}")
+            SHA=$(sha256sum "$DEST_DIR/${{ matrix.target.binary }}" | awk '{print $1}')
+          fi
+
+          cat <<EOF > "$DEST_DIR/checksum.json"
+          {
+            "packageName": "@heidi-dang/${{ matrix.target.pkg }}",
+            "version": "$PKG_VERSION",
+            "executable": "${{ matrix.target.binary }}",
+            "sha256": "$SHA",
+            "builtAt": "$NOW"
+          }
+          EOF
+
+          cat <<EOF > "$DEST_DIR/provenance.json"
+          {
+            "packageName": "@heidi-dang/${{ matrix.target.pkg }}",
+            "packageVersion": "$PKG_VERSION",
+            "flowdeckVersion": "$PKG_VERSION",
+            "fdxBinaryVersion": "$PKG_VERSION",
+            "fdxProtocolVersion": "1.0.0",
+            "targetTriple": "${{ matrix.target.rust_target }}",
+            "platform": "${{ runner.os }}",
+            "architecture": "${{ matrix.target.pkg }}",
+            "binaryFilename": "${{ matrix.target.binary }}",
+            "binaryByteSize": $SIZE,
+            "sha256": "$SHA",
+            "sourceCommitSha": "$HEAD_SHA",
+            "gitCommit": "$HEAD_SHA",
+            "gitBranch": "$HEAD_REF",
+            "workflowRunId": "${{ github.run_id }}",
+            "ciRunId": "${{ github.run_id }}",
+            "builderPlatform": "${{ runner.os }}",
+            "rustVersion": "$RUST_VER",
+            "buildProfile": "release",
+            "buildTimestamp": "$NOW"
+          }
+          EOF
+
+          if [ -f LICENSE ]; then cp LICENSE "$DEST_DIR/LICENSE"; fi
+          if [ ! -f "$DEST_DIR/README.md" ]; then
+            echo "# @heidi-dang/${{ matrix.target.pkg }}" > "$DEST_DIR/README.md"
+          fi
+
+          cd "$DEST_DIR"
+          # Pack the exact archive, then let the shared tooling generate the
+          # manifest (canonical single-line sha512- SRI, sha256, all cross-hashes).
+          # Archive name is derived from package name + version — never parsed
+          # from npm pack output, never glob-discovered.
+          npm pack
+          node "$GITHUB_WORKSPACE/scripts/verify-fdx-artifact.mjs" generate \
+            --dir "$PWD" \
+            --package-name "@heidi-dang/${{ matrix.target.pkg }}" \
+            --version "$PKG_VERSION" \
+            --source-sha "$HEAD_SHA" \
+            --built-at "$NOW"
+          # Fail-closed cross-manifest verification before upload.
+          node "$GITHUB_WORKSPACE/scripts/verify-fdx-artifact.mjs" verify \
+            --dir "$PWD" \
+            --package-name "@heidi-dang/${{ matrix.target.pkg }}" \
+            --version "$PKG_VERSION" \
+            --source-sha "$HEAD_SHA"
+
+      - name: Upload Native Release Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fdx-tgz-${{ matrix.target.pkg }}
+          path: packages/${{ matrix.target.pkg }}/
