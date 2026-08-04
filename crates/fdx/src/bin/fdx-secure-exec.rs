@@ -301,6 +301,7 @@ mod windows_impl {
     const GENERIC_READ: u32 = 0x8000_0000;
     const FILE_SHARE_READ: u32 = 0x0000_0001; // write and delete sharing denied
     const CREATE_ALWAYS: u32 = 2;
+    const OPEN_EXISTING: u32 = 3;
     const FILE_ATTRIBUTE_TEMPORARY: u32 = 0x0000_0100;
     const STD_INPUT_HANDLE: u32 = -10i32 as u32;
     const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
@@ -380,6 +381,7 @@ mod windows_impl {
         fn GetExitCodeProcess(h: HANDLE, code: *mut u32) -> i32;
         fn DeleteFileW(name: *const u16) -> i32;
         fn GetLastError() -> u32;
+        fn FlushFileBuffers(h: HANDLE) -> i32;
     }
 
     fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
@@ -406,40 +408,64 @@ mod windows_impl {
             let _ = std::fs::create_dir_all(&dir);
             let path = dir.join(format!("payload{ext}"));
             let path_w = wide(path.as_os_str());
-            // Deny write AND delete sharing: while this handle is held, no
-            // other process can open the file for writing or delete/replace
-            // it — enforced through the whole CreateProcess call.
-            let h = CreateFileW(
+
+            // ── Write phase ─────────────────────────────────────────────────
+            // A write handle whose share mode is FILE_SHARE_READ (no write or
+            // delete sharing) while the payload is being written, so no other
+            // process can modify or replace it mid-write.
+            let hw = CreateFileW(
                 path_w.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
+                GENERIC_WRITE,
                 FILE_SHARE_READ,
                 std::ptr::null_mut(),
                 CREATE_ALWAYS,
                 FILE_ATTRIBUTE_TEMPORARY,
                 std::ptr::null_mut(),
             );
-            if h.is_null() || h == INVALID_HANDLE {
-                fail("CreateFileW failed");
+            if hw.is_null() || hw == INVALID_HANDLE {
+                fail("CreateFileW (write) failed");
             }
-            // The file handle must not be inherited by the child.
-            SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
+            // The write handle must not be inherited by the child.
+            SetHandleInformation(hw, HANDLE_FLAG_INHERIT, 0);
             let mut written: u32 = 0;
             let mut off = 0usize;
             while off < bytes.len() {
                 let chunk = (bytes.len() - off).min(u32::MAX as usize);
                 if WriteFile(
-                    h,
+                    hw,
                     bytes.as_ptr().add(off) as *const core::ffi::c_void,
                     chunk as u32,
                     &mut written,
                     std::ptr::null_mut(),
                 ) == 0
                 {
-                    CloseHandle(h);
+                    CloseHandle(hw);
                     fail("WriteFile failed");
                 }
                 off += written as usize;
             }
+            FlushFileBuffers(hw);
+            CloseHandle(hw);
+
+            // ── Execute phase ───────────────────────────────────────────────
+            // Hold a READ-ONLY handle (share = FILE_SHARE_READ: write and
+            // delete sharing denied) through the whole CreateProcess call.
+            // Crucially, no handle with WRITE access is open during process
+            // creation — Windows refuses to create an image section from a
+            // file that is open for writing (ERROR_SHARING_VIOLATION).
+            let hr = CreateFileW(
+                path_w.as_ptr(),
+                GENERIC_READ,
+                FILE_SHARE_READ,
+                std::ptr::null_mut(),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_TEMPORARY,
+                std::ptr::null_mut(),
+            );
+            if hr.is_null() || hr == INVALID_HANDLE {
+                fail("CreateFileW (read) failed");
+            }
+            SetHandleInformation(hr, HANDLE_FLAG_INHERIT, 0);
 
             // Build the command line: quoted payload path + args.
             let payload_str = path.to_string_lossy();
@@ -501,7 +527,7 @@ mod windows_impl {
             );
             if ok == 0 {
                 let err = GetLastError();
-                CloseHandle(h);
+                CloseHandle(hr);
                 fail(&format!("CreateProcessW failed (error {err})"));
             }
             CloseHandle(pi.h_thread);
@@ -511,7 +537,7 @@ mod windows_impl {
             let mut code: u32 = 1;
             GetExitCodeProcess(pi.h_process, &mut code);
             CloseHandle(pi.h_process);
-            CloseHandle(h);
+            CloseHandle(hr);
             // The child has exited, so its image is released; the temp file
             // can now be removed.
             let _ = DeleteFileW(path_w.as_ptr());
