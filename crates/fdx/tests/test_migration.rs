@@ -96,7 +96,7 @@ fn test_existing_incomplete_destination_recovery() {
     let inc_backups: Vec<_> = fs::read_dir(&root)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().contains(".bak.incomplete."))
+        .filter(|e| e.file_name().to_string_lossy().contains(".incomplete.bak."))
         .collect();
     assert_eq!(
         inc_backups.len(),
