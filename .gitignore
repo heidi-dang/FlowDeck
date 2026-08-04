@@ -175,3 +175,7 @@ packages/*/checksum.json
 
 # Local FlowDeck configuration (machine-local, not distributed)
 .flowdeck.jsonc
+
+# Blocker 1 secure-exec helper (built into platform packages)
+packages/*/fdx-secure-exec
+packages/*/fdx-secure-exec.exe

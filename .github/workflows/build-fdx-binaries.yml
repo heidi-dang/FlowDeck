@@ -159,6 +159,13 @@ jobs:
           mkdir -p packages/${{ matrix.target.pkg }}
           BIN_PATH="target/${{ matrix.target.rust_target }}/release/${{ matrix.target.binary }}"
           cp "$BIN_PATH" packages/${{ matrix.target.pkg }}/
+          # Blocker 1: ship the narrow native secure-exec helper next to the
+          # fdx binary (the cargo build above compiles both [[bin]] targets).
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target.rust_target }}/release/fdx-secure-exec.exe" packages/${{ matrix.target.pkg }}/
+          else
+            cp "target/${{ matrix.target.rust_target }}/release/fdx-secure-exec" packages/${{ matrix.target.pkg }}/
+          fi
           cd packages/${{ matrix.target.pkg }}
 
           if [ "${{ runner.os }}" = "Windows" ]; then

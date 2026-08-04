@@ -7,6 +7,7 @@ import { promisify } from "util"
 import type { CheckResult } from "../types"
 import { resolve } from "path"
 import { pathToFileURL } from "url"
+import type { FdxResolutionResult } from "../../tools/fdx-shared"
 
 const execFileAsync = promisify(execFile)
 
@@ -29,7 +30,19 @@ async function tryVersion(cmd: string): Promise<string | null> {
   return out?.split("\n")[0]?.trim() ?? null
 }
 
-export async function runRuntimeChecks(_directory: string, profileArg?: string): Promise<CheckResult[]> {
+/**
+ * Run the runtime environment checks.
+ *
+ * `opts.fdxStatus` injects the FDX availability result so unit tests of doctor
+ * aggregation never run a real FDX resolution (which performs subprocess
+ * probes and can be timing-sensitive). When omitted, the canonical resolver is
+ * consulted (real integration path).
+ */
+export async function runRuntimeChecks(
+  _directory: string,
+  profileArg?: string,
+  opts: { fdxStatus?: FdxResolutionResult } = {},
+): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
 
   const [
@@ -131,19 +144,27 @@ export async function runRuntimeChecks(_directory: string, profileArg?: string):
     autoFixAvailable: false,
   })
 
-  let fdxSharedModule: any
-  try {
-    const p1 = pathToFileURL(resolve(__dirname, "../../../dist/tools/fdx-shared.js")).href
-    fdxSharedModule = await import(p1)
-  } catch {
+  let fdxStatus: FdxResolutionResult
+  if (opts.fdxStatus) {
+    // Injected (unit tests): doctor aggregation must not run a real FDX
+    // resolution. Real resolver timing is covered by dedicated integration
+    // tests under explicit bounded timeouts.
+    fdxStatus = opts.fdxStatus
+  } else {
+    let fdxSharedModule: any
     try {
-      const p2 = pathToFileURL(resolve(__dirname, "../../tools/fdx-shared.ts")).href
-      fdxSharedModule = await import(p2)
+      const p1 = pathToFileURL(resolve(__dirname, "../../../dist/tools/fdx-shared.js")).href
+      fdxSharedModule = await import(p1)
     } catch {
-      fdxSharedModule = await import("../../tools/fdx-shared.js")
+      try {
+        const p2 = pathToFileURL(resolve(__dirname, "../../tools/fdx-shared.ts")).href
+        fdxSharedModule = await import(p2)
+      } catch {
+        fdxSharedModule = await import("../../tools/fdx-shared.js")
+      }
     }
+    fdxStatus = fdxSharedModule.getFdxAvailabilityStatus(true)
   }
-  const fdxStatus = fdxSharedModule.getFdxAvailabilityStatus(true)
   const profile = profileArg || process.env.FLOWDECK_PROFILE || "recommended-dev"
   const isStrictFail = profile !== "minimal"
 

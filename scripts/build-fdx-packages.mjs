@@ -230,6 +230,18 @@ function main() {
     const destBin = join(destDir, execName)
     copyFileSync(cargoTargetBin, destBin)
 
+    // Blocker 1: ship the narrow native secure-exec helper next to the fdx
+    // binary — every execution source resolves it from the platform package.
+    const helperName = execName === "fdx.exe" ? "fdx-secure-exec.exe" : "fdx-secure-exec"
+    const cargoHelperBin = join(PKG_ROOT, "target", "release", helperName)
+    if (existsSync(cargoHelperBin)) {
+      copyFileSync(cargoHelperBin, join(destDir, helperName))
+    } else if (isStrict) {
+      fail(`Secure-exec helper not found at ${cargoHelperBin}`)
+    } else {
+      console.log(`[build-fdx-packages] Secure-exec helper missing at ${cargoHelperBin}; skipping.`)
+    }
+
     // Calculate SHA-256 and byte size
     const buf = readFileSync(destBin)
     const sha256 = createHash("sha256").update(buf).digest("hex")

@@ -313,6 +313,12 @@ export interface FdxResolutionResult {
    * must match.
    */
   validatedSha256?: string | null;
+  /**
+   * Structured cleanup diagnostics from the resolution-time --version probe
+   * (Blocker 2). Present when the selected source's probe ran, so successful
+   * probe cleanup failures remain inspectable through the resolver.
+   */
+  probeCleanup?: VerifiedExecCleanupErrors | null;
 }
 
 export const STRICT_SEMVER_REGEX = /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+([0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$/
@@ -567,6 +573,14 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
   integrity: FdxIntegrityResult;
   /** The SHA-256 of the exact bytes that passed the checksum contract (P1-1). */
   validatedSha256: string | null;
+  /**
+   * Structured cleanup diagnostics from the --version probe execution
+   * (Blocker 2). Set whenever the probe ran — on both successful and failed
+   * probes — so a successful compatibility probe never silently discards
+   * snapshot-unlink / snapshot-dir-removal / descriptor-close failures.
+   * Undefined when the probe did not run.
+   */
+  probeCleanup?: VerifiedExecCleanupErrors | null;
   reason?: string;
 } {
   const opts: FdxBinaryValidateOpts = typeof requireManagedChecksum === "object"
@@ -765,6 +779,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
   }
 
   let version: string | null = null
+  let probeCleanup: VerifiedExecCleanupErrors | null = null
   try {
     // Contract 1: the --version probe runs from a private execution snapshot
     // of the EXACT bytes that passed the checksum/trust rules — never from the
@@ -781,6 +796,10 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
         version = match[1]
       }
       validatedSha = execRes.sha256
+      // Blocker 2: a successful --version probe carries its structured cleanup
+      // diagnostics (snapshot unlink / dir removal / close failures) so they
+      // are never silently discarded.
+      probeCleanup = execRes.cleanup
     } else {
       // P2-1: a cleanup failure during the probe must not disappear — it is
       // surfaced alongside the primary execution failure.
@@ -792,6 +811,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
         versionCompatible: false,
         checksumStatus,
         validatedSha256: null,
+        probeCleanup: execRes.cleanup,
         integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid, reason: probeReason },
         reason: probeReason,
       }
@@ -855,6 +875,8 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
     versionCompatible: true,
     checksumStatus,
     validatedSha256: validatedSha,
+    // Blocker 2: successful-probe cleanup diagnostics are never discarded.
+    probeCleanup,
     integrity: {
       status: ((checksumStatus === "pass" || (!requireChecksum && checksumStatus === "unverified")) && (!hasProvenance || provenanceValid)) ? "pass" : "fail",
       checksumStatus,
@@ -1003,6 +1025,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
         versionCompatible: true,
         checksumStatus: val.checksumStatus,
         validatedSha256: val.validatedSha256,
+        probeCleanup: val.probeCleanup ?? null,
         executionStatus: "pass",
         fallbackAvailable: true,
         diagnostics: [`Using environment binary from FDX_BINARY_PATH="${resolvedEnv}"`],
@@ -1053,6 +1076,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
           versionCompatible: true,
           checksumStatus: val.checksumStatus,
           validatedSha256: val.validatedSha256,
+          probeCleanup: val.probeCleanup ?? null,
           executionStatus: "pass",
           fallbackAvailable: true,
           diagnostics: [`Resolved compatible platform package binary at "${binPath}" (source: ${resolvedPkg.source})`],
@@ -1093,6 +1117,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
           versionCompatible: true,
           checksumStatus: val.checksumStatus,
           validatedSha256: val.validatedSha256,
+          probeCleanup: val.probeCleanup ?? null,
           executionStatus: "pass",
           fallbackAvailable: true,
           diagnostics: [`Resolved repaired native binary from cache at "${cacheBin}"`],
@@ -1128,6 +1153,7 @@ export function resolveFdxBinaryPathDetailed(): FdxResolutionResult {
           versionCompatible: true,
           checksumStatus: val.checksumStatus,
           validatedSha256: val.validatedSha256,
+          probeCleanup: val.probeCleanup ?? null,
           executionStatus: "pass",
           fallbackAvailable: true,
           diagnostics: [`Resolved system PATH binary at "${pathBin}"`],
@@ -1235,35 +1261,68 @@ export function formatCleanupErrors(cleanup: VerifiedExecCleanupErrors): string 
   return parts.join("; ")
 }
 
+function secureExecHelperName(): string {
+  return process.platform === "win32" ? "fdx-secure-exec.exe" : "fdx-secure-exec"
+}
+
+/**
+ * Blocker 1: resolve the narrow native secure-exec helper used for ALL native
+ * process creation (the `--version` probe and every command, for managed
+ * packages, repair cache, FDX_BINARY_PATH, and system PATH alike).
+ *
+ * Resolution order:
+ *   1. The current platform package (ships the helper next to the fdx binary).
+ *   2. The source/dev cargo build output (target/release, target/debug)
+ *      relative to the package root — used when running from the repo.
+ *
+ * If no helper is available, native execution is refused (fail closed); the
+ * TypeScript fallbacks remain available. There is no insecure fallback path.
+ */
+export function resolveSecureExecHelper(): string | null {
+  const target = detectFdxTarget()
+  if (target) {
+    const pkg = resolveTrustedPlatformPackage(target)
+    if (pkg) {
+      const p = join(pkg.pkgDir, secureExecHelperName())
+      if (existsSync(p)) return p
+    }
+  }
+  const ownDir = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")
+  for (const rel of ["target/release", "target/debug"]) {
+    const p = join(ownDir, rel, secureExecHelperName())
+    if (existsSync(p)) return p
+  }
+  return null
+}
+
 /**
  * Contract 1 (verified execution): the shared pipeline every FDX execution
  * source funnels through — the `--version` probe, normal `runFdx`, managed
  * packages, repair-cache binaries, FDX_BINARY_PATH, and system PATH.
  *
  * Required sequence: open candidate → read/hash THOSE opened bytes →
- * checksum/trust verification → private execution snapshot written from
- * exactly those bytes → open the snapshot descriptor → (test hook) → OS
- * execution → structured cleanup/close. The original candidate pathname is
- * NEVER executed after validation begins: a replacement-before-probe or
- * same-inode mutation of the path is invisible to the executed generation.
+ * checksum/trust verification → (test hook) → OS execution → structured
+ * cleanup/close. The original candidate pathname is NEVER executed after
+ * validation begins: a replacement-before-probe or same-inode mutation of the
+ * path is invisible to the executed generation.
  *
- * Snapshot immutability through the OS execution boundary (P1-2):
- * - On Linux the snapshot is executed THROUGH ITS OPEN DESCRIPTOR via
- *   /proc/<pid>/fd/<fd>. The kernel resolves the descriptor, not a pathname,
- *   so replacing or mutating the snapshot pathname at the pre-exec barrier
- *   cannot change the executed bytes — they are exactly the validated
- *   snapshot generation. The descriptor is held until process creation
- *   completes and released in the finally block.
- * - On platforms without descriptor-bound exec (macOS/Windows) the snapshot
- *   path is re-verified against the validated digest immediately before
- *   execution and any change fails closed — the modified bytes never execute.
+ * Snapshot immutability through the OS execution boundary (Blocker 1): the
+ * validated bytes are held in memory and streamed to the narrow native helper
+ * (`fdx-secure-exec`) on stdin. The helper materializes them in a
+ * platform-immutable backing object and executes THAT object:
+ * - Linux:   sealed memfd (memfd_create + F_ADD_SEALS + execveat) — the kernel
+ *            refuses in-place writes regardless of permissions, and no
+ *            pathname exists to replace.
+ * - macOS:   unlinked private descriptor + fexecve — a protected handle no
+ *            other process can reach by pathname.
+ * - Windows: CreateFileW with write/delete sharing denied, held through
+ *            CreateProcess.
+ * A same-user process mutating or replacing the mutable snapshot pathname (a
+ * test seam / diagnostic artifact only) cannot change the bytes that execute.
  *
- * Cleanup failures (unlink/rmdir/close) are captured in a structured
- * `cleanup` record on every result; they never replace the primary result.
- *
- * The snapshot itself is a randomized file inside a mode-0700 private
- * directory, file mode 0500 on POSIX (read+exec, not writable in place), so
- * non-owners cannot read the path, write, or replace it.
+ * The snapshot file written here is NEVER executed: it exists so the pre-exec
+ * test hook has a real object to mutate and so cleanup failures are
+ * observable (Blocker 2).
  *
  * Returns { kind: "executed", out, sha256, byteLength, cleanup } on success,
  * or { kind: "rejected", reason, cleanup } when the generation cannot be
@@ -1276,7 +1335,6 @@ export function executeVerifiedSnapshot(
   opts: { timeout?: number; maxBuffer?: number } = {}
 ): VerifiedExecResult {
   let fd: number | null = null
-  let snapshotFd: number | null = null
   let snapshotDir: string | null = null
   let snapshotPath: string | null = null
   const cleanup: VerifiedExecCleanupErrors = { unlinkError: null, rmdirError: null, closeError: null }
@@ -1289,10 +1347,19 @@ export function executeVerifiedSnapshot(
     if (trustedSha !== null && sha !== trustedSha) {
       return { kind: "rejected", reason: `binary digest ${sha} does not match trusted ${trustedSha}`, cleanup }
     }
-    // Private execution snapshot: randomized directory name (unpredictable,
-    // process-scoped), mode 0700 so only this user can traverse it, file mode
-    // 0500 (read+exec, not writable in place). Preserve the source extension
-    // on Windows so .cmd/.bat/.exe execute correctly from the snapshot path.
+    // Secure execution helper: the only process-creation path. If it is
+    // unavailable, refuse — never fall back to executing a mutable pathname.
+    const helper = resolveSecureExecHelper()
+    if (helper === null) {
+      return {
+        kind: "rejected",
+        reason: "secure execution helper unavailable (fdx-secure-exec not found); refusing to execute",
+        cleanup,
+      }
+    }
+    // Private execution snapshot file — a test seam / diagnostic artifact
+    // ONLY. Execution never reads it: the validated bytes are streamed to the
+    // helper via stdin and materialized in the platform-immutable object.
     snapshotDir = join(tmpdir(), `flowdeck-fdx-snapshot-${process.pid}-${randomBytes(8).toString("hex")}`)
     mkdirSync(snapshotDir, { recursive: true, mode: 0o700 })
     const snapshotExt = process.platform === "win32" ? (extname(bin) || ".exe") : ""
@@ -1301,43 +1368,20 @@ export function executeVerifiedSnapshot(
     if (process.platform !== "win32") {
       try { chmodSync(snapshotPath, 0o500) } catch {}
     }
-    // Open the snapshot descriptor BEFORE the barrier so Linux can bind
-    // process creation to the exact validated inode.
-    if (process.platform === "linux") {
-      snapshotFd = openSync(snapshotPath, "r")
-    }
     // Test-only seam at the real boundary: validated snapshot created -> hook
     // -> OS execution call. Production callers never set this hook.
     if (fdxPreExecTestHookValue) fdxPreExecTestHookValue(snapshotPath, bin)
-    let out: string
-    if (process.platform === "linux" && snapshotFd !== null) {
-      // Descriptor-bound execution: the kernel resolves the fd (held open by
-      // this process for the whole child lifetime), so a pathname replacement
-      // of the snapshot at the barrier cannot change the executed bytes.
-      out = execFileSync(`/proc/${process.pid}/fd/${snapshotFd}`, args, {
-        encoding: "utf-8",
-        timeout: opts.timeout ?? FDX_TIMEOUT_MS,
-        maxBuffer: opts.maxBuffer ?? FDX_MAX_BUFFER,
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"],
-      })
-    } else {
-      // No descriptor-bound exec on this platform: fail-closed generation
-      // re-verify of the snapshot path immediately before execution. A
-      // mutated, replaced, or removed snapshot is refused — the modified
-      // bytes never execute.
-      const nowSha = sha256FileContents(snapshotPath)
-      if (nowSha === null || nowSha !== sha) {
-        return { kind: "rejected", reason: "snapshot generation changed before execution", cleanup }
-      }
-      out = execFileSync(snapshotPath, args, {
-        encoding: "utf-8",
-        timeout: opts.timeout ?? FDX_TIMEOUT_MS,
-        maxBuffer: opts.maxBuffer ?? FDX_MAX_BUFFER,
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"],
-      })
-    }
+    // Secure process creation from the validated in-memory bytes. The helper
+    // execs the target (or launches + waits on Windows) and propagates its
+    // exit status; stdout/stderr flow through the inherited pipes.
+    const out = execFileSync(helper, args, {
+      input: buf,
+      encoding: "utf-8",
+      timeout: opts.timeout ?? FDX_TIMEOUT_MS,
+      maxBuffer: opts.maxBuffer ?? FDX_MAX_BUFFER,
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+    })
     return { kind: "executed", out, sha256: sha, byteLength: buf.length, cleanup }
   } catch (err: any) {
     if (err?.code === "ENOBUFS") {
@@ -1363,11 +1407,8 @@ export function executeVerifiedSnapshot(
     if (snapshotDir !== null) {
       try { rmSync(snapshotDir, { recursive: true, force: true }) } catch (e: any) { cleanup.rmdirError = e?.message ?? String(e) }
     }
-    if (snapshotFd !== null) {
-      try { closeSync(snapshotFd) } catch (e: any) { cleanup.closeError = e?.message ?? String(e) }
-    }
     if (fd !== null) {
-      try { closeSync(fd) } catch (e: any) { if (cleanup.closeError === null) cleanup.closeError = e?.message ?? String(e) }
+      try { closeSync(fd) } catch (e: any) { cleanup.closeError = e?.message ?? String(e) }
     }
   }
 }
@@ -1448,25 +1489,38 @@ export function setFdxPreExecTestHook(hook: ((snapshotPath: string, sourceBin: s
   fdxPreExecTestHookValue = hook
 }
 
+/**
+ * Blocker 2: structured cleanup diagnostics from the most recent command
+ * execution (successful or failed) — snapshot unlink, snapshot-dir removal,
+ * descriptor close. Never null after the first execution; all-null when the
+ * cleanup was clean. Lets callers and tests inspect cleanup failures that
+ * would otherwise only be visible via console.error.
+ */
+let lastExecCleanupDiagnostics: VerifiedExecCleanupErrors | null = null
+export function getLastExecCleanupDiagnostics(): VerifiedExecCleanupErrors | null {
+  return lastExecCleanupDiagnostics
+}
+
 export function runFdx(args: string[]): string {
   const bin = fdxBin()
   validateExecutable(bin)
   validateArgs(args)
   // Contract 1: bind execution to the same immutable generation that passed
   // the trust contract. The resolution cache carries the trusted digest; the
-  // verified-execution snapshot pipeline opens the candidate once, hashes the
-  // bytes of that open generation, verifies them against the trusted digest,
-  // writes a private execution snapshot from exactly those bytes, and executes
-  // the snapshot — never the original pathname — failing closed on any
-  // mismatch or missing digest.
+  // verified-execution pipeline opens the candidate once, hashes the bytes of
+  // that open generation, verifies them against the trusted digest, and
+  // executes the validated bytes through the secure-exec helper — never the
+  // original pathname — failing closed on any mismatch or missing digest.
   const trustedSha = fdxCacheBinarySha256
   if (trustedSha === null) {
     throw new Error(`[FDX Integrity] No trusted digest recorded for ${bin}; refusing to execute unverified binary`)
   }
   const result = executeVerifiedSnapshot(bin, args, trustedSha)
+  lastExecCleanupDiagnostics = result.cleanup
   if (result.kind === "executed") {
-    // P2-1: cleanup failures never replace a successful execution, but they
-    // must never disappear silently.
+    // P2-1/Blocker 2: cleanup failures never replace a successful execution,
+    // but they must never disappear silently — they are recorded structurally
+    // (getLastExecCleanupDiagnostics) and surfaced on the console.
     const cleanupNote = formatCleanupErrors(result.cleanup)
     if (cleanupNote) {
       console.error(`[FDX Integrity] snapshot cleanup warning for ${bin}: ${cleanupNote}`)

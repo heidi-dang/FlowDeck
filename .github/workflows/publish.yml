@@ -292,6 +292,14 @@ jobs:
           CARGO_BIN="target/${{ matrix.target.rust_target }}/release/${{ matrix.target.binary }}"
           cp "$CARGO_BIN" "$DEST_DIR/${{ matrix.target.binary }}"
 
+          # Blocker 1: ship the narrow native secure-exec helper next to the
+          # fdx binary (the cargo build above compiles both [[bin]] targets).
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target.rust_target }}/release/fdx-secure-exec.exe" "$DEST_DIR/fdx-secure-exec.exe"
+          else
+            cp "target/${{ matrix.target.rust_target }}/release/fdx-secure-exec" "$DEST_DIR/fdx-secure-exec"
+          fi
+
           HEAD_SHA="${{ github.event.pull_request.head.sha || github.sha }}"
           HEAD_REF="${{ github.head_ref || github.ref_name }}"
           RUST_VER="$(rustc --version)"

@@ -28,3 +28,13 @@ sha2 = "0.10"
 [[bin]]
 name = "fdx"
 path = "src/main.rs"
+
+# Narrow native helper for secure process creation (Blocker 1): reads the
+# validated payload bytes from stdin and executes them from an immutable /
+# protected backing object on each supported platform (sealed memfd on Linux,
+# unlinked-descriptor fexecve on macOS, write/delete-share-denied handle via
+# CreateProcess on Windows). Zero dependencies: raw syscalls on Linux, raw
+# extern declarations on macOS/Windows.
+[[bin]]
+name = "fdx-secure-exec"
+path = "src/bin/fdx-secure-exec.rs"

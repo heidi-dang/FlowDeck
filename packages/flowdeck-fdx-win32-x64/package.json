@@ -14,6 +14,7 @@
     "fdx": "fdx.exe"
   },
   "files": [
+    "fdx-secure-exec.exe",
     "fdx.exe",
     "checksum.json",
     "LICENSE",
