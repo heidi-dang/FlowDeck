@@ -25,7 +25,7 @@
 //!     CURRENT                     # current generation sequence number
 //!     tmp/                        # in-progress temp files (RAII-owned)
 //!     quarantine/                 # corrupt objects moved here
-//!     commit.lock                 # O_EXCL cross-process commit lock
+//!     commit.lock                 # cross-process commit lock (OS file lock)
 //!
 //! A batch is committed in three steps, in this exact order:
 //!   1. **stage** — write each payload as a content-addressed object under
@@ -54,6 +54,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
+
+use fs2::FileExt;
 
 /// Domain string that prefixes every cache key (contract). Bumping this
 /// invalidates all caches from older builds. Bumped to `-v2` when the storage
@@ -86,7 +88,10 @@ pub const TMP_DIR: &str = "tmp";
 /// Corrupt objects moved here for diagnostics.
 pub const QUARANTINE_DIR: &str = "quarantine";
 
-/// O_EXCL cross-process commit lock.
+/// Cross-process commit lock file. Created once and NEVER removed: the OS
+/// file lock (fs2) held on it is authoritative, so unlinking it by pathname
+/// would let a second committer lock a NEW inode at the same path while the
+/// first still holds the OLD one.
 pub const COMMIT_LOCK_FILE: &str = "commit.lock";
 
 /// Manifest schema version.
@@ -117,10 +122,6 @@ const ORPHAN_GRACE: Duration = Duration::from_secs(300);
 
 /// Age after which a leftover temp file is swept.
 const TMP_GRACE: Duration = Duration::from_secs(60);
-
-/// Age after which a `commit.lock` is considered abandoned by a crashed
-/// committer and is broken (removed) by the next committer.
-const LOCK_STALE_GRACE: Duration = Duration::from_secs(30);
 
 /// Sleep between commit-lock contention retries.
 const LOCK_RETRY_SLEEP: Duration = Duration::from_millis(5);
@@ -524,39 +525,39 @@ impl QueryCache {
         std::fs::rename(&src, qdir.join(gen_file_name(seq)))
     }
 
-    /// Acquire the cross-process commit lock (O_EXCL). Retries on contention;
-    /// breaks a lock older than [`LOCK_STALE_GRACE`] (a crashed committer).
-    /// Returns an [`OwnedTemp`] guard that removes the lock file on drop.
-    fn acquire_commit_lock(&self) -> Result<OwnedTemp, String> {
+    /// Acquire the cross-process commit lock (an exclusive OS file lock via
+    /// fs2, Finding 4). The lock FILE is created once and never unlinked by
+    /// pathname; contention is serialized by the kernel on the inode. A live
+    /// committer's lock is NEVER stolen — not by elapsed time (no age-based
+    /// breaking) and not by unlink (a second committer can never lock a new
+    /// inode while the first holds the old one). A crashed committer's lock
+    /// is released automatically by the OS when its process dies. Returns a
+    /// [`CommitLock`] guard that releases the lock on drop.
+    fn acquire_commit_lock(&self) -> Result<CommitLock, String> {
         let lock_path = self.lock_path();
         if let Some(parent) = lock_path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("failed to create cache root: {e}"))?;
         }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| format!("failed to open cache commit lock: {e}"))?;
         let mut attempts = 0usize;
         loop {
-            match std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&lock_path)
-            {
-                Ok(_) => return Ok(OwnedTemp::adopt(lock_path)),
-                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                    if lock_is_stale(&lock_path) {
-                        // A crashed committer left it behind: break it.
-                        if std::fs::remove_file(&lock_path).is_ok() {
-                            continue;
-                        }
-                    }
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(CommitLock { _file: file }),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     attempts += 1;
                     if attempts >= LOCK_RETRY_BUDGET {
                         return Err("timed out waiting for the cache commit lock".into());
                     }
                     std::thread::sleep(LOCK_RETRY_SLEEP);
                 }
-                Err(e) => {
-                    return Err(format!("failed to create cache commit lock: {e}"));
-                }
+                Err(e) => return Err(format!("failed to lock cache commit: {e}")),
             }
         }
     }
@@ -585,30 +586,71 @@ impl QueryCache {
     }
 
     /// Atomically flip the `CURRENT` pointer to `seq` (tmp + fsync + rename).
-    fn flip_current(&self, seq: u64) -> Result<(), String> {
+    ///
+    /// Returns a [`PointerCommitResult`] that separates visibility from
+    /// durability (Finding 3): a successful rename is ALWAYS reported as
+    /// committed (readers see the new generation), even when the subsequent
+    /// root-dir fsync fails — the pointer is never reported as "not flipped"
+    /// after the rename succeeded.
+    fn flip_current(&self, seq: u64) -> PointerCommitResult {
         let root = self.root_dir();
-        std::fs::create_dir_all(&root).map_err(|e| format!("failed to create cache root: {e}"))?;
-        let mut tmp = OwnedTemp::create_exclusive_in(&root, CURRENT_FILE)?;
-        tmp.write_all_and_sync(format!("{seq}\n").as_bytes())?;
+        if let Err(e) = std::fs::create_dir_all(&root) {
+            return PointerCommitResult::NotCommitted {
+                error: format!("failed to create cache root: {e}"),
+            };
+        }
+        let mut tmp = match OwnedTemp::create_exclusive_in(&root, CURRENT_FILE) {
+            Ok(t) => t,
+            Err(e) => return PointerCommitResult::NotCommitted { error: e },
+        };
+        if let Err(e) = tmp.write_all_and_sync(format!("{seq}\n").as_bytes()) {
+            return PointerCommitResult::NotCommitted { error: e };
+        }
+        // Test-only fault injection: force the rename to fail.
+        #[cfg(test)]
+        if INJECT_FLIP_RENAME_FAIL.with(|f| f.get()) {
+            return PointerCommitResult::NotCommitted {
+                error: "injected CURRENT rename failure".into(),
+            };
+        }
         match std::fs::rename(tmp.path(), self.current_path()) {
             Ok(()) => {
                 tmp.disarm();
-                sync_cache_dir(&root).map_err(|e| format!("failed to fsync cache root: {e}"))
+                // Test-only fault injection: force the root-dir fsync to fail
+                // AFTER the rename succeeded (the pointer is already visible).
+                #[cfg(test)]
+                if INJECT_FLIP_DIR_FSYNC_FAIL.with(|f| f.get()) {
+                    return PointerCommitResult::CommittedWithDurabilityWarning {
+                        generation: seq,
+                        warning: "injected cache-root fsync failure".into(),
+                    };
+                }
+                match sync_cache_dir(&root) {
+                    Ok(()) => PointerCommitResult::Committed { generation: seq },
+                    Err(e) => PointerCommitResult::CommittedWithDurabilityWarning {
+                        generation: seq,
+                        warning: format!("failed to fsync cache root: {e}"),
+                    },
+                }
             }
-            Err(e) => Err(format!("failed to flip CURRENT: {e}")),
+            Err(e) => PointerCommitResult::NotCommitted {
+                error: format!("failed to flip CURRENT: {e}"),
+            },
         }
     }
 
     /// Finalize a commit: write the manifest, fsync the generations dir, then
     /// flip `CURRENT`. The commit lock is held for the whole sequence and
-    /// released on drop. Returns a structured [`PublishFailure`] on any
-    /// failure (the pointer is never flipped on failure, so readers observe
-    /// the previous generation).
+    /// released on drop. Returns the [`PointerCommitResult`] on success —
+    /// which may be a durability warning when the pointer flipped but the
+    /// root-dir fsync failed (Finding 3) — or a structured [`PublishFailure`]
+    /// for pre-pointer failures (manifest write, generations-dir fsync), where
+    /// readers still observe the previous generation.
     fn finalize_commit(
         &self,
         manifest: &GenerationManifest,
-        lock: OwnedTemp,
-    ) -> Result<(), PublishFailure> {
+        lock: CommitLock,
+    ) -> Result<PointerCommitResult, PublishFailure> {
         let mut durability_issues: Vec<String> = Vec::new();
         if let Err(e) = self.write_manifest_atomic(manifest) {
             return Err(PublishFailure {
@@ -629,20 +671,35 @@ impl QueryCache {
                 unpublished_objects: Vec::new(),
             });
         }
-        if let Err(e) = self.flip_current(manifest.generation) {
-            durability_issues.push(format!("failed to flip CURRENT: {e}"));
-            return Err(PublishFailure {
-                primary_error: "CURRENT pointer not flipped".into(),
-                outcomes: Vec::new(),
-                cleanup_issues: Vec::new(),
-                durability_issues,
-                unpublished_objects: Vec::new(),
-            });
+        match self.flip_current(manifest.generation) {
+            PointerCommitResult::NotCommitted { error } => {
+                durability_issues.push(format!("failed to flip CURRENT: {error}"));
+                Err(PublishFailure {
+                    primary_error: "CURRENT pointer not flipped".into(),
+                    outcomes: Vec::new(),
+                    cleanup_issues: Vec::new(),
+                    durability_issues,
+                    unpublished_objects: Vec::new(),
+                })
+            }
+            // Lock released on drop (OS file lock released; commit.lock file
+            // itself is intentionally left in place).
+            PointerCommitResult::Committed { generation } => {
+                drop(lock);
+                Ok(PointerCommitResult::Committed { generation })
+            }
+            PointerCommitResult::CommittedWithDurabilityWarning {
+                generation,
+                warning,
+            } => {
+                durability_issues.push(warning.clone());
+                drop(lock);
+                Ok(PointerCommitResult::CommittedWithDurabilityWarning {
+                    generation,
+                    warning,
+                })
+            }
         }
-        // Lock released on drop (removes commit.lock). A removal failure is
-        // only a stale-lock annoyance for the next committer (age-break).
-        drop(lock);
-        Ok(())
     }
 
     /// Count committed positive and negative mappings from the `CURRENT`
@@ -859,6 +916,122 @@ pub enum CachePublishOutcome {
     ReusedExisting,
 }
 
+/// Result of flipping the `CURRENT` pointer (Finding 3). Visibility is
+/// separated from durability: a rename that succeeded is ALWAYS reported as
+/// committed — never as "not flipped" — even when the subsequent directory
+/// fsync fails, because the pointer is reader-visible either way.
+#[derive(Debug, Clone)]
+pub enum PointerCommitResult {
+    /// The pointer was never flipped; readers observe the previous generation.
+    NotCommitted { error: String },
+    /// The pointer flipped to `generation` and the root dir was fsynced.
+    Committed { generation: u64 },
+    /// The pointer flipped to `generation` (readers see it) but the root dir
+    /// fsync failed: durability is not guaranteed after a crash. The original
+    /// durability error is preserved in `warning`.
+    CommittedWithDurabilityWarning { generation: u64, warning: String },
+}
+
+/// One mapping committed by a successful [`CacheTransaction::publish`] — the
+/// batch needs this to COMPENSATE (remove exactly what it published) when a
+/// post-publish artifact revalidation fails (Finding 2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommittedEntry {
+    /// The cache key (64-hex SHA-256).
+    pub key: String,
+    /// Content hash of the staged bytes.
+    pub digest: String,
+    /// True for a negative (definitive-empty) entry.
+    pub negative: bool,
+}
+
+/// The cache commit state surfaced to the batch (Finding 2). `publish()`
+/// returns the first three variants; `CacheTransaction::compensate()` returns
+/// `Compensated` when a post-publish artifact revalidation failure forces the
+/// batch to remove exactly the mappings it published.
+#[derive(Debug, Clone)]
+pub enum CacheCommitState {
+    /// Nothing was committed; readers observe the previous state.
+    NotCommitted { error: String },
+    /// The commit flipped CURRENT to `generation`; every staged mapping is
+    /// visible and durable.
+    Committed {
+        generation: u64,
+        previous_generation: u64,
+        outcomes: Vec<CachePublishOutcome>,
+        entries: Vec<CommittedEntry>,
+    },
+    /// The pointer flipped (readers see `generation`) but the root dir fsync
+    /// failed; durability is not guaranteed after a crash.
+    CommittedWithDurabilityWarning {
+        generation: u64,
+        previous_generation: u64,
+        outcomes: Vec<CachePublishOutcome>,
+        entries: Vec<CommittedEntry>,
+        warning: String,
+    },
+    /// A compensating generation removed this transaction's mappings after a
+    /// post-commit invalidation; `failed_generation` was superseded by
+    /// `restored_generation`. `durability_warning` is present when the
+    /// compensating pointer flipped but its root-dir fsync failed.
+    Compensated {
+        failed_generation: u64,
+        restored_generation: u64,
+        durability_warning: Option<String>,
+    },
+}
+
+// Test-only fault injection for the pointer commit stages (Finding 3).
+// Thread-local so parallel tests cannot observe each other's injection:
+// `publish()` runs synchronously in the caller's thread, so only the test
+// that set the flag is affected. Never set in production.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static INJECT_FLIP_RENAME_FAIL: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    pub(crate) static INJECT_FLIP_DIR_FSYNC_FAIL: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+impl CacheCommitState {
+    /// The per-entry publish outcomes. Empty for `NotCommitted`/`Compensated`
+    /// (nothing was published by this transaction) and for an empty commit.
+    pub fn outcomes(&self) -> Vec<CachePublishOutcome> {
+        match self {
+            CacheCommitState::Committed { outcomes, .. }
+            | CacheCommitState::CommittedWithDurabilityWarning { outcomes, .. } => outcomes.clone(),
+            CacheCommitState::NotCommitted { .. } | CacheCommitState::Compensated { .. } => {
+                Vec::new()
+            }
+        }
+    }
+
+    /// The mappings committed by this state (empty for `NotCommitted`,
+    /// `Compensated` — which removed mappings — and empty commits).
+    pub fn entries(&self) -> &[CommittedEntry] {
+        match self {
+            CacheCommitState::Committed { entries, .. }
+            | CacheCommitState::CommittedWithDurabilityWarning { entries, .. } => entries,
+            CacheCommitState::NotCommitted { .. } | CacheCommitState::Compensated { .. } => &[],
+        }
+    }
+
+    /// The generation made current by this state: the committed generation for
+    /// `Committed*`, the restored generation for `Compensated`, and 0 when
+    /// nothing was committed (`NotCommitted`).
+    pub fn generation(&self) -> u64 {
+        match self {
+            CacheCommitState::Committed { generation, .. }
+            | CacheCommitState::CommittedWithDurabilityWarning { generation, .. } => *generation,
+            CacheCommitState::NotCommitted { .. } => 0,
+            CacheCommitState::Compensated {
+                restored_generation,
+                ..
+            } => *restored_generation,
+        }
+    }
+}
+
 impl CacheTransaction<'_> {
     /// Stage a write for `key`. The bytes are written to an immutable
     /// content-addressed object (RAII-owned temp, no-clobber hard-link). The
@@ -959,10 +1132,11 @@ impl CacheTransaction<'_> {
     /// never unlinked by pathname — they are harmless orphans reclaimed by GC.
     /// Every independent failure — manifest write, durability fsync, pointer
     /// flip — is preserved in the returned [`PublishFailure`].
-    pub fn publish(&mut self) -> Result<Vec<CachePublishOutcome>, PublishFailure> {
-        if self.staged.is_empty() {
-            return Ok(Vec::new());
-        }
+    ///
+    /// Returns a [`CacheCommitState`] that distinguishes a clean commit from a
+    /// commit whose pointer flipped but whose root-dir fsync failed (Finding 3)
+    /// — the batch must treat the latter as committed-but-not-durable.
+    pub fn publish(&mut self) -> Result<CacheCommitState, PublishFailure> {
         let lock = match self.cache.acquire_commit_lock() {
             Ok(l) => l,
             Err(e) => {
@@ -991,6 +1165,16 @@ impl CacheTransaction<'_> {
         } else {
             Some(base.generation)
         };
+        let previous_generation = base_generation.unwrap_or(0);
+        if self.staged.is_empty() {
+            // Nothing to commit; readers already observe `previous_generation`.
+            return Ok(CacheCommitState::Committed {
+                generation: previous_generation,
+                previous_generation,
+                outcomes: Vec::new(),
+                entries: Vec::new(),
+            });
+        }
         let now = unix_secs();
         let new_seq = base_seq + 1;
         let mut positives = base.positives.clone();
@@ -1043,10 +1227,50 @@ impl CacheTransaction<'_> {
             integrity: String::new(),
         };
         manifest.integrity = compute_integrity(&manifest);
+        let entries: Vec<CommittedEntry> = self
+            .staged
+            .iter()
+            .map(|e| CommittedEntry {
+                key: e.key.clone(),
+                digest: e.digest.clone(),
+                negative: e.negative,
+            })
+            .collect();
         match self.cache.finalize_commit(&manifest, lock) {
-            Ok(()) => {
+            Ok(PointerCommitResult::Committed { generation }) => {
                 self.staged.clear();
-                Ok(outcomes)
+                Ok(CacheCommitState::Committed {
+                    generation,
+                    previous_generation,
+                    outcomes,
+                    entries,
+                })
+            }
+            Ok(PointerCommitResult::CommittedWithDurabilityWarning {
+                generation,
+                warning,
+            }) => {
+                self.staged.clear();
+                Ok(CacheCommitState::CommittedWithDurabilityWarning {
+                    generation,
+                    previous_generation,
+                    outcomes,
+                    entries,
+                    warning,
+                })
+            }
+            Ok(PointerCommitResult::NotCommitted { error }) => {
+                // `finalize_commit` converts NotCommitted into
+                // Err(PublishFailure), so this arm is unreachable in practice;
+                // handle defensively so a future change cannot silently ignore
+                // a non-flipped pointer.
+                Err(PublishFailure {
+                    primary_error: error,
+                    outcomes,
+                    cleanup_issues: Vec::new(),
+                    durability_issues: Vec::new(),
+                    unpublished_objects: self.unpublished_objects(),
+                })
             }
             Err(mut f) => {
                 f.outcomes = outcomes;
@@ -1077,6 +1301,115 @@ impl CacheTransaction<'_> {
         let issues = Vec::new();
         self.staged.clear();
         issues
+    }
+
+    /// Compensate a committed transaction (Finding 2): publish a new
+    /// generation that REMOVES exactly the mappings in `entries` — but only
+    /// where the current generation's mapping still matches the entry's
+    /// digest. A concurrent committer that replaced a key after our commit is
+    /// NEVER touched (its winner stays). Objects are content-addressed
+    /// immutable, so removal only drops manifest references; nothing is
+    /// unlinked by pathname.
+    ///
+    /// Returns [`CacheCommitState::Compensated`] with the restored generation
+    /// when the compensating pointer flipped. Returns a structured
+    /// [`PublishFailure`] when compensation did not happen (the pointer never
+    /// flipped) — the failed mappings remain visible and the caller must
+    /// surface that distinctly.
+    pub fn compensate(
+        &mut self,
+        failed_generation: u64,
+        entries: &[CommittedEntry],
+    ) -> Result<CacheCommitState, PublishFailure> {
+        let lock = match self.cache.acquire_commit_lock() {
+            Ok(l) => l,
+            Err(e) => {
+                return Err(PublishFailure {
+                    primary_error: e,
+                    outcomes: Vec::new(),
+                    cleanup_issues: Vec::new(),
+                    durability_issues: Vec::new(),
+                    unpublished_objects: Vec::new(),
+                });
+            }
+        };
+        let base_seq = read_current(&self.cache.current_path()).unwrap_or(0);
+        let base = if base_seq == 0 {
+            GenerationManifest::empty(0)
+        } else {
+            self.cache
+                .load_valid_manifest(base_seq)
+                .unwrap_or_else(|| GenerationManifest::empty(base_seq))
+        };
+        let base_generation = if base_seq == 0 {
+            None
+        } else {
+            Some(base.generation)
+        };
+        let now = unix_secs();
+        let new_seq = base_seq + 1;
+        let mut positives = base.positives.clone();
+        let mut negatives = base.negatives.clone();
+        for entry in entries {
+            let removed = if entry.negative {
+                negatives
+                    .get(&entry.key)
+                    .map(|e| e.digest == entry.digest)
+                    .unwrap_or(false)
+            } else {
+                positives
+                    .get(&entry.key)
+                    .map(|e| e.digest == entry.digest)
+                    .unwrap_or(false)
+            };
+            if removed {
+                if entry.negative {
+                    negatives.remove(&entry.key);
+                } else {
+                    positives.remove(&entry.key);
+                }
+            }
+            // else: the mapping is no longer ours (replaced by a concurrent
+            // winner, or already gone) — it is never removed.
+        }
+        let mut manifest = GenerationManifest {
+            schema_version: SCHEMA_VERSION,
+            generation: new_seq,
+            base_generation,
+            created_at: now,
+            positives,
+            negatives,
+            integrity: String::new(),
+        };
+        manifest.integrity = compute_integrity(&manifest);
+        match self.cache.finalize_commit(&manifest, lock) {
+            Ok(PointerCommitResult::Committed { generation }) => {
+                Ok(CacheCommitState::Compensated {
+                    failed_generation,
+                    restored_generation: generation,
+                    durability_warning: None,
+                })
+            }
+            Ok(PointerCommitResult::CommittedWithDurabilityWarning {
+                generation,
+                warning,
+            }) => Ok(CacheCommitState::Compensated {
+                failed_generation,
+                restored_generation: generation,
+                durability_warning: Some(warning),
+            }),
+            Ok(PointerCommitResult::NotCommitted { error }) => Err(PublishFailure {
+                primary_error: error,
+                outcomes: Vec::new(),
+                cleanup_issues: Vec::new(),
+                durability_issues: Vec::new(),
+                unpublished_objects: Vec::new(),
+            }),
+            Err(mut f) => {
+                f.unpublished_objects = Vec::new();
+                Err(f)
+            }
+        }
     }
 }
 
@@ -1270,18 +1603,20 @@ fn file_older_than(path: &Path, now: u64, grace: Duration) -> bool {
     now.saturating_sub(mtime_secs.as_secs()) >= grace.as_secs()
 }
 
-/// Whether the commit lock is old enough to belong to a crashed committer.
-fn lock_is_stale(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return false;
-    };
-    let Ok(mtime) = meta.modified() else {
-        return false;
-    };
-    let Ok(mtime_secs) = mtime.duration_since(SystemTime::UNIX_EPOCH) else {
-        return false;
-    };
-    unix_secs().saturating_sub(mtime_secs.as_secs()) >= LOCK_STALE_GRACE.as_secs()
+/// RAII guard for the cross-process commit lock (Finding 4). Holds an
+/// exclusive OS file lock on `commit.lock` for its lifetime; the lock is
+/// released automatically on drop (and by the OS if the process dies). The
+/// lock file itself is never unlinked, so a concurrent committer can never
+/// acquire a fresh inode at the same path while this guard is alive.
+pub(crate) struct CommitLock {
+    _file: std::fs::File,
+}
+
+impl Drop for CommitLock {
+    fn drop(&mut self) {
+        // Best-effort: the OS releases the lock when the file handle closes.
+        let _ = self._file.unlock();
+    }
 }
 
 /// Compute the integrity SHA-256 over the canonical serialization of every
@@ -1500,6 +1835,45 @@ mod tests {
     /// A deterministic 64-hex cache key for tests.
     fn key(n: u8) -> String {
         format!("{:064x}", n)
+    }
+
+    #[test]
+    fn commit_lock_is_os_file_lock_and_never_unlinked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        let lock_path = cache.lock_path();
+
+        // Acquiring the lock creates the file but does NOT remove it: the OS
+        // file lock is authoritative, so the inode must persist.
+        let lock = cache.acquire_commit_lock().unwrap();
+        assert!(
+            lock_path.exists(),
+            "lock file must persist (never unlinked)"
+        );
+
+        // A concurrent committer opening the same path cannot steal the lock
+        // while it is held (separate open file description → WouldBlock).
+        let second = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        assert_eq!(
+            second.try_lock_exclusive().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock,
+            "held commit lock must not be stealable by a concurrent committer"
+        );
+
+        // Dropping the guard releases the lock for the next committer.
+        drop(lock);
+        let third = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        third.try_lock_exclusive().unwrap();
     }
 
     #[test]
@@ -1787,7 +2161,7 @@ mod tests {
             handles.push(std::thread::spawn(move || {
                 let mut tx = cache.begin();
                 tx.stage_write(&key(9), false, value).unwrap();
-                let outcomes = tx.publish().unwrap();
+                let outcomes = tx.publish().unwrap().outcomes();
                 // Every writer either created or reused the identical mapping.
                 for o in outcomes {
                     assert!(matches!(
@@ -1812,7 +2186,7 @@ mod tests {
         let mut tx = cache.begin();
         tx.stage_write(&key(1), false, br#"{"a":1}"#).unwrap();
         tx.stage_write(&key(2), true, br#"{"b":2}"#).unwrap();
-        let outcomes = tx.publish().unwrap();
+        let outcomes = tx.publish().unwrap().outcomes();
         assert_eq!(outcomes.len(), 2);
         assert_eq!(
             cache.get(&key(1)).as_deref(),
@@ -1823,6 +2197,195 @@ mod tests {
             Some(br#"{"b":2}"#.as_slice())
         );
         assert_eq!(cache.debug_entry_count(), (1, 1));
+    }
+
+    #[test]
+    fn flip_rename_failure_reports_not_committed_and_keeps_previous_generation() {
+        // Finding 3: when the CURRENT-pointer rename fails, the pointer never
+        // flipped — readers observe the previous generation and publish()
+        // reports a structured failure (never "committed").
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+
+        // Seed a committed generation so there IS a previous state to observe.
+        {
+            let mut tx = cache.begin();
+            tx.stage_write(&key(1), false, br#"{"a":1}"#).unwrap();
+            let state = tx.publish().unwrap();
+            assert!(matches!(state, CacheCommitState::Committed { .. }));
+        }
+
+        // Force the next pointer flip's rename to fail.
+        INJECT_FLIP_RENAME_FAIL.with(|f| f.set(true));
+        let result = {
+            let mut tx = cache.begin();
+            tx.stage_write(&key(2), false, br#"{"a":2}"#).unwrap();
+            tx.publish()
+        };
+        INJECT_FLIP_RENAME_FAIL.with(|f| f.set(false));
+
+        let f = result.unwrap_err();
+        assert!(
+            f.primary_error.contains("CURRENT pointer not flipped"),
+            "primary error names the non-flipped pointer: {}",
+            f.primary_error
+        );
+        assert!(
+            f.durability_issues
+                .iter()
+                .any(|d| d.contains("flip CURRENT")),
+            "durability issues preserve the original flip error: {:?}",
+            f.durability_issues
+        );
+        // Readers still observe the previous generation only.
+        assert_eq!(
+            cache.get(&key(1)).as_deref(),
+            Some(br#"{"a":1}"#.as_slice())
+        );
+        assert_eq!(cache.get(&key(2)), None, "the failed commit is not visible");
+    }
+
+    #[test]
+    fn flip_dir_fsync_failure_reports_committed_with_durability_warning_and_is_visible() {
+        // Finding 3: once the CURRENT rename succeeded the pointer IS flipped
+        // and readers see the new generation; a root-dir fsync failure is a
+        // durability WARNING (CommittedWithDurabilityWarning), never
+        // "not committed" — the response state equals the reader-visible state.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+
+        INJECT_FLIP_DIR_FSYNC_FAIL.with(|f| f.set(true));
+        let result = {
+            let mut tx = cache.begin();
+            tx.stage_write(&key(1), false, br#"{"a":1}"#).unwrap();
+            tx.publish()
+        };
+        INJECT_FLIP_DIR_FSYNC_FAIL.with(|f| f.set(false));
+
+        match result {
+            Ok(CacheCommitState::CommittedWithDurabilityWarning {
+                generation,
+                warning,
+                outcomes,
+                ..
+            }) => {
+                assert_eq!(generation, 1);
+                assert!(
+                    warning.contains("fsync"),
+                    "original durability error preserved: {warning}"
+                );
+                assert_eq!(outcomes, vec![CachePublishOutcome::Created]);
+                // Response state == reader-visible state: the mapping IS visible.
+                assert_eq!(
+                    cache.get(&key(1)).as_deref(),
+                    Some(br#"{"a":1}"#.as_slice())
+                );
+            }
+            other => panic!("expected CommittedWithDurabilityWarning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn clean_commit_reports_committed_with_generations_and_all_mappings_visible() {
+        // Finding 3/2: a clean commit is Committed with the new and previous
+        // generation; every staged mapping is visible together.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+
+        let state = {
+            let mut tx = cache.begin();
+            tx.stage_write(&key(1), false, br#"{"a":1}"#).unwrap();
+            tx.stage_write(&key(2), true, br#"{"b":2}"#).unwrap();
+            tx.publish().unwrap()
+        };
+        match state {
+            CacheCommitState::Committed {
+                generation,
+                previous_generation,
+                outcomes,
+                entries,
+            } => {
+                assert_eq!(generation, 1);
+                assert_eq!(previous_generation, 0);
+                assert_eq!(outcomes.len(), 2);
+                assert_eq!(entries.len(), 2);
+            }
+            other => panic!("expected Committed, got {other:?}"),
+        }
+        assert_eq!(
+            cache.get(&key(1)).as_deref(),
+            Some(br#"{"a":1}"#.as_slice())
+        );
+        assert_eq!(
+            cache.get_negative(&key(2)).as_deref(),
+            Some(br#"{"b":2}"#.as_slice())
+        );
+        assert_eq!(cache.debug_entry_count(), (1, 1));
+    }
+
+    #[test]
+    fn compensation_removes_only_mappings_still_owned_by_the_committer() {
+        // Finding 2: a compensating generation removes exactly the entries
+        // that are STILL this transaction's — a mapping a concurrent committer
+        // replaced after our commit is never touched.
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+
+        // Transaction A commits key-1 = "X" and a negative key-2.
+        let state_a = {
+            let mut tx = cache.begin();
+            tx.stage_write(&key(1), false, br#"{"v":"X"}"#).unwrap();
+            tx.stage_write(&key(2), true, br#"{"v":"N"}"#).unwrap();
+            tx.publish().unwrap()
+        };
+        let entries_a = state_a.entries().to_vec();
+        assert_eq!(entries_a.len(), 2);
+        assert_eq!(
+            cache.get(&key(1)).as_deref(),
+            Some(br#"{"v":"X"}"#.as_slice())
+        );
+        assert_eq!(
+            cache.get_negative(&key(2)).as_deref(),
+            Some(br#"{"v":"N"}"#.as_slice())
+        );
+
+        // A concurrent committer replaces key-1 with "Y" AFTER A's commit.
+        let mut tx_b = cache.begin();
+        tx_b.stage_write(&key(1), false, br#"{"v":"Y"}"#).unwrap();
+        tx_b.publish().unwrap();
+        assert_eq!(
+            cache.get(&key(1)).as_deref(),
+            Some(br#"{"v":"Y"}"#.as_slice())
+        );
+
+        // A compensates with ITS committed entries: key-2 (still ours) is
+        // removed; key-1 (now owned by the concurrent winner "Y") is not.
+        let comp = {
+            let mut tx = cache.begin();
+            tx.compensate(state_a.generation(), &entries_a).unwrap()
+        };
+        match comp {
+            CacheCommitState::Compensated {
+                failed_generation,
+                restored_generation,
+                durability_warning,
+            } => {
+                assert_eq!(failed_generation, state_a.generation());
+                assert!(restored_generation > failed_generation);
+                assert!(durability_warning.is_none());
+            }
+            other => panic!("expected Compensated, got {other:?}"),
+        }
+        assert_eq!(
+            cache.get(&key(1)).as_deref(),
+            Some(br#"{"v":"Y"}"#.as_slice()),
+            "a concurrent winner is never removed by compensation"
+        );
+        assert_eq!(
+            cache.get_negative(&key(2)),
+            None,
+            "a mapping still owned by the compensated transaction is removed"
+        );
     }
 
     #[test]

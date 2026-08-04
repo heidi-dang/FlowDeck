@@ -42,8 +42,8 @@ use crate::index::identity::{
 };
 use crate::index::paths::{index_state_root, worktree_dir};
 use crate::index::query_cache::{
-    canonical_json, configuration_fingerprint, query_cache_key, CacheTransaction, OwnedTemp,
-    QueryCache, BATCH_PROTOCOL_VERSION,
+    canonical_json, configuration_fingerprint, query_cache_key, CacheCommitState, CacheTransaction,
+    OwnedTemp, QueryCache, BATCH_PROTOCOL_VERSION,
 };
 use crate::index::{query_tests_for, IndexSnapshot};
 use crate::reader::code::cache::AstCache;
@@ -700,6 +700,23 @@ impl BatchStateProbe for RepoStateProbe {
 
 // ─── Executor ───────────────────────────────────────────────────────────────
 
+// Test-only fault injection: when set, every activated artifact is corrupted
+// immediately after Phase A so the Phase C2 final revalidation fails
+// deterministically. Thread-local so parallel tests cannot observe each
+// other's injection (the executor runs synchronously in the caller's thread).
+// Compiled only in test builds; never set in production.
+#[cfg(test)]
+thread_local! {
+    static INJECT_ARTIFACT_CORRUPTION_AFTER_ACTIVATION: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+    // Test-only fault injection: when set, every activated artifact is
+    // corrupted immediately AFTER the cache commit so the post-publish
+    // revalidation fails deterministically, forcing cache compensation
+    // (Finding 2). Thread-local for the same reason as the activation hook.
+    static INJECT_ARTIFACT_CORRUPTION_AFTER_PUBLISH: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
 /// Execute a typed batch. Validation errors (empty, >64, duplicate ids)
 /// return [`Err(BatchReject)`]; per-operation failures become per-op error
 /// responses. `index` is only consulted when the batch contains a
@@ -711,6 +728,31 @@ pub fn execute_batch(
     fail_fast: bool,
 ) -> Result<BatchResponse, BatchReject> {
     execute_batch_with_probe(operations, cwd, index, fail_fast, None)
+}
+
+/// Revalidate every referenced artifact against its committed bytes. Returns
+/// the first failure as a user-facing message, or `None` when every artifact
+/// is still valid. Used both as the Phase C2 commit barrier (BEFORE cache
+/// publication) and again immediately before response construction (AFTER
+/// publication, where a failure forces cache compensation — Finding 2).
+fn revalidate_artifacts(pendings: &[PendingActivation]) -> Option<String> {
+    for pending in pendings.iter() {
+        if let Some(ref_path) = &pending.artifact_ref {
+            let path = std::path::Path::new(ref_path);
+            let valid = match std::fs::metadata(path) {
+                Ok(m) if m.is_file() && m.len() == pending.used as u64 => std::fs::read(path)
+                    .map(|data| sha256_hex(&data) == sha256_hex(&pending.bytes))
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if !valid {
+                return Some(format!(
+                    "artifact {ref_path} no longer valid at finalization"
+                ));
+            }
+        }
+    }
+    None
 }
 
 /// [`execute_batch`] with an injectable repository-state probe (test seam).
@@ -967,6 +1009,19 @@ fn execute_batch_with_probe(
             }
         }
 
+        // Test-only fault injection: corrupt every activated artifact so the
+        // Phase C2 final revalidation fails deterministically. This proves a
+        // revalidation failure is a TRANSACTION failure that must never be
+        // observable through committed cache entries.
+        #[cfg(test)]
+        if INJECT_ARTIFACT_CORRUPTION_AFTER_ACTIVATION.with(|f| f.get()) {
+            for pending in pendings.iter() {
+                if let Some(ref_path) = &pending.artifact_ref {
+                    let _ = std::fs::write(std::path::Path::new(ref_path), b"corrupted");
+                }
+            }
+        }
+
         // Phase B: STAGE all cache writes privately. Entries are written to
         // transaction-private temp files and are NOT yet visible to readers.
         // Publication is deferred until after Phase C (drift probe) and
@@ -1010,25 +1065,7 @@ fn execute_batch_with_probe(
         // publication the batch is void and nothing was published yet.
         let mut final_revalidation_error: Option<String> = None;
         if txn_error.is_none() && !post_activation_drift {
-            for pending in pendings.iter() {
-                if let Some(ref_path) = &pending.artifact_ref {
-                    let path = std::path::Path::new(ref_path);
-                    let valid = match std::fs::metadata(path) {
-                        Ok(m) if m.is_file() && m.len() == pending.used as u64 => {
-                            std::fs::read(path)
-                                .map(|data| sha256_hex(&data) == sha256_hex(&pending.bytes))
-                                .unwrap_or(false)
-                        }
-                        _ => false,
-                    };
-                    if !valid {
-                        final_revalidation_error = Some(format!(
-                            "artifact {ref_path} no longer valid at finalization"
-                        ));
-                        break;
-                    }
-                }
-            }
+            final_revalidation_error = revalidate_artifacts(&pendings);
         }
 
         // Phase B2: COMMIT the staged cache entries — the final commit
@@ -1040,10 +1077,83 @@ fn execute_batch_with_probe(
         // `failed` decision is recomputed AFTER this stage so a publish
         // failure can never be followed by LRU or success responses.
         let mut cache_publish_issues: Vec<String> = Vec::new();
-        if txn_error.is_none() && !post_activation_drift {
+        if txn_error.is_none() && !post_activation_drift && final_revalidation_error.is_none() {
             if let Some(tx) = cache_tx_holder.as_mut() {
                 match tx.publish() {
-                    Ok(_) => {}
+                    Ok(state) => {
+                        // Phase B2b (Finding 2): the cache commit succeeded and
+                        // every mapping is reader-visible. Revalidate every
+                        // referenced artifact AGAIN — immediately before
+                        // response construction — because an artifact that
+                        // mutates AFTER the commit would leave published cache
+                        // entries pointing at invalid content. On failure the
+                        // batch publishes a COMPENSATING generation that
+                        // removes exactly this batch's mappings (only where
+                        // they are still ours), then errors every provisional
+                        // op: no success response can reference an artifact
+                        // that was already committed to the cache.
+                        let committed_entries = state.entries().to_vec();
+                        let failed_generation = state.generation();
+                        // Test-only fault injection: corrupt every activated
+                        // artifact AFTER the cache commit so the post-publish
+                        // revalidation fails deterministically, forcing
+                        // compensation (Finding 2).
+                        #[cfg(test)]
+                        if INJECT_ARTIFACT_CORRUPTION_AFTER_PUBLISH.with(|f| f.get()) {
+                            for pending in pendings.iter() {
+                                if let Some(ref_path) = &pending.artifact_ref {
+                                    let _ = std::fs::write(
+                                        std::path::Path::new(ref_path),
+                                        b"corrupted",
+                                    );
+                                }
+                            }
+                        }
+                        if let Some(err) = revalidate_artifacts(&pendings) {
+                            match tx.compensate(failed_generation, &committed_entries) {
+                                Ok(CacheCommitState::Compensated {
+                                    restored_generation,
+                                    durability_warning,
+                                    ..
+                                }) => {
+                                    let mut msg = format!(
+                                        "batch results invalidated after cache commit; \
+                                         compensating generation {restored_generation} superseded \
+                                         failed generation {failed_generation}: {err}"
+                                    );
+                                    if let Some(w) = durability_warning {
+                                        msg.push_str(&format!(
+                                            " (compensation pointer not durable: {w})"
+                                        ));
+                                    }
+                                    txn_error = Some(msg);
+                                }
+                                Ok(_) => {
+                                    // Unreachable: compensate() only returns
+                                    // Compensated. Guarded for future changes.
+                                    txn_error = Some(format!(
+                                        "batch results invalidated after cache commit AND \
+                                         compensation returned an unexpected state: {err}"
+                                    ));
+                                }
+                                Err(comp_f) => {
+                                    // DISTINCT failure: the compensating
+                                    // generation was never published, so the
+                                    // invalid mappings may remain visible.
+                                    txn_error = Some(format!(
+                                        "batch results invalidated after cache commit AND cache \
+                                         compensation FAILED (invalid mappings may remain \
+                                         visible): {err}; {}",
+                                        comp_f.primary_error
+                                    ));
+                                    cache_publish_issues
+                                        .extend(comp_f.cleanup_issues.iter().cloned());
+                                    cache_publish_issues
+                                        .extend(comp_f.durability_issues.iter().cloned());
+                                }
+                            }
+                        }
+                    }
                     Err(f) => {
                         txn_error = Some(f.primary_error.clone());
                         cache_publish_issues.extend(f.cleanup_issues.iter().cloned());
@@ -4239,7 +4349,7 @@ mod tests {
             let mut tx = cache.begin();
             tx.stage_write("key-a", false, br#"{"k":"prior-bytes"}"#)
                 .unwrap();
-            let outcomes = tx.publish().unwrap();
+            let outcomes = tx.publish().unwrap().outcomes();
             assert!(
                 matches!(
                     outcomes.as_slice(),
@@ -4259,7 +4369,7 @@ mod tests {
             let mut tx = cache.begin();
             tx.stage_write("key-new", false, br#"{"k":"fresh"}"#)
                 .unwrap();
-            let outcomes = tx.publish().unwrap();
+            let outcomes = tx.publish().unwrap().outcomes();
             assert!(
                 matches!(
                     outcomes.as_slice(),
@@ -4279,7 +4389,7 @@ mod tests {
             let mut tx = cache.begin();
             tx.stage_write("key-a", false, br#"{"k":"different"}"#)
                 .unwrap();
-            let outcomes = tx.publish().unwrap();
+            let outcomes = tx.publish().unwrap().outcomes();
             assert!(
                 matches!(
                     outcomes.as_slice(),
@@ -4387,7 +4497,7 @@ mod tests {
         // B's rollback (abort) must not delete or restore over it.
         let mut tx_b = cache.begin();
         tx_b.stage_write("key-x", false, br#"{"k":"X"}"#).unwrap();
-        let outcomes = tx_b.publish().unwrap();
+        let outcomes = tx_b.publish().unwrap().outcomes();
         assert!(
             matches!(
                 outcomes.as_slice(),
@@ -4765,6 +4875,181 @@ mod tests {
             cache_entry_count(state.path()),
             1,
             "the failed batch published no new reader-visible entries"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn c2_revalidation_failure_never_publishes_cache_entries() {
+        // Finding 1: the Phase C2 final artifact revalidation is part of the
+        // commit barrier. A revalidation failure must be a TRANSACTION failure
+        // that converts every provisional response to an error AND must never
+        // be observable through committed cache entries — the cache publication
+        // gate must include `final_revalidation_error.is_none()`.
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        // An over-budget op so the batch produces an artifact (which Phase C2
+        // revalidates) AND a cache write.
+        let big = "x".repeat(300 * 1024);
+        std::fs::write(tmp.path().join("big.txt"), &big).unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        let ops = || {
+            vec![op(
+                "r1",
+                "read",
+                serde_json::json!({ "file": "big.txt", "mode": "raw" }),
+            )]
+        };
+
+        // Warm the cache on state S1 so the batch has a base generation.
+        let first = execute_batch(&ops(), Some(cwd), None, false).unwrap();
+        assert!(first.responses[0].ok);
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "warm-up publishes one cache entry"
+        );
+
+        // Change the file and commit → state S2. The same op on S2 has a NEW
+        // cache key (the key embeds the state), so this run MISSES and stages
+        // a fresh mapping. If the C2 revalidation failure does NOT block cache
+        // publication, this run would publish the new mapping (count 2).
+        let big2 = "y".repeat(300 * 1024);
+        std::fs::write(tmp.path().join("big.txt"), &big2).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["commit", "-q", "-am", "change"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("git must be installed");
+        assert!(out.status.success());
+
+        // Inject an artifact corruption after Phase A so the Phase C2
+        // revalidation fails deterministically on the S2 run.
+        INJECT_ARTIFACT_CORRUPTION_AFTER_ACTIVATION.with(|f| f.set(true));
+        let resp = execute_batch(&ops(), Some(cwd), None, false).unwrap();
+        INJECT_ARTIFACT_CORRUPTION_AFTER_ACTIVATION.with(|f| f.set(false));
+
+        // The revalidation failure voids the provisional response.
+        assert!(
+            !resp.responses[0].ok,
+            "a C2 revalidation failure must void the provisional response"
+        );
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_INTERNAL
+        );
+        assert!(resp.responses[0].artifact_ref.is_none());
+        // The failure message surfaces the revalidation failure.
+        let msg = resp.responses[0].error.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            msg.contains("no longer valid") || msg.contains("not committed"),
+            "the response surfaces the revalidation failure: {msg}"
+        );
+        // Finding 1: the failed batch must NOT have published the NEW S2
+        // mapping. The count stays at the S1 warm-up entry (1).
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "a C2 revalidation failure must not publish cache entries"
+        );
+
+        match prev {
+            Some(v) => std::env::set_var(crate::index::paths::INDEX_DIR_ENV, v),
+            None => std::env::remove_var(crate::index::paths::INDEX_DIR_ENV),
+        }
+    }
+
+    #[test]
+    fn artifact_mutation_after_commit_triggers_cache_compensation() {
+        // Finding 2: an artifact that mutates AFTER the cache commit (but
+        // before response construction) must never yield a success response.
+        // The batch publishes a COMPENSATING generation that removes exactly
+        // its own mappings, then errors every provisional op.
+        let _guard = CACHE_ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        std::env::set_var(crate::index::paths::INDEX_DIR_ENV, state.path());
+
+        // An over-budget op so the batch produces an artifact (which the
+        // post-publish revalidation checks) AND a cache write.
+        let big = "x".repeat(300 * 1024);
+        std::fs::write(tmp.path().join("big.txt"), &big).unwrap();
+        git_init(tmp.path());
+        let cwd = tmp.path().to_str().unwrap();
+
+        let ops = || {
+            vec![op(
+                "r1",
+                "read",
+                serde_json::json!({ "file": "big.txt", "mode": "raw" }),
+            )]
+        };
+
+        // Warm the cache on state S1 so there is a base generation.
+        let first = execute_batch(&ops(), Some(cwd), None, false).unwrap();
+        assert!(first.responses[0].ok);
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "warm-up publishes one entry"
+        );
+
+        // Change the file and commit → state S2 (a NEW cache key, so this run
+        // misses and stages a fresh mapping).
+        let big2 = "y".repeat(300 * 1024);
+        std::fs::write(tmp.path().join("big.txt"), &big2).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["commit", "-q", "-am", "change"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("git must be installed");
+        assert!(out.status.success());
+
+        // Inject an artifact corruption AFTER the cache commit so the
+        // post-publish revalidation fails deterministically on the S2 run.
+        INJECT_ARTIFACT_CORRUPTION_AFTER_PUBLISH.with(|f| f.set(true));
+        let resp = execute_batch(&ops(), Some(cwd), None, false).unwrap();
+        INJECT_ARTIFACT_CORRUPTION_AFTER_PUBLISH.with(|f| f.set(false));
+
+        // The post-commit invalidation voids the provisional response.
+        assert!(
+            !resp.responses[0].ok,
+            "a post-commit artifact mutation must void the provisional response"
+        );
+        assert_eq!(
+            resp.responses[0].error.as_ref().unwrap()["code"],
+            err::E_INTERNAL
+        );
+        assert!(resp.responses[0].artifact_ref.is_none());
+        let msg = resp.responses[0].error.as_ref().unwrap()["message"]
+            .as_str()
+            .unwrap_or("");
+        assert!(
+            msg.contains("compensat"),
+            "the response surfaces the cache compensation: {msg}"
+        );
+        // Finding 2: the compensating generation removed the S2 mapping, so
+        // the count returns to the S1 warm-up baseline (1) — the invalid
+        // mapping is NOT reader-visible.
+        assert_eq!(
+            cache_entry_count(state.path()),
+            1,
+            "compensation removes the invalidated mapping"
         );
 
         match prev {
