@@ -521,6 +521,26 @@ pub struct BatchResponse {
     pub stale_snapshot: bool,
 }
 
+/// The final cache commit state for accurate batch response messaging
+/// (Finding 3). Distinguishes the five terminal states so the batch never
+/// reports "not committed" when the pointer was committed and compensation
+/// failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FinalCommitState {
+    /// No cache commit was attempted or it failed before the pointer flipped.
+    NotCommitted,
+    /// The pointer flipped and the root-dir fsync succeeded.
+    Committed,
+    /// The pointer flipped but the root-dir fsync failed (durability warning).
+    CommittedWithDurabilityWarning,
+    /// The pointer flipped, then compensation removed this transaction's
+    /// mappings.
+    Compensated,
+    /// The pointer flipped, then compensation FAILED — invalid mappings may
+    /// remain reader-visible.
+    CompensationFailed,
+}
+
 /// Structural batch rejection (empty, >64 ops, duplicate ids). Execution
 /// errors are per-op; this is a whole-batch refusal.
 #[derive(Debug, Clone)]
@@ -1077,6 +1097,10 @@ fn execute_batch_with_probe(
         // `failed` decision is recomputed AFTER this stage so a publish
         // failure can never be followed by LRU or success responses.
         let mut cache_publish_issues: Vec<String> = Vec::new();
+        // Tracks the final cache commit state for accurate response messaging
+        // (Finding 3): NotCommitted / Committed / CommittedWithDurabilityWarning
+        // / Compensated / CompensationFailed.
+        let mut final_commit_state: FinalCommitState = FinalCommitState::NotCommitted;
         if txn_error.is_none() && !post_activation_drift && final_revalidation_error.is_none() {
             if let Some(tx) = cache_tx_holder.as_mut() {
                 match tx.publish() {
@@ -1094,6 +1118,21 @@ fn execute_batch_with_probe(
                         // that was already committed to the cache.
                         let committed_entries = state.entries().to_vec();
                         let failed_generation = state.generation();
+                        // Surface durability warnings (Finding 2): a
+                        // CommittedWithDurabilityWarning is reader-visible
+                        // success, but the warning must remain observable.
+                        if let Some(w) = state.durability_warning() {
+                            cache_publish_issues.push(format!(
+                                "cache commit generation {failed_generation} not durable: {w}"
+                            ));
+                        }
+                        final_commit_state = match state {
+                            CacheCommitState::Committed { .. } => FinalCommitState::Committed,
+                            CacheCommitState::CommittedWithDurabilityWarning { .. } => {
+                                FinalCommitState::CommittedWithDurabilityWarning
+                            }
+                            _ => FinalCommitState::NotCommitted,
+                        };
                         // Test-only fault injection: corrupt every activated
                         // artifact AFTER the cache commit so the post-publish
                         // revalidation fails deterministically, forcing
@@ -1116,6 +1155,7 @@ fn execute_batch_with_probe(
                                     durability_warning,
                                     ..
                                 }) => {
+                                    final_commit_state = FinalCommitState::Compensated;
                                     let mut msg = format!(
                                         "batch results invalidated after cache commit; \
                                          compensating generation {restored_generation} superseded \
@@ -1128,18 +1168,41 @@ fn execute_batch_with_probe(
                                     }
                                     txn_error = Some(msg);
                                 }
+                                Ok(CacheCommitState::CompensationFailed {
+                                    error,
+                                    durability_warning,
+                                    ..
+                                }) => {
+                                    // DISTINCT failure (Finding 3): the
+                                    // compensating pointer never flipped, so
+                                    // the invalid mappings may remain visible.
+                                    final_commit_state = FinalCommitState::CompensationFailed;
+                                    let mut msg = format!(
+                                        "batch results invalidated after cache commit AND cache \
+                                         compensation FAILED (invalid mappings may remain \
+                                         visible): {err}; {error}"
+                                    );
+                                    if let Some(w) = durability_warning {
+                                        msg.push_str(&format!(
+                                            " (compensation durability issue: {w})"
+                                        ));
+                                    }
+                                    txn_error = Some(msg);
+                                }
                                 Ok(_) => {
                                     // Unreachable: compensate() only returns
-                                    // Compensated. Guarded for future changes.
+                                    // Compensated or CompensationFailed. Guarded
+                                    // for future changes.
+                                    final_commit_state = FinalCommitState::CompensationFailed;
                                     txn_error = Some(format!(
                                         "batch results invalidated after cache commit AND \
                                          compensation returned an unexpected state: {err}"
                                     ));
                                 }
                                 Err(comp_f) => {
-                                    // DISTINCT failure: the compensating
-                                    // generation was never published, so the
-                                    // invalid mappings may remain visible.
+                                    // Lock acquisition failure — compensation
+                                    // never ran.
+                                    final_commit_state = FinalCommitState::CompensationFailed;
                                     txn_error = Some(format!(
                                         "batch results invalidated after cache commit AND cache \
                                          compensation FAILED (invalid mappings may remain \
@@ -1237,12 +1300,48 @@ fn execute_batch_with_probe(
             pending_idx += 1;
             let id = pending.id.clone();
             if failed {
-                let mut base_msg = if let Some(e) = &final_revalidation_error {
-                    format!("batch activation failed; results not committed: {e}")
-                } else if let Some(e) = &txn_error {
-                    format!("batch activation failed; results not committed: {e}")
-                } else {
-                    "operation result discarded: repository state changed during execution".into()
+                let mut base_msg = match final_commit_state {
+                    FinalCommitState::NotCommitted => {
+                        if let Some(e) = &final_revalidation_error {
+                            format!("batch activation failed; results not committed: {e}")
+                        } else if let Some(e) = &txn_error {
+                            format!("batch activation failed; results not committed: {e}")
+                        } else {
+                            "operation result discarded: repository state changed during execution"
+                                .into()
+                        }
+                    }
+                    FinalCommitState::Committed
+                    | FinalCommitState::CommittedWithDurabilityWarning => {
+                        // The pointer was committed but the batch still failed
+                        // (e.g. post-publish artifact revalidation). The cache
+                        // entries are reader-visible but the batch results are
+                        // not — never report "not committed".
+                        format!(
+                            "batch results not committed to cache; cache generation committed: {}",
+                            txn_error.as_deref().unwrap_or("see diagnostics")
+                        )
+                    }
+                    FinalCommitState::Compensated => {
+                        // The pointer was committed, then compensation removed
+                        // this transaction's mappings. Never report "not
+                        // committed".
+                        format!(
+                            "batch results invalidated after cache commit; \
+                             compensating generation superseded the failed commit: {}",
+                            txn_error.as_deref().unwrap_or("see diagnostics")
+                        )
+                    }
+                    FinalCommitState::CompensationFailed => {
+                        // The pointer was committed, then compensation FAILED —
+                        // invalid mappings may remain reader-visible. Never
+                        // report "not committed".
+                        format!(
+                            "batch results invalidated after cache commit AND cache \
+                             compensation FAILED (invalid mappings may remain visible): {}",
+                            txn_error.as_deref().unwrap_or("see diagnostics")
+                        )
+                    }
                 };
                 if rollback_incomplete {
                     base_msg = format!(
@@ -4393,7 +4492,7 @@ mod tests {
             assert!(
                 matches!(
                     outcomes.as_slice(),
-                    [crate::index::query_cache::CachePublishOutcome::Created]
+                    [crate::index::query_cache::CachePublishOutcome::Replaced]
                 ),
                 "conflicting content replaces the mapping (object stays immutable)"
             );
