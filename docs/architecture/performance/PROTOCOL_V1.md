@@ -141,11 +141,12 @@ the one-shot `fdx` spawn (fallback reason `command-not-hosted`).
 
 | Code | Meaning |
 |---|---|
-| `E_BAD_REQUEST` | Malformed JSON, wrong `v`, empty required params, unknown method, empty batch. |
+| `E_BAD_REQUEST` | Malformed JSON, wrong `v`, empty required params, unknown method, empty batch, or ANY invalid batch operation (unknown / mutating / non-batchable — whole-batch preflight rejection). |
 | `E_TOO_LARGE` | Frame exceeds 64 KiB; rejected before unbounded buffering. |
 | `E_UNSUPPORTED` | Command not hosted in-process. |
 | `E_INTERNAL` | Hosted command failed (e.g. file read error). |
-| `E_CANCELLED` | Reserved for real cancellation of long scans (Task 7). |
+| `E_CANCELLED` | An unstarted batch operation after a `failFast` stop (see §10). |
+| `E_STALE_SNAPSHOT` | An unstarted batch operation after repository-state drift mid-batch (see §10). |
 | `E_NO_SUCH_REQUEST` | Reserved for cancel of a request the daemon never saw. |
 
 Errors are structured `{code, message}` — never empty "successful" results.
@@ -159,6 +160,58 @@ Errors are structured `{code, message}` — never empty "successful" results.
     queries synchronously, so this is the common case; real interruption of
     long scans lands in Task 7).
 - The client cancels by the request id it originally sent.
+
+### Typed batch `failFast` (Task 4, Phase 7)
+
+The typed `batch` method accepts `params.failFast: true`. Semantics are
+identical across daemon, one-shot `fdx batch-query --fail-fast`, and the
+pure-TS fallback:
+
+- Operations execute in input order; the batch stops at the first failed
+  operation and reports `failedFast: true`.
+- Every **unstarted** operation returns an explicit
+  `{"ok":false,"error":{"code":"E_CANCELLED","message":"operation cancelled by fail-fast"}}`
+  response — it is never executed and never touches the cache.
+- The response always contains **exactly one entry per input operation**, in
+  input order, with every id preserved (cardinality contract). No missing
+  entries, no partial truncation.
+- Completed operations keep their responses; cancelled operations write no
+  positive or negative cache entries.
+
+### Typed batch whole-batch preflight (Phase 7 audit)
+
+The typed `batch` method validates the ENTIRE batch before any operation
+executes (zero execution):
+
+- Structural violations — empty `operations`, more than 64 operations,
+  duplicate operation ids — reject the whole batch with `E_BAD_REQUEST`
+  (no `BatchResponse` is produced).
+- **Any** invalid operation — an unknown operation tag, a non-read-only
+  operation (`index.refresh` & co), or a non-batchable hosted command
+  (`capabilities.query`) — also rejects the WHOLE batch with `E_BAD_REQUEST`
+  before ANY operation executes. A valid op alongside an invalid op is never
+  executed: there are no partial results.
+- This contract is identical across the daemon `batch` method, the one-shot
+  `fdx batch-query` CLI (which exits non-zero with
+  `Error: batch rejected (E_BAD_REQUEST): <message>` on stderr), and the
+  pure-TS fallback (which throws the same `{code, message}`).
+
+### Typed batch repository-state drift (Phase 7 audit)
+
+The batch captures the repository identity fields (HEAD SHA, dirty
+working-tree fingerprint, configuration fingerprint) at batch start and
+revalidates them before every operation and before the final response is
+emitted. If ANY captured field changed mid-batch:
+
+- Every **remaining** (unstarted) operation is aborted with
+  `{"ok":false,"error":{"code":"E_STALE_SNAPSHOT","message":"operation aborted: repository state changed mid-batch"}}`
+  — it is never executed and never touches the cache.
+- The batch response reports `staleSnapshot: true`, so clients never persist
+  results that span two repository states.
+- `E_STALE_SNAPSHOT` is distinct from `E_CANCELLED`: the batch was not stopped
+  by the client (`failFast`); it was invalidated by an external mutation.
+- The response always contains exactly one entry per input operation, in
+  input order, with every id preserved (cardinality contract).
 
 ## 11. Shutdown
 
@@ -228,8 +281,11 @@ daemon (hello + query)
 - Task 3–5: the index lands; `commands` grows (search, outline, impact, ...),
   `cached: true` appears for cache hits.
 - Task 6: client batching coalescing; `batch` becomes the primary path.
-- Task 7: real cancellation of long scans (`E_CANCELLED`, `cancelled` status).
-- Task 8: hard output caps per response with truncation metadata.
+- Task 7: real cancellation of long scans (`E_CANCELLED` for in-flight
+  interruption, `cancelled` status; fail-fast batch cancellation already uses
+  `E_CANCELLED` today).
+- Task 8: hard output caps per response with truncation metadata (landed:
+  per-op + batch-total caps with artifact spill and content hashes).
 - Later: Windows named-pipe transport (`transport: "pipe"`).
 
 Each evolution bumps nothing in v1 unless the wire format changes; capability

@@ -367,6 +367,9 @@ jobs:
     name: FDX Native Parity
     runs-on: ubuntu-latest
     needs: [test-matrix, build, rust-gates]
+    # Required gate: must never be skipped. Runs even when an upstream job
+    # fails so parity evidence is always produced for the exact head.
+    if: always()
 
     steps:
       - uses: actions/checkout@v4

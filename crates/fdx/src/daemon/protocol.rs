@@ -118,9 +118,30 @@ pub struct QueryParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchParams {
-    /// Sub-requests; each carries its own `id` (they must not collide with
-    /// the batch envelope id, which is reserved for the batch response).
+    /// Batch protocol version. Present (1) with non-empty `operations`
+    /// selects the typed read-only batch path (Task 4). Absent/legacy
+    /// clients keep using `requests` (Task 2 multiplexing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    /// Typed batch operations (Task 4). When non-empty, the daemon executes
+    /// them as one frozen-snapshot batch instead of the legacy multiplexer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<crate::batch::BatchOperation>,
+    /// Working directory for the typed path: resolves relative paths and
+    /// selects the worktree index service (`testsFor`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Stop at the first failed operation (`failed_fast=true` in the batch
+    /// response); every unstarted operation returns an explicit `E_CANCELLED`
+    /// response. Mirrors the one-shot CLI `--fail-fast` flag and the TS
+    /// fallback option, so all transports interpret `failFast` identically.
+    #[serde(default)]
+    pub fail_fast: bool,
+    /// Legacy sub-requests; each carries its own `id` (they must not collide
+    /// with the batch envelope id, which is reserved for the batch response).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub requests: Vec<Request>,
 }
 
@@ -250,7 +271,21 @@ pub fn validate_request(req: &Request) -> Result<(), (&'static str, String)> {
             }
         }
         RequestBody::Batch { params } => {
-            if params.requests.is_empty() {
+            let typed = !params.operations.is_empty();
+            let legacy = !params.requests.is_empty();
+            if typed || !legacy {
+                // Typed path. An empty `operations` array with no legacy
+                // requests reaches `execute_batch`, whose canonical rejection
+                // matches the one-shot CLI and the TS fallback.
+                if let Some(v) = params.version {
+                    if v != 1 {
+                        return Err((
+                            err::E_BAD_REQUEST,
+                            format!("unsupported batch protocol version {v} (daemon speaks v1)"),
+                        ));
+                    }
+                }
+            } else if params.requests.is_empty() {
                 return Err((
                     err::E_BAD_REQUEST,
                     "batch.params.requests must not be empty".into(),
@@ -331,10 +366,41 @@ mod tests {
             RequestBody::Batch { params } => {
                 assert_eq!(params.requests.len(), 1);
                 assert_eq!(params.requests[0].id, Some(5));
+                assert!(params.operations.is_empty());
             }
             other => panic!("expected batch, got {other:?}"),
         }
         assert!(validate_request(&req).is_ok());
+    }
+
+    #[test]
+    fn typed_batch_round_trips_operations() {
+        let line = r#"{"v":1,"id":4,"method":"batch","params":{"version":1,"operations":[
+            {"id":"a","op":"read","params":{"file":"src/main.rs"}},
+            {"id":"b","op":"grep","params":{"pattern":"fn","paths":["src"]}}
+        ]}}"#;
+        let req: Request = parse(line).expect("parses");
+        match &req.body {
+            RequestBody::Batch { params } => {
+                assert_eq!(params.version, Some(1));
+                assert_eq!(params.operations.len(), 2);
+                assert_eq!(params.operations[0].id, "a");
+                assert_eq!(params.operations[0].op, "read");
+                assert_eq!(params.operations[1].op, "grep");
+                assert!(params.requests.is_empty());
+            }
+            other => panic!("expected batch, got {other:?}"),
+        }
+        assert!(validate_request(&req).is_ok());
+    }
+
+    #[test]
+    fn rejects_bad_batch_protocol_version() {
+        let line = r#"{"v":1,"id":4,"method":"batch","params":{"version":2,"operations":[{"id":"a","op":"read","params":{}}]}}"#;
+        let req: Request = parse(line).unwrap();
+        let (code, msg) = validate_request(&req).unwrap_err();
+        assert_eq!(code, err::E_BAD_REQUEST);
+        assert!(msg.contains("unsupported batch protocol version 2"));
     }
 
     #[test]
@@ -364,11 +430,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_batch() {
+    fn empty_batch_defers_rejection_to_executor() {
+        // An empty batch (no operations, no legacy requests) passes request
+        // validation so it reaches `execute_batch`, whose canonical
+        // E_BAD_REQUEST matches the one-shot CLI and the TS fallback
+        // ("batch.operations must not be empty"). The executor-layer
+        // rejection is asserted in `batch::tests`.
         let line = r#"{"v":1,"id":4,"method":"batch","params":{"requests":[]}}"#;
         let req: Request = parse(line).unwrap();
-        let (code, _) = validate_request(&req).unwrap_err();
-        assert_eq!(code, err::E_BAD_REQUEST);
+        assert!(validate_request(&req).is_ok());
+        let typed_line = r#"{"v":1,"id":5,"method":"batch","params":{"operations":[]}}"#;
+        let typed: Request = parse(typed_line).unwrap();
+        assert!(validate_request(&typed).is_ok());
     }
 
     #[test]
