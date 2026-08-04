@@ -50,6 +50,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -63,6 +65,13 @@ jobs:
       - name: Coverage check (unit tests)
         run: bun test tests/check-coverage.test.ts
       - run: node scripts/check-coverage.mjs
+      - name: Routing policy-version gate
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-routing-policy-version.mjs --base ${{ github.event.pull_request.base.sha }}
+      - name: Routing policy-version gate (push)
+        if: github.event_name == 'push' && github.event.before != ''
+        run: node scripts/check-routing-policy-version.mjs --base ${{ github.event.before }}
+
   benchmark-runtime:
     name: Runtime Benchmark (Branch-Head)
     runs-on: ubuntu-latest
@@ -149,6 +158,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"

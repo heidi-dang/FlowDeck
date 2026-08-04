@@ -1,0 +1,1224 @@
+# FlowDeck Routing and Model Selection — Architecture
+
+**Author:** Dev 4 (Routing, Scheduling, Models, Capabilities)
+**Status:** Target architecture — contracts, classifier, scoring, strategy, capabilities, delegation, scheduling, and models implemented (PR 1 + Dev 4 stacked work); providers, shadow mode, evaluation corpus, and reporting remain planned
+**Baseline SHA:** `5809fcf` (v1.0.3)
+**Scope:** This document describes the canonical routing and model-selection architecture for the FlowDeck orchestration system.
+
+> **Subordination notice:** This document is subordinate to the Dev 2 master plan. It does NOT propose
+> replacing Dev 2's runtime state machine, task contracts, completion engine, context store, or telemetry
+> persistence. Dev 4 adds a deterministic decision layer (routing, scheduling, models, capabilities) **on top
+> of** Dev 2's interfaces. Where a Dev 4 feature would need to change Dev 2-owned behavior, the change is
+> flagged as a dependency and routed to Dev 2, never implemented unilaterally.
+
+> **Implementation status legend.** Every section below is tagged with one of two statuses:
+>
+> - **Implemented (PR 1)** — code exists in the stacked PR 1 work (contracts, classifier, scoring).
+>   These artifacts are NOT yet merged into the baseline and are NOT active in the harness at `5809fcf`.
+> - **Planned** — design agreed in this document; implementation is scheduled as stacked work after PR 1.
+
+---
+
+## 1. Current Routing Architecture (Baseline `5809fcf`, v1.0.3)
+
+What exists today at the baseline. Dev 4 must be compatible with all of this.
+
+### 1.1 Legacy execution policy — `src/services/heidi-execution-policy.ts`
+
+The current harness selects an execution strategy from a prompt-level list defined in this file. The legacy
+`ExecutionStrategy` union has **8 values**:
+
+```
+fast_direct, direct, explore_then_direct, planner_then_execute,
+debugger_root_cause, frontend_backend_parallel, audit_only, audit_after_change
+```
+
+The file also provides:
+
+- `evaluateDelegationJustification(ctx)` — returns `{ justified, reasons[] }` from a `DelegationContext`
+  with flags: `explicitUserRequest`, `independentOwnership`, `specialistDomainRequired`,
+  `auditOrSecurityReview`, `directDiscoveryFailed`, `multiDomainSpanning`. Delegation is permitted ONLY when
+  at least one justification flag is true.
+- `performSurfaceAreaCheck(...)` — pre-edit inspection of dependents, existing tests, related config,
+  assumptions, and error paths.
+- `BoundedRecoveryTracker` — 3-step bounded recovery: `targeted_diagnosis` → `change_hypothesis` →
+  `circuit_breaker_block`.
+
+**Dev 4 stance:** this file remains untouched. It is the *current* harness. The canonical strategy list in
+section 6 supersedes the legacy prompt-level list as the routing-layer vocabulary, but the legacy file is not
+modified by Dev 4.
+
+### 1.2 Telemetry-only model guidance — `src/services/model-router.ts`
+
+- `classifyTaskComplexity(task)` returns `RoutingDecision { complexity, reason, eligible_agents }` where
+  `TaskComplexity = "cheap" | "standard" | "expensive"`.
+- `AgentTier = "cheap" | "standard" | "expensive"` with an `AGENT_TIER_MAP` per agent.
+- `filterAgentsForStage(stage)` and `computePromptSlimmingStats(allAgents)` drive stage-aware prompt slimming.
+- `getOutputFormatHint(complexity)` returns a compact-JSON hint for cheap tasks.
+
+The file header is explicit: **"This service is telemetry/guidance only. It does NOT change which model
+OpenCode uses for each call."** Actual model switching is explicitly marked as a TODO and does not exist.
+
+### 1.3 Centralized agent registry — `src/services/canonical-registry.ts`
+
+Single source of truth for all agent configuration. **13 agents** are registered:
+
+```
+heidi (alias: orchestrator), planner, architect, researcher, mapper,
+backend-coder, frontend-coder, devops, tester, reviewer, security-auditor, debug-specialist
+```
+
+Key defaults relevant to routing:
+
+- `modelPolicy: "inherit"` for every agent (no per-agent model pinning).
+- `maxDelegationDepth: 1` — exactly one level of delegation.
+- `delegationPolicy`: `"justified_only"` for `heidi`/`orchestrator`; `"none"` for all specialists.
+- Only heidi/orchestrator may delegate (`canAgentDelegate`); specialists never delegate.
+- `validateDelegation(delegatingAgent, currentDepth)` blocks depth >= 1 and non-delegating agents.
+
+### 1.4 Enforcement — `src/index.ts` (`tool.execute.before`)
+
+The runtime enforces governance at tool-call time:
+
+- `validateDelegationDepth` gate on every `task` tool call; `SELF_DELEGATION_BLOCKED` returned when an agent
+  targets itself; `MISSING_TARGET_AGENT` for unknown targets.
+- Child-session correlation via deterministic FIFO pending-slot queue per `(parentSessionID, targetAgent)`.
+- Delegation budgets with defaults: `maxToolCalls = 200`, `maxSameStepRetries = 3`, `maxDelegations = 20`
+  (configurable under `flowdeckConfig.governance.delegationBudget`).
+
+### 1.5 Supervisor pipeline — `src/services/supervisor-binding.ts`
+
+Every task follows the single pipeline `FD_PIPELINE`:
+
+```
+FD_PIPELINE = [fd-task, fd-review, fd-execute, fd-verify, fd-done]
+```
+
+No workflow classes, no alternative paths. The only sanctioned deviation is the trivial-task shortcut, which
+may skip `fd-review` and `fd-verify` (`TRIVIAL_SKIPPABLE_STAGES`) provided the reason is logged.
+
+### 1.6 Dev 2 / Dev 3 orchestration runtime — `src/orchestration/`
+
+An event-sourced orchestration runtime already exists and is owned by Dev 2/3:
+
+```
+src/orchestration/
+├── api/            (public API surface)
+├── streaming/      (event streaming)
+├── contracts/      (contract domain, hashing, services, policies, ports, adapters)
+├── domain/         (domain model)
+├── persistence/    (repositories incl. sqlite outbox adapter)
+├── services/       (orchestration services)
+├── projections/    (projections)
+├── completion/     (completion engine)
+├── evidence/       (evidence records)
+├── idempotency/    (idempotency keys)
+├── approval/       (approval flows)
+├── override/       (user override)
+├── verification/   (verification engine)
+└── index.ts        (barrel)
+```
+
+Dev 4 consumes the stable interfaces exposed by this runtime (events, persistence ports, completion,
+verification) and emits routing decisions as domain events through shared contracts. Dev 4 does not modify
+these sub-domains.
+
+---
+
+## 2. Prompt-Driven Weaknesses
+
+The baseline makes all routing decisions through prompt prose. This section catalogues the concrete failures
+that motivate the deterministic decision layer.
+
+| # | Weakness | Description |
+|---|---|---|
+| 1 | Classification is prose | Task complexity is decided by an LLM reading instructions about "cheap vs expensive"; no deterministic classifier, no stable output. |
+| 2 | Scoring is absent | There are no complexity/ambiguity/risk/confidence scores. Nothing is measured on a scale, so nothing can be compared across runs. |
+| 3 | Strategy selection is manual | The orchestrator prompt lists strategies; the model picks one ad hoc. No rule maps task properties to a strategy, and no rejected-strategy record exists. |
+| 4 | No runtime measurement | No signals (file count, domain count, test surface, dependency depth) are collected at decision time. Decisions cannot be audited or tuned. |
+| 5 | No reproducibility | Two identical prompts can route differently across runs because nothing is deterministic. Repeated-run equivalence cannot be guaranteed or measured. |
+| 6 | No provenance | No record of why a strategy, delegation, or agent was chosen. Post-hoc review and rollback analysis are impossible. |
+| 7 | Model router cannot switch models | `src/services/model-router.ts` is telemetry-only by design. It reports a tier but never changes which model executes a call. |
+| 8 | Delegation justification is advisory | `evaluateDelegationJustification` returns reasons, but nothing enforces a budget table, overlap checks, or rejection reasons. |
+| 9 | No capability awareness | Agents are routed by name and prose description, never by a machine-readable capability contract, so any agent may be asked for work it cannot perform. |
+
+**Consequence:** routing behavior is emergent and unverifiable. The target architecture replaces the prose
+path with a deterministic decision layer while keeping the current harness operational during rollout.
+
+---
+
+## 3. Target Architecture
+
+Dev 4 introduces a deterministic decision layer under `src/orchestration/routing/`. It consumes Dev 2 runtime
+interfaces and Dev 3 capability metadata, and emits routing events through shared contracts.
+
+**Status: contracts, classifier, scoring implemented in PR 1 (not active at baseline). Strategy, capabilities,
+delegation, scheduling, models, and providers are planned.**
+
+```
+                          ┌──────────────────────────────────────────┐
+                          │               user request                │
+                          └───────────────────┬──────────────────────┘
+                                              │
+                                              v
+        ┌─────────────────────────────────────────────────────────────────┐
+        │                src/orchestration/routing/                       │  Dev 4
+        │                                                                 │
+        │  contracts/   ── RoutingDecisionRecord, StrategyPolicy,         │  (PR 1: contracts,
+        │                 DelegationDecision, ModelRoutingInput,          │   classifier, scoring
+        │                 ModelSelectionDecision, CapabilityDescriptor    │   implemented;
+        │                                                                 │   rest planned)
+        │  classifier/  ── TaskClass taxonomy (17 classes, 16 inputs)     │
+        │                 deterministic, rule-first, LLM fallback         │
+        │                                                                 │
+        │  scoring/     ── complexity / ambiguity / risk / confidence     │
+        │                 (0-100, evidence-referenced)                    │
+        │                                                                 │
+        │  strategy/    ── canonical ExecutionStrategy + StrategyPolicy   │  (planned)
+        │  capabilities/── capability registry, derives from              │  (planned)
+        │                 canonical-registry.ts                           │
+        │  delegation/  ── DelegationDecision, budgets, rejection         │  (planned)
+        │  scheduling/  ── bounded parallelism, ownership leases          │  (planned)
+        │  models/      ── model tier selection, provider-neutral         │  (planned)
+        │  providers/   ── provider resilience, circuit breaker           │  (planned)
+        └──────────┬───────────────────────────────────────────────┬─────┘
+                   │                                              │
+                   │ consumes                                     │ emits
+                   v                                              v
+   ┌────────────────────────────────────┐          ┌─────────────────────────────┐
+   │  Dev 2 runtime interfaces          │          │  shared contracts / events  │
+   │  (src/orchestration/: events,      │          │  (routing decisions,         │
+   │   persistence, completion,         │          │   rejections, escalations,   │
+   │   verification, evidence)          │          │   shadow comparisons)        │
+   └────────────────────────────────────┘          └─────────────────────────────┘
+                   │
+                   v
+   ┌────────────────────────────────────┐
+   │  Dev 3 capability metadata         │
+   │  (FDX capability descriptors,      │
+   │   index inspection, tools)         │
+   └────────────────────────────────────┘
+```
+
+**Layering rules**
+
+1. `routing/` calls Dev 2 interfaces; Dev 2 never imports `routing/`.
+2. `routing/` reads Dev 3 capability metadata; it does not own FDX.
+3. All decision output is written as domain events through the existing event infrastructure; no separate
+   decision store is introduced (section 13).
+4. The legacy harness (`heidi-execution-policy.ts`, `model-router.ts`) remains the active path until shadow
+   mode (section 14) and rollout (section 16) complete.
+
+---
+
+## 4. Task Taxonomy
+
+**Status: classifier implemented in PR 1.**
+
+### 4.1 TaskClass — 17 values
+
+| TaskClass | Meaning | Example |
+|---|---|---|
+| `trivial_edit` | Single-file, no logic change | typo, rename, config value |
+| `documentation` | Docs-only change | README, ADR, comments |
+| `read_only_question` | Answer a question, no mutation | "how does X work?" |
+| `repository_audit` | Systematic read-only review of the repo | dependency audit, convention audit |
+| `local_bug` | Bug contained to a module | failing unit test, wrong branch |
+| `cross_module_feature` | Feature spanning 3+ files/modules | new service + API + persistence |
+| `ci_failure` | CI pipeline failure | lint/test/build job red |
+| `build_package_failure` | Local build or package failure | tsc error, bundler failure |
+| `release_failure` | Release pipeline failure | version bump, publish, tag |
+| `database_migration` | Schema or data migration | new table, column rename |
+| `concurrency_failure` | Race, deadlock, parallel-safety bug | overlapping writes, async race |
+| `security_review` | Security audit or fix | auth bypass, injection |
+| `performance_work` | Performance investigation/optimization | N+1 query, slow render |
+| `ui_feature` | Frontend/UI implementation | component, styling, screen |
+| `production_incident` | Live production outage or degradation | prod error, incident response |
+| `recovery_resume` | Resume or recover an interrupted task | state-machine recovery, re-run |
+| `unknown` | Classifier cannot determine a class | fallback class |
+
+### 4.2 Classification inputs — the signal set
+
+The classifier consumes the following input dimensions (derived from the user prompt plus runtime
+measurement at decision time):
+
+```
+read-only/mutating        file count               domain count          test surface
+repository criticality    production impact        release impact        security sensitivity
+migration                 concurrency              UI                    CI context
+explicit audit request    ambiguity                independent review need
+user-required specialist  recovery state
+```
+
+**Classification rules**
+
+- Deterministic, rule-first: class is decided by matching inputs against the taxonomy tables before any LLM
+  fallback is consulted.
+- The LLM fallback is used only when the deterministic path yields `unknown`, and the fallback result is
+  recorded with `confidence` (section 5) and provenance (section 13).
+- Inputs are normalized (case, whitespace, synonyms) before matching.
+- A read-only/mutating conflict is detected **before any rule runs**: `readOnly=true` together with
+  `mutating=true` is contradictory and always resolves to `unknown` with conflict evidence.
+- Documentation classification (rule 9) uses bounded word-boundary matching for the terms `doc`, `docs`,
+  `documentation`, `README`, `user guide`, and `developer guide`. Substring look-alikes are deliberately
+  **not** documentation signals: "doctor", "Docker", "dock", "document database", and "guided execution"
+  never classify as `documentation`. The rule applies regardless of the mutating flag, so "Update the
+  README" classifies as `documentation` even when mutating; `documentation` is part of the canonical
+  `MUTATING_CLASSES` set, and a read-only documentation inspection remains distinguishable from a
+  documentation mutation via the `readOnly`/`mutating` input flags. Question markers ("explain", "how to")
+  are **not** documentation signals; an explanatory prompt classifies as `read_only_question`.
+- Fallback rule 17 maps `userRequiredSpecialist` through the routing-owned specialist allow-list
+  (`classifier/specialist-registry.ts`). Specialist identities are **derived** from the canonical agent
+  registry in section 1.3 (`getSubagentIds()`); the routing layer keeps no second manually synchronized
+  agent list, and orchestrator aliases (heidi/orchestrator) are primaries by construction. The id is
+  normalized (trimmed, lowercased) before matching. A recognized specialist maps to its deterministic
+  class; an unrecognized id yields `unknown` with low confidence and evidence recording why the
+  deterministic path failed.
+
+---
+
+## 5. Scoring Model
+
+**Status: scoring implemented in PR 1.**
+
+Four independent scores, each on a **0–100** integer range, are computed for every task at decision time.
+
+| Score | Meaning | Direction |
+|---|---|---|
+| `complexity` | Structural size and interconnectedness | higher = more complex |
+| `ambiguity` | How underspecified or contradictory the task is | higher = more ambiguous |
+| `risk` | Worst-case consequence of executing the task | higher = more dangerous |
+| `confidence` | Classifier/scorer certainty in its own output | higher = more certain |
+
+### 5.1 Complexity signals
+
+- file count
+- domain count
+- dependency depth
+- checks (test/verification surface)
+- workstreams (parallel streams implied)
+- migration
+- concurrency
+- cross-platform
+- external integration
+
+### 5.2 Risk signals
+
+The canonical executable risk taxonomy has twelve signals, each with a dedicated
+`ClassificationInput` field and a dedicated `ScoreWeights.risk` weight:
+
+- production impact — `productionImpact` (0-100; the term scales by `productionWeight/30`)
+- release impact — `releaseImpact`
+- data integrity — `dataIntegrityInvolved`
+- security — `securitySensitive`
+- destructive operations — `destructiveOperations`
+- migration — `migrationInvolved`
+- concurrency — `concurrencyInvolved`
+- authentication/authorization — `authInvolved`
+- package publication — `packagePublication`
+- infrastructure changes — `infrastructureChange`
+- rollback difficulty — `rollbackDifficulty`
+- uncertain external side effects — `uncertainExternalSideEffects`
+
+Every signal is executable: it has an input field, a weight, a risk term in
+`scoreRisk`, and (where it denotes a high-risk condition) a floor trigger in
+`ensureHighRiskMinimum`. A destructive or auth-touching raw prompt is also
+detected as a secondary signal when the explicit field is not set. Two
+additional risk contributions — `needsIndependentReview` and an expected blast
+radius of >= 3 files — raise risk without adding to the canonical taxonomy.
+
+### 5.3 Ambiguity signals
+
+- missing target (no clear object of the change)
+- unclear success criteria
+- conflicting requirements
+- unknown repository
+- incomplete reproduction
+- missing error evidence
+- undefined ownership (no file/domain owner identified)
+
+### 5.4 Evidence references
+
+Score evidence is carried as an `EvidenceReference` list. Each entry is a `{ id, source, detail }` triple
+where `id` is a stable identifier (required for supersede references and dedup), `source` is a stable code
+path or rule id that produced the evidence, and `detail` is a human-readable description. A score with no
+evidence is treated as a defect (see metric `decisions without evidence = 0`, section 15).
+
+Raw routing inputs recorded at decision time are carried separately as `RoutingInputEvidence`
+`{ signal, value, source }` triples: `signal` names the input dimension, `value` is the observed value,
+`source` is a stable reference (file path, tool output pointer, prompt fragment index). These appear in the
+decision record's `inputEvidence` (section 13) and are distinct from score evidence.
+
+### 5.5 High-risk minimum rules
+
+Any task carrying **any** of the twelve canonical risk signals gets a `risk >= 70` floor
+(`HIGH_RISK_FLOOR = 70`) and triggers the high-risk capability floor (sections 10, 12) plus mandatory
+review:
+
+- `productionImpact >= 70` — touches production data or a live production system
+- `releaseImpact === true` — release impact
+- `dataIntegrityInvolved === true` — data integrity risk
+- `securitySensitive === true` — security sensitivity
+- `destructiveOperations === true` — performs destructive operations (delete, force-push, drop, purge)
+- `migrationInvolved === true` — database migration
+- `concurrencyInvolved === true` — concurrency involvement
+- `authInvolved === true` — touches authentication or authorization
+- `packagePublication === true` — publishes a package or mutates a registry
+- `infrastructureChange === true` — infrastructure changes
+- `rollbackDifficulty === true` — rollback is difficult
+- `uncertainExternalSideEffects === true` — uncertain external side effects with no rollback path
+
+The floor also applies for `needsIndependentReview`, a destructive or auth-touching raw prompt (secondary
+detection when the explicit field is not set), and an expected blast radius of >= 3 files. These twelve
+signals are exactly the executable risk taxonomy in section 5.2. For high-risk tasks: verification level is
+at least `full` (section 6), required reviewers are non-empty, `approvalRequirements` apply, the review
+stage is present, and the model tier may never be silently downgraded below the capability floor
+(section 12).
+
+---
+
+## 6. Strategy Contracts
+
+**Status: implemented.** Canonical `ExecutionStrategy` (9 values), `StrategyPolicy`
+with cross-field invariants (`zStrategyPolicy`), load-time validation of every
+default policy, `validateCanonicalStrategyPolicy` (locked-field enforcement),
+and high-risk/low-risk posture checks live in `src/orchestration/routing/contracts/strategy.ts`.
+
+### 6.1 Canonical ExecutionStrategy — 9 values
+
+The routing layer uses the following canonical strategy vocabulary:
+
+```
+fast_direct                direct_verified            explore_then_execute
+planned_execution          parallel_implementation    root_cause_repair
+audit_only                 repair_and_independent_audit   recovery_resume
+```
+
+| Strategy | Purpose | Typical TaskClass |
+|---|---|---|
+| `fast_direct` | Single-shot direct edit, minimal ceremony | `trivial_edit`, `documentation` |
+| `direct_verified` | Direct edit followed by verification | `local_bug`, `ui_feature` |
+| `explore_then_execute` | Map/repo discovery before mutation | `cross_module_feature`, `repository_audit` |
+| `planned_execution` | Plan first, then execute steps | `cross_module_feature`, `database_migration` |
+| `parallel_implementation` | Independent workstreams run concurrently | `cross_module_feature` (independent domains) |
+| `root_cause_repair` | Reproduce, diagnose, fix root cause | `local_bug`, `concurrency_failure`, `ci_failure` |
+| `audit_only` | Read-only analysis, no mutation | `security_review`, `repository_audit` |
+| `repair_and_independent_audit` | Fix, then independent verification by a separate reviewer | `security_review`, `production_incident` |
+| `recovery_resume` | Resume/recover an interrupted run | `recovery_resume` |
+
+### 6.2 StrategyPolicy
+
+Each strategy carries a policy record:
+
+```typescript
+interface StrategyPolicy {
+  strategy: ExecutionStrategy;
+  allowedStates: RunStage[];              // Dev 2 state-machine states where this strategy is valid
+  maximumSpecialists: number;             // cap on concurrent specialist sessions
+  requiredCapabilities: Capability[];     // capabilities that must exist before strategy starts
+  requiredReviewers: number;              // minimum reviewer count (0 for direct strategies, >= 1 for review-stage strategies)
+  verificationLevel: "focused" | "standard" | "full" | "release";
+  contextBudget: number;                  // relative budget weight for context/token use
+  modelTier: ModelTier;                   // baseline model tier (section 10)
+  recoveryLimit: number;                  // max repair cycles (Dev 2 recovery interface)
+  approvalRequirements: string[];         // human approvals required, if any
+}
+```
+
+**High-risk posture.** Section 5.5 mandates that high-risk tasks use full (or release) verification, at
+least one required reviewer, and at least one approval requirement. `isHighRiskCompatible(policy)` returns
+true exactly when `verificationLevel` is `full`/`release`, `requiredReviewers >= 1`, `allowedStates`
+contains the `review` stage, `approvalRequirements` contains the canonical `HIGH_RISK_APPROVAL_REQUIREMENT`
+(an arbitrary non-empty approval string does not qualify), every `requiredCapability` is recognized by the
+capability-tier floor projection, and the strategy's `modelTier` satisfies the high-risk capability floor
+(`security audit`, `database migration`, `release operation`, `package publication`, `destructive Git`,
+`infrastructure change` — all `strong_reasoning`). Direct strategies such as `fast_direct` (focused
+verification, zero reviewers, no approvals) are therefore incompatible with high-risk tasks.
+
+### 6.3 Mapping note — legacy vs canonical
+
+The canonical list **supersedes the legacy prompt-level strategy list** as the routing-layer vocabulary.
+
+| Legacy (`heidi-execution-policy.ts`) | Canonical (routing layer) | Relationship |
+|---|---|---|
+| `fast_direct` | `fast_direct` | kept identical |
+| `direct` | `direct_verified` | superseded: canonical requires verification |
+| `explore_then_direct` | `explore_then_execute` | superseded: canonical has explicit policy |
+| `planner_then_execute` | `planned_execution` | superseded |
+| `debugger_root_cause` | `root_cause_repair` | superseded |
+| `frontend_backend_parallel` | `parallel_implementation` | generalized superseded |
+| `audit_only` | `audit_only` | kept identical |
+| `audit_after_change` | `repair_and_independent_audit` | superseded: canonical requires independent auditor |
+| — | `recovery_resume` | new: formalizes recovery as a strategy |
+
+**The legacy `src/services/heidi-execution-policy.ts` remains untouched and remains the current harness.**
+The canonical list is the target vocabulary the deterministic layer selects from; until rollout completes, the
+legacy path continues to operate. No legacy file is modified by Dev 4.
+
+---
+
+## 7. Capability Registry
+
+**Status: implemented.** `CapabilityDescriptor` (`zCapabilityDescriptor`),
+canonical capability ids (`zNonEmptyId`), the capability-tier floor
+projection (`CAPABILITY_TIER_FLOOR`), the high-risk floor
+(`HIGH_RISK_CAPABILITY_FLOOR`), and per-specialist capability assignments
+(`SPECIALIST_CAPABILITIES`, `SPECIALIST_MUTATION_AUTHORITY`) are all
+deep-frozen and enforced by contracts in `src/orchestration/routing/contracts/`.
+
+### 7.1 CapabilityDescriptor
+
+```typescript
+interface CapabilityDescriptor {
+  capability: Capability;                 // canonical capability id (type Capability = string)
+  allowedAgents: string[];                // agents that may perform this capability
+  tools: string[];                        // tool ids required for the capability
+  mutating: boolean;                      // true if capability modifies state
+  requiresHuman: boolean;                 // human approval gate required
+  supportsParallelism: boolean;           // may run concurrently with other work
+  supportsCancellation: boolean;          // work can be cancelled mid-flight
+  expectedLatencyClass: "instant" | "fast" | "slow"; // latency budget hint
+}
+```
+
+### 7.2 Example capabilities
+
+| Capability | mutating | requiresHuman | supportsParallelism | supportsCancellation | expectedLatencyClass |
+|---|---|---|---|---|---|
+| `repository inspection` | false | false | true | true | fast |
+| `code mutation` | true | false | false | false | fast |
+| `GitHub inspection` | false | false | true | true | fast |
+| `CI log inspection` | false | false | true | true | fast |
+| `release operation` | true | true | false | false | slow |
+| `database migration` | true | true | false | false | slow |
+| `security audit` | false | false | true | true | slow |
+| `UI implementation` | true | false | false | false | fast |
+| `FDX index inspection` | false | false | true | true | instant |
+| `package publication` | true | true | false | false | slow |
+| `destructive Git` | true | true | false | false | fast |
+| `infrastructure change` | true | true | false | false | slow |
+
+### 7.3 Registry derivation
+
+The capability registry **derives from `src/services/canonical-registry.ts`**: the canonical registry remains
+the single source of truth for agent identity, tools, and ownership; capabilities are a projection of that
+data (agent id → allowedTools → capability descriptors) plus explicit capability declarations. No conflicting
+agent list is maintained. `requiredCapabilities` in a `StrategyPolicy` is validated against this derived
+registry before a strategy starts.
+
+---
+
+## 8. Delegation Rules
+
+**Status: implemented.** `DelegationDecision` (`zDelegationDecision`), the
+allowed/rejected reason vocabularies, canonical identity resolution
+(`resolveCanonicalPrincipal`, `CANONICAL_ALIAS_LOOKUP`), self-delegation and
+primary-target rejection, and depth-0/1 enforcement are enforced by contracts
+in `src/orchestration/routing/contracts/agents.ts`.
+
+### 8.1 DelegationDecision
+
+```typescript
+interface DelegationDecision {
+  taskId: string;
+  delegatingAgent: string;
+  targetAgent: string;
+  depth: number;                          // must be exactly 0 or 1
+  allowed: boolean;
+  reason?: "explicit_user_request" | "independent_ownership" | "specialist_expertise"
+        | "independent_audit" | "direct_discovery_failed" | "multi_domain";
+  rejectionReason?: "rejected_trivial" | "rejected_overlap" | "rejected_no_advantage"
+        | "rejected_cost";
+  justification: string[];                // persisted evidence for the decision
+}
+```
+
+### 8.2 Allowed delegation reasons
+
+| Reason | Meaning |
+|---|---|
+| `explicit_user_request` | User named or requested a specialist |
+| `independent_ownership` | Work has non-overlapping file ownership |
+| `specialist_expertise` | Requires domain expertise the primary lacks |
+| `independent_audit` | Independent verification/review required |
+| `direct_discovery_failed` | Direct repository discovery failed |
+| `multi_domain` | Change spans multiple technical domains |
+
+### 8.3 Rejection reasons
+
+| Reason | Meaning |
+|---|---|
+| `rejected_trivial` | Task too small to justify a session |
+| `rejected_overlap` | Delegation overlaps existing work/writes |
+| `rejected_no_advantage` | Specialist offers no measurable benefit |
+| `rejected_cost` | Cost/duration exceeds benefit |
+
+### 8.4 Hard constraints
+
+- **Canonical identity resolution.** Every delegation authorization decision is made from the **canonical
+  principal identity**, never from a raw id string. The canonical registry defines `heidi` (primary,
+  canonical id) and `orchestrator` (primary, alias of `heidi`). `resolveCanonicalPrincipal` maps every
+  agent id and alias (trimmed, lower-cased) to the canonical primary id, so `heidi` and `orchestrator`
+  resolve to the **same principal**. The raw requested ids are preserved in the decision record for
+  evidence; authorization uses the canonical identity.
+- **Delegating agents are derived from the canonical registry.** `CANONICAL_DELEGATING_AGENT_IDS` is
+  projected from `getPrimaryAgentIds()` (heidi/orchestrator, `delegationPolicy: "justified_only"`); the
+  authoritative agent list is never duplicated in the routing layer.
+- **Max depth is exactly 1.** `validateDelegation` in the canonical registry already enforces this; the
+  routing layer never produces a `depth > 1` decision.
+- **No self-delegation — alias-aware.** Any decision whose delegating and target agents resolve to the
+  same canonical principal is rejected. This blocks `heidi → heidi`, `orchestrator → orchestrator`,
+  `heidi → orchestrator`, and `orchestrator → heidi`.
+- **No primary-to-primary delegation.** A primary agent may never target another primary agent
+  (`heidi → orchestrator` and `orchestrator → heidi` both resolve to the same orchestrator principal and
+  are rejected). Only primary → canonical-subagent delegation may pass.
+- **Targets are canonical subagents.** `targetAgent` must be a canonical subagent (specialist) id from
+  the registry; primary agents and unknown ids are rejected as targets.
+- **No specialist delegation.** Specialists (`delegationPolicy: "none"` in canonical-registry.ts) never
+  delegate; the routing layer never emits a decision with a specialist as `delegatingAgent`.
+- **Allowed decisions carry evidence.** An `allowed` decision requires a non-empty allowed `reason` and
+  non-empty `justification`; `rejectionReason` is forbidden.
+- **Rejected decisions carry a rejection reason.** A `rejected` decision requires `rejectionReason`;
+  `reason` is forbidden. `rejected_overlap` and `rejected_cost` rejections additionally preserve
+  non-empty justification evidence.
+- **No empty or whitespace-only identifiers.** `delegatingAgent`, `targetAgent`, `taskId`, and every
+  `justification` entry reject empty/whitespace-only strings; unknown or whitespace-only agents resolve
+  to no principal and are rejected.
+
+### 8.5 Budget table
+
+Delegation budgets are enforced per task class. Exceeding a budget requires a persisted justification (written
+to the decision record, section 13).
+
+| Task class (group) | Max specialist sessions |
+|---|---|
+| typo / config | 0 |
+| documentation | 0–1 |
+| local bug | 0–2 |
+| cross-module feature | 2–4 |
+| CI / release | 3–6 |
+| architecture migration | 5–10 |
+| production incident | independent-domains-only (no overlapping writes) |
+
+---
+
+## 9. Specialist Budgets and Scheduling Rules
+
+**Status: scheduling through the Dev 2 runtime interfaces; budgets are
+bounded by contract.** `MAX_RECOVERY_LIMIT` and `MAX_SPECIALISTS_LIMIT` bound
+recovery and specialist counts in `strategy.ts`; specialist-count limits are
+pinned per strategy by `maximumSpecialists` in `DEFAULT_STRATEGY_POLICIES`.
+
+| Rule | Description |
+|---|---|
+| Bounded parallelism | Concurrent specialist sessions never exceed `StrategyPolicy.maximumSpecialists` for the active strategy. |
+| Ownership leases | Specialists acquire ownership leases through the Dev 2 interface for their file/domain scope; no second writer obtains the same lease. |
+| Serialize overlapping writes | Two workstreams whose leases overlap are serialized, never run concurrently. |
+| Verification capacity reservation | `requiredReviewers` sessions reserve verification capacity before execution starts; verification is never starved by execution work. |
+| Obsolete-work cancellation | When a decision supersedes in-flight work (e.g., a new hypothesis after a failed attempt), obsolete sessions are cancelled via `supportsCancellation` capabilities. |
+| Deterministic terminal outcomes | Every scheduled session reaches a terminal state (completed, rejected, cancelled) recorded in the decision record; no session is left indeterminate. |
+| Required evidence on results | A `completed` result must carry a non-empty summary and at least one evidence entry; `failed`/`blocked`/`cancelled` results must carry either evidence or a non-empty summary (the reason). Enforced by `zSpecialistResult` (`.superRefine`). |
+
+---
+
+## 10. Model Tiers
+
+**Status: implemented.** `ModelTier` (`MODEL_TIERS`), tier ranking
+(`MODEL_TIER_RANK`), timeout invariants (`zTimeoutPolicy`), provider/model
+constraints, the degradation-only fallback policy
+(`validateDegradationFallback`, shared by `zModelSelectionDecision` and
+`zRoutingDecisionRecord`), and capability-floor compliance are enforced by
+contracts in `src/orchestration/routing/contracts/models.ts`.
+
+### 10.1 ModelTier — provider-neutral
+
+```
+small_fast        |   general_coding        |   strong_reasoning
+```
+
+Tiers are **provider-neutral**. The document and the code contain **no hardcoded provider or model id**.
+Tier selection produces a requirement; provider resolution (which provider/model actually serves a tier) is
+the job of the provider layer (section 12) at call time.
+
+### 10.2 Per-tier use lists
+
+| Tier | Use for |
+|---|---|
+| `small_fast` | classification fallback, log summarization, result extraction, context compaction, simple docs, progress summary, low-risk routing |
+| `general_coding` | standard implementation, repo reasoning, test authoring, common bug repair |
+| `strong_reasoning` | complex root cause, architecture, concurrency, migration, high-risk security, ambiguous multi-system incidents, critical independent audit |
+
+### 10.3 Interfaces
+
+```typescript
+interface ModelRoutingInput {
+  taskId: string;
+  taskClass: TaskClass;
+  scores: { complexity: number; ambiguity: number; risk: number; confidence: number };
+  capabilityFloor: Capability[];          // capabilities the model must be able to perform
+  strategy: ExecutionStrategy;
+  timeoutPolicy: { queueMs: number; firstTokenMs: number; totalMs: number };
+  providerHealth?: Record<string, number>; // provider health scores (section 12)
+}
+
+interface ModelSelectionDecision {
+  tier: ModelTier;
+  provider?: string;                      // optional; resolved at call time, never pinned here
+  model?: string;                         // optional; resolved at call time, never pinned here
+  confidence: number;                     // 0-100
+  reasonCodes: string[];                  // deterministic codes, e.g. "HIGH_RISK_FLOOR"
+  fallbackTiers: ModelTier[];             // ordered fallback list
+  timeoutPolicy: { queueMs: number; firstTokenMs: number; totalMs: number };
+  capabilityFloor: Capability[];          // the floor this selection was required to satisfy
+}
+```
+
+**Capability floor:** a selection must satisfy `capabilityFloor`. If the cheapest tier cannot satisfy it, the
+selection moves up tiers until the floor is met (section 12: never silently downgrade below the floor).
+
+### 10.4 Model fallback policy — degradation-only (deterministic)
+
+**Status: enforced by contract (`zModelSelectionDecision` / `zRoutingDecisionRecord`).**
+
+The model fallback ordering follows exactly **one** canonical policy:
+
+> **Degradation-only:** the selected tier is the strongest tier that satisfies the capability floor; every
+> fallback tier is a progressively *weaker* tier, in strictly descending rank order
+> (`strong_reasoning → general_coding → small_fast`), and every fallback tier must still satisfy the
+> capability floor.
+
+Contract invariants (all enforced at the schema boundary):
+
+- `selectedTier` must NOT appear in `fallbackTiers` (it is the primary choice, not a degraded fallback).
+- `fallbackTiers` must be unique (no duplicate tiers).
+- `fallbackTiers` must be strictly ordered strongest-first (descending `MODEL_TIER_RANK`); escalation
+  (`small_fast → general_coding`) inside a fallback list is rejected — mixed escalation/degradation
+  ordering is never permitted.
+- every fallback tier must satisfy the capability floor.
+- `totalMs > 0`, `queueMs <= totalMs`, `firstTokenMs <= totalMs` (a bounded model call).
+- provider and model are trimmed and non-empty when present; a `model` requires a `provider`.
+- capability-floor entries and reason codes are unique.
+
+The **global user-selected model remains authoritative**. Model tiers are a recommendation and telemetry
+contract only; no automatic model switching occurs unless an explicit future setting enables it.
+
+---
+
+## 11. Escalation Policy
+
+**Status: planned.**
+
+The system starts at the **cheapest tier with sufficient capability** and escalates only on objective signals.
+
+**Escalate when:**
+
+1. Classification confidence is below the confidence floor (`confidence < 60`, see section 5).
+2. Ambiguity persists after the evidence-gathering pass (`ambiguity >= 70`).
+3. The first hypothesis fails with evidence (first failure on a `root_cause_repair`/`planned_execution` path).
+4. Critical evidence is missing (no reproduction, no error output, unknown repo).
+5. A high-risk state is entered (section 5.5 triggers).
+6. Historical success for the agent/task class is below the success threshold.
+7. A capability-floor violation is detected (selected tier cannot perform `requiredCapabilities`).
+
+**Never:**
+
+- Escalate because output is long (length is not a complexity signal).
+- Escalate/downgrade loops: each task has a single escalation path; a downgrade only follows an explicit
+  evidence-backed decision, and the pair is recorded (section 13) to prevent oscillation.
+
+Escalation always records `reasonCodes` and the scores that triggered it.
+
+---
+
+## 12. Provider Resilience
+
+**Status: planned.**
+
+The provider layer resolves a tier to an actual provider/model at call time and handles failures. It is
+provider-neutral in the same sense as section 10.
+
+| Mechanism | Behavior |
+|---|---|
+| Queue timeout | Wait-for-slot timeout; on expiry, try next candidate provider. |
+| First-token timeout | Timeout from request start to first token; on expiry, fail over. |
+| Total-response timeout | Hard cap on the whole response; on expiry, cancel and record. |
+| Provider health score | Rolling score per provider (0-100) updated after every call. |
+| Recent failure window | Failures within the window weigh heavily in the health score. |
+| Circuit breaker | Provider opens after repeated failures; open providers are not called. |
+| Cooldown | Opened providers enter cooldown before being probed again. |
+| Fallback list | Ordered provider candidates per tier from `ModelSelectionDecision.fallbackTiers`. |
+| Cancellation | In-flight calls are cancelled on failover via `supportsCancellation`. |
+| Retry policy | Retries occur ONLY when the call is non-mutating, or idempotent, or reconciliation confirms the operation is safe to repeat. Never retry blindly after a mutation. |
+| Idempotency awareness | Idempotency keys from the Dev 2 idempotency sub-domain gate retries of mutating calls. |
+| High-risk capability floor | For high-risk tasks (section 5.5), the tier may escalate but never silently downgrade below `capabilityFloor`; a downgrade attempt is a defect (metric `high-risk downgrades = 0`, section 15). |
+
+Every failover and retry decision is appended to the decision record with provider names, health scores, and
+reason codes (section 13).
+
+---
+
+## 13. Decision Provenance
+
+**Status: planned.**
+
+Every production routing decision is persisted as a `RoutingDecisionRecord` through the existing event
+infrastructure. No separate decision store is introduced.
+
+```typescript
+interface RoutingDecisionRecord {
+  taskId: string;
+  decisionId: string;                     // stable identifier of this decision record
+  timestamp: string;                      // ISO-8601
+  repositorySha: string;                  // exact 40-hex commit SHA the decision was made against
+  routingPolicyVersion: string;           // version of the routing policy tables used
+  weightsVersion: string;                 // version of the score weights used
+
+  inputEvidence: RoutingInputEvidence[];  // { signal, value, source } triples recorded at decision time
+  rulesApplied: string[];                 // deterministic rule ids that fired
+  modelFallbackUsed: boolean;             // true if an LLM fallback was consulted
+
+  classification: ClassificationResult;   // task class + evidence + fallback flag + policy version
+  scores: ScoredTask;                     // scores + per-dimension evidence + weightsVersion + policyVersion
+
+  taskClass: TaskClass;
+  selectedStrategy: ExecutionStrategy;
+  rejectedStrategies: Array<{ strategy: ExecutionStrategy; reason: string }>;
+
+  specialistCandidates: string[];
+  delegationDecisions: DelegationDecision[];
+
+  modelCandidates: Array<{ tier: ModelTier; provider?: string; reason: string }>;
+  selectedTier: ModelTier;
+  fallback: ModelTier[];
+
+  confidence: number;
+  outcome?: "pending" | "success" | "failed" | "superseded" | "cancelled";
+  supersedes?: string;                    // decisionId of the record this record corrects/supersedes
+}
+```
+
+**Guarantees**
+
+- Every production routing decision produces exactly one record (`recorded decisions = 100%`, section 15).
+- `repositorySha` is the exact 40-hex commit SHA the decision was made against; short or malformed SHAs are
+  rejected.
+- Binding is clone-safe and fails closed. `bindDecisionToSha` constructs the candidate, canonically deep-clones
+  it (no shared mutable object identity with caller-owned arrays/objects), validates the complete record, and
+  deep-freezes only the validated clone. Caller-owned inputs are never frozen and never referenced by the
+  returned record. Invalid SHA, timestamp, version identifiers, or nested classification/score/delegation/
+  strategy/model/evidence data throw rather than producing an invalid record.
+- Records are immutable after write; corrections are new records referencing the original via `supersedes`.
+- The record is the single source of truth for post-hoc review, shadow comparison (section 14), and rollback
+  analysis (section 16).
+
+---
+
+## 14. Shadow Mode
+
+**Status: planned.**
+
+Shadow mode is the rollout gate between the legacy prompt-driven path and the deterministic path.
+
+**Execution model**
+
+- The **current (legacy) routing executes** — user-visible behavior is unchanged.
+- The **candidate (deterministic) routing observes** — it computes classifications, scores, strategies,
+  specialists, and model selections in parallel.
+- **No mutation** — the candidate never delegates, never calls providers, never changes files or sessions.
+- Only the decision computation runs; all candidate output goes to shadow comparison.
+
+**Comparison dimensions**
+
+```
+strategy                 specialist count         selected specialists
+expected cost            expected duration        actual outcome
+verification completeness  recovery               task success
+unnecessary work
+```
+
+**Activation rule:** a candidate routing is promoted only after statistically significant agreement with the
+legacy path across many runs. **Never activate from a single session.** Promotion requires at least the
+thresholds in section 15's metrics (repeated-run equivalence, recorded decisions, etc.) plus a Dev 4 report
+(section 18) reviewed before the flag flips.
+
+---
+
+## 15. Evaluation Corpus and Performance Budgets
+
+**Status: corpus planned; classifier/scoring unit tests part of PR 1.**
+
+### 15.1 Evaluation corpus
+
+A deterministic fixture corpus is maintained for classification and scoring:
+
+- Each fixture is `{ input, expectedTaskClass, expectedScores, expectedStrategy, expectedDelegation }`.
+- Fixtures are versioned with the routing policy version and checked in under `tests/routing/` (fixtures) with
+  benchmarks under `scripts/` (routing benchmarks).
+- The corpus is deterministic: same input, same expected output, run on any machine.
+
+### 15.2 Target metrics
+
+| Metric | Target |
+|---|---|
+| Deterministic classification | 100% of corpus fixtures classified by rules (LLM fallback never required for fixtures) |
+| Recorded decisions | 100% of production routing decisions persisted |
+| Recursive delegation | 0 |
+| Self-delegation | 0 |
+| Overlapping writes | 0 |
+| Specialist sessions | -30% vs baseline |
+| Redundant investigations | -40% vs baseline |
+| Model cost | -35% vs baseline |
+| Repeated-run equivalence | >= 90% (same input → same decision) |
+| High-risk downgrades | 0 |
+| Unbounded retries | 0 |
+| Missing terminal results | 0 |
+| Decisions without evidence | 0 |
+
+Metrics are measured per campaign via the Dev 4 report (section 18) and the persisted decision records.
+
+---
+
+## 16. Fault Handling, Rollout, and Rollback
+
+**Status: planned.**
+
+### 16.1 Activation
+
+- All routing features are gated behind configuration flags (disabled by default at baseline).
+- Flag categories: `routing.classifier`, `routing.scoring`, `routing.strategy`, `routing.delegation`,
+  `routing.scheduling`, `routing.models`, `routing.providers`, `routing.shadow`.
+
+### 16.2 Rollout order
+
+1. **Shadow first.** Enable `routing.shadow` with the candidate observing, never acting (section 14).
+2. Classifier and scoring in shadow: verify deterministic classification and score stability on live input.
+3. Strategy/delegation selection in shadow: verify agreement with legacy behavior and the budget table.
+4. Scheduling and models in shadow: verify parallelism caps and provider selection without mutating anything.
+5. Providers in shadow: verify failover and timeouts against health scores.
+6. Only after shadow metrics pass (section 15) is any flag flipped to active.
+
+### 16.3 Fault handling
+
+- Any candidate failure in shadow is a shadow-only incident; the legacy path is unaffected.
+- In active mode, a routing fault (missing evidence, classifier error, provider exhaustion) degrades to the
+  legacy prompt-driven path for that task and records a defect in the decision record.
+- Circuit breakers (section 12) bound provider faults; the bounded recovery tracker bounds task faults.
+
+### 16.4 Operator documentation
+
+- Runtime flags, shadow mode usage, and metric collection are documented for operators (Dev 4 docs shipped
+  with the rollout PRs).
+- Every promotion is preceded by a Dev 4 report (section 18).
+
+### 16.5 Rollback plan
+
+- Rollback = flip the routing flag off; the legacy harness is always present and always the fallback.
+- Decision records (section 13) let operators identify which tasks were routed by the candidate so affected
+  work can be re-run on the legacy path.
+- No data migration is required for rollback: decision records are additive events; removing routing
+  activation never corrupts Dev 2 state.
+
+---
+
+## 17. Ownership Boundaries
+
+Exact ownership table. Dev 4 does not modify any Dev 1/2/3-owned path without routing through the owning
+developer.
+
+| Area | Owner |
+|---|---|
+| SSE / streaming / UI | Dev 1 |
+| Master plan, state machine, task contracts, completion engine, recovery, context store, telemetry persistence | Dev 2 |
+| FDX (Rust native `crates/fdx/`, index inspection, FDX tooling) | Dev 3 |
+| Routing decision layer (`src/orchestration/routing/`) | Dev 4 |
+| Scheduling, models, capabilities | Dev 4 |
+| Tests under `tests/routing/` | Dev 4 |
+| Routing benchmarks under `scripts/` (routing benchmarks) | Dev 4 |
+| This document | Dev 4 |
+
+**Interfaces consumed by Dev 4 (read-only usage of Dev 2/3):**
+
+- Dev 2: events (`src/orchestration/events/`), persistence ports, completion, verification, evidence,
+  idempotency.
+- Dev 3: capability metadata and FDX index inspection.
+
+**Interfaces Dev 4 does not own or modify:**
+
+- `src/orchestration/contracts/`, `completion/`, `persistence/`, `projections/`, `streaming/`, `api/`
+  (Dev 2/3 frozen sub-domains).
+- `src/services/heidi-execution-policy.ts` and `src/services/model-router.ts` (legacy harness, untouched).
+- `src/services/canonical-registry.ts` (single source of truth; Dev 4 derives from it, does not fork it).
+
+---
+
+## 18. Per-Task Reporting
+
+**Status: planned (report format mandatory for every Dev 4 campaign and PR).**
+
+Every Dev 4 task, program, and campaign ends with a report in this format.
+
+### 18.1 Header
+
+```
+Developer: Dev 4
+Task:        <task id / title>
+Program:     <program or stacked-work wave>
+Campaign:    <campaign id, if part of a benchmark campaign>
+Harness:     <harness version>
+```
+
+### 18.2 Provenance
+
+```
+Branch:      <branch>
+Base SHA:    <base SHA>
+Final SHA:   <final SHA>
+PR:          <PR number / link>
+Sessions:    <count>            Stages: <pipeline stages executed>
+```
+
+### 18.3 Decisions
+
+```
+Classification:  <TaskClass>            Confidence: <0-100>
+Scores:          complexity=<n> ambiguity=<n> risk=<n>
+Strategy:        <canonical ExecutionStrategy>
+Delegation:      <decision summary + budget-table compliance>
+Specialists:     <list + counts vs budget>
+DAG:             <parallelism graph / serialization summary>
+Model selections:<tier chain + reason codes>
+Provider fallback:<fallback events + health scores>
+```
+
+### 18.4 Execution telemetry
+
+```
+Tokens:        <in/out totals>          Cost:   <USD estimate>
+Tool calls:    <count>                  Duration: <wall time>
+Retries:       <count, with idempotency flags>
+Guard blocks:  <count of governance blocks hit>
+Stability defects: <count + descriptions>
+Repeated-run consistency: <% same-input-same-decision>
+Exact-SHA CI:  <CI status at the exact final SHA, not a later SHA>
+```
+
+### 18.5 Readiness
+
+```
+Readiness scores (0-10 each):
+  - Determinism    <0-10>
+  - Evidence       <0-10>
+  - Safety         <0-10>
+  - Cost           <0-10>
+  - Reproducibility <0-10>
+
+Merge recommendation: <APPROVE / REQUEST CHANGES> <one-paragraph rationale>
+```
+
+A task is not considered done until the report exists, the metrics in section 15 are populated for the
+campaign, and the merge recommendation is stated.
+
+---
+
+## 19. Absolute Contract Closure (PR 1)
+
+**Status: enforced by executable contracts and adversarial tests
+(`tests/routing/absolute-closure.test.ts`).**
+
+PR 1 guarantees that the exported routing contracts cannot produce mutable,
+contradictory, or ambiguous routing decisions. Every guarantee below is a
+runtime invariant enforced by a schema `superRefine`, a load-time guard, or a
+deep-freeze — not just a TypeScript `readonly` annotation.
+
+### 19.1 Immutable policy tables
+
+The following exported tables are deeply frozen at module load:
+
+| Table | Location | Change requires |
+|---|---|---|
+| `DEFAULT_WEIGHTS` | `src/orchestration/routing/scoring/scorers.ts` | `WEIGHTS_VERSION` bump |
+| `MODEL_TIER_RANK` | `src/orchestration/routing/contracts/models.ts` | `ROUTING_POLICY_VERSION` bump |
+| `CAPABILITY_TIER_FLOOR` | `src/orchestration/routing/contracts/models.ts` | `ROUTING_POLICY_VERSION` bump |
+| `TASK_CLASSES` | `src/orchestration/routing/contracts/task.ts` | `ROUTING_POLICY_VERSION` bump |
+| `HIGH_RISK_CAPABILITY_FLOOR` | `src/orchestration/routing/contracts/strategy.ts` | `ROUTING_POLICY_VERSION` bump |
+| `CANONICAL_ALIAS_LOOKUP` | `src/orchestration/routing/contracts/agents.ts` | `ROUTING_POLICY_VERSION` bump |
+| `SPECIALIST_CAPABILITIES` / `SPECIALIST_MUTATION_AUTHORITY` | `src/orchestration/routing/contracts/agents.ts` | `ROUTING_POLICY_VERSION` bump |
+| `SPECIALIST_TERMINAL_STATUSES` | `src/orchestration/routing/contracts/agents.ts` | `ROUTING_POLICY_VERSION` bump |
+| `SPECIALIST_TASK_CLASS` | `src/orchestration/routing/classifier/specialist-registry.ts` | `ROUTING_POLICY_VERSION` bump |
+| `DEFAULT_STRATEGY_POLICIES` | `src/orchestration/routing/contracts/strategy.ts` | `ROUTING_POLICY_VERSION` bump |
+
+- Deep-freeze (`Object.freeze` recursively, one shared `deepFreeze` utility in
+  `immutability.ts`) makes mutation attempts throw in strict mode or silently
+  leave the canonical value unchanged — either way the canonical value never
+  changes.
+- `DeepReadonly<T>` exposes recursive readonly types; no writable `Record`
+  exports remain.
+- Callers that need a mutable working copy use `cloneFrozen(...)` /
+  `structuredClone(...)`.
+- Version-policy parity fixtures in `absolute-closure.test.ts` snapshot the
+  canonical serialization of every table: a policy change that does not bump
+  the version fails the parity test.
+
+### 19.2 Canonical agent identity
+
+- `resolveCanonicalPrincipal` normalizes (trim + lowercase) and resolves every
+  agent id/alias to its canonical principal; `heidi` and `orchestrator` resolve
+  to the same principal.
+- Delegation authorization always uses canonical identity:
+  - `heidi → heidi`, `orchestrator → orchestrator`, `heidi → orchestrator`,
+    `orchestrator → heidi` are all rejected (same principal).
+  - Primary agents are never valid delegation targets; targets must be
+    canonical subagents.
+  - Specialists can never delegate.
+  - Unknown/whitespace-only agents are rejected.
+- Raw requested ids are preserved in the parsed record for evidence; only the
+  authorization decision uses canonical identity.
+
+### 19.3 Routing decision record invariants
+
+`zRoutingDecisionRecord` fails closed when any relationship is invalid:
+
+- `selectedStrategy` not in `rejectedStrategies`; rejected strategies unique
+  with meaningful reasons.
+- `selectedTier` not in `fallback`; fallback unique and strictly
+  strongest-first (degradation-only).
+- Every delegation decision uses the record `taskId`; delegation decisions
+  unique by task/delegator/target/depth; candidates are canonical subagents.
+- `classification.policyVersion` and `scores.policyVersion` equal
+  `routingPolicyVersion`; `scores.weightsVersion` equals `weightsVersion`.
+- `supersedes !== decisionId`; `rulesApplied`, input evidence, model
+  candidates, and evidence ids are unique; score evidence ids unique within a
+  dimension and across dimensions; evidence ids are unique across every scope
+  in the record (classification, scores, input) — a cross-scope collision is
+  rejected.
+- `modelFallbackUsed` must exactly equal `classification.usedModelFallback` —
+  no contradictory fallback provenance.
+- Selected tier exists in model candidates when candidates are supplied.
+- `bindDecisionToSha` canonically clones, validates, and deep-freezes the
+  record; the returned record shares no mutable identity with the caller.
+
+### 19.4 Canonical JSON
+
+`canonicalJson` (in `contracts/canonical.ts`) is deterministic (recursive
+sorted keys) with the documented rules:
+
+- `undefined` object properties are omitted (key disappears).
+- `null` object/array values are preserved distinctly.
+- `undefined` array entries are **rejected** (an array `[undefined]` can never
+  serialize like `[null]`).
+- Sparse arrays (holes, detected by index ownership) are **rejected**,
+  including nested sparse arrays.
+- Unsupported values (Map, Set, typed arrays, class instances, RegExp,
+  Promise, symbol, function, bigint, non-finite numbers) and cycles are
+  rejected.
+- Two semantically different accepted values never produce the same canonical
+  JSON.
+
+### 19.5 Evidence
+
+All evidence fields (`zEvidenceReference`, `zClassificationResult`,
+`zRoutingInputEvidence`, `zRoutingDecisionRecord`) require trimmed,
+non-empty, meaningful text (`id`, `source`, `detail`, `signal`); bare
+placeholders (`"unknown"`, `"n/a"`, …) are rejected without an explanatory
+detail. Classification evidence is non-empty and unique; routing decision
+input evidence is non-empty; score evidence ids are unique within and across
+dimensions; evidence values must pass canonical serialization — an observed
+`value` of `undefined` is rejected (it would silently disappear during
+canonical serialization), while explicit falsy values (`0`, `false`, `""`,
+`null`) remain valid observations.
+
+### 19.6 Model selection
+
+- Timeout invariants: `totalMs > 0`, `queueMs <= totalMs`,
+  `firstTokenMs <= totalMs`.
+- Provider/model trimmed and non-empty when present; a model requires a
+  provider.
+- Capability-floor entries and reason codes unique; unknown capabilities
+  rejected.
+- Selected tier not in fallback; fallback unique and degradation-only
+  (strongest-first); every fallback satisfies the floor. The record-level
+  `zRoutingDecisionRecord` re-applies the same degradation-only validator to
+  `selectedTier`/`fallback` — escalation (a fallback strictly stronger than
+  the selected tier) is rejected at both the model-selection schema and the
+  record level.
+
+### 19.7 Specialist results
+
+- Completed results require a meaningful summary and meaningful evidence.
+- Non-completed results require a meaningful reason: a blocked, failed, or
+  cancelled result must carry either a meaningful summary or meaningful
+  evidence, and an explicit `terminalReason` must be explanatory — the bare
+  status word (`"blocked"`, `"failed"`, `"cancelled"`, `"canceled"`, …) or a
+  generic placeholder (`"error"`, `"unable"`, …) is rejected.
+- Changed-file and ownership paths are normalized repository-relative paths
+  (absolute, drive, UNC/device, and traversal paths rejected; repeated
+  separators and `.` segments collapsed) and unique.
+- Finding/evidence/ownership ids are unique; assumptions and unresolved risks
+  reject whitespace-only entries; completed results with changes carry
+  supporting evidence that references a changed path.
+- `zChangeRef` normalizes `file` at parse time (transform contract): the
+  parsed value is canonical, so no code validates one representation and
+  stores another.
+
+### 19.8 Assignment-bound specialist results (envelope)
+
+`validateSpecialistResultEnvelope` binds a raw result to the task,
+assignment, specialist identity, and the capabilities that authorize it:
+
+- `specialistId` must be a canonical subagent; every assigned capability must
+  belong to that specialist.
+- Mutation claims (`changes.length > 0`) require a mutating assigned
+  capability (`"code mutation"`); a read-only specialist that reports changes
+  is rejected. Reported ownership must fall within assigned ownership.
+- Completed results with changes must carry evidence referencing a changed
+  path (same rule as §19.7, re-enforced at envelope level).
+- The envelope is the identity binding: raw result records carry no identity,
+  and envelope checks cannot be bypassed by constructing a bare result.
+
+### 19.9 Strategy policies
+
+`zStrategyPolicy` validates: non-empty unique stages, unique recognized
+capabilities, unique meaningful approvals, reviewer ⇒ review stage,
+non-focused verification ⇒ verify stage, `contextBudget > 0`, bounded
+`recoveryLimit`, and no contradictory high-risk/low-risk posture. Every
+default policy is validated at module load (load-time invariant in
+`strategy.ts`).
+
+### 19.10 Specialist mapping parity
+
+`SPECIALIST_TASK_CLASS` is deeply frozen and guarded at load: exactly the
+canonical subagent set is permitted as keys (two-way equality
+`canonical subagent ids === mapping keys`); stale entries for removed
+agents and primary-agent keys are rejected.
+
+### 19.11 Policy-version fingerprint gate
+
+Policy and weights versions are protected by a CI gate
+(`scripts/check-routing-policy-version.mjs`, wired as
+`npm run test:routing:policy-version`):
+
+- `src/orchestration/routing/fingerprints.json` records the canonical
+  fingerprint of every versioned policy/weights table for the current
+  versions (`ROUTING_POLICY_VERSION`, `ROUTING_WEIGHTS_VERSION`).
+- The gate compares the live serialized tables against the manifest: a policy
+  change without a version bump, a historical-fingerprint modification, or a
+  current-version entry missing from the manifest fails the gate.
+- `scripts/update-routing-fingerprints.mjs` regenerates the manifest after an
+  intentional, version-bumped policy change; `fingerprint-report.ts` emits the
+  manifest as JSON on the last line of its output for CI consumption.
+- The gate runs in addition to the parity fixtures in §19.1: fixtures pin the
+  serialized values, the gate pins the live-vs-manifest equivalence.
+
+---
+
+## Appendix: Verification
+
+- This document covers all 18 sections: current architecture, prompt-driven weaknesses, target architecture,
+  task taxonomy, scoring model, strategy contracts, capability registry, delegation rules, specialist
+  budgets/scheduling, model tiers, escalation policy, provider resilience, decision provenance, shadow mode,
+  evaluation corpus, fault handling/rollout/rollback, ownership boundaries, per-task reporting.
+- Real paths referenced: `src/services/heidi-execution-policy.ts`, `src/services/model-router.ts`,
+  `src/services/canonical-registry.ts`, `src/index.ts`, `src/services/supervisor-binding.ts`,
+  `src/orchestration/` (contracts, events, persistence, completion, verification, evidence, idempotency,
+  streaming, api, projections).
+- Statuses: contracts, classifier, scoring, strategy, capabilities, delegation, scheduling, models = implemented (PR 1 + Dev 4 stacked work, inactive at baseline `5809fcf`); providers, shadow, evaluation corpus, reporting = planned.
