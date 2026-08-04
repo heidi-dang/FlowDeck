@@ -411,6 +411,70 @@ interface Regression {
   deltaPercent: number;
 }
 
+function averageSummaries(a: MetricSummary, b: MetricSummary): MetricSummary {
+  return {
+    meanMs: round((a.meanMs + b.meanMs) / 2),
+    medianMs: round((a.medianMs + b.medianMs) / 2),
+    p95Ms: round((a.p95Ms + b.p95Ms) / 2),
+    minMs: Math.min(a.minMs, b.minMs),
+    maxMs: Math.max(a.maxMs, b.maxMs),
+    iterations: a.iterations + b.iterations,
+  };
+}
+
+const BENCHMARK_ROUNDS = 3;
+
+function medianOf(ns: number[]): number {
+  const sorted = [...ns].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] ?? 0;
+}
+
+function aggregateSummaries(rounds: MetricSummary[]): MetricSummary {
+  return {
+    meanMs: round(rounds.reduce((a, s) => a + s.meanMs, 0) / rounds.length),
+    medianMs: round(medianOf(rounds.map((s) => s.medianMs))),
+    p95Ms: round(rounds.reduce((a, s) => a + s.p95Ms, 0) / rounds.length),
+    minMs: Math.min(...rounds.map((s) => s.minMs)),
+    maxMs: Math.max(...rounds.map((s) => s.maxMs)),
+    iterations: rounds.reduce((a, s) => a + s.iterations, 0),
+  };
+}
+
+async function measureABBA(
+  candidateMod: RuntimeModule,
+  baselineMod: RuntimeModule,
+  profile: SampleProfile,
+): Promise<{ candidate: Metrics; baseline: Metrics }> {
+  await measureAll(candidateMod, profile);
+  await measureAll(baselineMod, profile);
+
+  const candidateRounds: Metrics[] = [];
+  const baselineRounds: Metrics[] = [];
+  for (let round = 0; round < BENCHMARK_ROUNDS; round++) {
+    const c1 = await measureAll(candidateMod, profile);
+    const b1 = await measureAll(baselineMod, profile);
+    const b2 = await measureAll(baselineMod, profile);
+    const c2 = await measureAll(candidateMod, profile);
+
+    const candidateRound = {} as Metrics;
+    const baselineRound = {} as Metrics;
+    for (const id of METRIC_IDS) {
+      candidateRound[id] = averageSummaries(c1[id], c2[id]);
+      baselineRound[id] = averageSummaries(b1[id], b2[id]);
+    }
+    candidateRounds.push(candidateRound);
+    baselineRounds.push(baselineRound);
+  }
+
+  const candidate = {} as Metrics;
+  const baseline = {} as Metrics;
+  for (const id of METRIC_IDS) {
+    candidate[id] = aggregateSummaries(candidateRounds.map((r) => r[id]));
+    baseline[id] = aggregateSummaries(baselineRounds.map((r) => r[id]));
+  }
+  return { candidate, baseline };
+}
+
 function computeRegressions(baseline: Metrics, candidate: Metrics): Regression[] {
   const regressions: Regression[] = [];
   for (const id of METRIC_IDS) {
@@ -662,8 +726,9 @@ async function main(): Promise<void> {
   console.log(`Sample profile: ${opts.smallSamples ? "small (hermetic test)" : "full (CI evidence)"}`);
   console.log("");
 
-  const candidate = await measureAll(candidateMod, profile);
-  const baseline = await measureAll(baselineMod, profile);
+  const both = await measureABBA(candidateMod, baselineMod, profile);
+  const candidate = both.candidate;
+  const baseline = both.baseline;
 
   validateMetrics(candidate, "candidate");
   validateMetrics(baseline, "baseline");

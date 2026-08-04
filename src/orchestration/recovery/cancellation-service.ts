@@ -605,7 +605,17 @@ export class CancellationService {
     retryFingerprint?: string,
     circuitBreakerOpen: boolean = false,
   ): Promise<RecoveryState> {
-    const latestCheckpoint = await this.getLatestCheckpoint(runId);
+    // Checkpoint data is informational audit context. When no checkpoint
+    // repository is wired, recovery must still proceed — the recovery
+    // transition is the authoritative operation.
+    let latestCheckpoint: Checkpoint | null = null;
+    if (this.checkpointRepo) {
+      try {
+        latestCheckpoint = await this.getLatestCheckpoint(runId);
+      } catch {
+        latestCheckpoint = null;
+      }
+    }
     const recoveryAttempts = this.countRecoveryAttempts(runId);
 
     return {

@@ -12,11 +12,13 @@ function clean() {
 const conns = new Map();
 function openConn(p, ro = false) {
   let d = conns.get(p); if (d) return d;
-  d = new Database(p, { readonly: ro });
-  d.pragma('journal_mode = WAL');
-  d.pragma('foreign_keys = ON');
-  d.pragma('busy_timeout = 5000');
-  d.pragma('synchronous = NORMAL');
+  // bun:sqlite has no .pragma(); use exec. Never pass an all-zero-flags options
+  // object (SQLITE_MISUSE under bun 1.3.14), so open plain unless readonly.
+  d = ro ? new Database(p, { readonly: true }) : new Database(p);
+  d.exec('PRAGMA journal_mode = WAL');
+  d.exec('PRAGMA foreign_keys = ON');
+  d.exec('PRAGMA busy_timeout = 5000');
+  d.exec('PRAGMA synchronous = NORMAL');
   conns.set(p, d); return d;
 }
 function closeConn(p) { const d = conns.get(p); if (d) { d.close(); conns.delete(p); } }
@@ -51,7 +53,7 @@ function createTx(db, policy) {
     write: (fn) => {
       for (let a = 0; a < pol.maxAttempts; a++) {
         try { return db.transaction(fn)(); }
-        catch {
+        catch (e) {
           const reason = pol.classify(e);
           if (pol.isRetryable(reason) && a < pol.maxAttempts - 1) {
             const delay = pol.baseMs * Math.pow(2, a);
@@ -93,39 +95,6 @@ const _tx0 = createTx(db0, expiredPolicy);
   ok(expiredPolicy.maxAttempts === 10, 'deadline policy: maxAttempts=10');
   ok(expiredPolicy.classify(new Error("SQLITE_BUSY")) === "busy", 'classify: busy detected');
   clean();
-
-// ════════════════════════════════════════════════════════════════
-console.log('\n=== Bun Compatibility Investigation ===');
-
-// Verify the crash is reproducible
-const bunVersion = process.version;
-const platform = process.platform;
-const arch = process.arch;
-const isWindows = platform === 'win32';
-console.log(`  Runtime: Node ${bunVersion}, platform=${platform}, arch=${arch}, isWindows=${isWindows}`);
-try { require('fs').readFileSync('node_modules/bun-types/package.json','utf-8'); console.log('  bun-types: installed'); } catch { console.log('  bun-types: missing (expected if bun is global)'); };
-const dbVer = new Database(':memory:').prepare('SELECT sqlite_version()').get();
-console.log(`  SQLite version: ${JSON.stringify(dbVer)}`);
-
-// Verify that better-sqlite3 works correctly with Node
-const tdb = new Database(':memory:');
-const rows = tdb.prepare("SELECT 1 AS test UNION SELECT 2").all();
-eq(rows.length, 2, 'basic query: 2 rows');
-tdb.close();
-
-// Document finding
-const finding = `bun NAPI crash root cause:
-- bun v1.3.14 crashes in napi_get_last_error_info when loading better-sqlite3 native addon
-- Affected platforms: Windows (WSL), Windows native
-- Not affected: macOS (bun + better-sqlite3 works natively)
-- Root cause: bun's NAPI bridge does not fully implement the NAPI lifecycle for native addons
-  that use node-gyp (better-sqlite3 uses node-gyp for native compilation)
-- Mitigation: Use Node.js for integration tests; bun test may be used for non-native unit tests
-- Pure-JS fallback: sql.js is a pure-JS SQLite implementation that works with bun
-  but is slower and has a different API
-- Recommendation: Keep better-sqlite3 as primary driver; add sql.js as optional fallback
-  in a separate driver abstraction if cross-runtime compatibility becomes required`;
-console.log(`\n  ${finding.replace(/\n/g, '\n  ')}`);
 
 // ════════════════════════════════════════════════════════════════
 console.log('\n=== Migration Stress Tests ===');

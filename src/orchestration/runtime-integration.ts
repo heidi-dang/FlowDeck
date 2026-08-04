@@ -640,6 +640,11 @@ export class RuntimeOrchestrator {
     });
 
     const tokenId = `token:root:${runId}`;
+    const token = this.cancellationService.getToken(tokenId);
+    if (!token) {
+      // Create the root token if it doesn't exist yet (same as cancel())
+      this.cancellationService.createRootToken(runId);
+    }
     await this.cancellationService.cancel(tokenId, { force: true, reason });
 
     return { success: true, runId, phase: "completed" };
@@ -733,25 +738,13 @@ export class RuntimeOrchestrator {
       };
     }
 
-    // Build recovery state (best-effort: the checkpoint repository is an
-    // optional port; if it is not configured the transition is still
-    // committed, so we must not throw after the commit).
-    let recoveryState: import("./recovery/recovery-state.js").RecoveryState | undefined;
-    try {
-      recoveryState = await this.cancellationService.buildRecoveryState(
-        runId,
-        `${runId}-${Date.now()}-checkpoint`,
-        true,
-        error,
-      );
-    } catch (recoveryError) {
-      this.logger.error(
-        `Recovery state build failed for run ${runId}: ${
-          recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
-        }`,
-        { component: "RuntimeOrchestrator", runId },
-      );
-    }
+    // Build recovery state
+    const recoveryState = await this.cancellationService.buildRecoveryState(
+      runId,
+      `${runId}-${Date.now()}-checkpoint`,
+      true,
+      error,
+    );
 
     // Emit stage events via transition service
     const stageEmitter = this.transitionService.getEventEmitter();
@@ -766,7 +759,7 @@ export class RuntimeOrchestrator {
         from: fromState,
         to: toState,
         version: result.newVersion,
-        recoveryAttempts: recoveryState?.recoveryAttempts ?? [],
+        recoveryAttempts: recoveryState.recoveryAttempts,
       },
       timestamp: this.config.clock.now(),
     });
