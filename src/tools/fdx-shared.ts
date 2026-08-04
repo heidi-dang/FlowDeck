@@ -789,7 +789,7 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
     // sources the opened generation is the one whose probe output is accepted.
     // The executed generation's digest becomes the authoritative validated
     // digest — captured BEFORE the probe runs (unmanaged trust order).
-    const execRes = executeVerifiedSnapshot(binPath, ["--version"], validatedSha, { timeout: 3000 })
+    const execRes = executeVerifiedSnapshot(binPath, ["--version"], validatedSha, { timeout: 10000 })
     if (execRes.kind === "executed") {
       const match = execRes.out.match(/fdx\s+v?([0-9]+\.[0-9]+\.[0-9]+)/i) || execRes.out.match(/v?([0-9]+\.[0-9]+\.[0-9]+)/)
       if (match && match[1]) {
@@ -1373,11 +1373,9 @@ export function executeVerifiedSnapshot(
     if (fdxPreExecTestHookValue) fdxPreExecTestHookValue(snapshotPath, bin)
     // Secure process creation from the validated in-memory bytes. The helper
     // execs the target (or launches + waits on Windows) and propagates its
-    // exit status; stdout/stderr flow through the inherited pipes. The source
-    // extension is passed so Windows names .cmd/.bat payloads correctly.
+    // exit status; stdout/stderr flow through the inherited pipes.
     const out = execFileSync(helper, args, {
       input: buf,
-      env: { ...process.env, FDX_SECURE_EXEC_PAYLOAD_EXT: process.platform === "win32" ? (extname(bin) || ".exe") : ".exe" },
       encoding: "utf-8",
       timeout: opts.timeout ?? FDX_TIMEOUT_MS,
       maxBuffer: opts.maxBuffer ?? FDX_MAX_BUFFER,

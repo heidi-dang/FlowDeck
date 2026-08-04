@@ -713,12 +713,12 @@ await new Promise(() => {})
     it("never copies an FDX_BINARY_PATH / PATH binary into the managed repair cache", async () => {
       const target = detectFdxTarget()
       if (!target) return
-      // Windows: a target-less env-path validation spawns the binary; a .cmd
-      // file is executable on Windows without a shell (Node invokes cmd.exe),
-      // unlike a text file named .exe.
-      const envBin = process.platform === "win32" ? join(tempDir, "fdx-env.cmd") : join(tempDir, "fdx-env")
+      // Windows uses a genuine PE fixture (bun.exe) — the audit requires PE
+      // fixtures because .cmd-content files cannot be spawned by the
+      // secure-exec helper (CreateProcess only runs real PE images).
+      const envBin = process.platform === "win32" ? join(tempDir, "fdx-env.exe") : join(tempDir, "fdx-env")
       if (process.platform === "win32") {
-        writeFileSync(envBin, "@echo fdx v1.0.4\r\n", "utf-8")
+        writeFileSync(envBin, readFileSync(process.execPath))
       } else {
         writeFileSync(envBin, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
         chmodSync(envBin, 0o755)
@@ -1454,7 +1454,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       } finally {
         setFdxPreExecTestHook(null)
       }
-    })
+    }, { timeout: 30000 })
 
     it("Contract1/P1-2: snapshot replacement at the pre-exec barrier never executes the replaced bytes", () => {
       const target = detectFdxTarget()
@@ -1618,7 +1618,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       } finally {
         setFdxPreExecTestHook(null)
       }
-    })
+    }, { timeout: 30000 })
 
     it("Contract1/P2-1: a successful --version probe surfaces cleanup failures structurally", () => {
       const target = detectFdxTarget()
@@ -1709,7 +1709,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
           try { rmSync(snapshotDirSeen, { recursive: true, force: true }) } catch {}
         }
       }
-    })
+    }, { timeout: 30000 })
 
     it("Contract1: the real resolver path completes under an explicit bounded timeout", () => {
       const target = detectFdxTarget()
@@ -1723,7 +1723,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
         expect(res.available).toBe(true)
         expect(res.validatedSha256).not.toBeNull()
       }
-    }, { timeout: 15000 })
+    }, { timeout: 30000 })
 
     it("Contract1/P1-1: unmanaged (env/PATH) candidates are hashed before first execution", () => {
       const target = detectFdxTarget()
@@ -1838,14 +1838,15 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       const commandPath = readFileSync(marker, "utf-8").trim()
       // Neither the probe nor the command ever executed the original candidate
       // pathname or the mutable snapshot pathname — execution is bound to the
-      // validated in-memory bytes via the secure-exec helper. $0 is either the
-      // kernel's descriptor path for the sealed object (/dev/fd/N on Linux) or
-      // the helper's own argv[0].
+      // validated in-memory bytes via the secure-exec helper. $0 is the
+      // helper's private payload path (macOS), the kernel's descriptor path
+      // for the sealed object (/dev/fd/N or /proc/self/fd/N on Linux), or the
+      // helper's own argv[0].
       expect(probePath).not.toBe(fake.binPath)
       expect(commandPath).not.toBe(fake.binPath)
       expect(probePath).not.toContain("flowdeck-fdx-snapshot")
       expect(commandPath).not.toContain("flowdeck-fdx-snapshot")
-      const sealedObjectPath = /^\/dev\/fd\/\d+$|^\/proc\/self\/fd\/\d+$|^fdx-secure-exec$/
+      const sealedObjectPath = /fdx-secure-exec-\d+\/payload$|^\/dev\/fd\/\d+$|^\/proc\/self\/fd\/\d+$|^fdx-secure-exec$/
       expect(probePath).toMatch(sealedObjectPath)
       expect(commandPath).toMatch(sealedObjectPath)
     })

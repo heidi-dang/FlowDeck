@@ -400,13 +400,12 @@ mod windows_impl {
 
     pub fn exec(bytes: &[u8], args: &[OsString]) -> ! {
         unsafe {
-            // The source extension is passed by Node so .cmd/.bat payloads are
-            // named and routed correctly (a genuine PE stays payload.exe).
-            let ext =
-                std::env::var("FDX_SECURE_EXEC_PAYLOAD_EXT").unwrap_or_else(|_| ".exe".to_string());
+            // The payload is a genuine PE (the validated fdx binary or a test
+            // PE fixture); .cmd/.bat payloads cannot be CreateProcess'd and are
+            // refused fail-closed (they never execute insecurely).
             let dir = std::env::temp_dir().join(format!("fdx-secure-exec-{}", std::process::id()));
             let _ = std::fs::create_dir_all(&dir);
-            let path = dir.join(format!("payload{ext}"));
+            let path = dir.join("payload.exe");
             let path_w = wide(path.as_os_str());
 
             // ── Write phase ─────────────────────────────────────────────────
@@ -469,22 +468,11 @@ mod windows_impl {
 
             // Build the command line: quoted payload path + args.
             let payload_str = path.to_string_lossy();
-            let mut inner = format!("\"{payload_str}\"");
+            let mut cmd = format!("\"{payload_str}\"");
             for arg in args {
-                inner.push(' ');
-                inner.push_str(&quote_arg(&arg.to_string_lossy()));
+                cmd.push(' ');
+                cmd.push_str(&quote_arg(&arg.to_string_lossy()));
             }
-            let is_script = ext.eq_ignore_ascii_case(".cmd") || ext.eq_ignore_ascii_case(".bat");
-            let cmd = if is_script {
-                // .cmd/.bat cannot be CreateProcess'd directly; route through
-                // cmd.exe exactly as libuv does:
-                //   "<ComSpec>" /d /s /c ""<line>""
-                let comspec = std::env::var("ComSpec")
-                    .unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".into());
-                format!("\"{comspec}\" /d /s /c \"\"{inner}\"\"")
-            } else {
-                inner
-            };
             let mut cmd_w: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
 
             let si = StartupInfoW {

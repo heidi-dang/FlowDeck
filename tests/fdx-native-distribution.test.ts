@@ -31,6 +31,23 @@ describe("FDX Native Distribution & Binary Resolver", () => {
     } catch {}
   })
 
+  /**
+   * Write an executable validation fixture. On Windows a GENUINE PE (bun.exe)
+   * is used — the audit requires genuine PE fixtures because .cmd-content
+   * files cannot be spawned by the secure-exec helper (CreateProcess only
+   * runs real PE images). On POSIX a shebang script echoing a valid version.
+   */
+  function writeValidFixture(dir: string, binName: string): string {
+    const binPath = join(dir, binName)
+    if (process.platform === "win32") {
+      writeFileSync(binPath, readFileSync(process.execPath))
+    } else {
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
+      chmodSync(binPath, 0o755)
+    }
+    return binPath
+  }
+
   it("detectFdxTarget identifies current host target properly", () => {
     const target = detectFdxTarget()
     if (process.platform === "linux" && process.arch === "x64") {
@@ -60,36 +77,26 @@ describe("FDX Native Distribution & Binary Resolver", () => {
   })
 
   it("validateFdxBinaryPath verifies valid executable and checksum", () => {
-    const binName = process.platform === "win32" ? "fdx.cmd" : "fdx"
-    const binPath = join(tempDir, binName)
-
-    if (process.platform === "win32") {
-      writeFileSync(binPath, "@echo fdx v1.0.4\r\n", "utf-8")
-    } else {
-      // Mock shell script returning fdx v1.0.4
-      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
-      chmodSync(binPath, 0o755)
-    }
+    const binName = process.platform === "win32" ? "fdx.exe" : "fdx"
+    const binPath = writeValidFixture(tempDir, binName)
 
     const sha256 = createHash("sha256").update(readFileSync(binPath)).digest("hex")
     writeFileSync(join(tempDir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
 
     const val = validateFdxBinaryPath(binPath, tempDir)
     expect(val.valid).toBe(true)
-    expect(val.version).toBe("1.0.4")
+    if (process.platform === "win32") {
+      // Genuine PE fixture (bun.exe): its --version is a major-1 semver.
+      expect(val.version).toMatch(/^1\.\d+\.\d+/)
+    } else {
+      expect(val.version).toBe("1.0.4")
+    }
     expect(val.checksumStatus).toBe("pass")
   })
 
   it("validateFdxBinaryPath rejects checksum mismatch", () => {
-    const binName = process.platform === "win32" ? "fdx.cmd" : "fdx"
-    const binPath = join(tempDir, binName)
-
-    if (process.platform === "win32") {
-      writeFileSync(binPath, "@echo fdx v1.0.4\r\n", "utf-8")
-    } else {
-      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
-      chmodSync(binPath, 0o755)
-    }
+    const binName = process.platform === "win32" ? "fdx.exe" : "fdx"
+    const binPath = writeValidFixture(tempDir, binName)
 
     writeFileSync(join(tempDir, "checksum.json"), JSON.stringify({ sha256: "0000000000000000000000000000000000000000000000000000000000000000" }), "utf-8")
 
@@ -100,15 +107,8 @@ describe("FDX Native Distribution & Binary Resolver", () => {
   })
 
   it("priority resolution prefers FDX_BINARY_PATH when valid", () => {
-    const binName = process.platform === "win32" ? "fdx.cmd" : "fdx"
-    const binPath = join(tempDir, binName)
-
-    if (process.platform === "win32") {
-      writeFileSync(binPath, "@echo fdx v1.0.4\r\n", "utf-8")
-    } else {
-      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
-      chmodSync(binPath, 0o755)
-    }
+    const binName = process.platform === "win32" ? "fdx.exe" : "fdx"
+    const binPath = writeValidFixture(tempDir, binName)
 
     process.env.FDX_BINARY_PATH = binPath
     const status = getFdxAvailabilityStatus(true)
