@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, readFileSync, statSync, utimesSync } from "node:fs"
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, readFileSync, statSync, utimesSync, existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { createHash } from "node:crypto"
@@ -428,7 +428,53 @@ describe("FDX Native Distribution & Binary Resolver", () => {
     it("P2-1: artifact generation rejects a provenance document with an invalid source SHA", () => {
       const dir = makePkgDir("0000000000000000000000000000000000000000")
       try {
-        expect(() => generateArtifactManifest({ dir, packageName: PKG, version: VERSION })).toThrow(/invalid sourceCommitSha/)
+        // A missing input SHA is rejected before any provenance read.
+        expect(() => generateArtifactManifest({ dir, packageName: PKG, version: VERSION })).toThrow(/source commit SHA is required/)
+        // A valid input SHA with a zero-SHA provenance document is rejected too.
+        expect(() => generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: VALID_SHA })).toThrow(/invalid sourceCommitSha/)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("P2-1/Contract2: invalid provenance writes NO artifact manifest and never rewrites provenance", () => {
+      const dir = makePkgDir(VALID_SHA)
+      const manifestPath = join(dir, "artifact-manifest.json")
+      const provPath = join(dir, "provenance.json")
+      try {
+        // provenance.gitCommit differs from the input SHA.
+        const prov = JSON.parse(readFileSync(provPath, "utf-8"))
+        prov.gitCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        writeFileSync(provPath, JSON.stringify(prov, null, 2), "utf-8")
+        expect(() => generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: VALID_SHA })).toThrow(/gitCommit/)
+        // NO artifact manifest may be written on invalid provenance...
+        expect(existsSync(manifestPath)).toBe(false)
+        // ...and provenance.json is never rewritten by generation.
+        expect(JSON.parse(readFileSync(provPath, "utf-8")).gitCommit).toBe("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("P2-1/Contract2: provenance sourceCommitSha and gitCommit must be valid and identical to the input", () => {
+      const dir = makePkgDir(VALID_SHA)
+      const manifestPath = join(dir, "artifact-manifest.json")
+      const provPath = join(dir, "provenance.json")
+      try {
+        // Case A: provenance.sourceCommitSha differs from the input SHA.
+        const provA = JSON.parse(readFileSync(provPath, "utf-8"))
+        provA.sourceCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        writeFileSync(provPath, JSON.stringify(provA, null, 2), "utf-8")
+        expect(() => generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: VALID_SHA })).toThrow(/does not match input/)
+        expect(existsSync(manifestPath)).toBe(false)
+        // Case B: provenance.gitCommit is malformed (sourceCommitSha restored
+        // to the valid input first so the gitCommit check is reached).
+        const provB = JSON.parse(readFileSync(provPath, "utf-8"))
+        provB.sourceCommitSha = VALID_SHA
+        provB.gitCommit = "not-a-sha"
+        writeFileSync(provPath, JSON.stringify(provB, null, 2), "utf-8")
+        expect(() => generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: VALID_SHA })).toThrow(/invalid gitCommit/)
+        expect(existsSync(manifestPath)).toBe(false)
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
@@ -459,6 +505,20 @@ describe("FDX Native Distribution & Binary Resolver", () => {
         generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: VALID_SHA })
         const result = verifyArtifactDir({ dir, packageName: PKG, version: VERSION, sourceSha: VALID_SHA })
         expect(result.ok).toBe(true)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+
+    it("P2-1/Contract2: a successfully generated artifact passes verifyArtifactDir without corrective args (gen/verify symmetry)", () => {
+      const dir = makePkgDir(VALID_SHA)
+      try {
+        generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: VALID_SHA })
+        // No --source-sha corrective argument: the generated manifest and the
+        // provenance document must be mutually consistent on their own.
+        const result = verifyArtifactDir({ dir, packageName: PKG, version: VERSION })
+        expect(result.ok).toBe(true)
+        expect(result.errors).toEqual([])
       } finally {
         rmSync(dir, { recursive: true, force: true })
       }
@@ -514,6 +574,33 @@ describe("FDX Native Distribution & Binary Resolver", () => {
       expect(refs.strictError).toBeNull() // commit is real
       const err = strictProvenanceInputError({ currentCommit: refs.currentCommit, currentBranch: refs.currentBranch, rustVersion: "rustc 1.84.0" })
       expect(err).toContain("source branch")
+    })
+
+    it("P2-2/Contract2: strict builds bind the recorded commit to the checked-out HEAD (spoofed SHA refused)", () => {
+      // Real binding: GITHUB_SHA equals the checked-out HEAD — the full gate
+      // chain (refs + strict input validation) passes and the recorded commit
+      // is exactly the checked-out HEAD.
+      const refs = resolveProvenanceRefs({
+        isStrict: true,
+        gitCommit: REAL,
+        gitBranchRaw: "main",
+        githubSha: REAL,
+        githubRefName: "main",
+      })
+      expect(refs.strictError).toBeNull()
+      expect(refs.currentCommit).toBe(REAL)
+      expect(strictProvenanceInputError({ currentCommit: refs.currentCommit, currentBranch: refs.currentBranch, rustVersion: "rustc 1.84.0" })).toBeNull()
+      // A syntactically valid but spoofed GITHUB_SHA (differs from the
+      // checked-out HEAD) is refused: strict builds never record a commit
+      // other than the one actually checked out.
+      const spoofed = resolveProvenanceRefs({
+        isStrict: true,
+        gitCommit: REAL,
+        gitBranchRaw: "main",
+        githubSha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        githubRefName: "main",
+      })
+      expect(spoofed.strictError).toContain("does not match checked-out HEAD")
     })
   })
 })

@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "bun:test"
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
+import { mkdtempSync, writeFileSync, rmSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { createHash } from "node:crypto"
@@ -146,7 +146,7 @@ describe("verify-fdx-artifact: cross-manifest verification", () => {
 
   it("fails when the binary was tampered with (checksum/provenance/manifest mismatch)", () => {
     const { dir } = makePackageDir()
-    generateArtifactManifest({ dir, packageName: PKG, version: VERSION })
+    generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: "8498ac260defa952adb40281f16c6e361dde3cb8" })
     // Tamper AFTER manifest generation so the hashes no longer match the file.
     writeFileSync(join(dir, "fdx"), Buffer.from("tampered-binary"))
     const result = verifyArtifactDir({ dir, packageName: PKG, version: VERSION })
@@ -159,7 +159,7 @@ describe("verify-fdx-artifact: cross-manifest verification", () => {
     const { dir } = makePackageDir({ version: "9.9.9" })
     // Manifest carries the package's own (stale) version; verification targets
     // the canonical release version 1.0.4 -> drift must fail closed.
-    generateArtifactManifest({ dir, packageName: PKG, version: "9.9.9" })
+    generateArtifactManifest({ dir, packageName: PKG, version: "9.9.9", sourceCommitSha: "8498ac260defa952adb40281f16c6e361dde3cb8" })
     const result = verifyArtifactDir({ dir, packageName: PKG, version: VERSION })
     expect(result.ok).toBe(false)
     expect(result.errors.some(e => e.startsWith("checksum.version"))).toBe(true)
@@ -178,7 +178,13 @@ describe("verify-fdx-artifact: cross-manifest verification", () => {
 
   it("fails when the artifact source SHA does not match the release source SHA", () => {
     const { dir } = makePackageDir()
-    generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" })
+    // Generation requires a provenance-consistent input SHA; the verify-time
+    // mismatch is exercised by tampering the written manifest afterwards.
+    generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: "8498ac260defa952adb40281f16c6e361dde3cb8" })
+    const manifestPath = join(dir, "artifact-manifest.json")
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"))
+    manifest.sourceCommitSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8")
     const result = verifyArtifactDir({ dir, packageName: PKG, version: VERSION, sourceSha: "8498ac260defa952adb40281f16c6e361dde3cb8" })
     expect(result.ok).toBe(false)
     expect(result.errors.some(e => e.startsWith("manifest.sourceCommitSha"))).toBe(true)
@@ -196,7 +202,7 @@ describe("verify-fdx-artifact: cross-manifest verification", () => {
 
   it("fails closed with a non-zero exit when invoked via CLI", () => {
     const { dir } = makePackageDir()
-    generateArtifactManifest({ dir, packageName: PKG, version: VERSION })
+    generateArtifactManifest({ dir, packageName: PKG, version: VERSION, sourceCommitSha: "8498ac260defa952adb40281f16c6e361dde3cb8" })
     writeFileSync(join(dir, "fdx"), Buffer.from("tampered-binary"))
     const { spawnSync } = require("node:child_process") as typeof import("node:child_process")
     const res = spawnSync(process.execPath, ["scripts/verify-fdx-artifact.mjs", "verify", "--dir", dir, "--package-name", PKG, "--version", VERSION], { cwd: join(import.meta.dir, "..") })

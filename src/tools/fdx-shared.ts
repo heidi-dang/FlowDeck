@@ -9,10 +9,10 @@
  */
 
 import { execFileSync } from "node:child_process"
-import { existsSync, readFileSync, readdirSync, statSync, accessSync, constants, promises as fsPromises, openSync, fstatSync, closeSync } from "fs"
-import { join, resolve, dirname } from "path"
-import { createHash } from "node:crypto"
-import { homedir } from "node:os"
+import { existsSync, readFileSync, readdirSync, statSync, accessSync, constants, promises as fsPromises, openSync, fstatSync, closeSync, mkdirSync, writeFileSync, chmodSync, unlinkSync, rmSync } from "fs"
+import { join, resolve, dirname, extname } from "path"
+import { createHash, randomBytes } from "node:crypto"
+import { homedir, tmpdir } from "node:os"
 import { createRequire } from "node:module"
 import { fileURLToPath } from "node:url"
 import {
@@ -766,12 +766,31 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
 
   let version: string | null = null
   try {
-    // Direct execution with explicit argv (no shell): shell:true would defeat
-    // argument-boundary safety and break paths containing spaces on Windows.
-    const out = execFileSync(binPath, ["--version"], { encoding: "utf-8", timeout: 3000 })
-    const match = out.match(/fdx\s+v?([0-9]+\.[0-9]+\.[0-9]+)/i) || out.match(/v?([0-9]+\.[0-9]+\.[0-9]+)/)
-    if (match && match[1]) {
-      version = match[1]
+    // Contract 1: the --version probe runs from a private execution snapshot
+    // of the EXACT bytes that passed the checksum/trust rules — never from the
+    // candidate pathname (a replacement-before-probe cannot change what the
+    // probe executes). For managed sources the pipeline verifies the opened
+    // generation against the checksum digest before executing; for unmanaged
+    // sources the opened generation is the one whose probe output is accepted.
+    // The executed generation's digest becomes the authoritative validated
+    // digest — captured BEFORE the probe runs (unmanaged trust order).
+    const execRes = executeVerifiedSnapshot(binPath, ["--version"], validatedSha, { timeout: 3000 })
+    if (execRes.kind === "executed") {
+      const match = execRes.out.match(/fdx\s+v?([0-9]+\.[0-9]+\.[0-9]+)/i) || execRes.out.match(/v?([0-9]+\.[0-9]+\.[0-9]+)/)
+      if (match && match[1]) {
+        version = match[1]
+      }
+      validatedSha = execRes.sha256
+    } else {
+      return {
+        valid: false,
+        version: null,
+        versionCompatible: false,
+        checksumStatus,
+        validatedSha256: null,
+        integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid, reason: `Binary execution failed: ${execRes.reason}` },
+        reason: `Binary execution failed: ${execRes.reason}`,
+      }
     }
   } catch (err: any) {
     return {
@@ -783,43 +802,6 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
       integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid, reason: `Binary execution failed: ${err.message}` },
       reason: `Binary execution failed: ${err.message}`,
     }
-  }
-
-  // P1-1: the --version probe must have operated on the same immutable
-  // generation that was hashed. Re-read the path now and require the digest to
-  // be unchanged from the checksum-validated bytes. If the path was replaced
-  // between the checksum read and the probe, this re-read differs and the
-  // validation fails — the replacement can never become the trusted digest.
-  if (validatedSha !== null) {
-    const postProbeSha = sha256FileContents(binPath)
-    if (postProbeSha === null || postProbeSha !== validatedSha) {
-      return {
-        valid: false,
-        version: null,
-        versionCompatible: false,
-        checksumStatus,
-        validatedSha256: null,
-        integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid: false, reason: "Binary generation changed during --version probe (path replaced between checksum read and execution)" },
-        reason: "Binary generation changed during --version probe (path replaced between checksum read and execution)",
-      }
-    }
-  } else {
-    // Unmanaged source (env/PATH with no checksum manifest): capture the
-    // digest of the bytes that the probe executed, verified stable across
-    // the probe, so the resolver still has a trusted generation digest.
-    const preProbeSha = sha256FileContents(binPath)
-    if (preProbeSha === null) {
-      return {
-        valid: false,
-        version: null,
-        versionCompatible: false,
-        checksumStatus,
-        validatedSha256: null,
-        integrity: { status: "fail", checksumStatus, checksumMatch, provenanceValid: false, reason: "Cannot read binary bytes before --version probe" },
-        reason: "Cannot read binary bytes before --version probe",
-      }
-    }
-    validatedSha = preProbeSha
   }
 
   if (!version) {
@@ -1248,62 +1230,66 @@ export function openAndHash(binPath: string): { sha: string; dev: number; ino: n
 }
 
 /**
- * Same-descriptor execution (P1-2, design 3). Opens the binary once, hashes
- * the bytes of that open descriptor, verifies they match the trusted digest,
- * then executes the SAME open descriptor via /proc/<pid>/fd/<fd> on Linux.
- * A pathname replacement after this point is irrelevant: the kernel resolves
- * the descriptor, not the pathname, so the executed bytes are exactly the
- * hashed generation. Returns { kind: "executed", out } on success, or a
- * reject reason string when the generation cannot be proven.
+ * Contract 1 (verified execution): the shared pipeline every FDX execution
+ * source funnels through — the `--version` probe, normal `runFdx`, managed
+ * packages, repair-cache binaries, FDX_BINARY_PATH, and system PATH.
  *
- * On non-Linux platforms (no /proc/<pid>/fd) it falls back to an inode
- * identity re-check immediately before path-based exec, which detects
- * same-path replacement but cannot fully eliminate the final stat-to-exec
- * window on those platforms.
+ * Required sequence: open candidate → read/hash THOSE opened bytes →
+ * checksum/trust verification → private execution snapshot written from
+ * exactly those bytes → (test hook) → OS execution of the snapshot →
+ * cleanup/close. The original candidate pathname is NEVER executed after
+ * validation begins: a replacement-before-probe or same-inode mutation of the
+ * path is invisible to the executed generation.
+ *
+ * The snapshot is a randomized, read-only file inside a mode-0700 private
+ * directory — only this process knows the path, and the file cannot be
+ * modified in place (POSIX 0500). The race is closed by byte binding to the
+ * snapshot, never by stat/inode/post-exec digest checks.
+ *
+ * Returns { kind: "executed", out, sha256, byteLength } on success, or a
+ * reject reason string when the generation cannot be proven.
  */
-export function executeHashedBinary(bin: string, args: string[], trustedSha: string): { kind: "executed"; out: string } | { kind: "rejected"; reason: string } {
+export function executeVerifiedSnapshot(
+  bin: string,
+  args: string[],
+  trustedSha: string | null,
+  opts: { timeout?: number; maxBuffer?: number } = {}
+): { kind: "executed"; out: string; sha256: string; byteLength: number } | { kind: "rejected"; reason: string } {
   let fd: number | null = null
+  let snapshotDir: string | null = null
+  let snapshotPath: string | null = null
   try {
     fd = openSync(bin, "r")
     const st = fstatSync(fd)
     if (!st.isFile()) return { kind: "rejected", reason: "path is not a regular file" }
     const buf = readFileSync(fd)
     const sha = createHash("sha256").update(buf).digest("hex")
-    if (sha !== trustedSha) {
+    if (trustedSha !== null && sha !== trustedSha) {
       return { kind: "rejected", reason: `binary digest ${sha} does not match trusted ${trustedSha}` }
     }
-    if (process.platform === "linux") {
-      // Execute the open descriptor directly: the kernel resolves /proc/<pid>/fd/<fd>
-      // in this process's fd table, so the executed bytes are the hashed generation.
-      const procFdPath = `/proc/${process.pid}/fd/${fd}`
-      // Re-verify the descriptor still points at the hashed inode immediately
-      // before spawn.
-      const stAgain = fstatSync(fd)
-      if (stAgain.dev !== st.dev || stAgain.ino !== st.ino) {
-        return { kind: "rejected", reason: "descriptor generation changed after hashing" }
-      }
-      const out = execFileSync(procFdPath, args, {
-        encoding: "utf-8",
-        timeout: FDX_TIMEOUT_MS,
-        maxBuffer: FDX_MAX_BUFFER,
-        shell: false,
-        stdio: ["pipe", "pipe", "pipe"],
-      })
-      return { kind: "executed", out }
+    // Private execution snapshot: randomized directory name (unpredictable,
+    // process-scoped), mode 0700 so only this user can traverse it, file mode
+    // 0500 (read+exec, not writable in place). Preserve the source extension
+    // on Windows so .cmd/.bat/.exe execute correctly from the snapshot path.
+    snapshotDir = join(tmpdir(), `flowdeck-fdx-snapshot-${process.pid}-${randomBytes(8).toString("hex")}`)
+    mkdirSync(snapshotDir, { recursive: true, mode: 0o700 })
+    const snapshotExt = process.platform === "win32" ? (extname(bin) || ".exe") : ""
+    snapshotPath = join(snapshotDir, `fdx-snapshot${snapshotExt}`)
+    writeFileSync(snapshotPath, buf, { mode: 0o500 })
+    if (process.platform !== "win32") {
+      try { chmodSync(snapshotPath, 0o500) } catch {}
     }
-    // Portable fallback: inode identity re-check then path-based exec.
-    const pathStat = statSyncSafe(bin)
-    if (pathStat === null || pathStat.dev !== st.dev || pathStat.ino !== st.ino) {
-      return { kind: "rejected", reason: "path replaced between digest check and execution" }
-    }
-    const out = execFileSync(bin, args, {
+    // Test-only seam at the real boundary: validated snapshot created -> hook
+    // -> OS execution call. Production callers never set this hook.
+    if (fdxPreExecTestHookValue) fdxPreExecTestHookValue(snapshotPath, bin)
+    const out = execFileSync(snapshotPath, args, {
       encoding: "utf-8",
-      timeout: FDX_TIMEOUT_MS,
-      maxBuffer: FDX_MAX_BUFFER,
+      timeout: opts.timeout ?? FDX_TIMEOUT_MS,
+      maxBuffer: opts.maxBuffer ?? FDX_MAX_BUFFER,
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     })
-    return { kind: "executed", out }
+    return { kind: "executed", out, sha256: sha, byteLength: buf.length }
   } catch (err: any) {
     if (err?.code === "ENOBUFS") {
       return {
@@ -1315,19 +1301,15 @@ export function executeHashedBinary(bin: string, args: string[], trustedSha: str
     }
     return { kind: "rejected", reason: err?.message ?? String(err) }
   } finally {
+    if (snapshotPath !== null) {
+      try { unlinkSync(snapshotPath) } catch {}
+    }
+    if (snapshotDir !== null) {
+      try { rmSync(snapshotDir, { recursive: true, force: true }) } catch {}
+    }
     if (fd !== null) {
       try { closeSync(fd) } catch {}
     }
-  }
-}
-
-/** statSync that returns null instead of throwing (missing/vanished path). */
-function statSyncSafe(binPath: string): { dev: number; ino: number } | null {
-  try {
-    const st = statSync(binPath)
-    return { dev: st.dev, ino: st.ino }
-  } catch {
-    return null
   }
 }
 
@@ -1394,13 +1376,16 @@ const FDX_TIMEOUT_MS = 30_000
 const FDX_MAX_BUFFER = 50 * 1024 * 1024
 
 /**
- * Test-only hook: when set, invoked immediately before execFileSync in
- * runFdx, after the final digest + inode verification. Lets a deterministic
- * acceptance test replace/mutate the binary in the exact check-to-execution
- * window and assert that execution is refused (P1-2 race).
+ * Test-only hook: when set, invoked inside executeVerifiedSnapshot at the real
+ * boundary — validated snapshot created -> hook -> OS execution call — for
+ * both the `--version` probe and command executions. Receives the private
+ * snapshot path (first argument) and the original candidate path (second).
+ * Lets a deterministic acceptance test replace/mutate the source at the exact
+ * snapshot-to-exec boundary and assert the executed bytes are unchanged.
+ * Production callers never set this hook.
  */
-let fdxPreExecTestHookValue: ((binPath: string) => void) | null = null
-export function setFdxPreExecTestHook(hook: ((binPath: string) => void) | null): void {
+let fdxPreExecTestHookValue: ((snapshotPath: string, sourceBin: string) => void) | null = null
+export function setFdxPreExecTestHook(hook: ((snapshotPath: string, sourceBin: string) => void) | null): void {
   fdxPreExecTestHookValue = hook
 }
 
@@ -1408,22 +1393,18 @@ export function runFdx(args: string[]): string {
   const bin = fdxBin()
   validateExecutable(bin)
   validateArgs(args)
-  // P1-2: bind execution to the same immutable generation that passed the
-  // trust contract. The resolution cache re-verifies the trusted digest on a
-  // cache hit, but a binary could still be mutated between that check and
-  // execution below. executeHashedBinary opens the binary once, hashes those
-  // exact bytes, verifies them against the trusted digest, and executes the
-  // same open descriptor (Linux) or re-checks inode identity (fallback) —
-  // failing closed on any mismatch or missing digest.
+  // Contract 1: bind execution to the same immutable generation that passed
+  // the trust contract. The resolution cache carries the trusted digest; the
+  // verified-execution snapshot pipeline opens the candidate once, hashes the
+  // bytes of that open generation, verifies them against the trusted digest,
+  // writes a private execution snapshot from exactly those bytes, and executes
+  // the snapshot — never the original pathname — failing closed on any
+  // mismatch or missing digest.
   const trustedSha = fdxCacheBinarySha256
   if (trustedSha === null) {
     throw new Error(`[FDX Integrity] No trusted digest recorded for ${bin}; refusing to execute unverified binary`)
   }
-  // Test-only race injection point: mutates the binary after the trusted
-  // digest was captured but before the final identity verification, modeling
-  // the check-to-execution window the audit requires coverage for.
-  if (fdxPreExecTestHookValue) fdxPreExecTestHookValue(bin)
-  const result = executeHashedBinary(bin, args, trustedSha)
+  const result = executeVerifiedSnapshot(bin, args, trustedSha)
   if (result.kind === "executed") return result.out
   // Re-resolve once: the fresh resolution re-runs the full trust contract and
   // may observe a legitimate replacement (e.g. a repair installed a new binary).

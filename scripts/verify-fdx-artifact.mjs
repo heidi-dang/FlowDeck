@@ -96,20 +96,32 @@ function fail(message) {
      throw new Error(`archive name mismatch: expected ${expectedName}, found ${tgzFiles[0]}`)
    }
 
-   // P2-1: generation must never write an invalid/fabricated source SHA.
-   if (sourceCommitSha !== undefined && sourceCommitSha !== null) {
-     const sourceError = sourceCommitShaError(sourceCommitSha)
-     if (sourceError) throw new Error(`cannot generate artifact manifest: ${sourceError}`)
+   // P2-1/Contract2: generation must never write an invalid/fabricated source
+   // SHA. The input SHA is REQUIRED, and every provenance source field
+   // (provenance.sourceCommitSha, provenance.gitCommit) must be a valid, real,
+   // non-zero commit SHA identical to the input. On any violation NOTHING is
+   // written — no artifact-manifest.json, and provenance.json is never
+   // rewritten by generation.
+   if (sourceCommitSha === undefined || sourceCommitSha === null) {
+     throw new Error(`cannot generate artifact manifest: source commit SHA is required (got ${JSON.stringify(sourceCommitSha)})`)
    }
+   const inputShaError = sourceCommitShaError(sourceCommitSha)
+   if (inputShaError) throw new Error(`cannot generate artifact manifest: ${inputShaError}`)
 
    const provenancePath = join(dir, "provenance.json")
    if (!existsSync(provenancePath)) throw new Error(`provenance.json missing in ${dir}`)
    const provenance = readJson(provenancePath)
    // The provenance document's own source commit must be valid (fabricated
-   // provenance is rejected at generation time too).
-   if (provenance.sourceCommitSha !== undefined && provenance.sourceCommitSha !== null) {
-     const provError = sourceCommitShaError(provenance.sourceCommitSha)
-     if (provError) throw new Error(`provenance.json contains invalid sourceCommitSha: ${provError}`)
+   // provenance is rejected at generation time too) and identical to the input.
+   const provSourceError = sourceCommitShaError(provenance.sourceCommitSha)
+   if (provSourceError) throw new Error(`provenance.json contains invalid sourceCommitSha: ${provSourceError}`)
+   if (provenance.sourceCommitSha !== sourceCommitSha) {
+     throw new Error(`provenance.json sourceCommitSha (${JSON.stringify(provenance.sourceCommitSha)}) does not match input sourceCommitSha (${JSON.stringify(sourceCommitSha)})`)
+   }
+   const provGitError = sourceCommitShaError(provenance.gitCommit)
+   if (provGitError) throw new Error(`provenance.json contains invalid gitCommit: ${provGitError}`)
+   if (provenance.gitCommit !== sourceCommitSha) {
+     throw new Error(`provenance.json gitCommit (${JSON.stringify(provenance.gitCommit)}) does not match input sourceCommitSha (${JSON.stringify(sourceCommitSha)})`)
    }
    const binaryFilename = provenance.binaryFilename
    if (typeof binaryFilename !== "string" || binaryFilename.length === 0) {

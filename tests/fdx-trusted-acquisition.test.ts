@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import {
-  mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readFileSync, readdirSync, utimesSync, statSync, renameSync,
+  mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readFileSync, readdirSync, utimesSync, statSync,
 } from "node:fs"
 import { join, resolve, dirname } from "node:path"
 import { tmpdir } from "node:os"
@@ -189,6 +189,7 @@ await new Promise(() => {})
       try { child.kill("SIGKILL") } catch {}
     }
     liveChildren = []
+    setFdxPreExecTestHook(null)
     setActiveProjectDir(REPO_ROOT)
     process.env = originalEnv
     try {
@@ -1182,22 +1183,18 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       expect(existsSync(cacheDir)).toBe(false)
       const fake = buildFakePlatformPackage(tempDir, {})
       if (!fake) return
-      // Deterministic fault injection via $0: the binary reports a valid
-      // version while it lives in the staging path (`.staging-` — the staged
-      // copy validated at step 5) and fails everywhere else. After activation
-      // the authoritative cache path no longer contains `.staging-`, so the
-      // direct activated-cache validation at step 7b fails — reaching
-      // cacheActivated=true with newCacheActivated=false.
-      const stateful = [
-        "#!/bin/sh",
-        "case \"$0\" in",
-        "  *\".staging-\"*) echo 'fdx v1.0.4' ;;",
-        "  *) echo 'boom' >&2; exit 1 ;;",
-        "esac",
-      ].join("\n")
-      writeFileSync(fake.binPath, stateful, "utf-8")
+      // Deterministic post-activation fault injection (Contract 1 compatible):
+      // the staged binary is a plain valid script. The step-5 staging probe
+      // runs it from a private snapshot of the checksum-verified bytes and
+      // passes. The pre-exec test hook fires at that exact boundary with the
+      // STAGED source path; it overwrites the staged copy on disk with
+      // checksum-mismatching bytes. Step 7b then re-validates the ACTIVATED
+      // cache copy — which now holds the mismatching bytes — and fails
+      // deterministically, reaching cacheActivated=true with
+      // newCacheActivated=false.
+      writeFileSync(fake.binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
       chmodSync(fake.binPath, 0o755)
-      // Recompute checksum + provenance over the stateful binary so staging
+      // Recompute checksum + provenance over the valid binary so staging
       // validation passes while the binary lives in the staging path.
       const binBuf = readFileSync(fake.binPath)
       const sha256 = createHash("sha256").update(binBuf).digest("hex")
@@ -1206,20 +1203,27 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       prov.sha256 = sha256
       prov.binaryByteSize = binBuf.length
       writeFileSync(join(fake.pkgDir, "provenance.json"), JSON.stringify(prov), "utf-8")
-
-      const result = await handleFdxInstall(true)
-      expect(result).toBe(false)
-      // The activated cache must not survive the post-activation failure.
-      expect(existsSync(cacheDir)).toBe(false)
-      // Evidence retention: exactly one .failed-<pid>-<ts> quarantine dir exists.
-      const failedDirs = readdirSync(dirname(cacheDir)).filter((n) => n.includes("failed"))
-      expect(failedDirs.length).toBe(1)
-      expect(failedDirs[0]).toContain(".failed-")
-      // No staging or temporary dirs may remain.
-      const stagingLeftovers = readdirSync(dirname(cacheDir)).filter((n) => n.includes("staging") || n.includes(".registry-fetch"))
-      expect(stagingLeftovers).toEqual([])
-      // The install lock is released.
-      expect(existsSync(`${cacheDir}.lock`)).toBe(false)
+      const evil = "#!/bin/sh\necho 'fdx v9.9.9 evil'\n"
+      setFdxPreExecTestHook((snapshotPath: string, sourceBin: string) => {
+        if (sourceBin.includes(".staging-")) writeFileSync(sourceBin, evil, "utf-8")
+      })
+      try {
+        const result = await handleFdxInstall(true)
+        expect(result).toBe(false)
+        // The activated cache must not survive the post-activation failure.
+        expect(existsSync(cacheDir)).toBe(false)
+        // Evidence retention: exactly one .failed-<pid>-<ts> quarantine dir exists.
+        const failedDirs = readdirSync(dirname(cacheDir)).filter((n) => n.includes("failed"))
+        expect(failedDirs.length).toBe(1)
+        expect(failedDirs[0]).toContain(".failed-")
+        // No staging or temporary dirs may remain.
+        const stagingLeftovers = readdirSync(dirname(cacheDir)).filter((n) => n.includes("staging") || n.includes(".registry-fetch"))
+        expect(stagingLeftovers).toEqual([])
+        // The install lock is released.
+        expect(existsSync(`${cacheDir}.lock`)).toBe(false)
+      } finally {
+        setFdxPreExecTestHook(null)
+      }
     }, { timeout: 30000 })
 
     it("P2-1: deterministic post-activation failure restores a pre-existing backup exactly (full tree)", async () => {
@@ -1250,14 +1254,12 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
 
       const fake = buildFakePlatformPackage(tempDir, {})
       if (!fake) return
-      const stateful = [
-        "#!/bin/sh",
-        "case \"$0\" in",
-        "  *\".staging-\"*) echo 'fdx v1.0.4' ;;",
-        "  *) echo 'boom' >&2; exit 1 ;;",
-        "esac",
-      ].join("\n")
-      writeFileSync(fake.binPath, stateful, "utf-8")
+      // Deterministic post-activation fault injection (Contract 1 compatible):
+      // same hook-based mechanism as the first-install test — the staged copy
+      // is overwritten with checksum-mismatching bytes at the step-5 probe
+      // boundary so the step-7b activation verification fails deterministically
+      // and the backup is restored.
+      writeFileSync(fake.binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
       chmodSync(fake.binPath, 0o755)
       const binBuf = readFileSync(fake.binPath)
       const sha256 = createHash("sha256").update(binBuf).digest("hex")
@@ -1266,30 +1268,37 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       prov.sha256 = sha256
       prov.binaryByteSize = binBuf.length
       writeFileSync(join(fake.pkgDir, "provenance.json"), JSON.stringify(prov), "utf-8")
-
-      const result = await handleFdxInstall(true)
-      expect(result).toBe(false)
-      // The pre-existing cache must be restored to EXACTLY its prior tree —
-      // same file set, same sizes, same bytes — not merely a marker file.
-      expect(existsSync(cacheDir)).toBe(true)
-      const snapshotAfter = new Map<string, Buffer>()
-      for (const name of readdirSync(cacheDir)) {
-        snapshotAfter.set(name, readFileSync(join(cacheDir, name)))
+      const evil = "#!/bin/sh\necho 'fdx v9.9.9 evil'\n"
+      setFdxPreExecTestHook((snapshotPath: string, sourceBin: string) => {
+        if (sourceBin.includes(".staging-")) writeFileSync(sourceBin, evil, "utf-8")
+      })
+      try {
+        const result = await handleFdxInstall(true)
+        expect(result).toBe(false)
+        // The pre-existing cache must be restored to EXACTLY its prior tree —
+        // same file set, same sizes, same bytes — not merely a marker file.
+        expect(existsSync(cacheDir)).toBe(true)
+        const snapshotAfter = new Map<string, Buffer>()
+        for (const name of readdirSync(cacheDir)) {
+          snapshotAfter.set(name, readFileSync(join(cacheDir, name)))
+        }
+        expect([...snapshotAfter.keys()].sort()).toEqual([...snapshotBefore.keys()].sort())
+        for (const [name, content] of snapshotBefore) {
+          expect(snapshotAfter.get(name)!.length).toBe(content.length)
+          expect(snapshotAfter.get(name)!.equals(content)).toBe(true)
+        }
+        // No unexpected files were added by the failed activation.
+        expect([...snapshotAfter.keys()].sort()).toEqual([...snapshotBefore.keys()].sort())
+        // Evidence retained for the failed activation.
+        const failedDirs = readdirSync(dirname(cacheDir)).filter((n) => n.includes("failed"))
+        expect(failedDirs.length).toBe(1)
+        // No staging/tmp leftovers; lock released.
+        const stagingLeftovers = readdirSync(dirname(cacheDir)).filter((n) => n.includes("staging") || n.includes(".registry-fetch"))
+        expect(stagingLeftovers).toEqual([])
+        expect(existsSync(`${cacheDir}.lock`)).toBe(false)
+      } finally {
+        setFdxPreExecTestHook(null)
       }
-      expect([...snapshotAfter.keys()].sort()).toEqual([...snapshotBefore.keys()].sort())
-      for (const [name, content] of snapshotBefore) {
-        expect(snapshotAfter.get(name)!.length).toBe(content.length)
-        expect(snapshotAfter.get(name)!.equals(content)).toBe(true)
-      }
-      // No unexpected files were added by the failed activation.
-      expect([...snapshotAfter.keys()].sort()).toEqual([...snapshotBefore.keys()].sort())
-      // Evidence retained for the failed activation.
-      const failedDirs = readdirSync(dirname(cacheDir)).filter((n) => n.includes("failed"))
-      expect(failedDirs.length).toBe(1)
-      // No staging/tmp leftovers; lock released.
-      const stagingLeftovers = readdirSync(dirname(cacheDir)).filter((n) => n.includes("staging") || n.includes(".registry-fetch"))
-      expect(stagingLeftovers).toEqual([])
-      expect(existsSync(`${cacheDir}.lock`)).toBe(false)
     }, { timeout: 30000 })
 
     it("P1-1: the validated digest comes from the checksum-verified bytes, not a post-validation reread", () => {
@@ -1336,43 +1345,17 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       expect(val.validatedSha256).toBe(sha256FileContents(binPath))
     })
 
-    it("P1-1: a binary that swaps its own pathname during --version never becomes the trusted digest", () => {
+    it("Contract1/P1-1: replacement-before-probe — the candidate pathname is never executed after validation begins", () => {
       const target = detectFdxTarget()
       if (!target) return
       if (process.platform === "win32") return
-      const dir = join(tempDir, "swap-during-version")
+      const dir = join(tempDir, "replacement-before-probe")
       mkdirSync(dir, { recursive: true })
       const binPath = join(dir, target.executableName)
-      const goodPath = join(dir, "good-bytes")
-      const evilPath = join(dir, "evil-bytes")
-      // Good bytes echo a valid version; evil bytes echo a valid version too
-      // but are a DIFFERENT file (different checksum).
-      writeFileSync(goodPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
-      chmodSync(goodPath, 0o755)
-      const evilScript = "#!/bin/sh\necho 'fdx v1.0.4 evil'\n"
-      writeFileSync(evilPath, evilScript, "utf-8")
-      // The binary at binPath copies good bytes into itself on FIRST invocation
-      // (so the checksum read passes), then swaps itself to the evil bytes and
-      // echoes a version — a deterministic same-path replacement DURING the
-      // --version probe.
-      const selfSwap = [
-        "#!/bin/sh",
-        `GOOD=${JSON.stringify(goodPath)}`,
-        `EVIL=${JSON.stringify(evilPath)}`,
-        `SELF=${JSON.stringify(binPath)}`,
-        'if [ ! -f "$SELF.swapped" ]; then',
-        "  touch \"$SELF.swapped\"",
-        "  cat \"$GOOD\" > \"$SELF\"",
-        "fi",
-        "cat \"$EVIL\" > \"$SELF\"",
-        "chmod +x \"$SELF\"",
-        "echo 'fdx v1.0.4 evil'",
-      ].join("\n")
-      writeFileSync(binPath, selfSwap, "utf-8")
+      writeFileSync(binPath, "#!/bin/sh\necho 'fdx v1.0.4'\n", "utf-8")
       chmodSync(binPath, 0o755)
-      // checksum manifest references the GOOD bytes.
-      const goodBuf = readFileSync(goodPath)
-      const sha256 = createHash("sha256").update(goodBuf).digest("hex")
+      const binBuf = readFileSync(binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
       writeFileSync(join(dir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
       const flowdeckVersion = getFlowdeckPackageVersion()
       writeFileSync(
@@ -1387,7 +1370,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
           platform: target.platform,
           architecture: target.arch,
           binaryFilename: target.executableName,
-          binaryByteSize: goodBuf.length,
+          binaryByteSize: binBuf.length,
           sha256,
           sourceCommitSha: "0123456789abcdef0123456789abcdef01234567",
           buildProfile: "release",
@@ -1395,21 +1378,99 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
         }),
         "utf-8"
       )
-      // First, validate the GOOD bytes in isolation: passes with its digest.
-      const goodVal = validateFdxBinaryPath(goodPath, dir, { requireChecksum: true, requireProvenance: true, target })
-      expect(goodVal.valid).toBe(true)
-      expect(goodVal.validatedSha256).toBe(sha256)
-      // Now validate the self-swapping binary. It must FAIL: the post-probe
-      // generation check detects that the path now holds evil bytes, not the
-      // checksum-validated good bytes.
-      const swapped = validateFdxBinaryPath(binPath, dir, { requireChecksum: true, requireProvenance: true, target })
-      expect(swapped.valid).toBe(false)
-      expect(swapped.validatedSha256).toBeNull()
-      // The evil replacement must never have become the trusted digest.
-      expect(swapped.validatedSha256).not.toBe(createHash("sha256").update(evilScript).digest("hex"))
+      const evil = "#!/bin/sh\necho 'fdx v1.0.4 evil'\n"
+      // Replace the candidate pathname exactly at the validated-snapshot ->
+      // OS-execution boundary (the pre-exec hook). The probe must run the
+      // private snapshot of the ORIGINAL bytes, never the replaced pathname.
+      setFdxPreExecTestHook((snapshotPath: string, sourceBin: string) => {
+        if (sourceBin === binPath) writeFileSync(binPath, evil, "utf-8")
+      })
+      try {
+        const val = validateFdxBinaryPath(binPath, dir, { requireChecksum: true, requireProvenance: true, target })
+        expect(val.valid).toBe(true)
+        expect(val.version).toBe("1.0.4")
+        // The trusted digest is the original checksum-verified generation.
+        expect(val.validatedSha256).toBe(sha256)
+        // The replacement really happened during the probe...
+        expect(readFileSync(binPath, "utf-8")).toBe(evil)
+        // ...and the evil bytes never became the trusted digest.
+        expect(val.validatedSha256).not.toBe(createHash("sha256").update(evil).digest("hex"))
+      } finally {
+        setFdxPreExecTestHook(null)
+      }
     })
 
-    it("P1-2: a mutation injected in the final digest-to-exec window refuses execution", () => {
+    it("Contract1/P1-2: same-inode mutation after snapshot creation cannot change what executes", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      if (process.platform === "win32") return
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      process.env.FDX_DISABLE_FALLBACK = "1"
+      setActiveProjectDir(tempDir)
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      // Resolve + validate BEFORE arming the hook: the probe runs without the
+      // hook and the resolution is cached for runFdx.
+      const before = getFdxAvailabilityStatus(true)
+      expect(before.available).toBe(true)
+      // At the command's validated-snapshot -> OS-execution boundary, mutate
+      // the source IN PLACE (same inode, different content). The command must
+      // execute the snapshot's ORIGINAL bytes, never the mutated path.
+      setFdxPreExecTestHook((snapshotPath: string, sourceBin: string) => {
+        if (sourceBin === fake.binPath) {
+          writeFileSync(fake.binPath, "#!/bin/sh\necho 'evil-generation'\n", "utf-8")
+        }
+      })
+      try {
+        const out = runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])
+        expect(out).toContain("fdx v1.0.4")
+        expect(out).not.toContain("evil-generation")
+        expect(readFileSync(fake.binPath, "utf-8")).toContain("evil-generation")
+      } finally {
+        setFdxPreExecTestHook(null)
+      }
+    })
+
+    it("Contract1/P1-1: unmanaged (env/PATH) candidates are hashed before first execution", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      if (process.platform === "win32") return
+      const dir = join(tempDir, "unmanaged-trust-order")
+      mkdirSync(dir, { recursive: true })
+      const binPath = join(dir, target.executableName)
+      const evilPath = join(dir, "replacement-bytes")
+      writeFileSync(evilPath, "#!/bin/sh\necho 'fdx v1.0.4 replaced'\n", "utf-8")
+      // On its first execution the script replaces its own pathname with the
+      // replacement bytes (same inode via cp truncation). If the candidate
+      // were hashed AFTER first execution, the trusted digest would be the
+      // REPLACED generation; the contract hashes the opened bytes BEFORE any
+      // execution.
+      const selfReplacing = [
+        "#!/bin/sh",
+        `SELF=${JSON.stringify(binPath)}`,
+        `EVIL=${JSON.stringify(evilPath)}`,
+        'cp "$EVIL" "$SELF"',
+        'chmod +x "$SELF"',
+        "echo 'fdx v1.0.4'",
+      ].join("\n")
+      writeFileSync(binPath, selfReplacing, "utf-8")
+      chmodSync(binPath, 0o755)
+      const originalSha = sha256FileContents(binPath)
+      expect(originalSha).not.toBeNull()
+      process.env.FDX_BINARY_PATH = binPath
+      process.env.FDX_DISABLE_FALLBACK = "1"
+      const res = getFdxAvailabilityStatus(true)
+      expect(res.available).toBe(true)
+      expect(res.source).toBe("env")
+      // Trusted digest = the ORIGINAL generation (hashed before the probe),
+      // never the post-execution replacement.
+      expect(res.validatedSha256).toBe(originalSha)
+      expect(sha256FileContents(binPath)).not.toBe(originalSha)
+      expect(readFileSync(binPath, "utf-8")).toContain("replaced")
+    })
+
+    it("Contract1/P1-2: the pre-exec hook fires after the snapshot exists and before the OS execution call", () => {
       const target = detectFdxTarget()
       if (!target) return
       if (process.platform === "win32") return
@@ -1421,23 +1482,33 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       if (!fake) return
       const before = getFdxAvailabilityStatus(true)
       expect(before.available).toBe(true)
-      // Inject a deterministic mutation exactly between the final digest check
-      // and execFileSync: RENAME a different file over the binary so it is a
-      // NEW inode — the inode identity check must refuse execution.
-      setFdxPreExecTestHook((bin: string) => {
-        const replacement = join(tempDir, "replacement-binary")
-        writeFileSync(replacement, "#!/bin/sh\necho 'replaced'\n", "utf-8")
-        chmodSync(replacement, 0o755)
-        renameSync(replacement, bin)
+      let snapshotSeen: string | null = null
+      let sourceSeen: string | null = null
+      let snapshotBytesAtHook: string | null = null
+      setFdxPreExecTestHook((snapshotPath: string, sourceBin: string) => {
+        snapshotSeen = snapshotPath
+        sourceSeen = sourceBin
+        snapshotBytesAtHook = sha256FileContents(snapshotPath)
       })
       try {
-        expect(() => runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])).toThrow(/FDX Integrity|Binary path replaced/)
+        const out = runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])
+        // The hook saw a real snapshot path — distinct from the source — that
+        // already carried the validated bytes (post final hash op)...
+        expect(snapshotSeen).not.toBeNull()
+        expect(snapshotSeen!).not.toBe(fake.binPath)
+        expect(sourceSeen).not.toBeNull()
+        expect(sourceSeen!).toBe(fake.binPath)
+        expect(snapshotBytesAtHook).not.toBeNull()
+        expect(snapshotBytesAtHook!).toBe(createHash("sha256").update(readFileSync(fake.binPath)).digest("hex"))
+        // ...and the OS execution call still ran after the hook (the snapshot
+        // executed successfully and returned the validated binary's output).
+        expect(out).toContain("fdx v1.0.4")
       } finally {
         setFdxPreExecTestHook(null)
       }
     })
 
-    it("P1-2: a missing final digest fails closed and never executes", () => {
+    it("Contract1/P1-1/P1-2: probe and command run from the same private snapshot generation (parity)", () => {
       const target = detectFdxTarget()
       if (!target) return
       if (process.platform === "win32") return
@@ -1447,20 +1518,89 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       setActiveProjectDir(tempDir)
       const fake = buildFakePlatformPackage(tempDir, {})
       if (!fake) return
-      const before = getFdxAvailabilityStatus(true)
-      expect(before.available).toBe(true)
-      // The resolution succeeds, then the hook makes the binary unreadable so
-      // the FINAL digest read inside executeHashedBinary returns null -> the
-      // execution must fail closed with an integrity error, never spawn.
-      setFdxPreExecTestHook((bin: string) => {
-        chmodSync(bin, 0o000)
-      })
-      try {
-        expect(() => runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])).toThrow(/FDX Integrity/)
-      } finally {
-        setFdxPreExecTestHook(null)
-        chmodSync(fake.binPath, 0o755)
+      // The binary records the path it was executed from ($0) into a marker.
+      const marker = join(tempDir, "executed-from.txt")
+      const recorder = [
+        "#!/bin/sh",
+        `echo "$0" > ${JSON.stringify(marker)}`,
+        "echo 'fdx v1.0.4'",
+      ].join("\n")
+      writeFileSync(fake.binPath, recorder, "utf-8")
+      chmodSync(fake.binPath, 0o755)
+      const binBuf = readFileSync(fake.binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
+      writeFileSync(join(fake.pkgDir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      const prov = JSON.parse(readFileSync(join(fake.pkgDir, "provenance.json"), "utf-8"))
+      prov.sha256 = sha256
+      prov.binaryByteSize = binBuf.length
+      writeFileSync(join(fake.pkgDir, "provenance.json"), JSON.stringify(prov), "utf-8")
+
+      // Probe (during resolution): records the snapshot path it ran from.
+      const status = getFdxAvailabilityStatus(true)
+      expect(status.available).toBe(true)
+      const probePath = readFileSync(marker, "utf-8").trim()
+      // Command (normal runFdx): records its own snapshot path.
+      const out = runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])
+      expect(out).toContain("fdx v1.0.4")
+      const commandPath = readFileSync(marker, "utf-8").trim()
+      // Neither the probe nor the command ever executed the original pathname.
+      expect(probePath).not.toBe(fake.binPath)
+      expect(commandPath).not.toBe(fake.binPath)
+      // Both ran from the private snapshot mechanism.
+      expect(probePath).toContain("flowdeck-fdx-snapshot")
+      expect(commandPath).toContain("flowdeck-fdx-snapshot")
+    })
+
+    it("Contract1/P1-2: private snapshot cleanup on failure (dual-error: probe fails AND command fails)", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      if (process.platform === "win32") return
+      const listSnapshots = (): string[] => {
+        try {
+          return readdirSync(tmpdir()).filter((n) => n.startsWith("flowdeck-fdx-snapshot"))
+        } catch {
+          return []
+        }
       }
+      const before = listSnapshots()
+      // Dual-error case 1: the --version probe itself fails (non-zero exit).
+      const failDir = join(tempDir, "probe-fails")
+      mkdirSync(failDir, { recursive: true })
+      const failScript = "#!/bin/sh\nexit 3\n"
+      writeFileSync(join(failDir, target.executableName), failScript, "utf-8")
+      chmodSync(join(failDir, target.executableName), 0o755)
+      writeFileSync(join(failDir, "checksum.json"), JSON.stringify({ sha256: createHash("sha256").update(failScript).digest("hex") }), "utf-8")
+      const val = validateFdxBinaryPath(join(failDir, target.executableName), failDir, { requireChecksum: true, target })
+      expect(val.valid).toBe(false)
+      expect(listSnapshots()).toEqual(before)
+
+      // Dual-error case 2: the probe passes but the command fails.
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      process.env.FDX_DISABLE_FALLBACK = "1"
+      setActiveProjectDir(tempDir)
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      const failsOnCommand = [
+        "#!/bin/sh",
+        'case "$1" in',
+        "  --version) echo 'fdx v1.0.4' ;;",
+        "  *) exit 9 ;;",
+        "esac",
+      ].join("\n")
+      writeFileSync(fake.binPath, failsOnCommand, "utf-8")
+      chmodSync(fake.binPath, 0o755)
+      const binBuf = readFileSync(fake.binPath)
+      const sha256 = createHash("sha256").update(binBuf).digest("hex")
+      writeFileSync(join(fake.pkgDir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      const prov = JSON.parse(readFileSync(join(fake.pkgDir, "provenance.json"), "utf-8"))
+      prov.sha256 = sha256
+      prov.binaryByteSize = binBuf.length
+      writeFileSync(join(fake.pkgDir, "provenance.json"), JSON.stringify(prov), "utf-8")
+      const status = getFdxAvailabilityStatus(true)
+      expect(status.available).toBe(true)
+      expect(() => runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])).toThrow(/FDX Integrity/)
+      expect(listSnapshots()).toEqual(before)
     })
   })
 })

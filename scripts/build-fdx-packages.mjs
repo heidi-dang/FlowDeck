@@ -185,6 +185,46 @@ function main() {
     return
   }
 
+  // P2-4/Contract2: resolve provenance inputs BEFORE any package writes. A
+  // missing/zero source commit, a missing branch, a detached-HEAD branch, or a
+  // missing rustc version must never produce a provenance document that is not
+  // traceable to a real build. GitHub Actions checks out a detached HEAD, so
+  // `git rev-parse --abbrev-ref HEAD` returns the literal "HEAD" even though
+  // the workflow knows the real branch.
+  const gitCommit = tryExec("git", ["rev-parse", "HEAD"]) || null
+  const gitBranchRaw = tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]) || null
+  const rustVersion = tryExec("rustc", ["--version"]) || null
+
+  // P2-2/P2-3: resolve commit/branch from git + CI inputs, rejecting a
+  // spoofed GITHUB_SHA in strict mode and modeling detached builds as
+  // "detached" rather than recording "HEAD" as a branch.
+  const refs = resolveProvenanceRefs({
+    isStrict,
+    gitCommit,
+    gitBranchRaw,
+    githubSha: process.env.GITHUB_SHA ?? null,
+    githubRefName: process.env.GITHUB_REF_NAME ?? null,
+  })
+  if (refs.strictError) fail(refs.strictError)
+  const currentCommit = refs.currentCommit
+  const gitBranch = refs.gitBranch
+
+  // Contract2: never emit fabricated provenance — the gate runs before writing
+  // any manifest or provenance output. Strict (release/CI) mode fails the
+  // build on any fabricated input; non-strict local runs without a real source
+  // commit SHA skip packaging entirely rather than writing zero-SHA
+  // placeholders. All four provenance source fields (input sourceCommitSha,
+  // manifest.sourceCommitSha, provenance.sourceCommitSha, provenance.gitCommit)
+  // derive from the single validated currentCommit below, so they are valid,
+  // non-zero, and identical by construction.
+  if (isStrict) {
+    const strictError = strictProvenanceInputError({ currentCommit, currentBranch: refs.currentBranch, rustVersion })
+    if (strictError) fail(strictError)
+  } else if (sourceCommitShaError(currentCommit) !== null) {
+    console.log(`[build-fdx-packages] No real source commit SHA available (${JSON.stringify(currentCommit)}); skipping package population for ${targetDirName}.`)
+    return
+  }
+
   try {
     mkdirSync(destDir, { recursive: true })
     const destBin = join(destDir, execName)
@@ -203,37 +243,6 @@ function main() {
     }
     writeFileSync(join(destDir, "checksum.json"), JSON.stringify(checksumManifest, null, 2), "utf-8")
 
-    // P2-4: prefer validated CI refs when present. GitHub Actions checks out a
-    // detached HEAD, so `git rev-parse --abbrev-ref HEAD` returns the literal
-    // "HEAD" even though the workflow knows the real branch.
-    const gitCommit = tryExec("git", ["rev-parse", "HEAD"]) || null
-    const gitBranchRaw = tryExec("git", ["rev-parse", "--abbrev-ref", "HEAD"]) || null
-    const rustVersion = tryExec("rustc", ["--version"]) || null
-
-    // P2-2/P2-3: resolve commit/branch from git + CI inputs, rejecting a
-    // spoofed GITHUB_SHA in strict mode and modeling detached builds as
-    // "detached" rather than recording "HEAD" as a branch.
-    const refs = resolveProvenanceRefs({
-      isStrict,
-      gitCommit,
-      gitBranchRaw,
-      githubSha: process.env.GITHUB_SHA ?? null,
-      githubRefName: process.env.GITHUB_REF_NAME ?? null,
-    })
-    if (refs.strictError) fail(refs.strictError)
-    const currentCommit = refs.currentCommit
-    const gitBranch = refs.gitBranch
-
-    // P2-4: never emit fabricated provenance. A zero/absent source commit, a
-    // missing branch, a detached-HEAD branch, or a missing rustc version would
-    // produce a provenance document that is not traceable to a real build —
-    // unacceptable in strict (release/CI) mode, which must fail instead of
-    // writing the artifact.
-    if (isStrict) {
-      const strictError = strictProvenanceInputError({ currentCommit, currentBranch: refs.currentBranch, rustVersion })
-      if (strictError) fail(strictError)
-    }
-
     const provenanceManifest = {
       packageName: `@heidi-dang/${targetDirName}`,
       packageVersion: flowdeckVersion,
@@ -246,8 +255,11 @@ function main() {
       binaryFilename: execName,
       binaryByteSize: buf.length,
       sha256,
-      sourceCommitSha: currentCommit || "0000000000000000000000000000000000000000",
-      gitCommit: currentCommit || "0000000000000000000000000000000000000000",
+      // Contract2: currentCommit was validated (real, non-zero, identical for
+      // the manifest/provenance fields) by the pre-write gate above — never a
+      // zero/placeholder SHA.
+      sourceCommitSha: currentCommit,
+      gitCommit: currentCommit,
       gitBranch,
       workflowRunId: process.env.GITHUB_RUN_ID ?? null,
       ciRunId: process.env.GITHUB_RUN_ID ?? null,
