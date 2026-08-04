@@ -107,6 +107,59 @@ export class HarnessHttpServer {
           return;
         }
 
+        // Detect production UI dashboard route
+        const isUiRoute = method === "GET" && (
+          urlPath === "/app" ||
+          urlPath === "/dashboard" ||
+          urlPath === "/ui" ||
+          urlPath.includes("/better-harness/ui")
+        );
+
+        if (isUiRoute) {
+          if (!isLoopback) {
+            const authToken = req.headers.authorization?.replace("Bearer ", "");
+            if (!authCheck(authToken)) {
+              res.writeHead(401, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ error: "Unauthorized" }));
+              return;
+            }
+          }
+
+          const runId = urlPath.match(/runs\/([^/]+)/)?.[1] || "default_run";
+          const sseUrl = `/api/runs/${runId}/events`;
+
+          const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: http: https:;">
+  <title>FlowDeck Live Orchestration Dashboard</title>
+</head>
+<body>
+  <header role="banner">
+    <h1>FlowDeck Better Harness Orchestration</h1>
+  </header>
+  <div id="live-dashboard" role="region" aria-label="Live Orchestration Dashboard"></div>
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      const container = document.getElementById('live-dashboard');
+      if (container && window.FlowDeckUI) {
+        window.FlowDeckUI.mountLiveDashboard(container, { runId: "${runId}", url: "${sseUrl}" });
+      }
+    });
+  </script>
+</body>
+</html>`;
+
+          res.writeHead(200, {
+            "Content-Type": "text/html; charset=utf-8",
+            "Content-Security-Policy": "default-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: http: https:;",
+          });
+          res.end(html);
+          return;
+        }
+
         // Fallback SSE detection (without route params)
         const isSseRoute = method === "GET" && urlPath.includes("/events");
         if (isSseRoute && this.sseManager) {

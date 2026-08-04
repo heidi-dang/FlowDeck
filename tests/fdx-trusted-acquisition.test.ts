@@ -932,7 +932,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       if (!fake) return
       // Resolve once so the cache is populated with a trusted digest.
       const before = getFdxAvailabilityStatus(true)
-      expect(before.available).toBe(true)
+      console.log(before); expect(before.available).toBe(true)
       // Mutate the binary AFTER the cache was validated, preserving size and
       // restoring mtime so only the digest can detect it.
       const st = statSync(fake.binPath)
@@ -1432,7 +1432,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       // Resolve + validate BEFORE arming the hook: the probe runs without the
       // hook and the resolution is cached for runFdx.
       const before = getFdxAvailabilityStatus(true)
-      expect(before.available).toBe(true)
+      console.log(before); expect(before.available).toBe(true)
       // At the command's validated-snapshot -> OS-execution boundary, mutate
       // the source IN PLACE (same inode, different content). The command must
       // execute the snapshot's ORIGINAL bytes, never the mutated path.
@@ -1462,7 +1462,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       const fixture = setupVerifiedExecFixture()
       if (!fixture) return
       const before = getFdxAvailabilityStatus(true)
-      expect(before.available).toBe(true)
+      console.log(before); expect(before.available).toBe(true)
       const evilMarker = "EVIL-SNAPSHOT-MARKER"
       const evilBytes = process.platform === "win32"
         ? `@echo ${evilMarker}\r\n`
@@ -1583,7 +1583,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       const fixture = setupVerifiedExecFixture()
       if (!fixture) return
       const before = getFdxAvailabilityStatus(true)
-      expect(before.available).toBe(true)
+      console.log(before); expect(before.available).toBe(true)
       const evilMarker = "EVIL-INODE-MUTATION"
       const evilBytes = process.platform === "win32"
         ? `@echo ${evilMarker}\r\n`
@@ -1683,7 +1683,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       setActiveProjectDir(tempDir)
       process.env.FDX_BINARY_PATH = binPath
       const before = getFdxAvailabilityStatus(true)
-      expect(before.available).toBe(true)
+      console.log(before); expect(before.available).toBe(true)
       let snapshotDirSeen: string | null = null
       setFdxPreExecTestHook((snapshotPath: string, _sourceBin: string) => {
         snapshotDirSeen = dirname(snapshotPath)
@@ -1774,7 +1774,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       const fake = buildFakePlatformPackage(tempDir, {})
       if (!fake) return
       const before = getFdxAvailabilityStatus(true)
-      expect(before.available).toBe(true)
+      console.log(before); expect(before.available).toBe(true)
       let snapshotSeen: string | null = null
       let sourceSeen: string | null = null
       let snapshotBytesAtHook: string | null = null
