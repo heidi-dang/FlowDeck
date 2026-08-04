@@ -1,0 +1,30 @@
+[
+  {
+    "scenarioId": "delegated-task",
+    "delegationOverhead": 17.99,
+    "coordinationLatency": 21.77,
+    "parallelEfficiency": 24.18,
+    "totalDuration": 92.95
+  },
+  {
+    "scenarioId": "cross-module-feature",
+    "delegationOverhead": 10.65,
+    "coordinationLatency": 0,
+    "parallelEfficiency": 59.84,
+    "totalDuration": 89.63
+  },
+  {
+    "scenarioId": "ci-repair",
+    "delegationOverhead": 3.9,
+    "coordinationLatency": 0,
+    "parallelEfficiency": 78.58,
+    "totalDuration": 97.91
+  },
+  {
+    "scenarioId": "parallel-ownership-conflict",
+    "delegationOverhead": 22.84,
+    "coordinationLatency": 28.72,
+    "parallelEfficiency": 37.88,
+    "totalDuration": 85.51
+  }
+]

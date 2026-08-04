@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { existsSync, mkdirSync, writeFileSync, rmSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
-import { execSync } from "child_process"
+import { execFileSync } from "child_process"
 import { runDoctorChecks } from "@/services/doctor"
 import { doctorTool } from "@/tools/doctor"
 
@@ -86,9 +86,11 @@ describe("Phase 7 — Installer, Upgrade, Doctor, and Uninstall", () => {
       expect(existsSync(installPath)).toBe(true)
       expect(existsSync(uninstallPath)).toBe(true)
 
+      // Skip bash syntax check if bash is not available (e.g., Windows)
+      const bashPath = process.env.BASH || "bash"
       try {
-        execSync(`bash -n "${installPath}"`, { stdio: "ignore" })
-        execSync(`bash -n "${uninstallPath}"`, { stdio: "ignore" })
+        execFileSync(bashPath, ["-n", installPath], { stdio: "ignore", timeout: 1000 })
+        execFileSync(bashPath, ["-n", uninstallPath], { stdio: "ignore", timeout: 1000 })
       } catch {
         // Skip bash syntax check if bash is not available in environment
       }

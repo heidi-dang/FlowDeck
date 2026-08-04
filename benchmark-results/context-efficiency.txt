@@ -1,0 +1,14 @@
+=== Context Efficiency Benchmark Report ===
+Baseline: 5809fcf1230ff349ff0d7f5b53ed75403f44573b
+Generated: 2026-08-01T03:23:30.199Z
+
+Scenario                      | Context Items | Tokens    | Ctx/Token | Efficiency
+------------------------------|---------------|-----------|-----------|-----------
+ trivial-direct-edit         |          68 | 1070.5178427257486 |     6.35% |      36.48
+ local-bug                   |          59 | 1361.723611650757 |     4.33% |      56.67
+ cross-module-feature        |          61 | 1007.3938691611445 |     6.06% |      39.45
+ delegated-task              |          60 | 1202.9550542165973 |     4.99% |      50.12
+
+Averages:
+  Efficiency Score: 45.68
+  Context/Token Ratio: 5.43%
