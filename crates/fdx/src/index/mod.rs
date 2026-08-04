@@ -27,6 +27,7 @@ pub mod components;
 pub mod identity;
 pub mod manifest;
 pub mod paths;
+pub mod query_cache;
 pub mod refresh;
 pub mod storage;
 pub mod winfs;
@@ -726,6 +727,14 @@ impl IndexService {
         self.store.clear_persisted()?;
         self.store.verify_persisted_absent()?;
         *self.snapshot.write().unwrap() = None;
+        // A full invalidation must also drop cached batch results: the query
+        // cache keys on repository/worktree state, and invalidation announces
+        // that state changed. The query cache shares this worktree's state
+        // dir, so clearing it here covers both the positive and negative
+        // namespaces. Best-effort: a failed cache clear is not an index
+        // failure (stale entries are just re-executed on the next batch).
+        let cache = crate::index::query_cache::QueryCache::new(&self.state_dir());
+        let _ = cache.clear();
         Ok(())
     }
 
@@ -1442,6 +1451,17 @@ mod tests {
         assert!(svc.snapshot().is_some());
         assert!(!svc.store.persisted_generations().is_empty());
 
+        // Seed the query cache (positive + negative namespaces) at the
+        // service's state dir — the same location invalidate must clear.
+        let cache = crate::index::query_cache::QueryCache::new(&svc.state_dir());
+        cache.put("k1", b"v1");
+        cache.put_negative("k2", b"v2");
+        assert_eq!(
+            cache.debug_entry_count(),
+            (1, 1),
+            "seeded positive and negative entries are committed"
+        );
+
         svc.invalidate().unwrap();
         assert!(
             svc.snapshot().is_none(),
@@ -1449,6 +1469,14 @@ mod tests {
         );
         assert!(svc.store.persisted_generations().is_empty());
         assert_eq!(svc.store.current_generation().unwrap(), None);
+        // The whole v2 cache root (plus legacy v1 namespaces) is cleared by
+        // invalidation — no committed mappings survive.
+        assert!(!cache.root_dir().exists(), "v2 cache root cleared");
+        assert!(!cache.query_dir().exists(), "legacy positive cache cleared");
+        assert!(
+            !cache.negative_dir().exists(),
+            "legacy negative cache cleared"
+        );
 
         // The next refresh rebuilds from scratch.
         let snap = svc.refresh(false).unwrap();

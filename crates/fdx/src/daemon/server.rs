@@ -39,7 +39,7 @@ pub const DAEMON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Commands hosted in-process by the daemon. Everything else → `E_UNSUPPORTED`
 /// and the client falls back to the one-shot `fdx` spawn.
-pub const HOSTED_COMMANDS: [&str; 12] = [
+pub const HOSTED_COMMANDS: [&str; 13] = [
     "version",
     "read",
     "ls",
@@ -54,6 +54,8 @@ pub const HOSTED_COMMANDS: [&str; 12] = [
     "dependencies.query",
     "testsFor.query",
     "gitState.query",
+    // Task 4: capability metadata (descriptor registry).
+    "capabilities.query",
 ];
 
 /// Server state shared across requests.
@@ -195,21 +197,65 @@ impl Server {
                 result
             }
             RequestBody::Batch { params } => {
-                let mut responses = Vec::with_capacity(params.requests.len());
-                for sub in &params.requests {
-                    if let Err((code, message)) = protocol::validate_request(sub) {
-                        responses.push(Response::error(sub.id, code, message));
-                        continue;
+                // Task 4: typed batch path — one frozen snapshot per batch,
+                // input-order responses. Whole-batch preflight: ANY invalid
+                // op (unknown / mutating / non-batchable) plus structural
+                // issues (empty, >64, dup ids) reject the whole batch with
+                // E_BAD_REQUEST before anything executes (zero execution).
+                let has_ops = !params.operations.is_empty();
+                let has_reqs = !params.requests.is_empty();
+                if has_ops || !has_reqs {
+                    // Typed path. An empty `operations` array with no legacy
+                    // requests reaches `execute_batch`, whose canonical
+                    // rejection matches the one-shot `batch-query` CLI and the
+                    // TS fallback ("batch.operations must not be empty").
+                    let cwd = params.cwd.as_deref();
+                    // Resolve the worktree index only when a testsFor op is
+                    // present (other ops never need it).
+                    let needs_index = params.operations.iter().any(|op| op.op == "testsFor");
+                    let index: Option<std::sync::Arc<crate::index::IndexService>> = if needs_index {
+                        match cwd {
+                            Some(c) => crate::index::GLOBAL_INDEX_REGISTRY
+                                .service_for(std::path::Path::new(c))
+                                .ok(),
+                            None => None,
+                        }
+                    } else {
+                        None
+                    };
+                    match crate::batch::execute_batch(
+                        &params.operations,
+                        cwd,
+                        index
+                            .as_ref()
+                            .map(|i| i.as_ref() as &dyn crate::batch::BatchIndexProvider),
+                        params.fail_fast,
+                    ) {
+                        Ok(batch) => Response::ok(
+                            req.id,
+                            serde_json::to_value(&batch).expect("serialize batch response"),
+                        ),
+                        Err(reject) => Response::error(req.id, reject.code, reject.message),
                     }
-                    let r = self.handle(sub, kind);
-                    // Strip the batch envelope's own correlation: sub-responses
-                    // are returned as an array; the client matches by sub id.
-                    responses.push(r);
+                } else {
+                    // Legacy multiplexed path (Task 2): each sub-request is
+                    // handled independently.
+                    let mut responses = Vec::with_capacity(params.requests.len());
+                    for sub in &params.requests {
+                        if let Err((code, message)) = protocol::validate_request(sub) {
+                            responses.push(Response::error(sub.id, code, message));
+                            continue;
+                        }
+                        let r = self.handle(sub, kind);
+                        // Strip the batch envelope's own correlation: sub-responses
+                        // are returned as an array; the client matches by sub id.
+                        responses.push(r);
+                    }
+                    Response::ok(
+                        req.id,
+                        serde_json::json!({ "responses": responses.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().unwrap_or_default() }),
+                    )
                 }
-                Response::ok(
-                    req.id,
-                    serde_json::json!({ "responses": responses.iter().map(serde_json::to_value).collect::<Result<Vec<_>, _>>().unwrap_or_default() }),
-                )
             }
             RequestBody::Cancel { params } => {
                 let cancelled = self.in_flight.remove(&params.target_id);
@@ -317,6 +363,16 @@ fn run_command(command: &str, argv: &[String], cwd: Option<&str>, req_id: Option
                 }
                 Err(e) => Response::error(req_id, err::E_INTERNAL, format!("ls failed: {e}")),
             }
+        }
+        "capabilities.query" => {
+            // Task 4: the canonical descriptor registry (read-only, batching,
+            // output bounds, cache policy, latency class).
+            Response::ok(
+                req_id,
+                serde_json::json!({
+                    "descriptors": crate::batch::capabilities_payload(),
+                }),
+            )
         }
         other => {
             // Task 3: persistent index commands (index.*, *.query). When the
@@ -455,6 +511,31 @@ mod tests {
     }
 
     #[test]
+    fn capabilities_query_returns_descriptor_registry() {
+        let mut server = Server::new();
+        let resp = handle_line(
+            &mut server,
+            r#"{"v":1,"id":8,"method":"query","params":{"command":"capabilities.query","argv":[]}}"#,
+        );
+        assert!(resp.ok, "capabilities.query failed: {resp:?}");
+        let descriptors_value = result_field(&resp, "descriptors");
+        let descriptors = descriptors_value.as_array().unwrap();
+        assert!(!descriptors.is_empty());
+        let first = &descriptors[0];
+        assert!(first.get("name").is_some());
+        assert!(first.get("readOnly").is_some());
+        assert!(first.get("supportsBatching").is_some());
+        assert!(first.get("maximumOutputBytes").is_some());
+        // Every negotiated command has a descriptor (capabilities parity).
+        for command in HOSTED_COMMANDS {
+            assert!(
+                descriptors.iter().any(|d| d["name"] == command),
+                "missing descriptor for negotiated command {command}"
+            );
+        }
+    }
+
+    #[test]
     fn batch_multiplexes_sub_responses() {
         let mut server = Server::new();
         let resp = handle_line(
@@ -489,6 +570,60 @@ mod tests {
         assert_eq!(responses.len(), 1);
         assert!(responses[0]["ok"] == false);
         assert_eq!(responses[0]["error"]["code"], err::E_BAD_REQUEST);
+    }
+
+    #[test]
+    fn typed_batch_dispatches_in_input_order() {
+        let mut server = Server::new();
+        let tmp = std::env::temp_dir();
+        let file = tmp.join("fdx-typed-batch-test.txt");
+        std::fs::write(&file, "alpha\nbeta\n").unwrap();
+        let file = file.to_string_lossy();
+        let line = format!(
+            r#"{{"v":1,"id":9,"method":"batch","params":{{"version":1,"cwd":"{}","operations":[
+                {{"id":"r1","op":"read","params":{{"file":"{file}","mode":"raw","limit":1}}}},
+                {{"id":"r2","op":"read","params":{{"file":"{file}","mode":"raw","limit":1,"offset":2}}}}
+            ]}}}}"#,
+            tmp.display()
+        );
+        let resp = handle_line(&mut server, &line);
+        assert!(resp.ok, "typed batch failed: {resp:?}");
+        let result = resp.result.clone().unwrap();
+        assert_eq!(result["version"], 1);
+        assert_eq!(result["failedFast"], false);
+        let responses = result["responses"].as_array().unwrap();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], "r1");
+        assert_eq!(responses[1]["id"], "r2");
+        assert!(responses[0]["ok"] == true);
+        assert!(responses[1]["ok"] == true);
+        let lines1 = responses[0]["result"]["lines"].as_array().unwrap();
+        assert_eq!(lines1[0], "alpha");
+        let lines2 = responses[1]["result"]["lines"].as_array().unwrap();
+        assert_eq!(lines2[0], "beta");
+    }
+
+    #[test]
+    fn typed_batch_rejects_structural_violations() {
+        let mut server = Server::new();
+        // Empty operations: rejected whole-batch (E_BAD_REQUEST).
+        let resp = handle_line(
+            &mut server,
+            r#"{"v":1,"id":9,"method":"batch","params":{"version":1,"operations":[]}}"#,
+        );
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, err::E_BAD_REQUEST);
+
+        // Duplicate ids: rejected whole-batch.
+        let resp2 = handle_line(
+            &mut server,
+            r#"{"v":1,"id":9,"method":"batch","params":{"version":1,"operations":[
+                {"id":"a","op":"read","params":{"file":"x"}},
+                {"id":"a","op":"read","params":{"file":"y"}}
+            ]}}"#,
+        );
+        assert!(!resp2.ok);
+        assert_eq!(resp2.error.unwrap().code, err::E_BAD_REQUEST);
     }
 
     #[test]
@@ -552,7 +687,8 @@ mod tests {
     #[test]
     fn hosted_commands_surface_matches_capabilities() {
         // Capability claims must not exceed implemented behaviour. Task 3
-        // adds the index commands to the negotiated set.
+        // adds the index commands to the negotiated set; Task 4 adds
+        // capabilities.query.
         assert_eq!(
             HOSTED_COMMANDS,
             [
@@ -568,6 +704,7 @@ mod tests {
                 "dependencies.query",
                 "testsFor.query",
                 "gitState.query",
+                "capabilities.query",
             ]
         );
         let mut server = Server::new();

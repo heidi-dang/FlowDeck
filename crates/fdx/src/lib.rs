@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod commands;
 pub mod daemon;
 pub mod index;
