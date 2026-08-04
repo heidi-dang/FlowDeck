@@ -169,3 +169,9 @@ packages/*/fdx
 packages/*/fdx.exe
 packages/*/checksum.json
 
+
+# Local scratch / audit artifacts
+.artifacts/
+
+# Local FlowDeck configuration (machine-local, not distributed)
+.flowdeck.jsonc

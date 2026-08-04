@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import {
-  mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readFileSync, readdirSync, utimesSync, statSync,
+  mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readFileSync, readdirSync, utimesSync, statSync, renameSync,
 } from "node:fs"
 import { join, resolve, dirname } from "node:path"
 import { tmpdir } from "node:os"
@@ -24,6 +24,7 @@ import {
   setFdxPreExecTestHook,
   runFdx,
   sourceCommitShaError,
+  executeVerifiedSnapshot,
 } from "../src/tools/fdx-shared"
 import { acquireInstallLock, releaseInstallLock, handleFdxInstall, parseSRI, REGISTRY_TIMEOUT_MS, type InstallLockResult } from "../src/commands/fdx-admin"
 
@@ -1403,7 +1404,6 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
     it("Contract1/P1-2: same-inode mutation after snapshot creation cannot change what executes", () => {
       const target = detectFdxTarget()
       if (!target) return
-      if (process.platform === "win32") return
       process.env.XDG_CACHE_HOME = tempDir
       process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
       process.env.FDX_DISABLE_FALLBACK = "1"
@@ -1429,6 +1429,121 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
         expect(readFileSync(fake.binPath, "utf-8")).toContain("evil-generation")
       } finally {
         setFdxPreExecTestHook(null)
+      }
+    })
+
+    it("Contract1/P1-2: snapshot replacement at the pre-exec barrier never executes the replaced bytes", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      process.env.FDX_DISABLE_FALLBACK = "1"
+      setActiveProjectDir(tempDir)
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return
+      const before = getFdxAvailabilityStatus(true)
+      expect(before.available).toBe(true)
+      const evilMarker = "EVIL-SNAPSHOT-MARKER"
+      const evilBytes = process.platform === "win32"
+        ? `@echo ${evilMarker}\r\n`
+        : `#!/bin/sh\necho '${evilMarker}'\n`
+      // REPLACE the snapshot pathname with attacker-controlled bytes exactly at
+      // the validated-snapshot -> OS-execution barrier. The replaced bytes must
+      // NEVER execute on any platform:
+      // - Linux: execution binds the snapshot descriptor (held open), so the
+      //   ORIGINAL snapshot generation runs.
+      // - macOS/Windows: the fail-closed generation re-verify refuses to run.
+      setFdxPreExecTestHook((snapshotPath: string, _sourceBin: string) => {
+        const evil = join(tempDir, "snapshot-replacement")
+        writeFileSync(evil, evilBytes, "utf-8")
+        if (process.platform !== "win32") chmodSync(evil, 0o755)
+        renameSync(evil, snapshotPath)
+      })
+      try {
+        let out: string | null = null
+        let threw: string | null = null
+        try {
+          out = runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])
+        } catch (e: any) {
+          threw = String(e?.message ?? e)
+        }
+        if (threw !== null) {
+          // Fail-closed refusal: nothing ran, so the replaced bytes never
+          // executed.
+          expect(threw).toMatch(/FDX Integrity/)
+          expect(threw).not.toContain(evilMarker)
+        } else {
+          // Descriptor-bound execution (Linux): the ORIGINAL snapshot bytes ran.
+          expect(out).not.toContain(evilMarker)
+          expect(out).toContain("fdx v1.0.4")
+        }
+      } finally {
+        setFdxPreExecTestHook(null)
+      }
+    })
+
+    it("Contract1/P2-1: structured cleanup preserves both primary and cleanup failures", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      // Case 1: primary probe failure + injected cleanup failure (snapshot dir
+      // made non-writable so unlink/rmdir fail). Both must be reported; the
+      // cleanup failure must not replace the primary one.
+      const dir = join(tempDir, "cleanup-fail")
+      mkdirSync(dir, { recursive: true })
+      const failScript = "#!/bin/sh\nexit 3\n"
+      const binPath = join(dir, target.executableName)
+      writeFileSync(binPath, failScript, "utf-8")
+      chmodSync(binPath, 0o755)
+      let snapshotDirSeen: string | null = null
+      setFdxPreExecTestHook((snapshotPath: string, _sourceBin: string) => {
+        snapshotDirSeen = dirname(snapshotPath)
+        try { chmodSync(dirname(snapshotPath), 0o500) } catch {}
+      })
+      try {
+        const res = executeVerifiedSnapshot(binPath, ["--version"], null)
+        expect(res.kind).toBe("rejected")
+        if (res.kind === "rejected") {
+          // Primary failure preserved, explicitly structured.
+          expect(res.reason).toContain("exit code 3")
+          // Cleanup failures surfaced, not swallowed.
+          expect(res.cleanup.unlinkError).not.toBeNull()
+          expect(res.cleanup.rmdirError).not.toBeNull()
+        }
+      } finally {
+        setFdxPreExecTestHook(null)
+        if (snapshotDirSeen) {
+          try { chmodSync(snapshotDirSeen, 0o700) } catch {}
+          try { rmSync(snapshotDirSeen, { recursive: true, force: true }) } catch {}
+        }
+      }
+
+      // Case 2: successful execution with a cleanup failure — the primary
+      // result is preserved and the cleanup errors are attached.
+      const dir2 = join(tempDir, "cleanup-fail-success")
+      mkdirSync(dir2, { recursive: true })
+      const goodScript = "#!/bin/sh\necho 'fdx v1.0.4'\n"
+      const binPath2 = join(dir2, target.executableName)
+      writeFileSync(binPath2, goodScript, "utf-8")
+      chmodSync(binPath2, 0o755)
+      let snapshotDirSeen2: string | null = null
+      setFdxPreExecTestHook((snapshotPath: string, _sourceBin: string) => {
+        snapshotDirSeen2 = dirname(snapshotPath)
+        try { chmodSync(dirname(snapshotPath), 0o500) } catch {}
+      })
+      try {
+        const res2 = executeVerifiedSnapshot(binPath2, ["--version"], null)
+        expect(res2.kind).toBe("executed")
+        if (res2.kind === "executed") {
+          expect(res2.out).toContain("fdx v1.0.4")
+          expect(res2.cleanup.unlinkError).not.toBeNull()
+          expect(res2.cleanup.rmdirError).not.toBeNull()
+        }
+      } finally {
+        setFdxPreExecTestHook(null)
+        if (snapshotDirSeen2) {
+          try { chmodSync(snapshotDirSeen2, 0o700) } catch {}
+          try { rmSync(snapshotDirSeen2, { recursive: true, force: true }) } catch {}
+        }
       }
     })
 
@@ -1546,9 +1661,12 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       // Neither the probe nor the command ever executed the original pathname.
       expect(probePath).not.toBe(fake.binPath)
       expect(commandPath).not.toBe(fake.binPath)
-      // Both ran from the private snapshot mechanism.
-      expect(probePath).toContain("flowdeck-fdx-snapshot")
-      expect(commandPath).toContain("flowdeck-fdx-snapshot")
+      // Both ran from the verified snapshot pipeline — the private snapshot
+      // pathname (non-Linux) or the held snapshot descriptor (/proc/<pid>/fd/
+      // on Linux).
+      const verifiedPipelinePath = /flowdeck-fdx-snapshot|\/proc\/\d+\/fd\/\d+/
+      expect(probePath).toMatch(verifiedPipelinePath)
+      expect(commandPath).toMatch(verifiedPipelinePath)
     })
 
     it("Contract1/P1-2: private snapshot cleanup on failure (dual-error: probe fails AND command fails)", () => {
