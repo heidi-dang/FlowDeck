@@ -70,6 +70,7 @@ pub fn get_language_provider(ext: &str) -> Option<LanguageProvider> {
                 "method_definition",
                 "method_signature",
                 "lexical_declaration",
+                "namespace_definition",
             ],
         }),
         "tsx" => Some(LanguageProvider {
@@ -85,6 +86,7 @@ pub fn get_language_provider(ext: &str) -> Option<LanguageProvider> {
                 "method_definition",
                 "method_signature",
                 "lexical_declaration",
+                "namespace_definition",
             ],
         }),
         "js" | "jsx" | "mjs" | "cjs" => Some(LanguageProvider {

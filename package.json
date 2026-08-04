@@ -50,12 +50,23 @@
     "check:fdx": "fdx --version",
     "postinstall": "node postinstall.mjs",
     "prepublishOnly": "bun run clean && bun run build",
+<<<<<<< HEAD
     "test": "bun test --path-ignore-patterns=\"**/orchestration/persistence/**\"",
     "test:routing": "bun test tests/routing/ && node scripts/check-routing-policy-version.mjs",
     "test:routing:policy-version": "node scripts/check-routing-policy-version.mjs",
     "test:routing:classification": "bun test tests/routing/classification.test.ts",
     "test:routing:consistency": "bun test tests/routing/consistency.test.ts",
+=======
+    "test": "bun test --timeout 60000 --path-ignore-patterns=\"**/orchestration/persistence/**\"",
+>>>>>>> origin/feat/fdx-performance-indexing
     "test:fdx-parity": "node scripts/verify-fdx-parity.mjs",
+    "test:fdx-protocol": "bun test tests/fdx-protocol.test.ts",
+    "test:fdx-daemon": "bun test tests/fdx-daemon.test.ts",
+    "test:fdx-index": "bun test tests/fdx-index.test.ts",
+    "test:fdx-index-incremental": "bun test tests/fdx-index.test.ts",
+    "test:fdx-index-faults": "bun test tests/fdx-index-faults.test.ts",
+    "benchmark:fdx": "node scripts/bench-fdx-baseline.mjs",
+    "benchmark:fdx-index": "node scripts/bench-fdx-index.mjs",
     "test:coverage": "node scripts/check-coverage.mjs",
     "test:policy-version": "node scripts/check-routing-policy-version.mjs",
     "typecheck": "tsc --noEmit",
