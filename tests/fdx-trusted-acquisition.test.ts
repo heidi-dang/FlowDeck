@@ -1401,15 +1401,34 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       }
     })
 
+    /**
+     * Cross-platform verified-execution fixture. On POSIX a fake platform
+     * package with a shebang script is used (package source); on Windows a
+     * genuine PE (bun.exe) is used via FDX_BINARY_PATH — `.exe`-named
+     * cmd-script fixtures cannot execute on Windows (ENOEXEC), so a real
+     * executable is required for deterministic snapshot-boundary tests.
+     */
+    function setupVerifiedExecFixture(): { binPath: string } | null {
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FDX_DISABLE_FALLBACK = "1"
+      if (process.platform === "win32") {
+        const binPath = join(tempDir, "fdx.exe")
+        writeFileSync(binPath, readFileSync(process.execPath))
+        process.env.FDX_BINARY_PATH = binPath
+        return { binPath }
+      }
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      setActiveProjectDir(tempDir)
+      const fake = buildFakePlatformPackage(tempDir, {})
+      if (!fake) return null
+      return { binPath: fake.binPath }
+    }
+
     it("Contract1/P1-2: same-inode mutation after snapshot creation cannot change what executes", () => {
       const target = detectFdxTarget()
       if (!target) return
-      process.env.XDG_CACHE_HOME = tempDir
-      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
-      process.env.FDX_DISABLE_FALLBACK = "1"
-      setActiveProjectDir(tempDir)
-      const fake = buildFakePlatformPackage(tempDir, {})
-      if (!fake) return
+      const fixture = setupVerifiedExecFixture()
+      if (!fixture) return
       // Resolve + validate BEFORE arming the hook: the probe runs without the
       // hook and the resolution is cached for runFdx.
       const before = getFdxAvailabilityStatus(true)
@@ -1418,15 +1437,20 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       // the source IN PLACE (same inode, different content). The command must
       // execute the snapshot's ORIGINAL bytes, never the mutated path.
       setFdxPreExecTestHook((snapshotPath: string, sourceBin: string) => {
-        if (sourceBin === fake.binPath) {
-          writeFileSync(fake.binPath, "#!/bin/sh\necho 'evil-generation'\n", "utf-8")
+        if (sourceBin === fixture.binPath) {
+          writeFileSync(fixture.binPath, "#!/bin/sh\necho 'evil-generation'\n", "utf-8")
         }
       })
       try {
-        const out = runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])
-        expect(out).toContain("fdx v1.0.4")
+        const out = runFdx(["--version"])
         expect(out).not.toContain("evil-generation")
-        expect(readFileSync(fake.binPath, "utf-8")).toContain("evil-generation")
+        if (process.platform === "win32") {
+          // The original PE generation executed (bun --version output).
+          expect(out.trim().length).toBeGreaterThan(0)
+        } else {
+          expect(out).toContain("fdx v1.0.4")
+        }
+        expect(readFileSync(fixture.binPath, "utf-8")).toContain("evil-generation")
       } finally {
         setFdxPreExecTestHook(null)
       }
@@ -1435,12 +1459,8 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
     it("Contract1/P1-2: snapshot replacement at the pre-exec barrier never executes the replaced bytes", () => {
       const target = detectFdxTarget()
       if (!target) return
-      process.env.XDG_CACHE_HOME = tempDir
-      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
-      process.env.FDX_DISABLE_FALLBACK = "1"
-      setActiveProjectDir(tempDir)
-      const fake = buildFakePlatformPackage(tempDir, {})
-      if (!fake) return
+      const fixture = setupVerifiedExecFixture()
+      if (!fixture) return
       const before = getFdxAvailabilityStatus(true)
       expect(before.available).toBe(true)
       const evilMarker = "EVIL-SNAPSHOT-MARKER"
@@ -1463,7 +1483,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
         let out: string | null = null
         let threw: string | null = null
         try {
-          out = runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])
+          out = runFdx(["--version"])
         } catch (e: any) {
           threw = String(e?.message ?? e)
         }
@@ -1474,8 +1494,12 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
           expect(threw).not.toContain(evilMarker)
         } else {
           // Descriptor-bound execution (Linux): the ORIGINAL snapshot bytes ran.
-          expect(out).not.toContain(evilMarker)
-          expect(out).toContain("fdx v1.0.4")
+          expect(out!).not.toContain(evilMarker)
+          if (process.platform === "win32") {
+            expect(out!.trim().length).toBeGreaterThan(0)
+          } else {
+            expect(out!).toContain("fdx v1.0.4")
+          }
         }
       } finally {
         setFdxPreExecTestHook(null)
@@ -1485,6 +1509,12 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
     it("Contract1/P2-1: structured cleanup preserves both primary and cleanup failures", () => {
       const target = detectFdxTarget()
       if (!target) return
+      // POSIX-only: the deterministic cleanup-failure injection relies on
+      // POSIX directory permissions (chmod 0500 makes unlink/rmdir fail).
+      // Windows chmod is a no-op, so cleanup-failure injection is not
+      // expressible in pure Node there; the structured result contract itself
+      // (cleanup errors captured on every result) is platform-independent.
+      if (process.platform === "win32") return
       // Case 1: primary probe failure + injected cleanup failure (snapshot dir
       // made non-writable so unlink/rmdir fail). Both must be reported; the
       // cleanup failure must not replace the primary one.
