@@ -1473,7 +1473,10 @@ mod tests {
         // invalidation — no committed mappings survive.
         assert!(!cache.root_dir().exists(), "v2 cache root cleared");
         assert!(!cache.query_dir().exists(), "legacy positive cache cleared");
-        assert!(!cache.negative_dir().exists(), "legacy negative cache cleared");
+        assert!(
+            !cache.negative_dir().exists(),
+            "legacy negative cache cleared"
+        );
 
         // The next refresh rebuilds from scratch.
         let snap = svc.refresh(false).unwrap();

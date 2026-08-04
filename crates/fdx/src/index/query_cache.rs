@@ -569,7 +569,8 @@ impl QueryCache {
         std::fs::create_dir_all(&gen_dir)
             .map_err(|e| format!("failed to create generations dir: {e}"))?;
         let final_path = gen_dir.join(gen_file_name(manifest.generation));
-        let mut tmp = OwnedTemp::create_exclusive_in(&gen_dir, &format!("gen-{}", manifest.generation))?;
+        let mut tmp =
+            OwnedTemp::create_exclusive_in(&gen_dir, &format!("gen-{}", manifest.generation))?;
         tmp.write_all_and_sync(&bytes)?;
         match std::fs::rename(tmp.path(), &final_path) {
             Ok(()) => {
@@ -586,8 +587,7 @@ impl QueryCache {
     /// Atomically flip the `CURRENT` pointer to `seq` (tmp + fsync + rename).
     fn flip_current(&self, seq: u64) -> Result<(), String> {
         let root = self.root_dir();
-        std::fs::create_dir_all(&root)
-            .map_err(|e| format!("failed to create cache root: {e}"))?;
+        std::fs::create_dir_all(&root).map_err(|e| format!("failed to create cache root: {e}"))?;
         let mut tmp = OwnedTemp::create_exclusive_in(&root, CURRENT_FILE)?;
         tmp.write_all_and_sync(format!("{seq}\n").as_bytes())?;
         match std::fs::rename(tmp.path(), self.current_path()) {
@@ -908,8 +908,7 @@ impl CacheTransaction<'_> {
             ));
         }
         let tmp_dir = self.cache.tmp_dir();
-        std::fs::create_dir_all(&tmp_dir)
-            .map_err(|e| format!("failed to create tmp dir: {e}"))?;
+        std::fs::create_dir_all(&tmp_dir).map_err(|e| format!("failed to create tmp dir: {e}"))?;
         let mut tmp = OwnedTemp::create_exclusive_in(&tmp_dir, digest)?;
         tmp.write_all_and_sync(bytes)?;
         let tmp_path = tmp.path().to_path_buf();
@@ -1303,13 +1302,10 @@ fn compute_integrity(m: &GenerationManifest) -> String {
 /// Validate a manifest: schema version, generation match, integrity, and that
 /// every key/digest is a well-formed cache key (path-traversal safe).
 fn validate_manifest(bytes: &[u8], expected_seq: u64) -> Result<GenerationManifest, String> {
-    let m: GenerationManifest = serde_json::from_slice(bytes)
-        .map_err(|e| format!("manifest parse error: {e}"))?;
+    let m: GenerationManifest =
+        serde_json::from_slice(bytes).map_err(|e| format!("manifest parse error: {e}"))?;
     if m.schema_version != SCHEMA_VERSION {
-        return Err(format!(
-            "unsupported schema version {}",
-            m.schema_version
-        ));
+        return Err(format!("unsupported schema version {}", m.schema_version));
     }
     if m.generation != expected_seq {
         return Err(format!(
@@ -1351,7 +1347,7 @@ fn evict_lru_mapping(m: &mut GenerationManifest) {
     }
     for (k, e) in &m.negatives {
         let cand = (e.committed_at, true, k.clone());
-        if oldest.as_ref().map_or(true, |o| cand < *o) {
+        if oldest.as_ref().is_none_or(|o| cand < *o) {
             oldest = Some(cand);
         }
     }
@@ -1518,7 +1514,10 @@ mod tests {
         );
         // v2 stores content-addressed objects + a generation manifest, not a
         // per-key file.
-        assert!(cache.objects_dir().join(sha256_hex(br#"{"v":"value-one"}"#)).exists());
+        assert!(cache
+            .objects_dir()
+            .join(sha256_hex(br#"{"v":"value-one"}"#))
+            .exists());
         assert!(cache.current_path().exists());
         assert_eq!(cache.debug_entry_count(), (1, 0));
     }
@@ -1635,7 +1634,10 @@ mod tests {
         cache.put_negative(&key(3), b"3");
         // Bound is 2: oldest negative entry (key(2)) is evicted.
         assert_eq!(cache.get_negative(&key(2)), None);
-        assert_eq!(cache.get_negative(&key(3)).as_deref(), Some(b"3".as_slice()));
+        assert_eq!(
+            cache.get_negative(&key(3)).as_deref(),
+            Some(b"3".as_slice())
+        );
     }
 
     #[test]
@@ -1655,10 +1657,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
         cache.put(&key(1), br#"{"v":1}"#);
-        assert_eq!(cache.get(&key(1)).as_deref(), Some(br#"{"v":1}"#.as_slice()));
+        assert_eq!(
+            cache.get(&key(1)).as_deref(),
+            Some(br#"{"v":1}"#.as_slice())
+        );
         // Overwrite: the new value replaces the old atomically.
         cache.put(&key(1), br#"{"v":2}"#);
-        assert_eq!(cache.get(&key(1)).as_deref(), Some(br#"{"v":2}"#.as_slice()));
+        assert_eq!(
+            cache.get(&key(1)).as_deref(),
+            Some(br#"{"v":2}"#.as_slice())
+        );
         // No temp files may remain after any write (success or failure path).
         let leftover = std::fs::read_dir(cache.tmp_dir())
             .map(|rd| rd.flatten().count())
@@ -1708,7 +1716,10 @@ mod tests {
         std::fs::write(&path, b"not a manifest").unwrap();
         // key(2) (only in gen-2) is a miss; key(1) (in gen-1) still served.
         assert_eq!(cache.get(&key(2)), None);
-        assert_eq!(cache.get(&key(1)).as_deref(), Some(br#"{"v":1}"#.as_slice()));
+        assert_eq!(
+            cache.get(&key(1)).as_deref(),
+            Some(br#"{"v":1}"#.as_slice())
+        );
     }
 
     #[test]
@@ -1729,7 +1740,7 @@ mod tests {
         let cache = QueryCache::new(tmp.path());
         // Simulate a leftover v1 entry.
         std::fs::create_dir_all(cache.query_dir()).unwrap();
-        std::fs::write(cache.query_dir().join(&key(1)), br#"{"v":1}"#).unwrap();
+        std::fs::write(cache.query_dir().join(key(1)), br#"{"v":1}"#).unwrap();
         // v2 never reads the legacy dir.
         assert_eq!(cache.get(&key(1)), None);
         // clear() removes it.
@@ -1803,7 +1814,10 @@ mod tests {
         tx.stage_write(&key(2), true, br#"{"b":2}"#).unwrap();
         let outcomes = tx.publish().unwrap();
         assert_eq!(outcomes.len(), 2);
-        assert_eq!(cache.get(&key(1)).as_deref(), Some(br#"{"a":1}"#.as_slice()));
+        assert_eq!(
+            cache.get(&key(1)).as_deref(),
+            Some(br#"{"a":1}"#.as_slice())
+        );
         assert_eq!(
             cache.get_negative(&key(2)).as_deref(),
             Some(br#"{"b":2}"#.as_slice())

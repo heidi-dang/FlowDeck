@@ -1816,9 +1816,7 @@ impl PreparedArtifact {
                             self.final_path.display()
                         );
                         if let Some(issue) = discard_issue {
-                            msg.push_str(&format!(
-                                "; provisional temp removal failed: {issue}"
-                            ));
+                            msg.push_str(&format!("; provisional temp removal failed: {issue}"));
                         }
                         Err(msg)
                     }
@@ -1826,9 +1824,7 @@ impl PreparedArtifact {
                         let mut msg =
                             format!("artifact winner exists but is unreadable: {read_err}");
                         if let Some(issue) = discard_issue {
-                            msg.push_str(&format!(
-                                "; provisional temp removal failed: {issue}"
-                            ));
+                            msg.push_str(&format!("; provisional temp removal failed: {issue}"));
                         }
                         Err(msg)
                     }
@@ -2852,9 +2848,7 @@ mod tests {
                     for wt in worktrees.flatten() {
                         let cache = crate::index::query_cache::QueryCache::new(&wt.path());
                         let (pos, neg) = cache.debug_entry_count();
-                        count += if namespace
-                            == crate::index::query_cache::NEGATIVE_CACHE_DIR
-                        {
+                        count += if namespace == crate::index::query_cache::NEGATIVE_CACHE_DIR {
                             neg
                         } else {
                             pos
