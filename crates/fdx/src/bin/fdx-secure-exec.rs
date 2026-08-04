@@ -229,7 +229,7 @@ mod linux_impl {
     }
 }
 
-// ─── macOS: unlinked private descriptor + fexecve ──────────────────────────
+// ─── macOS: private read-only payload, immediate path exec ──────────────────
 
 #[cfg(target_os = "macos")]
 mod macos_impl {
@@ -238,11 +238,14 @@ mod macos_impl {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     use std::os::unix::io::IntoRawFd;
 
-    // macOS has no fexecve(2) symbol; the standard protected-handle exec is
-    // execve("/dev/fd/<fd>") on a descriptor whose backing inode has been
-    // unlinked: /dev/fd duplicates the open descriptor (it does not resolve a
-    // pathname), and the inode is unreachable by any path, so no other process
-    // can open it for writing or replace it. /dev/fd is per-process.
+    // macOS has no fexecve(2) symbol, and /dev/fd entries are symlinks that
+    // resolve the real path (an unlinked file cannot be exec'd). The strongest
+    // macOS mechanism is therefore: materialize the validated stdin bytes in a
+    // private 0700 directory as a read-only 0500 file, then execve that exact
+    // path immediately. No other user can read/write/replace it (0700 dir +
+    // 0500 file); the bytes come from the validated in-memory payload, not
+    // from any pathname that existed before validation, and the write-to-exec
+    // window is microseconds inside a private directory.
     extern "C" {
         fn execve(
             path: *const c_char,
@@ -272,17 +275,13 @@ mod macos_impl {
         if file.write_all(bytes).is_err() || file.flush().is_err() {
             fail("cannot write payload file");
         }
-        let fd = file.into_raw_fd();
-        // Unlink immediately: the inode is now unreachable by any pathname, so
-        // no other process can open it for writing or replace it. Execution
-        // binds the protected descriptor via /dev/fd.
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_dir_all(&dir);
+        let _fd = file.into_raw_fd();
+        // Exec the private, read-only, freshly-materialized path immediately.
         unsafe {
-            let devfd = CString::new(format!("/dev/fd/{fd}")).unwrap();
+            let cpath = CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
             let argv = build_argv(args);
             let envp = build_envp();
-            execve(devfd.as_ptr(), argv.as_ptr(), envp.as_ptr());
+            execve(cpath.as_ptr(), argv.as_ptr(), envp.as_ptr());
             fail("execve failed");
         }
     }
@@ -380,6 +379,7 @@ mod windows_impl {
         fn WaitForSingleObject(h: HANDLE, ms: u32) -> u32;
         fn GetExitCodeProcess(h: HANDLE, code: *mut u32) -> i32;
         fn DeleteFileW(name: *const u16) -> i32;
+        fn GetLastError() -> u32;
     }
 
     fn wide(s: &std::ffi::OsStr) -> Vec<u16> {
@@ -500,8 +500,9 @@ mod windows_impl {
                 &mut pi,
             );
             if ok == 0 {
+                let err = GetLastError();
                 CloseHandle(h);
-                fail("CreateProcessW failed");
+                fail(&format!("CreateProcessW failed (error {err})"));
             }
             CloseHandle(pi.h_thread);
             // Hold the deny-write/delete handle until the child process has
