@@ -1373,9 +1373,11 @@ export function executeVerifiedSnapshot(
     if (fdxPreExecTestHookValue) fdxPreExecTestHookValue(snapshotPath, bin)
     // Secure process creation from the validated in-memory bytes. The helper
     // execs the target (or launches + waits on Windows) and propagates its
-    // exit status; stdout/stderr flow through the inherited pipes.
+    // exit status; stdout/stderr flow through the inherited pipes. The source
+    // extension is passed so Windows names .cmd/.bat payloads correctly.
     const out = execFileSync(helper, args, {
       input: buf,
+      env: { ...process.env, FDX_SECURE_EXEC_PAYLOAD_EXT: process.platform === "win32" ? (extname(bin) || ".exe") : ".exe" },
       encoding: "utf-8",
       timeout: opts.timeout ?? FDX_TIMEOUT_MS,
       maxBuffer: opts.maxBuffer ?? FDX_MAX_BUFFER,

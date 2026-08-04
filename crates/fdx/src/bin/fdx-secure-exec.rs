@@ -21,8 +21,11 @@
 //! Zero dependencies: raw syscalls on Linux, raw `extern` declarations on
 //! macOS and Windows.
 
-use std::ffi::{CString, OsString};
+#[cfg(not(windows))]
+use std::ffi::CString;
+use std::ffi::OsString;
 use std::io::Read;
+#[cfg(not(windows))]
 use std::os::raw::c_char;
 
 /// Read all of stdin (the validated payload bytes).
@@ -40,7 +43,9 @@ fn fail(msg: &str) -> ! {
 }
 
 /// Build an argv/envp pointer array, leaking the CStrings so the pointers stay
-/// valid until the exec call that immediately follows.
+/// valid until the exec call that immediately follows. (Unix platforms only —
+/// Windows builds its own command line.)
+#[cfg(not(windows))]
 fn leak_pointers(items: impl IntoIterator<Item = Vec<u8>>) -> Vec<*const c_char> {
     let cstrings: Vec<CString> = items
         .into_iter()
@@ -52,12 +57,14 @@ fn leak_pointers(items: impl IntoIterator<Item = Vec<u8>>) -> Vec<*const c_char>
     ptrs
 }
 
+#[cfg(not(windows))]
 fn build_argv(args: &[OsString]) -> Vec<*const c_char> {
     let mut items: Vec<Vec<u8>> = vec![b"fdx-secure-exec".to_vec()];
     items.extend(args.iter().map(|a| a.as_encoded_bytes().to_vec()));
     leak_pointers(items)
 }
 
+#[cfg(not(windows))]
 fn build_envp() -> Vec<*const c_char> {
     let items = std::env::vars_os().map(|(k, v)| {
         let mut kv = k.as_encoded_bytes().to_vec();
@@ -228,12 +235,20 @@ mod linux_impl {
 mod macos_impl {
     use super::*;
     use std::io::Write;
-    use std::os::raw::c_int;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     use std::os::unix::io::IntoRawFd;
 
+    // macOS has no fexecve(2) symbol; the standard protected-handle exec is
+    // execve("/dev/fd/<fd>") on a descriptor whose backing inode has been
+    // unlinked: /dev/fd duplicates the open descriptor (it does not resolve a
+    // pathname), and the inode is unreachable by any path, so no other process
+    // can open it for writing or replace it. /dev/fd is per-process.
     extern "C" {
-        fn fexecve(fd: c_int, argv: *const *const c_char, envp: *const *const c_char) -> c_int;
+        fn execve(
+            path: *const c_char,
+            argv: *const *const c_char,
+            envp: *const *const c_char,
+        ) -> std::ffi::c_int;
     }
 
     pub fn exec(bytes: &[u8], args: &[OsString]) -> ! {
@@ -260,14 +275,15 @@ mod macos_impl {
         let fd = file.into_raw_fd();
         // Unlink immediately: the inode is now unreachable by any pathname, so
         // no other process can open it for writing or replace it. Execution
-        // binds the protected descriptor.
+        // binds the protected descriptor via /dev/fd.
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir_all(&dir);
         unsafe {
+            let devfd = CString::new(format!("/dev/fd/{fd}")).unwrap();
             let argv = build_argv(args);
             let envp = build_envp();
-            fexecve(fd, argv.as_ptr(), envp.as_ptr());
-            fail("fexecve failed");
+            execve(devfd.as_ptr(), argv.as_ptr(), envp.as_ptr());
+            fail("execve failed");
         }
     }
 }
@@ -370,11 +386,25 @@ mod windows_impl {
         s.encode_wide().chain(std::iter::once(0)).collect()
     }
 
+    /// Quote a single argument for the C runtime command-line parser
+    /// (CreateProcessW / CommandLineToArgvW rules).
+    fn quote_arg(s: &str) -> String {
+        if s.contains(' ') || s.contains('"') {
+            format!("\"{}\"", s.replace('"', "\\\""))
+        } else {
+            s.to_string()
+        }
+    }
+
     pub fn exec(bytes: &[u8], args: &[OsString]) -> ! {
         unsafe {
+            // The source extension is passed by Node so .cmd/.bat payloads are
+            // named and routed correctly (a genuine PE stays payload.exe).
+            let ext =
+                std::env::var("FDX_SECURE_EXEC_PAYLOAD_EXT").unwrap_or_else(|_| ".exe".to_string());
             let dir = std::env::temp_dir().join(format!("fdx-secure-exec-{}", std::process::id()));
             let _ = std::fs::create_dir_all(&dir);
-            let path = dir.join("payload.exe");
+            let path = dir.join(format!("payload{ext}"));
             let path_w = wide(path.as_os_str());
             // Deny write AND delete sharing: while this handle is held, no
             // other process can open the file for writing or delete/replace
@@ -412,18 +442,23 @@ mod windows_impl {
             }
 
             // Build the command line: quoted payload path + args.
-            let mut cmd = format!("\"{}\"", path.to_string_lossy());
+            let payload_str = path.to_string_lossy();
+            let mut inner = format!("\"{payload_str}\"");
             for arg in args {
-                cmd.push(' ');
-                let s = arg.to_string_lossy();
-                if s.contains(' ') || s.contains('"') {
-                    cmd.push('"');
-                    cmd.push_str(&s.replace('"', "\\\""));
-                    cmd.push('"');
-                } else {
-                    cmd.push_str(&s);
-                }
+                inner.push(' ');
+                inner.push_str(&quote_arg(&arg.to_string_lossy()));
             }
+            let is_script = ext.eq_ignore_ascii_case(".cmd") || ext.eq_ignore_ascii_case(".bat");
+            let cmd = if is_script {
+                // .cmd/.bat cannot be CreateProcess'd directly; route through
+                // cmd.exe exactly as libuv does:
+                //   "<ComSpec>" /d /s /c ""<line>""
+                let comspec = std::env::var("ComSpec")
+                    .unwrap_or_else(|_| "C:\\Windows\\System32\\cmd.exe".into());
+                format!("\"{comspec}\" /d /s /c \"\"{inner}\"\"")
+            } else {
+                inner
+            };
             let mut cmd_w: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
 
             let si = StartupInfoW {
