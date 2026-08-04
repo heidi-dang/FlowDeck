@@ -78,7 +78,7 @@ describe("publish.yml workflow step ordering", () => {
   })
 
   it("2. typecheck precedes publish", () => {
-    expectStepOrder(stepNames, "Typecheck", "Publish to npm")
+    expectStepOrder(stepNames, "Typecheck", "Publish Main Package to npm")
   })
 
   it("3. build precedes tests", () => {
@@ -86,11 +86,11 @@ describe("publish.yml workflow step ordering", () => {
   })
 
   it("4. tests precede publish", () => {
-    expectStepOrder(stepNames, "Run Tests", "Publish to npm")
+    expectStepOrder(stepNames, "Run Tests", "Publish Main Package to npm")
   })
 
   it("5. package validation precedes publish", () => {
-    expectStepOrder(stepNames, "Validate Package", "Publish to npm")
+    expectStepOrder(stepNames, "Validate Package", "Publish Main Package to npm")
   })
 
   it("6. bun is pinned to 1.3.14", () => {

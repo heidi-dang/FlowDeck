@@ -211,7 +211,7 @@ export function runCoverageCheckWithRunner(thresholdRaw = process.env.COVERAGE_T
   const bunBin = getBunExecutable()
 
   try {
-    const proc = runner(bunBin, ["test", "--coverage", "--coverage-reporter=lcov", `--coverage-dir=${tempDir}`], {
+    const proc = runner(bunBin, ["test", "--preload", "./tests/preload-fdx-secure-exec.ts", "--coverage", "--coverage-reporter=lcov", `--coverage-dir=${tempDir}`], {
       shell: false,
       encoding: "utf-8",
       maxBuffer: 50 * 1024 * 1024,

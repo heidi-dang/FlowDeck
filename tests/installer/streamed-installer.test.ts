@@ -15,7 +15,7 @@
 import { describe, it, expect } from "bun:test"
 import { spawnSync } from "node:child_process"
 import { mkdirSync, writeFileSync, rmSync, readFileSync } from "node:fs"
-import { join } from "node:path"
+import { join, delimiter } from "node:path"
 import { tmpdir } from "node:os"
 
 const ROOT = join(__dirname, "..", "..")
@@ -90,14 +90,14 @@ function streamInstall(workdir: string, extraEnv: Record<string, string> = {}): 
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
-describe("streamed installer (curl | bash)", () => {
+describe.skipIf(process.platform === "win32")("streamed installer (curl | bash)", () => {
   it("completes a plain streamed install without unbound-variable failure", () => {
     const workdir = join(tmpdir(), `fd-stream-work-${Date.now()}`)
     mkdirSync(workdir, { recursive: true })
     const stubBin = makeStubDir()
 
     const result = streamInstall(workdir, {
-      PATH: `${stubBin}:${process.env.PATH ?? ""}`,
+      PATH: `${stubBin}${delimiter}${process.env.PATH ?? ""}`,
     })
 
     // The v1.0.0 bug aborted with "DOCTOR_PROFILE: unbound variable" here.
@@ -115,7 +115,7 @@ describe("streamed installer (curl | bash)", () => {
     const stubBin = makeStubDir()
 
     const result = streamInstall(workdir, {
-      PATH: `${stubBin}:${process.env.PATH ?? ""}`,
+      PATH: `${stubBin}${delimiter}${process.env.PATH ?? ""}`,
     })
 
     // Line 236-249 is executed on every install; before the fix the

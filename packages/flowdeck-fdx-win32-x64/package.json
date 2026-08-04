@@ -1,0 +1,24 @@
+{
+  "name": "@heidi-dang/flowdeck-fdx-win32-x64",
+  "version": "1.0.4",
+  "description": "Prebuilt native FDX executable for FlowDeck (win32-x64)",
+  "license": "MIT",
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "fdx.exe",
+  "bin": {
+    "fdx": "fdx.exe"
+  },
+  "files": [
+    "fdx-secure-exec.exe",
+    "fdx.exe",
+    "checksum.json",
+    "LICENSE",
+    "README.md",
+    "provenance.json"
+  ]
+}

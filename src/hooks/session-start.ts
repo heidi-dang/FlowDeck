@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from "fs"
 import { dirname, join } from "path"
 import { fileURLToPath } from "url"
-import { execFileSync } from "node:child_process"
 import { statePath, parseState, findWorkspaceRoot, getWorkspaceConfig, planningDir, resolveActiveTopic } from "../tools/planning-state-lib"
 import { codebaseDir } from "../tools/codebase-state"
+import { checkFdxAvailability } from "../tools/fdx-shared"
 import {
   detectProjectLanguages,
   getStartupRulePaths,
@@ -18,20 +18,21 @@ import { FD_PIPELINE } from "../services/supervisor-binding"
 const MAX_LESSON_SECTIONS = 10
 const MAX_LESSON_CONTEXT_BYTES = 8 * 1024
 
-let fdxAvailable = false
-let fdxChecked = false
-
-/** Check if the fdx binary is available. Cached after first call. */
+/**
+ * Whether the trusted FDX resolver reports an available native binary.
+ *
+ * Delegates to the canonical resolver (checksum/provenance-verified
+ * resolution + trusted-digest execution) — the candidate PATHNAME is never
+ * executed directly, so an untrusted `fdx` placed earlier in PATH cannot run
+ * before the trust contract. The resolver's environment-keyed cache keeps
+ * repeated calls cheap (tool-guard invokes this on every tool call).
+ */
 export function isFdxAvailable(): boolean {
-  if (fdxChecked) return fdxAvailable
-  fdxChecked = true
   try {
-    execFileSync("fdx", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"], timeout: 5_000 })
-    fdxAvailable = true
+    return checkFdxAvailability()
   } catch {
-    fdxAvailable = false
+    return false
   }
-  return fdxAvailable
 }
 
 /**

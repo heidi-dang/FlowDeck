@@ -38,7 +38,7 @@ export async function runDoctor(directory: string, options: DoctorOptions = {}):
 
   // Run all check categories in parallel
   const results = await Promise.all([
-    runRuntimeChecks(directory),
+    runRuntimeChecks(directory, options.profile),
     runRepositoryChecks(directory),
     runEnvironmentChecks(directory),
     runMCPChecks(directory),

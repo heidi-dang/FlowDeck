@@ -163,3 +163,19 @@ fd-worktrees/
 *.db
 *.db-wal
 *.db-shm
+
+# Platform package compiled binary build artifacts
+packages/*/fdx
+packages/*/fdx.exe
+packages/*/checksum.json
+
+
+# Local scratch / audit artifacts
+.artifacts/
+
+# Local FlowDeck configuration (machine-local, not distributed)
+.flowdeck.jsonc
+
+# Blocker 1 secure-exec helper (built into platform packages)
+packages/*/fdx-secure-exec
+packages/*/fdx-secure-exec.exe

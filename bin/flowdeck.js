@@ -221,6 +221,35 @@ async function cmdInstall() {
     console.log(`  Config: ${configDir}`);
     console.log(`  Source: ${checkoutPath}`);
   }
+
+  // Attempt FDX acquisition and report native status after plugin registration
+  let fdxShared = null;
+  let fdxAdmin = null;
+  try {
+    fdxShared = await import("../dist/tools/fdx-shared.js");
+  } catch {}
+  try {
+    fdxAdmin = await import("../dist/commands/fdx-admin.js");
+  } catch {}
+
+  if (fdxShared && fdxAdmin) {
+    await fdxAdmin.handleFdxInstall(false).catch(() => false);
+
+    const target = fdxShared.detectFdxTarget();
+    const fdxStatus = fdxShared.getFdxAvailabilityStatus(true);
+
+    console.log(`\n── Native FDX Status ──`);
+    if (!target) {
+      console.log(`  ℹ Target platform ${process.platform}/${process.arch}: Native FDX prebuilt package not targeted.`);
+      console.log(`  ✓ TypeScript fallback mode active.`);
+    } else if (fdxStatus.available && fdxStatus.binaryPath) {
+      console.log(`  ✓ Native FDX binary resolved: ${fdxStatus.binaryPath}`);
+      console.log(`  ✓ Source: ${fdxStatus.source} (v${fdxStatus.binaryVersion || "1.0.4"})`);
+    } else {
+      console.log(`  ⚠ Native FDX binary not resolved for target ${target.platform}/${target.arch}${target.libc ? `-${target.libc}` : ""}`);
+      console.log(`  FlowDeck plugin registered. To acquire or repair native FDX performance, run: flowdeck fdx repair`);
+    }
+  }
 }
 
 async function cmdUpdate() {
@@ -435,7 +464,7 @@ Options:
   const isVerbose = doctorArgs.includes("--verbose");
   const applyFix = doctorArgs.includes("--apply-recommended");
   const profileIdx = doctorArgs.indexOf("--profile");
-  const profile = profileIdx >= 0 && profileIdx + 1 < doctorArgs.length ? doctorArgs[profileIdx + 1] : "recommended-dev";
+  const profile = profileIdx >= 0 && profileIdx + 1 < doctorArgs.length ? doctorArgs[profileIdx + 1] : (process.env.FLOWDECK_PROFILE || "recommended-dev");
 
   if (!DOCTOR_KNOWN_PROFILES.has(profile)) {
     process.stderr.write(`Error: Unknown profile "${profile}". Valid profiles: ${[...DOCTOR_KNOWN_PROFILES].join(", ")}\n`);
@@ -902,6 +931,33 @@ async function cmdDryRun() {
   console.log(`Dry run complete. Use: flowdeck install`);
 }
 
+async function cmdFdx() {
+  const sub = args[1] || "status";
+  let admin;
+  try {
+    admin = await import("../dist/commands/fdx-admin.js");
+  } catch {
+    admin = await import("../src/commands/fdx-admin.js");
+  }
+  const { handleFdxStatus, handleFdxInstall, handleFdxVerify } = admin;
+  if (sub === "status") {
+    handleFdxStatus();
+  } else if (sub === "install") {
+    const ok = await handleFdxInstall(false);
+    if (!ok) process.exit(1);
+  } else if (sub === "repair") {
+    const ok = await handleFdxInstall(true);
+    if (!ok) process.exit(1);
+  } else if (sub === "verify") {
+    const ok = handleFdxVerify();
+    if (!ok) process.exit(1);
+  } else {
+    console.error(`Unknown fdx subcommand: ${sub}`);
+    console.error(`Usage: flowdeck fdx [status|install|repair|verify]`);
+    process.exit(1);
+  }
+}
+
 // ─── Dispatch ──────────────────────────────────────────────────────────
 
 const handlers = {
@@ -910,6 +966,7 @@ const handlers = {
   verify: cmdVerify,
   doctor: cmdDoctor,
   uninstall: cmdUninstall,
+  fdx: cmdFdx,
   "dry-run": cmdDryRun,
   "config validate": cmdConfigValidate,
   migrate: cmdMigrate,
