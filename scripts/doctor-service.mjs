@@ -13,6 +13,7 @@
 
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import { existsSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { resolveDoctorExitCode as canonicalResolveDoctorExitCode } from "../src/doctor/exit-code.mjs"
 
@@ -113,8 +114,9 @@ function hasBun() {
 }
 
 function runViaBun(directory, options = {}) {
-  // Use bun to import and execute the TypeScript doctor module inline
-  const doctorPath = join(PKG_ROOT, "src/doctor/doctor.ts")
+  const srcDoctorPath = join(PKG_ROOT, "src/doctor/doctor.ts")
+  const distDoctorPath = join(PKG_ROOT, "dist/index.js")
+  const doctorPath = distDoctorPath
   const opts = {
     directory: directory || PKG_ROOT,
     options: {
@@ -149,7 +151,7 @@ function runViaBun(directory, options = {}) {
       return JSON.parse(stdout.trim())
     } catch {
       if (stderr) {
-        throw new Error(stderr.trim().split("\n").pop() || e.message)
+        throw new Error(stderr.trim())
       }
       throw e
     }

@@ -7,7 +7,7 @@ import { promisify } from "util"
 import type { CheckResult } from "../types"
 import { resolve } from "path"
 import { pathToFileURL } from "url"
-import type { FdxResolutionResult } from "../../tools/fdx-shared"
+import { type FdxResolutionResult, getFdxAvailabilityStatus } from "../../tools/fdx-shared"
 
 const execFileAsync = promisify(execFile)
 
@@ -145,25 +145,13 @@ export async function runRuntimeChecks(
   })
 
   let fdxStatus: FdxResolutionResult
-  if (opts.fdxStatus) {
+  if (opts?.fdxStatus) {
     // Injected (unit tests): doctor aggregation must not run a real FDX
     // resolution. Real resolver timing is covered by dedicated integration
     // tests under explicit bounded timeouts.
     fdxStatus = opts.fdxStatus
   } else {
-    let fdxSharedModule: any
-    try {
-      const p1 = pathToFileURL(resolve(__dirname, "../../../dist/tools/fdx-shared.js")).href
-      fdxSharedModule = await import(p1)
-    } catch {
-      try {
-        const p2 = pathToFileURL(resolve(__dirname, "../../tools/fdx-shared.ts")).href
-        fdxSharedModule = await import(p2)
-      } catch {
-        fdxSharedModule = await import("../../tools/fdx-shared.js")
-      }
-    }
-    fdxStatus = fdxSharedModule.getFdxAvailabilityStatus(true)
+    fdxStatus = getFdxAvailabilityStatus(true)
   }
   const profile = profileArg || process.env.FLOWDECK_PROFILE || "recommended-dev"
   const isStrictFail = profile !== "minimal"

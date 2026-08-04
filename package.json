@@ -43,7 +43,7 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "bun build src/index.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && tsc --emitDeclarationOnly --project tsconfig.build.json && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm",
+    "build": "bun build src/index.ts src/commands/fdx-admin.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && tsc --emitDeclarationOnly --project tsconfig.build.json && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm",
     "build:fdx": "cargo install --path crates/fdx --quiet",
     "check:fdx": "fdx --version",
     "postinstall": "node postinstall.mjs",
@@ -146,9 +146,12 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
+    "axe-core": "^4.12.1",
     "bun-types": "^1.3.14",
     "ejs": "^6.0.1",
+    "happy-dom": "^20.11.1",
     "oxlint": "^1.75.0",
+    "playwright": "^1.62.1",
     "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   },

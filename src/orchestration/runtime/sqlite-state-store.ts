@@ -479,7 +479,9 @@ export class SqliteStateStore implements StateStore {
       return result.changes > 0;
     }
 
-    if (current.version !== expectedVersion) return false;
+    if (current.version !== expectedVersion) {
+      return false;
+    }
 
     const newVersion = current.version + 1;
     const result = this.db

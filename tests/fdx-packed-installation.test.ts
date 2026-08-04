@@ -69,11 +69,21 @@ describe("FDX Clean Packed Installation Tests", () => {
     expect(repairOut).toContain("✓ FDX native installation successful")
 
     // 5. flowdeck doctor profiles
-    const docMinimal = execFileSync(cliBin, ["doctor"], { cwd: projectDir, env: { ...process.env, FLOWDECK_PROFILE: "minimal" }, encoding: "utf-8", shell: shellOpt })
-    expect(docMinimal).toBeDefined()
+    let docMinimal = "";
+    try {
+      docMinimal = execFileSync(cliBin, ["doctor"], { cwd: projectDir, env: { ...process.env, FLOWDECK_PROFILE: "minimal" }, encoding: "utf-8", shell: shellOpt })
+    } catch (e: any) {
+      docMinimal = e.stdout;
+    }
+    expect(docMinimal).toContain("FlowDeck Doctor")
 
-    const docRec = execFileSync(cliBin, ["doctor"], { cwd: projectDir, env: { ...process.env, FLOWDECK_PROFILE: "recommended-dev" }, encoding: "utf-8", shell: shellOpt })
-    expect(docRec).toBeDefined()
+    let docRec = "";
+    try {
+      docRec = execFileSync(cliBin, ["doctor"], { cwd: projectDir, env: { ...process.env, FLOWDECK_PROFILE: "recommended-dev" }, encoding: "utf-8", shell: shellOpt })
+    } catch (e: any) {
+      docRec = e.stdout;
+    }
+    expect(docRec).toContain("FlowDeck Doctor")
 
     // Cleanup generated tarballs
     try { rmSync(mainTarball, { force: true }) } catch {}

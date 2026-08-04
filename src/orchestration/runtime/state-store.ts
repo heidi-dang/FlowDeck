@@ -548,5 +548,12 @@ export class InMemoryStateStore implements StateStore {
     this.events.clear();
     this.budgets.clear();
     this.phases.clear();
+    this.contracts.clear();
+    this.runContractLinks.clear();
+    this.verificationResults.clear();
+    this.evidenceItems.clear();
+    this.completionDecisions.clear();
+    this.recoveryAttempts.clear();
+    this.circuitBreakers.clear();
   }
 }

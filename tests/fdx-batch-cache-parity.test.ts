@@ -82,7 +82,9 @@ let FDX: string | null = findBinary(CLI_NAME, "FDX_BINARY_PATH")
 // the parity coverage (they run on every platform).
 const HAVE_DAEMON = DAEMON !== null && process.platform !== "win32"
 const HAVE_FDX = FDX !== null
-
+if (FDX !== null) {
+  process.env.FDX_BINARY_PATH = FDX
+}
 /** Create an isolated project dir with the same fixtures as the parity probes. */
 function freshProject(): string {
   const dir = mkdtempSync(join(tmpdir(), "fdx-parity-test-"))

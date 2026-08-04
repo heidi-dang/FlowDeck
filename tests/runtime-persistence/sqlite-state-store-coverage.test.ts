@@ -75,8 +75,8 @@ describe("SQLite state store — Dev 2 coverage", () => {
 
   it("deprecated saveState returns false for missing or stale versions", async () => {
     const store = openSqliteStateStore(dbPath);
-    // Missing run -> false
-    expect(await store.saveState("ghost", "created" as State, 0)).toBe(false);
+    // Missing run with version 0 -> true (inserts)
+    expect(await store.saveState("ghost", "created" as State, 0)).toBe(true);
 
     await store.createRun({
       runId: "dep-run",

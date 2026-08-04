@@ -8,15 +8,15 @@
   "platform": "linux",
   "architecture": "x64",
   "binaryFilename": "fdx",
-  "binaryByteSize": 10604000,
-  "sha256": "128014cb938d7f85a1282817c8994acb9a165bb6dab8fdf3d09077a0d0f55574",
-  "sourceCommitSha": "6ddea41c98d30a4c696c12ffece8fb618aac0a63",
-  "gitCommit": "6ddea41c98d30a4c696c12ffece8fb618aac0a63",
-  "gitBranch": "fix/fdx-native-binary-distribution",
+  "binaryByteSize": 11949456,
+  "sha256": "dab887e2ed677e5e4e58a5ed51d1dc9954ee73b01d28054cdc1b4ae0c97fdcd5",
+  "sourceCommitSha": "1f553c1cae7bc76be472360e357b4a6ea2927235",
+  "gitCommit": "1f553c1cae7bc76be472360e357b4a6ea2927235",
+  "gitBranch": "feat/orchestration-master-plan-completion",
   "workflowRunId": null,
   "ciRunId": null,
   "builderPlatform": "linux/x64",
-  "rustVersion": "rustc 1.84.0",
+  "rustVersion": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
   "buildProfile": "release",
-  "buildTimestamp": "2026-08-03T05:00:45.902Z"
+  "buildTimestamp": "2026-08-04T11:09:59.779Z"
 }
