@@ -1577,6 +1577,154 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       }
     })
 
+    it("Contract1/P1-2: same-inode mutation of the snapshot at the pre-exec barrier never executes the mutated bytes", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const fixture = setupVerifiedExecFixture()
+      if (!fixture) return
+      const before = getFdxAvailabilityStatus(true)
+      expect(before.available).toBe(true)
+      const evilMarker = "EVIL-INODE-MUTATION"
+      const evilBytes = process.platform === "win32"
+        ? `@echo ${evilMarker}\r\n`
+        : `#!/bin/sh\necho '${evilMarker}'\n`
+      // Mutate the ACTUAL snapshot inode IN PLACE (same inode, new content) at
+      // the validated-snapshot -> OS-execution barrier — not merely the source
+      // candidate. A same-user attacker can chmod its own file first, then
+      // write, so the hook mirrors that capability. The mutated bytes must
+      // never execute: execution is bound to the validated in-memory bytes
+      // (sealed object on Linux, protected handle on macOS, share-denied
+      // handle on Windows), never to the mutable snapshot pathname.
+      setFdxPreExecTestHook((snapshotPath: string, _sourceBin: string) => {
+        if (process.platform !== "win32") chmodSync(snapshotPath, 0o600)
+        writeFileSync(snapshotPath, evilBytes, "utf-8")
+        if (process.platform !== "win32") chmodSync(snapshotPath, 0o755)
+      })
+      try {
+        let out: string | null = null
+        let threw: string | null = null
+        try {
+          out = runFdx(["--version"])
+        } catch (e: any) {
+          threw = String(e?.message ?? e)
+        }
+        if (threw !== null) {
+          // Fail-closed refusal: the mutated bytes never executed.
+          expect(threw).toMatch(/FDX Integrity/)
+          expect(threw).not.toContain(evilMarker)
+        } else {
+          expect(out).not.toContain(evilMarker)
+        }
+      } finally {
+        setFdxPreExecTestHook(null)
+      }
+    })
+
+    it("Contract1/P2-1: a successful --version probe surfaces cleanup failures structurally", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      // POSIX-only: cleanup-failure injection relies on POSIX directory
+      // permissions (chmod 0500 makes unlink/rmdir fail); Windows chmod is a
+      // no-op.
+      if (process.platform === "win32") return
+      const dir = join(tempDir, "probe-cleanup-success")
+      mkdirSync(dir, { recursive: true })
+      const script = "#!/bin/sh\necho 'fdx v1.0.4'\n"
+      const binPath = join(dir, target.executableName)
+      writeFileSync(binPath, script, "utf-8")
+      chmodSync(binPath, 0o755)
+      const sha256 = createHash("sha256").update(readFileSync(binPath)).digest("hex")
+      writeFileSync(join(dir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      let snapshotDirSeen: string | null = null
+      setFdxPreExecTestHook((snapshotPath: string, _sourceBin: string) => {
+        snapshotDirSeen = dirname(snapshotPath)
+        try { chmodSync(dirname(snapshotPath), 0o500) } catch {}
+      })
+      try {
+        const val = validateFdxBinaryPath(binPath, dir, { requireChecksum: true, target })
+        // The successful probe result is preserved...
+        expect(val.valid).toBe(true)
+        expect(val.version).toBe("1.0.4")
+        // ...and the cleanup failures are surfaced as a mandatory structured
+        // diagnostic on the successful probe result, never silently discarded.
+        expect(val.probeCleanup).toBeDefined()
+        expect(val.probeCleanup!.unlinkError).not.toBeNull()
+        expect(val.probeCleanup!.rmdirError).not.toBeNull()
+      } finally {
+        setFdxPreExecTestHook(null)
+        if (snapshotDirSeen) {
+          try { chmodSync(snapshotDirSeen, 0o700) } catch {}
+          try { rmSync(snapshotDirSeen, { recursive: true, force: true }) } catch {}
+        }
+      }
+    })
+
+    it("Contract1/P2-1: a failed command surfaces both the primary exit failure and cleanup failures", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      if (process.platform === "win32") return
+      const dir = join(tempDir, "cmd-fail-cleanup")
+      mkdirSync(dir, { recursive: true })
+      const script = [
+        "#!/bin/sh",
+        'case "$1" in',
+        "  --version) echo 'fdx v1.0.4' ;;",
+        "  *) exit 5 ;;",
+        "esac",
+      ].join("\n")
+      const binPath = join(dir, target.executableName)
+      writeFileSync(binPath, script, "utf-8")
+      chmodSync(binPath, 0o755)
+      const sha256 = createHash("sha256").update(readFileSync(binPath)).digest("hex")
+      writeFileSync(join(dir, "checksum.json"), JSON.stringify({ sha256 }), "utf-8")
+      process.env.XDG_CACHE_HOME = tempDir
+      process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE = "1"
+      process.env.FDX_DISABLE_FALLBACK = "1"
+      setActiveProjectDir(tempDir)
+      process.env.FDX_BINARY_PATH = binPath
+      const before = getFdxAvailabilityStatus(true)
+      expect(before.available).toBe(true)
+      let snapshotDirSeen: string | null = null
+      setFdxPreExecTestHook((snapshotPath: string, _sourceBin: string) => {
+        snapshotDirSeen = dirname(snapshotPath)
+        try { chmodSync(dirname(snapshotPath), 0o500) } catch {}
+      })
+      try {
+        let threw: string | null = null
+        try {
+          runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])
+        } catch (e: any) {
+          threw = String(e?.message ?? e)
+        }
+        expect(threw).not.toBeNull()
+        // Primary exit failure preserved...
+        expect(threw!).toContain("exit code 5")
+        // ...and cleanup failures surfaced alongside, not replacing it.
+        expect(threw!).toContain("cleanup")
+        expect(threw!).toContain("unlink failed")
+      } finally {
+        setFdxPreExecTestHook(null)
+        if (snapshotDirSeen) {
+          try { chmodSync(snapshotDirSeen, 0o700) } catch {}
+          try { rmSync(snapshotDirSeen, { recursive: true, force: true }) } catch {}
+        }
+      }
+    })
+
+    it("Contract1: the real resolver path completes under an explicit bounded timeout", () => {
+      const target = detectFdxTarget()
+      if (!target) return
+      const fixture = setupVerifiedExecFixture()
+      if (!fixture) return
+      // Real resolver + real secure process creation, repeated, under an
+      // explicit bounded timeout — never reliant on Bun's default 5s.
+      for (let i = 0; i < 3; i++) {
+        const res = getFdxAvailabilityStatus(true)
+        expect(res.available).toBe(true)
+        expect(res.validatedSha256).not.toBeNull()
+      }
+    }, { timeout: 15000 })
+
     it("Contract1/P1-1: unmanaged (env/PATH) candidates are hashed before first execution", () => {
       const target = detectFdxTarget()
       if (!target) return
@@ -1680,23 +1828,26 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       prov.binaryByteSize = binBuf.length
       writeFileSync(join(fake.pkgDir, "provenance.json"), JSON.stringify(prov), "utf-8")
 
-      // Probe (during resolution): records the snapshot path it ran from.
+      // Probe (during resolution): records the path it ran from.
       const status = getFdxAvailabilityStatus(true)
       expect(status.available).toBe(true)
       const probePath = readFileSync(marker, "utf-8").trim()
-      // Command (normal runFdx): records its own snapshot path.
+      // Command (normal runFdx): records its own path.
       const out = runFdx(["read", "tests/fdx-trusted-acquisition.test.ts"])
       expect(out).toContain("fdx v1.0.4")
       const commandPath = readFileSync(marker, "utf-8").trim()
-      // Neither the probe nor the command ever executed the original pathname.
+      // Neither the probe nor the command ever executed the original candidate
+      // pathname or the mutable snapshot pathname — execution is bound to the
+      // validated in-memory bytes via the secure-exec helper. $0 is either the
+      // kernel's descriptor path for the sealed object (/dev/fd/N on Linux) or
+      // the helper's own argv[0].
       expect(probePath).not.toBe(fake.binPath)
       expect(commandPath).not.toBe(fake.binPath)
-      // Both ran from the verified snapshot pipeline — the private snapshot
-      // pathname (non-Linux) or the held snapshot descriptor (/proc/<pid>/fd/
-      // on Linux).
-      const verifiedPipelinePath = /flowdeck-fdx-snapshot|\/proc\/\d+\/fd\/\d+/
-      expect(probePath).toMatch(verifiedPipelinePath)
-      expect(commandPath).toMatch(verifiedPipelinePath)
+      expect(probePath).not.toContain("flowdeck-fdx-snapshot")
+      expect(commandPath).not.toContain("flowdeck-fdx-snapshot")
+      const sealedObjectPath = /^\/dev\/fd\/\d+$|^\/proc\/self\/fd\/\d+$|^fdx-secure-exec$/
+      expect(probePath).toMatch(sealedObjectPath)
+      expect(commandPath).toMatch(sealedObjectPath)
     })
 
     it("Contract1/P1-2: private snapshot cleanup on failure (dual-error: probe fails AND command fails)", () => {
