@@ -15,7 +15,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { execFileSync } from "node:child_process"
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, statSync } from "node:fs"
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync, readFileSync, statSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -66,35 +66,43 @@ function freshGitProject(): string {
   return dir
 }
 
-/** Count cached result files under an FDX_INDEX_DIR state root. */
-function cacheEntryCount(stateRoot: string): number {
+/**
+ * Count committed cache mappings (positive/negative) under an FDX_INDEX_DIR
+ * state root by reading each worktree's v2 CURRENT generation manifest (the
+ * manifest is a full snapshot, so the CURRENT manifest is authoritative).
+ */
+function committedManifestCounts(stateRoot: string): { pos: number; neg: number } {
   const ns = join(stateRoot, "fdx-index")
-  if (!existsSync(ns)) return 0
-  let count = 0
+  if (!existsSync(ns)) return { pos: 0, neg: 0 }
+  let pos = 0
+  let neg = 0
   for (const repo of readdirSync(ns)) {
     const repoDir = join(ns, repo)
     if (!statSync(repoDir).isDirectory()) continue
     for (const wt of readdirSync(repoDir)) {
-      const qcDir = join(repoDir, wt, "query-cache")
-      if (existsSync(qcDir)) count += readdirSync(qcDir).length
+      const wtDir = join(repoDir, wt)
+      if (!statSync(wtDir).isDirectory()) continue
+      const currentPath = join(wtDir, "query-cache-v2", "CURRENT")
+      if (!existsSync(currentPath)) continue
+      const seq = readFileSync(currentPath, "utf8").trim()
+      const manifestPath = join(wtDir, "query-cache-v2", "generations", `gen-${seq}.json`)
+      if (!existsSync(manifestPath)) continue
+      const m = JSON.parse(readFileSync(manifestPath, "utf8"))
+      pos += m.positives ? Object.keys(m.positives).length : 0
+      neg += m.negatives ? Object.keys(m.negatives).length : 0
     }
   }
-  return count
+  return { pos, neg }
 }
 
+/** Count committed positive cache mappings under an FDX_INDEX_DIR state root. */
+function cacheEntryCount(stateRoot: string): number {
+  return committedManifestCounts(stateRoot).pos
+}
+
+/** Count committed negative cache mappings under an FDX_INDEX_DIR state root. */
 function negativeEntryCount(stateRoot: string): number {
-  const ns = join(stateRoot, "fdx-index")
-  if (!existsSync(ns)) return 0
-  let count = 0
-  for (const repo of readdirSync(ns)) {
-    const repoDir = join(ns, repo)
-    if (!statSync(repoDir).isDirectory()) continue
-    for (const wt of readdirSync(repoDir)) {
-      const ncDir = join(repoDir, wt, "negative-cache")
-      if (existsSync(ncDir)) count += readdirSync(ncDir).length
-    }
-  }
-  return count
+  return committedManifestCounts(stateRoot).neg
 }
 
 let conn: DaemonConnection

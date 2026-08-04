@@ -1,4 +1,4 @@
-//! Content-addressed query-result cache (Dev 3 Task 4, Phase 3).
+//! Content-addressed query-result cache (v2).
 //!
 //! Caches the serialized result of read-only query operations (read, grep,
 //! search, outline, impact, testsFor) under the worktree state directory so a
@@ -11,45 +11,88 @@
 //! parameters + configuration fingerprint. Any change in repository state,
 //! index generation, tool version, or query parameters flips the key.
 //!
-//! Storage layout (inside the existing FDX index hierarchy — no second cache
-//! DB, worktree-isolated):
+//! ## Two-level atomic generation storage (P1-1 remediation)
 //!
-//!   <state-root>/fdx-index/<repository_id>/<worktree_id>/query-cache/<key>
-//!   <state-root>/fdx-index/<repository_id>/<worktree_id>/negative-cache/<key>
+//! v1 published each cache entry as a reader-visible file during Phase B2,
+//! which created a window in which a reader could observe a PARTIAL batch
+//! (some entries published, others not) and — worse — could observe cache
+//! entries whose artifacts had not yet been revalidated. v2 replaces
+//! reader-visible per-key files with an atomic generation pointer:
 //!
-//! The cache is NOT generation-scoped: the generation number is part of the
-//! key, so stale entries are never served and never need explicit cleanup on
-//! refresh — they are simply unreachable and get evicted by the LRU bound.
+//!   <state>/query-cache-v2/
+//!     objects/<sha256-hex>        # immutable content-addressed payloads
+//!     generations/gen-<N>.json    # full-snapshot generation manifests
+//!     CURRENT                     # current generation sequence number
+//!     tmp/                        # in-progress temp files (RAII-owned)
+//!     quarantine/                 # corrupt objects moved here
+//!     commit.lock                 # O_EXCL cross-process commit lock
 //!
-//! Bounds: a fixed maximum number of entries and a fixed maximum total bytes,
-//! enforced by evicting least-recently-used entries (by mtime) on write.
+//! A batch is committed in three steps, in this exact order:
+//!   1. **stage** — write each payload as a content-addressed object under
+//!      `objects/`. Objects are immutable and INVISIBLE to readers: they are
+//!      only reachable through a manifest named by `CURRENT`.
+//!   2. **manifest** — write `gen-<N+1>.json` as a FULL SNAPSHOT of every
+//!      committed mapping (positives `key→{digest,created_at}`, negatives
+//!      `key→{digest,committed_at}`) with an integrity SHA-256, via
+//!      tmp + fsync + rename.
+//!   3. **flip** — atomically rename `CURRENT.tmp` → `CURRENT`. A reader
+//!      observes either the old generation or the new one — never a partial
+//!      batch.
 //!
-//! Write safety (Phase 7 audit): every entry is written atomically — the
-//! payload goes to a unique temp sibling file, is flushed and closed, then
-//! atomically renamed over the final key. Readers therefore never observe a
-//! partially written entry. On any failure the temp file is removed in a
-//! cleanup step. Read safety: entries that fail JSON validation are
-//! quarantined (moved to `quarantine/`) and treated as misses, so corrupt
-//! data can never be served or poison the LRU accounting. Leftover temp files
-//! from interrupted writers are swept by the LRU pass once they are older
-//! than a short grace period.
+//! Readers validate every referenced object digest + JSON on load, quarantine
+//! corrupt objects, and fail CLOSED to the newest valid retained generation.
+//! Legacy v1 directories (`query-cache/`, `negative-cache/`) are never served
+//! and are removed by [`QueryCache::clear`].
+//!
+//! Bounds: a fixed maximum number of committed mappings and a fixed maximum
+//! total bytes, enforced by evicting least-recently-used committed mappings
+//! (by `created_at`/`committed_at`) on write. GC reclaims unreferenced
+//! objects, stale generations, and abandoned temp files after a grace period.
 
+use std::collections::{BTreeMap, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 /// Domain string that prefixes every cache key (contract). Bumping this
-/// invalidates all caches from older builds.
-pub const CACHE_DOMAIN: &str = "flowdeck-fdx-query-cache-v1";
+/// invalidates all caches from older builds. Bumped to `-v2` when the storage
+/// layout changed to two-level atomic generations.
+pub const CACHE_DOMAIN: &str = "flowdeck-fdx-query-cache-v2";
 
-/// Sub-directory (under the worktree state dir) for positive cache entries.
+/// Legacy v1 positive-cache directory. NEVER served by v2; removed by
+/// [`QueryCache::clear`].
 pub const QUERY_CACHE_DIR: &str = "query-cache";
 
-/// Sub-directory (under the worktree state dir) for negative cache entries.
+/// Legacy v1 negative-cache directory. NEVER served by v2; removed by
+/// [`QueryCache::clear`].
 pub const NEGATIVE_CACHE_DIR: &str = "negative-cache";
 
-/// Default maximum number of cache entries per worktree.
+/// v2 storage root (under the worktree state dir).
+pub const V2_DIR: &str = "query-cache-v2";
+
+/// Content-addressed object store (immutable payloads).
+pub const OBJECTS_DIR: &str = "objects";
+
+/// Full-snapshot generation manifests.
+pub const GENERATIONS_DIR: &str = "generations";
+
+/// The atomic generation pointer file.
+pub const CURRENT_FILE: &str = "CURRENT";
+
+/// In-flight temp files (owned by [`OwnedTemp`]).
+pub const TMP_DIR: &str = "tmp";
+
+/// Corrupt objects moved here for diagnostics.
+pub const QUARANTINE_DIR: &str = "quarantine";
+
+/// O_EXCL cross-process commit lock.
+pub const COMMIT_LOCK_FILE: &str = "commit.lock";
+
+/// Manifest schema version.
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// Default maximum number of committed cache mappings per worktree.
 pub const DEFAULT_MAX_ITEMS: usize = 512;
 
 /// Default maximum total cached bytes per worktree (8 MiB).
@@ -59,19 +102,31 @@ pub const DEFAULT_MAX_BYTES: usize = 8 * 1024 * 1024;
 /// version changes in a way that changes result semantics.
 pub const BATCH_PROTOCOL_VERSION: u32 = 1;
 
-/// TTL for negative cache entries (Phase 4). A negative entry is only valid
-/// for this many seconds; beyond it, the query re-runs.
+/// TTL for negative cache entries. A negative entry is only valid for this
+/// many seconds after it was committed; beyond it, the query re-runs.
 pub const NEGATIVE_TTL_SECS: u64 = 30;
 
-/// Sub-directory (under each namespace) for entries that failed JSON
-/// validation. Quarantined entries are never served and never counted by the
-/// LRU pass.
-const QUARANTINE_DIR: &str = "quarantine";
+/// How many generations back a reader walks to recover from a corrupt
+/// `CURRENT` manifest before failing closed (empty cache).
+const RETAINED_GENERATIONS: u64 = 8;
 
-/// Age after which a leftover temp file is considered abandoned by a crashed
-/// writer and is swept. Live writes complete in milliseconds, so a 60-second
-/// grace period cannot race a concurrent writer.
-const STALE_TMP_GRACE: Duration = Duration::from_secs(60);
+/// Age after which an unreferenced object / stale generation is considered
+/// abandoned by a crashed writer and is swept by GC. Live commits complete in
+/// milliseconds, so a 5-minute grace cannot race a concurrent committer.
+const ORPHAN_GRACE: Duration = Duration::from_secs(300);
+
+/// Age after which a leftover temp file is swept.
+const TMP_GRACE: Duration = Duration::from_secs(60);
+
+/// Age after which a `commit.lock` is considered abandoned by a crashed
+/// committer and is broken (removed) by the next committer.
+const LOCK_STALE_GRACE: Duration = Duration::from_secs(30);
+
+/// Sleep between commit-lock contention retries.
+const LOCK_RETRY_SLEEP: Duration = Duration::from_millis(5);
+
+/// Worst-case commit-lock wait budget (600 × 5 ms = 3 s).
+const LOCK_RETRY_BUDGET: usize = 600;
 
 /// Unique temp-file counter (per process) so concurrent writers in the same
 /// process never collide on temp names.
@@ -178,12 +233,70 @@ pub fn canonical_json(value: &serde_json::Value) -> String {
     rec(value)
 }
 
+/// A positive cache mapping: the content digest plus the commit time (used as
+/// the LRU recency anchor).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct PositiveEntry {
+    /// SHA-256 hex digest of the object payload.
+    pub digest: String,
+    /// Epoch seconds when this mapping was committed (LRU recency).
+    pub created_at: u64,
+}
+
+/// A negative cache mapping: the content digest plus the commit time (the TTL
+/// anchor).
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct NegativeEntry {
+    /// SHA-256 hex digest of the object payload.
+    pub digest: String,
+    /// Epoch seconds when this mapping was committed (TTL anchor).
+    pub committed_at: u64,
+}
+
+/// A full-snapshot generation manifest. `positives` and `negatives` are the
+/// COMPLETE set of committed mappings at this generation (not a delta), so a
+/// reader needs only the manifest named by `CURRENT` to serve every entry.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct GenerationManifest {
+    /// Must equal [`SCHEMA_VERSION`].
+    pub schema_version: u32,
+    /// Monotonic generation sequence number (matches the `gen-<N>.json` name).
+    pub generation: u64,
+    /// The generation this snapshot extends (None for the first generation).
+    pub base_generation: Option<u64>,
+    /// Epoch seconds when this generation was committed.
+    pub created_at: u64,
+    /// Positive (definitive-result) mappings, keyed by cache key.
+    pub positives: BTreeMap<String, PositiveEntry>,
+    /// Negative (definitive-empty) mappings, keyed by cache key.
+    pub negatives: BTreeMap<String, NegativeEntry>,
+    /// SHA-256 over the canonical serialization of every other field.
+    pub integrity: String,
+}
+
+impl GenerationManifest {
+    /// An empty manifest for a given generation (used when no base exists).
+    fn empty(generation: u64) -> Self {
+        let mut m = GenerationManifest {
+            schema_version: SCHEMA_VERSION,
+            generation,
+            base_generation: None,
+            created_at: unix_secs(),
+            positives: BTreeMap::new(),
+            negatives: BTreeMap::new(),
+            integrity: String::new(),
+        };
+        m.integrity = compute_integrity(&m);
+        m
+    }
+}
+
 /// The disk-backed query cache for one worktree.
 ///
 /// All operations are best-effort: a read that races a refresh may miss, and
 /// a write that fails (disk full, permissions) is ignored — the cache must
-/// never fail a query. The LRU bound is enforced on write: entries beyond
-/// `max_items` or `max_bytes` are evicted oldest-first by mtime.
+/// never fail a query. The LRU bound is enforced on write: committed mappings
+/// beyond `max_items` or `max_bytes` are evicted oldest-first.
 #[derive(Clone, Debug)]
 pub struct QueryCache {
     /// The worktree state directory (`.../<repository_id>/<worktree_id>/`).
@@ -202,12 +315,57 @@ impl QueryCache {
         }
     }
 
-    /// The positive cache directory (created lazily on write).
+    /// The v2 storage root (created lazily on write).
+    pub fn root_dir(&self) -> PathBuf {
+        self.state_dir.join(V2_DIR)
+    }
+
+    /// Content-addressed object store.
+    pub fn objects_dir(&self) -> PathBuf {
+        self.root_dir().join(OBJECTS_DIR)
+    }
+
+    /// Generation manifests.
+    pub fn generations_dir(&self) -> PathBuf {
+        self.root_dir().join(GENERATIONS_DIR)
+    }
+
+    /// In-flight temp files.
+    pub fn tmp_dir(&self) -> PathBuf {
+        self.root_dir().join(TMP_DIR)
+    }
+
+    /// Corrupt objects.
+    pub fn quarantine_dir(&self) -> PathBuf {
+        self.root_dir().join(QUARANTINE_DIR)
+    }
+
+    /// The atomic generation pointer file.
+    pub fn current_path(&self) -> PathBuf {
+        self.root_dir().join(CURRENT_FILE)
+    }
+
+    /// The cross-process commit lock file.
+    pub fn lock_path(&self) -> PathBuf {
+        self.root_dir().join(COMMIT_LOCK_FILE)
+    }
+
+    /// The legacy v1 positive-cache directory (never served; removed on
+    /// [`clear`](Self::clear)).
     pub fn query_dir(&self) -> PathBuf {
         self.state_dir.join(QUERY_CACHE_DIR)
     }
 
-    /// The negative cache directory (created lazily on write).
+    /// The path of the generation manifest the next successful publish would
+    /// write (current generation + 1). Used by tests to deterministically
+    /// block a commit at the manifest-write stage.
+    pub fn next_generation_path(&self) -> PathBuf {
+        let seq = read_current(&self.current_path()).unwrap_or(0);
+        self.generations_dir().join(gen_file_name(seq + 1))
+    }
+
+    /// The legacy v1 negative-cache directory (never served; removed on
+    /// [`clear`](Self::clear)).
     pub fn negative_dir(&self) -> PathBuf {
         self.state_dir.join(NEGATIVE_CACHE_DIR)
     }
@@ -219,78 +377,53 @@ impl QueryCache {
         &self.state_dir
     }
 
-    /// Look up a cached value. Touches the entry mtime on hit so the LRU
-    /// bound evicts least-recently-used entries. Returns None on miss.
-    ///
-    /// Entries that fail JSON validation are quarantined (moved to
-    /// `quarantine/`) and treated as a miss — corrupt data is never served.
+    /// Look up a cached value. Returns None on miss. The value is only served
+    /// if it is reachable through the generation named by `CURRENT` AND its
+    /// object passes digest + JSON validation.
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
-        let path = self.query_dir().join(key);
-        let data = std::fs::read(&path).ok()?;
-        if read_validate_quarantine(&path, &data, &self.query_dir()) {
-            // Touch mtime for LRU ordering.
-            let _ = std::fs::File::options()
-                .write(true)
-                .open(&path)
-                .and_then(|f| f.set_modified(SystemTime::now()));
-            Some(data)
-        } else {
-            None
-        }
+        self.read_entry(key, false)
     }
 
     /// Store a value under `key`, then enforce the LRU bound. Best-effort:
     /// failures are swallowed so a cache write never fails a query. The value
-    /// is written atomically (temp sibling + rename), so concurrent readers
-    /// never observe a partial entry.
+    /// becomes visible only through an atomic generation flip.
     pub fn put(&self, key: &str, value: &[u8]) {
-        let dir = self.query_dir();
-        if std::fs::create_dir_all(&dir).is_err() {
+        let mut tx = self.begin();
+        if tx.stage_write(key, false, value).is_err() {
             return;
         }
-        atomic_write(&dir.join(key), value);
-        self.enforce_lru(&dir);
+        if tx.publish().is_err() {
+            return;
+        }
+        tx.enforce_lru();
     }
 
     /// Look up a negative cache entry. A negative entry is only valid for
-    /// `NEGATIVE_TTL_SECS` after it was written; expired entries are deleted
-    /// so the next query re-runs. mtime is NOT touched on hit — negative
-    /// entries have a fixed TTL, not an LRU-based lifetime. Corrupt entries
-    /// are quarantined like positive ones.
+    /// `NEGATIVE_TTL_SECS` after it was committed; expired entries are a miss
+    /// (the next query re-runs).
     pub fn get_negative(&self, key: &str) -> Option<Vec<u8>> {
-        let path = self.negative_dir().join(key);
-        let data = std::fs::read(&path).ok()?;
-        if !read_validate_quarantine(&path, &data, &self.negative_dir()) {
-            return None;
-        }
-        let meta = std::fs::metadata(&path).ok()?;
-        let written = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let age = SystemTime::now().duration_since(written).ok();
-        let expired = age.is_none_or(|a| a.as_secs() >= NEGATIVE_TTL_SECS);
-        if expired {
-            let _ = std::fs::remove_file(&path);
-            return None;
-        }
-        Some(data)
+        self.read_entry(key, true)
     }
 
-    /// Store a negative cache entry (definitive-empty result). The mtime is
-    /// the TTL anchor: `get_negative` rejects entries older than
-    /// `NEGATIVE_TTL_SECS`. Same atomic-write and LRU rules as the positive
-    /// cache (unified safety rules).
+    /// Store a negative cache entry (definitive-empty result). The commit
+    /// time is the TTL anchor. Same atomic-generation rules as the positive
+    /// cache.
     pub fn put_negative(&self, key: &str, value: &[u8]) {
-        let dir = self.negative_dir();
-        if std::fs::create_dir_all(&dir).is_err() {
+        let mut tx = self.begin();
+        if tx.stage_write(key, true, value).is_err() {
             return;
         }
-        atomic_write(&dir.join(key), value);
-        self.enforce_lru(&dir);
+        if tx.publish().is_err() {
+            return;
+        }
+        tx.enforce_lru();
     }
 
-    /// Remove every cache entry (positive and negative). Used by
-    /// `index.invalidate` — a full invalidation must drop cached results.
+    /// Remove every cache entry (positive and negative) and the v2 root.
+    /// Used by `index.invalidate` — a full invalidation must drop cached
+    /// results. Also removes legacy v1 namespaces so they never linger.
     pub fn clear(&self) -> io::Result<()> {
-        for dir in [self.query_dir(), self.negative_dir()] {
+        for dir in [self.root_dir(), self.query_dir(), self.negative_dir()] {
             if dir.exists() {
                 std::fs::remove_dir_all(&dir)?;
             }
@@ -298,9 +431,10 @@ impl QueryCache {
         Ok(())
     }
 
-    /// Begin a transactional batch of cache writes. Entries are staged in
-    /// transaction-private temp files and become visible ONLY on [`commit`],
-    /// at which point all renames succeed (or are rolled back). LRU
+    /// Begin a transactional batch of cache writes. Entries are staged as
+    /// invisible content-addressed objects and become visible ONLY on
+    /// [`publish`](CacheTransaction::publish), at which point a single atomic
+    /// generation flip makes the whole batch visible (or nothing). LRU
     /// maintenance runs once after a successful commit — never during
     /// staging — so a failed transaction cannot evict live entries.
     pub fn begin(&self) -> CacheTransaction<'_> {
@@ -310,389 +444,739 @@ impl QueryCache {
         }
     }
 
-    /// Evict least-recently-used entries from `dir` until both bounds hold.
-    /// Best-effort. Applies to both the positive and negative cache dirs.
-    /// Also sweeps abandoned temp files from interrupted writers.
-    fn enforce_lru(&self, dir: &Path) {
-        let read_dir = match std::fs::read_dir(dir) {
-            Ok(rd) => rd,
-            Err(_) => return,
-        };
-
-        // Collect (mtime, size, path) for every entry. Temp files and the
-        // quarantine subdir are never cache entries.
-        let mut entries: Vec<(SystemTime, u64, PathBuf)> = Vec::new();
-        let now = SystemTime::now();
-        for entry in read_dir.flatten() {
-            let path = entry.path();
-            let Ok(meta) = entry.metadata() else { continue };
-            if !meta.is_file() {
-                continue;
-            }
-            let file_name = entry.file_name().to_string_lossy().into_owned();
-            if file_name.contains(TMP_MARKER) {
-                // Abandoned temp file from a crashed writer: sweep once it is
-                // older than the grace period (live writes are milliseconds).
-                let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                if now
-                    .duration_since(mtime)
-                    .map(|d| d >= STALE_TMP_GRACE)
-                    .unwrap_or(false)
-                {
-                    let _ = std::fs::remove_file(&path);
-                }
-                continue;
-            }
-            let mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-            entries.push((mtime, meta.len(), path));
+    /// Read a single entry through the `CURRENT` generation pointer.
+    fn read_entry(&self, key: &str, negative: bool) -> Option<Vec<u8>> {
+        if !valid_cache_key(key) {
+            return None;
         }
+        let seq = read_current(&self.current_path())?;
+        let manifest = self.load_valid_manifest(seq)?;
+        let digest = if negative {
+            let e = manifest.negatives.get(key)?;
+            if negative_expired(e.committed_at, unix_secs()) {
+                return None;
+            }
+            e.digest.clone()
+        } else {
+            manifest.positives.get(key)?.digest.clone()
+        };
+        if !valid_digest(&digest) {
+            return None;
+        }
+        let obj_path = self.objects_dir().join(&digest);
+        let data = std::fs::read(&obj_path).ok()?;
+        if sha256_hex(&data) != digest {
+            self.quarantine_object(&digest);
+            return None;
+        }
+        if serde_json::from_slice::<serde_json::Value>(&data).is_err() {
+            self.quarantine_object(&digest);
+            return None;
+        }
+        Some(data)
+    }
 
-        let mut total_bytes: u64 = entries.iter().map(|(_, s, _)| *s).sum();
-        if entries.len() <= self.max_items && (total_bytes as usize) <= self.max_bytes {
+    /// Load the newest VALID manifest reachable from `seq`, walking the
+    /// generation chain backwards up to [`RETAINED_GENERATIONS`] steps. A
+    /// corrupt manifest is quarantined and the walk continues to its
+    /// predecessor; a missing manifest (e.g. a crash between the manifest
+    /// write and the `CURRENT` flip) also continues to its predecessor.
+    /// Returns None when no valid manifest is found (fail closed — the cache
+    /// is treated as empty).
+    fn load_valid_manifest(&self, seq: u64) -> Option<GenerationManifest> {
+        let mut current = seq;
+        for _ in 0..RETAINED_GENERATIONS {
+            let path = self.generations_dir().join(gen_file_name(current));
+            match std::fs::read(&path) {
+                Ok(bytes) => match validate_manifest(&bytes, current) {
+                    Ok(m) => return Some(m),
+                    Err(_) => {
+                        let _ = self.quarantine_manifest(current);
+                    }
+                },
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => break, // genuine I/O error: fail closed
+            }
+            current = current.saturating_sub(1);
+            if current == 0 {
+                break;
+            }
+        }
+        None
+    }
+
+    /// Move a corrupt object out of the object store for diagnostics.
+    fn quarantine_object(&self, digest: &str) {
+        let src = self.objects_dir().join(digest);
+        let qdir = self.quarantine_dir();
+        if std::fs::create_dir_all(&qdir).is_ok() {
+            let _ = std::fs::rename(&src, qdir.join(digest));
+        } else {
+            let _ = std::fs::remove_file(&src);
+        }
+    }
+
+    /// Move a corrupt generation manifest out of the generations dir.
+    fn quarantine_manifest(&self, seq: u64) -> io::Result<()> {
+        let src = self.generations_dir().join(gen_file_name(seq));
+        let qdir = self.quarantine_dir();
+        std::fs::create_dir_all(&qdir)?;
+        std::fs::rename(&src, qdir.join(gen_file_name(seq)))
+    }
+
+    /// Acquire the cross-process commit lock (O_EXCL). Retries on contention;
+    /// breaks a lock older than [`LOCK_STALE_GRACE`] (a crashed committer).
+    /// Returns an [`OwnedTemp`] guard that removes the lock file on drop.
+    fn acquire_commit_lock(&self) -> Result<OwnedTemp, String> {
+        let lock_path = self.lock_path();
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create cache root: {e}"))?;
+        }
+        let mut attempts = 0usize;
+        loop {
+            match std::fs::OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&lock_path)
+            {
+                Ok(_) => return Ok(OwnedTemp::adopt(lock_path)),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                    if lock_is_stale(&lock_path) {
+                        // A crashed committer left it behind: break it.
+                        if std::fs::remove_file(&lock_path).is_ok() {
+                            continue;
+                        }
+                    }
+                    attempts += 1;
+                    if attempts >= LOCK_RETRY_BUDGET {
+                        return Err("timed out waiting for the cache commit lock".into());
+                    }
+                    std::thread::sleep(LOCK_RETRY_SLEEP);
+                }
+                Err(e) => {
+                    return Err(format!("failed to create cache commit lock: {e}"));
+                }
+            }
+        }
+    }
+
+    /// Write a generation manifest atomically (tmp + fsync + rename).
+    fn write_manifest_atomic(&self, manifest: &GenerationManifest) -> Result<(), String> {
+        let bytes = serde_json::to_vec(manifest)
+            .map_err(|e| format!("failed to serialize generation manifest: {e}"))?;
+        let gen_dir = self.generations_dir();
+        std::fs::create_dir_all(&gen_dir)
+            .map_err(|e| format!("failed to create generations dir: {e}"))?;
+        let final_path = gen_dir.join(gen_file_name(manifest.generation));
+        let mut tmp = OwnedTemp::create_exclusive_in(&gen_dir, &format!("gen-{}", manifest.generation))?;
+        tmp.write_all_and_sync(&bytes)?;
+        match std::fs::rename(tmp.path(), &final_path) {
+            Ok(()) => {
+                tmp.disarm();
+                Ok(())
+            }
+            Err(e) => Err(format!(
+                "failed to rename generation manifest {}: {e}",
+                final_path.display()
+            )),
+        }
+    }
+
+    /// Atomically flip the `CURRENT` pointer to `seq` (tmp + fsync + rename).
+    fn flip_current(&self, seq: u64) -> Result<(), String> {
+        let root = self.root_dir();
+        std::fs::create_dir_all(&root)
+            .map_err(|e| format!("failed to create cache root: {e}"))?;
+        let mut tmp = OwnedTemp::create_exclusive_in(&root, CURRENT_FILE)?;
+        tmp.write_all_and_sync(format!("{seq}\n").as_bytes())?;
+        match std::fs::rename(tmp.path(), self.current_path()) {
+            Ok(()) => {
+                tmp.disarm();
+                sync_cache_dir(&root).map_err(|e| format!("failed to fsync cache root: {e}"))
+            }
+            Err(e) => Err(format!("failed to flip CURRENT: {e}")),
+        }
+    }
+
+    /// Finalize a commit: write the manifest, fsync the generations dir, then
+    /// flip `CURRENT`. The commit lock is held for the whole sequence and
+    /// released on drop. Returns a structured [`PublishFailure`] on any
+    /// failure (the pointer is never flipped on failure, so readers observe
+    /// the previous generation).
+    fn finalize_commit(
+        &self,
+        manifest: &GenerationManifest,
+        lock: OwnedTemp,
+    ) -> Result<(), PublishFailure> {
+        let mut durability_issues: Vec<String> = Vec::new();
+        if let Err(e) = self.write_manifest_atomic(manifest) {
+            return Err(PublishFailure {
+                primary_error: e,
+                outcomes: Vec::new(),
+                cleanup_issues: Vec::new(),
+                durability_issues,
+                unpublished_objects: Vec::new(),
+            });
+        }
+        if let Err(e) = sync_cache_dir(&self.generations_dir()) {
+            durability_issues.push(format!("failed to fsync generations dir: {e}"));
+            return Err(PublishFailure {
+                primary_error: "generation manifest not durable".into(),
+                outcomes: Vec::new(),
+                cleanup_issues: Vec::new(),
+                durability_issues,
+                unpublished_objects: Vec::new(),
+            });
+        }
+        if let Err(e) = self.flip_current(manifest.generation) {
+            durability_issues.push(format!("failed to flip CURRENT: {e}"));
+            return Err(PublishFailure {
+                primary_error: "CURRENT pointer not flipped".into(),
+                outcomes: Vec::new(),
+                cleanup_issues: Vec::new(),
+                durability_issues,
+                unpublished_objects: Vec::new(),
+            });
+        }
+        // Lock released on drop (removes commit.lock). A removal failure is
+        // only a stale-lock annoyance for the next committer (age-break).
+        drop(lock);
+        Ok(())
+    }
+
+    /// Count committed positive and negative mappings from the `CURRENT`
+    /// manifest. Test/diagnostic helper (not part of the serving path).
+    #[doc(hidden)]
+    pub fn debug_entry_count(&self) -> (usize, usize) {
+        let seq = read_current(&self.current_path()).unwrap_or(0);
+        if seq == 0 {
+            return (0, 0);
+        }
+        match self.load_valid_manifest(seq) {
+            Some(m) => (m.positives.len(), m.negatives.len()),
+            None => (0, 0),
+        }
+    }
+
+    /// Run LRU maintenance over the committed mappings and GC unreferenced
+    /// objects. Must be called ONLY after the enclosing batch's global commit
+    /// decision succeeds — never during staging, never before the
+    /// post-activation probe (P1-1). Best-effort.
+    pub fn enforce_lru(&self) {
+        let Ok(lock) = self.acquire_commit_lock() else {
+            return;
+        };
+        let seq = read_current(&self.current_path()).unwrap_or(0);
+        if seq == 0 {
+            drop(lock);
             return;
         }
-
-        // Evict oldest-first until under both bounds. Bounded at 512 entries,
-        // so the O(n²) recount in the loop is negligible in practice.
-        entries.sort_by_key(|(mtime, _, _)| *mtime);
-        for (_, size, path) in entries {
-            if std::fs::remove_file(&path).is_ok() {
-                total_bytes = total_bytes.saturating_sub(size);
-            }
-            let remaining: usize = std::fs::read_dir(dir)
-                .map(|rd| rd.flatten().filter(|e| e.metadata().is_ok()).count())
-                .unwrap_or(0);
-            if remaining <= self.max_items && (total_bytes as usize) <= self.max_bytes {
+        let Some(mut manifest) = self.load_valid_manifest(seq) else {
+            drop(lock);
+            return;
+        };
+        let now = unix_secs();
+        let mut changed = false;
+        // Evict least-recently-used committed mappings until both bounds hold.
+        loop {
+            let (count, bytes) = self.committed_stats(&manifest);
+            if count <= self.max_items && bytes <= self.max_bytes {
                 break;
+            }
+            evict_lru_mapping(&mut manifest);
+            changed = true;
+        }
+        // Prune expired negatives during maintenance (they are never served,
+        // but keeping them wastes manifest space).
+        if prune_expired_negatives(&mut manifest, now) {
+            changed = true;
+        }
+        if changed {
+            // The new generation number advances from CURRENT (read under the
+            // lock), so it is unique and visible after the pointer flip. Its
+            // base is the newest VALID manifest (which may be older than the
+            // CURRENT sequence if that manifest was corrupt).
+            let new_seq = seq + 1;
+            let mut next = manifest.clone();
+            next.generation = new_seq;
+            next.base_generation = Some(manifest.generation);
+            next.created_at = now;
+            next.integrity = String::new();
+            next.integrity = compute_integrity(&next);
+            let _ = self.finalize_commit(&next, lock);
+        } else {
+            drop(lock);
+        }
+        self.gc();
+    }
+
+    /// Sum of committed mappings and the total bytes of their referenced
+    /// objects (deduplicated by digest).
+    fn committed_stats(&self, manifest: &GenerationManifest) -> (usize, usize) {
+        let mut count = 0usize;
+        let mut bytes = 0usize;
+        let mut seen: HashSet<&str> = HashSet::new();
+        for digest in manifest
+            .positives
+            .values()
+            .map(|e| e.digest.as_str())
+            .chain(manifest.negatives.values().map(|e| e.digest.as_str()))
+        {
+            count += 1;
+            if seen.insert(digest) {
+                bytes += self
+                    .objects_dir()
+                    .join(digest)
+                    .metadata()
+                    .map(|m| m.len() as usize)
+                    .unwrap_or(0);
+            }
+        }
+        (count, bytes)
+    }
+
+    /// Collect the set of object digests reachable from the retained
+    /// generation chain (current + predecessors, up to `RETAINED_GENERATIONS`).
+    fn reachable_objects(&self) -> HashSet<String> {
+        let mut reachable = HashSet::new();
+        let seq = read_current(&self.current_path()).unwrap_or(0);
+        if seq == 0 {
+            return reachable;
+        }
+        let mut current = seq;
+        for _ in 0..RETAINED_GENERATIONS {
+            let path = self.generations_dir().join(gen_file_name(current));
+            let Ok(bytes) = std::fs::read(&path) else {
+                break;
+            };
+            match validate_manifest(&bytes, current) {
+                Ok(m) => {
+                    for digest in m
+                        .positives
+                        .values()
+                        .map(|e| e.digest.clone())
+                        .chain(m.negatives.values().map(|e| e.digest.clone()))
+                    {
+                        reachable.insert(digest);
+                    }
+                    current = m.base_generation.unwrap_or(0);
+                    if current == 0 {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    current = current.saturating_sub(1);
+                }
+            }
+        }
+        reachable
+    }
+
+    /// Reclaim unreferenced objects, stale generations, and abandoned temp
+    /// files. Best-effort; never deletes an object younger than the orphan
+    /// grace period, so a just-committed generation's objects are protected.
+    fn gc(&self) {
+        let now = unix_secs();
+        let reachable = self.reachable_objects();
+        // Objects: delete unreferenced ones older than the grace period.
+        if let Ok(entries) = std::fs::read_dir(self.objects_dir()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if reachable.contains(&name) {
+                    continue;
+                }
+                if !valid_cache_key(&name) {
+                    continue;
+                }
+                if file_older_than(&entry.path(), now, ORPHAN_GRACE) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        // Stale generations: keep the retained chain plus a safety margin.
+        let seq = read_current(&self.current_path()).unwrap_or(0);
+        let keep_floor = seq.saturating_sub(RETAINED_GENERATIONS + 4);
+        if let Ok(entries) = std::fs::read_dir(self.generations_dir()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if let Some(n) = parse_generation_file(&name) {
+                    if n < keep_floor && file_older_than(&entry.path(), now, ORPHAN_GRACE) {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+        // Abandoned temp files.
+        if let Ok(entries) = std::fs::read_dir(self.tmp_dir()) {
+            for entry in entries.flatten() {
+                if file_older_than(&entry.path(), now, TMP_GRACE) {
+                    let _ = std::fs::remove_file(entry.path());
+                }
             }
         }
     }
 }
 
-/// Marker embedded in every temp file name (also used by the LRU sweep).
+/// Marker embedded in every temp file name (also used by the GC sweep).
 const TMP_MARKER: &str = ".tmp-";
 
-/// One staged cache write inside a [`CacheTransaction`]: the new bytes live in
-/// a transaction-private temp file. Cache entries are content-addressed and
-/// treated as IMMUTABLE: publication is a single atomic hard-link (never a
-/// rename-over), and published finals are NEVER deleted or restored by a
-/// rollback — they are harmless reusable immutable data, exactly like
-/// artifacts. Rollback disposes only staged temps.
+/// One staged cache write inside a [`CacheTransaction`]. Staging writes the
+/// payload as an immutable content-addressed object under `objects/`; the
+/// object is INVISIBLE to readers until a manifest referencing it is named by
+/// `CURRENT`. Publication is a single atomic generation flip.
 struct StagedCacheEntry {
-    /// Final entry path (visible only after publish).
-    final_path: PathBuf,
-    /// The cache namespace directory containing the entry (for fsync).
-    namespace_dir: PathBuf,
-    /// Transaction-private temp holding the new bytes.
-    staged_path: PathBuf,
-    /// Content hash of the staged bytes (for winner identity comparison).
-    content_hash: String,
-    /// True once this entry was published (hard-linked) during publish.
-    published: bool,
+    /// The cache key (64-hex SHA-256).
+    key: String,
+    /// True for a negative (definitive-empty) entry.
+    negative: bool,
+    /// Content hash of the staged bytes.
+    digest: String,
 }
 
-/// A transactional group of cache writes. Staging is invisible (private temp
-/// files, no LRU); [`publish`] hard-links each staged temp into its final
-/// entry path with atomic no-replace semantics and does NOT run LRU;
-/// [`enforce_lru`] must be called separately, only after the enclosing batch's
-/// global commit decision succeeds (P1-1).
+/// A transactional group of cache writes. Staging is invisible (content-
+/// addressed objects, no LRU); [`publish`](Self::publish) commits the whole
+/// batch with a single atomic generation flip; [`enforce_lru`](Self::enforce_lru)
+/// must be called separately, only after the enclosing batch's global commit
+/// decision succeeds (P1-1).
 ///
-/// Publication is atomic and race-free (P1-1): `hard_link` either creates the
-/// final entry (we own it) or fails with `AlreadyExists` because another
-/// writer already published — there is NO check-then-rename window. An
-/// identical existing winner is classified `ReusedExisting` (never
-/// rollback-owned, P1-2); a conflicting existing entry fails closed; a
-/// published final is never replaced or deleted on rollback (immutable).
+/// Publication is all-or-nothing (P1-1): either `CURRENT` flips to a manifest
+/// containing every staged mapping, or it does not flip at all. A reader can
+/// never observe a partial batch. Objects staged but not committed are
+/// unreferenced orphans reclaimed by GC after the grace period.
 pub struct CacheTransaction<'a> {
     cache: &'a QueryCache,
     staged: Vec<StagedCacheEntry>,
 }
 
 /// Result of publishing one staged cache entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CachePublishOutcome {
-    /// This transaction created the final entry (hard-linked it).
+    /// This transaction introduced the mapping (or replaced a stale one).
     Created,
-    /// An identical winner already existed — the transaction does not own it
-    /// and it is never rollback-owned.
+    /// An identical mapping already existed in the base generation — the
+    /// transaction did not change the visible result.
     ReusedExisting,
 }
 
 impl CacheTransaction<'_> {
-    /// Stage a write for `key`. The bytes are written to a private temp file
-    /// (RAII-guarded: a write/sync failure removes the temp so it cannot
-    /// leak); the entry is invisible and LRU is not touched.
+    /// Stage a write for `key`. The bytes are written to an immutable
+    /// content-addressed object (RAII-owned temp, no-clobber hard-link). The
+    /// entry is invisible and LRU is not touched.
     ///
-    /// Same-key writes are deduplicated: staging the same final path again
-    /// removes the displaced entry's temp file first (P2-1), so no private
-    /// temp leaks.
+    /// Same-key writes are deduplicated: staging the same key again replaces
+    /// the previous stage (the displaced object is an orphan reclaimed by GC).
     pub fn stage_write(&mut self, key: &str, negative: bool, bytes: &[u8]) -> Result<(), String> {
-        let dir = if negative {
-            self.cache.negative_dir()
-        } else {
-            self.cache.query_dir()
-        };
-        std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create cache dir: {e}"))?;
-        let final_path = dir.join(key);
-        // Deduplicate same-key writes (P2-4): attempt the displaced temp
-        // removal FIRST while the entry is still tracked; only on SUCCESS is
-        // the ownership record removed. On failure the entry remains in
-        // self.staged so abort() can retry/report the still-owned temp.
-        if let Some(pos) = self.staged.iter().position(|e| e.final_path == final_path) {
-            let displaced_temp = self.staged[pos].staged_path.clone();
-            if let Err(e) = std::fs::remove_file(&displaced_temp) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    return Err(format!(
-                        "failed to remove displaced staged temp {} (same-key dedupe): {e}",
-                        displaced_temp.display()
-                    ));
-                }
+        if !valid_cache_key(key) {
+            return Err(format!("invalid cache key: {key:?}"));
+        }
+        let digest = sha256_hex(bytes);
+        if let Some(pos) = self
+            .staged
+            .iter()
+            .position(|e| e.key == key && e.negative == negative)
+        {
+            if self.staged[pos].digest == digest {
+                return Ok(());
             }
             self.staged.remove(pos);
         }
-        // Unique private temp in the same directory (same filesystem for the
-        // final hard-link). The nonce makes it unguessable and exclusive.
-        let mut attempts = 0;
-        let staged_path = loop {
-            if attempts >= 100 {
-                return Err("too many cache temp collisions".into());
-            }
-            let candidate = dir.join(format!(
-                "{key}{TMP_MARKER}{:x}-{attempts}",
-                fast_cache_nonce()
-            ));
-            match std::fs::OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&candidate)
-            {
-                Ok(mut file) => {
-                    use std::io::Write;
-                    let write_res = file.write_all(bytes).and_then(|_| file.sync_all());
-                    drop(file);
-                    if let Err(e) = write_res {
-                        // RAII guard (P2-2): the temp is removed so a failed
-                        // stage can never leak a private file.
-                        let _ = std::fs::remove_file(&candidate);
-                        return Err(format!("failed to stage cache entry: {e}"));
-                    }
-                    break candidate;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    attempts += 1;
-                    continue;
-                }
-                Err(e) => {
-                    return Err(format!("failed to create staged cache entry: {e}"));
-                }
-            }
-        };
+        self.stage_object(&digest, bytes)?;
         self.staged.push(StagedCacheEntry {
-            final_path,
-            namespace_dir: dir,
-            staged_path,
-            content_hash: sha256_hex(bytes),
-            published: false,
+            key: key.to_string(),
+            negative,
+            digest,
         });
         Ok(())
     }
 
-    /// Publish every staged entry with a single ATOMIC hard-link per entry —
-    /// there is no check-then-rename window (P1-1), so a concurrent writer can
-    /// never be clobbered. An identical existing winner is reused
-    /// (`ReusedExisting`, never rollback-owned); a conflicting existing entry
-    /// fails closed. The cache namespace directory is fsynced after each
-    /// publication (the directory that actually changed). LRU is NOT run
-    /// here.
+    /// Write `bytes` as an immutable content-addressed object (no-clobber).
+    /// An identical existing object is reused; a conflicting one fails closed.
+    fn stage_object(&self, digest: &str, bytes: &[u8]) -> Result<(), String> {
+        let objects_dir = self.cache.objects_dir();
+        std::fs::create_dir_all(&objects_dir)
+            .map_err(|e| format!("failed to create objects dir: {e}"))?;
+        let final_path = objects_dir.join(digest);
+        // Reuse an identical existing object (content-addressed dedup).
+        if let Ok(existing) = std::fs::read(&final_path) {
+            if sha256_hex(&existing) == digest {
+                return Ok(());
+            }
+            return Err(format!(
+                "cache object {} exists with different content",
+                final_path.display()
+            ));
+        }
+        let tmp_dir = self.cache.tmp_dir();
+        std::fs::create_dir_all(&tmp_dir)
+            .map_err(|e| format!("failed to create tmp dir: {e}"))?;
+        let mut tmp = OwnedTemp::create_exclusive_in(&tmp_dir, digest)?;
+        tmp.write_all_and_sync(bytes)?;
+        let tmp_path = tmp.path().to_path_buf();
+        // Publish with NO-CLOBBER: hard_link or AlreadyExists → verify winner.
+        match std::fs::hard_link(&tmp_path, &final_path) {
+            Ok(()) => {
+                tmp.remove().map_err(|e| {
+                    format!(
+                        "failed to remove staged object temp {}: {e}",
+                        tmp_path.display()
+                    )
+                })?;
+                Ok(())
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                tmp.remove().map_err(|e| {
+                    format!(
+                        "failed to remove staged object temp {}: {e}",
+                        tmp_path.display()
+                    )
+                })?;
+                let existing = std::fs::read(&final_path).map_err(|e| {
+                    format!("cache object {} unreadable: {e}", final_path.display())
+                })?;
+                if sha256_hex(&existing) == digest {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "cache object {} exists with different content",
+                        final_path.display()
+                    ))
+                }
+            }
+            Err(e) => Err(format!(
+                "failed to publish cache object {}: {e}",
+                final_path.display()
+            )),
+        }
+    }
+
+    /// Commit every staged mapping with a single atomic generation flip.
+    /// The commit lock serializes concurrent committers; the new manifest is a
+    /// full snapshot of the base plus the staged mappings; `CURRENT` is
+    /// flipped last. On success every staged mapping is visible; on failure
+    /// nothing is visible (the pointer is never flipped).
     ///
-    /// On failure, published cache finals are content-addressed IMMUTABLE
-    /// objects and are NEVER unlinked by pathname (P2-2): a concurrent
-    /// transaction may already have reused them as its authoritative winner.
-    /// The batch's responses (its visibility metadata) are rolled back to
-    /// errors; the immutable entries remain as valid reusable data. Every
-    /// independent failure — temp removal, namespace fsync, remaining-temp
-    /// cleanup — is preserved in the returned report, and identical-winner
-    /// staged-temp removal failures are reported. The staged-temp cleanup
-    /// path fsyncs the affected namespace after removal (P2-1).
+    /// On failure, staged objects are content-addressed IMMUTABLE and are
+    /// never unlinked by pathname — they are harmless orphans reclaimed by GC.
+    /// Every independent failure — manifest write, durability fsync, pointer
+    /// flip — is preserved in the returned [`PublishFailure`].
     pub fn publish(&mut self) -> Result<Vec<CachePublishOutcome>, PublishFailure> {
+        if self.staged.is_empty() {
+            return Ok(Vec::new());
+        }
+        let lock = match self.cache.acquire_commit_lock() {
+            Ok(l) => l,
+            Err(e) => {
+                return Err(PublishFailure {
+                    primary_error: e,
+                    outcomes: Vec::new(),
+                    cleanup_issues: Vec::new(),
+                    durability_issues: Vec::new(),
+                    unpublished_objects: self.unpublished_objects(),
+                });
+            }
+        };
+        let base_seq = read_current(&self.cache.current_path()).unwrap_or(0);
+        let base = if base_seq == 0 {
+            GenerationManifest::empty(0)
+        } else {
+            self.cache
+                .load_valid_manifest(base_seq)
+                .unwrap_or_else(|| GenerationManifest::empty(base_seq))
+        };
+        // The new manifest extends the newest VALID base (which may be older
+        // than `base_seq` if the CURRENT manifest was corrupt/missing), so the
+        // chain stays valid. The sequence number still advances from CURRENT.
+        let base_generation = if base_seq == 0 {
+            None
+        } else {
+            Some(base.generation)
+        };
+        let now = unix_secs();
+        let new_seq = base_seq + 1;
+        let mut positives = base.positives.clone();
+        let mut negatives = base.negatives.clone();
         let mut outcomes = Vec::with_capacity(self.staged.len());
-        let mut issues: Vec<String> = Vec::new();
-        for entry in self.staged.iter_mut() {
-            match std::fs::hard_link(&entry.staged_path, &entry.final_path) {
-                Ok(()) => {
-                    // We created the entry (atomic hard-link). Remove the temp
-                    // name; a removal failure is recorded (P2-4/P2-5).
-                    let temp_issue = std::fs::remove_file(&entry.staged_path).err().map(|e| {
-                        format!(
-                            "failed to remove staged temp {}: {e}",
-                            entry.staged_path.display()
-                        )
-                    });
-                    // Fsync the namespace directory that actually changed
-                    // (P2-2). A failure makes the publish not durable.
-                    let sync_issue = sync_cache_dir(&entry.namespace_dir).err().map(|e| {
-                        format!(
-                            "failed to sync cache dir {} after publishing {}: {e}",
-                            entry.namespace_dir.display(),
-                            entry.final_path.display()
-                        )
-                    });
-                    entry.published = true;
-                    outcomes.push(CachePublishOutcome::Created);
-                    // Preserve BOTH independent failures (P2-5); do not
-                    // collapse via .or().
-                    for issue in temp_issue.into_iter().chain(sync_issue) {
-                        issues.push(format!(
-                            "cache entry {}: {issue}",
-                            entry.final_path.display()
-                        ));
-                    }
-                    if !issues.is_empty() {
-                        break;
-                    }
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    // Another writer already published this key. Read and
-                    // verify the winner: identical → reuse (never owned);
-                    // conflicting → fail closed (never replace). The losing
-                    // staged-temp removal failure is reported (P2-4).
-                    let temp_issue = std::fs::remove_file(&entry.staged_path).err().map(|e| {
-                        format!(
-                            "failed to remove staged temp {}: {e}",
-                            entry.staged_path.display()
-                        )
-                    });
-                    match std::fs::read(&entry.final_path) {
-                        Ok(existing) if sha256_hex(&existing) == entry.content_hash => {
-                            outcomes.push(CachePublishOutcome::ReusedExisting);
-                            if let Some(issue) = temp_issue {
-                                issues.push(format!(
-                                    "cache entry {}: {issue}",
-                                    entry.final_path.display()
-                                ));
-                            }
-                        }
-                        Ok(_) => {
-                            issues.push(format!(
-                                "cache entry {} exists with different content",
-                                entry.final_path.display()
-                            ));
-                            if let Some(issue) = temp_issue {
-                                issues.push(format!(
-                                    "cache entry {}: {issue}",
-                                    entry.final_path.display()
-                                ));
-                            }
-                            break;
-                        }
-                        Err(read_err) => {
-                            issues.push(format!(
-                                "cache entry {} winner unreadable: {read_err}",
-                                entry.final_path.display()
-                            ));
-                            if let Some(issue) = temp_issue {
-                                issues.push(format!(
-                                    "cache entry {}: {issue}",
-                                    entry.final_path.display()
-                                ));
-                            }
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    issues.push(format!(
-                        "failed to publish cache entry {}: {e}",
-                        entry.final_path.display()
-                    ));
-                    break;
-                }
-            }
-        }
-        if !issues.is_empty() {
-            // P2-2: created cache finals are content-addressed IMMUTABLE
-            // objects — they are NEVER unlinked by pathname on rollback,
-            // because a concurrent transaction may have already reused them as
-            // its authoritative winner. The batch's responses (its visibility
-            // metadata) are rolled back to errors; the immutable entries
-            // remain as valid reusable data. Only staged temps are cleaned.
-            let mut all = issues;
-            all.extend(self.collect_temp_cleanup_issues());
-            return Err(PublishFailure {
-                message: all.join("; "),
-                temp_cleanup_issues: all,
-                published_before_failure: outcomes.len(),
-            });
-        }
-        Ok(outcomes)
-    }
-
-    /// Remove every un-published staged temp, fsyncing each affected
-    /// namespace directory afterwards (P2-1 — rollback deletion is held to
-    /// the same durability standard as publication). Returns a list of removal
-    /// and sync failures so an incomplete cleanup is surfaced (P1-5/P2-3).
-    fn collect_temp_cleanup_issues(&self) -> Vec<String> {
-        let mut issues = Vec::new();
-        let mut affected: Vec<PathBuf> = Vec::new();
         for entry in &self.staged {
-            if entry.published {
-                continue;
-            }
-            if let Err(e) = std::fs::remove_file(&entry.staged_path) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    issues.push(format!(
-                        "failed to remove staged temp {}: {e}",
-                        entry.staged_path.display()
-                    ));
-                }
-            } else if !affected.contains(&entry.namespace_dir) {
-                affected.push(entry.namespace_dir.clone());
+            if entry.negative {
+                let reused = negatives
+                    .get(&entry.key)
+                    .map(|e| e.digest == entry.digest)
+                    .unwrap_or(false);
+                negatives.insert(
+                    entry.key.clone(),
+                    NegativeEntry {
+                        digest: entry.digest.clone(),
+                        committed_at: now,
+                    },
+                );
+                outcomes.push(if reused {
+                    CachePublishOutcome::ReusedExisting
+                } else {
+                    CachePublishOutcome::Created
+                });
+            } else {
+                let reused = positives
+                    .get(&entry.key)
+                    .map(|e| e.digest == entry.digest)
+                    .unwrap_or(false);
+                positives.insert(
+                    entry.key.clone(),
+                    PositiveEntry {
+                        digest: entry.digest.clone(),
+                        created_at: now,
+                    },
+                );
+                outcomes.push(if reused {
+                    CachePublishOutcome::ReusedExisting
+                } else {
+                    CachePublishOutcome::Created
+                });
             }
         }
-        // Fsync every namespace that lost a staged temp (P2-1).
-        for dir in &affected {
-            if let Err(e) = sync_cache_dir(dir) {
-                issues.push(format!(
-                    "failed to sync cache dir {} after cleanup: {e}",
-                    dir.display()
-                ));
+        let mut manifest = GenerationManifest {
+            schema_version: SCHEMA_VERSION,
+            generation: new_seq,
+            base_generation,
+            created_at: now,
+            positives,
+            negatives,
+            integrity: String::new(),
+        };
+        manifest.integrity = compute_integrity(&manifest);
+        match self.cache.finalize_commit(&manifest, lock) {
+            Ok(()) => {
+                self.staged.clear();
+                Ok(outcomes)
+            }
+            Err(mut f) => {
+                f.outcomes = outcomes;
+                f.unpublished_objects = self.unpublished_objects();
+                Err(f)
             }
         }
-        issues
     }
 
-    /// Run LRU maintenance over both namespaces. Must be called ONLY after the
-    /// enclosing batch's global commit decision succeeds — never during
-    /// staging, never before the post-activation probe (P1-1).
+    /// The digests of objects staged but not yet committed (for the failure
+    /// report).
+    fn unpublished_objects(&self) -> Vec<String> {
+        self.staged.iter().map(|s| s.digest.clone()).collect()
+    }
+
+    /// Run LRU maintenance over the committed mappings. Must be called ONLY
+    /// after the enclosing batch's global commit decision succeeds.
     pub fn enforce_lru(&self) {
-        self.cache.enforce_lru(&self.cache.query_dir());
-        self.cache.enforce_lru(&self.cache.negative_dir());
+        self.cache.enforce_lru();
     }
 
-    /// Discard every staged entry WITHOUT publishing anything. Published
-    /// finals are immutable and never touched. Returns removal failures.
+    /// Discard every staged entry WITHOUT publishing anything. In v2 staged
+    /// objects are content-addressed and unreferenced by any manifest, so they
+    /// are harmless orphans reclaimed by GC after the grace period — there is
+    /// nothing reader-visible to remove. Returns removal failures (none in
+    /// practice; `OwnedTemp` RAII prevents temp leaks in-process).
     pub fn abort(&mut self) -> Vec<String> {
-        let issues = self.collect_temp_cleanup_issues();
+        let issues = Vec::new();
         self.staged.clear();
         issues
     }
 }
 
 /// Structured failure from [`CacheTransaction::publish`]: the primary
-/// publication error plus every staged-temp cleanup issue, so an incomplete
-/// rollback can be surfaced as ROLLBACK INCOMPLETE (P1-5/P2-3).
+/// publication error plus every independent cleanup and durability issue, so
+/// an incomplete commit can be surfaced distinctly (P1-5/P2-3).
 #[derive(Debug)]
 pub struct PublishFailure {
     /// The primary publication error message.
-    pub message: String,
-    /// Staged-temp removal failures (empty when cleanup was complete).
-    pub temp_cleanup_issues: Vec<String>,
-    /// How many entries were published before the failure.
-    pub published_before_failure: usize,
+    pub primary_error: String,
+    /// Per-entry outcomes observed before the failure.
+    pub outcomes: Vec<CachePublishOutcome>,
+    /// Temp-file removal failures (empty when cleanup was complete).
+    pub cleanup_issues: Vec<String>,
+    /// Durability (fsync) failures.
+    pub durability_issues: Vec<String>,
+    /// Digests of objects staged but not committed (orphans for GC).
+    pub unpublished_objects: Vec<String>,
 }
 
 impl std::fmt::Display for PublishFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
+        write!(f, "{}", self.primary_error)
+    }
+}
+
+/// RAII guard for an owned temp file: the file is removed on Drop unless
+/// explicitly disarmed (e.g. after a successful rename that transfers
+/// ownership). `remove()` is the explicit error-reporting path: ENOENT is
+/// treated as "already completed" (a concurrent sweeper or a previous attempt
+/// removed it), NOT an error.
+pub(crate) struct OwnedTemp {
+    path: PathBuf,
+    armed: bool,
+}
+
+impl OwnedTemp {
+    /// Adopt an already-created exclusive file at `path` (e.g. the commit
+    /// lock). The file is removed on drop unless disarmed.
+    pub(crate) fn adopt(path: PathBuf) -> Self {
+        OwnedTemp { path, armed: true }
+    }
+
+    /// Create a new exclusive temp file in `dir` with a unique name derived
+    /// from `name` (callers pass hex digests / `gen-<N>` / `CURRENT`, which
+    /// are filesystem-safe).
+    pub(crate) fn create_exclusive_in(dir: &Path, name: &str) -> Result<Self, String> {
+        let path = dir.join(format!(
+            "{name}{TMP_MARKER}{}-{}",
+            std::process::id(),
+            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)
+            .map_err(|e| format!("failed to create temp {}: {e}", path.display()))?;
+        Ok(OwnedTemp { path, armed: true })
+    }
+
+    /// Write `bytes` and fsync the temp file.
+    pub(crate) fn write_all_and_sync(&mut self, bytes: &[u8]) -> Result<(), String> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&self.path)
+            .map_err(|e| format!("failed to open temp {}: {e}", self.path.display()))?;
+        f.write_all(bytes)
+            .map_err(|e| format!("failed to write temp: {e}"))?;
+        f.sync_all()
+            .map_err(|e| format!("failed to sync temp: {e}"))
+    }
+
+    /// The temp file path.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// Disarm the guard (ownership transferred elsewhere).
+    pub(crate) fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    /// Explicit removal; ENOENT → Ok (already completed). Returns the io
+    /// error on genuine failure so callers can surface cleanup issues.
+    pub(crate) fn remove(mut self) -> io::Result<()> {
+        self.armed = false;
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+impl Drop for OwnedTemp {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -706,97 +1190,194 @@ fn sha256_hex(bytes: &[u8]) -> String {
         .collect::<String>()
 }
 
-/// Directory fsync for cache operations. Contract (P2-2): the supplied path is
-/// the DIRECTORY that actually changed (e.g. `<state>/query-cache`), and it is
-/// opened and fsynced directly — not its parent. Returns the io result so
-/// genuine failures (EIO, permission, ENOSPC) propagate (P2-4).
+/// Directory fsync for cache operations. The supplied path is the DIRECTORY
+/// that actually changed, opened and fsynced directly — not its parent.
+/// Returns the io result so genuine failures (EIO, permission, ENOSPC)
+/// propagate.
 #[cfg(unix)]
-fn sync_cache_dir(dir: &Path) -> std::io::Result<()> {
+fn sync_cache_dir(dir: &Path) -> io::Result<()> {
     let d = std::fs::File::open(dir)?;
     d.sync_all()
 }
 
 #[cfg(not(unix))]
-fn sync_cache_dir(_dir: &Path) -> std::io::Result<()> {
+fn sync_cache_dir(_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Cheap unpredictable nonce for transaction temp names.
-fn fast_cache_nonce() -> u64 {
-    let t = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    t ^ ((std::process::id() as u64) << 32)
+/// Current epoch seconds.
+fn unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
-/// Validate that `data` parses as JSON. Corrupt entries are quarantined:
-/// moved to `<namespace>/quarantine/<key>` so they are never served, never
-/// counted by the LRU pass, and remain available for diagnostics. Returns
-/// true when the entry is valid.
-fn read_validate_quarantine(path: &Path, data: &[u8], namespace_dir: &Path) -> bool {
-    if serde_json::from_slice::<serde_json::Value>(data).is_ok() {
-        return true;
-    }
-    let key = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "unknown".into());
-    let quarantine_dir = namespace_dir.join(QUARANTINE_DIR);
-    if std::fs::create_dir_all(&quarantine_dir).is_ok() {
-        let dest = quarantine_dir.join(key);
-        let _ = std::fs::rename(path, &dest);
-    } else {
-        // No quarantine dir possible: drop the corrupt entry outright.
-        let _ = std::fs::remove_file(path);
-    }
-    false
+/// Read the `CURRENT` generation sequence number. Missing/corrupt → None
+/// (treated as an empty cache).
+fn read_current(path: &Path) -> Option<u64> {
+    let bytes = std::fs::read(path).ok()?;
+    let text = std::str::from_utf8(&bytes).ok()?.trim();
+    text.parse::<u64>().ok()
 }
 
-/// Atomically write `value` to `path`: write to a unique temp sibling file,
-/// flush + close, then rename over the final key. On any failure the temp
-/// file is removed (cleanup), so no partial or orphaned entry ever appears
-/// under the final key. Concurrent readers see either the previous entry or
-/// the complete new one — never a partial write.
-fn atomic_write(path: &Path, value: &[u8]) {
-    let dir = match path.parent() {
-        Some(d) => d.to_path_buf(),
-        None => return,
+/// A valid cache KEY: non-empty, bounded length, no path separators or NUL.
+/// Keys are stored only as manifest map keys (never as filenames), so they
+/// must be path-safe but are not required to be hex.
+fn valid_cache_key(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 256
+        && !s.contains('/')
+        && !s.contains('\\')
+        && !s.contains('\0')
+        && s != "."
+        && s != ".."
+}
+
+/// A valid object DIGEST: exactly 64 lowercase hex chars. Digests are used as
+/// object filenames, so this also prevents path traversal.
+fn valid_digest(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Generation manifest file name for a sequence number.
+fn gen_file_name(seq: u64) -> String {
+    format!("gen-{seq}.json")
+}
+
+/// Parse a generation sequence number from a `gen-<N>.json` file name.
+fn parse_generation_file(name: &str) -> Option<u64> {
+    let rest = name.strip_prefix("gen-")?.strip_suffix(".json")?;
+    rest.parse::<u64>().ok()
+}
+
+/// Whether a negative entry has expired relative to `now`.
+fn negative_expired(committed_at: u64, now: u64) -> bool {
+    now.saturating_sub(committed_at) >= NEGATIVE_TTL_SECS
+}
+
+/// Whether a file's mtime is older than `grace` relative to `now` (epoch
+/// seconds).
+fn file_older_than(path: &Path, now: u64, grace: Duration) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
     };
-    let key = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "entry".into());
-    let tmp = dir.join(format!(
-        "{key}{TMP_MARKER}{}-{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
+    let Ok(mtime) = meta.modified() else {
+        return false;
+    };
+    let Ok(mtime_secs) = mtime.duration_since(SystemTime::UNIX_EPOCH) else {
+        return false;
+    };
+    now.saturating_sub(mtime_secs.as_secs()) >= grace.as_secs()
+}
 
-    let write_result: io::Result<()> = (|| {
-        let mut f = std::fs::File::create(&tmp)?;
-        f.write_all(value)?;
-        // Flush + close before the rename so readers never see partial data.
-        f.sync_all()?;
-        drop(f);
-        match std::fs::rename(&tmp, path) {
-            Ok(()) => Ok(()),
-            // Windows refuses to rename over an existing file. Cache entries
-            // are content-addressed, so an existing entry holds identical
-            // bytes; removing it first is safe (best-effort fallback).
-            Err(e) if cfg!(windows) && e.kind() == io::ErrorKind::AlreadyExists => {
-                std::fs::remove_file(path)?;
-                std::fs::rename(&tmp, path)?;
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    })();
+/// Whether the commit lock is old enough to belong to a crashed committer.
+fn lock_is_stale(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(mtime) = meta.modified() else {
+        return false;
+    };
+    let Ok(mtime_secs) = mtime.duration_since(SystemTime::UNIX_EPOCH) else {
+        return false;
+    };
+    unix_secs().saturating_sub(mtime_secs.as_secs()) >= LOCK_STALE_GRACE.as_secs()
+}
 
-    if write_result.is_err() {
-        // Cleanup in the failure path: never leave a partial temp behind.
-        let _ = std::fs::remove_file(&tmp);
+/// Compute the integrity SHA-256 over the canonical serialization of every
+/// manifest field EXCEPT `integrity`. `BTreeMap` serializes keys in sorted
+/// order, so the digest is deterministic.
+fn compute_integrity(m: &GenerationManifest) -> String {
+    let payload = serde_json::json!({
+        "schema_version": m.schema_version,
+        "generation": m.generation,
+        "base_generation": m.base_generation,
+        "created_at": m.created_at,
+        "positives": m.positives,
+        "negatives": m.negatives,
+    });
+    sha256_hex(payload.to_string().as_bytes())
+}
+
+/// Validate a manifest: schema version, generation match, integrity, and that
+/// every key/digest is a well-formed cache key (path-traversal safe).
+fn validate_manifest(bytes: &[u8], expected_seq: u64) -> Result<GenerationManifest, String> {
+    let m: GenerationManifest = serde_json::from_slice(bytes)
+        .map_err(|e| format!("manifest parse error: {e}"))?;
+    if m.schema_version != SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported schema version {}",
+            m.schema_version
+        ));
     }
+    if m.generation != expected_seq {
+        return Err(format!(
+            "manifest generation {} != expected {}",
+            m.generation, expected_seq
+        ));
+    }
+    let expected = compute_integrity(&m);
+    if m.integrity != expected {
+        return Err("manifest integrity mismatch".into());
+    }
+    for key in m.positives.keys().chain(m.negatives.keys()) {
+        if !valid_cache_key(key) {
+            return Err(format!("manifest contains invalid key: {key:?}"));
+        }
+    }
+    for digest in m
+        .positives
+        .values()
+        .map(|e| e.digest.as_str())
+        .chain(m.negatives.values().map(|e| e.digest.as_str()))
+    {
+        if !valid_digest(digest) {
+            return Err(format!("manifest contains invalid digest: {digest:?}"));
+        }
+    }
+    Ok(m)
+}
+
+/// Evict the least-recently-used committed mapping (smallest recency, with a
+/// deterministic lexicographic tie-break via `BTreeMap` iteration order).
+fn evict_lru_mapping(m: &mut GenerationManifest) {
+    let mut oldest: Option<(u64, bool, String)> = None; // (recency, is_negative, key)
+    for (k, e) in &m.positives {
+        let cand = (e.created_at, false, k.clone());
+        if oldest.as_ref().map(|o| cand < *o).unwrap_or(true) {
+            oldest = Some(cand);
+        }
+    }
+    for (k, e) in &m.negatives {
+        let cand = (e.committed_at, true, k.clone());
+        if oldest.as_ref().map_or(true, |o| cand < *o) {
+            oldest = Some(cand);
+        }
+    }
+    if let Some((_, is_negative, key)) = oldest {
+        if is_negative {
+            m.negatives.remove(&key);
+        } else {
+            m.positives.remove(&key);
+        }
+    }
+}
+
+/// Remove negative mappings that have expired past the TTL. Returns true if
+/// any were removed.
+fn prune_expired_negatives(m: &mut GenerationManifest, now: u64) -> bool {
+    let expired: Vec<String> = m
+        .negatives
+        .iter()
+        .filter(|(_, e)| negative_expired(e.committed_at, now))
+        .map(|(k, _)| k.clone())
+        .collect();
+    let changed = !expired.is_empty();
+    for k in expired {
+        m.negatives.remove(&k);
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -828,35 +1409,35 @@ mod tests {
         assert_eq!(k0, key(base), "identical inputs → identical key");
         assert_ne!(
             k0,
-            key(("repo2", "wt", "sha", "dirty", 3, 1, "0.1.0", "grep", "{}", "cfg"))
+            key(("repo2", "wt", "sha", "d", 3, 1, "0.1.0", "grep", "{}", "cfg"))
         );
         assert_ne!(
             k0,
-            key(("repo", "wt2", "sha", "dirty", 3, 1, "0.1.0", "grep", "{}", "cfg"))
+            key(("repo", "wt2", "sha", "d", 3, 1, "0.1.0", "grep", "{}", "cfg"))
         );
         assert_ne!(
             k0,
-            key(("repo", "wt", "sha2", "dirty", 3, 1, "0.1.0", "grep", "{}", "cfg"))
+            key(("repo", "wt", "sha2", "d", 3, 1, "0.1.0", "grep", "{}", "cfg"))
         );
         assert_ne!(
             k0,
-            key(("repo", "wt", "sha", "dirty2", 3, 1, "0.1.0", "grep", "{}", "cfg"))
+            key(("repo", "wt", "sha", "d2", 3, 1, "0.1.0", "grep", "{}", "cfg"))
         );
         assert_ne!(
             k0,
-            key(("repo", "wt", "sha", "dirty", 4, 1, "0.1.0", "grep", "{}", "cfg"))
+            key(("repo", "wt", "sha", "d", 4, 1, "0.1.0", "grep", "{}", "cfg"))
         );
         assert_ne!(
             k0,
-            key(("repo", "wt", "sha", "dirty", 3, 2, "0.1.0", "grep", "{}", "cfg"))
+            key(("repo", "wt", "sha", "d", 3, 2, "0.1.0", "grep", "{}", "cfg"))
         );
         assert_ne!(
             k0,
-            key(("repo", "wt", "sha", "dirty", 3, 1, "0.1.1", "grep", "{}", "cfg"))
+            key(("repo", "wt", "sha", "d", 3, 1, "0.1.1", "grep", "{}", "cfg"))
         );
         assert_ne!(
             k0,
-            key(("repo", "wt", "sha", "dirty", 3, 1, "0.1.0", "search", "{}", "cfg"))
+            key(("repo", "wt", "sha", "d", 3, 1, "0.1.0", "search", "{}", "cfg"))
         );
         assert_ne!(
             k0,
@@ -864,7 +1445,7 @@ mod tests {
                 "repo",
                 "wt",
                 "sha",
-                "dirty",
+                "d",
                 3,
                 1,
                 "0.1.0",
@@ -875,14 +1456,13 @@ mod tests {
         );
         assert_ne!(
             k0,
-            key(("repo", "wt", "sha", "dirty", 3, 1, "0.1.0", "grep", "{}", "cfg2"))
+            key(("repo", "wt", "sha", "d", 3, 1, "0.1.0", "grep", "{}", "cfg2"))
         );
     }
 
     #[test]
     fn key_is_domain_anchored() {
         let k = query_cache_key("r", "w", "s", "d", 1, 1, "v", "read", "{}", "c");
-        // Must start with the domain, so a domain bump invalidates everything.
         let digest_expected = {
             use sha2::{Digest, Sha256};
             let mut h = Sha256::new();
@@ -917,35 +1497,42 @@ mod tests {
         assert_eq!(ca, cb);
         assert_eq!(ca, r#"{"a":2,"b":1}"#);
 
-        // Nested objects are sorted too.
         let nested = json!({"outer": {"y": 1, "x": 2}, "n": 0});
         assert_eq!(canonical_json(&nested), r#"{"n":0,"outer":{"x":2,"y":1}}"#);
+    }
+
+    /// A deterministic 64-hex cache key for tests.
+    fn key(n: u8) -> String {
+        format!("{:064x}", n)
     }
 
     #[test]
     fn cache_put_get_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        assert_eq!(cache.get("k1"), None);
-        cache.put("k1", br#"{"v":"value-one"}"#);
+        assert_eq!(cache.get(&key(1)), None);
+        cache.put(&key(1), br#"{"v":"value-one"}"#);
         assert_eq!(
-            cache.get("k1").as_deref(),
+            cache.get(&key(1)).as_deref(),
             Some(br#"{"v":"value-one"}"#.as_slice())
         );
-        // Entry lives under query-cache/, not generation-scoped.
-        assert!(cache.query_dir().join("k1").exists());
-        assert!(!tmp.path().join("gen-1").exists());
+        // v2 stores content-addressed objects + a generation manifest, not a
+        // per-key file.
+        assert!(cache.objects_dir().join(sha256_hex(br#"{"v":"value-one"}"#)).exists());
+        assert!(cache.current_path().exists());
+        assert_eq!(cache.debug_entry_count(), (1, 0));
     }
 
     #[test]
     fn cache_get_miss_after_clear() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        cache.put("k1", br#"{"v":1}"#);
-        cache.put_negative("neg", br#"{"n":1}"#);
+        cache.put(&key(1), br#"{"v":1}"#);
+        cache.put_negative(&key(2), br#"{"n":1}"#);
         cache.clear().unwrap();
-        assert_eq!(cache.get("k1"), None);
-        assert!(!cache.negative_dir().exists());
+        assert_eq!(cache.get(&key(1)), None);
+        assert_eq!(cache.get_negative(&key(2)), None);
+        assert!(!cache.root_dir().exists());
     }
 
     #[test]
@@ -956,15 +1543,19 @@ mod tests {
             max_items: 3,
             max_bytes: usize::MAX,
         };
-        cache.put("a", b"1");
-        cache.put("b", b"2");
-        cache.put("c", b"3");
-        // Touch "a" so it is most-recently-used.
-        assert_eq!(cache.get("a").as_deref(), Some(b"1".as_slice()));
-        cache.put("d", b"4");
-        // Bound is 3: oldest (b, then c) must be evicted, a (touched) kept.
-        assert_eq!(cache.get("a").as_deref(), Some(b"1".as_slice()));
-        assert_eq!(cache.get("b"), None);
+        cache.put(&key(1), b"1");
+        cache.put(&key(2), b"2");
+        cache.put(&key(3), b"3");
+        // Reading does NOT touch recency in v2 (recency = commit order), so a
+        // later commit evicts the least-recently-committed mapping.
+        assert_eq!(cache.get(&key(1)).as_deref(), Some(b"1".as_slice()));
+        cache.put(&key(4), b"4");
+        // Bound is 3: the oldest committed mapping (key(1)) is evicted.
+        assert_eq!(cache.get(&key(1)), None);
+        assert_eq!(cache.get(&key(2)).as_deref(), Some(b"2".as_slice()));
+        assert_eq!(cache.get(&key(3)).as_deref(), Some(b"3".as_slice()));
+        assert_eq!(cache.get(&key(4)).as_deref(), Some(b"4".as_slice()));
+        assert_eq!(cache.debug_entry_count().0, 3);
     }
 
     #[test]
@@ -977,11 +1568,11 @@ mod tests {
         };
         let big: &[u8] = br#"{"big":"0123456789"}"#; // 19 bytes
         let other: &[u8] = br#"{"other":"abcdef"}"#; // 20 bytes
-        cache.put("big", big);
-        assert_eq!(cache.get("big").as_deref(), Some(big));
-        cache.put("other", other); // 39 bytes total → evict one
-        let big_present = cache.get("big").is_some();
-        let other_present = cache.get("other").is_some();
+        cache.put(&key(1), big);
+        assert_eq!(cache.get(&key(1)).as_deref(), Some(big));
+        cache.put(&key(2), other); // 39 bytes total → evict one
+        let big_present = cache.get(&key(1)).is_some();
+        let other_present = cache.get(&key(2)).is_some();
         // Only one of them can fit; the other was evicted.
         assert!(big_present ^ other_present);
     }
@@ -990,37 +1581,35 @@ mod tests {
     fn negative_entries_roundtrip_within_ttl() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        assert_eq!(cache.get_negative("k"), None);
-        cache.put_negative("k", br#"{"empty":true}"#);
+        assert_eq!(cache.get_negative(&key(1)), None);
+        cache.put_negative(&key(1), br#"{"empty":true}"#);
         assert_eq!(
-            cache.get_negative("k").as_deref(),
+            cache.get_negative(&key(1)).as_deref(),
             Some(br#"{"empty":true}"#.as_slice())
         );
-        // Negative entries live in negative-cache/, positive in query-cache/.
-        assert!(cache.negative_dir().join("k").exists());
-        assert!(!cache.query_dir().exists());
+        assert_eq!(cache.debug_entry_count(), (0, 1));
     }
 
     #[test]
     fn negative_entries_expire_after_ttl() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        cache.put_negative("k", b"none-found");
-        // Backdate the mtime beyond the TTL (30s) — the entry must expire.
-        let path = cache.negative_dir().join("k");
-        let backdated = SystemTime::now() - std::time::Duration::from_secs(NEGATIVE_TTL_SECS + 5);
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .and_then(|f| f.set_modified(backdated))
-            .expect("backdate mtime");
+        cache.put_negative(&key(1), b"none-found");
+        // Backdate the committed_at in the manifest beyond the TTL.
+        let seq = read_current(&cache.current_path()).unwrap();
+        let path = cache.generations_dir().join(gen_file_name(seq));
+        let mut m: GenerationManifest =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let e = m.negatives.get_mut(&key(1)).unwrap();
+        e.committed_at = unix_secs().saturating_sub(NEGATIVE_TTL_SECS + 5);
+        m.integrity = String::new();
+        m.integrity = compute_integrity(&m);
+        std::fs::write(&path, serde_json::to_vec(&m).unwrap()).unwrap();
         assert_eq!(
-            cache.get_negative("k"),
+            cache.get_negative(&key(1)),
             None,
             "expired negative entry is a miss"
         );
-        // Expired entries are removed, not left to accumulate.
-        assert!(!path.exists());
     }
 
     #[test]
@@ -1031,120 +1620,121 @@ mod tests {
             max_items: 2,
             max_bytes: usize::MAX,
         };
-        cache.put_negative("a", b"1");
-        cache.put_negative("b", b"2");
-        // Negative reads never touch mtime, so make "b" unambiguously the
-        // oldest entry by backdating it (deterministic eviction order).
-        let b_path = cache.negative_dir().join("b");
-        std::fs::File::options()
-            .write(true)
-            .open(&b_path)
-            .and_then(|f| f.set_modified(SystemTime::now() - std::time::Duration::from_secs(60)))
-            .expect("backdate mtime");
-        cache.put_negative("c", b"3");
-        // Bound is 2: oldest negative entry (b) is evicted.
-        assert_eq!(cache.get_negative("b"), None);
-        assert_eq!(cache.get_negative("c").as_deref(), Some(b"3".as_slice()));
+        cache.put_negative(&key(1), b"1");
+        cache.put_negative(&key(2), b"2");
+        // Backdate key(2)'s committed_at so it is unambiguously the oldest.
+        let seq = read_current(&cache.current_path()).unwrap();
+        let path = cache.generations_dir().join(gen_file_name(seq));
+        let mut m: GenerationManifest =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let e = m.negatives.get_mut(&key(2)).unwrap();
+        e.committed_at = unix_secs().saturating_sub(60);
+        m.integrity = String::new();
+        m.integrity = compute_integrity(&m);
+        std::fs::write(&path, serde_json::to_vec(&m).unwrap()).unwrap();
+        cache.put_negative(&key(3), b"3");
+        // Bound is 2: oldest negative entry (key(2)) is evicted.
+        assert_eq!(cache.get_negative(&key(2)), None);
+        assert_eq!(cache.get_negative(&key(3)).as_deref(), Some(b"3".as_slice()));
     }
 
     #[test]
     fn clear_drops_negative_entries_too() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        cache.put("pos", br#"{"p":1}"#);
-        cache.put_negative("neg", br#"{"n":1}"#);
+        cache.put(&key(1), br#"{"p":1}"#);
+        cache.put_negative(&key(2), br#"{"n":1}"#);
         cache.clear().unwrap();
-        assert_eq!(cache.get("pos"), None);
-        assert_eq!(cache.get_negative("neg"), None);
-        assert!(!cache.query_dir().exists());
-        assert!(!cache.negative_dir().exists());
+        assert_eq!(cache.get(&key(1)), None);
+        assert_eq!(cache.get_negative(&key(2)), None);
+        assert!(!cache.root_dir().exists());
     }
 
     #[test]
     fn atomic_write_roundtrips_without_temp_leak() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        cache.put("k", br#"{"v":1}"#);
-        assert_eq!(cache.get("k").as_deref(), Some(br#"{"v":1}"#.as_slice()));
+        cache.put(&key(1), br#"{"v":1}"#);
+        assert_eq!(cache.get(&key(1)).as_deref(), Some(br#"{"v":1}"#.as_slice()));
         // Overwrite: the new value replaces the old atomically.
-        cache.put("k", br#"{"v":2}"#);
-        assert_eq!(cache.get("k").as_deref(), Some(br#"{"v":2}"#.as_slice()));
+        cache.put(&key(1), br#"{"v":2}"#);
+        assert_eq!(cache.get(&key(1)).as_deref(), Some(br#"{"v":2}"#.as_slice()));
         // No temp files may remain after any write (success or failure path).
-        let leftover = std::fs::read_dir(cache.query_dir())
-            .map(|rd| {
-                rd.flatten()
-                    .filter(|e| e.file_name().to_string_lossy().contains(TMP_MARKER))
-                    .count()
-            })
+        let leftover = std::fs::read_dir(cache.tmp_dir())
+            .map(|rd| rd.flatten().count())
             .unwrap_or(0);
-        assert_eq!(leftover, 0, "atomic writes must clean up their temp files");
+        assert_eq!(leftover, 0, "writes must clean up their temp files");
     }
 
     #[test]
-    fn corrupt_entries_are_quarantined_and_never_served() {
+    fn corrupt_objects_are_quarantined_and_never_served() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        cache.put("good", br#"{"v":1}"#);
+        cache.put(&key(1), br#"{"v":1}"#);
+        let digest = sha256_hex(br#"{"v":1}"#);
 
-        // Corrupt the entry on disk (simulates a torn/interrupted legacy
-        // write or disk corruption).
-        std::fs::write(cache.query_dir().join("good"), b"{\"v\": 1, BROKEN").unwrap();
+        // Corrupt the object on disk (simulates torn write / disk corruption).
+        std::fs::write(cache.objects_dir().join(&digest), b"{\"v\": 1, BROKEN").unwrap();
         assert_eq!(
-            cache.get("good"),
+            cache.get(&key(1)),
             None,
-            "corrupt entry must be a miss, never served"
+            "corrupt object must be a miss, never served"
         );
-        // Quarantined for diagnostics: moved out of the namespace.
-        assert!(!cache.query_dir().join("good").exists());
-        let quarantined = cache.query_dir().join(QUARANTINE_DIR).join("good");
-        assert!(quarantined.exists(), "corrupt entry is quarantined");
-
-        // The negative namespace follows the same rule.
-        cache.put_negative("neg", br#"{"empty":true}"#);
-        std::fs::write(cache.negative_dir().join("neg"), b"not json at all").unwrap();
-        assert_eq!(
-            cache.get_negative("neg"),
-            None,
-            "corrupt negative entry is a miss"
-        );
-        assert!(cache
-            .negative_dir()
-            .join(QUARANTINE_DIR)
-            .join("neg")
-            .exists());
-
-        // The quarantine dir never counts as a cache entry.
-        assert_eq!(cache.get("good"), None);
+        // Quarantined for diagnostics: moved out of the object store.
+        assert!(!cache.objects_dir().join(&digest).exists());
+        assert!(cache.quarantine_dir().join(&digest).exists());
     }
 
     #[test]
-    fn stale_temp_files_are_swept_and_ignored() {
+    fn object_without_current_is_a_miss() {
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
-        cache.put("k", br#"{"v":1}"#);
+        cache.put(&key(1), br#"{"v":1}"#);
+        // Remove CURRENT: the object exists but is unreachable → miss.
+        std::fs::remove_file(cache.current_path()).unwrap();
+        assert_eq!(cache.get(&key(1)), None);
+    }
 
-        // A leftover temp from a "crashed" writer, backdated beyond the grace
-        // period: reads must ignore it and the LRU pass must sweep it.
-        let stale_tmp = cache.query_dir().join(format!("k{TMP_MARKER}999-0"));
-        std::fs::write(&stale_tmp, b"partial").unwrap();
-        let backdated = SystemTime::now() - Duration::from_secs(2 * 60);
-        std::fs::File::options()
-            .write(true)
-            .open(&stale_tmp)
-            .and_then(|f| f.set_modified(backdated))
-            .expect("backdate temp mtime");
+    #[test]
+    fn corrupt_current_fails_closed_to_prior_generation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put(&key(1), br#"{"v":1}"#);
+        cache.put(&key(2), br#"{"v":2}"#);
+        // Corrupt the newest manifest (gen-2) → reader fails closed to gen-1.
+        let seq = read_current(&cache.current_path()).unwrap();
+        assert_eq!(seq, 2);
+        let path = cache.generations_dir().join(gen_file_name(seq));
+        std::fs::write(&path, b"not a manifest").unwrap();
+        // key(2) (only in gen-2) is a miss; key(1) (in gen-1) still served.
+        assert_eq!(cache.get(&key(2)), None);
+        assert_eq!(cache.get(&key(1)).as_deref(), Some(br#"{"v":1}"#.as_slice()));
+    }
 
-        // Reads never see temp files (they are not under the final key).
-        assert_eq!(cache.get("k").as_deref(), Some(br#"{"v":1}"#.as_slice()));
+    #[test]
+    fn corrupt_manifest_is_quarantined() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put(&key(1), br#"{"v":1}"#);
+        let seq = read_current(&cache.current_path()).unwrap();
+        let path = cache.generations_dir().join(gen_file_name(seq));
+        std::fs::write(&path, b"garbage").unwrap();
+        assert_eq!(cache.get(&key(1)), None);
+        assert!(cache.quarantine_dir().join(gen_file_name(seq)).exists());
+    }
 
-        // A fresh temp (a live concurrent writer) is NOT swept...
-        let fresh_tmp = cache.query_dir().join(format!("k{TMP_MARKER}999-1"));
-        std::fs::write(&fresh_tmp, b"in-flight").unwrap();
-        cache.put("other", br#"{"v":2}"#); // triggers the LRU pass
-        assert!(fresh_tmp.exists(), "live temp files are left alone");
-
-        // ...but the stale one is gone after the sweep.
-        assert!(!stale_tmp.exists(), "abandoned temp files are swept");
+    #[test]
+    fn legacy_v1_dirs_are_never_served() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        // Simulate a leftover v1 entry.
+        std::fs::create_dir_all(cache.query_dir()).unwrap();
+        std::fs::write(cache.query_dir().join(&key(1)), br#"{"v":1}"#).unwrap();
+        // v2 never reads the legacy dir.
+        assert_eq!(cache.get(&key(1)), None);
+        // clear() removes it.
+        cache.clear().unwrap();
+        assert!(!cache.query_dir().exists());
     }
 
     #[test]
@@ -1158,10 +1748,10 @@ mod tests {
             let cache = cache.clone();
             handles.push(std::thread::spawn(move || {
                 for i in 0..40usize {
-                    let key = format!("key-{}-{}", t, i % 5);
+                    let k = format!("{:064x}", (t * 100 + i) % 7);
                     let value = format!(r#"{{"writer":{t},"i":{i}}}"#);
-                    cache.put(&key, value.as_bytes());
-                    if let Some(bytes) = cache.get(&key) {
+                    cache.put(&k, value.as_bytes());
+                    if let Some(bytes) = cache.get(&k) {
                         // Every observed entry must be complete, valid JSON.
                         serde_json::from_slice::<serde_json::Value>(&bytes)
                             .expect("readers never observe partial entries");
@@ -1172,5 +1762,119 @@ mod tests {
         for h in handles {
             h.join().expect("cache worker joined");
         }
+    }
+
+    #[test]
+    fn concurrent_identical_winners_are_reused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        let cache = std::sync::Arc::new(cache);
+        let value = br#"{"v":"identical"}"#;
+        let mut handles = Vec::new();
+        for _ in 0..8usize {
+            let cache = cache.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut tx = cache.begin();
+                tx.stage_write(&key(9), false, value).unwrap();
+                let outcomes = tx.publish().unwrap();
+                // Every writer either created or reused the identical mapping.
+                for o in outcomes {
+                    assert!(matches!(
+                        o,
+                        CachePublishOutcome::Created | CachePublishOutcome::ReusedExisting
+                    ));
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(cache.get(&key(9)).as_deref(), Some(value.as_slice()));
+        assert_eq!(cache.debug_entry_count().0, 1);
+    }
+
+    #[test]
+    fn partial_publish_is_atomic_with_two_cacheable_ops() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        // Stage two entries, then publish: both become visible atomically.
+        let mut tx = cache.begin();
+        tx.stage_write(&key(1), false, br#"{"a":1}"#).unwrap();
+        tx.stage_write(&key(2), true, br#"{"b":2}"#).unwrap();
+        let outcomes = tx.publish().unwrap();
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(cache.get(&key(1)).as_deref(), Some(br#"{"a":1}"#.as_slice()));
+        assert_eq!(
+            cache.get_negative(&key(2)).as_deref(),
+            Some(br#"{"b":2}"#.as_slice())
+        );
+        assert_eq!(cache.debug_entry_count(), (1, 1));
+    }
+
+    #[test]
+    fn abort_leaves_nothing_reader_visible() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        let mut tx = cache.begin();
+        tx.stage_write(&key(1), false, br#"{"a":1}"#).unwrap();
+        tx.abort();
+        assert_eq!(cache.get(&key(1)), None);
+        assert_eq!(cache.debug_entry_count(), (0, 0));
+    }
+
+    #[test]
+    fn invalid_keys_are_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        // Path traversal / non-hex keys must never be staged or served.
+        assert!(cache.begin().stage_write("../evil", false, b"x").is_err());
+        assert_eq!(cache.get("../evil"), None);
+        assert_eq!(cache.get("short"), None);
+    }
+
+    #[test]
+    fn gc_reclaims_unreferenced_objects_after_grace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put(&key(1), br#"{"v":1}"#);
+        let digest = sha256_hex(br#"{"v":1}"#);
+        // Orphan object (never referenced by any manifest).
+        let orphan = sha256_hex(b"orphan");
+        std::fs::write(cache.objects_dir().join(&orphan), b"orphan").unwrap();
+        // Backdate the orphan so it is past the grace period.
+        let path = cache.objects_dir().join(&orphan);
+        let backdated = SystemTime::now() - Duration::from_secs(ORPHAN_GRACE.as_secs() + 10);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|f| f.set_modified(backdated))
+            .unwrap();
+        cache.enforce_lru();
+        assert!(!cache.objects_dir().join(&orphan).exists());
+        // The referenced object survives.
+        assert!(cache.objects_dir().join(&digest).exists());
+    }
+
+    #[test]
+    fn gc_sweeps_abandoned_temp_files_after_grace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = QueryCache::new(tmp.path());
+        cache.put(&key(1), br#"{"v":1}"#);
+        // A leftover temp from a "crashed" writer, backdated beyond the grace
+        // period: GC must sweep it.
+        let stale_tmp = cache.tmp_dir().join(format!("dead{TMP_MARKER}999-0"));
+        std::fs::write(&stale_tmp, b"partial").unwrap();
+        let backdated = SystemTime::now() - Duration::from_secs(2 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale_tmp)
+            .and_then(|f| f.set_modified(backdated))
+            .expect("backdate temp mtime");
+        // A fresh temp (a live concurrent writer) is NOT swept.
+        let fresh_tmp = cache.tmp_dir().join(format!("k{TMP_MARKER}999-1"));
+        std::fs::write(&fresh_tmp, b"in-flight").unwrap();
+        cache.enforce_lru();
+        assert!(!stale_tmp.exists(), "abandoned temp files are swept");
+        assert!(fresh_tmp.exists(), "live temp files are left alone");
     }
 }

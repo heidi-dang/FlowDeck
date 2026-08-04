@@ -12,6 +12,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "bun:test"
 import { execFileSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import {
   existsSync,
   mkdtempSync,
@@ -19,6 +20,7 @@ import {
   rmSync,
   writeFileSync,
   readdirSync,
+  readFileSync,
   statSync,
 } from "node:fs"
 import { tmpdir } from "node:os"
@@ -69,20 +71,103 @@ function freshGitProject(): string {
   return dir
 }
 
-/** Count cache files in one namespace across all worktrees under a state root. */
+/**
+ * Count committed cache mappings in one namespace ("query-cache" = positive,
+ * "negative-cache" = negative) across all worktrees under a state root, read
+ * from each worktree's v2 CURRENT generation manifest (a full snapshot).
+ */
 function namespaceEntryCount(stateRoot: string, namespace: string): number {
   const ns = join(stateRoot, "fdx-index")
   if (!existsSync(ns)) return 0
+  const wantNeg = namespace === "negative-cache"
   let count = 0
   for (const repo of readdirSync(ns)) {
     const repoDir = join(ns, repo)
     if (!statSync(repoDir).isDirectory()) continue
     for (const wt of readdirSync(repoDir)) {
-      const dir = join(repoDir, wt, namespace)
-      if (existsSync(dir)) count += readdirSync(dir).length
+      const wtDir = join(repoDir, wt)
+      if (!statSync(wtDir).isDirectory()) continue
+      const currentPath = join(wtDir, "query-cache-v2", "CURRENT")
+      if (!existsSync(currentPath)) continue
+      const seq = readFileSync(currentPath, "utf8").trim()
+      const manifestPath = join(wtDir, "query-cache-v2", "generations", `gen-${seq}.json`)
+      if (!existsSync(manifestPath)) continue
+      const m = JSON.parse(readFileSync(manifestPath, "utf8"))
+      const table = wantNeg ? m.negatives : m.positives
+      count += table ? Object.keys(table).length : 0
     }
   }
   return count
+}
+
+/**
+ * Recursively sort object keys, mirroring serde_json::Value::Object (BTreeMap)
+ * serialization used by the Rust `compute_integrity`: sorted at every level.
+ */
+function canonicalize(value: unknown): unknown {
+  if (value === null || typeof value !== "object") return value
+  if (Array.isArray(value)) return value.map(canonicalize)
+  const out: Record<string, unknown> = {}
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    out[key] = canonicalize((value as Record<string, unknown>)[key])
+  }
+  return out
+}
+
+/**
+ * Recompute the v2 generation-manifest integrity field for a manifest object,
+ * mirroring the Rust `compute_integrity` (sha256 of the compact canonical JSON
+ * of {base_generation, created_at, generation, negatives, positives,
+ * schema_version} with object keys sorted at every level).
+ */
+function recomputeIntegrity(m: {
+  schema_version: number
+  generation: number
+  base_generation: number | null
+  created_at: number
+  positives: Record<string, unknown>
+  negatives: Record<string, unknown>
+}): string {
+  const payload = JSON.stringify(
+    canonicalize({
+      base_generation: m.base_generation ?? null,
+      created_at: m.created_at,
+      generation: m.generation,
+      negatives: m.negatives,
+      positives: m.positives,
+      schema_version: m.schema_version,
+    }),
+  )
+  return createHash("sha256").update(payload, "utf8").digest("hex")
+}
+
+/** Backdate every negative entry in the CURRENT manifest beyond the TTL. */
+function backdateNegativeEntries(stateRoot: string): void {
+  const ns = join(stateRoot, "fdx-index")
+  if (!existsSync(ns)) return
+  for (const repo of readdirSync(ns)) {
+    const repoDir = join(ns, repo)
+    if (!statSync(repoDir).isDirectory()) continue
+    for (const wt of readdirSync(repoDir)) {
+      const wtDir = join(repoDir, wt)
+      if (!statSync(wtDir).isDirectory()) continue
+      const currentPath = join(wtDir, "query-cache-v2", "CURRENT")
+      if (!existsSync(currentPath)) continue
+      const seq = readFileSync(currentPath, "utf8").trim()
+      const manifestPath = join(wtDir, "query-cache-v2", "generations", `gen-${seq}.json`)
+      if (!existsSync(manifestPath)) continue
+      const m = JSON.parse(readFileSync(manifestPath, "utf8"))
+      const old = Math.floor(Date.now() / 1000) - 60
+      let touched = false
+      for (const key of Object.keys(m.negatives ?? {})) {
+        m.negatives[key].committed_at = old
+        touched = true
+      }
+      if (!touched) continue
+      m.integrity = recomputeIntegrity(m)
+      writeFileSync(manifestPath, JSON.stringify(m))
+    }
+  }
 }
 
 let conn: DaemonConnection
@@ -175,24 +260,11 @@ describe("FDX negative cache (daemon)", () => {
 
   it("expired negative entries are skipped (TTL re-runs the query)", async () => {
     if (!HAVE_DAEMON) return
-    // Backdate every negative entry beyond the 30s TTL, then re-query: the
-    // daemon must re-run instead of serving the expired entry. The result is
-    // still correct and a fresh negative entry replaces the expired one.
-    const ns = join(stateDir, "fdx-index")
-    for (const repo of readdirSync(ns)) {
-      const repoDir = join(ns, repo)
-      if (!statSync(repoDir).isDirectory()) continue
-      for (const wt of readdirSync(repoDir)) {
-        const dir = join(repoDir, wt, "negative-cache")
-        if (!existsSync(dir)) continue
-        for (const entry of readdirSync(dir)) {
-          const path = join(dir, entry)
-          const old = new Date(Date.now() - 60_000)
-          // Touch the file to a 60s-old mtime without changing content.
-          execFileSync("touch", ["-d", old.toISOString(), path])
-        }
-      }
-    }
+    // Backdate every negative entry's committed_at beyond the 30s TTL, then
+    // re-query: the daemon must re-run instead of serving the expired entry.
+    // The result is still correct and a fresh negative entry replaces the
+    // expired one.
+    backdateNegativeEntries(stateDir)
     const resp = asBatch(await conn.batch(grepOp("definitely-not-present"), projectDir))
     expect((resp.responses[0].result as { total_matches: number }).total_matches).toBe(0)
     // A fresh negative entry exists (written on this run).

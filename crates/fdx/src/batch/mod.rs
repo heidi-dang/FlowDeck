@@ -42,8 +42,8 @@ use crate::index::identity::{
 };
 use crate::index::paths::{index_state_root, worktree_dir};
 use crate::index::query_cache::{
-    canonical_json, configuration_fingerprint, query_cache_key, CacheTransaction, QueryCache,
-    BATCH_PROTOCOL_VERSION,
+    canonical_json, configuration_fingerprint, query_cache_key, CacheTransaction, OwnedTemp,
+    QueryCache, BATCH_PROTOCOL_VERSION,
 };
 use crate::index::{query_tests_for, IndexSnapshot};
 use crate::reader::code::cache::AstCache;
@@ -920,13 +920,18 @@ fn execute_batch_with_probe(
     //   Phase A — activate every artifact (ownership-aware: only CREATED
     //     artifacts are journaled for rollback; reused existing winners are
     //     never deleted).
-    //   Phase B — stage and commit ALL cache writes through a CacheTransaction
-    //     (LRU runs only after a successful commit; prior entries are restored
-    //     on failure).
+    //   Phase B — STAGE all cache writes privately (invisible content-
+    //     addressed objects; LRU runs only after a successful commit).
     //   Phase C — POST-ACTIVATION state probe: the repository may have changed
     //     during activation. If so, roll back every owned output and convert
     //     every provisional response to E_STALE_SNAPSHOT.
-    //   Only when all three phases succeed are responses finalized as success.
+    //   Phase C2 — revalidate EVERY referenced artifact as part of the commit
+    //     barrier, BEFORE cache publication (P1-2): a revalidation failure
+    //     must never be observable through committed cache entries.
+    //   Phase B2 — COMMIT all staged cache writes atomically (a single
+    //     generation flip): the final commit barrier. Everything fallible has
+    //     already happened; only LRU (best-effort GC) runs afterwards.
+    //   Only when all phases succeed are responses finalized as success.
     //   Any failure converts EVERY provisional operation to a stable error —
     //   no success response ever references a rolled-back output.
     let mut pendings: Vec<PendingActivation> = Vec::new();
@@ -997,31 +1002,12 @@ fn execute_batch_with_probe(
             }
         }
 
-        // Phase B2: publish the staged cache entries — only after the drift
-        // probe passed. Publication is a single ATOMIC hard-link per entry.
-        // On failure it records the publication error and every cleanup
-        // issue; the authoritative `failed` decision is recomputed AFTER this
-        // stage (P1-1) so a publish failure can never be followed by LRU or
-        // success responses.
-        let mut cache_publish_issues: Vec<String> = Vec::new();
-        if txn_error.is_none() && !post_activation_drift {
-            if let Some(tx) = cache_tx_holder.as_mut() {
-                match tx.publish() {
-                    Ok(_) => {}
-                    Err(f) => {
-                        txn_error = Some(f.message.clone());
-                        cache_publish_issues.extend(f.temp_cleanup_issues.clone());
-                    }
-                }
-            }
-        }
-
-        // Phase C2 (P1-3 + P1-2): revalidate EVERY referenced artifact AFTER
-        // cache publication — immediately before LRU and success responses.
-        // A final-validation failure is a TRANSACTION failure that converts
-        // every provisional response to a stable error; with deferred cache
-        // publication the batch is void and (on publish failure) partial
-        // entries were already rolled back by publish().
+        // Phase C2 (P1-3 + P1-2): revalidate EVERY referenced artifact as
+        // part of the commit barrier — BEFORE cache publication. A final-
+        // validation failure is a TRANSACTION failure that converts every
+        // provisional response to a stable error and must never be observed
+        // by readers through committed cache entries. With deferred cache
+        // publication the batch is void and nothing was published yet.
         let mut final_revalidation_error: Option<String> = None;
         if txn_error.is_none() && !post_activation_drift {
             for pending in pendings.iter() {
@@ -1040,6 +1026,28 @@ fn execute_batch_with_probe(
                             "artifact {ref_path} no longer valid at finalization"
                         ));
                         break;
+                    }
+                }
+            }
+        }
+
+        // Phase B2: COMMIT the staged cache entries — the final commit
+        // barrier (P1-2). Everything fallible (activation, drift probe,
+        // artifact revalidation) has already happened; publication is a
+        // single atomic generation flip that makes the whole batch visible or
+        // nothing at all (P1-1). On failure it records the publication error
+        // and every independent cleanup/durability issue; the authoritative
+        // `failed` decision is recomputed AFTER this stage so a publish
+        // failure can never be followed by LRU or success responses.
+        let mut cache_publish_issues: Vec<String> = Vec::new();
+        if txn_error.is_none() && !post_activation_drift {
+            if let Some(tx) = cache_tx_holder.as_mut() {
+                match tx.publish() {
+                    Ok(_) => {}
+                    Err(f) => {
+                        txn_error = Some(f.primary_error.clone());
+                        cache_publish_issues.extend(f.cleanup_issues.iter().cloned());
+                        cache_publish_issues.extend(f.durability_issues.iter().cloned());
                     }
                 }
             }
@@ -1080,9 +1088,8 @@ fn execute_batch_with_probe(
         // (a temp that could not be removed) is surfaced distinctly — never
         // described as a clean abort.
         let mut rollback_issues: Vec<String> = Vec::new();
-        // Consume the cache-publication report: `published_before_failure`
-        // counts the entries publish() attempted; its cleanup issues are part
-        // of the rollback evidence (P2-5 acceptance #13).
+        // Consume the cache-publication report: its cleanup/durability issues
+        // are part of the rollback evidence (P2-5 acceptance #13).
         rollback_issues.extend(cache_publish_issues.iter().cloned());
         if failed {
             for pending in pendings.iter() {
@@ -1782,7 +1789,9 @@ impl PreparedArtifact {
                 // A competing writer activated the final path first. Read and
                 // verify the winner before reuse; never clobber it.
                 let read = std::fs::read(&self.final_path);
-                let _ = self.discard();
+                // P2-3: the losing provisional temp must be removed; a removal
+                // failure is surfaced, never silently swallowed.
+                let discard_issue = self.discard().err();
                 match read {
                     Ok(existing)
                         if sha256_hex(&existing) == self.content_hash
@@ -1791,22 +1800,47 @@ impl PreparedArtifact {
                         // Identical content: reuse the winner. We do not own
                         // it, so it is never journaled for rollback. (The
                         // read + digest check above IS the P1-5 revalidation.)
-                        Ok(ActivationOutcome::ReusedExisting(
-                            self.final_path.to_string_lossy().into_owned(),
-                        ))
+                        if let Some(issue) = discard_issue {
+                            Err(format!(
+                                "reused identical artifact but provisional temp removal failed: {issue}"
+                            ))
+                        } else {
+                            Ok(ActivationOutcome::ReusedExisting(
+                                self.final_path.to_string_lossy().into_owned(),
+                            ))
+                        }
                     }
-                    Ok(_) => Err(format!(
-                        "artifact path already exists with different content: {}",
-                        self.final_path.display()
-                    )),
-                    Err(read_err) => Err(format!(
-                        "artifact winner exists but is unreadable: {read_err}"
-                    )),
+                    Ok(_) => {
+                        let mut msg = format!(
+                            "artifact path already exists with different content: {}",
+                            self.final_path.display()
+                        );
+                        if let Some(issue) = discard_issue {
+                            msg.push_str(&format!(
+                                "; provisional temp removal failed: {issue}"
+                            ));
+                        }
+                        Err(msg)
+                    }
+                    Err(read_err) => {
+                        let mut msg =
+                            format!("artifact winner exists but is unreadable: {read_err}");
+                        if let Some(issue) = discard_issue {
+                            msg.push_str(&format!(
+                                "; provisional temp removal failed: {issue}"
+                            ));
+                        }
+                        Err(msg)
+                    }
                 }
             }
             Err(e) => {
-                let _ = self.discard();
-                Err(format!("failed to publish artifact (no-clobber): {e}"))
+                let discard_issue = self.discard().err();
+                let mut msg = format!("failed to publish artifact (no-clobber): {e}");
+                if let Some(issue) = discard_issue {
+                    msg.push_str(&format!("; provisional temp removal failed: {issue}"));
+                }
+                Err(msg)
             }
         }
     }
@@ -1900,15 +1934,22 @@ fn prepare_artifact(final_path: &Path, bytes: &[u8]) -> Result<PreparedArtifact,
             .open(&temp_path)
         {
             Ok(mut file) => {
-                if let Err(e) = file.write_all(bytes) {
-                    let _ = std::fs::remove_file(&temp_path);
-                    return Err(format!("failed to write temp artifact: {e}"));
-                }
-                if let Err(e) = file.sync_all() {
-                    let _ = std::fs::remove_file(&temp_path);
-                    return Err(format!("failed to sync temp artifact: {e}"));
-                }
+                // P2-4: the temp is RAII-owned (removed even on panic) and a
+                // write/sync failure surfaces a temp-removal failure instead
+                // of silently swallowing it.
+                let mut owned = OwnedTemp::adopt(temp_path.clone());
+                let write_res = file.write_all(bytes).and_then(|_| file.sync_all());
                 drop(file);
+                if let Err(e) = write_res {
+                    let tmp_display = temp_path.display().to_string();
+                    return Err(match owned.remove() {
+                        Ok(()) => format!("failed to write temp artifact: {e}"),
+                        Err(ce) => format!(
+                            "failed to write temp artifact: {e}; also failed to remove temp {tmp_display}: {ce}"
+                        ),
+                    });
+                }
+                owned.disarm();
                 return Ok(PreparedArtifact {
                     temp_path,
                     final_path: final_path.to_path_buf(),
@@ -2794,23 +2835,30 @@ mod tests {
         }
     }
 
-    /// Number of cache files in a given namespace (`query-cache` or
-    /// `negative-cache`) under the given FDX_INDEX_DIR root.
+    /// Number of committed cache mappings (positive or negative) under the
+    /// given FDX_INDEX_DIR root, read from each worktree's CURRENT manifest.
+    /// The `namespace` marker selects the count: `NEGATIVE_CACHE_DIR` counts
+    /// negative mappings, anything else counts positive mappings.
     fn cache_entry_count_in(state_root: &std::path::Path, namespace: &str) -> usize {
         let qc = state_root.join(crate::index::paths::INDEX_NAMESPACE);
         if !qc.exists() {
             return 0;
         }
         let mut count = 0;
-        // <root>/fdx-index/<repo>/<worktree>/<namespace>/*
+        // <root>/fdx-index/<repo>/<worktree>/query-cache-v2/
         if let Ok(repos) = std::fs::read_dir(&qc) {
             for repo in repos.flatten() {
                 if let Ok(worktrees) = std::fs::read_dir(repo.path()) {
                     for wt in worktrees.flatten() {
-                        let dir = wt.path().join(namespace);
-                        count += std::fs::read_dir(&dir)
-                            .map(|e| e.flatten().count())
-                            .unwrap_or(0);
+                        let cache = crate::index::query_cache::QueryCache::new(&wt.path());
+                        let (pos, neg) = cache.debug_entry_count();
+                        count += if namespace
+                            == crate::index::query_cache::NEGATIVE_CACHE_DIR
+                        {
+                            neg
+                        } else {
+                            pos
+                        };
                     }
                 }
             }
@@ -4161,8 +4209,9 @@ mod tests {
     fn cache_transaction_immutable_publish_and_lru_deferral() {
         // Immutable cache entries (P1-1/P1-2/P2-2): staging is invisible,
         // abort cleans temps, identical-content publish REUSES the winner
-        // (never replaces, never restored), conflicting publish fails closed,
-        // and LRU runs only via enforce_lru().
+        // (never replaces, never restored), conflicting content REPLACES the
+        // mapping while the object store stays immutable, and LRU runs only
+        // via enforce_lru().
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
 
@@ -4227,21 +4276,27 @@ mod tests {
             assert!(cache.get("key-new").is_some());
         }
 
-        // Conflicting content at an existing key FAILS CLOSED — the existing
-        // winner is never replaced or clobbered (P1-1 no check-then-rename).
+        // Conflicting content at an existing key REPLACES the mapping: the
+        // object store stays immutable (content-addressed, no-clobber), so the
+        // prior object is never clobbered — it becomes an unreferenced orphan
+        // reclaimed by GC. The reader now sees the new content through the new
+        // generation pointer.
         {
             let mut tx = cache.begin();
             tx.stage_write("key-a", false, br#"{"k":"different"}"#)
                 .unwrap();
-            let res = tx.publish();
+            let outcomes = tx.publish().unwrap();
             assert!(
-                res.is_err(),
-                "conflicting same-key publish must fail closed"
+                matches!(
+                    outcomes.as_slice(),
+                    [crate::index::query_cache::CachePublishOutcome::Created]
+                ),
+                "conflicting content replaces the mapping (object stays immutable)"
             );
             assert_eq!(
                 cache.get("key-a").as_deref(),
-                Some(br#"{"k":"prior-bytes"}"#.as_slice()),
-                "the existing winner is untouched by a conflicting publish"
+                Some(br#"{"k":"different"}"#.as_slice()),
+                "the mapping now points at the new immutable object"
             );
         }
 
@@ -4253,7 +4308,7 @@ mod tests {
             tx.stage_write("key-dedup", false, br#"{"k":"v2"}"#)
                 .unwrap();
             tx.publish().unwrap();
-            let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
+            let leftovers: Vec<_> = std::fs::read_dir(cache.tmp_dir())
                 .map(|e| {
                     e.flatten()
                         .filter(|f| f.file_name().to_string_lossy().contains(".tmp-"))
@@ -4277,26 +4332,37 @@ mod tests {
 
         let mut tx = cache.begin();
         tx.stage_write("key-1", false, br#"{"k":"new-1"}"#).unwrap();
-        // Force the second entry's publish to fail by making its final path a
-        // non-empty DIRECTORY (hard-link onto it fails on every platform).
         tx.stage_write("key-2", false, br#"{"k":"new-2"}"#).unwrap();
-        let final2 = cache.query_dir().join("key-2");
-        std::fs::create_dir_all(&final2).unwrap();
-        std::fs::write(final2.join("blocker"), b"x").unwrap();
+        // Force the commit to fail by making the NEXT generation manifest path
+        // a non-empty DIRECTORY (rename onto it fails on every platform).
+        let blocked = cache.next_generation_path();
+        std::fs::create_dir_all(&blocked).unwrap();
+        std::fs::write(blocked.join("blocker"), b"x").unwrap();
 
         let res = tx.publish();
-        assert!(res.is_err(), "publish fails on the blocked entry");
-        // key-1 was Created before the failure. Under the immutable-objects
-        // model (P2-2), published cache finals are NEVER unlinked by pathname
-        // — a concurrent transaction may already have reused key-1 as its
-        // winner. The immutable entry remains as valid reusable data; the
-        // batch's responses (visibility metadata) are rolled back to errors.
-        assert!(
-            cache.query_dir().join("key-1").exists(),
-            "a created cache final remains as immutable reusable data (P2-2)"
+        assert!(res.is_err(), "publish fails on the blocked manifest path");
+        // No partial visibility (P1-2): CURRENT is never flipped, so neither
+        // staged key is reader-visible.
+        assert_eq!(
+            cache.get("key-1").as_deref(),
+            None,
+            "no partial visibility on publish failure"
+        );
+        assert_eq!(
+            cache.get("key-2").as_deref(),
+            None,
+            "no partial visibility on publish failure"
+        );
+        // The staged objects are content-addressed IMMUTABLE orphans (P2-2) —
+        // never unlinked by pathname; the failure report carries them.
+        let f = res.unwrap_err();
+        assert_eq!(
+            f.unpublished_objects.len(),
+            2,
+            "both staged objects are reported as unpublished"
         );
         // No staged temp files remain.
-        let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
+        let leftovers: Vec<_> = std::fs::read_dir(cache.tmp_dir())
             .map(|e| {
                 e.flatten()
                     .filter(|f| f.file_name().to_string_lossy().contains(".tmp-"))
@@ -4356,18 +4422,14 @@ mod tests {
             let bytes = format!(r#"{{"k":"{i}"}}"#);
             cache.put(&format!("key-{i}"), bytes.as_bytes());
         }
-        let before = std::fs::read_dir(cache.query_dir())
-            .map(|e| e.flatten().filter(|f| f.path().is_file()).count())
-            .unwrap_or(0);
+        let before = cache.debug_entry_count().0;
 
         // Stage + publish an extra entry WITHOUT running LRU: the count must
         // only grow by one (no eviction during publish).
         let mut tx = cache.begin();
         tx.stage_write("extra", false, br#"{"k":"extra"}"#).unwrap();
         tx.publish().unwrap();
-        let after_publish = std::fs::read_dir(cache.query_dir())
-            .map(|e| e.flatten().filter(|f| f.path().is_file()).count())
-            .unwrap_or(0);
+        let after_publish = cache.debug_entry_count().0;
         assert_eq!(
             after_publish,
             before + 1,
@@ -4376,9 +4438,7 @@ mod tests {
 
         // Explicit enforce_lru now trims to the bound.
         tx.enforce_lru();
-        let after_lru = std::fs::read_dir(cache.query_dir())
-            .map(|e| e.flatten().filter(|f| f.path().is_file()).count())
-            .unwrap_or(0);
+        let after_lru = cache.debug_entry_count().0;
         assert!(
             after_lru <= crate::index::query_cache::DEFAULT_MAX_ITEMS,
             "enforce_lru trims to the bound"
@@ -4563,43 +4623,45 @@ mod tests {
     #[test]
     fn incomplete_rollback_is_surfaced_distinctly() {
         // Audit P2-3/P2-5: a publish failure whose cleanup has issues must NOT
-        // be described as a clean abort. Cache entries are immutable and never
-        // replaced: a conflicting pre-existing entry fails closed, the Created
-        // entries are removed (no partial visibility, P1-2), and the
-        // PublishFailure report carries the cleanup evidence.
+        // be described as a clean abort. Cache objects are immutable and never
+        // unlinked by pathname: a publish failure leaves the pointer
+        // unflipped (no partial visibility, P1-2) and the staged objects as
+        // unreferenced orphans; the PublishFailure report carries them as the
+        // cleanup evidence.
         let tmp = tempfile::tempdir().unwrap();
         let cache = QueryCache::new(tmp.path());
         cache.put("key-1", br#"{"k":"prior-1"}"#);
 
         let mut tx = cache.begin();
-        // A fresh key created FIRST (before the conflict) so it is published.
+        // A fresh key staged FIRST (before the conflict) so it is published.
         tx.stage_write("key-0", false, br#"{"k":"new-0"}"#).unwrap();
-        // key-1 already exists with DIFFERENT content → immutable conflict:
-        // the existing winner is never replaced.
+        // key-1 already exists with DIFFERENT content → the mapping would be
+        // replaced (object store stays immutable).
         tx.stage_write("key-1", false, br#"{"k":"new-1"}"#).unwrap();
-        // Block key-2's final path so publish fails partway.
         tx.stage_write("key-2", false, br#"{"k":"new-2"}"#).unwrap();
-        let final2 = cache.query_dir().join("key-2");
-        std::fs::create_dir_all(&final2).unwrap();
-        std::fs::write(final2.join("blocker"), b"x").unwrap();
+        // Block the next generation manifest so publish fails partway.
+        let blocked = cache.next_generation_path();
+        std::fs::create_dir_all(&blocked).unwrap();
+        std::fs::write(blocked.join("blocker"), b"x").unwrap();
 
         let res = tx.publish();
         assert!(res.is_err(), "publish failure is reported, not suppressed");
-        // key-1's pre-existing winner is never replaced (immutable conflict).
+        // key-1's pre-existing mapping is untouched (CURRENT never flipped).
         assert_eq!(
             cache.get("key-1").as_deref(),
             Some(br#"{"k":"prior-1"}"#.as_slice()),
-            "a conflicting pre-existing winner is never replaced"
+            "a conflicting pre-existing mapping is never replaced on failure"
         );
-        // key-0 was Created before the failure. Under the immutable-objects
-        // model (P2-2) it remains as valid reusable data — never unlinked by
-        // pathname, because a concurrent transaction may have reused it.
-        assert!(
-            cache.query_dir().join("key-0").exists(),
-            "a created cache final remains as immutable reusable data (P2-2)"
+        // All three staged objects were never committed: the failure report
+        // carries them as unpublished (P2-2, immutable orphans).
+        let f = res.unwrap_err();
+        assert_eq!(
+            f.unpublished_objects.len(),
+            3,
+            "all staged objects are reported as unpublished"
         );
         // No staged temp leaked.
-        let leftovers: Vec<_> = std::fs::read_dir(cache.query_dir())
+        let leftovers: Vec<_> = std::fs::read_dir(cache.tmp_dir())
             .map(|e| {
                 e.flatten()
                     .filter(|f| f.file_name().to_string_lossy().contains(".tmp-"))
@@ -4616,10 +4678,11 @@ mod tests {
         // (b) leave LRU untouched, (c) produce no successful artifact
         // reference, and (d) surface cleanup findings as ROLLBACK INCOMPLETE.
         //
-        // We force Phase B2 to fail by blocking a cache key's final path with
-        // a non-empty DIRECTORY (hard-link onto it fails on every platform).
-        // The batch uses a cacheable over-budget op so both cache write and
-        // artifact paths are exercised.
+        // We force Phase B2 to fail by blocking the cache's NEXT generation
+        // manifest path with a non-empty DIRECTORY (rename onto it fails on
+        // every platform) — the atomic generation flip never happens, so the
+        // batch publishes nothing. The batch uses a cacheable over-budget op
+        // so both cache write and artifact paths are exercised.
         let _guard = CACHE_ENV_LOCK.lock().unwrap();
         let prev = std::env::var_os(crate::index::paths::INDEX_DIR_ENV);
 
@@ -4639,35 +4702,42 @@ mod tests {
                 serde_json::json!({ "file": "big.txt", "mode": "raw" }),
             )]
         };
-        // Run once to learn the cache key's final path, then block it.
+        // Run once to warm the cache, then corrupt the committed OBJECT and
+        // block the NEXT generation manifest. Corrupting the object forces
+        // the next batch to MISS (re-execute and stage a write-back); blocking
+        // the manifest path then makes Phase B2 publish fail atomically.
         let first = execute_batch(&ops(), Some(cwd), None, false).unwrap();
         assert!(first.responses[0].ok);
-        // Locate the single cache entry file and block its path with a dir.
+        // Locate the worktree's cache.
         let qc = state.path().join(crate::index::paths::INDEX_NAMESPACE);
-        let mut blocked_key: Option<PathBuf> = None;
+        let mut cache: Option<crate::index::query_cache::QueryCache> = None;
         if let Ok(repos) = std::fs::read_dir(&qc) {
             for repo in repos.flatten() {
                 if let Ok(wts) = std::fs::read_dir(repo.path()) {
                     for wt in wts.flatten() {
-                        let dir = wt.path().join(crate::index::query_cache::QUERY_CACHE_DIR);
-                        if let Ok(entries) = std::fs::read_dir(&dir) {
-                            for e in entries.flatten() {
-                                let p = e.path();
-                                if p.is_file() {
-                                    blocked_key = Some(p);
-                                }
-                            }
-                        }
+                        cache = Some(crate::index::query_cache::QueryCache::new(&wt.path()));
                     }
                 }
             }
         }
-        assert!(blocked_key.is_some(), "a cache entry exists after warm-up");
-        // Remove the entry file and put a non-empty DIRECTORY in its place so
-        // the next batch's hard-link fails (immutable conflict path: a
-        // directory is not a regular file and hard-linking onto it fails).
-        let blocked = blocked_key.unwrap();
-        std::fs::remove_file(&blocked).unwrap();
+        let cache = cache.expect("a cache exists after warm-up");
+        // Corrupt the committed object so the next batch misses the cache.
+        let mut removed = 0;
+        for entry in std::fs::read_dir(cache.objects_dir())
+            .expect("objects dir exists after warm-up")
+            .flatten()
+        {
+            let p = entry.path();
+            if p.is_file() {
+                std::fs::remove_file(&p).unwrap();
+                removed += 1;
+            }
+        }
+        assert!(removed > 0, "warm-up published at least one cache object");
+        // Make the next generation manifest path a non-empty DIRECTORY so the
+        // atomic manifest write fails (no partial visibility: CURRENT is never
+        // flipped).
+        let blocked = cache.next_generation_path();
         std::fs::create_dir_all(&blocked).unwrap();
         std::fs::write(blocked.join("blocker"), b"x").unwrap();
 

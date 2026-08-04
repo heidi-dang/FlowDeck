@@ -1456,8 +1456,11 @@ mod tests {
         let cache = crate::index::query_cache::QueryCache::new(&svc.state_dir());
         cache.put("k1", b"v1");
         cache.put_negative("k2", b"v2");
-        assert!(cache.query_dir().join("k1").exists());
-        assert!(cache.negative_dir().join("k2").exists());
+        assert_eq!(
+            cache.debug_entry_count(),
+            (1, 1),
+            "seeded positive and negative entries are committed"
+        );
 
         svc.invalidate().unwrap();
         assert!(
@@ -1466,9 +1469,11 @@ mod tests {
         );
         assert!(svc.store.persisted_generations().is_empty());
         assert_eq!(svc.store.current_generation().unwrap(), None);
-        // Both cache namespaces are cleared by invalidation.
-        assert!(!cache.query_dir().exists(), "positive cache cleared");
-        assert!(!cache.negative_dir().exists(), "negative cache cleared");
+        // The whole v2 cache root (plus legacy v1 namespaces) is cleared by
+        // invalidation — no committed mappings survive.
+        assert!(!cache.root_dir().exists(), "v2 cache root cleared");
+        assert!(!cache.query_dir().exists(), "legacy positive cache cleared");
+        assert!(!cache.negative_dir().exists(), "legacy negative cache cleared");
 
         // The next refresh rebuilds from scratch.
         let snap = svc.refresh(false).unwrap();
