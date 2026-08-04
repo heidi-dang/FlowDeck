@@ -734,7 +734,7 @@ await new Promise(() => {})
       expect(result).toBe(false)
       const cacheDir = getFdxCacheDir(target)
       expect(existsSync(cacheDir)).toBe(false)
-    })
+    }, { timeout: 30000 })
 
     it("validates binaries at paths containing spaces (shell-free execution)", () => {
       const target = detectFdxTarget()
@@ -1504,7 +1504,7 @@ console.log("RESULT:" + JSON.stringify({ source: res?.source ?? null, isLocalDev
       } finally {
         setFdxPreExecTestHook(null)
       }
-    })
+    }, { timeout: 30000 })
 
     it("Contract1/P2-1: structured cleanup preserves both primary and cleanup failures", () => {
       const target = detectFdxTarget()

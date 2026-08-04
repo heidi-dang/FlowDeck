@@ -92,7 +92,7 @@ describe("FDX Native Distribution & Binary Resolver", () => {
       expect(val.version).toBe("1.0.4")
     }
     expect(val.checksumStatus).toBe("pass")
-  })
+  }, { timeout: 30000 })
 
   it("validateFdxBinaryPath rejects checksum mismatch", () => {
     const binName = process.platform === "win32" ? "fdx.exe" : "fdx"

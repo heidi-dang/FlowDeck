@@ -789,7 +789,11 @@ export function validateFdxBinaryPath(binPath: string, expectedDir?: string, req
     // sources the opened generation is the one whose probe output is accepted.
     // The executed generation's digest becomes the authoritative validated
     // digest — captured BEFORE the probe runs (unmanaged trust order).
-    const execRes = executeVerifiedSnapshot(binPath, ["--version"], validatedSha, { timeout: 10000 })
+    // The probe bound matches the command bound: on Windows, Defender scans
+    // each freshly materialized payload executable, and the first spawn of a
+    // real binary can take seconds — a bounded upper limit, not a trust
+    // relaxation (real spawns complete in milliseconds).
+    const execRes = executeVerifiedSnapshot(binPath, ["--version"], validatedSha, { timeout: 30000 })
     if (execRes.kind === "executed") {
       const match = execRes.out.match(/fdx\s+v?([0-9]+\.[0-9]+\.[0-9]+)/i) || execRes.out.match(/v?([0-9]+\.[0-9]+\.[0-9]+)/)
       if (match && match[1]) {
