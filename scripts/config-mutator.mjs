@@ -13,7 +13,100 @@
 
 import { readFileSync, writeFileSync, existsSync, renameSync, unlinkSync, readdirSync, copyFileSync, mkdirSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
-import { modify, applyEdits, parse } from "jsonc-parser";
+
+// jsonc-parser is an optional runtime dependency: it is used when installed
+// (npm-installed layouts) and a comment/trailing-comma stripping fallback is
+// used when it is not (bare extracted tarballs, so `node bin/flowdeck.js
+// doctor` works with zero external dependencies). Top-level await keeps the
+// import resilient without blocking the rest of the module graph.
+let jsonc = null;
+try {
+  jsonc = await import("jsonc-parser");
+} catch {
+  jsonc = null;
+}
+
+/**
+ * Strip `//` line comments and `/* ... *​/` block comments from JSONC content
+ * without touching comments inside string literals. Only used when
+ * jsonc-parser is unavailable.
+ */
+function stripComments(input) {
+  let out = "";
+  let inString = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    const next = input[i + 1];
+    if (inLineComment) {
+      if (ch === "\n") {
+        inLineComment = false;
+        out += ch;
+      }
+      continue;
+    }
+    if (inBlockComment) {
+      if (ch === "*" && next === "/") {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (inString) {
+      out += ch;
+      if (ch === "\\") {
+        out += next ?? "";
+        i++;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
+ * Parse JSONC content (jsonc-parser when installed, comment-stripping
+ * fallback otherwise).
+ */
+function parseJsonc(content) {
+  if (jsonc) {
+    const errors = [];
+    const data = jsonc.parse(content, errors, { allowTrailingComma: true });
+    return { data, errors };
+  }
+  const stripped = stripComments(content);
+  const errors = [];
+  let data;
+  try {
+    // Trailing commas are valid JSONC but invalid JSON — remove them for the
+    // fallback path only.
+    data = JSON.parse(stripped.replace(/,(\s*[}\]])/g, "$1"));
+  } catch (err) {
+    errors.push({ error: 0, offset: 0, length: 0 });
+    data = undefined;
+    void err;
+  }
+  return { data, errors };
+}
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -52,8 +145,7 @@ export function safeParseConfig(content) {
   }
 
   try {
-    const errors = [];
-    const data = parse(content, errors, { allowTrailingComma: true });
+    const { data, errors } = parseJsonc(content);
 
     if (errors.length > 0) {
       const detail = errors
@@ -150,9 +242,15 @@ export function applyJsoncEdits(rawContent, edits) {
       throw new Error(`applyJsoncEdits: edit at index ${i} has an empty path`);
     }
 
-    content = applyEdits(
+    if (!jsonc) {
+      throw new Error(
+        "applyJsoncEdits requires the 'jsonc-parser' package; run npm install in the FlowDeck package",
+      );
+    }
+
+    content = jsonc.applyEdits(
       content,
-      modify(content, edit.path, edit.value, {
+      jsonc.modify(content, edit.path, edit.value, {
         formattingOptions: FORMATTING_OPTIONS,
       }),
     );
