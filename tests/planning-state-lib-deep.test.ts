@@ -24,7 +24,7 @@ import {
   retryTransient,
   renameWithSharingRetry,
 } from "../src/tools/planning-state-lib"
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs"
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 
@@ -151,7 +151,9 @@ describe("Planning State Lib Deep Unit Tests", () => {
 
 describe("Legacy planning migration Windows-safety helpers", () => {
   it("releaseCwdPinIfInside moves the process cwd out of the legacy dir", () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "plan-mig-cwd-"))
+    // realpathSync resolves the temp root (macOS /var → /private/var) so the
+    // expected paths match what process.cwd() returns after chdir.
+    const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "plan-mig-cwd-")))
     const root = join(tempRoot, ".fd-plan")
     const legacyDir = join(root, "my-app")
     mkdirSync(legacyDir, { recursive: true })
@@ -170,7 +172,7 @@ describe("Legacy planning migration Windows-safety helpers", () => {
   })
 
   it("releaseCwdPinIfInside leaves cwd untouched when outside the legacy dir", () => {
-    const tempRoot = mkdtempSync(join(tmpdir(), "plan-mig-cwd2-"))
+    const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "plan-mig-cwd2-")))
     const root = join(tempRoot, ".fd-plan")
     mkdirSync(root, { recursive: true })
 
