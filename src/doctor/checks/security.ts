@@ -19,6 +19,11 @@ async function probeSecretRedaction(directory: string): Promise<{ ok: boolean; d
   const probeInput = "leaked " + "npm_" + "a".repeat(40) + " token"
   const candidates: Array<{ name: string; url: string }> = []
   try {
+    // Standalone doctor bundle — shipped in dist of every install, node-importable.
+    const p = resolve(directory, "dist", "doctor", "doctor.js")
+    if (existsSync(p)) candidates.push({ name: "dist/doctor/doctor.js", url: pathToFileURL(p).href })
+  } catch { /* ignore */ }
+  try {
     const p = resolve(directory, "dist", "tools", "fdx-shared.js")
     if (existsSync(p)) candidates.push({ name: "dist/tools/fdx-shared.js", url: pathToFileURL(p).href })
   } catch { /* ignore */ }

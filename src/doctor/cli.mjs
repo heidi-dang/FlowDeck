@@ -162,13 +162,24 @@ function runViaBunInline(options) {
 }
 
 async function runDoctorEngine(options) {
-  // Try 1: Run via bun (development mode — faster iteration)
-  if (hasBun()) {
-    return runViaBunInline(options)
+  // Try 1: Standalone compiled doctor bundle (node-compatible, zero deps).
+  // Shipped in dist/ of every install — this is what packaged/extracted
+  // layouts must use, since dist/index.js is a bun-only bundle.
+  const { existsSync } = await import("node:fs")
+  const doctorDistPath = join(PKG_ROOT, "dist", "doctor", "doctor.js")
+  if (existsSync(doctorDistPath)) {
+    try {
+      const doctorDistUrl = pathToFileURL(doctorDistPath).href
+      const doctorMod = await import(doctorDistUrl)
+      if (typeof doctorMod.runDoctor === "function") {
+        return await doctorMod.runDoctor(PKG_ROOT, options)
+      }
+    } catch (err) {
+      console.error(`[doctor] standalone bundle failed (${err.message}); falling back`)
+    }
   }
 
-  // Try 2: Compiled dist (packaged npm install)
-  const { existsSync } = await import("node:fs")
+  // Try 2: Compiled dist bundle (packaged npm install, bun runtime)
   const distPath = join(PKG_ROOT, "dist", "index.js")
   if (existsSync(distPath)) {
     try {
@@ -179,6 +190,17 @@ async function runDoctorEngine(options) {
       }
     } catch {
       // Fall through
+    }
+  }
+
+  // Try 3: Run via bun (development mode — faster iteration)
+  if (hasBun()) {
+    try {
+      return await runViaBunInline(options)
+    } catch (err) {
+      throw new Error(
+        `Doctor engine failed via bun inline engine: ${err.message}`
+      )
     }
   }
 

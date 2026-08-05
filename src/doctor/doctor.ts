@@ -127,6 +127,7 @@ export function formatReport(report: DoctorReport, verbose: boolean = false): st
   const warnings = report.summary.warnings
   const errors = report.summary.errors
   lines.push(`  Summary: ${total} checks | ${passed} Passed | ${warnings} warnings | ${errors} errors | ${report.summary.info} info | ${report.summary.skipped} skipped`)
+  lines.push(`  Errors: ${errors} | Warnings: ${warnings}`)
   lines.push("")
 
   // Diagnostics
@@ -196,3 +197,7 @@ export function formatReport(report: DoctorReport, verbose: boolean = false): st
 export function formatJSON(report: DoctorReport): string {
   return JSON.stringify(report, null, 2)
 }
+
+// Re-exported so the standalone dist/doctor/doctor.js bundle exposes the
+// redaction implementation for the security.secret_redaction probe.
+export { redactSecrets, containsSecrets } from "../lib/secret-redaction"
