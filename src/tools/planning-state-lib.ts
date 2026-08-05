@@ -69,6 +69,70 @@ function copyDirRecursiveSync(src: string, dest: string): void {
 }
 
 /**
+ * On Windows a process cannot rename a directory that is its own current
+ * working directory (the OS raises a sharing violation, EBUSY in Node). The
+ * fdx-context / fdx-decisions tools can run with cwd inside the legacy
+ * planning directory, so before renaming that directory the process cwd must
+ * be moved elsewhere. Mirrors `crates/fdx/src/paths.rs:release_cwd_pin`.
+ * Exported for cross-runtime parity tests.
+ */
+export function releaseCwdPinIfInside(root: string, legacyDir: string): void {
+  const cwd = process.cwd()
+  if (cwd === legacyDir || cwd.startsWith(legacyDir + "/") || cwd.startsWith(legacyDir + "\\")) {
+    try {
+      process.chdir(root)
+    } catch {
+      // Best effort — if chdir fails the rename will fail loudly below.
+    }
+  }
+}
+
+/**
+ * Bounded retry for transient Windows sharing violations (EBUSY is how Node
+ * surfaces ERROR_SHARING_VIOLATION). `classify` decides which errors are
+ * retried; everything else propagates immediately. Backoff doubles per
+ * attempt. Mirrors `crates/fdx/src/paths.rs:retry_sharing_violation`.
+ * Exported for cross-runtime parity tests.
+ */
+export function retryTransient<T>(
+  maxAttempts: number,
+  backoffMs: number,
+  classify: (err: unknown) => boolean,
+  op: () => T,
+): { value: T; attempts: number } {
+  const attempts = Math.max(1, maxAttempts)
+  const sleeper = new Int32Array(new SharedArrayBuffer(4))
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return { value: op(), attempts: attempt }
+    } catch (err) {
+      if (!classify(err)) throw err
+      lastErr = err
+      if (attempt < attempts) {
+        Atomics.wait(sleeper, 0, 0, backoffMs * 2 ** (attempt - 1))
+      }
+    }
+  }
+  throw lastErr
+}
+
+/**
+ * Rename with bounded retry for transient Windows sharing violations.
+ * Permission denial (EPERM) and every other error is returned immediately.
+ * Mirrors `crates/fdx/src/paths.rs:rename_with_sharing_retry`. Exported for
+ * cross-runtime parity tests.
+ */
+export function renameWithSharingRetry(src: string, dst: string): void {
+  retryTransient(
+    5,
+    25,
+    (err) => process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EBUSY",
+    () => renameSync(src, dst),
+  )
+}
+
+/**
  * Global planning root for a project.
  *
  * Planning artifacts live outside the repo at `~/.fd-plan/<project-id>/` so
@@ -84,13 +148,13 @@ export function planningDir(directory: string): string {
   const name = basename(resolvedPath)
   const legacyDir = join(root, name)
 
-  const needsMigration = existsSync(legacyDir) &&
-                         existsSync(join(legacyDir, "STATE.md")) &&
-                         (!existsSync(newDir) || !existsSync(join(newDir, "STATE.md")))
+  const legacyReady = existsSync(legacyDir) && existsSync(join(legacyDir, "STATE.md"))
+  const newDirComplete = existsSync(newDir) && existsSync(join(newDir, "STATE.md"))
 
-  if (needsMigration) {
+  if (legacyReady && !newDirComplete) {
     const ts = Date.now()
     const tmpDir = join(root, `${id}.tmp.${ts}`)
+    let migrationFailed: Error | null = null
     try {
       copyDirRecursiveSync(legacyDir, tmpDir)
 
@@ -98,6 +162,10 @@ export function planningDir(directory: string): string {
       if (!existsSync(tmpStateFile)) {
         throw new Error("Migration validation failed: STATE.md missing in destination")
       }
+
+      // Release any cwd pin into the legacy directory before it is renamed
+      // (Windows sharing violation otherwise).
+      releaseCwdPinIfInside(root, legacyDir)
 
       if (!existsSync(newDir)) {
         renameSync(tmpDir, newDir)
@@ -108,12 +176,36 @@ export function planningDir(directory: string): string {
 
       const backupDir = join(root, `${name}.bak.${ts}`)
       try {
-        renameSync(legacyDir, backupDir)
-      } catch {}
-    } catch {
-      if (existsSync(tmpDir)) {
-        try { rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+        renameWithSharingRetry(legacyDir, backupDir)
+      } catch (e) {
+        // Destination is already active; leaving the legacy dir behind is
+        // recoverable (planningDir retries the backup on the next call).
+        migrationFailed = e as Error
       }
+    } catch (e) {
+      migrationFailed = e as Error
+      if (existsSync(tmpDir)) {
+        try {
+          rmSync(tmpDir, { recursive: true, force: true })
+        } catch (cleanupErr) {
+          console.error(`[planning-state] failed to clean up migration tmp dir ${tmpDir}:`, cleanupErr)
+        }
+      }
+    }
+    if (migrationFailed) {
+      console.error(`[planning-state] legacy planning migration for ${legacyDir} did not fully complete:`, migrationFailed)
+    }
+  } else if (legacyReady && newDirComplete && existsSync(legacyDir)) {
+    // AlreadyMigrated cleanup: the destination is active but a previous run's
+    // legacy backup was interrupted. Retry the backup rename on each call so
+    // the leftover legacy dir is eventually cleared.
+    releaseCwdPinIfInside(root, legacyDir)
+    const ts = Date.now()
+    const backupDir = join(root, `${name}.bak.${ts}`)
+    try {
+      renameWithSharingRetry(legacyDir, backupDir)
+    } catch (e) {
+      console.error(`[planning-state] failed to back up legacy planning dir ${legacyDir}:`, e)
     }
   }
 

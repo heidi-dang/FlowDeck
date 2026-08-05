@@ -155,6 +155,80 @@ fn count_dir_entries(dir: &Path) -> std::io::Result<usize> {
     Ok(count)
 }
 
+/// Number of retry attempts for transient Windows sharing violations.
+const RENAME_SHARING_RETRY_ATTEMPTS: usize = 5;
+
+/// Retry a fallible operation when (and only when) `classify` reports a
+/// transient Windows sharing violation. Antivirus scanners and indexers can
+/// transiently hold a directory open for a few hundred milliseconds; every
+/// other error — including `ERROR_ACCESS_DENIED` (5) — is returned
+/// immediately without retry. `backoff_ms` is the initial delay; each retry
+/// doubles it (deterministic, bounded). On success returns the number of
+/// attempts used.
+fn retry_sharing_violation<T>(
+    attempts: usize,
+    backoff_ms: u64,
+    classify: impl Fn(&std::io::Error) -> bool,
+    mut f: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<(T, usize)> {
+    let attempts = attempts.max(1);
+    let mut last_err: Option<std::io::Error> = None;
+    for attempt in 1..=attempts {
+        match f() {
+            Ok(value) => return Ok((value, attempt)),
+            Err(e) => {
+                if !classify(&e) {
+                    return Err(e);
+                }
+                last_err = Some(e);
+                if attempt < attempts {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        backoff_ms << (attempt - 1),
+                    ));
+                }
+            }
+        }
+    }
+    Err(last_err.map_or_else(
+        || std::io::Error::other("operation failed"),
+        |e| std::io::Error::new(e.kind(), format!("{e} (after {attempts} retry attempts)")),
+    ))
+}
+
+/// True only on Windows for `ERROR_SHARING_VIOLATION` (os error 32).
+fn is_windows_sharing_violation(e: &std::io::Error) -> bool {
+    cfg!(windows) && e.raw_os_error() == Some(32)
+}
+
+/// Rename `src` to `dst`, retrying bounded times on Windows sharing
+/// violations only. On POSIX this is a plain rename. The returned `usize` is
+/// the number of attempts used on success.
+fn rename_with_sharing_retry(src: &Path, dst: &Path) -> std::io::Result<usize> {
+    retry_sharing_violation(
+        RENAME_SHARING_RETRY_ATTEMPTS,
+        25,
+        is_windows_sharing_violation,
+        || std::fs::rename(src, dst),
+    )
+    .map(|((), attempts)| attempts)
+}
+
+/// On Windows a process cannot rename (or delete) a directory that is its own
+/// current working directory — the OS refuses with `ERROR_SHARING_VIOLATION`
+/// (os error 32). The fdx `context`/`decisions` commands run with their cwd set
+/// to the legacy planning directory, so before any rename of that directory the
+/// process cwd must be moved elsewhere. On POSIX this is a no-op (renaming your
+/// own cwd is allowed), but performing it everywhere keeps behavior identical
+/// across platforms.
+fn release_cwd_pin(root: &Path, legacy_dir: &Path) {
+    let Ok(cwd) = std::env::current_dir() else {
+        return;
+    };
+    if cwd.starts_with(legacy_dir) {
+        let _ = std::env::set_current_dir(root);
+    }
+}
+
 /// Migrate legacy planning state from `~/.fd-plan/<legacy_name>/` to `~/.fd-plan/<project_slug>/`.
 /// Returns a migration result indicating success, no-op, or failure reason.
 pub fn migrate_legacy_planning_dir(
@@ -165,6 +239,13 @@ pub fn migrate_legacy_planning_dir(
     let root = home.join(".fd-plan");
     let new_dir = root.join(project_slug);
     let legacy_dir = root.join(legacy_name);
+
+    // The caller may have started this process with cwd inside the legacy
+    // directory (the fdx context/decisions commands do exactly that). Windows
+    // will refuse to rename that directory while it is our own cwd, so release
+    // the pin before any rename. Also makes the later renames deterministic on
+    // every platform.
+    release_cwd_pin(&root, &legacy_dir);
 
     // 1. Nothing to migrate if legacy_dir does not exist
     if !legacy_dir.exists() || !legacy_dir.is_dir() {
@@ -184,7 +265,7 @@ pub fn migrate_legacy_planning_dir(
     // when a plugin loop rapidly recreates the legacy path within the same ms.
     if new_dir.exists() && new_dir.join("STATE.md").exists() {
         let backup_dir = get_unique_backup_dir(&root, legacy_name, now_ms);
-        std::fs::rename(&legacy_dir, &backup_dir).map_err(|e| {
+        rename_with_sharing_retry(&legacy_dir, &backup_dir).map_err(|e| {
             MigrationError::RenameFailed(legacy_dir.clone(), backup_dir, e.to_string())
         })?;
         return Ok(MigrationResult::AlreadyMigrated);
@@ -230,17 +311,26 @@ pub fn migrate_legacy_planning_dir(
             ));
         }
 
+        // Durability: flush copied files (done above) and the tmp directory
+        // entry so the completed destination survives a crash before activation.
+        sync_directory(&tmp_dir).map_err(|e| {
+            MigrationError::ValidationFailed(
+                tmp_dir.clone(),
+                format!("failed to sync temporary destination: {e}"),
+            )
+        })?;
+
         // If new_dir exists but is incomplete, move it to a recovery backup first
         if new_dir.exists() {
             let recovery_dir =
                 get_unique_backup_dir(&root, &format!("{}.incomplete", project_slug), now_ms);
-            std::fs::rename(&new_dir, &recovery_dir).map_err(|e| {
+            rename_with_sharing_retry(&new_dir, &recovery_dir).map_err(|e| {
                 MigrationError::RenameFailed(new_dir.clone(), recovery_dir, e.to_string())
             })?;
         }
 
         // Atomically rename completed temporary directory into place
-        std::fs::rename(&tmp_dir, &new_dir).map_err(|e| {
+        rename_with_sharing_retry(&tmp_dir, &new_dir).map_err(|e| {
             MigrationError::RenameFailed(tmp_dir.clone(), new_dir.clone(), e.to_string())
         })?;
 
@@ -254,7 +344,7 @@ pub fn migrate_legacy_planning_dir(
 
         // Rename legacy directory to timestamped backup only AFTER destination validation
         let backup_dir = get_unique_backup_dir(&root, legacy_name, now_ms);
-        std::fs::rename(&legacy_dir, &backup_dir).map_err(|e| {
+        rename_with_sharing_retry(&legacy_dir, &backup_dir).map_err(|e| {
             MigrationError::RenameFailed(legacy_dir.clone(), backup_dir, e.to_string())
         })?;
 
@@ -302,11 +392,29 @@ fn copy_dir_recursive_count(src: &Path, dst: &Path) -> std::io::Result<usize> {
         if ty.is_dir() {
             count += copy_dir_recursive_count(&entry.path(), &dest_path)?;
         } else {
-            std::fs::copy(entry.path(), dest_path)?;
+            let mut fin = std::fs::File::open(entry.path())?;
+            let mut fout = std::fs::File::create(&dest_path)?;
+            std::io::copy(&mut fin, &mut fout)?;
+            // fsync each copied file so the temporary destination is durable
+            // before it is activated by rename.
+            fout.sync_all()?;
             count += 1;
         }
     }
     Ok(count)
+}
+
+/// fsync a directory entry so a completed copy survives a crash. Windows does
+/// not allow opening directories with `File::open`, so this is a no-op there
+/// (Windows flushes metadata through the per-file `sync_all` above).
+#[cfg(unix)]
+fn sync_directory(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -457,5 +565,282 @@ mod tests {
             p.to_str().unwrap(),
             "/home/test/.fd-plan/myproj/my-topic/context.md"
         );
+    }
+
+    // ── Legacy migration ────────────────────────────────────────────────
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static MIG_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    fn unique_tmp(name: &str) -> PathBuf {
+        let n = MIG_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let pid = std::process::id();
+        std::env::temp_dir().join(format!("fdx-mig-unit-{name}-{pid}-{n}"))
+    }
+
+    fn write(path: &Path, content: &str) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
+    fn seed_legacy(root: &Path, name: &str) -> PathBuf {
+        let legacy = root.join(".fd-plan").join(name);
+        write(&legacy.join("STATE.md"), "# State\n");
+        write(&legacy.join("topic-1").join("context.md"), "# Context\n");
+        write(&legacy.join("topic-2").join("plan.md"), "# Plan\n");
+        legacy
+    }
+
+    fn dir_entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn migrate_moves_nested_legacy_to_slug_with_single_backup() {
+        let home = unique_tmp("ok");
+        let legacy = seed_legacy(&home, "my-app");
+        let slug = "my-app-12345678";
+
+        let result = migrate_legacy_planning_dir(&home, slug, "my-app").unwrap();
+        assert_eq!(result, MigrationResult::Migrated { entries: 3 });
+
+        let new_dir = home.join(".fd-plan").join(slug);
+        assert!(new_dir.join("STATE.md").exists());
+        assert!(new_dir.join("topic-1").join("context.md").exists());
+        assert!(!legacy.exists(), "legacy dir must be renamed away");
+
+        let plan_names = dir_entries(&home.join(".fd-plan"));
+        let backups: Vec<&String> = plan_names
+            .iter()
+            .filter(|n| n.starts_with("my-app.bak."))
+            .collect();
+        assert_eq!(backups.len(), 1, "exactly one backup: {plan_names:?}");
+        assert!(home
+            .join(".fd-plan")
+            .join(backups[0])
+            .join("STATE.md")
+            .exists());
+        let tmp_left: Vec<&String> = plan_names.iter().filter(|n| n.contains(".tmp.")).collect();
+        assert!(tmp_left.is_empty(), "no tmp dirs left: {plan_names:?}");
+    }
+
+    #[test]
+    fn migrate_missing_state_returns_error_and_leaves_no_partial_output() {
+        let home = unique_tmp("missing-state");
+        let root = home.join(".fd-plan");
+        std::fs::create_dir_all(root.join("my-app")).unwrap();
+        std::fs::write(root.join("my-app").join("junk.txt"), "no state").unwrap();
+
+        let err = migrate_legacy_planning_dir(&home, "slug-00000000", "my-app").unwrap_err();
+        assert!(matches!(err, MigrationError::MissingState(_)), "{err}");
+
+        let plan_names = dir_entries(&root);
+        let tmp_left: Vec<&String> = plan_names.iter().filter(|n| n.contains(".tmp.")).collect();
+        assert!(tmp_left.is_empty(), "no partial output: {plan_names:?}");
+    }
+
+    #[test]
+    fn migrate_is_idempotent_on_second_run() {
+        let home = unique_tmp("idempotent");
+        let legacy = seed_legacy(&home, "my-app");
+        let slug = "my-app-12345678";
+
+        migrate_legacy_planning_dir(&home, slug, "my-app").unwrap();
+
+        // Simulate a plugin loop recreating the legacy dir.
+        std::fs::create_dir_all(&legacy).unwrap();
+        write(&legacy.join("STATE.md"), "# State\n");
+
+        let result = migrate_legacy_planning_dir(&home, slug, "my-app").unwrap();
+        assert_eq!(result, MigrationResult::AlreadyMigrated);
+
+        let plan_names = dir_entries(&home.join(".fd-plan"));
+        let backups: Vec<&String> = plan_names
+            .iter()
+            .filter(|n| n.starts_with("my-app.bak."))
+            .collect();
+        assert_eq!(
+            backups.len(),
+            2,
+            "first run + recreated legacy: {plan_names:?}"
+        );
+        assert!(!legacy.exists(), "recreated legacy must be backed up too");
+    }
+
+    #[test]
+    fn migrate_preserves_incomplete_destination_as_recovery_backup() {
+        let home = unique_tmp("incomplete-dest");
+        seed_legacy(&home, "my-app");
+        let slug = "my-app-12345678";
+
+        // Simulate a previous interrupted run: destination exists but incomplete.
+        write(&home.join(".fd-plan").join(slug).join("partial.txt"), "x");
+
+        let result = migrate_legacy_planning_dir(&home, slug, "my-app").unwrap();
+        assert_eq!(result, MigrationResult::Migrated { entries: 3 });
+
+        let plan_names = dir_entries(&home.join(".fd-plan"));
+        let recovery: Vec<&String> = plan_names
+            .iter()
+            .filter(|n| n.contains(".incomplete.bak."))
+            .collect();
+        assert_eq!(
+            recovery.len(),
+            1,
+            "incomplete destination preserved: {plan_names:?}"
+        );
+        assert!(home.join(".fd-plan").join(slug).join("STATE.md").exists());
+    }
+
+    #[test]
+    fn migrate_handles_unicode_spaces_and_shell_metacharacters() {
+        let home = unique_tmp("special-chars");
+        let legacy_name = "my app & repo (über) [v2]";
+        seed_legacy(&home, legacy_name);
+        let slug = "slug-00000000";
+
+        migrate_legacy_planning_dir(&home, slug, legacy_name).unwrap();
+
+        let plan_names = dir_entries(&home.join(".fd-plan"));
+        let backups: Vec<&String> = plan_names
+            .iter()
+            .filter(|n| n.starts_with("my app & repo (über) [v2].bak."))
+            .collect();
+        assert_eq!(backups.len(), 1, "{plan_names:?}");
+    }
+
+    #[test]
+    fn migrate_after_interruption_at_destination_activation_is_recoverable() {
+        // Interruption point: destination activated (complete) but legacy
+        // backup rename never happened. Next run must take the AlreadyMigrated
+        // path and back the legacy dir up without duplicating the destination.
+        let home = unique_tmp("interrupted");
+        let legacy = seed_legacy(&home, "my-app");
+        let slug = "my-app-12345678";
+
+        write(
+            &home.join(".fd-plan").join(slug).join("STATE.md"),
+            "# State\n",
+        );
+        write(
+            &home
+                .join(".fd-plan")
+                .join(slug)
+                .join("topic-1")
+                .join("context.md"),
+            "# C\n",
+        );
+
+        let result = migrate_legacy_planning_dir(&home, slug, "my-app").unwrap();
+        assert_eq!(result, MigrationResult::AlreadyMigrated);
+        assert!(!legacy.exists());
+
+        let plan_names = dir_entries(&home.join(".fd-plan"));
+        let backups: Vec<&String> = plan_names
+            .iter()
+            .filter(|n| n.starts_with("my-app.bak."))
+            .collect();
+        assert_eq!(backups.len(), 1, "{plan_names:?}");
+    }
+
+    // ── Sharing-violation retry ─────────────────────────────────────────
+
+    #[test]
+    fn retry_succeeds_after_transient_sharing_violations() {
+        let mut calls = 0;
+        let (value, attempts) = retry_sharing_violation(
+            5,
+            1,
+            |_| true,
+            || -> std::io::Result<&str> {
+                calls += 1;
+                if calls < 3 {
+                    Err(std::io::Error::from_raw_os_error(32))
+                } else {
+                    Ok("done")
+                }
+            },
+        )
+        .unwrap();
+        assert_eq!(value, "done");
+        assert_eq!(attempts, 3);
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn retry_does_not_retry_permission_denial() {
+        let mut calls = 0;
+        // Classifier as it would behave on Windows: retry only os error 32.
+        let err = retry_sharing_violation(
+            5,
+            1,
+            |e| e.raw_os_error() == Some(32),
+            || {
+                calls += 1;
+                Err::<u8, _>(std::io::Error::from_raw_os_error(5)) // ERROR_ACCESS_DENIED
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1, "permission denial must not be retried");
+        assert_eq!(err.raw_os_error(), Some(5));
+    }
+
+    #[test]
+    fn retry_gives_up_after_bounded_attempts_with_diagnostics() {
+        let mut calls = 0;
+        let err = retry_sharing_violation(
+            4,
+            1,
+            |_| true,
+            || {
+                calls += 1;
+                Err::<u8, _>(std::io::Error::from_raw_os_error(32))
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 4, "bounded retry attempts");
+        assert!(err.to_string().contains("retry attempts"), "{err}");
+    }
+
+    #[test]
+    fn retry_passthrough_when_classifier_rejects() {
+        let mut calls = 0;
+        let err = retry_sharing_violation(
+            5,
+            1,
+            |e| e.raw_os_error() == Some(32),
+            || {
+                calls += 1;
+                Err::<u8, _>(std::io::Error::from_raw_os_error(13)) // EACCES on POSIX
+            },
+        )
+        .unwrap_err();
+        assert_eq!(calls, 1, "non-sharing-violation must not be retried");
+        assert_eq!(err.raw_os_error(), Some(13));
+    }
+
+    #[test]
+    fn is_windows_sharing_violation_classifier() {
+        let sharing = std::io::Error::from_raw_os_error(32);
+        let _denied = std::io::Error::from_raw_os_error(5);
+        // cfg!(windows) is evaluated per-target at compile time.
+        #[cfg(windows)]
+        {
+            assert!(is_windows_sharing_violation(&sharing));
+            assert!(!is_windows_sharing_violation(&denied));
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(
+                !is_windows_sharing_violation(&sharing),
+                "POSIX must not retry"
+            );
+        }
     }
 }
