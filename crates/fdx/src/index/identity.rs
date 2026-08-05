@@ -476,6 +476,6 @@ mod tests {
     #[test]
     fn schema_version_is_current() {
         assert_eq!(schema_version(), INDEX_SCHEMA_VERSION);
-        assert_eq!(fdx_version(), "0.1.0");
+        assert_eq!(fdx_version(), env!("CARGO_PKG_VERSION"));
     }
 }

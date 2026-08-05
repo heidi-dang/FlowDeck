@@ -5,8 +5,6 @@
 import { execFile } from "child_process"
 import { promisify } from "util"
 import type { CheckResult } from "../types"
-import { resolve } from "path"
-import { pathToFileURL } from "url"
 import { type FdxResolutionResult, getFdxAvailabilityStatus } from "../../tools/fdx-shared"
 
 const execFileAsync = promisify(execFile)

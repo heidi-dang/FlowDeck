@@ -7,7 +7,8 @@ let pass = 0, fail = 0;
 
 function clean() {
   try { closeAll(); } catch {}
-  for (const f of [DB, DB+'-wal', DB+'-shm', DB+'-lock', DB+'-lock-wal', DB+'-lock-shm']) { try { unlinkSync(f) } catch {} }
+  for (const f of [DB, DB+'-wal', DB+'-shm', DB+'-lock', DB+'-lock-wal', DB+'-lock-shm',
+                   DB+'-schema', DB+'-schema-wal', DB+'-schema-shm', DB+'-schema-lock']) { try { unlinkSync(f) } catch {} }
 }
 const conns = new Map();
 function openConn(p, ro = false) {

@@ -8,15 +8,15 @@
   "platform": "linux",
   "architecture": "x64",
   "binaryFilename": "fdx",
-  "binaryByteSize": 11949456,
-  "sha256": "dab887e2ed677e5e4e58a5ed51d1dc9954ee73b01d28054cdc1b4ae0c97fdcd5",
-  "sourceCommitSha": "1f553c1cae7bc76be472360e357b4a6ea2927235",
-  "gitCommit": "1f553c1cae7bc76be472360e357b4a6ea2927235",
+  "binaryByteSize": 11947392,
+  "sha256": "25c635ca979b7d886c8f6418dfc2807815d2fe4dabdd5a21b3d104b425452e46",
+  "sourceCommitSha": "04d696c735640b6aa03fe0378112f25177502470",
+  "gitCommit": "04d696c735640b6aa03fe0378112f25177502470",
   "gitBranch": "feat/orchestration-master-plan-completion",
   "workflowRunId": null,
   "ciRunId": null,
   "builderPlatform": "linux/x64",
   "rustVersion": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
   "buildProfile": "release",
-  "buildTimestamp": "2026-08-04T11:09:59.779Z"
+  "buildTimestamp": "2026-08-04T12:59:25.346Z"
 }

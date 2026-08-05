@@ -13,7 +13,6 @@
 
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import { existsSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { resolveDoctorExitCode as canonicalResolveDoctorExitCode } from "../src/doctor/exit-code.mjs"
 
@@ -114,7 +113,6 @@ function hasBun() {
 }
 
 function runViaBun(directory, options = {}) {
-  const srcDoctorPath = join(PKG_ROOT, "src/doctor/doctor.ts")
   const distDoctorPath = join(PKG_ROOT, "dist/index.js")
   const doctorPath = distDoctorPath
   const opts = {

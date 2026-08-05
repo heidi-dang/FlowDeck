@@ -232,7 +232,8 @@ pub fn migrate_legacy_planning_dir(
 
         // If new_dir exists but is incomplete, move it to a recovery backup first
         if new_dir.exists() {
-            let recovery_dir = get_unique_backup_dir(&root, &format!("{}.incomplete", project_slug), now_ms);
+            let recovery_dir =
+                get_unique_backup_dir(&root, &format!("{}.incomplete", project_slug), now_ms);
             std::fs::rename(&new_dir, &recovery_dir).map_err(|e| {
                 MigrationError::RenameFailed(new_dir.clone(), recovery_dir, e.to_string())
             })?;
