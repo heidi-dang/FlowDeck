@@ -1,5 +1,4 @@
 import { describe, expect, it, beforeAll, afterAll } from "bun:test";
-import { type Browser, type BrowserContext, type Page } from "playwright";
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { SseManager } from "../../src/better-harness";
@@ -10,37 +9,39 @@ import {
 import { EventBus } from "../../src/better-harness/runtime/event-bus";
 import {
   startE2EServer,
-  launchBrowserBounded,
-  closeE2EAll,
   assertNoOrphans,
   snapshotChromiumPids,
   makeWorkDir,
+  DriverClient,
   type E2EServer,
 } from "../helpers/e2e-lifecycle";
 
 const PRODUCTION_BUNDLE = join(__dirname, "..", "..", "dist", "ui", "mount.js");
+const DRIVER_PATH = join(__dirname, "..", "helpers", "browser-driver.mjs");
+
+const APP_READY_SELECTOR = ".dashboard-shell";
 
 /**
  * Task 9: Real Playwright Headless Browser E2E Suite.
  *
  * Windows regression this guards: the suite previously hung to the global 60s
- * timeout. Every await is now bounded (server readiness, chromium launch,
- * page waits, browser/server close), the production bundle is served, SSE
- * connections are ended before `server.close()`, and no orphan chromium or
- * server process may remain after success or failure.
+ * timeout. Root cause (now diagnosed): Bun's Windows child-process pipes do
+ * not complete Playwright's `--remote-debugging-pipe` CDP handshake
+ * (oven-sh/bun#31105), so `chromium.launch()` hangs forever under `bun test`
+ * on Windows while succeeding under Node. The real browser is therefore
+ * driven through a node subprocess (tests/helpers/browser-driver.mjs), with
+ * genuine UI assertions, a production bundle, an ephemeral port, bounded
+ * server readiness, and no orphan processes after success or failure.
  */
 describe("Task 9: Real Playwright Headless Browser E2E Suite", () => {
-  let browser: Browser;
-  let context: BrowserContext;
+  let driver: DriverClient;
   let e2eServer: E2EServer;
   let beforePids: number[];
-  let repository: StreamRepository;
   let publisher: StreamPublisher;
   let sseManager: SseManager;
   let clientBundleCode: string;
+  let port = 0;
   const work = makeWorkDir("fdx-e2e-");
-
-  const APP_READY_SELECTOR = ".dashboard-shell";
 
   beforeAll(async () => {
     beforePids = snapshotChromiumPids();
@@ -62,13 +63,10 @@ describe("Task 9: Real Playwright Headless Browser E2E Suite", () => {
     }
 
     const eventBus = new EventBus();
-    repository = new StreamRepository(":memory:", { allowInMemory: true });
+    const repository = new StreamRepository(":memory:", { allowInMemory: true });
     sseManager = new SseManager(eventBus, repository);
     publisher = sseManager.getPublisher();
 
-    // `port` is captured before the server starts so the request handler can
-    // render the SSE URL without touching the (not yet assigned) e2eServer.
-    let port = 0;
     e2eServer = await startE2EServer((req, res) => {
       const url = req.url || "/";
       if (url.startsWith("/api/runs/") && url.includes("/events")) {
@@ -110,34 +108,30 @@ describe("Task 9: Real Playwright Headless Browser E2E Suite", () => {
     }, { readinessTimeoutMs: 10000, probePath: "/" });
     port = e2eServer.port;
 
-    browser = await launchBrowserBounded(beforePids, { launchTimeoutMs: 30000 });
-    context = await browser.newContext();
-  });
-
-  afterAll(async () => {
-    const report = await closeE2EAll({
-      browser,
-      context,
-      server: e2eServer,
-      sseManager,
-      browserCloseTimeoutMs: 10000,
-      serverCloseTimeoutMs: 5000,
-    });
-    await assertNoOrphans(beforePids, e2eServer.port);
-    work.cleanup();
-    // Surface force-kills in the test output so cleanup regressions are visible.
-    if (report.forceKilled) {
-      console.warn("[e2e] cleanup required force-kill of a process");
+    driver = new DriverClient(DRIVER_PATH);
+    const launched = await driver.send({ cmd: "launch" }, 30000);
+    if (!launched.ok) {
+      await driver.kill();
+      throw new Error(`browser driver launch failed: ${launched.error}`);
     }
   });
 
-  async function openApp(): Promise<Page> {
-    const page = await context.newPage();
-    await page.goto(`http://127.0.0.1:${e2eServer.port}/`, { timeout: 15000, waitUntil: "domcontentloaded" });
-    // Application-ready signal: the dashboard shell mounts only after the
-    // client bundle runs and the first SSE event renders.
-    await page.waitForSelector(APP_READY_SELECTOR, { timeout: 10000 });
-    return page;
+  afterAll(async () => {
+    try {
+      await driver.close(8000);
+    } catch { /* already gone */ }
+    await closeE2EServer(sseManager, e2eServer);
+    await assertNoOrphans(beforePids, e2eServer.port);
+    work.cleanup();
+  });
+
+  async function openApp(): Promise<void> {
+    const opened = await driver.send({ cmd: "open", url: `http://127.0.0.1:${port}/`, readySelector: APP_READY_SELECTOR }, 20000);
+    if (!opened.ok) throw new Error(`open failed: ${opened.error}`);
+  }
+
+  function expectOk(result: { ok: boolean; error?: string }): void {
+    if (!result.ok) throw new Error(`driver op failed: ${result.error}`);
   }
 
   it("should load dashboard in real browser, receive streamed events, and render live state safely", async () => {
@@ -150,11 +144,13 @@ describe("Task 9: Real Playwright Headless Browser E2E Suite", () => {
       payload: {},
     });
 
-    const page = await openApp();
+    await openApp();
     try {
-      await page.waitForSelector("header h1", { timeout: 10000 });
-      const headerText = await page.locator("header h1").textContent();
-      expect(headerText).toContain("Playwright E2E Initial Run");
+      const wait = await driver.send({ cmd: "waitForSelector", selector: "header h1", timeout: 10000 });
+      expectOk(wait);
+      const header = await driver.send<string | null>({ cmd: "textContent", selector: "header h1" });
+      expectOk(header);
+      expect(header.value).toContain("Playwright E2E Initial Run");
 
       publisher.publish({
         runId: "run-e2e-1",
@@ -165,12 +161,14 @@ describe("Task 9: Real Playwright Headless Browser E2E Suite", () => {
         payload: { agentId: "agent-planner", responsibility: "Architecture Planning" },
       });
 
-      await page.waitForSelector(".agent-card", { timeout: 10000 });
-      const agentCard = page.locator(".agent-card");
-      expect(await agentCard.count()).toBeGreaterThan(0);
-      expect(await agentCard.first().textContent()).toContain("agent-planner");
+      await driver.send({ cmd: "waitForSelector", selector: ".agent-card", timeout: 10000 });
+      const cards = await driver.send<number>({ cmd: "count", selector: ".agent-card" });
+      expectOk(cards);
+      expect(cards.value).toBeGreaterThan(0);
+      const firstCard = await driver.send<string | null>({ cmd: "textContent", selector: ".agent-card" });
+      expect(firstCard.value).toContain("agent-planner");
     } finally {
-      await page.close();
+      await driver.send({ cmd: "closePage" }, 10000);
     }
   });
 
@@ -184,9 +182,10 @@ describe("Task 9: Real Playwright Headless Browser E2E Suite", () => {
       payload: { phase: "1" },
     });
 
-    const page = await openApp();
+    await openApp();
     try {
-      await page.waitForSelector("header h1", { timeout: 10000 });
+      const wait = await driver.send({ cmd: "waitForSelector", selector: "header h1", timeout: 10000 });
+      expectOk(wait);
       // A second event arriving on the SAME connection proves the SSE stream
       // stayed open rather than being re-fetched per event.
       publisher.publish({
@@ -197,11 +196,12 @@ describe("Task 9: Real Playwright Headless Browser E2E Suite", () => {
         title: "Persistent SSE check 2",
         payload: { phase: "2" },
       });
-      await page.waitForSelector(".stage-rail", { timeout: 10000 });
-      const rail = page.locator(".stage-rail");
-      expect(await rail.count()).toBe(1);
+      await driver.send({ cmd: "waitForSelector", selector: ".stage-rail", timeout: 10000 });
+      const rails = await driver.send<number>({ cmd: "count", selector: ".stage-rail" });
+      expectOk(rails);
+      expect(rails.value).toBe(1);
     } finally {
-      await page.close();
+      await driver.send({ cmd: "closePage" }, 10000);
     }
   });
 
@@ -217,42 +217,62 @@ describe("Task 9: Real Playwright Headless Browser E2E Suite", () => {
       payload: {},
     });
 
-    const page = await openApp();
+    await openApp();
     try {
-      const scriptTags = await page.locator('script:has-text("xss-injection")').count();
-      expect(scriptTags).toBe(0);
+      const scriptTags = await driver.send<number>({ cmd: "count", selector: 'script:has-text("xss-injection")' });
+      expectOk(scriptTags);
+      expect(scriptTags.value).toBe(0);
 
-      const textContent = await page.locator("body").innerText();
-      expect(textContent).toContain('<script>alert("xss-injection")</script>');
+      const bodyText = await driver.send<string>({ cmd: "innerText", selector: "body" });
+      expectOk(bodyText);
+      expect(bodyText.value).toContain('<script>alert("xss-injection")</script>');
     } finally {
-      await page.close();
+      await driver.send({ cmd: "closePage" }, 10000);
     }
   });
 
   it("should handle mobile viewport layout and keyboard traversal in real browser", async () => {
-    const page = await openApp();
+    await openApp();
     try {
-      await page.setViewportSize({ width: 375, height: 667 });
-      await page.waitForSelector(".stage-rail", { timeout: 10000 });
-      const stageRail = page.locator(".stage-rail");
-      expect(await stageRail.isVisible()).toBe(true);
+      await driver.send({ cmd: "setViewport", width: 375, height: 667 });
+      await driver.send({ cmd: "waitForSelector", selector: ".stage-rail", timeout: 10000 });
+      const visible = await driver.send<boolean>({ cmd: "visible", selector: ".stage-rail" });
+      expectOk(visible);
+      expect(visible.value).toBe(true);
 
-      await page.keyboard.press("Tab");
-      const activeTagName = await page.evaluate(() => document.activeElement?.tagName);
-      expect(activeTagName).toBeDefined();
+      await driver.send({ cmd: "press", key: "Tab" });
+      const activeTag = await driver.send<string>({ cmd: "evaluate", expr: "document.activeElement?.tagName" });
+      expectOk(activeTag);
+      expect(activeTag.value).toBeDefined();
     } finally {
-      await page.close();
+      await driver.send({ cmd: "closePage" }, 10000);
     }
   });
 
   it("should preserve prefers-reduced-motion and accessible ARIA attributes", async () => {
-    const page = await openApp();
+    await openApp();
     try {
-      await page.emulateMedia({ reducedMotion: "reduce" });
-      const liveRegions = await page.locator("[aria-live]").count();
-      expect(liveRegions).toBeGreaterThan(0);
+      await driver.send({ cmd: "emulateMedia", reducedMotion: "reduce" });
+      const liveRegions = await driver.send<number>({ cmd: "count", selector: "[aria-live]" });
+      expectOk(liveRegions);
+      expect(liveRegions.value).toBeGreaterThan(0);
     } finally {
-      await page.close();
+      await driver.send({ cmd: "closePage" }, 10000);
     }
   });
 });
+
+async function closeE2EServer(sseManager: SseManager, e2eServer: E2EServer): Promise<void> {
+  sseManager.dispose();
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      e2eServer.server.closeAllConnections();
+      resolve();
+    }, 5000);
+    e2eServer.server.close(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+    e2eServer.server.closeAllConnections();
+  });
+}

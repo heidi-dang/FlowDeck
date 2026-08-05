@@ -13,7 +13,7 @@ import { createServer, type Server, type ServerResponse } from "http"
 import { get } from "http"
 import type { AddressInfo } from "net"
 import { chromium, type Browser, type BrowserContext } from "playwright"
-import { execFileSync } from "child_process"
+import { execFileSync, spawn, type ChildProcess } from "child_process"
 import { mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
@@ -337,4 +337,109 @@ export function makeWorkDir(prefix: string): { dir: string; cleanup: () => void 
 
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+export interface DriverResult<T = unknown> {
+  ok: boolean
+  value?: T
+  error?: string
+}
+
+/**
+ * Client for the node-run browser driver (tests/helpers/browser-driver.mjs).
+ *
+ * The driver runs under NODE because Bun's Windows child-process pipes do not
+ * complete Playwright's CDP pipe handshake (oven-sh/bun#31105); driving the
+ * real browser through this subprocess keeps genuine UI assertions while
+ * staying reliable on Windows CI.
+ */
+export class DriverClient {
+  private readonly child: ChildProcess
+  private readonly pending = new Map<number, (r: DriverResult) => void>()
+  private nextId = 1
+  private buffer = ""
+  private lastError = ""
+
+  constructor(driverPath: string) {
+    this.child = spawn("node", [driverPath], {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    })
+    this.child.stdout?.setEncoding("utf-8")
+    this.child.stdout?.on("data", (chunk: string) => this.onData(chunk))
+    this.child.stderr?.setEncoding("utf-8")
+    this.child.stderr?.on("data", (chunk: string) => {
+      if (chunk) this.lastError += chunk
+    })
+    this.child.on("exit", (code, signal) => {
+      const err = new Error(
+        `browser driver exited early (code=${code} signal=${signal}); last stderr: ${this.lastError.slice(0, 300)}`,
+      )
+      for (const reject of this.pending.values()) reject({ ok: false, error: err.message })
+      this.pending.clear()
+    })
+  }
+
+  /** Send a command and wait for its response, bounded by `timeoutMs`. */
+  send<T = unknown>(cmd: Record<string, unknown>, timeoutMs = 15000): Promise<DriverResult<T>> {
+    return new Promise((resolve) => {
+      const id = this.nextId++
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        resolve({ ok: false, error: `driver command ${cmd.cmd} timed out after ${timeoutMs}ms (stderr: ${this.lastError.slice(0, 200)})` })
+      }, timeoutMs)
+      this.pending.set(id, (result) => {
+        clearTimeout(timer)
+        resolve(result as DriverResult<T>)
+      })
+      this.child.stdin?.write(JSON.stringify({ id, ...cmd }) + "\n")
+    })
+  }
+
+  private onData(chunk: string): void {
+    this.buffer += chunk
+    let newline = this.buffer.indexOf("\n")
+    while (newline >= 0) {
+      const line = this.buffer.slice(0, newline).trim()
+      this.buffer = this.buffer.slice(newline + 1)
+      newline = this.buffer.indexOf("\n")
+      if (!line || line.startsWith(":hb") || !line.startsWith("{")) continue
+      let msg: { id: number; ok: boolean; value?: unknown; error?: string }
+      try {
+        msg = JSON.parse(line)
+      } catch {
+        continue
+      }
+      const resolve = this.pending.get(msg.id)
+      if (resolve) {
+        this.pending.delete(msg.id)
+        resolve({ ok: msg.ok, value: msg.value, error: msg.error })
+      }
+    }
+  }
+
+  /** Close the driver and its browser; returns the driver's exit promise. */
+  async close(timeoutMs = 8000): Promise<void> {
+    try {
+      await this.send({ cmd: "close" }, timeoutMs)
+    } catch { /* already gone */ }
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this.child.kill("SIGKILL")
+        resolve()
+      }, 3000)
+      this.child.once("exit", () => {
+        clearTimeout(timer)
+        resolve()
+      })
+      if (this.child.exitCode !== null) resolve()
+      this.child.stdin?.end()
+    })
+  }
+
+  kill(): void {
+    try {
+      this.child.kill("SIGTERM")
+    } catch { /* ignore */ }
+  }
 }
