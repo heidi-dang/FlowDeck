@@ -159,8 +159,7 @@ fn migration_succeeds_when_cwd_is_inside_legacy_directory() {
 
     std::env::set_current_dir(&legacy).expect("chdir into legacy dir");
 
-    let result =
-        migrate_legacy_planning_dir(home, slug, "my-app").expect("migration must succeed");
+    let result = migrate_legacy_planning_dir(home, slug, "my-app").expect("migration must succeed");
     assert!(matches!(result, MigrationResult::Migrated { entries: 2 }));
 
     // The destination is complete and the legacy dir was renamed to a backup.
