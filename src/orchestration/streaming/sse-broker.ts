@@ -52,4 +52,16 @@ export class SseBroker {
   hasClients(runId: string): boolean {
     return this.clients.has(runId) && this.clients.get(runId)!.size > 0;
   }
+
+  /** Close every open SSE session (used on server shutdown so persistent
+   * connections cannot block `server.close()`). */
+  closeAll() {
+    for (const runClients of this.clients.values()) {
+      for (const session of runClients) {
+        session.close();
+      }
+    }
+    this.clients.clear();
+    this.backpressureControllers.clear();
+  }
 }

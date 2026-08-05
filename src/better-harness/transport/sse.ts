@@ -126,6 +126,24 @@ export class SseManager {
     return this.publisher;
   }
 
+  /**
+   * Shut down all live SSE connections and legacy test clients. Required so a
+   * persistent SSE connection cannot block `server.close()` during tests or
+   * server shutdown.
+   */
+  dispose(): void {
+    this.broker.closeAll();
+    for (const client of this.legacyClients.values()) {
+      try {
+        client.send(
+          { type: "shutdown", data: { reason: "server_shutdown" }, timestamp: new Date().toISOString() } as unknown as HarnessEvent,
+          0,
+        );
+      } catch { /* client already disconnected */ }
+    }
+    this.legacyClients.clear();
+  }
+
   private mapHarnessEventType(type: string): string {
     const map: Record<string, string> = {
       "run.queued": "run.created",
