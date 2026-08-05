@@ -12,7 +12,7 @@
 import { createServer, type Server, type ServerResponse } from "http"
 import { get } from "http"
 import type { AddressInfo } from "net"
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright"
+import { chromium, type Browser, type BrowserContext } from "playwright"
 import { execFileSync } from "child_process"
 import { mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
@@ -149,23 +149,6 @@ function killPidTree(pid: number): void {
     }
   } catch {
     /* already gone */
-  }
-}
-
-function isPidAlive(pid: number): boolean {
-  try {
-    if (process.platform === "win32") {
-      const out = execFileSync(
-        "tasklist",
-        ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
-        { encoding: "utf-8", windowsHide: true, timeout: 5000 },
-      )
-      return out.includes(`"${pid}"`)
-    }
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
   }
 }
 
