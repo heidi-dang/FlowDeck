@@ -718,7 +718,7 @@ jobs:
   completion:
     name: Pipeline Completion
     if: always()
-    needs: [lint-typecheck, typecheck, coverage, benchmark-runtime, test-matrix, build, installer-test, rust-gates, security-scan, local-installer, packed-cli-matrix, test-fdx-parity]
+    needs: [lint-typecheck, typecheck, coverage, benchmark-runtime, benchmark, test-matrix, build, installer-test, rust-gates, security-scan, local-installer, packed-cli-matrix, test-fdx-parity]
     runs-on: ubuntu-latest
     steps:
       - run: |
