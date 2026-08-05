@@ -1,0 +1,160 @@
+   Compiling fdx v0.1.0 (/home/heidi/flowdeck/crates/fdx)
+warning: variable does not need to be mutable
+    --> crates/fdx/src/batch/mod.rs:1009:9
+     |
+1009 |     let mut cache_publish_warnings: Vec<String> = Vec::new();
+     |         ----^^^^^^^^^^^^^^^^^^^^^^
+     |         |
+     |         help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `fdx` (lib test) generated 1 warning (run `cargo fix --lib -p fdx --tests` to apply 1 suggestion)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.90s
+     Running unittests src/lib.rs (target/debug/deps/fdx-f19f29dc8bccec62)
+
+running 67 tests
+test batch::registry::tests::all_batch_ops_are_read_only_and_batchable ... ok
+test batch::registry::tests::descriptors_serialize_camel_case ... ok
+test batch::registry::tests::mutation_commands_are_marked_non_read_only ... ok
+test batch::registry::tests::negative_cache_eligibility_is_explicit ... ok
+test batch::registry::tests::unknown_descriptor_returns_none ... ok
+test batch::registry::tests::registry_contains_batch_ops ... ok
+test batch::tests::artifact_file_names_are_collision_resistant ... ok
+test batch::tests::artifact_dir_sync_failure_removes_created_final ... ok
+test batch::tests::artifact_name_is_sanitized ... ok
+test batch::tests::atomic_artifact_write_deduplicates_identical_content ... ok
+test batch::tests::atomic_artifact_write_fails_closed_on_conflict ... ok
+test batch::tests::barrier_synchronized_concurrent_publishers_never_clobber ... ok
+test batch::tests::barrier_synchronized_conflicting_publisher_fails_closed ... ok
+test batch::tests::artifact_mutation_after_commit_triggers_cache_compensation ... ok
+test batch::tests::batch_total_budget_truncates_when_cumulative_output_overflows ... ok
+test batch::tests::batch_level_publish_failure_voids_all_provisional_responses ... ok
+test batch::tests::cache_transaction_identical_winner_survives_other_transaction_rollback ... ok
+test batch::tests::cache_transaction_immutable_publish_and_lru_deferral ... ok
+test batch::tests::c2_revalidation_failure_never_publishes_cache_entries ... ok
+test batch::tests::cache_transaction_publish_failure_cleans_temps ... ok
+test batch::tests::concurrent_artifact_writes_different_content_do_not_collide ... ok
+test batch::tests::concurrent_artifact_writes_same_content_succeed ... ok
+test batch::tests::definitive_empty_results_use_the_negative_cache ... ok
+test batch::tests::drift_aborts_all_remaining_ops_and_preserves_cardinality ... ok
+test batch::tests::drift_after_cache_read_discards_cached_value ... ok
+test batch::tests::drift_at_final_barrier_discards_result_and_writes_no_cache ... ok
+test batch::tests::drift_before_artifact_activation_leaves_no_artifact ... ok
+test batch::tests::duplicate_ids_are_rejected ... ok
+test batch::tests::durability_warning_is_reader_visible_success_not_failure ... FAILED
+test batch::tests::empty_batch_is_rejected ... ok
+test batch::tests::existing_conflicting_artifact_is_rejected ... ok
+test batch::tests::fail_fast_cancelled_ops_never_touch_the_cache ... FAILED
+test batch::tests::fail_fast_false_runs_all_ops ... ok
+test batch::tests::fail_fast_preserves_ids_and_order_for_all_ops ... ok
+test batch::tests::fail_fast_stops_at_first_failure ... ok
+test batch::tests::failed_artifact_activation_leaves_no_cache_side_effect ... FAILED
+test batch::tests::final_envelope_drift_invalidates_accepted_responses ... FAILED
+test batch::tests::final_rename_winner_is_verified_and_reused ... ok
+test batch::tests::grep_returns_matching_lines ... ok
+test batch::tests::incomplete_rollback_is_surfaced_distinctly ... ok
+test batch::tests::invalid_ops_reject_the_whole_batch_before_any_execution ... ok
+test batch::tests::mid_batch_state_change_marks_stale_and_aborts_remaining_ops ... FAILED
+test batch::tests::mid_batch_state_change_never_reuses_cached_results ... FAILED
+test batch::tests::non_batchable_op_rejects_the_whole_batch ... ok
+test batch::tests::non_enoent_read_failure_fails_closed ... ok
+test batch::tests::outline_lists_symbols ... ok
+test batch::tests::over_capacity_batch_is_rejected ... ok
+test batch::tests::parameter_preflight_rejects_invalid_grep_params ... ok
+test batch::tests::parameter_preflight_rejects_invalid_impact_params ... ok
+test batch::tests::parameter_preflight_rejects_invalid_outline_params ... ok
+test batch::tests::parameter_preflight_rejects_invalid_read_params ... ok
+test batch::tests::parameter_preflight_rejects_invalid_search_params ... ok
+test batch::tests::parameter_preflight_rejects_invalid_tests_for_params ... ok
+test batch::tests::post_activation_drift_rolls_back_all_owned_outputs ... FAILED
+test batch::tests::post_execution_drift_discards_result_and_marks_stale ... FAILED
+test batch::tests::pre_existing_artifact_survives_rollback_of_unrelated_created_artifact ... ok
+test batch::tests::query_cache_is_inactive_outside_git_repos ... FAILED
+test batch::tests::query_cache_roundtrips_and_flips_key_on_change ... FAILED
+test batch::tests::read_raw_returns_text_result ... ok
+test batch::tests::real_negative_cache_candidate_is_invalidated_by_post_activation_drift ... FAILED
+test batch::tests::reused_artifact_is_revalidated_at_activation ... ok
+test batch::tests::search_finds_symbols ... ok
+test batch::tests::stale_snapshot_is_false_without_index ... ok
+test batch::tests::truncated_result_gets_artifact_marker ... ok
+test batch::tests::under_budget_results_are_not_truncated ... ok
+test batch::tests::unknown_and_mutating_ops_reject_the_whole_batch ... ok
+test batch::tests::cache_transaction_lru_only_runs_on_global_success has been running for over 60 seconds
+test batch::tests::cache_transaction_lru_only_runs_on_global_success ... ok
+
+failures:
+
+---- batch::tests::durability_warning_is_reader_visible_success_not_failure stdout ----
+
+thread 'batch::tests::durability_warning_is_reader_visible_success_not_failure' (271956) panicked at crates/fdx/src/batch/mod.rs:5225:9:
+a durability warning is reader-visible success — it must not fail the batch
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- batch::tests::fail_fast_cancelled_ops_never_touch_the_cache stdout ----
+
+thread 'batch::tests::fail_fast_cancelled_ops_never_touch_the_cache' (271998) panicked at crates/fdx/src/batch/mod.rs:2963:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::failed_artifact_activation_leaves_no_cache_side_effect stdout ----
+
+thread 'batch::tests::failed_artifact_activation_leaves_no_cache_side_effect' (272005) panicked at crates/fdx/src/batch/mod.rs:4362:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::final_envelope_drift_invalidates_accepted_responses stdout ----
+
+thread 'batch::tests::final_envelope_drift_invalidates_accepted_responses' (272006) panicked at crates/fdx/src/batch/mod.rs:3915:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::mid_batch_state_change_marks_stale_and_aborts_remaining_ops stdout ----
+
+thread 'batch::tests::mid_batch_state_change_marks_stale_and_aborts_remaining_ops' (272012) panicked at crates/fdx/src/batch/mod.rs:2775:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::mid_batch_state_change_never_reuses_cached_results stdout ----
+
+thread 'batch::tests::mid_batch_state_change_never_reuses_cached_results' (272013) panicked at crates/fdx/src/batch/mod.rs:2905:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::post_activation_drift_rolls_back_all_owned_outputs stdout ----
+
+thread 'batch::tests::post_activation_drift_rolls_back_all_owned_outputs' (272025) panicked at crates/fdx/src/batch/mod.rs:3978:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::post_execution_drift_discards_result_and_marks_stale stdout ----
+
+thread 'batch::tests::post_execution_drift_discards_result_and_marks_stale' (272026) panicked at crates/fdx/src/batch/mod.rs:3644:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::query_cache_is_inactive_outside_git_repos stdout ----
+
+thread 'batch::tests::query_cache_is_inactive_outside_git_repos' (272028) panicked at crates/fdx/src/batch/mod.rs:3158:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::query_cache_roundtrips_and_flips_key_on_change stdout ----
+
+thread 'batch::tests::query_cache_roundtrips_and_flips_key_on_change' (272029) panicked at crates/fdx/src/batch/mod.rs:3089:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::real_negative_cache_candidate_is_invalidated_by_post_activation_drift stdout ----
+
+thread 'batch::tests::real_negative_cache_candidate_is_invalidated_by_post_activation_drift' (272032) panicked at crates/fdx/src/batch/mod.rs:4039:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+
+failures:
+    batch::tests::durability_warning_is_reader_visible_success_not_failure
+    batch::tests::fail_fast_cancelled_ops_never_touch_the_cache
+    batch::tests::failed_artifact_activation_leaves_no_cache_side_effect
+    batch::tests::final_envelope_drift_invalidates_accepted_responses
+    batch::tests::mid_batch_state_change_marks_stale_and_aborts_remaining_ops
+    batch::tests::mid_batch_state_change_never_reuses_cached_results
+    batch::tests::post_activation_drift_rolls_back_all_owned_outputs
+    batch::tests::post_execution_drift_discards_result_and_marks_stale
+    batch::tests::query_cache_is_inactive_outside_git_repos
+    batch::tests::query_cache_roundtrips_and_flips_key_on_change
+    batch::tests::real_negative_cache_candidate_is_invalidated_by_post_activation_drift
+
+test result: FAILED. 56 passed; 11 failed; 0 ignored; 0 measured; 189 filtered out; finished in 95.69s
+
+error: test failed, to rerun pass `--lib`

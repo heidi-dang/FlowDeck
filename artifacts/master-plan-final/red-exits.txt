@@ -1,0 +1,22 @@
+# Master Plan Final — RED Evidence Exit Codes
+
+Genuine exit codes captured during the TDD RED phase of this branch's work.
+Each log below documents tests FAILING before the corresponding fix; the
+companion GREEN run is listed with its exit code.
+
+| Artifact | Run | Command | Exit | Evidence |
+|----------|-----|---------|------|----------|
+| rust-red.log | RED | `cargo test --lib` (256 tests) | 101 | 237 passed; 19 failed (batch cache/index) |
+| rust-batch-red.log | RED | `cargo test --lib batch` (67 tests) | 101 | 56 passed; 11 failed |
+| rust-batch-red-final.log | RED (final iteration) | `cargo test --lib batch` (67 tests) | 101 | 66 passed; 1 failed |
+| typescript-persistence-red.log | RED | `bun .scratch/p12-debug.mjs` | 1 | SQLiteError: no such table: main.objectives (section 7 applySchema) |
+| typescript-persistence-stmt-red.log | RED (per-statement) | `bun .scratch/p12-instr4.mjs` | 1 | SQLiteError: disk I/O error (SQLITE_IOERR_WRITE) at stmt 3 CREATE UNIQUE INDEX |
+| typescript-suite-red.log | RED | `bun test` full TS suite | 1 | fdx-artifact/install/provenance failures (stale version, missing binary) |
+| production-gates-red.log | RED | `bun test` production gates | 1 | fdx-native-distribution, fdx-trusted-acquisition, phase8 gates, installer failures |
+
+## Companion GREEN runs (post-fix, all exit 0)
+
+- `cargo test` — 257 passed; 0 failed (see `/tmp/verify-full2.log` tail)
+- `npm run test:persistence` — 29/39/23/34/28 per file, 0 failed (see `.scratch/test-persist.log`)
+- `bun test` full suite — 4498 passed; 2 skipped; 0 failed (baseline, pre-un-skip)
+- `node scripts/pre-push.mjs` — pass

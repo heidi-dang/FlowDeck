@@ -1,0 +1,461 @@
+bun test v1.3.14 (0d9b296a)
+
+tests/verify-fdx-artifact.test.ts:
+  - binary-sha256-consistency: file=774d557b353527f29ba8be36d7f91f331eeb27bb6b08b30c9f5466fb93e650d9 provenance=a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e checksum=a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e manifest=a2e659dacb4691e887ac0139f8893d04764ee197d70fb73d3190d56113d18e3e
+  - provenance.binaryByteSize: expected 15, got 4096
+  - archive-name: expected heidi-dang-flowdeck-fdx-linux-x64-gnu-1.0.4.tgz, found heidi-dang-flowdeck-fdx-linux-x64-gnu-9.9.9.tgz
+  - manifest.packageVersion: expected 1.0.4, got "9.9.9"
+  - provenance.packageVersion: expected 1.0.4, got "9.9.9"
+  - provenance.flowdeckVersion: expected 1.0.4, got "9.9.9"
+  - provenance.fdxBinaryVersion: expected 1.0.4, got "9.9.9"
+  - checksum.version: expected 1.0.4, got "9.9.9"
+  - archive-present: heidi-dang-flowdeck-fdx-linux-x64-gnu-1.0.4.tgz missing
+  - artifact-manifest-present: /home/heidi/.cache/tmp/fdx-artifact-3P5ykB/artifact-manifest.json missing
+  - checksum-present: /home/heidi/.cache/tmp/fdx-artifact-3P5ykB/checksum.json missing
+  - source-fields-consistent: expected all equal "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","8498ac260defa952adb40281f16c6e361dde3cb8","8498ac260defa952adb40281f16c6e361dde3cb8"]
+  - manifest.sourceCommitSha: expected 8498ac260defa952adb40281f16c6e361dde3cb8, got "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  - archive-count: expected exactly one .tgz (heidi-dang-flowdeck-fdx-linux-x64-gnu-1.0.4.tgz), found 2
+  - artifact-manifest-present: /home/heidi/.cache/tmp/fdx-artifact-CAL0Xd/artifact-manifest.json missing
+
+tests/phase28-cli-behavioural.test.ts:
+
+============================================================
+  FlowDeck Doctor
+  Version: 1.0.4
+  Profile: recommended-dev
+  Timestamp: 2026-08-04T12:55:45.518Z
+============================================================
+
+  Errors: 4 | Warnings: 1
+
+  OK  Operating System: Linux
+  OK  Node.js: v22.22.1
+  OK  npm: 9.2.0
+  OK  Bun: 1.3.14
+  OK  Git: git version 2.53.0
+  OK  Python: Python 3.14.4
+  ERROR  WSL2: Not WSL
+  OK  FDX Platform Target Support: linux/x64 (gnu)
+  ERROR  FDX Platform Package Present: Optional package missing
+  ERROR  FDX Native Binary Present: No binary found
+  OK  FDX Binary Checksum Integrity: Checksum status: missing
+  ERROR  FDX Binary Version Compatibility: none
+  ERROR  FDX Native Binary Execution: fail
+  OK  FDX TypeScript Fallback Availability: Active (TypeScript fallback mode)
+  OK  Package Manifest: package.json found
+  OK  Git Repository: .git found
+  OK  Current Branch: feat/orchestration-master-plan-completion
+  OK  Package Manager: npm
+  OK  Lockfile: package-lock.json found
+  ERROR  NPM_TOKEN: [NOT SET]
+  ERROR  GITHUB_TOKEN: [NOT SET]
+  ERROR  CONTEXT7_API_KEY: [NOT SET]
+  ERROR  EXA_API_KEY: [NOT SET]
+  OK  OPENCODE_CONFIG_DIR: [SET]
+  ERROR  OPENCODE_CONFIG: [NOT SET]
+  ERROR  XDG_CONFIG_HOME: [NOT SET]
+  ERROR  FLOWDECK_DISABLE_MCP: [NOT SET]
+  ERROR  FDX_DISABLE_FALLBACK: [NOT SET]
+  ERROR  FLOWDECK_GUARD_RAILS_ENABLED: [NOT SET]
+  ERROR  FLOWDECK_BUN_BIN (unknown): [SET]
+  OK  OpenCode Config Directory: /home/heidi/.cache/tmp/fd-cli-test-az1bf4a03f4/.config/opencode
+  OK  MCP: context7: https://mcp.context7.com/mcp
+  WARN  MCP: websearch auth: EXA_API_KEY not set
+  OK  MCP: grep_app: https://mcp.grep.app
+  OK  MCP: github: https://api.githubcopilot.com/mcp/
+  OK  MCP: memory: npx -y @modelcontextprotocol/server-memory
+  OK  MCP: sequentialThinking: npx -y @modelcontextprotocol/server-sequential-thinking
+  OK  MCP: magic: npx -y @magicuidesign/mcp@latest
+  OK  MCP: playwright: npx -y @playwright/mcp --browser chrome
+  OK  MCP: tokenOptimizer: npx -y token-optimizer-mcp
+  OK  MCP: codegraph: codegraph serve --mcp
+  OK  Plugin Identity: @heidi-dang/flowdeck
+  OK  Plugin Version: v1.0.4
+  OK  Plugin Module Contract: { main, type } present
+  OK  Plugin Bundle: dist/index.js found
+  ERROR  Hook: chat.message: mandatory
+  ERROR  Hook: tool.execute.before: mandatory
+  ERROR  Hook: tool.execute.after: mandatory
+  ERROR  Hook: guardRailsHook: mandatory
+  ERROR  Hook: orchestratorGuard: mandatory
+  ERROR  Hook: toolGuardHook: mandatory
+  ERROR  Hook: sessionStartHook: mandatory
+  ERROR  Hook: sessionEventsHook: mandatory
+  ERROR  Hook: commandRefGuard: recommended
+  ERROR  Hook: patchTrust: recommended
+  ERROR  Hook: notifications: optional
+  ERROR  Hook: todoHook: recommended
+  ERROR  Hook: fileTracker: recommended
+  ERROR  Hook: contextWindowMonitor: recommended
+  OK  .gitignore: present
+  OK  .gitignore Coverage: dist=true, node_modules=true, .env=true
+  ERROR  npm Token: [NOT SET]
+  OK  Secret Redaction: redacts synthetic secrets
+  ERROR  .npmrc: not found
+  OK  Config: package.json: present
+  OK  Config: tsconfig.json: present
+  OK  Config: install.sh: present
+  OK  Config: uninstall.sh: present
+  OK  OpenCode User Config: valid JSON/JSONC
+  OK  TypeScript Strict Mode: strict: true
+
+============================================================
+ 
+
+tests/fdx-native-distribution.test.ts:
+
+=== FlowDeck FDX Native Status ===
+Target:             linux/x64 (gnu)
+Expected Package:   @heidi-dang/flowdeck-fdx-linux-x64-gnu
+Native Available:   Yes
+Resolution Source:  cache
+Resolved Path:      /home/heidi/.cache/flowdeck/fdx/1.0.4/linux-x64-gnu/fdx
+Binary Version:     1.0.4
+Checksum Status:    pass
+Fallback Mode:      Inactive (using native performance)
+
+Diagnostics:
+  - Resolved repaired native binary from cache at "/home/heidi/.cache/flowdeck/fdx/1.0.4/linux-x64-gnu/fdx"
+
+=== FlowDeck FDX Verification ===
+✓ FDX native binary verified successfully:
+  Path:    /home/heidi/.cache/flowdeck/fdx/1.0.4/linux-x64-gnu/fdx
+  Version: 1.0.4
+  Source:  cache
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+ℹ Local platform package @heidi-dang/flowdeck-fdx-linux-x64-gnu not found. Attempting trusted registry acquisition...
+  [registry] Failure: package version missing (@heidi-dang/flowdeck-fdx-linux-x64-gnu@1.0.4)
+✗ Installation FAILED: Could not locate platform package @heidi-dang/flowdeck-fdx-linux-x64-gnu.
+  Ensure @heidi-dang/flowdeck-fdx-linux-x64-gnu is installed or present in node_modules/packages.
+  Run: npm install @heidi-dang/flowdeck-fdx-linux-x64-gnu
+  - manifest.sourceCommitSha-valid: source commit SHA is all-zero (0000000000000000000000000000000000000000) — fabricated provenance
+  - source-fields-consistent: expected all equal "0000000000000000000000000000000000000000", got ["0000000000000000000000000000000000000000","8498ac260defa952adb40281f16c6e361dde3cb8","8498ac260defa952adb40281f16c6e361dde3cb8"]
+fatal: not a git repository (or any of the parent directories): .git
+fatal: not a git repository (or any of the parent directories): .git
+
+tests/phase8-ci-production-gates.test.ts:
+  installer: pass Postinstall is side-effect-free; 'flowdeck install' handles setup
+
+tests/check-coverage.test.ts:
+Measured weighted aggregate line coverage: 90% (raw: 90%, 90/100 lines across 1 source files). Required threshold: 80%
+
+[SUCCESS] Coverage threshold requirement satisfied (90% >= 80%).
+
+tests/fdx-trusted-acquisition.test.ts:
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+ℹ Local platform package @heidi-dang/flowdeck-fdx-linux-x64-gnu not found. Attempting trusted registry acquisition...
+  [registry] Failure: package version missing (@heidi-dang/flowdeck-fdx-linux-x64-gnu@1.0.4)
+✗ Installation FAILED: Could not locate platform package @heidi-dang/flowdeck-fdx-linux-x64-gnu.
+  Ensure @heidi-dang/flowdeck-fdx-linux-x64-gnu is installed or present in node_modules/packages.
+  Run: npm install @heidi-dang/flowdeck-fdx-linux-x64-gnu
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+ℹ Local platform package @heidi-dang/flowdeck-fdx-linux-x64-gnu not found. Attempting trusted registry acquisition...
+  [registry] Failure: package version missing (@heidi-dang/flowdeck-fdx-linux-x64-gnu@1.0.4)
+✗ Installation FAILED: Could not locate platform package @heidi-dang/flowdeck-fdx-linux-x64-gnu.
+  Ensure @heidi-dang/flowdeck-fdx-linux-x64-gnu is installed or present in node_modules/packages.
+  Run: npm install @heidi-dang/flowdeck-fdx-linux-x64-gnu
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+✗ Installation FAILED: Another FDX install/repair is already in progress for this target.
+  Lock file: /home/heidi/.cache/tmp/fdx-trusted-acq-knB6JN/flowdeck/fdx/1.0.4/linux-x64-gnu.lock
+  Reason: lock-held-live
+  Detail: Lock is held by live process 401971.
+  The lock is held by a live process; it will be released when that process finishes.
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+ℹ Using local dev platform package from: /home/heidi/.cache/tmp/fdx-trusted-acq-o9I5RW/packages/flowdeck-fdx-linux-x64-gnu
+✓ FDX native installation successful: /home/heidi/.cache/tmp/fdx-trusted-acq-o9I5RW/packages/flowdeck-fdx-linux-x64-gnu/fdx
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+ℹ Using local dev platform package from: /home/heidi/.cache/tmp/fdx-trusted-acq-9U1QrA/packages/flowdeck-fdx-linux-x64-gnu
+✗ Installation FAILED: Provenance validation failed: Provenance packageName "@heidi-dang/evil-fdx" mismatch with target "@heidi-dang/flowdeck-fdx-linux-x64-gnu"
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+ℹ Using local dev platform package from: /home/heidi/.cache/tmp/fdx-trusted-acq-CtakR4/packages/flowdeck-fdx-linux-x64-gnu
+✗ Installation FAILED: Binary checksum mismatch for @heidi-dang/flowdeck-fdx-linux-x64-gnu.
+  Expected: 66abe4ea7bb60551284e0d31a84f04f8dd422794b7520942499e0db356049d63
+  Actual:   eb394e7f468e00e0df65f5db909d5d2faa2b2146a98fd8223c4e1d67e7b738fd
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+ℹ Local platform package @heidi-dang/flowdeck-fdx-linux-x64-gnu not found. Attempting trusted registry acquisition...
+  [registry] Failure: package version missing (@heidi-dang/flowdeck-fdx-linux-x64-gnu@1.0.4)
+✗ Installation FAILED: Could not locate platform package @heidi-dang/flowdeck-fdx-linux-x64-gnu.
+  Ensure @heidi-dang/flowdeck-fdx-linux-x64-gnu is installed or present in node_modules/packages.
+  Run: npm install @heidi-dang/flowdeck-fdx-linux-x64-gnu
+{
+  available: true,
+  binary: "/home/heidi/.cache/tmp/fdx-trusted-acq-aVNpcR/packages/flowdeck-fdx-linux-x64-gnu/fdx",
+  binaryPath: "/home/heidi/.cache/tmp/fdx-trusted-acq-aVNpcR/packages/flowdeck-fdx-linux-x64-gnu/fdx",
+  message: "FDX native binary is available at \"/home/heidi/.cache/tmp/fdx-trusted-acq-aVNpcR/packages/flowdeck-fdx-linux-x64-gnu/fdx\".",
+  source: "package",
+  target: {
+    platform: "linux",
+    arch: "x64",
+    libc: "gnu",
+    packageName: "@heidi-dang/flowdeck-fdx-linux-x64-gnu",
+    executableName: "fdx",
+  },
+  targetSupported: true,
+  packagePresent: true,
+  binaryPresent: true,
+  binaryIntegrity: "pass",
+  binaryVersion: "1.0.4",
+  versionCompatible: true,
+  checksumStatus: "pass",
+  validatedSha256: "66abe4ea7bb60551284e0d31a84f04f8dd422794b7520942499e0db356049d63",
+  probeCleanup: {
+    unlinkError: null,
+    rmdirError: null,
+    closeError: null,
+  },
+  executionStatus: "pass",
+  fallbackAvailable: true,
+  diagnostics: [ "Resolved compatible platform package binary at \"/home/heidi/.cache/tmp/fdx-trusted-acq-aVNpcR/packages/flowdeck-fdx-linux-x64-gnu/fdx\" (source: local-dev)" ],
+  repairCommand: "npx flowdeck fdx repair",
+}
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+ℹ Using local dev platform package from: /home/heidi/.cache/tmp/fdx-trusted-acq-6kxrmS/packages/flowdeck-fdx-linux-x64-gnu
+✗ Installation FAILED: Validation of staged binary failed: Provenance binaryByteSize 1027 does not match actual binary size 28
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+ℹ Using local dev platform package from: /home/heidi/.cache/tmp/fdx-trusted-acq-eWbFpI/packages/flowdeck-fdx-linux-x64-gnu
+✗ FDX installation failed: Post-installation verification failed: activated cache failed direct trust validation
+  [rollback] Quarantined newly-activated cache to /home/heidi/.cache/tmp/fdx-trusted-acq-eWbFpI/flowdeck/fdx/1.0.4/linux-x64-gnu.failed-401971-1785848399690 for inspection.
+
+=== FlowDeck FDX Repair ===
+Target: linux/x64 (gnu)
+Package: @heidi-dang/flowdeck-fdx-linux-x64-gnu
+ℹ Using local dev platform package from: /home/heidi/.cache/tmp/fdx-trusted-acq-VkTHx9/packages/flowdeck-fdx-linux-x64-gnu
+✗ FDX installation failed: Post-installation verification failed: activated cache failed direct trust validation
+  [rollback] Quarantined newly-activated cache to /home/heidi/.cache/tmp/fdx-trusted-acq-VkTHx9/flowdeck/fdx/1.0.4/linux-x64-gnu.failed-401971-1785848399703 for inspection.
+  [rollback] Restored previous cache directory from backup.
+{
+  available: true,
+  binary: "/home/heidi/.cache/tmp/fdx-trusted-acq-bqrpHn/packages/flowdeck-fdx-linux-x64-gnu/fdx",
+  binaryPath: "/home/heidi/.cache/tmp/fdx-trusted-acq-bqrpHn/packages/flowdeck-fdx-linux-x64-gnu/fdx",
+  message: "FDX native binary is available at \"/home/heidi/.cache/tmp/fdx-trusted-acq-bqrpHn/packages/flowdeck-fdx-linux-x64-gnu/fdx\".",
+  source: "package",
+  target: {
+    platform: "linux",
+    arch: "x64",
+    libc: "gnu",
+    packageName: "@heidi-dang/flowdeck-fdx-linux-x64-gnu",
+    executableName: "fdx",
+  },
+  targetSupported: true,
+  packagePresent: true,
+  binaryPresent: true,
+  binaryIntegrity: "pass",
+  binaryVersion: "1.0.4",
+  versionCompatible: true,
+  checksumStatus: "pass",
+  validatedSha256: "66abe4ea7bb60551284e0d31a84f04f8dd422794b7520942499e0db356049d63",
+  probeCleanup: {
+    unlinkError: null,
+    rmdirError: null,
+    closeError: null,
+  },
+  executionStatus: "pass",
+  fallbackAvailable: true,
+  diagnostics: [ "Resolved compatible platform package binary at \"/home/heidi/.cache/tmp/fdx-trusted-acq-bqrpHn/packages/flowdeck-fdx-linux-x64-gnu/fdx\" (source: local-dev)" ],
+  repairCommand: "npx flowdeck fdx repair",
+}
+{
+  available: true,
+  binary: "/home/heidi/.cache/tmp/fdx-trusted-acq-7fx7Tx/packages/flowdeck-fdx-linux-x64-gnu/fdx",
+  binaryPath: "/home/heidi/.cache/tmp/fdx-trusted-acq-7fx7Tx/packages/flowdeck-fdx-linux-x64-gnu/fdx",
+  message: "FDX native binary is available at \"/home/heidi/.cache/tmp/fdx-trusted-acq-7fx7Tx/packages/flowdeck-fdx-linux-x64-gnu/fdx\".",
+  source: "package",
+  target: {
+    platform: "linux",
+    arch: "x64",
+    libc: "gnu",
+    packageName: "@heidi-dang/flowdeck-fdx-linux-x64-gnu",
+    executableName: "fdx",
+  },
+  targetSupported: true,
+  packagePresent: true,
+  binaryPresent: true,
+  binaryIntegrity: "pass",
+  binaryVersion: "1.0.4",
+  versionCompatible: true,
+  checksumStatus: "pass",
+  validatedSha256: "66abe4ea7bb60551284e0d31a84f04f8dd422794b7520942499e0db356049d63",
+  probeCleanup: {
+    unlinkError: null,
+    rmdirError: null,
+    closeError: null,
+  },
+  executionStatus: "pass",
+  fallbackAvailable: true,
+  diagnostics: [ "Resolved compatible platform package binary at \"/home/heidi/.cache/tmp/fdx-trusted-acq-7fx7Tx/packages/flowdeck-fdx-linux-x64-gnu/fdx\" (source: local-dev)" ],
+  repairCommand: "npx flowdeck fdx repair",
+}
+{
+  available: true,
+  binary: "/home/heidi/.cache/tmp/fdx-trusted-acq-OpWPpN/packages/flowdeck-fdx-linux-x64-gnu/fdx",
+  binaryPath: "/home/heidi/.cache/tmp/fdx-trusted-acq-OpWPpN/packages/flowdeck-fdx-linux-x64-gnu/fdx",
+  message: "FDX native binary is available at \"/home/heidi/.cache/tmp/fdx-trusted-acq-OpWPpN/packages/flowdeck-fdx-linux-x64-gnu/fdx\".",
+  source: "package",
+  target: {
+    platform: "linux",
+    arch: "x64",
+    libc: "gnu",
+    packageName: "@heidi-dang/flowdeck-fdx-linux-x64-gnu",
+    executableName: "fdx",
+  },
+  targetSupported: true,
+  packagePresent: true,
+  binaryPresent: true,
+  binaryIntegrity: "pass",
+  binaryVersion: "1.0.4",
+  versionCompatible: true,
+  checksumStatus: "pass",
+  validatedSha256: "66abe4ea7bb60551284e0d31a84f04f8dd422794b7520942499e0db356049d63",
+  probeCleanup: {
+    unlinkError: null,
+    rmdirError: null,
+    closeError: null,
+  },
+  executionStatus: "pass",
+  fallbackAvailable: true,
+  diagnostics: [ "Resolved compatible platform package binary at \"/home/heidi/.cache/tmp/fdx-trusted-acq-OpWPpN/packages/flowdeck-fdx-linux-x64-gnu/fdx\" (source: local-dev)" ],
+  repairCommand: "npx flowdeck fdx repair",
+}
+{
+  available: true,
+  binary: "/home/heidi/.cache/tmp/fdx-trusted-acq-674U6P/cmd-fail-cleanup/fdx",
+  binaryPath: "/home/heidi/.cache/tmp/fdx-trusted-acq-674U6P/cmd-fail-cleanup/fdx",
+  message: "FDX native binary is available at \"/home/heidi/.cache/tmp/fdx-trusted-acq-674U6P/cmd-fail-cleanup/fdx\".",
+  source: "env",
+  target: {
+    platform: "linux",
+    arch: "x64",
+    libc: "gnu",
+    packageName: "@heidi-dang/flowdeck-fdx-linux-x64-gnu",
+    executableName: "fdx",
+  },
+  targetSupported: true,
+  packagePresent: false,
+  binaryPresent: true,
+  binaryIntegrity: "pass",
+  binaryVersion: "1.0.4",
+  versionCompatible: true,
+  checksumStatus: "pass",
+  validatedSha256: "6e1c06bac3b7f198c5a6218c65bdbd2135e278fb8a0133fa1209144602846948",
+  probeCleanup: {
+    unlinkError: null,
+    rmdirError: null,
+    closeError: null,
+  },
+  executionStatus: "pass",
+  fallbackAvailable: true,
+  diagnostics: [ "Using environment binary from FDX_BINARY_PATH=\"/home/heidi/.cache/tmp/fdx-trusted-acq-674U6P/cmd-fail-cleanup/fdx\"" ],
+  repairCommand: "npx flowdeck fdx repair",
+}
+{
+  available: true,
+  binary: "/home/heidi/.cache/tmp/fdx-trusted-acq-luuuZQ/packages/flowdeck-fdx-linux-x64-gnu/fdx",
+  binaryPath: "/home/heidi/.cache/tmp/fdx-trusted-acq-luuuZQ/packages/flowdeck-fdx-linux-x64-gnu/fdx",
+  message: "FDX native binary is available at \"/home/heidi/.cache/tmp/fdx-trusted-acq-luuuZQ/packages/flowdeck-fdx-linux-x64-gnu/fdx\".",
+  source: "package",
+  target: {
+    platform: "linux",
+    arch: "x64",
+    libc: "gnu",
+    packageName: "@heidi-dang/flowdeck-fdx-linux-x64-gnu",
+    executableName: "fdx",
+  },
+  targetSupported: true,
+  packagePresent: true,
+  binaryPresent: true,
+  binaryIntegrity: "pass",
+  binaryVersion: "1.0.4",
+  versionCompatible: true,
+  checksumStatus: "pass",
+  validatedSha256: "66abe4ea7bb60551284e0d31a84f04f8dd422794b7520942499e0db356049d63",
+  probeCleanup: {
+    unlinkError: null,
+    rmdirError: null,
+    closeError: null,
+  },
+  executionStatus: "pass",
+  fallbackAvailable: true,
+  diagnostics: [ "Resolved compatible platform package binary at \"/home/heidi/.cache/tmp/fdx-trusted-acq-luuuZQ/packages/flowdeck-fdx-linux-x64-gnu/fdx\" (source: local-dev)" ],
+  repairCommand: "npx flowdeck fdx repair",
+}
+fatal: bad object 0000000000000000000000000000000000000000
+fatal: bad object 0000000000000000000000000000000000000000
+
+tests/config/agent-models.test.ts:
+[flowdeck] Malformed config at /home/heidi/.cache/tmp/flowdeck-agent-models-test-bvYTfj/.flowdeck.jsonc: JSON Parse error: Expected '}'. Trying next candidate.
+
+tests/streaming/http-sse-load-soak.test.ts:
+=== Network Load & Soak Gate Report ===
+{
+  "test": "delivery-aware-http-sse-load-soak",
+  "timestamp": "2026-08-04T13:00:28.372Z",
+  "clientCount": 3,
+  "eventCount": 500,
+  "totalSuccessfulReceipts": 1500,
+  "missingEvents": 0,
+  "duplicates": 0,
+  "p50ReceiptLatencyMs": 93.0139,
+  "p95ReceiptLatencyMs": 168.5739,
+  "maxReceiptLatencyMs": 185.0814,
+  "throughputOpsPerSec": 2875,
+  "baselineRss": 320335872,
+  "peakRss": 337563648,
+  "finalRss": 337956864,
+  "openHandlesAfterTeardown": 0,
+  "sustainedDurationMs": 173.9
+}
+
+tests/hooks/tui-layout-invariants.test.ts:
+[flowdeck] Malformed config at /home/heidi/.cache/tmp/flowdeck-tui-invariants-test/1785848431484/config-malformed/.opencode/flowdeck.json: JSON Parse error: Expected '}'. Trying next candidate.
+Preparing worktree (new branch 'fd-fdx-worktree-test-1785848440171-b7oenw-auth-phase-1-phase-1')
+Preparing worktree (new branch 'fd-fdx-worktree-test-1785848440227-v41ern-auth-phase-1-phase-1')
+Preparing worktree (new branch 'fd-fdx-worktree-test-1785848440286-j3qv8l-auth-phase-1-phase-1')
+Preparing worktree (new branch 'fd-fdx-worktree-test-1785848440430-d2yg35-auth-phase-1-phase-1')
+Preparing worktree (new branch 'fd-fdx-worktree-test-1785848440501-tes1b5-auth-phase-1-phase-1')
+merge: fd-fdx-worktree-test-1785848440594-y2l0lg-auth-phase-1-phase-1 - not something we can merge
+fatal: There is no merge to abort (MERGE_HEAD missing).
+Preparing worktree (new branch 'fd-fdx-worktree-test-1785848440692-t72u8k-a-phase-1-phase-1')
+Preparing worktree (new branch 'fd-fdx-worktree-test-1785848440692-t72u8k-a-phase-2-phase-2')
+
+tests/orchestration/services.test.ts:
+{"timestamp":"2026-08-04T13:00:57.612Z","level":"info","message":"child message","component":"parent.child"}
+
+tests/orchestration/performance/benchmark.test.ts:
+[BENCHMARK] Schema Creation: median=0.15ms, p95=0.17ms, max=0.17ms, threshold=100ms
+[BENCHMARK] 1,000 event appends: median=3.07ms, p95=3.31ms, max=3.31ms, threshold=2000ms
+
+ 4498 pass
+ 2 skip
+ 0 fail
+ 34814 expect() calls
+Ran 4500 tests across 210 files. [357.75s]
