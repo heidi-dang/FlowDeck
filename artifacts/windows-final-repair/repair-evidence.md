@@ -87,3 +87,12 @@ Windows product failures repaired on
 - Final exact-head runs (after the artifacts-only evidence commit): see
   `final-runs.json` (stored with the run evidence in the PR description, kept
   outside the branch so the validated head is not mutated).
+
+## Pipeline Completion gate fix
+
+Run `31007615210` on `b9ead1c` went fully green except Pipeline Completion:
+the gate checked `needs.benchmark.result` but the `benchmark` job (FDX Index
+Benchmark, added in `8ebf2a8`) was never added to the Pipeline Completion
+`needs:` array, so the value rendered empty and the chain could never pass.
+Fixed in `329f50a` (add `benchmark` to the needs list). The final exact-head
+run on the artifacts-only evidence commit below is the validated green state.
