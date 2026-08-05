@@ -54,8 +54,6 @@ jobs:
   coverage:
     name: Coverage Check
     runs-on: ubuntu-latest
-    env:
-      GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -80,7 +78,10 @@ jobs:
         run: npx playwright install --with-deps chromium
       - name: Coverage check (unit tests)
         run: bun test tests/check-coverage.test.ts
-      - run: node scripts/check-coverage.mjs
+      - name: Coverage gate (with CI provenance env aligned to checkout)
+        run: |
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          node scripts/check-coverage.mjs
       - name: Routing policy-version gate
         if: github.event_name == 'pull_request'
         run: node scripts/check-routing-policy-version.mjs --base ${{ github.event.pull_request.base.sha }}
@@ -168,8 +169,6 @@ jobs:
   test-matrix:
     name: Test Matrix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    env:
-      GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
       fail-fast: false
       matrix:
@@ -199,14 +198,16 @@ jobs:
       - name: Install Playwright Chromium (macOS/Windows)
         if: runner.os != 'Linux'
         run: npx playwright install chromium
-      - run: npm run test
+      - name: Run test suite (with CI provenance env aligned to checkout)
+        shell: bash
+        run: |
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          npm run test
 
 
   build:
     name: Build & Validate
     runs-on: ubuntu-latest
-    env:
-      GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -225,6 +226,7 @@ jobs:
       - run: npm run validate:docs
       - name: Pack and inspect tarball
         run: |
+          export GITHUB_SHA="$(git rev-parse HEAD)"
           node scripts/build-fdx-packages.mjs
           PACKAGE=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
           echo "Package: $PACKAGE"
@@ -587,8 +589,6 @@ jobs:
   packed-cli-matrix:
     name: Packed CLI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    env:
-      GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
       fail-fast: false
       matrix:
@@ -612,6 +612,7 @@ jobs:
       - name: Packed CLI test with spaces
         run: |
           set -e
+          export GITHUB_SHA="$(git rev-parse HEAD)"
           node scripts/build-fdx-packages.mjs
           PACKAGE=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
           TARBALL_PATH="$GITHUB_WORKSPACE/$PACKAGE"
