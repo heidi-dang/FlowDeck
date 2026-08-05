@@ -1,0 +1,266 @@
+{
+  "version": 1,
+  "algorithm_version": "v1",
+  "algorithm_doc": "docs/project-identity.md",
+  "description": "Canonical project-identity fixture shared by the TypeScript (src/tools/planning-state-lib.ts:normalizePathForId/generateProjectId) and Rust (crates/fdx/src/paths.rs:normalize_path_for_id/generate_project_id) implementations. Changing an expected value requires an intentional algorithm_version bump.",
+  "field_notes": {
+    "input": "Raw input as the caller provides it.",
+    "platform": "Context the fixture entry targets: posix, windows, or any.",
+    "canonical": {
+      "posix": "Expected canonical normalized input on POSIX (null when filesystem- or cwd-dependent).",
+      "windows": "Expected canonical normalized input on Windows (null when filesystem- or cwd-dependent)."
+    },
+    "expected_id": {
+      "posix": "Expected full project id `<name>-<8-hex-sha256>` on POSIX (null when not pinned).",
+      "windows": "Expected full project id on Windows (null when not pinned)."
+    },
+    "slug_prefix": "Basename prefix asserted on every platform.",
+    "different_from": "Entry ids that MUST produce a different id on every platform.",
+    "create_dir": "When set, both implementations must create this relative dir under a temp root and produce identical ids (byte-for-byte TS/Rust parity on real directories).",
+    "explanation": "Why this case matters."
+  },
+  "entries": [
+    {
+      "id": "posix-basic",
+      "input": "/home/user/project",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/project", "windows": null },
+      "expected_id": { "posix": "project-9dad1e4e", "windows": null },
+      "slug_prefix": "project-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Baseline absolute POSIX path (nonexistent — lexical normalization only)."
+    },
+    {
+      "id": "posix-dotdot",
+      "input": "/home/user/app/../project",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/project", "windows": null },
+      "expected_id": { "posix": "project-9dad1e4e", "windows": null },
+      "slug_prefix": "project-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Lexical .. resolution must collapse to the same canonical as posix-basic."
+    },
+    {
+      "id": "posix-trailing",
+      "input": "/home/user/project/",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/project", "windows": null },
+      "expected_id": { "posix": "project-9dad1e4e", "windows": null },
+      "slug_prefix": "project-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Trailing separator is stripped."
+    },
+    {
+      "id": "posix-double-slash",
+      "input": "/home/user//project",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/project", "windows": null },
+      "expected_id": { "posix": "project-9dad1e4e", "windows": null },
+      "slug_prefix": "project-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Repeated separators collapse."
+    },
+    {
+      "id": "posix-dot",
+      "input": "/home/user/./project",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/project", "windows": null },
+      "expected_id": { "posix": "project-9dad1e4e", "windows": null },
+      "slug_prefix": "project-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Dot components collapse."
+    },
+    {
+      "id": "posix-different-parent",
+      "input": "/home/other/work/project",
+      "platform": "posix",
+      "canonical": { "posix": "/home/other/work/project", "windows": null },
+      "expected_id": { "posix": "project-59d0d676", "windows": null },
+      "slug_prefix": "project-",
+      "different_from": ["posix-basic"],
+      "create_dir": null,
+      "explanation": "Same basename, different parent: ids must differ (collision safety)."
+    },
+    {
+      "id": "posix-hyphenated",
+      "input": "/home/user/my-project-repo",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/my-project-repo", "windows": null },
+      "expected_id": { "posix": "my-project-repo-40bd1f9e", "windows": null },
+      "slug_prefix": "my-project-repo-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Hyphenated names are kept verbatim (the legacy 'hashed-looking name' heuristic was removed)."
+    },
+    {
+      "id": "posix-multi-hyphen",
+      "input": "/home/user/some---repo--name",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/some---repo--name", "windows": null },
+      "expected_id": { "posix": "some---repo--name-12b00b7c", "windows": null },
+      "slug_prefix": "some---repo--name-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Multiple hyphens preserved."
+    },
+    {
+      "id": "posix-spaces",
+      "input": "/home/user/my project folder",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/my project folder", "windows": null },
+      "expected_id": { "posix": "my project folder-5d111ab2", "windows": null },
+      "slug_prefix": "my project folder-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Spaces preserved (identity is not a filesystem slug)."
+    },
+    {
+      "id": "posix-unicode-nfc",
+      "input": "/home/user/über-project",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/über-project", "windows": null },
+      "expected_id": { "posix": "über-project-3185b167", "windows": null },
+      "slug_prefix": "über-project-",
+      "different_from": ["posix-unicode-nfd"],
+      "create_dir": null,
+      "explanation": "NFC Unicode input is hashed byte-for-byte (no Unicode normalization)."
+    },
+    {
+      "id": "posix-unicode-nfd",
+      "input": "/home/user/u\u0308ber-project",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/u\u0308ber-project", "windows": null },
+      "expected_id": { "posix": "u\u0308ber-project-1ea99686", "windows": null },
+      "slug_prefix": "u\u0308ber-project-",
+      "different_from": ["posix-unicode-nfc"],
+      "create_dir": null,
+      "explanation": "NFD input differs from NFC input — Unicode normalization is intentionally NOT applied; NFC/NFD paths must not collide with each other."
+    },
+    {
+      "id": "posix-ampersand",
+      "input": "/home/user/& repo",
+      "platform": "posix",
+      "canonical": { "posix": "/home/user/& repo", "windows": null },
+      "expected_id": { "posix": "& repo-d905099a", "windows": null },
+      "slug_prefix": "& repo-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Shell metacharacters in directory names are preserved."
+    },
+    {
+      "id": "posix-root",
+      "input": "/",
+      "platform": "posix",
+      "canonical": { "posix": "/", "windows": null },
+      "expected_id": { "posix": "-8a5edab2", "windows": null },
+      "slug_prefix": "-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Root has no basename; id is `-<hash>` on both implementations."
+    },
+    {
+      "id": "windows-drive",
+      "input": "C:\\work\\repo",
+      "platform": "windows",
+      "canonical": { "posix": null, "windows": "C:/work/repo" },
+      "expected_id": { "posix": null, "windows": "repo-6fd4f692" },
+      "slug_prefix": "repo-",
+      "different_from": ["windows-drive-d"],
+      "create_dir": null,
+      "explanation": "Windows drive path; drive letter uppercased. On POSIX the input is a relative path resolved against cwd (id not pinned, prefix asserted)."
+    },
+    {
+      "id": "windows-drive-d",
+      "input": "D:\\work\\repo",
+      "platform": "windows",
+      "canonical": { "posix": null, "windows": "D:/work/repo" },
+      "expected_id": { "posix": null, "windows": "repo-27bec666" },
+      "slug_prefix": "repo-",
+      "different_from": ["windows-drive"],
+      "create_dir": null,
+      "explanation": "Different drive letter must produce a different id."
+    },
+    {
+      "id": "windows-unc",
+      "input": "\\\\server\\share\\project",
+      "platform": "windows",
+      "canonical": { "posix": null, "windows": "//server/share/project" },
+      "expected_id": { "posix": null, "windows": "project-ed0860ba" },
+      "slug_prefix": "project-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "UNC paths are kept as canonical (no symlink/short-name resolution on network shares) and are NOT resolved to the cwd on either platform."
+    },
+    {
+      "id": "windows-extended",
+      "input": "\\\\?\\C:\\work\\repo",
+      "platform": "windows",
+      "canonical": { "posix": null, "windows": "C:/work/repo" },
+      "expected_id": { "posix": null, "windows": "repo-6fd4f692" },
+      "slug_prefix": "repo-",
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Extended-length prefix is stripped, yielding the same identity as windows-drive."
+    },
+    {
+      "id": "windows-drive-root",
+      "input": "C:\\",
+      "platform": "windows",
+      "canonical": { "posix": null, "windows": "C:/" },
+      "expected_id": { "posix": null, "windows": "-8545a81f" },
+      "slug_prefix": null,
+      "different_from": [],
+      "create_dir": null,
+      "explanation": "Drive root has no basename in Rust's file_name; TypeScript aligns to `-<hash>` on Windows. On POSIX the input resolves against cwd and the basename is `C:`."
+    },
+    {
+      "id": "real-dir-normal",
+      "input": null,
+      "platform": "any",
+      "canonical": { "posix": null, "windows": null },
+      "expected_id": { "posix": null, "windows": null },
+      "slug_prefix": null,
+      "different_from": [],
+      "create_dir": "normal-repo",
+      "explanation": "Real existing directory: both implementations resolve the OS canonical path (symlinks and 8.3 short names) and must produce byte-identical ids."
+    },
+    {
+      "id": "real-dir-space",
+      "input": null,
+      "platform": "any",
+      "canonical": { "posix": null, "windows": null },
+      "expected_id": { "posix": null, "windows": null },
+      "slug_prefix": null,
+      "different_from": [],
+      "create_dir": "space repo",
+      "explanation": "Real directory with spaces."
+    },
+    {
+      "id": "real-dir-unicode",
+      "input": null,
+      "platform": "any",
+      "canonical": { "posix": null, "windows": null },
+      "expected_id": { "posix": null, "windows": null },
+      "slug_prefix": null,
+      "different_from": [],
+      "create_dir": "über-repo",
+      "explanation": "Real directory with NFC Unicode."
+    },
+    {
+      "id": "real-dir-ampersand",
+      "input": null,
+      "platform": "any",
+      "canonical": { "posix": null, "windows": null },
+      "expected_id": { "posix": null, "windows": null },
+      "slug_prefix": null,
+      "different_from": [],
+      "create_dir": "a&b repo",
+      "explanation": "Real directory with shell metacharacter."
+    }
+  ]
+}

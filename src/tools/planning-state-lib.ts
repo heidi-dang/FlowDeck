@@ -25,18 +25,40 @@ export function codebaseDir(directory: string): string {
 // ─── Collision-safe project identity ──────────────────────────────────────
 
 /**
- * Normalize path deterministically for project ID generation.
- * Resolves real path if exists, strips UNC prefix, resolves relative components.
+ * Canonical project-identity path normalization (algorithm v1).
+ *
+ * The canonical algorithm is documented in `docs/project-identity.md` and its
+ * expected outputs are pinned in `fixtures/fdx/project-identity-v1.json`,
+ * which BOTH the TypeScript and Rust implementations consume. Rules:
+ *
+ * 1. `\` → `/`
+ * 2. strip extended-length prefixes (`//?/`, `\\?\`)
+ * 3. uppercase the drive letter (`c:` → `C:`)
+ * 4. resolve relative paths against the process cwd
+ * 5. if the path exists (and is not a UNC path), resolve symlinks and Windows
+ *    8.3 short names via the OS canonical path (`realpathSync.native`, which
+ *    uses libuv — matching Rust's `std::fs::canonicalize`); otherwise apply
+ *    lexical `.`/`..`/repeated-separator normalization
+ * 6. strip a single trailing `/` (beyond the root)
+ * 7. uppercase the drive letter again
+ *
+ * No general case folding, no Unicode normalization, no hostname-specific
+ * handling — the identity is byte-deterministic on the canonical input.
  */
 export function normalizePathForId(directory: string): string {
   let dir = directory.replace(/\\/g, "/")
   if (/^[a-zA-Z]:/.test(dir)) {
     dir = dir[0].toUpperCase() + dir.slice(1)
   }
+  const isUnc = dir.startsWith("//")
   let resolved = resolve(dir).replace(/\\/g, "/")
-  if (!dir.startsWith("//") && !dir.startsWith("\\\\") && existsSync(resolved)) {
+  if (!isUnc && existsSync(resolved)) {
     try {
-      resolved = realpathSync(resolved).replace(/\\/g, "/")
+      // `.native` (libuv) resolves 8.3 short names on Windows exactly like
+      // Rust's `std::fs::canonicalize`; fall back to the plain variant if a
+      // runtime does not expose it.
+      const realpath = typeof realpathSync.native === "function" ? realpathSync.native : realpathSync
+      resolved = realpath(resolved).replace(/\\/g, "/")
     } catch {}
   }
   if (resolved.startsWith("//?/")) {
@@ -55,11 +77,13 @@ export function normalizePathForId(directory: string): string {
 
 /**
  * Generate stable project ID from directory path.
- * Format: `<dirname>-<8-char-sha256-hash>`
+ * Format: `<dirname>-<8-char-sha256-hash>` (root paths yield `-<hash>`).
  */
 export function generateProjectId(directory: string): string {
   const normPath = normalizePathForId(directory)
-  const name = basename(normPath) || normPath
+  // A bare drive root (`C:/`) has no basename in Rust's `file_name`; align the
+  // TypeScript side so both produce `-<hash>` for root/drive-root inputs.
+  const name = /^[A-Z]:\/$/.test(normPath) ? "" : basename(normPath) || ""
   const hash = createHash("sha256").update(normPath).digest("hex").slice(0, 8)
   return `${name}-${hash}`
 }

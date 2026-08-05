@@ -53,9 +53,9 @@ pub fn slugify_topic(topic: &str) -> String {
 
 use sha2::{Digest, Sha256};
 
-/// Normalize path deterministically for project ID generation.
-/// Mirrors `src/tools/planning-state-lib.ts:normalizePathForId`.
-/// Normalize path deterministically for project ID generation.
+/// Normalize path deterministically for project ID generation (canonical
+/// algorithm v1 — see `docs/project-identity.md` and
+/// `fixtures/fdx/project-identity-v1.json`).
 /// Mirrors `src/tools/planning-state-lib.ts:normalizePathForId`.
 pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
     let mut s = directory.to_string_lossy().replace('\\', "/");
@@ -63,6 +63,10 @@ pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
         let drive = (s.as_bytes()[0] as char).to_ascii_uppercase();
         s = format!("{}{}", drive, &s[1..]);
     }
+
+    // UNC (network share) paths are canonical as given: no symlink or 8.3
+    // short-name resolution is applied, matching the TypeScript side.
+    let is_unc = s.starts_with("//");
 
     let path_buf = PathBuf::from(&s);
     let abs = if path_buf.is_absolute() || (s.len() >= 2 && s.as_bytes()[1] == b':') {
@@ -73,7 +77,7 @@ pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
             .join(path_buf)
     };
 
-    let resolved = if abs.exists() {
+    let resolved = if !is_unc && abs.exists() {
         std::fs::canonicalize(&abs).unwrap_or(abs)
     } else {
         normalize_components(&abs)
@@ -96,6 +100,11 @@ pub fn normalize_path_for_id(directory: &Path) -> PathBuf {
     PathBuf::from(path_str)
 }
 
+/// Lexically normalize `.`/`..`/repeated-separator components without touching
+/// the filesystem. Mirrors `path.resolve` semantics from
+/// `src/tools/planning-state-lib.ts:normalizePathForId` (canonical algorithm
+/// v1, see `docs/project-identity.md`): `..` that would climb above the root
+/// is dropped, so `/..` normalizes to `/`.
 fn normalize_components(path: &Path) -> PathBuf {
     use std::path::Component;
 
@@ -104,15 +113,12 @@ fn normalize_components(path: &Path) -> PathBuf {
         match component {
             Component::CurDir => {}
             Component::ParentDir => {
-                if let Some(last) = components.last() {
-                    if matches!(last, Component::Normal(_)) {
-                        components.pop();
-                    } else {
-                        components.push(component);
-                    }
-                } else {
-                    components.push(component);
+                if matches!(components.last(), Some(Component::Normal(_))) {
+                    components.pop();
                 }
+                // Otherwise drop the ParentDir: climbing above the root (or
+                // above a drive prefix / UNC root) is a no-op, matching
+                // path.resolve on every platform.
             }
             _ => components.push(component),
         }
