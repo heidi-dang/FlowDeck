@@ -153,27 +153,39 @@ function killPidTree(pid: number): void {
 }
 
 /** Launch chromium with a hard bound; on timeout, kill any newly spawned
- * chromium processes (best-effort) and throw a structured error. */
+ * chromium processes (best-effort) and throw a structured error. Windows CI
+ * runners sometimes need a second attempt (Defender cold-scan, resource
+ * contention with parallel workers), so the launch is retried once with the
+ * same bound. */
 export async function launchBrowserBounded(
   beforePids: number[],
-  opts: { launchTimeoutMs?: number } = {},
+  opts: { launchTimeoutMs?: number; attempts?: number } = {},
 ): Promise<Browser> {
-  const { launchTimeoutMs = 30000 } = opts
-  const launch = chromium.launch({ headless: true })
-  const timer = sleep(launchTimeoutMs).then(() => {
-    throw new Error(`chromium launch timed out after ${launchTimeoutMs}ms`)
-  })
+  const { launchTimeoutMs = 30000, attempts = 2 } = opts
+  const launchArgs = ["--disable-gpu", "--no-sandbox", "--disable-dev-shm-usage"]
+  let lastError: Error | null = null
+  const maxAttempts = Math.max(1, attempts)
 
-  try {
-    return await Promise.race([launch, timer])
-  } catch (err) {
-    // Best-effort: kill chromium processes spawned since the snapshot.
-    const after = snapshotChromiumPids()
-    for (const pid of after) {
-      if (!beforePids.includes(pid)) killPidTree(pid)
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const launch = chromium.launch({ headless: true, args: launchArgs })
+    const timer = sleep(launchTimeoutMs).then(() => {
+      throw new Error(`chromium launch attempt ${attempt}/${maxAttempts} timed out after ${launchTimeoutMs}ms`)
+    })
+
+    try {
+      return await Promise.race([launch, timer])
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+      // Best-effort: kill chromium processes spawned since the snapshot.
+      const after = snapshotChromiumPids()
+      const spawned = after.filter((pid) => !beforePids.includes(pid))
+      for (const pid of spawned) killPidTree(pid)
+      if (attempt < maxAttempts) await sleep(250)
     }
-    throw err
   }
+  throw new Error(
+    `chromium launch failed after ${maxAttempts} attempt(s): ${lastError?.message} (spawned processes killed)`,
+  )
 }
 
 export interface CloseReport {
