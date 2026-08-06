@@ -33,3 +33,13 @@ files so repeated runs are idempotent.
 - `npm run test:persistence` — all files 0 failed
 - `bun test` full suite — 4498 passed, 2 skipped, 0 failed
 - `node scripts/pre-push.mjs` — pass
+
+## Runtime authority phase (single writable state store)
+
+- `runtime-authority-green.log.md` — fail-fast evidence: 198 pass / 0 fail on
+  the runtime + state-machine suites; full orchestration 757 pass; typecheck
+  clean.
+- `docs/architecture/integration/runtime-authority.md` — ADR: state store is
+  the single writable authority; no silent in-memory fallback in production;
+  atomic `createRun`; no shadow maps. better-harness and stream repositories
+  are separate subsystems, out of scope.
