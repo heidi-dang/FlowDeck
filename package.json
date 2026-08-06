@@ -104,7 +104,7 @@
     "benchmark:flowdeck": "bun run scripts/benchmark-flowdeck.ts",
     "benchmark:context": "bun run scripts/benchmark-context.ts",
     "benchmark:orchestration": "bun run scripts/benchmark-orchestration.ts",
-    "validate:architecture-freeze": "node scripts/validate-architecture-freeze.mjs"
+    "validate:architecture-freeze": "bun scripts/validate-architecture-freeze.mjs"
   },
   "keywords": [
     "opencode",
