@@ -22,6 +22,7 @@
  */
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
@@ -153,7 +154,7 @@ export async function validateArchitectureFreeze(root = ROOT) {
     // 5–8. Runtime inventory via fresh SQLite execution
     try {
       const { Database } = await import("bun:sqlite");
-      const dbPath = join("/tmp", `fd-freeze-check-${process.pid}-${Date.now()}.db`);
+      const dbPath = join(tmpdir(), `fd-freeze-check-${process.pid}-${Date.now()}.db`);
       const db = new Database(dbPath);
       try {
         db.exec(readFileSync(schemaPath, "utf8"));

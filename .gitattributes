@@ -1,0 +1,6 @@
+# Force LF line endings for files whose bytes are SHA-pinned by the
+# architecture-freeze validator. Without this, git on Windows checks out
+# with CRLF, changing the hashes and failing the freeze gate.
+NEXT_GEN_ARCHITECTURE_v0.2.6.md text eol=lf
+schema-v0.2.6.sql text eol=lf
+src/orchestration/persistence/migrations/schema-embed.ts text eol=lf
