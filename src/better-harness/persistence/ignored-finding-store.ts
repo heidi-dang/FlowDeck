@@ -15,8 +15,8 @@ export interface IgnoredFindingsIndex {
   updatedAt: string;
 }
 
-export function saveIgnoredFinding(projectId: string, entry: IgnoredFinding): void {
-  const filePath = join(getProjectStoreDir(projectId), "ignored-findings.json");
+export function saveIgnoredFinding(projectId: string, entry: IgnoredFinding, stateDir?: string): void {
+  const filePath = join(getProjectStoreDir(projectId, stateDir), "ignored-findings.json");
   const existing = readJsonFile<IgnoredFindingsIndex>(filePath) ?? {
     version: 1,
     projectId,
@@ -28,13 +28,13 @@ export function saveIgnoredFinding(projectId: string, entry: IgnoredFinding): vo
   atomicWriteFile(filePath, existing);
 }
 
-export function loadIgnoredFindings(projectId: string): IgnoredFinding[] {
-  const filePath = join(getProjectStoreDir(projectId), "ignored-findings.json");
+export function loadIgnoredFindings(projectId: string, stateDir?: string): IgnoredFinding[] {
+  const filePath = join(getProjectStoreDir(projectId, stateDir), "ignored-findings.json");
   const data = readJsonFile<IgnoredFindingsIndex>(filePath);
   return data?.ignored ?? [];
 }
 
-export function isFindingIgnored(projectId: string, findingId: string): boolean {
-  const ignored = loadIgnoredFindings(projectId);
+export function isFindingIgnored(projectId: string, findingId: string, stateDir?: string): boolean {
+  const ignored = loadIgnoredFindings(projectId, stateDir);
   return ignored.some((i) => i.findingId === findingId);
 }

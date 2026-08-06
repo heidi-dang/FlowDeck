@@ -40,6 +40,18 @@ export interface RunState {
 export class RunCoordinator {
   private eventBus = new EventBus();
   private activeRun: RunState | null = null;
+  /**
+   * Instance-scoped state directory. When set, ALL persistence for this
+   * coordinator (runs, reports, findings, recovery, getRun) is confined to
+   * this directory and the global state override is never consulted. This
+   * guarantees the standalone runtime can never read or write canonical
+   * (~/.flowdeck/state) harness data, and concurrent instances stay isolated.
+   */
+  private readonly stateDir: string | undefined;
+
+  constructor(stateDir?: string) {
+    this.stateDir = stateDir;
+  }
 
   getEventBus(): EventBus {
     return this.eventBus;
@@ -73,7 +85,7 @@ export class RunCoordinator {
     };
     if (this.activeRun.errorMessage) runRecord.errorMessage = this.activeRun.errorMessage;
     if (this.activeRun.completedAt) runRecord.completedAt = this.activeRun.completedAt;
-    saveRun(projectId, runRecord as unknown as import("../persistence/run-store").StoredRun);
+    saveRun(projectId, runRecord as unknown as import("../persistence/run-store").StoredRun, this.stateDir);
 
     // Then emit
     this.eventBus.emit("run.progress", {
@@ -116,7 +128,7 @@ export class RunCoordinator {
       stage: "collecting",
       progressPercent: 5,
     };
-    saveRun(snapshot.projectId, runRecord);
+    saveRun(snapshot.projectId, runRecord, this.stateDir);
 
     setImmediate(async () => {
       try {
@@ -212,8 +224,8 @@ export class RunCoordinator {
             },
           };
 
-          saveReport(snapshot.projectId, report);
-          saveFindingIndex(snapshot.projectId, findings);
+          saveReport(snapshot.projectId, report, this.stateDir);
+          saveFindingIndex(snapshot.projectId, findings, this.stateDir);
 
           this.emitProgress(runId, snapshot.projectId, { status: "completed", stage: "completed", progressPercent: 100, completedAt: new Date().toISOString() });
           this.eventBus.emit("report.completed", { runId, report });
@@ -224,7 +236,7 @@ export class RunCoordinator {
             completedAt: new Date().toISOString(),
             progressPercent: 100,
           };
-          saveRun(snapshot.projectId, completedRecord);
+          saveRun(snapshot.projectId, completedRecord, this.stateDir);
         });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
@@ -241,11 +253,15 @@ export class RunCoordinator {
     try {
       const { readdirSync, existsSync } = require("fs");
       const { join } = require("path");
-      const stateDir = getFlowDeckStateDir();
+      // The state root is either the instance-scoped directory (standalone
+      // runtime) or the legacy global default (tests). In both cases the
+      // coordinator only ever reads better-harness JSON stores — it never
+      // touches canonical tables (task_runs, assignments, events).
+      const stateDir = this.stateDir ?? getFlowDeckStateDir();
       if (!existsSync(stateDir)) return null;
       const projectDirs = readdirSync(stateDir);
       for (const projectId of projectDirs) {
-        const runPath = join(getProjectStoreDir(projectId), "runs", runId + ".json");
+        const runPath = join(getProjectStoreDir(projectId, this.stateDir), "runs", runId + ".json");
         if (existsSync(runPath)) {
           const { readFileSync } = require("fs");
           return JSON.parse(readFileSync(runPath, "utf-8")) as StoredRun;
@@ -309,12 +325,15 @@ export class RunCoordinator {
     try {
       const { existsSync, readdirSync } = require("fs");
       const { join } = require("path");
-      const stateDir = getFlowDeckStateDir();
+      // Recovery is scoped to this instance's state directory. The standalone
+      // runtime never recovers canonical runs, and concurrent instances never
+      // recover each other's runs.
+      const stateDir = this.stateDir ?? getFlowDeckStateDir();
       if (!existsSync(stateDir)) return;
 
       const projectDirs = readdirSync(stateDir);
       for (const projectId of projectDirs) {
-        const runsDir = join(getProjectStoreDir(projectId), "runs");
+        const runsDir = join(getProjectStoreDir(projectId, this.stateDir), "runs");
         if (!existsSync(runsDir)) continue;
         const runFiles = readdirSync(runsDir).filter((f: string) => f.endsWith(".json"));
         for (const runFile of runFiles) {
@@ -325,7 +344,7 @@ export class RunCoordinator {
               run.status = "failed";
               run.completedAt = new Date().toISOString();
               run.errorMessage = "Recovered: process terminated unexpectedly";
-              saveRun(run.projectId, run);
+              saveRun(run.projectId, run, this.stateDir);
             }
           } catch { /* skip corrupt run files */ }
         }

@@ -2,7 +2,6 @@ import { RunCoordinator } from "./run-coordinator";
 import { EventBus, type HarnessEventType } from "./event-bus";
 import { cancelRun as cancelRunAction } from "./run-cancellation";
 import type { StoredRun } from "../persistence/run-store";
-import { setFlowDeckStateDir } from "../persistence/harness-store";
 
 export interface HarnessRuntimeConfig {
   projectRoot: string;
@@ -12,6 +11,10 @@ export interface HarnessRuntimeConfig {
    * When set, all runtime persistence writes go to this directory
    * instead of ~/.flowdeck/state/. The caller is responsible for
    * cleanup. Only supported for standalone/testing usage.
+   *
+   * The state directory is scoped to THIS runtime instance. It is passed
+   * through to the RunCoordinator and every persistence call, so concurrent
+   * instances in the same process can never redirect each other's stores.
    */
   stateDir?: string;
 }
@@ -22,10 +25,11 @@ export class HarnessRuntime {
 
   constructor(config: HarnessRuntimeConfig) {
     this.config = config;
-    if (config.stateDir) {
-      setFlowDeckStateDir(config.stateDir);
-    }
-    this.coordinator = new RunCoordinator();
+    // NOTE: stateDir is scoped to this instance via the coordinator. We do
+    // NOT call setFlowDeckStateDir here — that global override would let one
+    // instance redirect another instance's persistence (split-brain). See
+    // docs/architecture/integration/runtime-authority.md (P0-2).
+    this.coordinator = new RunCoordinator(config.stateDir);
   }
 
   getCoordinator(): RunCoordinator {

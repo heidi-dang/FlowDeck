@@ -133,11 +133,11 @@ export async function routeRequestContext(
         const { serverKey, projectKey } = m.params;
         const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
-        const reports = listReports(check.path);
+        const reports = listReports(check.path, ctx.stateDir);
         if (reports.length === 0) return { status: 404, body: { error: "No report found" } };
         // Load the latest report
         const latestReportId = reports[reports.length - 1];
-        const report = loadReport(check.path, latestReportId);
+        const report = loadReport(check.path, latestReportId, ctx.stateDir);
         if (!report) return { status: 404, body: { error: "Report not found" } };
         const validated = HarnessReportSchema.parse(report);
         return ok(validated);
@@ -151,10 +151,10 @@ export async function routeRequestContext(
         const { serverKey, projectKey } = m.params;
         const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
-        const reportIds = listReports(check.path);
+        const reportIds = listReports(check.path, ctx.stateDir);
         const reports: HarnessReport[] = [];
         for (const id of reportIds) {
-          const report = loadReport(check.path, id);
+          const report = loadReport(check.path, id, ctx.stateDir);
           if (report) reports.push(report);
         }
         return ok(reports);
@@ -171,9 +171,9 @@ export async function routeRequestContext(
         const activeRun = ctx.coordinator.getActiveRun();
         if (!activeRun) {
           // Fall back to persisted runs
-          const runIds = listRuns(check.path);
+          const runIds = listRuns(check.path, ctx.stateDir);
           if (runIds.length === 0) return ok(null);
-          const lastRun = loadRun(check.path, runIds[runIds.length - 1]);
+          const lastRun = loadRun(check.path, runIds[runIds.length - 1], ctx.stateDir);
           if (!lastRun) return ok(null);
           const progress = HarnessRunProgressSchema.parse({
             runId: lastRun.runId,
@@ -241,7 +241,7 @@ export async function routeRequestContext(
         const { serverKey, projectKey, runId } = m.params;
         const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
-        const run = loadRun(check.path, runId);
+        const run = loadRun(check.path, runId, ctx.stateDir);
         if (!run) return { status: 404, body: { error: "Run not found" } };
         return ok(run);
       }
@@ -258,7 +258,7 @@ export async function routeRequestContext(
         if (!parsed.success) {
           return badRequest("Invalid request body");
         }
-        const findings = loadFindingIndex(check.path);
+        const findings = loadFindingIndex(check.path, ctx.stateDir);
         const results = [];
         for (const fid of parsed.data.findingIds) {
           const finding = findings?.findings.find((f) => f.id === fid);
@@ -305,7 +305,7 @@ export async function routeRequestContext(
         }
         const results = parsed.data.findingIds.map((fid: string) => {
           try {
-            saveIgnoredFinding(check.path, { findingId: fid, reason: parsed.data.reason, actor: "system", timestamp: new Date().toISOString() });
+            saveIgnoredFinding(check.path, { findingId: fid, reason: parsed.data.reason, actor: "system", timestamp: new Date().toISOString() }, ctx.stateDir);
             return { findingId: fid, accepted: true };
           } catch {
             return { findingId: fid, accepted: false, error: "Failed to ignore finding" };
@@ -327,7 +327,7 @@ export async function routeRequestContext(
         if (!parsed.success) {
           return badRequest("Invalid request body");
         }
-        const findingIndex = loadFindingIndex(check.path);
+        const findingIndex = loadFindingIndex(check.path, ctx.stateDir);
         const results = [];
         for (const fid of parsed.data.findingIds) {
           const finding = findingIndex?.findings.find((f) => f.id === fid);
@@ -360,7 +360,7 @@ export async function routeRequestContext(
                 }
                 return f;
               });
-              saveFindingIndex(check.path, updatedFindings);
+              saveFindingIndex(check.path, updatedFindings, ctx.stateDir);
             }
 
             results.push({
@@ -399,7 +399,7 @@ export async function routeRequestContext(
         const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
         if (!check.valid) return { status: check.status, body: check.body };
         const { loadRepairSession } = require("../persistence/repair-session-store");
-        const session = loadRepairSession(check.path, sessionId);
+        const session = loadRepairSession(check.path, sessionId, ctx.stateDir);
         if (!session) return { status: 404, body: { error: "Repair session not found" } };
         return ok(session);
       }
