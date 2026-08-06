@@ -52,6 +52,7 @@ function loadManifest(root) {
 /**
  * Validate the freeze. Returns { ok, errors } — never throws.
  */
+/** @returns {Promise<{ok: boolean, errors: string[]}>} */
 export async function validateArchitectureFreeze(root = ROOT) {
   const errors = [];
   const loaded = loadManifest(root);

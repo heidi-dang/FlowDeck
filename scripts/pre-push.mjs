@@ -434,6 +434,7 @@ export function getFullModeSteps(rustChanged, hasCargo) {
     { name: "Coverage", cmd: "node scripts/check-coverage.mjs" },
     { name: "Skill Validation", cmd: "npm run validate:skills" },
     { name: "Doc Validation", cmd: "npm run validate:docs" },
+    { name: "Architecture Freeze", cmd: "npm run validate:architecture-freeze" },
     { name: "Git Diff Check", cmd: "git diff --check" },
     { name: "Package Dry Run", cmd: "npm pack --dry-run" },
     { name: "Build", cmd: "npm run build" },

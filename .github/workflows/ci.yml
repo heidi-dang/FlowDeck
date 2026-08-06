@@ -224,6 +224,7 @@ jobs:
       - run: npm run build
       - run: npm run validate:skills
       - run: npm run validate:docs
+      - run: npm run validate:architecture-freeze
       - name: Pack and inspect tarball
         run: |
           export GITHUB_SHA="$(git rev-parse HEAD)"
