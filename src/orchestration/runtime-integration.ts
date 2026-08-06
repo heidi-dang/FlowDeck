@@ -213,6 +213,7 @@ export class RuntimeOrchestrator {
   > &
     Pick<RuntimeConfig, "dbPath">;
   private readonly stateStore: StateStore;
+  private ownsStateStore = false;
   private readonly contractStore?: ContractStore;
   private readonly transitionService: TransitionService;
   private readonly verificationExecutor: VerificationExecutor;
@@ -254,14 +255,18 @@ export class RuntimeOrchestrator {
    */
   private resolveStateStore(config: RuntimeConfig): StateStore {
     if (config.stateStore) {
+      this.ownsStateStore = false;
       return config.stateStore;
     }
     if (config.dbPath) {
+      this.ownsStateStore = true;
       return openSqliteStateStore(config.dbPath);
     }
     if (config.devMode === true) {
+      this.ownsStateStore = true;
       return new InMemoryStateStore();
     }
+    this.ownsStateStore = false;
     throw new Error(
       "RuntimeOrchestrator: no state store configured. Production requires a " +
         "durable store — pass stateStore, or dbPath to open a SQLite-backed " +
@@ -887,6 +892,12 @@ export class RuntimeOrchestrator {
   dispose(): void {
     this.cancellationService.dispose();
     this.eventListeners.length = 0;
+    // Close a store the orchestrator opened itself (dbPath / devMode) so the
+    // underlying SQLite file handle is released. A caller-supplied stateStore
+    // remains owned by the caller.
+    if (this.ownsStateStore) {
+      void this.stateStore.close?.();
+    }
   }
 }
 
