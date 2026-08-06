@@ -43,18 +43,28 @@ one writable orchestration authority.
   Playwright browsers (CI installs them), and parallel-run fault-injection
   interference (`tests/phase28-state-memory-gates` passes in isolation).
 
-## CI Production Gates (run 31105525645)
+## CI Production Gates
 
-| Job | Conclusion |
-|-----|-----------|
-| Test Matrix (ubuntu/macos/windows) | failure — only `validateEvidenceOnlyDescent` (2 assertions) |
-| Coverage Check | failure — same evidence-descent assertions |
-| All other jobs (Lint & Typecheck, Typecheck, Build & Validate, Rust Gates, Security Scan, Runtime Benchmark, FDX Native Parity, FDX Index Benchmark, Installer Tests, Local Installer, Packed CLI) | success |
+First run (31105525645): failure — Test Matrix (all OSes) and Coverage Check
+failed on `validateEvidenceOnlyDescent` only (2 assertions). Root cause: the
+final commit mixed `tests/` and `artifacts/`; the gate requires the diff
+`HEAD~1..HEAD` to contain only `artifacts/**`. Fixed by the evidence-only
+commit `74b3267` (artifacts/ only), matching the branch convention (see
+`ccb43a4`).
 
-The evidence-descent gate requires the diff `HEAD~1..HEAD` to contain only
-`artifacts/**`. The initial run mixed `tests/` and `artifacts/` in the final
-commit; this evidence-only commit (artifacts/ only) restores the invariant,
-matching the branch convention (see `ccb43a4`).
+Final run on `74b3267`:
+
+| Workflow | Run ID | Conclusion |
+|----------|--------|-----------|
+| CI Production Gates | 31109226414 | success (13m0s) |
+| Orchestration Validation | 31109225057 | success |
+| Build FDX Native Packages | 31109221978 | success |
+
+CI Production Gates jobs: Test Matrix (ubuntu/macos/windows), Coverage Check,
+Lint & Typecheck, Typecheck, Build & Validate, Rust Gates (FDX), Security Scan,
+Runtime Benchmark (Branch-Head), FDX Native Parity, FDX Index Benchmark
+(exact-SHA), Installer Tests, Local Installer (all OSes), Packed CLI (all OSes)
+— all green.
 
 ## Proof of Single Orchestration Authority
 
