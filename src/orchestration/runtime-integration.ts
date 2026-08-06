@@ -33,9 +33,10 @@ import type { Logger } from "./logging/index.js";
 import type {
   StateStore,
   CommitTransitionParams,
-  RunState,
+  ContractRecord,
 } from "./runtime/state-store.js";
 import { InMemoryStateStore } from "./runtime/state-store.js";
+import { openSqliteStateStore } from "./runtime/sqlite-state-store.js";
 
 // ── Types ────────────────────────────────────────────────────────────────
 
@@ -179,6 +180,33 @@ export const RuntimeConfigSchema = z.object({
 
 const DEFAULT_CONTEXT_BUDGET = 100_000;
 
+/**
+ * Convert an activated TaskContract (structured fields) into the
+ * stringified ContractRecord shape expected by the durable state store.
+ * The state store is the single writable authority for contracts; this
+ * mapping is how the runtime facade feeds it.
+ */
+function taskContractToContractRecord(contract: TaskContract): ContractRecord {
+  return {
+    contractId: contract.id,
+    hash: contract.hash,
+    version: contract.version,
+    objective: contract.objective,
+    requirements: JSON.stringify(contract.requirements),
+    acceptanceCriteria: JSON.stringify(contract.acceptanceCriteria),
+    constraints: JSON.stringify(contract.constraints),
+    exclusions: JSON.stringify(contract.exclusions),
+    requiredEvidence: JSON.stringify(contract.requiredEvidence),
+    requiredVerification: JSON.stringify(contract.requiredVerification),
+    startingSha: contract.startingSha,
+    allowedMutationScope: JSON.stringify(contract.allowedMutationScope),
+    approvalGates: JSON.stringify(contract.approvalGates),
+    createdAt: contract.createdAt.toISOString(),
+    activatedAt: contract.activatedAt?.toISOString(),
+    status: contract.status,
+  };
+}
+
 export class RuntimeOrchestrator {
   private readonly config: Required<
     Pick<RuntimeConfig, "clock" | "idGenerator" | "logger" | "devMode">
@@ -192,9 +220,6 @@ export class RuntimeOrchestrator {
   private readonly cancellationService: CancellationService;
   private readonly logger: Logger;
   private readonly eventListeners: RuntimeEventListener[] = [];
-  private readonly runStates: Map<string, RunState> = new Map();
-  private readonly runContracts: Map<string, TaskContract> = new Map();
-  private readonly contextBudgets: Map<string, ContextBudgetInfo> = new Map();
 
   constructor(config: RuntimeConfig = {}) {
     this.logger = config.logger ?? new StructuredLogger("RuntimeOrchestrator");
@@ -208,7 +233,7 @@ export class RuntimeOrchestrator {
       devMode: config.devMode ?? false,
       dbPath: config.dbPath,
     };
-    this.stateStore = config.stateStore ?? new InMemoryStateStore();
+    this.stateStore = this.resolveStateStore(config);
     this.contractStore = config.contractStore;
     this.transitionService = new TransitionService({
       stateStore: this.stateStore,
@@ -216,6 +241,33 @@ export class RuntimeOrchestrator {
     this.verificationExecutor = new VerificationExecutor(this.config.clock);
     this.completionEngine = new CompletionEngine();
     this.cancellationService = new CancellationService();
+  }
+
+  /**
+   * Resolve the authoritative state store for the runtime.
+   *
+   * Priority: explicit stateStore > dbPath (durable SQLite) > devMode
+   * (explicit in-memory opt-in). Throws when no store is configured for
+   * production — there is intentionally NO silent fallback to an in-memory
+   * store, because that would create a split-brain writable authority that
+   * loses all state on restart.
+   */
+  private resolveStateStore(config: RuntimeConfig): StateStore {
+    if (config.stateStore) {
+      return config.stateStore;
+    }
+    if (config.dbPath) {
+      return openSqliteStateStore(config.dbPath);
+    }
+    if (config.devMode === true) {
+      return new InMemoryStateStore();
+    }
+    throw new Error(
+      "RuntimeOrchestrator: no state store configured. Production requires a " +
+        "durable store — pass stateStore, or dbPath to open a SQLite-backed " +
+        "store. Set devMode:true to opt into the in-memory store for " +
+        "development/testing only.",
+    );
   }
 
   getEventEmitter(): { emit: (event: import("./runtime/stage-events.js").StageStageEvent) => void } {
@@ -286,31 +338,35 @@ export class RuntimeOrchestrator {
       this.contractStore.store(contract);
     }
 
-    this.runContracts.set(runId, contract);
-
-    // Initialize run state at "created"
+    // Initialize run state at "created" — atomically create the run
+    // (state + contract + creation event in a single transaction).
+    // The state store is the single writable authority; there is no
+    // in-memory shadow state to keep in sync.
     const initialState: State = "created";
-    await this.stateStore.saveState(runId, initialState, 0);
-    await this.stateStore.recordEvent(runId, {
+    const result = await this.stateStore.createRun({
       runId,
-      from: "created",
-      to: "created",
-      transitionType: "normal" satisfies TransitionType,
-      timestamp: now.getTime(),
+      initialState,
+      contract: taskContractToContractRecord(contract),
+      creationEvent: {
+        runId,
+        from: "created",
+        to: "created",
+        transitionType: "normal" satisfies TransitionType,
+        timestamp: now.getTime(),
+      },
     });
 
-    const runState = await this.stateStore.loadState(runId);
-    const version = runState?.version ?? 0;
-    this.runStates.set(
-      runId,
-      runState ?? { runId, state: initialState, version, lastUpdated: now },
-    );
+    if (!result.committed) {
+      throw new Error(
+        `RuntimeOrchestrator: failed to create run ${runId}: ${result.reason}`,
+      );
+    }
 
     const created: CreatedTaskRun = {
       runId,
       contract,
       initialState,
-      version,
+      version: result.version,
     };
 
     this.emitRuntimeEvent({
@@ -319,7 +375,7 @@ export class RuntimeOrchestrator {
       payload: {
         contractId: contract.id,
         initialState,
-        version,
+        version: result.version,
       },
       timestamp: now,
     });
@@ -356,11 +412,6 @@ export class RuntimeOrchestrator {
     );
 
     if (result.success) {
-      // Update cached state
-      const updated = await this.stateStore.loadState(runId);
-      if (updated) {
-        this.runStates.set(runId, updated);
-      }
       this.emitRuntimeEvent({
         type: "task_run.transitioned",
         runId,
@@ -804,7 +855,6 @@ export class RuntimeOrchestrator {
         isOverBudget: existing.is_over_budget === 1,
         truncationNeeded: existing.truncation_needed,
       };
-      this.contextBudgets.set(runId, budget);
       return budget;
     }
 
@@ -818,7 +868,6 @@ export class RuntimeOrchestrator {
       isOverBudget: false,
       truncationNeeded: 0,
     };
-    this.contextBudgets.set(runId, budget);
     await this.stateStore.saveContextBudget(runId, budget);
     return budget;
   }
@@ -830,7 +879,6 @@ export class RuntimeOrchestrator {
     runId: string,
     budget: ContextBudgetInfo,
   ): Promise<void> {
-    this.contextBudgets.set(runId, budget);
     await this.stateStore.saveContextBudget(runId, budget);
   }
 
@@ -839,9 +887,6 @@ export class RuntimeOrchestrator {
   dispose(): void {
     this.cancellationService.dispose();
     this.eventListeners.length = 0;
-    this.runStates.clear();
-    this.runContracts.clear();
-    this.contextBudgets.clear();
   }
 }
 

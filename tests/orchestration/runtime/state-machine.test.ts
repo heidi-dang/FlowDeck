@@ -495,7 +495,7 @@ describe("Full Transition Matrix Coverage", () => {
   const context = { runId: "test-run", timestamp: Date.now() };
 
   beforeEach(() => {
-    service = new TransitionService();
+    service = new TransitionService({ devMode: true });
   });
 
   const allTransitions: [State, State, boolean][] = [
@@ -598,5 +598,22 @@ describe("Full Transition Matrix Coverage", () => {
 
   it.each(allTransitions)("transition %s -> %s should be %s", (from, to, expected) => {
     expect(service.canTransition(from, to, context)).toBe(expected);
+  });
+});
+
+describe("TransitionService state store authority", () => {
+  it("should throw when no stateStore is provided and devMode is not set", () => {
+    expect(() => new TransitionService()).toThrow(/stateStore/);
+  });
+
+  it("should allow the in-memory store only as an explicit devMode opt-in", () => {
+    const service = new TransitionService({ devMode: true });
+    expect(service).toBeInstanceOf(TransitionService);
+  });
+
+  it("should use an explicit stateStore without requiring devMode", () => {
+    const store = new InMemoryStateStore();
+    const service = new TransitionService({ stateStore: store });
+    expect(service).toBeInstanceOf(TransitionService);
   });
 });

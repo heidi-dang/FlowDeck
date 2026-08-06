@@ -71,7 +71,7 @@ describe("RuntimeOrchestrator (runtime-integration)", () => {
 
   beforeEach(() => {
     events.length = 0
-    orchestrator = createRuntimeIntegration()
+    orchestrator = createRuntimeIntegration({ devMode: true })
   })
 
   afterEach(() => {
@@ -374,7 +374,7 @@ describe("RuntimeOrchestrator (runtime-integration)", () => {
       await orchestrator.createTask(makeDraft())
       orchestrator.dispose()
 
-      const fresh = createRuntimeIntegration()
+      const fresh = createRuntimeIntegration({ devMode: true })
       const created = await fresh.createTask(makeDraft())
       expect(created.runId).toBeTruthy()
       fresh.dispose()
@@ -432,6 +432,27 @@ describe("RuntimeOrchestrator (runtime-integration)", () => {
         orch.dispose()
         store.close()
       }
+    })
+  })
+
+  describe("state store authority (fail-fast)", () => {
+    it("should throw when no stateStore, dbPath, or devMode is configured", () => {
+      expect(() => createRuntimeIntegration()).toThrow(/state store/)
+    })
+
+    it("should allow the in-memory store only as an explicit devMode opt-in", () => {
+      const orch = createRuntimeIntegration({ devMode: true })
+      expect(orch.getStateStore()).toBeTruthy()
+      orch.dispose()
+    })
+
+    it("should open a durable SQLite store from dbPath without devMode", () => {
+      const dir = mkdtempSync(join(tmpdir(), "fd-authority-"))
+      const dbPath = join(dir, "runtime.db")
+      const orch = createRuntimeIntegration({ dbPath })
+      expect(orch.getStateStore()).toBeTruthy()
+      orch.dispose()
+      rmSync(dir, { recursive: true, force: true })
     })
   })
 })

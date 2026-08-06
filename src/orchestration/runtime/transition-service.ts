@@ -39,6 +39,12 @@ export interface TransitionServiceOptions {
   readonly guards?: TransitionGuard;
   readonly eventEmitter?: StageEventEmitter;
   readonly stateStore?: StateStore;
+  /**
+   * When true, allows an in-memory state store to be used when no explicit
+   * stateStore is provided. Intended for development and tests only.
+   * Production must always supply a durable stateStore.
+   */
+  readonly devMode?: boolean;
 }
 
 /**
@@ -61,7 +67,27 @@ export class TransitionService {
   constructor(options: TransitionServiceOptions = {}) {
     this.guards = options.guards ?? defaultTransitionGuards;
     this.eventEmitter = options.eventEmitter ?? new StageEventEmitter();
-    this.stateStore = options.stateStore ?? new InMemoryStateStore();
+    this.stateStore = this.resolveStateStore(options);
+  }
+
+  /**
+   * Resolve the authoritative state store. Production must supply an explicit
+   * durable stateStore; the in-memory store is only permitted as an explicit
+   * dev/test opt-in via `devMode`. There is intentionally NO silent fallback
+   * to an in-memory store in production — persistence must never degrade.
+   */
+  private resolveStateStore(options: TransitionServiceOptions): StateStore {
+    if (options.stateStore) {
+      return options.stateStore;
+    }
+    if (options.devMode === true) {
+      return new InMemoryStateStore();
+    }
+    throw new Error(
+      "TransitionService: no stateStore provided. Production requires a durable " +
+        "stateStore. Pass an explicit stateStore, or set devMode:true to opt into " +
+        "the in-memory store for development/testing only.",
+    );
   }
 
   /**
