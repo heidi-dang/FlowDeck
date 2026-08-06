@@ -11,6 +11,20 @@ export type { AgentModelConfig } from './agent-models';
 
 export type GovernanceMode = "off" | "advisory" | "strict";
 
+/**
+ * @deprecated Better Harness is a standalone development/QA facility.
+ *
+ * The production plugin no longer activates the Better Harness runtime.
+ * `betterHarness.enabled=true` in a production configuration is REJECTED by
+ * `loadFlowDeckConfig` with a migration error (fail closed). Any other
+ * `betterHarness` fields are deprecated and inert in the production plugin;
+ * they only apply to the standalone command:
+ *
+ *   flowdeck-better-harness --project <path> [--state-dir <dir>]
+ *
+ * Removal version: next minor after the standalone migration window closes.
+ * See docs/architecture/integration/runtime-authority.md for the timeline.
+ */
 export interface BetterHarnessConfig {
   enabled?: boolean;
   port?: number;
@@ -43,7 +57,7 @@ export interface FlowDeckConfig {
   governance?: GovernanceConfig;
   /** Supervisor configuration. */
   supervisor?: SupervisorConfig;
-  /** Better Harness integration configuration. */
+  /** @deprecated Better Harness standalone dev/QA configuration. Rejected when enabled=true; inert otherwise. Use the flowdeck-better-harness command instead. */
   betterHarness?: BetterHarnessConfig;
   /** Runtime agent identity enforcement. */
   runtimeAgent?: {
