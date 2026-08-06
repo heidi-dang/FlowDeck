@@ -1,0 +1,124 @@
+src/better-harness/transport/router.ts:3:import { loadRun, listRuns } from "../persistence/run-store";
+src/better-harness/transport/router.ts:4:import { loadReport, listReports } from "../persistence/report-store";
+src/better-harness/transport/router.ts:5:import { loadFindingIndex } from "../persistence/finding-store";
+src/better-harness/transport/router.ts:6:import { saveIgnoredFinding } from "../persistence/ignored-finding-store";
+src/better-harness/transport/router.ts:22:import { saveFindingIndex } from "../persistence/finding-store";
+src/better-harness/transport/router.ts:209:          const result = await ctx.runtime.enqueueRun({
+src/better-harness/transport/router.ts:231:        const accepted = ctx.runtime.cancelRun(runId);
+src/better-harness/index.ts:91:export { getFlowDeckStateDir, setFlowDeckStateDir, resetFlowDeckStateDir, getProjectStoreDir, atomicWriteFile, readJsonFile } from "./persistence/harness-store";
+src/better-harness/index.ts:92:export { saveRun, loadRun, listRuns } from "./persistence/run-store";
+src/better-harness/index.ts:93:export type { StoredRun } from "./persistence/run-store";
+src/better-harness/index.ts:94:export { saveReport, loadReport, listReports } from "./persistence/report-store";
+src/better-harness/index.ts:95:export { saveFindingIndex, loadFindingIndex, getActiveFindings } from "./persistence/finding-store";
+src/better-harness/index.ts:96:export type { FindingIndex } from "./persistence/finding-store";
+src/better-harness/index.ts:97:export { saveIgnoredFinding, loadIgnoredFindings, isFindingIgnored } from "./persistence/ignored-finding-store";
+src/better-harness/index.ts:98:export type { IgnoredFinding } from "./persistence/ignored-finding-store";
+src/better-harness/index.ts:109:export { cancelRun, isRunCancelled, clearCancellation } from "./runtime/run-cancellation";
+src/better-harness/persistence/ignored-finding-store.ts:2:import { atomicWriteFile, readJsonFile, getProjectStoreDir } from "./harness-store";
+src/better-harness/persistence/finding-store.ts:2:import { atomicWriteFile, readJsonFile, getProjectStoreDir } from "./harness-store";
+src/better-harness/persistence/run-store.ts:3:import { atomicWriteFile, readJsonFile, getProjectStoreDir } from "./harness-store";
+src/better-harness/persistence/repair-session-store.ts:3:import { atomicWriteFile, readJsonFile, getProjectStoreDir } from "./harness-store";
+src/better-harness/persistence/report-store.ts:3:import { atomicWriteFile, readJsonFile, getProjectStoreDir } from "./harness-store";
+src/better-harness/testing/standalone-launcher.ts:26:import { resetFlowDeckStateDir } from "../persistence/harness-store";
+src/better-harness/testing/standalone-launcher.ts:67:  // This must match what RunCoordinator.enqueueRun computes via captureWorkspaceSnapshot
+src/better-harness/runtime/run-coordinator.ts:15:import { saveRun, type StoredRun } from "../persistence/run-store";
+src/better-harness/runtime/run-coordinator.ts:17:import { saveReport } from "../persistence/report-store";
+src/better-harness/runtime/run-coordinator.ts:18:import { saveFindingIndex } from "../persistence/finding-store";
+src/better-harness/runtime/run-coordinator.ts:22:import { cancelRun as cancelRunAction } from "./run-cancellation";
+src/better-harness/runtime/run-coordinator.ts:23:import { getFlowDeckStateDir, getProjectStoreDir } from "../persistence/harness-store";
+src/better-harness/runtime/run-coordinator.ts:76:    saveRun(projectId, runRecord as unknown as import("../persistence/run-store").StoredRun);
+src/better-harness/runtime/run-coordinator.ts:89:  async enqueueRun(config: RunConfig): Promise<RunState> {
+src/better-harness/runtime/run-coordinator.ts:240:  getRun(runId: string): StoredRun | null {
+src/better-harness/runtime/run-coordinator.ts:258:  cancelRun(runId: string): boolean {
+src/better-harness/runtime/run-coordinator.ts:259:    const alreadyCancelled = !cancelRunAction(runId);
+src/better-harness/runtime/runtime-registry.ts:9:import { saveRun, loadRun } from "../persistence/run-store";
+src/better-harness/runtime/runtime-registry.ts:10:import { saveReport, loadReport } from "../persistence/report-store";
+src/better-harness/runtime/runtime-registry.ts:11:import { saveFindingIndex, loadFindingIndex } from "../persistence/finding-store";
+src/better-harness/runtime/runtime-registry.ts:12:import { saveIgnoredFinding, loadIgnoredFindings } from "../persistence/ignored-finding-store";
+src/better-harness/runtime/run-cancellation.ts:3:export function cancelRun(runId: string): boolean {
+src/better-harness/runtime/harness-runtime.ts:3:import { cancelRun as cancelRunAction } from "./run-cancellation";
+src/better-harness/runtime/harness-runtime.ts:4:import type { StoredRun } from "../persistence/run-store";
+src/better-harness/runtime/harness-runtime.ts:5:import { setFlowDeckStateDir } from "../persistence/harness-store";
+src/better-harness/runtime/harness-runtime.ts:43:  async enqueueRun(_request: { mode: string; sourceRevision?: string; collectors?: string[] }): Promise<{ runId: string; status: string }> {
+src/better-harness/runtime/harness-runtime.ts:44:    const result = await this.coordinator.enqueueRun({
+src/better-harness/runtime/harness-runtime.ts:54:  getRun(runId: string): StoredRun | null {
+src/better-harness/runtime/harness-runtime.ts:55:    return this.coordinator.getRun(runId);
+src/better-harness/runtime/harness-runtime.ts:58:  cancelRun(runId: string): boolean {
+src/better-harness/runtime/harness-runtime.ts:59:    return this.coordinator.cancelRun(runId);
+src/better-harness/runtime/harness-runtime.ts:63:    return this.enqueueRun({ mode: "full" });
+src/better-harness/runtime/harness-runtime.ts:69:    return cancelRunAction(active.runId);
+src/better-harness/runtime/harness-runtime.ts:72:  getStatus(): { active: boolean; runId?: string; status?: string; stage?: string } {
+tests/better-harness/e2e.test.ts:20:import { saveRun, loadRun } from "../../src/better-harness/persistence/run-store";
+tests/better-harness/e2e.test.ts:22:import { cancelRun, isRunCancelled } from "../../src/better-harness/runtime/run-cancellation";
+tests/better-harness/e2e.test.ts:212:    expect(cancelRun("test_run")).toBe(true);
+tests/better-harness/e2e.test.ts:213:    expect(cancelRun("test_run")).toBe(false); // already cancelled
+tests/better-harness/state-isolation.test.ts:17:} from "../../src/better-harness/persistence/harness-store";
+tests/better-harness/state-isolation.test.ts:87:describe("harness-store override functions", () => {
+tests/better-harness/integration.test.ts:8:import { cancelRun, isRunCancelled, clearCancellation } from "../../src/better-harness/runtime/run-cancellation";
+tests/better-harness/integration.test.ts:27:import { readJsonFile } from "../../src/better-harness/persistence/harness-store";
+tests/better-harness/integration.test.ts:28:import { saveFindingIndex, loadFindingIndex, getActiveFindings } from "../../src/better-harness/persistence/finding-store";
+tests/better-harness/integration.test.ts:29:import { saveReport, loadReport, listReports } from "../../src/better-harness/persistence/report-store";
+tests/better-harness/integration.test.ts:30:import { saveRun, listRuns, loadRun } from "../../src/better-harness/persistence/run-store";
+tests/better-harness/integration.test.ts:31:import { saveIgnoredFinding, loadIgnoredFindings, isFindingIgnored } from "../../src/better-harness/persistence/ignored-finding-store";
+tests/better-harness/integration.test.ts:90:    expect(cancelRun("cancel_test_1")).toBe(true);
+tests/better-harness/integration.test.ts:95:    cancelRun("cancel_test_1");
+tests/better-harness/integration.test.ts:96:    expect(cancelRun("cancel_test_1")).toBe(false);
+tests/better-harness/integration.test.ts:100:    cancelRun("cancel_test_2");
+tests/better-harness/integration.test.ts:624:    const state = await coord.enqueueRun({ projectRoot: process.cwd(), timeoutMs: 5000 });
+tests/better-harness/integration.test.ts:633:    await coord.enqueueRun({ projectRoot: process.cwd(), timeoutMs: 5000 });
+tests/better-harness/integration.test.ts:634:    await expect(coord.enqueueRun({ projectRoot: process.cwd() })).rejects.toThrow("already in progress");
+tests/better-harness/integration.test.ts:639:    const state = await coord.enqueueRun({ projectRoot: process.cwd(), timeoutMs: 5000 });
+tests/better-harness/integration.test.ts:640:    expect(coord.cancelRun(state.runId)).toBe(true);
+tests/better-harness/integration.test.ts:643:  it("cancelRun succeeds for any run id", () => {
+tests/better-harness/integration.test.ts:645:    expect(coord.cancelRun("nonexistent_run")).toBe(true);
+tests/better-harness/integration.test.ts:664:    const result = await runtime.enqueueRun({ mode: "full" });
+tests/better-harness/integration.test.ts:671:    const status = runtime.getStatus();
+tests/better-harness/integration.test.ts:689:  it("run() calls enqueueRun with full mode", async () => {
+tests/better-harness/integration.test.ts:695:  it("getRun returns null for unknown run", () => {
+tests/better-harness/integration.test.ts:697:    expect(runtime.getRun("nonexistent")).toBeNull();
+tests/better-harness/integration.test.ts:1009:  it("getStatus returns inactive when no run", () => {
+tests/better-harness/integration.test.ts:1011:    const status = rt.getStatus();
+tests/better-harness/integration.test.ts:1301:    const { getFlowDeckStateDir } = await import("../../src/better-harness/persistence/harness-store");
+tests/better-harness/integration.test.ts:1308:    const { getFlowDeckStateDir, atomicWriteFile, readJsonFile } = await import("../../src/better-harness/persistence/harness-store");
+tests/better-harness/integration.test.ts:1318:    const { readJsonFile } = await import("../../src/better-harness/persistence/harness-store");
+tests/better-harness/integration.test.ts:1746:    const { getProjectStoreDir } = require("../../src/better-harness/persistence/harness-store");
+tests/better-harness/integration.test.ts:1758:    const { getProjectStoreDir } = require("../../src/better-harness/persistence/harness-store");
+tests/better-harness/integration.test.ts:1770:    const { getProjectStoreDir } = require("../../src/better-harness/persistence/harness-store");
+tests/better-harness/persistence.test.ts:3:import { getProjectStoreDir, atomicWriteFile, readJsonFile } from "../../src/better-harness/persistence/harness-store";
+tests/better-harness/persistence.test.ts:4:import { saveRun, loadRun } from "../../src/better-harness/persistence/run-store";
+tests/better-harness/persistence.test.ts:5:import { saveIgnoredFinding, loadIgnoredFindings } from "../../src/better-harness/persistence/ignored-finding-store";
+tests/streaming/durable-sse.test.ts:84:    cc.cancelRun("run-4");
+tests/session-and-query-service-coverage.test.ts:212:  it("getRun returns run when found", async () => {
+tests/session-and-query-service-coverage.test.ts:214:    const run = await svc.getRun("run-1");
+tests/session-and-query-service-coverage.test.ts:218:  it("getRun throws when run not found", async () => {
+tests/session-and-query-service-coverage.test.ts:220:    await expect(svc.getRun("missing")).rejects.toThrow();
+tests/orchestration/harness/cleanup.ts:20:  cancelRunExecution(runId: string, reason?: string, timeoutMs?: number): Promise<{
+tests/orchestration/harness/cleanup.ts:156:        const result = await executionRegistry.cancelRunExecution(runId, "runtime_cleanup", ctx.executionTimeoutMs);
+tests/orchestration/services.test.ts:258:      await expect(runService.getRun("nonexistent")).rejects.toThrow(OrchestrationError);
+tests/orchestration/services.test.ts:259:      await expect(runService.getRun("nonexistent")).rejects.toMatchObject({ code: "RUN_NOT_FOUND" });
+tests/orchestration/services.test.ts:265:      const cancelled = await runService.cancelRun(run.id, "test cancellation");
+tests/orchestration/services.test.ts:272:      await expect(runService.cancelRun(run.id)).rejects.toThrow(OrchestrationError);
+tests/orchestration/negative/cancellation.test.ts:74:    // Resolve execution so cancelRunExecution proceeds past the execution wait
+tests/orchestration/negative/cancellation.test.ts:77:    const result = await registry.cancelRunExecution(runId, "test hanging cleanup", 100);
+tests/orchestration/negative/cancellation.test.ts:100:    const result = await registry.cancelRunExecution(runId, "fast cleanup", 5000);
+tests/orchestration/negative/cancellation.test.ts:124:    const cancelP = (async () => { await gate; return runService.cancelRun(run.id, "concurrent cancel"); })();
+tests/orchestration/negative/cancellation.test.ts:149:    const finalRun = await runService.getRun(run.id);
+tests/orchestration/negative/cancellation.test.ts:165:    const cancelled = await runService.cancelRun(run.id, "cancel before completion");
+tests/orchestration/negative/cancellation.test.ts:183:    // First cancelRunExecution — handle exists, cleanup runs
+tests/orchestration/negative/cancellation.test.ts:184:    const first = await registry.cancelRunExecution(runId, "first cancel");
+tests/orchestration/negative/cancellation.test.ts:190:    // Second cancelRunExecution — handle is already gone, returns no-op
+tests/orchestration/negative/cancellation.test.ts:191:    const second = await registry.cancelRunExecution(runId, "second cancel");
+tests/orchestration/concurrency/cancellation-execution.test.ts:73:    const cancelledRun = await runService.cancelRun(run.id, "User requested cancellation");
+tests/orchestration/concurrency/cancellation-execution.test.ts:88:    const result = await runService.cancelRun(run.id, "Late cancel request").catch(err => err);
+tests/orchestration/concurrency/cancellation-execution.test.ts:100:    const result = await registry.cancelRunExecution(run.id, "Testing cleanup failure", 100);
+tests/orchestration/durable-runtime-coverage.test.ts:7: * - run-service.ts (cancelRun, pauseRun, getRun, listRuns)
+tests/orchestration/durable-runtime-coverage.test.ts:840:  it("getRun returns run", async () => {
+tests/orchestration/durable-runtime-coverage.test.ts:849:    const retrieved = await runService.getRun(run.id)
+tests/orchestration/durable-runtime-coverage.test.ts:853:  it("getRun throws for missing run", async () => {
+tests/orchestration/durable-runtime-coverage.test.ts:856:      await runService.getRun("nonexistent")
+tests/orchestration/durable-runtime-coverage.test.ts:875:  it("cancelRun with active handle invokes cancellation", async () => {
+tests/orchestration/durable-runtime-coverage.test.ts:886:    const cancelled = await runService.cancelRun(run.id, "test cancellation")
+tests/orchestration/durable-runtime-coverage.test.ts:928:  it("cancelRun throws for missing run", async () => {
+tests/orchestration/durable-runtime-coverage.test.ts:931:      await runService.cancelRun("nonexistent", "reason")
+tests/orchestration/durable-runtime-coverage.test.ts:938:  it("cancelRun throws for terminal run", async () => {
+tests/orchestration/durable-runtime-coverage.test.ts:949:      await runService.cancelRun(run.id)
