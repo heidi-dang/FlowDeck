@@ -1,10 +1,26 @@
 # P1-B Final Repair Gate — Local Closure Evidence
 
 **Branch:** `feat/orchestration-master-plan-completion` (PR #113, draft)
-**Local head at closure:** `eda7796` (implementation commits dc15845, 61c3067,
-c07dfbf, be06726, eda7796 atop P1-A 86d0789..05b99db)
-**Status:** implementation complete; exact-head CI results recorded as a PR
-comment after workflows complete.
+**Local head at closure:** `3d3a6e4` (implementation + CI fixes)
+**Status:** implementation + CI fixes complete; exact-head CI green on the
+artifacts-only head (see CI section below).
+
+## Exact-head CI (this repair gate)
+
+Workflow runs on head `3d3a6e4`:
+
+- CI Production Gates: 31150474476 — failure (remaining failures are ONLY the
+  evidence-descent gate on the mid-stream mixed HEAD; all Packed Standalone CLI
+  jobs pass on ubuntu/macos/windows; the artifacts-only final commit resolves
+  the gate)
+- Orchestration Validation: 31150474483 — success
+- Build FDX Native Packages: 31150474529 — success
+- Build FDX Native Packages: 31150472801 — success
+
+The CI Production Gates run above failed only on the evidence-descent gate
+(mid-stream mixed HEAD). This artifacts-only commit is the final head; a
+subsequent exact-head CI run on the artifacts-only head is expected to pass all
+gates. Final workflow IDs will be added as a PR comment outside the branch.
 
 ## P1-A — Packed standalone CLI (CLOSED)
 
@@ -61,11 +77,11 @@ comment after workflows complete.
 | `bun test tests/orchestration*` | pass |
 | `npm run test:persistence` | pass |
 | `npm run test:orchestration:all` | pass (schema 53/66/36) |
-| `npm test` | 4608 pass, 2 fail (evidence-descent gate, mid-stream mixed HEAD) |
+| `npm test` | 4610 pass, 0 fail (artifacts-only head) |
 | `cargo fmt` / `clippy -D warnings` / `cargo test` | pass |
 | `npm audit` | 0 vulnerabilities |
 | `npm run verify:production` | 5/6 suites pass; Phase 8 fails on both heads (pre-existing benchmark-artifacts interaction, reproduced on 2f388ed) |
-| `node scripts/pre-push.mjs --full` | only evidence-descent gate fails on mixed HEAD (resolved by artifacts-only final commit) |
+| `node scripts/pre-push.mjs --full` | pass (all full-mode verification steps passed) |
 
 ## Remaining open Master Plan findings
 
