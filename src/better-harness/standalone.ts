@@ -182,6 +182,9 @@ export async function startStandaloneServer(opts: StandaloneOptions): Promise<St
     eventLogDir,
     runtime,
     shutdown: async () => {
+      // Release SSE resources (broker clients, legacy clients) before the
+      // listener closes so a persistent SSE connection cannot block close().
+      sseManager.dispose();
       await Promise.race([
         server.stop(),
         new Promise((_, reject) => setTimeout(() => reject(new Error("Server stop timeout")), 5000)),
@@ -191,7 +194,13 @@ export async function startStandaloneServer(opts: StandaloneOptions): Promise<St
 }
 
 // ─── Direct execution (bun run src/better-harness/standalone.ts ...) ─────
-if (import.meta.url === `file://${process.argv[1]}` || process.argv[1]?.endsWith("standalone.ts")) {
+const isDirectEntry =
+  process.argv[1] !== undefined &&
+  (import.meta.url === `file://${process.argv[1]}` ||
+    process.argv[1].endsWith("standalone.ts") ||
+    process.argv[1].endsWith("standalone.js"));
+
+if (isDirectEntry) {
   const opts = parseArgs(process.argv.slice(2));
   startStandaloneServer(opts)
     .then((handle) => {

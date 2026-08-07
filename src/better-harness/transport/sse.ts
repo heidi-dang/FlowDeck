@@ -25,32 +25,30 @@ export interface SseClient {
  * - One sequence counter (SQLite aggregate_version).
  * - One replay store (SQLite canonical `events` table).
  * - One event format (FlowDeckStreamEvent).
+ *
+ * The SQLite repository is constructed lazily on first SSE use. This keeps the
+ * standalone CLI server startable under supported Node versions: the health
+ * and API routes never open a SQLite handle, and the packed standalone bundle
+ * must not depend on the Bun-only `bun:sqlite` builtin at startup.
  */
 export class SseManager {
-  private repository: StreamRepository;
-  private broker: SseBroker;
-  private publisher: StreamPublisher;
-  private replayService: StreamReplayService;
-  private sseRouteHandler: (req: any, res: any) => Promise<void>;
+  private repository: StreamRepository | null = null;
+  private broker: SseBroker | null = null;
+  private publisher: StreamPublisher | null = null;
+  private replayService: StreamReplayService | null = null;
+  private sseRouteHandler: ((req: any, res: any) => Promise<void>) | null = null;
   private legacyClients = new Map<string, SseClient>();
+  private readonly eventBus: EventBus;
+  private readonly dbPathOrRepo?: string | StreamRepository;
+  private readonly projectFilter?: string;
 
   constructor(eventBus: EventBus, dbPathOrRepo?: string | StreamRepository, _projectFilter?: string) {
-    if (typeof dbPathOrRepo === 'object' && dbPathOrRepo !== null) {
-      this.repository = dbPathOrRepo;
-    } else {
-      const isTest = process.env.NODE_ENV === 'test';
-      const dbPath = (typeof dbPathOrRepo === 'string' && (dbPathOrRepo.endsWith('.db') || dbPathOrRepo === ':memory:'))
-        ? dbPathOrRepo
-        : (isTest ? ':memory:' : './flowdeck.db');
-      this.repository = new StreamRepository(dbPath, { allowInMemory: isTest });
-    }
+    this.eventBus = eventBus;
+    this.dbPathOrRepo = dbPathOrRepo;
+    this.projectFilter = _projectFilter;
 
-    this.broker = new SseBroker();
-    this.publisher = new StreamPublisher(this.repository, this.broker);
-    this.replayService = new StreamReplayService(this.repository);
-    this.sseRouteHandler = createSseRoute(this.broker, this.replayService, this.repository);
-
-    // Subscribe to EventBus and convert runtime HarnessEvents into canonical SSE v2 publication
+    // Subscribe to EventBus and convert runtime HarnessEvents into canonical
+    // SSE v2 publication. Subscription itself never opens the repository.
     const types = [
       "run.queued", "run.started", "collector.started", "collector.completed",
       "analysis.started", "finding.created", "run.progress", "report.completed",
@@ -62,6 +60,31 @@ export class SseManager {
         this.broadcastEvent(event);
       });
     }
+  }
+
+  /**
+   * Lazily initialize the SQLite-backed SSE infrastructure. Only called on
+   * the first SSE broadcast or SSE request; the health and API routes never
+   * invoke it, so the standalone server can start under Node where the
+   * Bun-only `bun:sqlite` builtin is unavailable.
+   */
+  private ensureInitialized(): void {
+    if (this.repository) return;
+
+    if (typeof this.dbPathOrRepo === 'object' && this.dbPathOrRepo !== null) {
+      this.repository = this.dbPathOrRepo;
+    } else {
+      const isTest = process.env.NODE_ENV === 'test';
+      const dbPath = (typeof this.dbPathOrRepo === 'string' && (this.dbPathOrRepo.endsWith('.db') || this.dbPathOrRepo === ':memory:'))
+        ? this.dbPathOrRepo
+        : (isTest ? ':memory:' : './flowdeck.db');
+      this.repository = new StreamRepository(dbPath, { allowInMemory: isTest });
+    }
+
+    this.broker = new SseBroker();
+    this.publisher = new StreamPublisher(this.repository, this.broker);
+    this.replayService = new StreamReplayService(this.repository);
+    this.sseRouteHandler = createSseRoute(this.broker, this.replayService, this.repository);
   }
 
   addClient(client: SseClient): void {
@@ -76,12 +99,13 @@ export class SseManager {
    * Broadcast a runtime event by persisting it atomically before live delivery.
    */
   broadcastEvent(event: HarnessEvent): void {
+    this.ensureInitialized();
     const eventData = (event.data || {}) as Record<string, unknown>;
     const runId = typeof eventData.runId === "string" ? eventData.runId : "default_run";
 
     const mappedType = this.mapHarnessEventType(event.type);
 
-    const committed = this.publisher.publish({
+    const committed = this.publisher!.publish({
       runId,
       type: mappedType as any,
       stage: event.type.startsWith("run.") ? "intake" : "execute",
@@ -108,31 +132,35 @@ export class SseManager {
     _projectKey?: string,
     runId?: string,
   ): void {
+    this.ensureInitialized();
     if (runId && !(req as any).params) {
       (req as any).params = { runId };
     }
-    this.sseRouteHandler(req, res);
+    this.sseRouteHandler!(req, res);
   }
 
   getStreamRepository(): StreamRepository {
-    return this.repository;
+    this.ensureInitialized();
+    return this.repository!;
   }
 
   getSseBroker(): SseBroker {
-    return this.broker;
+    this.ensureInitialized();
+    return this.broker!;
   }
 
   getPublisher(): StreamPublisher {
-    return this.publisher;
+    this.ensureInitialized();
+    return this.publisher!;
   }
 
   /**
    * Shut down all live SSE connections and legacy test clients. Required so a
    * persistent SSE connection cannot block `server.close()` during tests or
-   * server shutdown.
+   * server shutdown. Safe to call before the repository was ever initialized.
    */
   dispose(): void {
-    this.broker.closeAll();
+    this.broker?.closeAll();
     for (const client of this.legacyClients.values()) {
       try {
         client.send(

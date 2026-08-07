@@ -14,11 +14,28 @@ import { dirname, join } from "node:path";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 async function loadStandalone() {
-  // Prefer the built dist output; fall back to the TypeScript source.
+  // The compiled standalone module is the ONLY supported runtime source.
+  // TypeScript source under src/ is intentionally NOT a fallback: it is not
+  // shipped in the npm package and is not an acceptable installed runtime
+  // dependency. If the compiled module is absent the package has not been
+  // built (or the install is corrupt) — fail with a clear diagnostic.
+  const standalonePath = join(__dirname, "..", "dist", "better-harness", "standalone.js");
   try {
-    return await import(join(__dirname, "..", "dist", "better-harness", "standalone.js"));
-  } catch {
-    return await import(join(__dirname, "..", "src", "better-harness", "standalone.ts"));
+    return await import(standalonePath);
+  } catch (err) {
+    console.error(
+      `[flowdeck-better-harness] Compiled standalone module not found: ${standalonePath}`,
+    );
+    console.error(
+      "[flowdeck-better-harness] Run `npm run build` in the package checkout, or reinstall",
+    );
+    console.error(
+      "[flowdeck-better-harness] the package from a release tarball, then retry this command.",
+    );
+    console.error(
+      `[flowdeck-better-harness] Load error: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    process.exit(1);
   }
 }
 
