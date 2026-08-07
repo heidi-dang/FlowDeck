@@ -92,7 +92,8 @@ const VALID_CONFIG_KEYS: (keyof FlowDeckConfig)[] = [
   "betterHarness",
   "designFirst",
   "governance",
-  "maxWritesPerAgent"
+  "maxWritesPerAgent",
+  "tokenBudget"
 ]
 
 function sanitizeConfig(parsed: unknown): FlowDeckConfig {

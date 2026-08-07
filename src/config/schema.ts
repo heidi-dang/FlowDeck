@@ -7,7 +7,9 @@
  */
 
 import type { AgentModelConfig } from './agent-models';
+import type { TokenBudgetOverrides } from './token-budget-config';
 export type { AgentModelConfig } from './agent-models';
+export type { TokenBudgetOverrides } from './token-budget-config';
 
 export type GovernanceMode = "off" | "advisory" | "strict";
 
@@ -52,6 +54,8 @@ export interface FlowDeckConfig {
     /** Expected runtime agent. Defaults to effective default_agent or "heidi". */
     expectedAgent?: string;
   };
+  /** Hierarchical token-budget control. See token-budget-config.ts for profiles and validation. */
+  tokenBudget?: TokenBudgetOverrides;
 }
 
 export interface GovernanceConfig {

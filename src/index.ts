@@ -87,6 +87,7 @@ import {
   applyIdentityMarker,
 } from "./services/runtime-agent-policy"
 import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
+import { TokenBudgetRuntime } from "./services/token-budget-runtime"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -268,6 +269,17 @@ const plugin: Plugin = async ({ directory, client }) => {
   const loopDetector = new LoopDetector(flowdeckConfig.governance?.loopDetection, appLog)
   let effectiveDefaultAgent: string = "heidi"
 
+  // ─── Hierarchical token-budget control ────────────────────────────────
+  const tokenBudgetRuntime = TokenBudgetRuntime.fromConfig(flowdeckConfig, {
+    directory,
+    onWarning: (runId, message) => {
+      appLog(`[token-budget] ${message}`, "warn")
+    },
+    onTerminal: (runId, reason) => {
+      appLog(`[token-budget] Run ${runId} terminal: ${reason}`, "warn")
+    },
+  })
+
   const maxToolCalls = flowdeckConfig.governance?.delegationBudget?.maxToolCalls ?? 200
   const maxRetries = flowdeckConfig.governance?.delegationBudget?.maxSameStepRetries ?? 3
   const maxDelegations = flowdeckConfig.governance?.delegationBudget?.maxDelegations ?? 20
@@ -430,6 +442,27 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       if (!result.allowed) {
         throw new Error(result.reason ?? "Agent identity enforcement blocked this request")
+      }
+
+      // ── Hierarchical token-budget pre-dispatch gate ──────────────────
+      // Reserve budget before the model request is sent. When the run or
+      // child budget cannot cover the estimated request, abort the call.
+      if (sessionID && tokenBudgetRuntime.isEnabled()) {
+        const budgetCtx = {
+          sessionID,
+          agent,
+          parentID: sessionMeta?.parentID,
+          depth: sessionMeta?.depth ?? 0,
+        }
+        const budget = await tokenBudgetRuntime.beforeDispatch(budgetCtx, output.message, {
+          model: output.message?.modelID,
+          provider: output.message?.providerID,
+        })
+        if (!budget.allowed) {
+          throw new Error(
+            `TOKEN_BUDGET_EXCEEDED: ${budget.reason ?? "budget exhausted"} (run ${budget.runId}, remaining ${budget.remainingRun})`,
+          )
+        }
       }
 
       // Apply identity anti-fabrication marker
@@ -880,6 +913,47 @@ const plugin: Plugin = async ({ directory, client }) => {
               },
             })
           }
+        }
+      }
+
+      // ── Hierarchical token-budget reconciliation ─────────────────────
+      // message.updated carries the assistant message with real provider
+      // tokens + cost. Reconcile the reservation made at chat.message.
+      const eventMeta = eventSessionID ? sessionRegistry.get(eventSessionID) : undefined
+      if (tokenBudgetRuntime.isEnabled() && type === "message.updated") {
+        const msgInfo = info as {
+          id: string
+          role?: string
+          tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
+          cost?: number
+          modelID?: string
+          providerID?: string
+          error?: unknown
+        }
+        if (msgInfo?.id && msgInfo.role === "assistant") {
+          try {
+            const budgetCtx = {
+              sessionID: eventSessionID,
+              agent: sessionAgent ?? (eventSessionID ? sessionCallerAgents.get(eventSessionID) : undefined) ?? "unknown",
+              parentID,
+              depth: eventMeta?.depth ?? 0,
+            }
+            await tokenBudgetRuntime.reconcileUsage(budgetCtx, msgInfo)
+          } catch (err) {
+            appLog(`[token-budget] reconcile failed: ${err instanceof Error ? err.message : String(err)}`, "warn", eventSessionID)
+          }
+        }
+      } else if (tokenBudgetRuntime.isEnabled() && (type === "session.error" || type === "session.completed")) {
+        try {
+          const budgetCtx = {
+            sessionID: eventSessionID,
+            agent: sessionAgent ?? (eventSessionID ? sessionCallerAgents.get(eventSessionID) : undefined) ?? "unknown",
+            parentID,
+            depth: eventMeta?.depth ?? 0,
+          }
+          await tokenBudgetRuntime.onSessionEnd(budgetCtx, type === "session.error" ? "session_error" : "session_completed")
+        } catch (err) {
+          appLog(`[token-budget] session-end release failed: ${err instanceof Error ? err.message : String(err)}`, "warn", eventSessionID)
         }
       }
 
