@@ -66,9 +66,23 @@ beforeEach(() => {
   nextId = 0;
 });
 
-afterEach(() => {
+afterEach(async () => {
   try { db.close(); } catch { /* best-effort */ }
-  rmSync(dir, { recursive: true, force: true });
+  // Windows: SQLite WAL/SHM/journal sidecars can remain briefly locked after
+  // close(); remove them best-effort before removing the directory.
+  for (const sidecar of ["test.db-wal", "test.db-shm", "test.db-journal"]) {
+    try { rmSync(join(dir, sidecar), { force: true }); } catch { /* best-effort */ }
+  }
+  // Bounded retry tolerates transient EBUSY/EPERM on Windows (up to 10 × 100ms).
+  for (let attempt = 0; ; attempt++) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (attempt >= 9) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
 });
 
 function buildAdapter(hooks?: CanonicalEvidencePersistenceHooks): CanonicalEvidenceImportAdapter {

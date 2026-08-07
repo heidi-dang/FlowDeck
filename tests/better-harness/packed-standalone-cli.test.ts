@@ -85,7 +85,11 @@ describe("Packed flowdeck-better-harness CLI (P1-A)", () => {
     tarball = join(packDir, parsed[0].filename)
     expect(existsSync(tarball)).toBe(true)
 
-    const listing = execFileSync("tar", ["-tzf", tarball], { encoding: "utf-8" })
+    // Windows bsdtar treats a drive-letter path ("C:\...") as a remote host
+    // spec unless --force-local is passed ("tar (child): Cannot connect to
+    // C: resolve failed"). The flag is a no-op for GNU tar on POSIX, so it is
+    // safe on every platform.
+    const listing = execFileSync("tar", ["--force-local", "-tzf", tarball], { encoding: "utf-8" })
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean)
@@ -179,7 +183,12 @@ describe("Packed flowdeck-better-harness CLI (P1-A)", () => {
       new Promise<"TIMEOUT">((r) => setTimeout(() => r("TIMEOUT"), 10_000)),
     ])
     expect(code).not.toBe("TIMEOUT")
-    expect(code).toBe(0)
+    // Windows signal emulation can yield a null exit code for a signal
+    // termination; the real guarantees are that the process exited (above)
+    // and that the listener is gone (proven by the fetch failure below).
+    // Non-Windows keeps the strict 0 (graceful SIGTERM shutdown).
+    const exitedCleanly = code === 0 || (isWin && code === null)
+    expect(exitedCleanly).toBe(true)
 
     // 12. prove no listener remains
     const stillUp = await fetch(`http://127.0.0.1:${port}/health`)
@@ -190,6 +199,12 @@ describe("Packed flowdeck-better-harness CLI (P1-A)", () => {
     // 12. prove no child process remains
     if (!isWin) {
       expect(child.exitCode).not.toBeNull()
+    } else {
+      // Windows may report a signal-terminated child with a null exitCode;
+      // a set signalCode (or a non-null exitCode) still proves the child
+      // terminated. The fetch-fails assertion above is the real listener
+      // check either way.
+      expect(child.signalCode !== null || child.exitCode !== null).toBe(true)
     }
   }, 120_000)
 
