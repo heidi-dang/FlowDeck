@@ -8,7 +8,7 @@
 // Usage:
 //   flowdeck-better-harness --project <path> [--state-dir <dir>] [--port <port>] [--host <host>]
 
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -21,7 +21,9 @@ async function loadStandalone() {
   // built (or the install is corrupt) — fail with a clear diagnostic.
   const standalonePath = join(__dirname, "..", "dist", "better-harness", "standalone.js");
   try {
-    return await import(standalonePath);
+    // Node's ESM loader requires a file:// URL; on Windows a bare absolute
+    // path (C:\...) is rejected with ERR_UNSUPPORTED_ESM_URL_SCHEME.
+    return await import(pathToFileURL(standalonePath).href);
   } catch (err) {
     console.error(
       `[flowdeck-better-harness] Compiled standalone module not found: ${standalonePath}`,
