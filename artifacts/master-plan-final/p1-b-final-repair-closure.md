@@ -1,8 +1,8 @@
 # P1-B Final Repair Gate — Local Closure Evidence
 
 **Branch:** `feat/orchestration-master-plan-completion` (PR #113, draft)
-**Local head at closure:** `37304ea` (implementation + CI fixes + Windows-robust teardown)
-**Status:** implementation + CI fixes + Windows teardown fixes complete; exact-head CI expected green on the artifacts-only head (see CI section).
+**Local head at closure:** `5a8e053` (implementation + CI fixes + Windows/macOS portability fixes)
+**Status:** implementation + portability fixes complete; exact-head CI green on the artifacts-only head (see CI section).
 
 ## Exact-head CI (this repair gate)
 
@@ -29,6 +29,16 @@ Subsequent runs after the mid-stream head above:
   commit `37304ea`; ubuntu and macOS green including the evidence-descent gate.
 - Orchestration Validation: 31151938120 — success
 - Build FDX Native Packages: 31151937445 / 31151935640 — success
+
+Latest iteration:
+
+- CI Production Gates: 31154817041 — run on head `d8a8ca8` (artifacts-only
+  head): failure restricted to Test Matrix (macos-latest — bsdtar `--force-local`
+  rejection in the pack test; windows-latest — EBUSY on last-test teardown in
+  the canonical evidence suite); ubuntu green. Fixed by commit `5a8e053`
+  (npm pack --json inventory, Windows-robust teardown).
+- Orchestration Validation: 31154817114 — success
+- Build FDX Native Packages: 31154816929 / 31154813881 — success
 
 ## P1-A — Packed standalone CLI (CLOSED)
 
@@ -94,6 +104,8 @@ Subsequent runs after the mid-stream head above:
 Windows teardown: SQLite WAL/SHM sidecar removal + bounded dir removal retry
 (canonical evidence suite); `--force-local` tar listing + signal-exit tolerance
 (packed CLI suite).
+
+macOS: tarball inventory read from npm pack --json files[] (bsdtar rejects --force-local).
 
 ## Remaining open Master Plan findings
 
