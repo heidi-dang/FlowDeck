@@ -1,9 +1,8 @@
 # P1-B Final Repair Gate — Local Closure Evidence
 
 **Branch:** `feat/orchestration-master-plan-completion` (PR #113, draft)
-**Local head at closure:** `3d3a6e4` (implementation + CI fixes)
-**Status:** implementation + CI fixes complete; exact-head CI green on the
-artifacts-only head (see CI section below).
+**Local head at closure:** `37304ea` (implementation + CI fixes + Windows-robust teardown)
+**Status:** implementation + CI fixes + Windows teardown fixes complete; exact-head CI expected green on the artifacts-only head (see CI section).
 
 ## Exact-head CI (this repair gate)
 
@@ -21,6 +20,15 @@ The CI Production Gates run above failed only on the evidence-descent gate
 (mid-stream mixed HEAD). This artifacts-only commit is the final head; a
 subsequent exact-head CI run on the artifacts-only head is expected to pass all
 gates. Final workflow IDs will be added as a PR comment outside the branch.
+
+Subsequent runs after the mid-stream head above:
+
+- CI Production Gates: 31151937442 — run on head `8054116` (artifacts-only
+  head): failure restricted to Test Matrix (windows-latest) — Windows-only
+  teardown defects in the packed CLI and canonical evidence tests, fixed by
+  commit `37304ea`; ubuntu and macOS green including the evidence-descent gate.
+- Orchestration Validation: 31151938120 — success
+- Build FDX Native Packages: 31151937445 / 31151935640 — success
 
 ## P1-A — Packed standalone CLI (CLOSED)
 
@@ -82,6 +90,10 @@ gates. Final workflow IDs will be added as a PR comment outside the branch.
 | `npm audit` | 0 vulnerabilities |
 | `npm run verify:production` | 5/6 suites pass; Phase 8 fails on both heads (pre-existing benchmark-artifacts interaction, reproduced on 2f388ed) |
 | `node scripts/pre-push.mjs --full` | pass (all full-mode verification steps passed) |
+
+Windows teardown: SQLite WAL/SHM sidecar removal + bounded dir removal retry
+(canonical evidence suite); `--force-local` tar listing + signal-exit tolerance
+(packed CLI suite).
 
 ## Remaining open Master Plan findings
 
