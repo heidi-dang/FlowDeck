@@ -28,7 +28,6 @@ import {
   mkdtempSync,
   writeFileSync,
   rmSync,
-  readFileSync,
   existsSync,
   mkdirSync,
 } from "node:fs"

@@ -41,10 +41,6 @@ interface EvidenceRow {
   created_at: string;
 }
 
-interface LifecycleRow {
-  status: string;
-}
-
 interface CriterionLinkRow {
   run_acceptance_criterion_id: string;
   criterion_id: string | null;
