@@ -385,7 +385,10 @@ jobs:
         shell: bash
         run: |
           cd "$INSTALL_DIR"
-          node node_modules/.bin/flowdeck-better-harness \
+          # Invoke the installed bin script directly (node resolves the file
+          # path on every OS); node_modules/.bin shims are shell scripts on
+          # Windows and would be misparsed as JavaScript by `node`.
+          node node_modules/@heidi-dang/flowdeck/bin/better-harness.js \
             --project "$PROJECT_DIR" \
             --state-dir "$STATE_DIR" \
             --host 127.0.0.1 \

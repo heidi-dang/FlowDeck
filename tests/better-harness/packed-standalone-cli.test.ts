@@ -47,6 +47,7 @@ describe("Packed flowdeck-better-harness CLI (P1-A)", () => {
   let stateDir: string
   let tarball: string
   let installedBin: string
+  let installedJsBin: string
   let installedStandalone: string
 
   beforeAll(() => {
@@ -111,13 +112,21 @@ describe("Packed flowdeck-better-harness CLI (P1-A)", () => {
     )
     expect(existsSync(installedStandalone)).toBe(true)
 
+    // The .bin shim must resolve; but executing it with `node` is not
+    // portable (Windows shims are .cmd shell scripts). Node can execute the
+    // installed bin script directly on every OS, so that is what the
+    // --help / server lifecycle steps invoke.
     const binName = isWin ? "flowdeck-better-harness.cmd" : "flowdeck-better-harness"
     installedBin = join(installDir, "node_modules", ".bin", binName)
     expect(existsSync(installedBin)).toBe(true)
+    installedJsBin = join(
+      installDir, "node_modules", "@heidi-dang", "flowdeck", "bin", "better-harness.js",
+    )
+    expect(existsSync(installedJsBin)).toBe(true)
   }, 180_000)
 
   it("installed --help succeeds under Node", () => {
-    const out = execFileSync(NODE, [installedBin, "--help"], {
+    const out = execFileSync(NODE, [installedJsBin, "--help"], {
       cwd: installDir,
       encoding: "utf-8",
       shell: isWin,
@@ -128,7 +137,7 @@ describe("Packed flowdeck-better-harness CLI (P1-A)", () => {
 
   it("installed standalone server lifecycle: start → health → shutdown → exit", async () => {
     const child: ChildProcess = spawn(NODE, [
-      installedBin,
+      installedJsBin,
       "--project", projectDir,
       "--state-dir", stateDir,
       "--host", "127.0.0.1",
