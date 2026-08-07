@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "fs";
+import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -32,7 +32,6 @@ import {
 import { HarnessReportSchema, type HarnessReport } from "../src/better-harness/contracts/report";
 import { evaluateAllGates, type AggregatedGateResult } from "../src/orchestration/completion/completion-evaluator";
 import { CompletionGate } from "../src/orchestration/completion/completion-gates";
-import { deterministicCleanup } from "./orchestration/harness/cleanup";
 
 // ─── Fixture constants ────────────────────────────────────────────────────
 
@@ -67,8 +66,9 @@ beforeEach(() => {
   nextId = 0;
 });
 
-afterEach(async () => {
-  await deterministicCleanup({ db, dir });
+afterEach(() => {
+  try { db.close(); } catch { /* best-effort */ }
+  rmSync(dir, { recursive: true, force: true });
 });
 
 function buildAdapter(hooks?: CanonicalEvidencePersistenceHooks): CanonicalEvidenceImportAdapter {
