@@ -88,6 +88,12 @@ import {
 } from "./services/runtime-agent-policy"
 import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
 import { TokenBudgetRuntime } from "./services/token-budget-runtime"
+import { getArtifactStore } from "./services/artifact-store"
+import {
+  buildAssignmentContext,
+  externalizeToolOutput,
+  compactConversationContext,
+} from "./services/context-scoping"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -263,6 +269,7 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
 
   setActiveProjectDir(directory)
+  const artifactStore = getArtifactStore(join(directory, ".flowdeck", "artifacts"))
 
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
   const orchestratorGuard = new OrchestratorGuard({ routes: getAgentRoutes() })
@@ -444,6 +451,26 @@ const plugin: Plugin = async ({ directory, client }) => {
         throw new Error(result.reason ?? "Agent identity enforcement blocked this request")
       }
 
+      // ── Context Compaction ───────────────────────────────────────────
+      // Compact intermediate conversation turns when token footprint exceeds the
+      // configured threshold — runs before the budget gate to reduce reservation size.
+      if (sessionID && output.message?.messages && Array.isArray(output.message.messages)) {
+        const tokenConfig = tokenBudgetRuntime.getConfig()
+        const compactResult = compactConversationContext({
+          messages: output.message.messages,
+          thresholdTokens: tokenConfig.compactThresholdTokens,
+          sessionID,
+        })
+        if (compactResult.compacted) {
+          output.message.messages = compactResult.messages
+          appLog(
+            `[context-compaction] session=${sessionID} ${compactResult.originalTokens}->${compactResult.compactedTokens} tokens`,
+            "info",
+            sessionID,
+          )
+        }
+      }
+
       // ── Hierarchical token-budget pre-dispatch gate ──────────────────
       // Reserve budget before the model request is sent. When the run or
       // child budget cannot cover the estimated request, abort the call.
@@ -583,6 +610,19 @@ const plugin: Plugin = async ({ directory, client }) => {
           { sessionID, callID, agent },
           rawArgs,
         )
+
+        // Scope child prompt using buildAssignmentContext to enforce context packet boundaries
+        const rawTaskPrompt = (rawArgs.prompt as string) ?? (rawArgs.description as string) ?? ""
+        if (rawTaskPrompt) {
+          const assignmentCtx = buildAssignmentContext({
+            assignment: rawTaskPrompt,
+            target: (rawArgs.target as string) || (rawArgs.file as string) || undefined,
+            stage: (rawArgs.stage as string) || undefined,
+          })
+          rawArgs.prompt = assignmentCtx.prompt
+          if (toolOutput?.args) toolOutput.args.prompt = assignmentCtx.prompt
+          if (toolInput?.args) toolInput.args.prompt = assignmentCtx.prompt
+        }
         const targetAgent = invocation.targetAgent
 
         // Only run delegation validation if a delegation target is present.
@@ -748,6 +788,31 @@ const plugin: Plugin = async ({ directory, client }) => {
       const agent = sessionCallerAgents.get(sessionID) ?? toolInput.agent ?? "unknown"
       const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
       appLog(`[tool] done tool=${toolName} session=${sessionID}`)
+
+      // ── Tool Output Externalisation ───────────────────────────────────
+      // If the tool output is oversized, archive in ArtifactStore and return reference marker
+      if (sessionID && tokenBudgetRuntime.isEnabled()) {
+        const tokenConfig = tokenBudgetRuntime.getConfig()
+        const maxChars = tokenConfig.maxToolOutputChars
+        const outputFields = ["output", "result", "content"]
+        for (const field of outputFields) {
+          if (toolOutput && typeof toolOutput[field] === "string" && toolOutput[field].length > maxChars) {
+            const ext = externalizeToolOutput(toolOutput[field], maxChars, {
+              sessionID,
+              toolName,
+              artifactStore,
+            })
+            if (ext.truncated) {
+              toolOutput[field] = ext.text
+              appLog(
+                `[tool-externalisation] Externalised output for tool=${toolName} session=${sessionID} (${ext.originalChars} -> ${ext.retainedChars} chars, id=${ext.artifactId})`,
+                "info",
+                sessionID,
+              )
+            }
+          }
+        }
+      }
 
       if (sessionID && toolName && rawArgs.file && !toolInput.error && !toolOutput?.error) {
         if (!sessionFilesChanged.has(sessionID)) {

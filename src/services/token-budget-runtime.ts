@@ -103,6 +103,10 @@ export class TokenBudgetRuntime {
     return this.config.enabled
   }
 
+  getConfig() {
+    return this.config
+  }
+
   getControllerForSession(ctx: SessionBudgetContext): TokenBudgetController {
     const existingRun = this.runForSession.get(ctx.sessionID)
     if (existingRun) {
