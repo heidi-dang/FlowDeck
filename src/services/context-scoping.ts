@@ -289,8 +289,9 @@ function extractFromTurn(turn: ConversationTurn, state: CompactionState): void {
     const trimmed = line.trim()
     if (!trimmed) continue
 
-    // Decisions / Verified facts
-    if (/Decision:|Verified:|Passed:|Conclusion:/.test(trimmed) && state.verifiedFacts.size < 10) {
+    // Decisions / Verified facts. "Conclusion:" lines are turn summaries, not
+    // facts or decisions — excluding them keeps the cap for real signals.
+    if (/Decision:|Verified:|Passed:/.test(trimmed) && state.verifiedFacts.size < 10) {
       state.verifiedFacts.add(trimmed.slice(0, 120))
     }
     // Acceptance criteria

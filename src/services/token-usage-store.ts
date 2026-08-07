@@ -180,8 +180,11 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
 
   // Last committed usage per dedup key — later records win.
   const byKey = new Map<string, TokenUsageRecord>()
-  // reservationId → claimed, so committed reservations can be released.
+  // reservationId → claimed and its LATEST durable status. Later records
+  // override earlier ones, so a reservation that was cancelled or released
+  // after being reserved nets to zero on rebuild.
   const reservationClaims = new Map<string, number>()
+  const reservationStatus = new Map<string, string>()
   const committedReservations = new Set<string>()
 
   for (const e of entries) {
@@ -189,9 +192,11 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
       const claimed = Number(e.claimed ?? 0)
       if (Number.isFinite(claimed) && claimed > 0) {
         const status = String(e.status ?? "reserved")
-        if (status === "reserved") reserved += claimed
         const rid = String(e.reservationId ?? "")
-        if (rid) reservationClaims.set(rid, claimed)
+        if (rid) {
+          reservationClaims.set(rid, claimed)
+          reservationStatus.set(rid, status)
+        }
       }
       continue
     }
@@ -211,10 +216,17 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
     }
   }
 
-  // Release reservations that were committed (their usage is already counted).
+  // Reserved = claimed of reservations whose latest durable status is still
+  // reserved, minus those later committed (their usage is already counted in
+  // consumed and their reservation was released at commit time).
+  for (const [rid, status] of reservationStatus) {
+    if (status === "reserved") reserved += reservationClaims.get(rid) ?? 0
+  }
   for (const rid of committedReservations) {
-    const claimed = reservationClaims.get(rid)
-    if (claimed) reserved = Math.max(0, reserved - claimed)
+    if (reservationStatus.get(rid) === "reserved") {
+      const claimed = reservationClaims.get(rid)
+      if (claimed) reserved = Math.max(0, reserved - claimed)
+    }
   }
 
   // Consumed = sum of the winning (latest) record per dedup key only.

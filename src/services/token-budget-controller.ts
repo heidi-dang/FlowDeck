@@ -268,7 +268,10 @@ export class TokenBudgetController {
   registerSession(sessionId: string, agentId: string, parentSessionId?: string): AgentBudgetState {
     const existing = this.agents.get(sessionId)
     if (existing) return existing
-    const ceiling = Math.min(this.config.childTotal, this.run.ceiling)
+    // Root sessions (no parent) own the full run ceiling; only delegated child
+    // sessions are capped by childTotal so delegated work cannot starve the
+    // orchestrator's own budget.
+    const ceiling = parentSessionId ? Math.min(this.config.childTotal, this.run.ceiling) : this.run.ceiling
     const state: AgentBudgetState = {
       agentId,
       sessionId,
@@ -536,6 +539,9 @@ export class TokenBudgetController {
           this.run.reserved = Math.max(0, this.run.reserved - r.claimed)
           const ag = this.agents.get(r.sessionId)
           if (ag) ag.reserved = Math.max(0, ag.reserved - r.claimed)
+          // Persist the status change so a rebuild does not resurrect the
+          // cancelled reservation as reserved slack.
+          this.store.append(this.run.runId, { kind: "reservation", ...r })
         }
       }
     })
@@ -548,6 +554,8 @@ export class TokenBudgetController {
         this.run.reserved = Math.max(0, this.run.reserved - r.claimed)
         const ag = this.agents.get(r.sessionId)
         if (ag) ag.reserved = Math.max(0, ag.reserved - r.claimed)
+        // Persist so rebuilds (restart/recovery) reflect the release.
+        this.store.append(this.run.runId, { kind: "reservation", ...r })
       }
     }
   }
