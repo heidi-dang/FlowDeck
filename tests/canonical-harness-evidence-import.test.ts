@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "fs";
+import { mkdtempSync, rmSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -69,18 +69,33 @@ beforeEach(() => {
 afterEach(async () => {
   try { db.close(); } catch { /* best-effort */ }
   // Windows: SQLite WAL/SHM/journal sidecars can remain briefly locked after
-  // close(); remove them best-effort before removing the directory.
+  // close(). Force finalization of any lingering statement handles before
+  // removing them — matches the strictClose pattern in
+  // tests/orchestration/harness/cleanup.ts.
+  Bun.gc(true);
+  if (!existsSync(dir)) return;
   for (const sidecar of ["test.db-wal", "test.db-shm", "test.db-journal"]) {
     try { rmSync(join(dir, sidecar), { force: true }); } catch { /* best-effort */ }
   }
-  // Bounded retry tolerates transient EBUSY/EPERM on Windows (up to 10 × 100ms).
+  // Bounded retry tolerates transient EBUSY/EPERM on Windows. Windows can
+  // hold the WAL/SHM handles for ~1s+ past close(), so budget up to
+  // 50 × 200ms (10s); the loop exits as soon as the directory is gone
+  // (rmSync with force:true succeeds when the target is already absent).
+  const MAX_REMOVE_ATTEMPTS = 50;
+  const REMOVE_RETRY_DELAY_MS = 200;
   for (let attempt = 0; ; attempt++) {
     try {
       rmSync(dir, { recursive: true, force: true });
       return;
-    } catch (error) {
-      if (attempt >= 9) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    } catch {
+      if (attempt >= MAX_REMOVE_ATTEMPTS - 1) {
+        // Final best-effort: Node's own rm retry loop (maxRetries +
+        // retryDelay, honored when recursive: true) absorbs the last
+        // EBUSY/EPERM transitions on Windows. Throw only if it still fails.
+        rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, REMOVE_RETRY_DELAY_MS));
     }
   }
 });

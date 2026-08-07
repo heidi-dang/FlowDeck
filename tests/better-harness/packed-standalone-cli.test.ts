@@ -85,21 +85,19 @@ describe("Packed flowdeck-better-harness CLI (P1-A)", () => {
     tarball = join(packDir, parsed[0].filename)
     expect(existsSync(tarball)).toBe(true)
 
-    // Windows bsdtar treats a drive-letter path ("C:\...") as a remote host
-    // spec unless --force-local is passed ("tar (child): Cannot connect to
-    // C: resolve failed"). The flag is a no-op for GNU tar on POSIX, so it is
-    // safe on every platform.
-    const listing = execFileSync("tar", ["--force-local", "-tzf", tarball], { encoding: "utf-8" })
-      .split("\n")
-      .map((l) => l.trim())
-      .filter(Boolean)
+    // npm pack --json already reports the packaged file inventory portably on
+    // every platform (no tar shell-out — bsdtar on macOS rejects --force-local
+    // while GNU tar requires it for Windows drive-letter paths). The files[]
+    // entries are { path, size, mode } with paths relative to the package
+    // root, WITHOUT any "package/" prefix.
+    const files: string[] = (parsed[0].files ?? []).map((f: { path: string }) => f.path)
 
     // 5. standalone.js must be shipped in the tarball
-    expect(listing).toContain("package/dist/better-harness/standalone.js")
+    expect(files).toContain("dist/better-harness/standalone.js")
     // The bin entry must be shipped too
-    expect(listing).toContain("package/bin/better-harness.js")
+    expect(files).toContain("bin/better-harness.js")
     // TypeScript source must NOT be the runtime dependency
-    expect(listing.some((l) => l.includes("src/better-harness/standalone.ts"))).toBe(false)
+    expect(files.some((p) => p.includes("src/better-harness/standalone.ts"))).toBe(false)
   }, 120_000)
 
   it("installs the tarball into a clean temporary project and resolves the binary", () => {
