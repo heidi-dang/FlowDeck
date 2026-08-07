@@ -1,0 +1,35 @@
+{
+  "finding": "P1-B",
+  "title": "Runtime authority — packed standalone CLI + canonical evidence import",
+  "generated_at": "2026-08-07",
+  "head_sha": "05b99db (PR #113 feat/orchestration-master-plan-completion, draft)",
+  "method": "Static + runtime verification of dist/better-harness/standalone.js build output, npm tarball inventory, installed-package lifecycle, three-OS CI gate, and the transactional canonical evidence import path (tests/canonical-harness-evidence-import.test.ts, tests/harness-production-isolation.test.ts, tests/better-harness/packed-standalone-cli.test.ts).",
+  "summary": "The Better Harness dev/QA runtime is delivered exclusively as a packed standalone CLI (compiled dist/better-harness/standalone.js, no TypeScript source fallback in installed packages) gated across ubuntu/macos/windows in CI, and harness evidence enters the canonical orchestration store only through a transactional, idempotent canonical evidence importer bound to the authoritative canonical run + current SHA. The production plugin keeps exactly one writable orchestration authority.",
+  "entries": [
+    {
+      "item": "packed standalone CLI",
+      "build_output": "dist/better-harness/standalone.js",
+      "build_command": "bun build src/better-harness/standalone.ts --outdir dist/better-harness --target node --format esm",
+      "loader": "bin/better-harness.js imports only the compiled module; TypeScript source is NOT a runtime fallback",
+      "tarball_lifecycle": "npm pack ships package/dist/better-harness/standalone.js + package/bin/better-harness.js; installed via npm install --prefix <dir> --ignore-scripts <tarball>; binary resolves at node_modules/.bin/flowdeck-better-harness",
+      "ci_gate": ".github/workflows/ci.yml packed-standalone-cli job on [ubuntu-latest, macos-latest, windows-latest] + main Test Matrix",
+      "runtime_behavior": "per-instance state-dir only; never touches canonical task_runs/assignments/completion_decisions/events/event_outbox",
+      "test_evidence": "tests/better-harness/packed-standalone-cli.test.ts (6/6), CI Packed Standalone CLI + Installer + Local Installer (all OSes) jobs",
+      "status": "CLOSED"
+    },
+    {
+      "item": "canonical evidence import",
+      "adapter": "src/better-harness/evidence/canonical-evidence-adapter.ts (CanonicalEvidenceImportAdapter)",
+      "run_lookup": "authoritative CanonicalRunReader (SqliteCanonicalRunReader over task_runs); caller run id never trusted; unknown/arbitrary run-like strings rejected with CANONICAL_RUN_NOT_FOUND",
+      "sha_validation": "run.current_sha non-empty (RUN_CURRENT_SHA_MISSING) and === requested sha (RUN_SHA_MISMATCH) === report sourceRevision (REPORT_SHA_MISMATCH / REPORT_SOURCE_REVISION_MISSING)",
+      "eligibility": "states created/planning/analysing/delegating/executing/verifying/recovering; terminal runs rejected (RUN_NOT_ELIGIBLE); newer-report-supersedes rejected (REPORT_SUPERSEDED)",
+      "criterion_validation": "criterion in acceptance_criteria with contract_id === run.contractId (CRITERION_CONTRACT_MISMATCH) and run_acceptance_criteria row bound to run (CRITERION_RUN_MISMATCH)",
+      "idempotency": "deterministic importIdempotencyKey per source item + evidenceIdFromImportKey; scoped INSERT OR IGNORE into command_idempotency inside the transaction (owner=fpx:<sha>); completed → replay, executing → in_progress, failed → re-acquire, acquired → proceed",
+      "provenance": "13 fields persisted as canonical JSON in evidence.description (canonicalRunId, targetSha, harnessRunId, reportFingerprint, reportGeneratedAt, harnessFindingId, harnessEvidenceId, sourceEvidenceFingerprint, sourceCategory, sourceCollectedAt, contentHash, importIdempotencyKey, importedAt, provenanceVersion:1); frozen tr_evidence_immutable_update/delete make it immutable",
+      "transaction_boundary": "one SqliteUnitOfWork transaction: evidence + evidence_lifecycle + run_criterion_evidence + command_idempotency + events/event_outbox (evidence.imported, aggregate_version = max+1); sync db.query inside tx.write (thenables rejected by assertSync)",
+      "rollback": "any throw rolls back all writes; unexpected persistence failures wrapped in IMPORT_FAILED; never writes task-run state or completion decisions; harness run ids never become canonical run ids",
+      "test_evidence": "tests/canonical-harness-evidence-import.test.ts (27/27), tests/harness-production-isolation.test.ts section 4 (19/19 total)",
+      "status": "CLOSED"
+    }
+  ]
+}

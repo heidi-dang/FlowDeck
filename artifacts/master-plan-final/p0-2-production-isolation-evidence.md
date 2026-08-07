@@ -77,3 +77,73 @@ Runtime Benchmark (Branch-Head), FDX Native Parity, FDX Index Benchmark
   missing/mismatched SHAs.
 - `setFlowDeckStateDir` global override is deprecated and never invoked by the
   runtime; instance-scoped `stateDir` threads through coordinator/router.
+
+## Final Repair Gate Closure (P1-B)
+
+Closes the PR #113 final repair gate on top of the P0-2 commits: the
+Better Harness runtime ships as a packed standalone CLI (no TypeScript source
+fallback in installed packages) and harness evidence enters the canonical
+store only through a transactional, idempotent canonical importer bound to a
+real canonical run + SHA.
+
+### New artifacts (P1-B)
+
+- `src/better-harness/evidence/canonical-evidence-adapter.ts` — rewritten as a
+  canonical transactional import service: authoritative run lookup via
+  `CanonicalRunReader`, exact-SHA validation, eligibility + superseded-report
+  rejection, criterion contract/run validation, deterministic idempotency
+  (`INSERT OR IGNORE` scoped reservations inside the transaction),
+  provenance persisted as canonical JSON on the evidence description, one
+  `SqliteUnitOfWork` transaction for evidence + lifecycle + linkage +
+  idempotency + batch event/outbox, full rollback on any throw.
+- `src/better-harness/evidence/import-identity.ts` — deterministic report
+  fingerprints, content hashes, per-item idempotency keys, evidence ids.
+- `src/better-harness/evidence/import-errors.ts` — typed errors + reason codes
+  for every rejection path.
+- `src/orchestration/evidence/ports/canonical-run-reader.ts` +
+  `src/orchestration/evidence/adapters/sqlite-canonical-run-reader.ts` —
+  authoritative canonical run lookup over `task_runs`.
+- `src/orchestration/evidence/adapters/sqlite-evidence-repository.ts` —
+  `EvidenceRepository` over the frozen v0.2.6 schema.
+- `src/orchestration/idempotency/adapters/sqlite-idempotency-repository.ts` —
+  `IdempotencyRepository` over `command_idempotency`.
+- `tests/canonical-harness-evidence-import.test.ts` — 27 mandatory cases
+  (run binding, SHA validation, eligibility, superseded, criterion binding,
+  idempotency, interrupted retry, fault-injection rollback, provenance
+  completeness/immutability, deterministic identity, harness-run containment,
+  completion-gate non-bypass, FK/integrity) against the real frozen
+  v0.2.6 schema.
+- `tests/harness-production-isolation.test.ts` — section 4 rewritten to bind
+  against a REAL canonical run fixture (rejects unknown/arbitrary runs,
+  imports only against the real run) — 19/19 pass.
+- `docs/architecture/integration/runtime-authority.md` — P1-B section:
+  packed CLI build output, installed tarball lifecycle, three-OS CI gate,
+  canonical run lookup, exact-SHA validation, eligibility rules, idempotency
+  design, provenance schema, transaction boundary, rollback behavior.
+
+### Final gate verification (local)
+
+- `bun tsc --noEmit` — 0 errors.
+- `bun test tests/canonical-harness-evidence-import.test.ts` — 27/27 pass.
+- `bun test tests/harness-production-isolation.test.ts` — 19/19 pass.
+- `bun test tests/better-harness/packed-standalone-cli.test.ts` — 6/6 pass.
+- `bun test tests/better-harness` — 402/402 pass.
+- `npm run validate:architecture-freeze` — PASS (canonical v0.2.6 artifacts
+  verified; frozen schema untouched).
+- `git diff --check` — clean.
+
+### Proof of single orchestration authority (extended)
+
+- The packed CLI is the ONLY supported harness runtime entry; the installed
+  package resolves `dist/better-harness/standalone.js` + `bin/better-harness.js`
+  and never falls back to TypeScript source.
+- The canonical importer loads the authoritative run through
+  `CanonicalRunReader` — arbitrary `task_run_*` / `run_*` strings are rejected
+  with `CANONICAL_RUN_NOT_FOUND`; evidence binds to the real canonical run +
+  current SHA only.
+- The importer never writes `task_runs`, `assignments`, or
+  `completion_decisions`; imported evidence cannot create completion
+  decisions or bypass completion gates (`evaluateAllGates` still fails with
+  only imported evidence and no passing verification).
+- Harness run ids never become canonical run ids (provenance keeps
+  `harnessRunId` separate from `canonicalRunId`).
