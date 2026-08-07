@@ -4,7 +4,8 @@
  * Connections are cached by resolved path.
  */
 
-import { Database } from "bun:sqlite"
+import type { Database } from "bun:sqlite"
+import { loadBunSqliteDatabase } from "./sqlite-loader"
 import { resolve } from "path"
 import { REQUIRED_PRAGMAS, type DatabaseConfig, type PragmaResult } from "./configuration"
 import { PersistenceError } from "./errors"
@@ -19,7 +20,8 @@ export function openConnection(config: DatabaseConfig): Database {
     if (existing) return existing;
   }
 
-  const db = new Database(config.path === ':memory:' ? ':memory:' : key, { create: true });
+  const DatabaseClass = loadBunSqliteDatabase()
+  const db = new DatabaseClass(config.path === ':memory:' ? ':memory:' : key, { create: true });
 
   // Apply pragmas immediately
   for (const p of REQUIRED_PRAGMAS) {

@@ -43,7 +43,7 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "bun build src/index.ts src/commands/fdx-admin.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && tsc --emitDeclarationOnly --project tsconfig.build.json && bunx --yes esbuild src/doctor/doctor.ts --bundle --platform=node --format=esm --target=node18 --main-fields=module,main --outfile=dist/doctor/doctor.js && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm && bun build src/better-harness/ui/mount.ts --outdir dist/ui --target browser --format esm",
+    "build": "bun build src/index.ts src/commands/fdx-admin.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && tsc --emitDeclarationOnly --project tsconfig.build.json && bunx --yes esbuild src/doctor/doctor.ts --bundle --platform=node --format=esm --target=node18 --main-fields=module,main --outfile=dist/doctor/doctor.js && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm && bun build src/better-harness/standalone.ts --outdir dist/better-harness --target node --format esm && bun build src/better-harness/ui/mount.ts --outdir dist/ui --target browser --format esm",
     "build:fdx": "cargo install --path crates/fdx --quiet",
     "check:fdx": "fdx --version",
     "postinstall": "node postinstall.mjs",

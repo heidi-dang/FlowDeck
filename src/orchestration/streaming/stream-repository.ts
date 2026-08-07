@@ -1,4 +1,5 @@
-import { Database } from 'bun:sqlite';
+import type { Database } from 'bun:sqlite';
+import { loadBunSqliteDatabase } from '../persistence/sqlite-loader';
 import { createHash } from 'crypto';
 import { mkdirSync } from 'fs';
 import { join, resolve } from 'path';
