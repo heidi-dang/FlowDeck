@@ -111,10 +111,18 @@ export class TokenBudgetRuntime {
     const runId = this.lookupRunId(ctx)
     let ctrl = this.controllers.get(runId)
     if (!ctrl) {
-      ctrl = new TokenBudgetController(this.config, {
-        runId,
-        ...(this.persistDir ? { store: new FileTokenUsageStore(this.persistDir) } : {}),
-      })
+      if (this.persistDir) {
+        // Recover durable state for the run when present (restart/reconnect).
+        const store = new FileTokenUsageStore(this.persistDir)
+        const rebuilt = store.rebuild(runId)
+        if (rebuilt.consumed > 0 || rebuilt.reserved > 0 || rebuilt.terminal) {
+          ctrl = TokenBudgetController.restore(this.config, runId, store)
+        } else {
+          ctrl = new TokenBudgetController(this.config, { runId, store })
+        }
+      } else {
+        ctrl = new TokenBudgetController(this.config, { runId })
+      }
       this.controllers.set(runId, ctrl)
     }
     this.runForSession.set(ctx.sessionID, runId)
@@ -146,7 +154,10 @@ export class TokenBudgetRuntime {
     opts?: { maxOutputTokens?: number; model?: string; provider?: string },
   ): Promise<PreDispatchResult> {
     const ctrl = this.getControllerForSession(ctx)
-    const estimate = serializeEstimate(message) + (opts?.maxOutputTokens ?? 0)
+    // NOTE: only the message estimate is passed as estimatedInputTokens —
+    // the controller adds maxOutputTokens itself (need = input + output).
+    // Counting it here too would double-charge every reservation.
+    const estimate = serializeEstimate(message)
 
     const result: ReservationResult = await ctrl.reserveRequest({
       runId: ctrl.runId,

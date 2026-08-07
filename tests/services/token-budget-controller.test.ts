@@ -246,7 +246,7 @@ describe("TokenBudgetController", () => {
     expect(id1).not.toBe(id3)
   })
 
-  it("concurrent reservations do not oversubscribe the run budget", async () => {
+it("concurrent reservations do not oversubscribe the run budget", async () => {
     const cfg = makeConfig({ runTotal: 50_000, childTotal: 50_000 })
     const ctrl = new TokenBudgetController(cfg)
     // 20 parallel requests each claiming 3_000 tokens → only 16 can fit in 50_000.
@@ -259,5 +259,187 @@ describe("TokenBudgetController", () => {
     expect(allowed).toBe(16)
     const claimed = results.filter(r => r.allowed).reduce((sum, r) => sum + r.claimed, 0)
     expect(claimed).toBeLessThanOrEqual(50_000)
+  })
+
+  it("isSessionTerminal returns false for an unregistered session", async () => {
+    const cfg = makeConfig({ runTotal: 100_000 })
+    const ctrl = new TokenBudgetController(cfg)
+    expect(ctrl.isSessionTerminal("never-registered")).toBe(false)
+  })
+
+  it("persist() does not write a terminal record", async () => {
+    const cfg = makeConfig({ runTotal: 100_000 })
+    const store = new InMemoryTokenUsageStore()
+    const ctrl = new TokenBudgetController(cfg, { store, runId: "run-persist" })
+    ctrl.persist()
+    const rebuilt = store.rebuild("run-persist")
+    expect(rebuilt.terminal).toBeNull()
+    expect(ctrl.isRunTerminal()).toBe(false)
+  })
+
+  it("stress: concurrent reserve+commit across sessions never oversubscribes or goes negative", async () => {
+    const cfg = makeConfig({ runTotal: 200_000, childTotal: 200_000 })
+    const ctrl = new TokenBudgetController(cfg)
+    const sessions = ["s-a", "s-b", "s-c", "s-d"]
+    const jobs: Promise<void>[] = []
+    for (let i = 0; i < 200; i++) {
+      const sessionId = sessions[i % sessions.length]
+      jobs.push(
+        (async () => {
+          const r = await ctrl.reserveRequest(
+            reserveOpts({
+              sessionId,
+              requestId: `req-${i}`,
+              estimatedInputTokens: 500,
+              maxOutputTokens: 200,
+            }),
+          )
+          if (r.allowed) {
+            await ctrl.commitUsage({
+              runId: "run-1",
+              sessionId,
+              agentId: "heidi",
+              requestId: `req-${i}`,
+              reservationId: r.reservationId,
+              usage: { input: 300, output: 100 },
+            })
+          }
+        })(),
+      )
+    }
+    await Promise.all(jobs)
+
+    const snap = ctrl.getSnapshot()
+    // Accounting invariants: consumed never exceeds ceiling, reserved never negative.
+    expect(snap.run.consumed).toBeGreaterThan(0)
+    expect(snap.run.consumed).toBeLessThanOrEqual(snap.run.ceiling)
+    expect(snap.run.reserved).toBeGreaterThanOrEqual(0)
+    expect(snap.remainingRun).toBeGreaterThanOrEqual(0)
+    // Every committed record is billable-positive and attributed.
+    for (const rec of ctrl.getUsageRecords()) {
+      if (rec.status === "committed") {
+        expect(rec.billable).toBeGreaterThan(0)
+        expect(rec.sessionId).toBeTruthy()
+      }
+    }
+  })
+
+  it("stress: concurrent cancelSession releases all reservations without negative reserved", async () => {
+    const cfg = makeConfig({ runTotal: 100_000, childTotal: 100_000 })
+    const ctrl = new TokenBudgetController(cfg)
+    const reservations: string[] = []
+    for (let i = 0; i < 50; i++) {
+      const r = await ctrl.reserveRequest(
+        reserveOpts({ sessionId: "s-main", requestId: `req-${i}`, estimatedInputTokens: 1_000, maxOutputTokens: 500 }),
+      )
+      if (r.allowed) reservations.push(r.reservationId)
+    }
+    expect(reservations.length).toBeGreaterThan(0)
+    await ctrl.cancelSession("s-main", "aborted")
+    const snap = ctrl.getSnapshot()
+    expect(snap.run.reserved).toBe(0)
+    expect(snap.remainingRun).toBe(snap.run.ceiling)
+  })
+
+  it("provider-matrix: conservative accounting across provider usage shapes", async () => {
+    const cfg = makeConfig({ runTotal: 1_000_000, childTotal: 1_000_000 })
+    const ctrl = new TokenBudgetController(cfg)
+
+    // Provider A: reports cacheRead + cacheWrite + output (Anthropic-style).
+    const rA = await ctrl.reserveRequest(reserveOpts({ requestId: "req-A", estimatedInputTokens: 1_000, maxOutputTokens: 500 }))
+    await ctrl.commitUsage({
+      runId: "run-1", sessionId: "session-main", agentId: "heidi", requestId: "req-A",
+      reservationId: rA.reservationId, usage: { input: 0, output: 200, cacheRead: 4_000, cacheWrite: 100 },
+    })
+
+    // Provider B: omits input entirely → must fall back to reserved estimate (never undercount).
+    const rB = await ctrl.reserveRequest(reserveOpts({ requestId: "req-B", estimatedInputTokens: 1_000, maxOutputTokens: 500 }))
+    await ctrl.commitUsage({
+      runId: "run-1", sessionId: "session-main", agentId: "heidi", requestId: "req-B",
+      reservationId: rB.reservationId, usage: { output: 50 },
+    })
+
+    // Provider C: reasoning tokens exposed separately (OpenAI o-series).
+    const rC = await ctrl.reserveRequest(reserveOpts({ requestId: "req-C", estimatedInputTokens: 1_000, maxOutputTokens: 500 }))
+    await ctrl.commitUsage({
+      runId: "run-1", sessionId: "session-main", agentId: "heidi", requestId: "req-C",
+      reservationId: rC.reservationId, usage: { input: 300, output: 100, reasoning: 2_000 },
+    })
+
+    const snap = ctrl.getSnapshot()
+    // A: 0+200+4000+100 = 4300. B: fallback input 1000 + 50 = 1050. C: 300+100+2000 = 2400.
+    expect(snap.run.consumed).toBe(4300 + 1050 + 2400)
+    // No reservation leaked.
+    expect(snap.run.reserved).toBe(0)
+  })
+
+  it("provider-matrix: cache tokens are never double-counted as input", () => {
+    const u = normalizeUsage({ input: 100, cacheRead: 300, cacheWrite: 50 })
+    // billable counts each component once.
+    expect(u.billable).toBe(450)
+    expect(u.input).toBe(100)
+    expect(u.cacheRead).toBe(300)
+  })
+
+  it("adversarial: negative/NaN usage cannot reduce consumed or go negative", async () => {
+    const cfg = makeConfig({ runTotal: 100_000 })
+    const ctrl = new TokenBudgetController(cfg)
+    const r = await ctrl.reserveRequest(reserveOpts({ estimatedInputTokens: 1_000, maxOutputTokens: 500 }))
+    await ctrl.commitUsage({
+      runId: "run-1", sessionId: "session-main", agentId: "heidi", requestId: "req-1",
+      reservationId: r.reservationId,
+      usage: { input: -100_000, output: -100_000, cacheRead: -100_000, cacheWrite: -100_000 },
+    })
+    const snap = ctrl.getSnapshot()
+    // Negative usage is clamped to 0; consumed never goes negative.
+    expect(snap.run.consumed).toBeGreaterThanOrEqual(0)
+    expect(snap.run.reserved).toBeGreaterThanOrEqual(0)
+  })
+
+  it("adversarial: oversized estimate is clamped to maxRequestInputTokens", async () => {
+    const cfg = makeConfig({ runTotal: 1_000_000, maxRequestInputTokens: 50_000, maxRequestOutputTokens: 10_000 })
+    const ctrl = new TokenBudgetController(cfg)
+    const r = await ctrl.reserveRequest(
+      reserveOpts({ requestId: "req-huge", estimatedInputTokens: 1_000_000_000, maxOutputTokens: 1_000_000_000 }),
+    )
+    // Clamped to 50_000 + 10_000 = 60_000, well under runTotal.
+    expect(r.allowed).toBe(true)
+    expect(r.claimed).toBe(60_000)
+  })
+
+  it("adversarial: disabled config never blocks dispatch", async () => {
+    const cfg = makeConfig({ enabled: false, runTotal: 1, childTotal: 1 })
+    const ctrl = new TokenBudgetController(cfg)
+    const r = await ctrl.reserveRequest(reserveOpts({ estimatedInputTokens: 1_000_000, maxOutputTokens: 1_000_000 }))
+    expect(r.allowed).toBe(true)
+    expect(r.disabled).toBe(true)
+    expect(r.claimed).toBe(0)
+  })
+
+  it("adversarial: terminal run rejects even zero-cost requests", async () => {
+    const cfg = makeConfig({ runTotal: 10_000, childTotal: 10_000, hardStopThreshold: 1.0 })
+    const ctrl = new TokenBudgetController(cfg)
+    const r = await ctrl.reserveRequest(reserveOpts({ estimatedInputTokens: 0, maxOutputTokens: 10_000 }))
+    await ctrl.commitUsage({
+      runId: "run-1", sessionId: "session-main", agentId: "heidi", requestId: "req-1",
+      reservationId: r.reservationId, usage: { input: 10_000, output: 0 },
+    })
+    expect(ctrl.isRunTerminal()).toBe(true)
+    // Even a zero-token request is rejected once terminal.
+    const blocked = await ctrl.reserveRequest(reserveOpts({ requestId: "req-0", estimatedInputTokens: 0, maxOutputTokens: 0 }))
+    expect(blocked.allowed).toBe(false)
+    expect(blocked.reason).toBe("RUN_TERMINAL:budget_exhausted")
+  })
+
+  it("adversarial: commit without a reservation still charges conservatively", async () => {
+    const cfg = makeConfig({ runTotal: 100_000 })
+    const ctrl = new TokenBudgetController(cfg)
+    // No prior reservation — commitUsage must still account (fallback to 0 input).
+    const commit = await ctrl.commitUsage({
+      runId: "run-1", sessionId: "session-main", agentId: "heidi", requestId: "req-orphan",
+      usage: { output: 50 },
+    })
+    expect(commit.committed).toBe(true)
+    expect(ctrl.getSnapshot().run.consumed).toBe(50)
   })
 })

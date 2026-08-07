@@ -80,3 +80,43 @@ describe("estimateReplayTokens", () => {
     expect(estimateReplayTokens([circular])).toBe(0)
   })
 })
+
+describe("context before/after (runaway prevention)", () => {
+  it("bounded child context is far smaller than a raw parent replay", () => {
+    // Simulate a long parent conversation that a naive child would inherit.
+    const parentMessages = Array.from({ length: 200 }, (_, i) => ({
+      role: i % 2 === 0 ? "user" : "assistant",
+      content: `message ${i} with some realistic content that adds up over a long session `.repeat(5),
+    }))
+    const replayTokens = estimateReplayTokens(parentMessages)
+
+    const child = buildAssignmentContext({
+      target: "src/services/token-budget.ts",
+      stage: "execute",
+      assignment: "Implement the fix described in the briefing.",
+    })
+
+    // The bounded child context must be a small fraction of the raw replay.
+    expect(replayTokens).toBeGreaterThan(1_000)
+    expect(child.estimatedTokens).toBeLessThan(replayTokens / 10)
+    expect(child.parentConversationExcluded).toBe(true)
+  })
+
+  it("externalizing oversized tool output bounds what enters context", () => {
+    const hugeOutput = "x".repeat(1_000_000) // 1MB tool dump
+    const budget = 8_000
+    const r = externalizeToolOutput(hugeOutput, budget)
+    expect(r.truncated).toBe(true)
+    expect(r.retainedChars).toBeLessThanOrEqual(budget)
+    // The elided text is a tiny fraction of the original.
+    expect(r.retainedChars).toBeLessThan(hugeOutput.length / 100)
+  })
+
+  it("compaction triggers before a runaway conversation is dispatched", () => {
+    const threshold = 120_000
+    // A conversation that has grown past the threshold must be compacted.
+    expect(shouldCompact(threshold + 1, threshold)).toBe(true)
+    // A healthy conversation stays as-is.
+    expect(shouldCompact(threshold - 1, threshold)).toBe(false)
+  })
+})

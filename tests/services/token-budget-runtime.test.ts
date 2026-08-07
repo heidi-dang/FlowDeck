@@ -1,5 +1,8 @@
 import { describe, it, expect } from "bun:test"
 import { TokenBudgetRuntime } from "../../src/services/token-budget-runtime"
+import { mkdtempSync, rmSync } from "fs"
+import { tmpdir } from "os"
+import { join } from "path"
 
 function ctx(sessionID: string, agent = "heidi", parentID?: string, depth = 0) {
   return { sessionID, agent, parentID, depth }
@@ -73,5 +76,28 @@ describe("TokenBudgetRuntime", () => {
       tokens: { input: 50, output: 10, cache: { read: 0, write: 0 } },
     })
     expect(rt.getSnapshot("s-main")?.run.consumed).toBe(60)
+  })
+
+  it("recovers durable consumed state on a new runtime (restart)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fd-budget-runtime-"))
+    try {
+      const opts = { overrides: { enabled: true, profile: "small" as const, runTotal: 10_000, childTotal: 10_000 }, persistDir: dir }
+      const rt1 = new TokenBudgetRuntime(opts)
+      await rt1.beforeDispatch(ctx("s-main"), { content: "x".repeat(1000) }, { maxOutputTokens: 1_000 })
+      await rt1.reconcileUsage(ctx("s-main"), {
+        id: "msg-1",
+        tokens: { input: 500, output: 100, cache: { read: 0, write: 0 } },
+      })
+      expect(rt1.getSnapshot("s-main")?.run.consumed).toBe(600)
+
+      // Simulate a restart: a fresh runtime over the same persist dir must
+      // recover the consumed total for the same run id.
+      const rt2 = new TokenBudgetRuntime(opts)
+      rt2.registerSession(ctx("s-main"))
+      const snap = rt2.getSnapshot("s-main")
+      expect(snap?.run.consumed).toBe(600)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

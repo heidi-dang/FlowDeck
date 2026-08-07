@@ -132,64 +132,7 @@ export class FileTokenUsageStore implements TokenUsageStore {
   }
 
   rebuild(runId: string): RebuiltUsage {
-    const entries = this.read(runId)
-    let consumed = 0
-    let reserved = 0
-    let releasedUnused = 0
-    let warningFired = false
-    let terminal: { reason: string; at: number } | null = null
-
-    // Last committed usage per dedup key — later records win.
-    const byKey = new Map<string, TokenUsageRecord>()
-    // reservationId → claimed, so committed reservations can be released.
-    const reservationClaims = new Map<string, number>()
-    const committedReservations = new Set<string>()
-
-    for (const e of entries) {
-      if (e.kind === "reservation") {
-        const claimed = Number(e.claimed ?? 0)
-        if (Number.isFinite(claimed) && claimed > 0) {
-          const status = String(e.status ?? "reserved")
-          if (status === "reserved") reserved += claimed
-          const rid = String(e.reservationId ?? "")
-          if (rid) reservationClaims.set(rid, claimed)
-        }
-        continue
-      }
-      if (e.kind === "usage") {
-        const key = String(e.messageId ?? e.requestId ?? e.reservationId ?? "")
-        if (key) byKey.set(key, e)
-        const rid = String(e.reservationId ?? "")
-        if (rid) committedReservations.add(rid)
-        continue
-      }
-      if (e.kind === "terminal") {
-        terminal = { reason: String(e.reason ?? "unknown"), at: Number(e.at ?? 0) }
-        continue
-      }
-      if (e.kind === "warning") {
-        warningFired = true
-      }
-    }
-
-    // Release reservations that were committed (their usage is already counted).
-    for (const rid of committedReservations) {
-      const claimed = reservationClaims.get(rid)
-      if (claimed) reserved = Math.max(0, reserved - claimed)
-    }
-
-    // Consumed = sum of the winning (latest) record per dedup key only.
-    consumed = [...byKey.values()].reduce((sum, rec) => sum + (Number.isFinite(Number(rec.billable)) ? Number(rec.billable) : 0), 0)
-
-    return {
-      runId,
-      consumed,
-      reserved,
-      releasedUnused,
-      terminal,
-      warningFired,
-      records: [...byKey.values()],
-    }
+    return rebuildFromEntries(this.read(runId), runId)
   }
 }
 
@@ -213,62 +156,81 @@ export class InMemoryTokenUsageStore implements TokenUsageStore {
   }
 
   rebuild(runId: string): RebuiltUsage {
-    const entries = this.read(runId)
-    let consumed = 0
-    let reserved = 0
-    let releasedUnused = 0
-    let warningFired = false
-    let terminal: { reason: string; at: number } | null = null
-    const byKey = new Map<string, TokenUsageRecord>()
-    const reservationClaims = new Map<string, number>()
-    const committedReservations = new Set<string>()
+    return rebuildFromEntries(this.read(runId), runId)
+  }
+}
 
-    for (const e of entries) {
-      if (e.kind === "reservation") {
-        const claimed = Number(e.claimed ?? 0)
-        if (Number.isFinite(claimed) && claimed > 0 && String(e.status ?? "reserved") === "reserved") {
-          reserved += claimed
-        }
+/**
+ * Rebuild authoritative usage state from a set of durable entries.
+ *
+ * Shared implementation so both stores (and the standalone helper) keep
+ * identical semantics:
+ *  - Last committed usage per dedup key wins (later records override).
+ *  - Reservations that were later committed are released (their usage is
+ *    already counted in `consumed`).
+ *  - `consumed` sums only the winning record per dedup key — never double
+ *    counts duplicated events.
+ */
+export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): RebuiltUsage {
+  let consumed = 0
+  let reserved = 0
+  let releasedUnused = 0
+  let warningFired = false
+  let terminal: { reason: string; at: number } | null = null
+
+  // Last committed usage per dedup key — later records win.
+  const byKey = new Map<string, TokenUsageRecord>()
+  // reservationId → claimed, so committed reservations can be released.
+  const reservationClaims = new Map<string, number>()
+  const committedReservations = new Set<string>()
+
+  for (const e of entries) {
+    if (e.kind === "reservation") {
+      const claimed = Number(e.claimed ?? 0)
+      if (Number.isFinite(claimed) && claimed > 0) {
+        const status = String(e.status ?? "reserved")
+        if (status === "reserved") reserved += claimed
         const rid = String(e.reservationId ?? "")
         if (rid) reservationClaims.set(rid, claimed)
-        continue
       }
-      if (e.kind === "usage") {
-        const key = String(e.messageId ?? e.requestId ?? e.reservationId ?? "")
-        if (key) byKey.set(key, e)
-        const rid = String(e.reservationId ?? "")
-        if (rid) committedReservations.add(rid)
-        continue
-      }
-      if (e.kind === "terminal") {
-        terminal = { reason: String(e.reason ?? "unknown"), at: Number(e.at ?? 0) }
-        continue
-      }
-      if (e.kind === "warning") {
-        warningFired = true
-      }
+      continue
     }
-
-    for (const rid of committedReservations) {
-      const claimed = reservationClaims.get(rid)
-      if (claimed) reserved = Math.max(0, reserved - claimed)
+    if (e.kind === "usage") {
+      const key = String(e.messageId ?? e.requestId ?? e.reservationId ?? "")
+      if (key) byKey.set(key, e)
+      const rid = String(e.reservationId ?? "")
+      if (rid) committedReservations.add(rid)
+      continue
     }
-
-    consumed = [...byKey.values()].reduce((sum, rec) => sum + (Number.isFinite(Number(rec.billable)) ? Number(rec.billable) : 0), 0)
-
-    return {
-      runId,
-      consumed,
-      reserved,
-      releasedUnused,
-      terminal,
-      warningFired,
-      records: [...byKey.values()],
+    if (e.kind === "terminal") {
+      terminal = { reason: String(e.reason ?? "unknown"), at: Number(e.at ?? 0) }
+      continue
     }
+    if (e.kind === "warning") {
+      warningFired = true
+    }
+  }
+
+  // Release reservations that were committed (their usage is already counted).
+  for (const rid of committedReservations) {
+    const claimed = reservationClaims.get(rid)
+    if (claimed) reserved = Math.max(0, reserved - claimed)
+  }
+
+  // Consumed = sum of the winning (latest) record per dedup key only.
+  consumed = [...byKey.values()].reduce((sum, rec) => sum + (Number.isFinite(Number(rec.billable)) ? Number(rec.billable) : 0), 0)
+
+  return {
+    runId,
+    consumed,
+    reserved,
+    releasedUnused,
+    terminal,
+    warningFired,
+    records: [...byKey.values()],
   }
 }
 
 export function rebuildUsageEntries(entries: UsageStoreEntry[], runId: string): RebuiltUsage {
-  // Shared implementation so both stores keep identical semantics.
-  return new InMemoryTokenUsageStore().rebuild(runId)
+  return rebuildFromEntries(entries, runId)
 }

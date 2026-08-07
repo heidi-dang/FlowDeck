@@ -19,10 +19,6 @@ export interface TokenBudgetProfile {
   runTotal: number
   /** Per-child ceiling — independently enforced for each delegated session. */
   childTotal: number
-  /** Maximum concurrent/sequential delegations per run. */
-  maxDelegations: number
-  /** Maximum automatic model retries per request. */
-  autoRetry: number
 }
 
 export interface TokenBudgetOverrides {
@@ -30,8 +26,6 @@ export interface TokenBudgetOverrides {
   profile?: BudgetProfileName
   runTotal?: number
   childTotal?: number
-  maxDelegations?: number
-  autoRetry?: number
   /** Fraction of runTotal at which a single warning fires. Default 0.8. */
   warningThreshold?: number
   /** Fraction of runTotal at which the run hard-stops. Default 1.0. */
@@ -53,8 +47,6 @@ export interface ResolvedTokenBudgetConfig {
   profile: BudgetProfileName
   runTotal: number
   childTotal: number
-  maxDelegations: number
-  autoRetry: number
   warningThreshold: number
   hardStopThreshold: number
   maxRequestInputTokens: number
@@ -65,10 +57,10 @@ export interface ResolvedTokenBudgetConfig {
 }
 
 export const BUDGET_PROFILES: Record<BudgetProfileName, TokenBudgetProfile> = {
-  small: { name: "small", runTotal: 250_000, childTotal: 80_000, maxDelegations: 1, autoRetry: 1 },
-  normal: { name: "normal", runTotal: 600_000, childTotal: 180_000, maxDelegations: 3, autoRetry: 1 },
-  audit: { name: "audit", runTotal: 1_500_000, childTotal: 350_000, maxDelegations: 4, autoRetry: 1 },
-  "deep-audit": { name: "deep-audit", runTotal: 3_000_000, childTotal: 600_000, maxDelegations: 5, autoRetry: 1 },
+  small: { name: "small", runTotal: 250_000, childTotal: 80_000 },
+  normal: { name: "normal", runTotal: 600_000, childTotal: 180_000 },
+  audit: { name: "audit", runTotal: 1_500_000, childTotal: 350_000 },
+  "deep-audit": { name: "deep-audit", runTotal: 3_000_000, childTotal: 600_000 },
 }
 
 export const DEFAULT_PROFILE: BudgetProfileName = "normal"
@@ -89,12 +81,6 @@ export class TokenBudgetConfigError extends Error {
 
 function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v)
-}
-
-function assertNonNegativeInt(value: number, label: string): void {
-  if (!Number.isInteger(value) || value < 0) {
-    throw new TokenBudgetConfigError(`${label} must be a non-negative integer, got ${value}`)
-  }
 }
 
 function assertPositive(value: number, label: string): void {
@@ -155,13 +141,9 @@ export function resolveTokenBudgetConfig(overrides?: TokenBudgetOverrides): Reso
 
   let runTotal = envNumber("FLOWDECK_TOKEN_BUDGET_RUN_TOTAL") ?? overrides?.runTotal ?? profile.runTotal
   let childTotal = envNumber("FLOWDECK_TOKEN_BUDGET_CHILD_TOTAL") ?? overrides?.childTotal ?? profile.childTotal
-  let maxDelegations = envNumber("FLOWDECK_TOKEN_BUDGET_DELEGATIONS") ?? overrides?.maxDelegations ?? profile.maxDelegations
-  let autoRetry = envNumber("FLOWDECK_TOKEN_BUDGET_RETRY") ?? overrides?.autoRetry ?? profile.autoRetry
 
   assertPositive(runTotal, "runTotal")
   assertPositive(childTotal, "childTotal")
-  assertNonNegativeInt(maxDelegations, "maxDelegations")
-  assertNonNegativeInt(autoRetry, "autoRetry")
 
   // A child ceiling must never exceed a stricter parent ceiling.
   if (childTotal > runTotal) {
@@ -197,8 +179,6 @@ export function resolveTokenBudgetConfig(overrides?: TokenBudgetOverrides): Reso
     profile: profileName,
     runTotal,
     childTotal,
-    maxDelegations,
-    autoRetry,
     warningThreshold,
     hardStopThreshold,
     maxRequestInputTokens,

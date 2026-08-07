@@ -13,8 +13,6 @@ describe("token-budget-config", () => {
     expect(cfg.profile).toBe(DEFAULT_PROFILE)
     expect(cfg.runTotal).toBe(BUDGET_PROFILES.normal.runTotal)
     expect(cfg.childTotal).toBe(BUDGET_PROFILES.normal.childTotal)
-    expect(cfg.maxDelegations).toBe(BUDGET_PROFILES.normal.maxDelegations)
-    expect(cfg.autoRetry).toBe(BUDGET_PROFILES.normal.autoRetry)
     expect(cfg.warningThreshold).toBe(0.8)
     expect(cfg.hardStopThreshold).toBe(1.0)
   })
@@ -51,11 +49,6 @@ describe("token-budget-config", () => {
     expect(() => resolveTokenBudgetConfig({ hardStopThreshold: 1.5 })).toThrow(TokenBudgetConfigError)
   })
 
-  it("rejects negative delegation/retry counts", () => {
-    expect(() => resolveTokenBudgetConfig({ maxDelegations: -1 })).toThrow(TokenBudgetConfigError)
-    expect(() => resolveTokenBudgetConfig({ autoRetry: -1 })).toThrow(TokenBudgetConfigError)
-  })
-
   it("honours FLOWDECK_TOKEN_BUDGET_ENABLED=false", () => {
     const prev = process.env.FLOWDECK_TOKEN_BUDGET_ENABLED
     process.env.FLOWDECK_TOKEN_BUDGET_ENABLED = "false"
@@ -90,6 +83,57 @@ describe("token-budget-config", () => {
     } finally {
       if (prev === undefined) delete process.env.FLOWDECK_TOKEN_BUDGET_PROFILE
       else process.env.FLOWDECK_TOKEN_BUDGET_PROFILE = prev
+    }
+  })
+
+  it("config-matrix: every profile resolves with valid, monotonic ceilings", () => {
+    for (const name of Object.keys(BUDGET_PROFILES) as Array<keyof typeof BUDGET_PROFILES>) {
+      const cfg = resolveTokenBudgetConfig({ profile: name })
+      expect(cfg.profile).toBe(name)
+      expect(cfg.runTotal).toBeGreaterThan(0)
+      expect(cfg.childTotal).toBeGreaterThan(0)
+      // Child ceiling must never exceed run ceiling.
+      expect(cfg.childTotal).toBeLessThanOrEqual(cfg.runTotal)
+      // Thresholds are valid fractions.
+      expect(cfg.warningThreshold).toBeGreaterThan(0)
+      expect(cfg.warningThreshold).toBeLessThanOrEqual(1)
+      expect(cfg.hardStopThreshold).toBeGreaterThan(0)
+      expect(cfg.hardStopThreshold).toBeLessThanOrEqual(1)
+      expect(cfg.warningThreshold).toBeLessThanOrEqual(cfg.hardStopThreshold)
+    }
+  })
+
+  it("config-matrix: env overrides take precedence over config overrides", () => {
+    const prevRun = process.env.FLOWDECK_TOKEN_BUDGET_RUN_TOTAL
+    const prevChild = process.env.FLOWDECK_TOKEN_BUDGET_CHILD_TOTAL
+    process.env.FLOWDECK_TOKEN_BUDGET_RUN_TOTAL = "999999"
+    process.env.FLOWDECK_TOKEN_BUDGET_CHILD_TOTAL = "999999"
+    try {
+      // Config override says 100_000, but env must win.
+      const cfg = resolveTokenBudgetConfig({ runTotal: 100_000, childTotal: 100_000 })
+      expect(cfg.runTotal).toBe(999999)
+      expect(cfg.childTotal).toBe(999999)
+    } finally {
+      if (prevRun === undefined) delete process.env.FLOWDECK_TOKEN_BUDGET_RUN_TOTAL
+      else process.env.FLOWDECK_TOKEN_BUDGET_RUN_TOTAL = prevRun
+      if (prevChild === undefined) delete process.env.FLOWDECK_TOKEN_BUDGET_CHILD_TOTAL
+      else process.env.FLOWDECK_TOKEN_BUDGET_CHILD_TOTAL = prevChild
+    }
+  })
+
+  it("config-matrix: rejects non-positive childTotal", () => {
+    expect(() => resolveTokenBudgetConfig({ childTotal: 0 })).toThrow(TokenBudgetConfigError)
+    expect(() => resolveTokenBudgetConfig({ childTotal: -1 })).toThrow(TokenBudgetConfigError)
+  })
+
+  it("config-matrix: rejects invalid env numbers", () => {
+    const prev = process.env.FLOWDECK_TOKEN_BUDGET_RUN_TOTAL
+    process.env.FLOWDECK_TOKEN_BUDGET_RUN_TOTAL = "not-a-number"
+    try {
+      expect(() => resolveTokenBudgetConfig()).toThrow(TokenBudgetConfigError)
+    } finally {
+      if (prev === undefined) delete process.env.FLOWDECK_TOKEN_BUDGET_RUN_TOTAL
+      else process.env.FLOWDECK_TOKEN_BUDGET_RUN_TOTAL = prev
     }
   })
 })

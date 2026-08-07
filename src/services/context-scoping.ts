@@ -1,9 +1,16 @@
 /**
  * Context Scoping & Compaction Service
  *
- * Bounds what enters a child session's context and compacts oversized
- * payloads BEFORE they are sent, so a runaway child cannot balloon the run
- * budget by pulling the full parent history or dumping multi-MB tool output.
+ * Utility library for bounding what enters a child session's context and
+ * compacting oversized payloads BEFORE they are sent, so a runaway child
+ * cannot balloon the run budget by pulling the full parent history or
+ * dumping multi-MB tool output.
+ *
+ * NOTE: These helpers are NOT yet wired into the plugin's dispatch path —
+ * the plugin does not construct child prompts (OpenCode does). The active
+ * runaway defense is the token-budget reservation gate + hard stop in
+ * token-budget-controller.ts. This module is the intended future lever and
+ * is kept tested so it can be integrated when a child-context hook exists.
  *
  * Key behaviours:
  *  - `buildAssignmentContext`  — builds a bounded context packet for a

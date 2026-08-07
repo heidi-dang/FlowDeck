@@ -101,6 +101,30 @@ describe("loadFlowDeckConfig", () => {
     const cfg = loadFlowDeckConfig(dir)
     expect(cfg.agentModels?.planner?.model).toBe("provider/ model // with /* comment */")
   })
+
+  it("preserves runtimeAgent enforcement config through sanitization", () => {
+    writeFileSync(
+      join(dir, ".flowdeck.jsonc"),
+      JSON.stringify({ runtimeAgent: { enforcement: "strict", expectedAgent: "heidi" } }),
+      "utf-8",
+    )
+
+    const cfg = loadFlowDeckConfig(dir)
+    expect(cfg.runtimeAgent?.enforcement).toBe("strict")
+    expect(cfg.runtimeAgent?.expectedAgent).toBe("heidi")
+  })
+
+  it("preserves tokenBudget config through sanitization", () => {
+    writeFileSync(
+      join(dir, ".flowdeck.jsonc"),
+      JSON.stringify({ tokenBudget: { profile: "audit", runTotal: 2_000_000 } }),
+      "utf-8",
+    )
+
+    const cfg = loadFlowDeckConfig(dir)
+    expect(cfg.tokenBudget?.profile).toBe("audit")
+    expect(cfg.tokenBudget?.runTotal).toBe(2_000_000)
+  })
 })
 
 describe("resolveAgentModels", () => {

@@ -559,7 +559,8 @@ export class TokenBudgetController {
   }
 
   isSessionTerminal(sessionId: string): boolean {
-    return this.agents.get(sessionId)?.terminal !== null
+    const agent = this.agents.get(sessionId)
+    return agent ? agent.terminal !== null : false
   }
 
   remainingRun(): number {
@@ -603,7 +604,8 @@ export class TokenBudgetController {
 
   persist(): void {
     // Records are appended eagerly; this is a no-op flush hook for symmetry.
-    this.store.append(this.run.runId, { kind: "terminal", reason: "flush", at: Date.now() })
+    // Intentionally does NOT write a terminal record — a "flush" terminal
+    // would be replayed as a real terminal state on rebuild and block dispatch.
   }
 
   private buildRecord(

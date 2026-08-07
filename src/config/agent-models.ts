@@ -93,6 +93,7 @@ const VALID_CONFIG_KEYS: (keyof FlowDeckConfig)[] = [
   "designFirst",
   "governance",
   "maxWritesPerAgent",
+  "runtimeAgent",
   "tokenBudget"
 ]
 
