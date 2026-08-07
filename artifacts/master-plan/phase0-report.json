@@ -1,0 +1,13 @@
+{
+  "phase": "0",
+  "status": "PASS",
+  "schema": {
+    "file": "./schema-v0.2.6.sql",
+    "sha256": "dcda41acdffaeae3a58020a019636002ac263ab5ec59434db3d9b97a2916d66c",
+    "object_count": 224
+  },
+  "architecture": {
+    "file": "NEXT_GEN_ARCHITECTURE_v0.2.6.md",
+    "sha256": "259eb2b841d3a046a9a2462eb0d35d3f69bf5091604f29c1e6494678e5ecf16c"
+  }
+}

@@ -13,11 +13,76 @@ export interface AgentModelConfig {
 
 export const DEFAULT_CONFIG: FlowDeckConfig = {
   agentModels: {},
-  betterHarness: {
-    enabled: true,
-  },
+  // NOTE: betterHarness is intentionally absent from the production default.
+  // The Better Harness runtime is a standalone development/QA facility and
+  // must never be activated by the production plugin. Any configuration that
+  // sets betterHarness.enabled=true is rejected by loadFlowDeckConfig with a
+  // migration error (see validateBetterHarnessProductionConfig).
   maxDelegationDepth: 1,
   maxWritesPerAgent: 15,
+}
+
+/**
+ * Fail-closed validation for the deprecated `betterHarness` configuration
+ * block in the PRODUCTION plugin configuration.
+ *
+ * The production plugin must not accept `betterHarness.enabled=true` as
+ * permission to start a second orchestration runtime. Two behaviors are
+ * supported:
+ *
+ * 1. `betterHarness.enabled === true` -> throws a migration error so the
+ *    production plugin refuses to start (fail closed). Users must use the
+ *    standalone command instead.
+ * 2. `betterHarness` present with `enabled !== true` (or absent) -> emits a
+ *    deprecation diagnostic and is treated as inert. The returned config
+ *    forces `enabled: false` so no runtime can ever be activated.
+ *
+ * @param config the sanitized production config (may carry betterHarness)
+ * @param sourcePath config file path for diagnostics (optional)
+ * @returns a config that can never activate the Better Harness runtime
+ */
+export function validateBetterHarnessProductionConfig(
+  config: FlowDeckConfig,
+  sourcePath?: string,
+): FlowDeckConfig {
+  const bh = config.betterHarness
+  const source = sourcePath ? ` (${sourcePath})` : ""
+  if (bh?.enabled === true) {
+    throw new Error(
+      "[flowdeck] betterHarness.enabled=true is REJECTED in the production plugin configuration" +
+        source +
+        ".\n" +
+        "Better Harness is a standalone development/QA facility. It is no longer " +
+        "activated by the FlowDeck production plugin, which must have exactly one " +
+        "writable orchestration authority (the canonical schema-v0.2.6 runtime).\n" +
+        "Replacement: run the standalone harness explicitly with:\n" +
+        "  npx @heidi-dang/flowdeck flowdeck-better-harness --project <project-path> [--state-dir <dir>]\n" +
+        "or locally:  bun run src/better-harness/standalone.ts --project <project-path>\n" +
+        "Migration: remove the betterHarness block (or set enabled=false) from your " +
+        "flowdeck configuration. The field is deprecated and will be removed in a " +
+        "future version. Harness runs are independent of canonical task runs and are " +
+        "never recovered, exposed, or completed by the production plugin.",
+    )
+  }
+  if (bh !== undefined) {
+    // Deprecated but inert: emit diagnostics, force disabled, keep other
+    // fields available for the standalone tooling (read-only usage).
+    // eslint-disable-next-line no-console
+    console.warn(
+      "[flowdeck] DEPRECATED: the betterHarness configuration block is deprecated and inert in the " +
+        "production plugin" +
+        source +
+        ". Use the standalone command `flowdeck-better-harness` for Better Harness development/QA.",
+    )
+    return {
+      ...config,
+      betterHarness: {
+        ...bh,
+        enabled: false,
+      },
+    }
+  }
+  return config
 }
 
 function getGlobalConfigDir(): string {
@@ -137,14 +202,22 @@ export function loadFlowDeckConfig(directory?: string): FlowDeckConfig {
     try {
       const raw = readFileSync(configPath, "utf-8")
       const stripped = configPath.endsWith(".jsonc") ? stripJsonComments(raw) : raw
-      return sanitizeConfig(JSON.parse(stripped))
+      const config = sanitizeConfig(JSON.parse(stripped))
+      // Fail closed: a production configuration must never be allowed to
+      // activate the Better Harness runtime (see P0-2).
+      return validateBetterHarnessProductionConfig(config, configPath)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+      // A Better Harness migration rejection must surface as a hard error —
+      // it is not a malformed-config skip condition.
+      if (err instanceof Error && msg.includes("betterHarness.enabled=true is REJECTED")) {
+        throw err
+      }
       console.warn(`[flowdeck] Malformed config at ${configPath}: ${msg}. Trying next candidate.`)
     }
   }
 
-  return { ...DEFAULT_CONFIG }
+  return validateBetterHarnessProductionConfig({ ...DEFAULT_CONFIG })
 }
 
 /**

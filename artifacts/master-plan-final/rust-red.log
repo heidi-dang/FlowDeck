@@ -1,0 +1,409 @@
+   Compiling fdx v0.1.0 (/home/heidi/flowdeck/crates/fdx)
+warning: variable does not need to be mutable
+    --> crates/fdx/src/batch/mod.rs:1009:9
+     |
+1009 |     let mut cache_publish_warnings: Vec<String> = Vec::new();
+     |         ----^^^^^^^^^^^^^^^^^^^^^^
+     |         |
+     |         help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `fdx` (lib) generated 1 warning (run `cargo fix --lib -p fdx` to apply 1 suggestion)
+warning: `fdx` (lib test) generated 1 warning (1 duplicate)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 14.94s
+     Running unittests src/lib.rs (target/debug/deps/fdx-f19f29dc8bccec62)
+
+running 256 tests
+test batch::registry::tests::all_batch_ops_are_read_only_and_batchable ... ok
+test batch::registry::tests::mutation_commands_are_marked_non_read_only ... ok
+test batch::registry::tests::negative_cache_eligibility_is_explicit ... ok
+test batch::registry::tests::registry_contains_batch_ops ... ok
+test batch::registry::tests::descriptors_serialize_camel_case ... ok
+test batch::registry::tests::unknown_descriptor_returns_none ... ok
+test batch::tests::artifact_file_names_are_collision_resistant ... ok
+test batch::tests::artifact_dir_sync_failure_removes_created_final ... ok
+test batch::tests::artifact_name_is_sanitized ... ok
+test batch::tests::atomic_artifact_write_deduplicates_identical_content ... ok
+test batch::tests::atomic_artifact_write_fails_closed_on_conflict ... ok
+test batch::tests::barrier_synchronized_concurrent_publishers_never_clobber ... ok
+test batch::tests::barrier_synchronized_conflicting_publisher_fails_closed ... ok
+test batch::tests::artifact_mutation_after_commit_triggers_cache_compensation ... ok
+test batch::tests::batch_total_budget_truncates_when_cumulative_output_overflows ... ok
+test batch::tests::batch_level_publish_failure_voids_all_provisional_responses ... ok
+test batch::tests::cache_transaction_identical_winner_survives_other_transaction_rollback ... ok
+test batch::tests::cache_transaction_immutable_publish_and_lru_deferral ... ok
+test batch::tests::c2_revalidation_failure_never_publishes_cache_entries ... ok
+test batch::tests::cache_transaction_publish_failure_cleans_temps ... ok
+test batch::tests::concurrent_artifact_writes_different_content_do_not_collide ... ok
+test batch::tests::concurrent_artifact_writes_same_content_succeed ... ok
+test batch::tests::definitive_empty_results_use_the_negative_cache ... ok
+test batch::tests::drift_aborts_all_remaining_ops_and_preserves_cardinality ... ok
+test batch::tests::drift_after_cache_read_discards_cached_value ... ok
+test batch::tests::drift_at_final_barrier_discards_result_and_writes_no_cache ... ok
+test batch::tests::drift_before_artifact_activation_leaves_no_artifact ... ok
+test batch::tests::duplicate_ids_are_rejected ... ok
+test batch::tests::durability_warning_is_reader_visible_success_not_failure ... FAILED
+test batch::tests::empty_batch_is_rejected ... ok
+test batch::tests::existing_conflicting_artifact_is_rejected ... ok
+test batch::tests::fail_fast_cancelled_ops_never_touch_the_cache ... FAILED
+test batch::tests::fail_fast_false_runs_all_ops ... ok
+test batch::tests::fail_fast_preserves_ids_and_order_for_all_ops ... ok
+test batch::tests::fail_fast_stops_at_first_failure ... ok
+test batch::tests::failed_artifact_activation_leaves_no_cache_side_effect ... FAILED
+test batch::tests::final_envelope_drift_invalidates_accepted_responses ... FAILED
+test batch::tests::final_rename_winner_is_verified_and_reused ... ok
+test batch::tests::grep_returns_matching_lines ... ok
+test batch::tests::incomplete_rollback_is_surfaced_distinctly ... ok
+test batch::tests::invalid_ops_reject_the_whole_batch_before_any_execution ... ok
+test batch::tests::mid_batch_state_change_marks_stale_and_aborts_remaining_ops ... FAILED
+test batch::tests::mid_batch_state_change_never_reuses_cached_results ... FAILED
+test batch::tests::non_batchable_op_rejects_the_whole_batch ... ok
+test batch::tests::non_enoent_read_failure_fails_closed ... ok
+test batch::tests::outline_lists_symbols ... ok
+test batch::tests::over_capacity_batch_is_rejected ... ok
+test batch::tests::parameter_preflight_rejects_invalid_grep_params ... ok
+test batch::tests::parameter_preflight_rejects_invalid_impact_params ... ok
+test batch::tests::parameter_preflight_rejects_invalid_outline_params ... ok
+test batch::tests::parameter_preflight_rejects_invalid_read_params ... ok
+test batch::tests::parameter_preflight_rejects_invalid_search_params ... ok
+test batch::tests::parameter_preflight_rejects_invalid_tests_for_params ... ok
+test batch::tests::post_activation_drift_rolls_back_all_owned_outputs ... FAILED
+test batch::tests::post_execution_drift_discards_result_and_marks_stale ... FAILED
+test batch::tests::pre_existing_artifact_survives_rollback_of_unrelated_created_artifact ... ok
+test batch::tests::query_cache_is_inactive_outside_git_repos ... FAILED
+test batch::tests::query_cache_roundtrips_and_flips_key_on_change ... FAILED
+test batch::tests::read_raw_returns_text_result ... ok
+test batch::tests::real_negative_cache_candidate_is_invalidated_by_post_activation_drift ... FAILED
+test batch::tests::reused_artifact_is_revalidated_at_activation ... ok
+test batch::tests::search_finds_symbols ... ok
+test batch::tests::stale_snapshot_is_false_without_index ... ok
+test batch::tests::truncated_result_gets_artifact_marker ... ok
+test batch::tests::under_budget_results_are_not_truncated ... ok
+test batch::tests::unknown_and_mutating_ops_reject_the_whole_batch ... ok
+test commands::context::tests::append_rejects_missing_fields ... ok
+test commands::context::tests::read_missing_returns_placeholder ... ok
+test commands::context::tests::truncate_at_max ... ok
+test commands::context::tests::truncate_under_max_unchanged ... ok
+test commands::decisions::tests::read_missing_returns_placeholder ... ok
+test commands::decisions::tests::record_rejects_missing_fields ... ok
+test commands::decisions::tests::sanitize_caps_at_max ... ok
+test commands::decisions::tests::sanitize_strips_control_chars ... ok
+test daemon::protocol::tests::batch_round_trips_nested_requests ... ok
+test daemon::protocol::tests::cancel_and_shutdown_round_trip ... ok
+test daemon::protocol::tests::capabilities_serialize ... ok
+test daemon::protocol::tests::empty_batch_defers_rejection_to_executor ... ok
+test daemon::protocol::tests::hello_round_trips ... ok
+test daemon::protocol::tests::ping_round_trips ... ok
+test daemon::protocol::tests::query_round_trips_with_argv ... ok
+test daemon::protocol::tests::rejects_bad_batch_protocol_version ... ok
+test daemon::protocol::tests::rejects_empty_client ... ok
+test daemon::protocol::tests::rejects_empty_query_command ... ok
+test daemon::protocol::tests::rejects_wrong_protocol_version ... ok
+test daemon::protocol::tests::response_helpers_build_valid_wire_shape ... ok
+test daemon::protocol::tests::typed_batch_round_trips_operations ... ok
+test daemon::server::tests::batch_multiplexes_sub_responses ... ok
+test daemon::server::tests::batch_with_invalid_sub_request_reports_error ... ok
+test daemon::server::tests::cancel_acks_request ... ok
+test daemon::server::tests::capabilities_query_returns_descriptor_registry ... ok
+test daemon::server::tests::hello_negotiates_capabilities ... ok
+test daemon::server::tests::hosted_commands_surface_matches_capabilities ... ok
+test daemon::server::tests::idle_socket_tests::server_run_exits_on_idle_with_attached_client ... ok
+test daemon::server::tests::ping_responds_pong ... ok
+test daemon::server::tests::query_ls_lists_directory ... ok
+test daemon::server::tests::query_read_missing_file_returns_error ... ok
+test daemon::server::tests::query_read_returns_file_lines ... ok
+test daemon::server::tests::query_unsupported_returns_error ... ok
+test daemon::server::tests::query_version_returns_daemon_version ... ok
+test daemon::server::tests::resolve_path_joins_against_cwd ... ok
+test daemon::server::tests::shutdown_responds_ok ... ok
+test daemon::server::tests::typed_batch_dispatches_in_input_order ... ok
+test daemon::server::tests::typed_batch_rejects_structural_violations ... ok
+test daemon::server::tests::unknown_method_is_rejected_by_validation ... ok
+test daemon::transport::tests::eof_returns_none ... ok
+test daemon::transport::tests::rejects_oversized_message_before_buffering ... ok
+test daemon::transport::tests::rejects_truncated_message_at_eof ... ok
+test daemon::transport::tests::round_trips_multiple_messages_with_blank_lines ... ok
+test daemon::transport::tests::round_trips_single_message ... ok
+test daemon::transport::tests::unix_socket_tests::read_timeout_wakes_blocked_read ... ok
+test index::boundary::guarded_read_tests::broken_symlink_rejected ... ok
+test index::boundary::guarded_read_tests::directory_rejected_not_regular ... ok
+test index::boundary::guarded_read_tests::external_symlink_rejected_outside_root ... ok
+test index::boundary::guarded_read_tests::internal_symlink_reads_target_content ... ok
+test index::boundary::guarded_read_tests::metadata_rejects_external_symlink ... ok
+test index::boundary::guarded_read_tests::metadata_reports_size_and_flags ... ok
+test index::boundary::guarded_read_tests::missing_file_rejected ... ok
+test index::boundary::guarded_read_tests::reader_rejects_external_symlink_and_caches ... ok
+test index::boundary::guarded_read_tests::reader_returns_cached_guarded_bytes_across_swap ... ok
+test index::boundary::guarded_read_tests::regular_file_reads_guarded_bytes ... ok
+test index::boundary::guarded_read_tests::same_metadata_different_identity_swap_is_changed_during_read ... ok
+test index::boundary::guarded_read_tests::symlink_to_directory_rejected ... ok
+test index::builder::tests::direct_import_mapping_skips_test_to_test_rows ... ok
+test index::builder::tests::mapping_never_points_test_at_itself ... ok
+test index::builder::tests::naming_mapping_skips_generated_test_source ... ok
+test index::identity::tests::config_and_ignore_hashes_change_on_content_change ... ok
+test index::identity::tests::fingerprint_detects_content_edit_within_already_dirty_file ... ok
+test index::identity::tests::head_sha_and_fingerprint_are_detected ... ok
+test index::identity::tests::identity_is_stable_and_worktree_scoped ... ok
+test index::identity::tests::plain_directory_gets_identity_without_git ... ok
+test index::identity::tests::schema_version_is_current ... ok
+test index::identity::tests::two_worktrees_share_repo_but_not_worktree_id ... ok
+test index::manifest::tests::contains_path_rejects_escape ... ok
+test index::manifest::tests::manifest_defaults_are_unavailable ... ok
+test index::manifest::tests::normalize_rel_path_uses_forward_slashes ... ok
+test index::manifest::tests::short_hash_is_stable_and_short ... ok
+test index::manifest::tests::symbol_id_is_deterministic ... ok
+test index::paths::tests::ensure_state_root_creates_directory ... ok
+test index::paths::tests::paths_are_composable ... ok
+test index::paths::tests::segments_are_bounded_and_safe ... ok
+test index::paths::tests::state_root_resolution_is_env_driven ... ok
+test index::query_cache::tests::abort_leaves_nothing_reader_visible ... ok
+test index::query_cache::tests::atomic_write_roundtrips_without_temp_leak ... ok
+test index::query_cache::tests::cache_get_miss_after_clear ... ok
+test index::query_cache::tests::cache_put_get_roundtrip ... ok
+test index::query_cache::tests::canonical_json_sorts_keys_and_drops_nulls ... ok
+test index::query_cache::tests::clean_commit_reports_committed_with_generations_and_all_mappings_visible ... ok
+test index::query_cache::tests::clear_drops_negative_entries_too ... ok
+test index::query_cache::tests::commit_lock_is_os_file_lock_and_never_unlinked ... ok
+test index::query_cache::tests::commit_states_produce_accurate_semantics ... ok
+test index::query_cache::tests::compensation_failure_reports_committed_but_compensation_failed ... ok
+test index::query_cache::tests::compensation_generation_mismatch_fails_closed ... FAILED
+test index::query_cache::tests::compensation_later_different_digest_winner_survives ... FAILED
+test index::query_cache::tests::compensation_later_same_digest_republish_does_not_transfer_ownership ... FAILED
+test index::query_cache::tests::compensation_negative_and_positive_share_ownership_rules ... ok
+test index::query_cache::tests::compensation_refuses_entry_generation_mismatch ... FAILED
+test index::query_cache::tests::compensation_removes_only_mappings_still_owned_by_the_committer ... ok
+test index::query_cache::tests::compensation_replaced_restores_exact_previous_metadata ... FAILED
+test index::query_cache::tests::compensation_replaced_restores_previous_value ... ok
+test index::query_cache::tests::compensation_reused_existing_survives ... FAILED
+test index::query_cache::tests::concurrent_identical_winners_are_reused ... ok
+test index::query_cache::tests::concurrent_read_write_never_serves_partial_entries ... ok
+test index::query_cache::tests::configuration_fingerprint_is_deterministic ... ok
+test index::query_cache::tests::corrupt_current_fails_closed_to_prior_generation ... ok
+test index::query_cache::tests::corrupt_manifest_is_quarantined ... ok
+test index::query_cache::tests::corrupt_objects_are_quarantined_and_never_served ... ok
+test index::query_cache::tests::dir_fsync_warning_remains_reader_visible_and_surfaced ... ok
+test index::query_cache::tests::flip_dir_fsync_failure_reports_committed_with_durability_warning_and_is_visible ... ok
+test index::query_cache::tests::flip_rename_failure_reports_not_committed_and_keeps_previous_generation ... ok
+test index::query_cache::tests::gc_reclaims_unreferenced_objects_after_grace ... ok
+test index::query_cache::tests::gc_sweeps_abandoned_temp_files_after_grace ... ok
+test index::query_cache::tests::invalid_keys_are_rejected ... ok
+test index::query_cache::tests::key_flips_on_every_component ... ok
+test index::query_cache::tests::key_is_domain_anchored ... ok
+test index::query_cache::tests::legacy_v1_dirs_are_never_served ... ok
+test index::query_cache::tests::lru_evicts_beyond_byte_bound ... ok
+test index::query_cache::tests::lru_evicts_oldest_beyond_item_bound ... ok
+test index::query_cache::tests::negative_entries_expire_after_ttl ... ok
+test index::query_cache::tests::negative_entries_honor_lru_bounds ... ok
+test index::query_cache::tests::negative_entries_roundtrip_within_ttl ... ok
+test index::query_cache::tests::object_without_current_is_a_miss ... ok
+test index::query_cache::tests::partial_publish_is_atomic_with_two_cacheable_ops ... ok
+test index::query_cache::tests::reused_existing_negative_entry_is_unchanged ... FAILED
+test index::query_cache::tests::reused_existing_positive_entry_is_unchanged ... FAILED
+test index::refresh::tests::content_cache_bounds_and_lru ... ok
+test index::refresh::tests::deletion_is_detected ... ok
+test index::refresh::tests::fs_change_detection_uses_metadata ... ok
+test index::refresh::tests::head_change_signals_full_rebuild ... ok
+test index::refresh::tests::map_kind_and_classification_helpers_work ... ok
+test index::refresh::tests::modified_file_is_detected ... ok
+test index::refresh::tests::new_untracked_file_is_added ... ok
+test index::refresh::tests::no_change_yields_empty_change_set ... ok
+test index::refresh::tests::rename_detection_pairs_stem ... ok
+test index::storage::tests::clear_persisted_propagates_deletion_errors ... ok
+test index::storage::tests::clear_persisted_removes_all_generations_and_pointer ... ok
+test index::storage::tests::component_checksum_detects_tampering ... ok
+test index::storage::tests::content_cache_rows_are_validated_semantically ... ok
+test index::storage::tests::corrupt_generation_is_quarantined_and_prior_retained ... ok
+test index::storage::tests::count_mismatch_is_rejected ... ok
+test index::storage::tests::dependency_rows_are_validated_semantically ... ok
+test index::storage::tests::different_worktrees_do_not_share_state ... ok
+test index::storage::tests::dropped_checksum_entry_is_rejected ... ok
+test index::storage::tests::future_schema_is_rejected_and_left_in_place ... ok
+test index::storage::tests::git_state_rows_are_validated_semantically ... ok
+test index::storage::tests::interrupted_publication_repoints_to_newer_valid_generation ... ok
+test index::storage::tests::legacy_identity_state_is_migrated_when_ownership_matches ... ok
+test index::storage::tests::legacy_identity_state_is_not_mixed_with_other_repositories ... ok
+test index::storage::tests::load_reports_recovery_failed_when_pointer_repair_fails ... ok
+test index::storage::tests::load_reports_recovery_failed_when_stale_pointer_clear_fails ... ok
+test index::storage::tests::malformed_component_with_valid_checksum_is_rejected ... ok
+test index::storage::tests::malformed_pointer_recovers_to_newest_valid ... ok
+test index::storage::tests::manifest_dirty_fingerprint_format_is_validated ... ok
+test index::storage::tests::missing_component_is_rejected_not_emptied ... ok
+test index::storage::tests::no_tmp_or_pointer_leftovers_after_publish ... ok
+test index::storage::tests::publish_and_reload_round_trip ... ok
+test index::storage::tests::publish_fails_when_final_path_validation_fails ... ok
+chattr: Operation not permitted while setting flags on /tmp/.tmpvhpEuq/ac1ac5a65bb7b3b3c8b8bbe76b0dadfc6d8be9c780d1773594184b870e1b7ef6/ed17100924ad84989a66efa4f339654ca345dd765251b31f2274566ebe6d199e/gen-1/manifest.json
+test index::storage::tests::publish_propagates_retention_failure_after_activation ... ok
+test index::storage::tests::publish_restores_previous_pointer_when_activation_unobservable ... ok
+test index::storage::tests::retained_previous_generation_keeps_last_valid ... ok
+test index::storage::tests::stale_generation_row_rejects_each_component_type ... ok
+test index::storage::tests::stale_tmp_generations_are_cleaned ... ok
+test index::storage::tests::symbol_rows_are_validated_semantically ... ok
+test index::storage::tests::test_mapping_rows_are_validated_semantically ... ok
+test index::storage::tests::unique_temp_names_never_collide_and_pointer_is_atomic ... ok
+test index::storage::tests::unknown_checksum_key_is_rejected ... ok
+test index::storage::tests::verify_persisted_absent_rejects_leftover_generation ... ok
+test index::storage::tests::writer_lock_excludes_concurrent_writers ... ok
+test index::storage::tests::wrong_repository_identity_is_rejected ... ok
+test index::storage::tests::zero_generation_rows_are_rejected_no_bypass ... ok
+test index::tests::cold_build_produces_index ... ok
+test index::tests::deleted_file_removes_stale_symbols ... ok
+test index::tests::deleted_file_reresolves_dependant_edges ... ok
+test index::tests::invalidate_clears_persisted_state_and_snapshot ... ok
+test index::tests::no_change_refresh_reuses_generation ... ok
+test index::tests::one_file_change_updates_only_affected_layers ... ok
+test index::tests::open_fails_closed_on_future_schema ... ok
+test index::tests::queries_are_bounded_and_deterministic ... ok
+test index::tests::refresh_fails_closed_on_future_schema ... ok
+test index::tests::renamed_file_reresolves_dependant_edges ... ok
+test index::tests::warm_reopen_loads_persisted_generation ... ok
+test index::winfs::winfs_tests::atomic_replace_creates_missing_destination ... ok
+test index::winfs::winfs_tests::atomic_replace_preserves_destination_when_source_missing ... ok
+test index::winfs::winfs_tests::atomic_replace_replaces_destination_atomically ... ok
+test index::winfs::winfs_tests::identity_distinguishes_same_metadata_different_files ... ok
+test locking::tests::append_creates_file_and_writes ... ok
+test locking::tests::clear_idempotent_on_missing ... ok
+test locking::tests::concurrent_appends_both_succeed ... ok
+test output::ls_tree_text::tests::test_human_size ... ok
+test paths::tests::paths_join_correctly ... ok
+test paths::tests::slugify_caps_at_max_length ... ok
+test paths::tests::slugify_matches_ts_canonical ... ok
+test pr_monitor::logs::tests::test_extract_error_excerpt_basic ... ok
+test pr_monitor::logs::tests::test_extract_exit_code ... ok
+test tee::tests::test_sanitize_label ... ok
+test batch::tests::cache_transaction_lru_only_runs_on_global_success has been running for over 60 seconds
+test batch::tests::cache_transaction_lru_only_runs_on_global_success ... ok
+
+failures:
+
+---- batch::tests::durability_warning_is_reader_visible_success_not_failure stdout ----
+
+thread 'batch::tests::durability_warning_is_reader_visible_success_not_failure' (270682) panicked at crates/fdx/src/batch/mod.rs:5223:9:
+a durability warning is reader-visible success — it must not fail the batch
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- batch::tests::fail_fast_cancelled_ops_never_touch_the_cache stdout ----
+
+thread 'batch::tests::fail_fast_cancelled_ops_never_touch_the_cache' (270724) panicked at crates/fdx/src/batch/mod.rs:2963:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::failed_artifact_activation_leaves_no_cache_side_effect stdout ----
+
+thread 'batch::tests::failed_artifact_activation_leaves_no_cache_side_effect' (270731) panicked at crates/fdx/src/batch/mod.rs:4362:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::final_envelope_drift_invalidates_accepted_responses stdout ----
+
+thread 'batch::tests::final_envelope_drift_invalidates_accepted_responses' (270732) panicked at crates/fdx/src/batch/mod.rs:3915:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::mid_batch_state_change_marks_stale_and_aborts_remaining_ops stdout ----
+
+thread 'batch::tests::mid_batch_state_change_marks_stale_and_aborts_remaining_ops' (270738) panicked at crates/fdx/src/batch/mod.rs:2775:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::mid_batch_state_change_never_reuses_cached_results stdout ----
+
+thread 'batch::tests::mid_batch_state_change_never_reuses_cached_results' (270739) panicked at crates/fdx/src/batch/mod.rs:2905:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::post_activation_drift_rolls_back_all_owned_outputs stdout ----
+
+thread 'batch::tests::post_activation_drift_rolls_back_all_owned_outputs' (270751) panicked at crates/fdx/src/batch/mod.rs:3978:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::post_execution_drift_discards_result_and_marks_stale stdout ----
+
+thread 'batch::tests::post_execution_drift_discards_result_and_marks_stale' (270752) panicked at crates/fdx/src/batch/mod.rs:3644:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::query_cache_is_inactive_outside_git_repos stdout ----
+
+thread 'batch::tests::query_cache_is_inactive_outside_git_repos' (270754) panicked at crates/fdx/src/batch/mod.rs:3158:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::query_cache_roundtrips_and_flips_key_on_change stdout ----
+
+thread 'batch::tests::query_cache_roundtrips_and_flips_key_on_change' (270755) panicked at crates/fdx/src/batch/mod.rs:3089:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- batch::tests::real_negative_cache_candidate_is_invalidated_by_post_activation_drift stdout ----
+
+thread 'batch::tests::real_negative_cache_candidate_is_invalidated_by_post_activation_drift' (270758) panicked at crates/fdx/src/batch/mod.rs:4039:44:
+called `Result::unwrap()` on an `Err` value: PoisonError { .. }
+
+---- index::query_cache::tests::compensation_generation_mismatch_fails_closed stdout ----
+
+thread 'index::query_cache::tests::compensation_generation_mismatch_fails_closed' (270911) panicked at crates/fdx/src/index/query_cache.rs:2880:9:
+an entry generation mismatch fails compensation closed
+
+---- index::query_cache::tests::compensation_later_different_digest_winner_survives stdout ----
+
+thread 'index::query_cache::tests::compensation_later_different_digest_winner_survives' (270912) panicked at crates/fdx/src/index/query_cache.rs:2731:9:
+a compensation with nothing to restore fails closed — it never publishes an empty generation as success
+
+---- index::query_cache::tests::compensation_later_same_digest_republish_does_not_transfer_ownership stdout ----
+
+thread 'index::query_cache::tests::compensation_later_same_digest_republish_does_not_transfer_ownership' (270913) panicked at crates/fdx/src/index/query_cache.rs:2779:9:
+assertion `left == right` failed: a pure-reuse publish does not advance the generation
+  left: 2
+ right: 1
+
+---- index::query_cache::tests::compensation_refuses_entry_generation_mismatch stdout ----
+
+thread 'index::query_cache::tests::compensation_refuses_entry_generation_mismatch' (270915) panicked at crates/fdx/src/index/query_cache.rs:3255:9:
+an entry generation mismatch fails compensation closed
+
+---- index::query_cache::tests::compensation_replaced_restores_exact_previous_metadata stdout ----
+
+thread 'index::query_cache::tests::compensation_replaced_restores_exact_previous_metadata' (270917) panicked at crates/fdx/src/index/query_cache.rs:3213:9:
+assertion `left == right` failed: restore keeps the previous LRU anchor — it must not refresh created_at
+  left: 1785828885
+ right: 1000
+
+---- index::query_cache::tests::compensation_reused_existing_survives stdout ----
+
+thread 'index::query_cache::tests::compensation_reused_existing_survives' (270919) panicked at crates/fdx/src/index/query_cache.rs:2625:9:
+assertion `left == right` failed: a pure-reuse transaction changes nothing and does not advance CURRENT
+  left: 2
+ right: 1
+
+---- index::query_cache::tests::reused_existing_negative_entry_is_unchanged stdout ----
+
+thread 'index::query_cache::tests::reused_existing_negative_entry_is_unchanged' (270955) panicked at crates/fdx/src/index/query_cache.rs:3143:9:
+assertion `left == right` failed: a pure-reuse publish does not advance CURRENT
+  left: 2
+ right: 1
+
+---- index::query_cache::tests::reused_existing_positive_entry_is_unchanged stdout ----
+
+thread 'index::query_cache::tests::reused_existing_positive_entry_is_unchanged' (270956) panicked at crates/fdx/src/index/query_cache.rs:3090:9:
+assertion `left == right` failed: a pure-reuse publish does not advance CURRENT
+  left: 2
+ right: 1
+
+
+failures:
+    batch::tests::durability_warning_is_reader_visible_success_not_failure
+    batch::tests::fail_fast_cancelled_ops_never_touch_the_cache
+    batch::tests::failed_artifact_activation_leaves_no_cache_side_effect
+    batch::tests::final_envelope_drift_invalidates_accepted_responses
+    batch::tests::mid_batch_state_change_marks_stale_and_aborts_remaining_ops
+    batch::tests::mid_batch_state_change_never_reuses_cached_results
+    batch::tests::post_activation_drift_rolls_back_all_owned_outputs
+    batch::tests::post_execution_drift_discards_result_and_marks_stale
+    batch::tests::query_cache_is_inactive_outside_git_repos
+    batch::tests::query_cache_roundtrips_and_flips_key_on_change
+    batch::tests::real_negative_cache_candidate_is_invalidated_by_post_activation_drift
+    index::query_cache::tests::compensation_generation_mismatch_fails_closed
+    index::query_cache::tests::compensation_later_different_digest_winner_survives
+    index::query_cache::tests::compensation_later_same_digest_republish_does_not_transfer_ownership
+    index::query_cache::tests::compensation_refuses_entry_generation_mismatch
+    index::query_cache::tests::compensation_replaced_restores_exact_previous_metadata
+    index::query_cache::tests::compensation_reused_existing_survives
+    index::query_cache::tests::reused_existing_negative_entry_is_unchanged
+    index::query_cache::tests::reused_existing_positive_entry_is_unchanged
+
+test result: FAILED. 237 passed; 19 failed; 0 ignored; 0 measured; 0 filtered out; finished in 94.65s
+
+error: test failed, to rerun pass `--lib`

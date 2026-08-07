@@ -5,6 +5,7 @@
 import { execFile } from "child_process"
 import { promisify } from "util"
 import type { CheckResult } from "../types"
+import { type FdxResolutionResult, getFdxAvailabilityStatus } from "../../tools/fdx-shared"
 
 const execFileAsync = promisify(execFile)
 
@@ -27,7 +28,19 @@ async function tryVersion(cmd: string): Promise<string | null> {
   return out?.split("\n")[0]?.trim() ?? null
 }
 
-export async function runRuntimeChecks(_directory: string): Promise<CheckResult[]> {
+/**
+ * Run the runtime environment checks.
+ *
+ * `opts.fdxStatus` injects the FDX availability result so unit tests of doctor
+ * aggregation never run a real FDX resolution (which performs subprocess
+ * probes and can be timing-sensitive). When omitted, the canonical resolver is
+ * consulted (real integration path).
+ */
+export async function runRuntimeChecks(
+  _directory: string,
+  profileArg?: string,
+  opts: { fdxStatus?: FdxResolutionResult } = {},
+): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
 
   const [
@@ -126,6 +139,109 @@ export async function runRuntimeChecks(_directory: string): Promise<CheckResult[
     detected: isWSL ? "WSL2 detected" : "Not WSL",
     expected: "WSL2 on Windows recommended",
     recommendation: "Install WSL2: wsl --install -d Ubuntu-24.04",
+    autoFixAvailable: false,
+  })
+
+  let fdxStatus: FdxResolutionResult
+  if (opts?.fdxStatus) {
+    // Injected (unit tests): doctor aggregation must not run a real FDX
+    // resolution. Real resolver timing is covered by dedicated integration
+    // tests under explicit bounded timeouts.
+    fdxStatus = opts.fdxStatus
+  } else {
+    fdxStatus = getFdxAvailabilityStatus(true)
+  }
+  const profile = profileArg || process.env.FLOWDECK_PROFILE || "recommended-dev"
+  const isStrictFail = profile !== "minimal"
+
+  // 1. fdx.target-supported
+  checks.push({
+    id: "fdx.target-supported",
+    title: "FDX Platform Target Support",
+    category: "runtime",
+    severity: "info",
+    status: fdxStatus.targetSupported ? "pass" : "info",
+    detected: fdxStatus.target ? `${fdxStatus.target.platform}/${fdxStatus.target.arch}${fdxStatus.target.libc ? ` (${fdxStatus.target.libc})` : ""}` : `${process.platform}/${process.arch} (unsupported for native package)`,
+    expected: "Supported platform target",
+    recommendation: fdxStatus.targetSupported ? "OK" : "Target uses TypeScript fallback by design",
+    autoFixAvailable: false,
+  })
+
+  // 2. fdx.package-present
+  checks.push({
+    id: "fdx.package-present",
+    title: "FDX Platform Package Present",
+    category: "runtime",
+    severity: isStrictFail ? "high" : "medium",
+    status: fdxStatus.packagePresent ? "pass" : (fdxStatus.targetSupported ? (isStrictFail ? "error" : "warning") : "pass"),
+    detected: fdxStatus.packagePresent ? `Package ${fdxStatus.target?.packageName} resolved` : "Optional package missing",
+    expected: fdxStatus.target?.packageName ?? "n/a",
+    recommendation: fdxStatus.packagePresent ? "OK" : "Run 'flowdeck fdx repair' or install optionalDependencies",
+    autoFixAvailable: true,
+  })
+
+  // 3. fdx.binary-present
+  checks.push({
+    id: "fdx.binary-present",
+    title: "FDX Native Binary Present",
+    category: "runtime",
+    severity: isStrictFail ? "high" : "medium",
+    status: fdxStatus.binaryPresent ? "pass" : (fdxStatus.targetSupported ? (isStrictFail ? "error" : "warning") : "pass"),
+    detected: fdxStatus.binaryPath ? `Binary at "${fdxStatus.binaryPath}" (${fdxStatus.source})` : "No binary found",
+    expected: fdxStatus.target?.executableName ?? "fdx",
+    recommendation: fdxStatus.binaryPresent ? "OK" : "Run 'flowdeck fdx repair'",
+    autoFixAvailable: true,
+  })
+
+  // 4. fdx.binary-integrity
+  checks.push({
+    id: "fdx.binary-integrity",
+    title: "FDX Binary Checksum Integrity",
+    category: "runtime",
+    severity: "high",
+    status: fdxStatus.checksumStatus === "fail" ? "error" : "pass",
+    detected: `Checksum status: ${fdxStatus.checksumStatus}`,
+    expected: "SHA-256 matches manifest",
+    recommendation: fdxStatus.checksumStatus === "fail" ? "Corrupt binary — run 'flowdeck fdx repair'" : "OK",
+    autoFixAvailable: true,
+  })
+
+  // 5. fdx.binary-version
+  checks.push({
+    id: "fdx.binary-version",
+    title: "FDX Binary Version Compatibility",
+    category: "runtime",
+    severity: "high",
+    status: fdxStatus.versionCompatible ? "pass" : (fdxStatus.available ? "error" : (isStrictFail ? "error" : "warning")),
+    detected: fdxStatus.binaryVersion ? `v${fdxStatus.binaryVersion}` : "none",
+    expected: ">= 1.0.0",
+    recommendation: fdxStatus.versionCompatible ? "OK" : "Run 'flowdeck fdx repair'",
+    autoFixAvailable: true,
+  })
+
+  // 6. fdx.binary-execution
+  checks.push({
+    id: "fdx.binary-execution",
+    title: "FDX Native Binary Execution",
+    category: "runtime",
+    severity: isStrictFail ? "high" : "medium",
+    status: fdxStatus.executionStatus === "pass" ? "pass" : (fdxStatus.targetSupported ? (isStrictFail ? "error" : "warning") : "pass"),
+    detected: fdxStatus.executionStatus,
+    expected: "pass",
+    recommendation: fdxStatus.executionStatus === "pass" ? "OK" : "Run 'flowdeck fdx repair'",
+    autoFixAvailable: true,
+  })
+
+  // 7. fdx.fallback-available
+  checks.push({
+    id: "fdx.fallback-available",
+    title: "FDX TypeScript Fallback Availability",
+    category: "runtime",
+    severity: "info",
+    status: "pass",
+    detected: fdxStatus.available ? "Inactive (native mode active)" : "Active (TypeScript fallback mode)",
+    expected: "TypeScript fallback available for unsupported platforms or recovery",
+    recommendation: "OK",
     autoFixAvailable: false,
   })
 

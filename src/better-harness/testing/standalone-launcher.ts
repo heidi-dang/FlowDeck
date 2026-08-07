@@ -94,6 +94,7 @@ export async function launchStandaloneServer(
     },
     sseManager,
     bindHost: "127.0.0.1",
+    stateDir,
   };
 
   const server = new HarnessHttpServer({

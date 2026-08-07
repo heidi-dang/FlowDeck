@@ -36,6 +36,36 @@ export type {
   FailureClass,
 } from "./domain/index"
 
+// TaskContract — structured task contract interfaces
+export type {
+  Requirement as TaskContractRequirement,
+  AcceptanceCriterion as TaskContractAcceptanceCriterion,
+  Constraint,
+  EvidenceRequirement,
+  VerificationRequirement,
+  MutationScope,
+  ApprovalGate,
+  TaskContractStatus,
+  TaskContract,
+  TaskContractDraft,
+  TaskContractValidationResult,
+  ContractActivationResult,
+} from "./task-contract"
+
+// Contract hashing
+export { hashContract, verifyContractHash } from "./contract-hasher"
+
+// Contract validation
+export {
+  validateContractDraft,
+  validateMutationScope,
+  activateContract,
+  validateActivatedContract,
+} from "./contract-validator"
+
+// Contract store
+export { ContractStore, createContractStore, reconstructContractStore, type IContractStore } from "./contract-store"
+
 // Hashing
 export { hashSpecification } from "./hashing/specification-hash"
 

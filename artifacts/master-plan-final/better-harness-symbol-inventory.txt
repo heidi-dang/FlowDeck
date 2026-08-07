@@ -1,0 +1,424 @@
+src/better-harness/transport/router.ts:24:import type { RouterContext } from "../runtime/router-context";
+src/better-harness/transport/router.ts:102:  return routeRequestContext({} as RouterContext, method, urlPath, body);
+src/better-harness/transport/router.ts:106:  ctx: RouterContext,
+src/better-harness/transport/router.ts:119:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/availability", urlPath);
+src/better-harness/transport/router.ts:131:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/report", urlPath);
+src/better-harness/transport/router.ts:149:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/history", urlPath);
+src/better-harness/transport/router.ts:166:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/current", urlPath);
+src/better-harness/transport/router.ts:199:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs", urlPath);
+src/better-harness/transport/router.ts:226:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/:runId/cancel", urlPath);
+src/better-harness/transport/router.ts:239:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/:runId", urlPath);
+src/better-harness/transport/router.ts:252:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/findings/plan-fix", urlPath);
+src/better-harness/transport/router.ts:297:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/findings/ignore", urlPath);
+src/better-harness/transport/router.ts:321:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/findings/verify", urlPath);
+src/better-harness/transport/router.ts:385:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/:runId/events", urlPath);
+src/better-harness/transport/router.ts:396:      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/repair-sessions/:sessionId", urlPath);
+src/better-harness/transport/sse.ts:21: * Unified Production SseManager Adapter.
+src/better-harness/transport/sse.ts:29:export class SseManager {
+src/better-harness/transport/http-server.ts:5:import type { SseManager } from "./sse";
+src/better-harness/transport/http-server.ts:6:import type { RouterContext } from "../runtime/router-context";
+src/better-harness/transport/http-server.ts:26:export class HarnessHttpServer {
+src/better-harness/transport/http-server.ts:29:  private sseManager: SseManager | null = null;
+src/better-harness/transport/http-server.ts:30:  private routerContext: RouterContext | null = null;
+src/better-harness/transport/http-server.ts:37:  setSseManager(manager: SseManager): void {
+src/better-harness/transport/http-server.ts:41:  setRouterContext(ctx: RouterContext): void {
+src/better-harness/transport/http-server.ts:92:        const sseRouteMatch = urlPath.match(/\/api\/v1\/servers\/([^/]+)\/projects\/([^/]+)\/better-harness\/runs\/([^/]+)\/events$/);
+src/better-harness/transport/http-server.ts:115:          urlPath.includes("/better-harness/ui")
+src/better-harness/index.ts:91:export { getFlowDeckStateDir, setFlowDeckStateDir, resetFlowDeckStateDir, getProjectStoreDir, atomicWriteFile, readJsonFile } from "./persistence/harness-store";
+src/better-harness/index.ts:103:export { HarnessRuntime } from "./runtime/harness-runtime";
+src/better-harness/index.ts:104:export type { HarnessRuntimeConfig } from "./runtime/harness-runtime";
+src/better-harness/index.ts:105:export { RunCoordinator } from "./runtime/run-coordinator";
+src/better-harness/index.ts:113:export { HarnessHttpServer } from "./transport/http-server";
+src/better-harness/index.ts:121:export { SseManager } from "./transport/sse";
+src/better-harness/persistence/harness-store.ts:16:export function setFlowDeckStateDir(dir: string): void {
+src/better-harness/persistence/harness-store.ts:23:export function resetFlowDeckStateDir(): void {
+src/better-harness/persistence/harness-store.ts:32:  return join(getFlowDeckStateDir(), projectId, "better-harness");
+src/better-harness/testing/standalone-launcher.ts:20:import { HarnessRuntime } from "../runtime/harness-runtime";
+src/better-harness/testing/standalone-launcher.ts:21:import { ProjectRegistry } from "../runtime/project-registry";
+src/better-harness/testing/standalone-launcher.ts:22:import { SseManager } from "../transport/sse";
+src/better-harness/testing/standalone-launcher.ts:23:import { RouterContext } from "../runtime/router-context";
+src/better-harness/testing/standalone-launcher.ts:24:import { HarnessHttpServer } from "../transport/http-server";
+src/better-harness/testing/standalone-launcher.ts:26:import { resetFlowDeckStateDir } from "../persistence/harness-store";
+src/better-harness/testing/standalone-launcher.ts:67:  // This must match what RunCoordinator.enqueueRun computes via captureWorkspaceSnapshot
+src/better-harness/testing/standalone-launcher.ts:72:  const runtime = new HarnessRuntime({ projectRoot: projectDir, timeoutMs: 60000, stateDir });
+src/better-harness/testing/standalone-launcher.ts:75:  const registry = new ProjectRegistry();
+src/better-harness/testing/standalone-launcher.ts:82:  const sseManager = new SseManager(eventBus, eventLogDir);
+src/better-harness/testing/standalone-launcher.ts:84:  const routerContext: RouterContext = {
+src/better-harness/testing/standalone-launcher.ts:99:  const server = new HarnessHttpServer({
+src/better-harness/testing/standalone-launcher.ts:104:  server.setSseManager(sseManager);
+src/better-harness/testing/standalone-launcher.ts:105:  server.setRouterContext(routerContext);
+src/better-harness/testing/standalone-launcher.ts:120:      resetFlowDeckStateDir();
+src/better-harness/testing/standalone-server-cli.ts:10: *   bun run src/better-harness/testing/standalone-server-cli.ts
+src/better-harness/runtime/router-context.ts:1:import type { HarnessRuntime } from "./harness-runtime";
+src/better-harness/runtime/router-context.ts:2:import type { RunCoordinator } from "./run-coordinator";
+src/better-harness/runtime/router-context.ts:3:import type { SseManager } from "../transport/sse";
+src/better-harness/runtime/router-context.ts:5:export interface RouterContext {
+src/better-harness/runtime/router-context.ts:6:  runtime: HarnessRuntime;
+src/better-harness/runtime/router-context.ts:7:  coordinator: RunCoordinator;
+src/better-harness/runtime/router-context.ts:9:  sseManager?: SseManager;
+src/better-harness/runtime/run-coordinator.ts:40:export class RunCoordinator {
+src/better-harness/runtime/run-coordinator.ts:308:  recoverActiveRuns(): void {
+src/better-harness/runtime/project-registry.ts:45:export class ProjectRegistry {
+src/better-harness/runtime/harness-runtime.ts:1:import { RunCoordinator } from "./run-coordinator";
+src/better-harness/runtime/harness-runtime.ts:5:import { setFlowDeckStateDir } from "../persistence/harness-store";
+src/better-harness/runtime/harness-runtime.ts:7:export interface HarnessRuntimeConfig {
+src/better-harness/runtime/harness-runtime.ts:19:export class HarnessRuntime {
+src/better-harness/runtime/harness-runtime.ts:20:  private coordinator: RunCoordinator;
+src/better-harness/runtime/harness-runtime.ts:21:  private config: HarnessRuntimeConfig;
+src/better-harness/runtime/harness-runtime.ts:23:  constructor(config: HarnessRuntimeConfig) {
+src/better-harness/runtime/harness-runtime.ts:26:      setFlowDeckStateDir(config.stateDir);
+src/better-harness/runtime/harness-runtime.ts:28:    this.coordinator = new RunCoordinator();
+src/better-harness/runtime/harness-runtime.ts:31:  getCoordinator(): RunCoordinator {
+src/index.ts:65:import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
+src/index.ts:66:import { HarnessHttpServer } from "./better-harness/transport/http-server"
+src/index.ts:67:import { SseManager } from "./better-harness/transport/sse"
+src/index.ts:68:import { ProjectRegistry } from "./better-harness/runtime/project-registry"
+src/index.ts:70:import type { RouterContext } from "./better-harness/runtime/router-context"
+src/index.ts:279:  let betterHarnessRuntime: HarnessRuntime | null = null
+src/index.ts:280:  let betterHarnessServer: HarnessHttpServer | null = null
+src/index.ts:281:  let betterHarnessSseManager: SseManager | null = null
+src/index.ts:282:  let _betterHarnessCleanup: (() => void) | null = null
+src/index.ts:284:  const projectRegistry = new ProjectRegistry()
+src/index.ts:285:  const bhConfig: BetterHarnessConfig | undefined = flowdeckConfig.betterHarness
+src/index.ts:288:    betterHarnessRuntime = new HarnessRuntime({
+src/index.ts:300:    const coordinator = betterHarnessRuntime.getCoordinator()
+src/index.ts:304:    betterHarnessSseManager = new SseManager(eventBus, eventLogDir)
+src/index.ts:311:    const routerContext: RouterContext = {
+src/index.ts:312:      runtime: betterHarnessRuntime,
+src/index.ts:317:      sseManager: betterHarnessSseManager,
+src/index.ts:323:    betterHarnessServer = new HarnessHttpServer({
+src/index.ts:333:    betterHarnessServer.setSseManager(betterHarnessSseManager)
+src/index.ts:334:    betterHarnessServer.setRouterContext(routerContext)
+src/index.ts:336:    betterHarnessServer.start().then((port) => {
+src/index.ts:337:      appLog("[better-harness] HTTP server started on port " + port)
+src/index.ts:339:      appLog("[better-harness] Failed to start HTTP server: " + err.message, "error")
+src/index.ts:342:    coordinator.recoverActiveRuns()
+src/index.ts:345:    _betterHarnessCleanup = () => {
+src/index.ts:346:      betterHarnessServer?.stop().catch(() => {})
+src/config/agent-models.ts:16:  betterHarness: {
+src/config/agent-models.ts:92:  "betterHarness",
+src/config/schema.ts:47:  betterHarness?: BetterHarnessConfig;
+src/orchestration/streaming/stream-repository.ts:9:import { getProjectIdentity } from '../../better-harness/workspace/project-identity';
+src/orchestration/streaming/stream-repository.ts:10:import { getProjectStoreDir } from '../../better-harness/persistence/harness-store';
+src/orchestration/streaming/index.ts:1:export { SseManager } from "./sse-manager";
+src/orchestration/streaming/live-updates.ts:4:import type { SseManager } from "./sse-manager";
+src/orchestration/streaming/live-updates.ts:10:  sseManager: SseManager,
+src/orchestration/streaming/live-updates.ts:30:export function createLiveRunUpdates(sseManager: SseManager) {
+src/orchestration/streaming/sse-manager.ts:15:export class SseManager {
+src/orchestration/diagnostics/index.ts:4:import type { SseManager } from "../streaming/sse-manager";
+src/orchestration/diagnostics/index.ts:33:    private readonly sseManager: SseManager,
+package.json:22:    "flowdeck-better-harness": "./bin/better-harness.js"
+package.json:46:    "build": "bun build src/index.ts src/commands/fdx-admin.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && tsc --emitDeclarationOnly --project tsconfig.build.json && bunx --yes esbuild src/doctor/doctor.ts --bundle --platform=node --format=esm --target=node18 --main-fields=module,main --outfile=dist/doctor/doctor.js && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm && bun build src/better-harness/ui/mount.ts --outdir dist/ui --target browser --format esm",
+package.json:78:    "better-harness:serve": "node bin/better-harness.js",
+package.json:79:    "standalone:start": "bun run src/better-harness/testing/standalone-server-cli.ts",
+tests/better-harness/production-server-integration.test.ts:2:import { HarnessHttpServer } from "../../src/better-harness/transport/http-server";
+tests/better-harness/production-server-integration.test.ts:3:import { SseManager } from "../../src/better-harness/transport/sse";
+tests/better-harness/production-server-integration.test.ts:4:import { EventBus } from "../../src/better-harness/runtime/event-bus";
+tests/better-harness/production-server-integration.test.ts:5:import type { RouterContext } from "../../src/better-harness/runtime/router-context";
+tests/better-harness/production-server-integration.test.ts:9:  let server: HarnessHttpServer;
+tests/better-harness/production-server-integration.test.ts:10:  let sseManager: SseManager;
+tests/better-harness/production-server-integration.test.ts:17:    sseManager = new SseManager(eventBus, repository);
+tests/better-harness/production-server-integration.test.ts:19:    const routerCtx: Partial<RouterContext> = {
+tests/better-harness/production-server-integration.test.ts:24:    server = new HarnessHttpServer({
+tests/better-harness/production-server-integration.test.ts:30:    server.setSseManager(sseManager);
+tests/better-harness/production-server-integration.test.ts:31:    server.setRouterContext(routerCtx as RouterContext);
+tests/better-harness/production-server-integration.test.ts:52:    const authServer = new HarnessHttpServer({
+tests/better-harness/production-server-integration.test.ts:58:    authServer.setSseManager(sseManager);
+tests/better-harness/production-server-integration.test.ts:62:      const unauthorizedRes = await fetch(`http://127.0.0.1:${authPort}/api/v1/servers/s1/projects/p1/better-harness/runs/r1/events`);
+tests/better-harness/production-server-integration.test.ts:66:      const authorizedRes = await fetch(`http://127.0.0.1:${authPort}/api/v1/servers/s1/projects/p1/better-harness/runs/r1/events`, {
+tests/better-harness/production-server-integration.test.ts:83:    const sseUrl = `http://127.0.0.1:${port}/api/v1/servers/${serverKey}/projects/${projectKey}/better-harness/runs/${runId}/events`;
+tests/better-harness/production-server-integration.test.ts:87:    // Emit event via SseManager (uses canonical StreamPublisher)
+tests/better-harness/verification.test.ts:2:import { inspectDiff } from "../../src/better-harness/verification/diff-inspector";
+tests/better-harness/verification.test.ts:3:import { detectRegressions } from "../../src/better-harness/verification/regression-detector";
+tests/better-harness/verification.test.ts:4:import { generateLearningProposal } from "../../src/better-harness/verification/learning-capture";
+tests/better-harness/session-collector.test.ts:2:import { readSessionRecords } from "../../src/better-harness/opencode/session-reader";
+tests/better-harness/session-collector.test.ts:3:import { analyzeSessions } from "../../src/better-harness/opencode/session-analyzer";
+tests/better-harness/e2e.test.ts:5:import { captureWorkspaceSnapshot } from "../../src/better-harness/workspace/workspace-snapshot";
+tests/better-harness/e2e.test.ts:6:import { getProjectIdentity } from "../../src/better-harness/workspace/project-identity";
+tests/better-harness/e2e.test.ts:7:import { runAllCollectors } from "../../src/better-harness/collectors/collector-runner";
+tests/better-harness/e2e.test.ts:8:import { analyzeTaskUnderstanding } from "../../src/better-harness/analyzers/task-understanding";
+tests/better-harness/e2e.test.ts:9:import { analyzeControlledExecution } from "../../src/better-harness/analyzers/controlled-execution";
+tests/better-harness/e2e.test.ts:10:import { analyzeChangeValidation } from "../../src/better-harness/analyzers/change-validation";
+tests/better-harness/e2e.test.ts:11:import { analyzeReliableDelivery } from "../../src/better-harness/analyzers/reliable-delivery";
+tests/better-harness/e2e.test.ts:12:import { analyzeLearningCapture } from "../../src/better-harness/analyzers/learning-capture";
+tests/better-harness/e2e.test.ts:13:import { synthesizeFindings } from "../../src/better-harness/analyzers/finding-synthesizer";
+tests/better-harness/e2e.test.ts:14:import { scoreDimension } from "../../src/better-harness/scoring/dimension-scoring";
+tests/better-harness/e2e.test.ts:15:import { calculateOverallScore } from "../../src/better-harness/scoring/overall-scoring";
+tests/better-harness/e2e.test.ts:16:import { readSessionRecords } from "../../src/better-harness/opencode/session-reader";
+tests/better-harness/e2e.test.ts:17:import { analyzeSessions } from "../../src/better-harness/opencode/session-analyzer";
+tests/better-harness/e2e.test.ts:18:import { createRepairSession } from "../../src/better-harness/opencode/repair-session";
+tests/better-harness/e2e.test.ts:19:import { verifyFinding } from "../../src/better-harness/verification/finding-verifier";
+tests/better-harness/e2e.test.ts:20:import { saveRun, loadRun } from "../../src/better-harness/persistence/run-store";
+tests/better-harness/e2e.test.ts:21:import { EventBus } from "../../src/better-harness/runtime/event-bus";
+tests/better-harness/e2e.test.ts:22:import { cancelRun, isRunCancelled } from "../../src/better-harness/runtime/run-cancellation";
+tests/better-harness/e2e.test.ts:23:import { generateEvidenceFingerprint } from "../../src/better-harness/evidence/evidence-fingerprint";
+tests/better-harness/e2e.test.ts:24:import { deduplicateEvidence } from "../../src/better-harness/evidence/evidence-deduplicator";
+tests/better-harness/e2e.test.ts:25:import type { HarnessFinding } from "../../src/better-harness/contracts/report";
+tests/better-harness/repair-session.test.ts:3:import { createRepairSession } from "../../src/better-harness/opencode/repair-session";
+tests/better-harness/repair-session.test.ts:4:import { buildRepairPrompt } from "../../src/better-harness/opencode/repair-prompt";
+tests/better-harness/repair-session.test.ts:5:import { executeValidation } from "../../src/better-harness/opencode/validation-executor";
+tests/better-harness/repair-session.test.ts:37:      "../../src/better-harness/opencode/repair-session"
+tests/better-harness/repair-session.test.ts:70:      "../../src/better-harness/opencode/repair-session"
+tests/better-harness/repair-session.test.ts:99:      "../../src/better-harness/opencode/repair-session"
+tests/better-harness/repair-session.test.ts:119:      "../../src/better-harness/opencode/repair-session"
+tests/better-harness/repair-session.test.ts:149:      "../../src/better-harness/opencode/repair-session"
+tests/better-harness/scoring.test.ts:2:import { scoreDimension } from "../../src/better-harness/scoring/dimension-scoring";
+tests/better-harness/scoring.test.ts:3:import { calculateOverallScore } from "../../src/better-harness/scoring/overall-scoring";
+tests/better-harness/engine.test.ts:2:import { generateEvidenceFingerprint } from "../../src/better-harness/evidence/evidence-fingerprint";
+tests/better-harness/engine.test.ts:3:import { normalizeEvidence } from "../../src/better-harness/evidence/evidence-normalizer";
+tests/better-harness/engine.test.ts:4:import { deduplicateEvidence } from "../../src/better-harness/evidence/evidence-deduplicator";
+tests/better-harness/engine.test.ts:5:import { scoreDimension } from "../../src/better-harness/scoring/dimension-scoring";
+tests/better-harness/engine.test.ts:6:import { calculateOverallScore, getScoreTrend } from "../../src/better-harness/scoring/overall-scoring";
+tests/better-harness/engine.test.ts:7:import { SCORING_VERSION, formatScoreWithVersion } from "../../src/better-harness/scoring/scoring-version";
+tests/better-harness/state-isolation.test.ts:11:import { launchStandaloneServer, type StandaloneServerMeta } from "../../src/better-harness/testing/standalone-launcher";
+tests/better-harness/state-isolation.test.ts:14:  setFlowDeckStateDir,
+tests/better-harness/state-isolation.test.ts:15:  resetFlowDeckStateDir,
+tests/better-harness/state-isolation.test.ts:17:} from "../../src/better-harness/persistence/harness-store";
+tests/better-harness/state-isolation.test.ts:29:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs`,
+tests/better-harness/state-isolation.test.ts:56:    const projectStoreInTemp = join(meta.stateDir, meta.projectId, "better-harness");
+tests/better-harness/state-isolation.test.ts:72:    const runPath = join(projectDirInDefault, "better-harness", "runs", `${capturedRunId}.json`);
+tests/better-harness/state-isolation.test.ts:91:    resetFlowDeckStateDir();
+tests/better-harness/state-isolation.test.ts:98:  it("setFlowDeckStateDir redirects all subsequent calls", () => {
+tests/better-harness/state-isolation.test.ts:100:    setFlowDeckStateDir(temp);
+tests/better-harness/state-isolation.test.ts:106:  it("resetFlowDeckStateDir restores default", () => {
+tests/better-harness/state-isolation.test.ts:108:    setFlowDeckStateDir(temp);
+tests/better-harness/state-isolation.test.ts:110:    resetFlowDeckStateDir();
+tests/better-harness/integration.test.ts:7:import { EventBus } from "../../src/better-harness/runtime/event-bus";
+tests/better-harness/integration.test.ts:8:import { cancelRun, isRunCancelled, clearCancellation } from "../../src/better-harness/runtime/run-cancellation";
+tests/better-harness/integration.test.ts:9:import { ProjectRegistry } from "../../src/better-harness/runtime/project-registry";
+tests/better-harness/integration.test.ts:10:import { HarnessRuntime } from "../../src/better-harness/runtime/harness-runtime";
+tests/better-harness/integration.test.ts:11:import { RunCoordinator } from "../../src/better-harness/runtime/run-coordinator";
+tests/better-harness/integration.test.ts:12:import { registry } from "../../src/better-harness/runtime/runtime-registry";
+tests/better-harness/integration.test.ts:15:import { createAuthCheck } from "../../src/better-harness/transport/authentication";
+tests/better-harness/integration.test.ts:16:import { createCorsHeaders, DEFAULT_CORS_CONFIG } from "../../src/better-harness/transport/cors";
+tests/better-harness/integration.test.ts:17:import { setRequestContext, getRequestContext, clearRequestContext } from "../../src/better-harness/transport/request-context";
+tests/better-harness/integration.test.ts:18:import { routeRequest, routeRequestContext } from "../../src/better-harness/transport/router";
+tests/better-harness/integration.test.ts:19:import type { RouterContext } from "../../src/better-harness/runtime/router-context";
+tests/better-harness/integration.test.ts:22:import { verifyFinding } from "../../src/better-harness/verification/finding-verifier";
+tests/better-harness/integration.test.ts:23:import { runRequirements } from "../../src/better-harness/verification/requirement-runner";
+tests/better-harness/integration.test.ts:24:import { inspectDiff } from "../../src/better-harness/verification/diff-inspector";
+tests/better-harness/integration.test.ts:27:import { readJsonFile } from "../../src/better-harness/persistence/harness-store";
+tests/better-harness/integration.test.ts:28:import { saveFindingIndex, loadFindingIndex, getActiveFindings } from "../../src/better-harness/persistence/finding-store";
+tests/better-harness/integration.test.ts:29:import { saveReport, loadReport, listReports } from "../../src/better-harness/persistence/report-store";
+tests/better-harness/integration.test.ts:30:import { saveRun, listRuns, loadRun } from "../../src/better-harness/persistence/run-store";
+tests/better-harness/integration.test.ts:31:import { saveIgnoredFinding, loadIgnoredFindings, isFindingIgnored } from "../../src/better-harness/persistence/ignored-finding-store";
+tests/better-harness/integration.test.ts:32:import { saveRepairSession, listRepairSessions, loadRepairSession } from "../../src/better-harness/persistence/repair-session-store";
+tests/better-harness/integration.test.ts:35:import { SseManager } from "../../src/better-harness/transport/sse";
+tests/better-harness/integration.test.ts:36:import { HarnessHttpServer } from "../../src/better-harness/transport/http-server";
+tests/better-harness/integration.test.ts:37:import { executeValidation } from "../../src/better-harness/opencode/validation-executor";
+tests/better-harness/integration.test.ts:40:import type { HarnessFinding } from "../../src/better-harness/contracts/report";
+tests/better-harness/integration.test.ts:111:// ─── ProjectRegistry ──────────────────────────────────────────────
+tests/better-harness/integration.test.ts:112:describe("ProjectRegistry", () => {
+tests/better-harness/integration.test.ts:113:  const reg = new ProjectRegistry();
+tests/better-harness/integration.test.ts:242:    const ctx = { runtime: null, coordinator: null } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:249:    const ctx = { runtime: null, coordinator: null } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:259:    } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:260:    const result = await routeRequestContext(ctx, "GET", "/api/v1/servers/sk/projects/pk/better-harness/runs/current", undefined);
+tests/better-harness/integration.test.ts:266:    const ctx = { runtime: null, coordinator: null } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:267:    const result = await routeRequestContext(ctx, "GET", "/api/v1/servers/sk/projects/%00/better-harness/availability", undefined);
+tests/better-harness/integration.test.ts:281:      runtime: new HarnessRuntime({ projectRoot: "/tmp" }),
+tests/better-harness/integration.test.ts:282:      coordinator: new RunCoordinator(),
+tests/better-harness/integration.test.ts:283:    } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:284:    const result = await routeRequestContext(ctx, "GET", "/api/v1/servers/sk/projects/pk/better-harness/availability", undefined);
+tests/better-harness/integration.test.ts:502:    const dir = join(homedir(), ".flowdeck", "state", pid2, "better-harness", "reports");
+tests/better-harness/integration.test.ts:577:    const testDir = join(homedir(), ".flowdeck", "state", TEST_PROJECT, "better-harness", "_quarantine_test");
+tests/better-harness/integration.test.ts:614:// ─── RunCoordinator ──────────────────────────────────────────────
+tests/better-harness/integration.test.ts:615:describe("RunCoordinator", () => {
+tests/better-harness/integration.test.ts:617:    const coord = new RunCoordinator();
+tests/better-harness/integration.test.ts:623:    const coord = new RunCoordinator();
+tests/better-harness/integration.test.ts:632:    const coord = new RunCoordinator();
+tests/better-harness/integration.test.ts:638:    const coord = new RunCoordinator();
+tests/better-harness/integration.test.ts:644:    const coord = new RunCoordinator();
+tests/better-harness/integration.test.ts:649:    const coord = new RunCoordinator();
+tests/better-harness/integration.test.ts:654:// ─── HarnessRuntime ──────────────────────────────────────────────
+tests/better-harness/integration.test.ts:655:describe("HarnessRuntime", () => {
+tests/better-harness/integration.test.ts:657:    const runtime = new HarnessRuntime({ projectRoot: "/tmp" });
+tests/better-harness/integration.test.ts:658:    expect(runtime.getCoordinator()).toBeInstanceOf(RunCoordinator);
+tests/better-harness/integration.test.ts:663:    const runtime = new HarnessRuntime({ projectRoot: process.cwd(), timeoutMs: 5000 });
+tests/better-harness/integration.test.ts:670:    const runtime = new HarnessRuntime({ projectRoot: "/tmp" });
+tests/better-harness/integration.test.ts:676:    const runtime = new HarnessRuntime({ projectRoot: "/tmp" });
+tests/better-harness/integration.test.ts:685:    const runtime = new HarnessRuntime({ projectRoot: "/tmp" });
+tests/better-harness/integration.test.ts:690:    const runtime = new HarnessRuntime({ projectRoot: process.cwd(), timeoutMs: 5000 });
+tests/better-harness/integration.test.ts:696:    const runtime = new HarnessRuntime({ projectRoot: "/tmp" });
+tests/better-harness/integration.test.ts:705:    const sse = new SseManager(bus);
+tests/better-harness/integration.test.ts:706:    expect(sse).toBeInstanceOf(SseManager);
+tests/better-harness/integration.test.ts:713:    const sse = new SseManager(bus, tmpLogDir);
+tests/better-harness/integration.test.ts:714:    expect(sse).toBeInstanceOf(SseManager);
+tests/better-harness/integration.test.ts:720:    const sse = new SseManager(bus);
+tests/better-harness/integration.test.ts:732:    const sse = new SseManager(bus);
+tests/better-harness/integration.test.ts:747:    const sse = new SseManager(bus);
+tests/better-harness/integration.test.ts:759:    const sse = new SseManager(bus);
+tests/better-harness/integration.test.ts:777:    const ctx = { runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator() } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:778:    const result = await routeRequestContext(ctx, "GET", "/api/v1/servers/sk/projects/nonexistent/better-harness/report", undefined);
+tests/better-harness/integration.test.ts:784:    const ctx = { runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator() } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:785:    const result = await routeRequestContext(ctx, "GET", "/api/v1/servers/sk/projects/nonexistent/better-harness/history", undefined);
+tests/better-harness/integration.test.ts:791:    const ctx = { runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator(), resolveProjectPath: () => "/tmp" } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:792:    const result = await routeRequestContext(ctx, "GET", "/api/v1/servers/sk/projects/pk/better-harness/runs/current", undefined);
+tests/better-harness/integration.test.ts:797:    const ctx = { runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator(), resolveProjectPath: () => "/tmp" } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:798:    const result = await routeRequestContext(ctx, "POST", "/api/v1/servers/sk/projects/pk/better-harness/runs", { invalid: true });
+tests/better-harness/integration.test.ts:803:    const ctx = { runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator(), resolveProjectPath: () => "/tmp" } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:804:    const result = await routeRequestContext(ctx, "GET", "/api/v1/servers/sk/projects/pk/better-harness/runs/nonexistent", undefined);
+tests/better-harness/integration.test.ts:809:    const ctx = { runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator(), resolveProjectPath: () => "/tmp" } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:810:    const result = await routeRequestContext(ctx, "GET", "/api/v1/servers/sk/projects/pk/better-harness/runs/r1/events", undefined);
+tests/better-harness/integration.test.ts:815:    const ctx = { runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator(), resolveProjectPath: () => "/tmp" } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:816:    const result = await routeRequestContext(ctx, "POST", "/api/v1/servers/sk/projects/pk/better-harness/findings/ignore", {});
+tests/better-harness/integration.test.ts:821:    const ctx = { runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator(), resolveProjectPath: () => "/tmp" } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:822:    const result = await routeRequestContext(ctx, "POST", "/api/v1/servers/sk/projects/pk/better-harness/findings/plan-fix", {});
+tests/better-harness/integration.test.ts:827:    const ctx = { runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator(), resolveProjectPath: () => "/tmp" } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:828:    const result = await routeRequestContext(ctx, "POST", "/api/v1/servers/sk/projects/pk/better-harness/findings/verify", {});
+tests/better-harness/integration.test.ts:833:    const ctx = { runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator(), resolveProjectPath: () => "/tmp" } as unknown as RouterContext;
+tests/better-harness/integration.test.ts:834:    const result = await routeRequestContext(ctx, "GET", "/api/v1/servers/sk/projects/pk/better-harness/repair-sessions/nonexistent", undefined);
+tests/better-harness/integration.test.ts:842:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:843:    const server = new HarnessHttpServer({ enabled: false });
+tests/better-harness/integration.test.ts:849:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:850:    const server = new HarnessHttpServer({ enabled: false });
+tests/better-harness/integration.test.ts:858:    const { generateRestrictedRepairPrompt } = await import("../../src/better-harness/opencode/repair-session");
+tests/better-harness/integration.test.ts:881:    const { getProjectIdentity } = await import("../../src/better-harness/workspace/project-identity");
+tests/better-harness/integration.test.ts:891:    const { captureWorkspaceSnapshot } = await import("../../src/better-harness/workspace/workspace-snapshot");
+tests/better-harness/integration.test.ts:905:    const { executeValidation } = await import("../../src/better-harness/opencode/validation-executor");
+tests/better-harness/integration.test.ts:913:// ─── RunCoordinator Recovery ─────────────────────────────────
+tests/better-harness/integration.test.ts:914:describe("RunCoordinator Recovery", () => {
+tests/better-harness/integration.test.ts:915:  it("recoverActiveRuns does not throw", () => {
+tests/better-harness/integration.test.ts:916:    const coord = new RunCoordinator();
+tests/better-harness/integration.test.ts:917:    expect(() => coord.recoverActiveRuns()).not.toThrow();
+tests/better-harness/integration.test.ts:922:describe("HarnessHttpServer", () => {
+tests/better-harness/integration.test.ts:924:    const server = new HarnessHttpServer({ enabled: false });
+tests/better-harness/integration.test.ts:930:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1" });
+tests/better-harness/integration.test.ts:937:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "999.999.999.999" });
+tests/better-harness/integration.test.ts:942:    const server = new HarnessHttpServer({ enabled: true, port: 0 });
+tests/better-harness/integration.test.ts:955:    const res = await routeRequest("GET", "/api/v1/servers/s1/projects/../etc/passwd/better-harness/report", undefined);
+tests/better-harness/integration.test.ts:960:    const res = await routeRequest("GET", "/api/v1/servers/s1/projects/foo/bar/better-harness/report", undefined);
+tests/better-harness/integration.test.ts:965:    const res = await routeRequest("POST", "/api/v1/servers/s1/projects/p1/better-harness/runs", "invalid json");
+tests/better-harness/integration.test.ts:970:    const res = await routeRequest("POST", "/api/v1/servers/s1/projects/p1/better-harness/findings/plan-fix", {});
+tests/better-harness/integration.test.ts:975:// ─── SseManager Edge Cases ─────────────────────────────────────────
+tests/better-harness/integration.test.ts:976:describe("SseManager", () => {
+tests/better-harness/integration.test.ts:979:    const mgr = new SseManager(bus, undefined);
+tests/better-harness/integration.test.ts:985:    const mgr = new SseManager(bus, undefined);
+tests/better-harness/integration.test.ts:998:    const mgr = new SseManager(bus, undefined);
+tests/better-harness/integration.test.ts:1007:// ─── HarnessRuntime Edge Cases ─────────────────────────────────────
+tests/better-harness/integration.test.ts:1008:describe("HarnessRuntime", () => {
+tests/better-harness/integration.test.ts:1010:    const rt = new HarnessRuntime({ projectRoot: "/tmp" });
+tests/better-harness/integration.test.ts:1020:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:1021:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1", maxBodySize: 512 });
+tests/better-harness/integration.test.ts:1028:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:1029:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1", timeoutMs: 5000 });
+tests/better-harness/integration.test.ts:1036:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:1037:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1", maxBodySize: 1024 });
+tests/better-harness/integration.test.ts:1118:// ─── SseManager Heartbeat ────────────────────────────────────────
+tests/better-harness/integration.test.ts:1119:describe("SseManager - Heartbeat", () => {
+tests/better-harness/integration.test.ts:1122:    const mgr = new SseManager(bus);
+tests/better-harness/integration.test.ts:1131:    const mgr = new SseManager(bus);
+tests/better-harness/integration.test.ts:1142:    const mgr = new SseManager(bus);
+tests/better-harness/integration.test.ts:1155:// ─── RouterContext Construction ──────────────────────────────────
+tests/better-harness/integration.test.ts:1156:describe("RouterContext", () => {
+tests/better-harness/integration.test.ts:1158:    const runtime = new HarnessRuntime({ projectRoot: "/tmp" });
+tests/better-harness/integration.test.ts:1159:    const coordinator = new RunCoordinator();
+tests/better-harness/integration.test.ts:1160:    const ctx: import("../../src/better-harness/runtime/router-context").RouterContext = {
+tests/better-harness/integration.test.ts:1176:    const sse = new SseManager(bus);
+tests/better-harness/integration.test.ts:1177:    const ctx: import("../../src/better-harness/runtime/router-context").RouterContext = {
+tests/better-harness/integration.test.ts:1178:      runtime: new HarnessRuntime({ projectRoot: "/tmp" }),
+tests/better-harness/integration.test.ts:1179:      coordinator: new RunCoordinator(),
+tests/better-harness/integration.test.ts:1189:    const ctx: import("../../src/better-harness/runtime/router-context").RouterContext = {
+tests/better-harness/integration.test.ts:1190:      runtime: new HarnessRuntime({ projectRoot: "/tmp" }),
+tests/better-harness/integration.test.ts:1191:      coordinator: new RunCoordinator(),
+tests/better-harness/integration.test.ts:1197:      "/api/v1/servers/sk/projects/unknown/better-harness/availability",
+tests/better-harness/integration.test.ts:1208:    const { buildRepairPrompt } = await import("../../src/better-harness/opencode/repair-prompt");
+tests/better-harness/integration.test.ts:1244:    const { buildRepairPrompt } = await import("../../src/better-harness/opencode/repair-prompt");
+tests/better-harness/integration.test.ts:1271:    const { buildRepairPrompt } = await import("../../src/better-harness/opencode/repair-prompt");
+tests/better-harness/integration.test.ts:1301:    const { getFlowDeckStateDir } = await import("../../src/better-harness/persistence/harness-store");
+tests/better-harness/integration.test.ts:1308:    const { getFlowDeckStateDir, atomicWriteFile, readJsonFile } = await import("../../src/better-harness/persistence/harness-store");
+tests/better-harness/integration.test.ts:1318:    const { readJsonFile } = await import("../../src/better-harness/persistence/harness-store");
+tests/better-harness/integration.test.ts:1387:  it("setSseManager stores the SSE manager", async () => {
+tests/better-harness/integration.test.ts:1389:    const sse = new SseManager(bus);
+tests/better-harness/integration.test.ts:1390:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1" });
+tests/better-harness/integration.test.ts:1391:    server.setSseManager(sse);
+tests/better-harness/integration.test.ts:1398:  it("setRouterContext stores the router context", async () => {
+tests/better-harness/integration.test.ts:1399:    const runtime = new HarnessRuntime({ projectRoot: "/tmp" });
+tests/better-harness/integration.test.ts:1400:    const coordinator = new RunCoordinator();
+tests/better-harness/integration.test.ts:1401:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1" });
+tests/better-harness/integration.test.ts:1402:    server.setRouterContext({ runtime, coordinator } as any);
+tests/better-harness/integration.test.ts:1409:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1", timeoutMs: 5000 });
+tests/better-harness/integration.test.ts:1418:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1" });
+tests/better-harness/integration.test.ts:1582:    expect(isEligibleSourceFile("src/better-harness/runtime/event-bus.ts")).toBe(true);
+tests/better-harness/integration.test.ts:1641:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:1642:    const { HarnessRuntime } = await import("../../src/better-harness/runtime/harness-runtime");
+tests/better-harness/integration.test.ts:1643:    const { RunCoordinator } = await import("../../src/better-harness/runtime/run-coordinator");
+tests/better-harness/integration.test.ts:1644:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1" });
+tests/better-harness/integration.test.ts:1645:    const runtime = new HarnessRuntime({ projectRoot: "/tmp" });
+tests/better-harness/integration.test.ts:1646:    const coordinator = new RunCoordinator();
+tests/better-harness/integration.test.ts:1647:    server.setRouterContext({ runtime, coordinator } );
+tests/better-harness/integration.test.ts:1659:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:1660:    const { HarnessRuntime } = await import("../../src/better-harness/runtime/harness-runtime");
+tests/better-harness/integration.test.ts:1661:    const { RunCoordinator } = await import("../../src/better-harness/runtime/run-coordinator");
+tests/better-harness/integration.test.ts:1662:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1" });
+tests/better-harness/integration.test.ts:1663:    server.setRouterContext({ runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator() } );
+tests/better-harness/integration.test.ts:1673:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:1674:    const { HarnessRuntime } = await import("../../src/better-harness/runtime/harness-runtime");
+tests/better-harness/integration.test.ts:1675:    const { RunCoordinator } = await import("../../src/better-harness/runtime/run-coordinator");
+tests/better-harness/integration.test.ts:1676:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1" });
+tests/better-harness/integration.test.ts:1677:    server.setRouterContext({ runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator() } );
+tests/better-harness/integration.test.ts:1687:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:1688:    const { HarnessRuntime } = await import("../../src/better-harness/runtime/harness-runtime");
+tests/better-harness/integration.test.ts:1689:    const { RunCoordinator } = await import("../../src/better-harness/runtime/run-coordinator");
+tests/better-harness/integration.test.ts:1690:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1", maxBodySize: 100 });
+tests/better-harness/integration.test.ts:1691:    server.setRouterContext({ runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator() } );
+tests/better-harness/integration.test.ts:1695:    const res = await fetch("http://127.0.0.1:" + port + "/api/v1/servers/sk/projects/pk/better-harness/runs", {
+tests/better-harness/integration.test.ts:1707:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:1708:    const { HarnessRuntime } = await import("../../src/better-harness/runtime/harness-runtime");
+tests/better-harness/integration.test.ts:1709:    const { RunCoordinator } = await import("../../src/better-harness/runtime/run-coordinator");
+tests/better-harness/integration.test.ts:1710:    const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "127.0.0.1" });
+tests/better-harness/integration.test.ts:1711:    server.setRouterContext({ runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator() } );
+tests/better-harness/integration.test.ts:1724:    const { HarnessHttpServer } = await import("../../src/better-harness/transport/http-server");
+tests/better-harness/integration.test.ts:1725:    const { HarnessRuntime } = await import("../../src/better-harness/runtime/harness-runtime");
+tests/better-harness/integration.test.ts:1726:    const { RunCoordinator } = await import("../../src/better-harness/runtime/run-coordinator");
+tests/better-harness/integration.test.ts:1727:    const server = new HarnessHttpServer({ enabled: true, port: 0 } );
+tests/better-harness/integration.test.ts:1728:    server.setRouterContext({ runtime: new HarnessRuntime({ projectRoot: "/tmp" }), coordinator: new RunCoordinator() } );
+tests/better-harness/integration.test.ts:1746:    const { getProjectStoreDir } = require("../../src/better-harness/persistence/harness-store");
+tests/better-harness/integration.test.ts:1758:    const { getProjectStoreDir } = require("../../src/better-harness/persistence/harness-store");
+tests/better-harness/integration.test.ts:1770:    const { getProjectStoreDir } = require("../../src/better-harness/persistence/harness-store");
+tests/better-harness/sse-lifecycle.test.ts:9:import { launchStandaloneServer, type StandaloneServerMeta } from "../../src/better-harness/testing/standalone-launcher";
+tests/better-harness/sse-lifecycle.test.ts:50:    const res = await fetch(`${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/unknown-key/better-harness/availability`);
+tests/better-harness/sse-lifecycle.test.ts:57:    const res = await fetch(`${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/availability`);
+tests/better-harness/sse-lifecycle.test.ts:67:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs`,
+tests/better-harness/sse-lifecycle.test.ts:85:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs`,
+tests/better-harness/sse-lifecycle.test.ts:97:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs/${runId}/events`,
+tests/better-harness/sse-lifecycle.test.ts:150:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs`,
+tests/better-harness/sse-lifecycle.test.ts:164:        `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs/${runId}`,
+tests/better-harness/sse-lifecycle.test.ts:174:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs/${runId}`,
+tests/better-harness/sse-lifecycle.test.ts:183:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs`,
+tests/better-harness/sse-lifecycle.test.ts:193:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs/${runId}/cancel`,
+tests/better-harness/sse-lifecycle.test.ts:203:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs`,
+tests/better-harness/sse-lifecycle.test.ts:214:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs/${runId}/cancel`,
+tests/better-harness/sse-lifecycle.test.ts:222:      `${meta.baseUrl}/api/v1/servers/${meta.serverKey}/projects/${meta.projectKey}/better-harness/runs/${runId}/cancel`,
+tests/better-harness/canonical-path-containment.test.ts:5:import { isPathContained, normalizePath, ProjectRegistry } from "@/better-harness/runtime/project-registry";
+tests/better-harness/canonical-path-containment.test.ts:65:  it("registers in ProjectRegistry with macOS /var alias support", () => {
+tests/better-harness/canonical-path-containment.test.ts:69:    const registry = new ProjectRegistry();
+tests/better-harness/command-boundary-integration.test.ts:19:import { runRequirements } from "../../src/better-harness/verification/requirement-runner"
+tests/better-harness/command-boundary-integration.test.ts:20:import { executeValidation } from "../../src/better-harness/opencode/validation-executor"
+tests/better-harness/command-boundary-integration.test.ts:68:    "src/better-harness/verification/requirement-runner.ts",
+tests/better-harness/command-boundary-integration.test.ts:69:    "src/better-harness/opencode/validation-executor.ts",
+tests/better-harness/persistence.test.ts:3:import { getProjectStoreDir, atomicWriteFile, readJsonFile } from "../../src/better-harness/persistence/harness-store";
+tests/better-harness/persistence.test.ts:4:import { saveRun, loadRun } from "../../src/better-harness/persistence/run-store";
+tests/better-harness/persistence.test.ts:5:import { saveIgnoredFinding, loadIgnoredFindings } from "../../src/better-harness/persistence/ignored-finding-store";
+tests/better-harness/persistence.test.ts:6:import { saveRepairSession, loadRepairSession } from "../../src/better-harness/persistence/repair-session-store";
+tests/better-harness/persistence.test.ts:14:    expect(dir).toContain("better-harness");
+tests/better-harness/contracts.test.ts:6:} from "../../src/better-harness/contracts/common";
+tests/better-harness/contracts.test.ts:10:} from "../../src/better-harness/contracts/report";
+tests/better-harness/contracts.test.ts:11:import { HarnessRunProgressSchema } from "../../src/better-harness/contracts/progress";
+tests/better-harness/contracts.test.ts:28:} from "../../src/better-harness/contracts/sse-events";
+tests/e2e-lifecycle.test.ts:16:  type SseManagerLike,
+tests/e2e-lifecycle.test.ts:92:    const sseManager: SseManagerLike = { dispose: () => {} };
+tests/ui/accessibility.test.ts:4:import { mountLiveDashboard } from '../../src/better-harness/ui/mount';
+tests/ui/live-dashboard.test.ts:9:} from '../../src/better-harness/ui';
+tests/ui/browser-e2e.test.ts:4:import { SseManager } from "../../src/better-harness";
+tests/ui/browser-e2e.test.ts:9:import { EventBus } from "../../src/better-harness/runtime/event-bus";
+tests/ui/browser-e2e.test.ts:41:  let sseManager: SseManager;
+tests/ui/browser-e2e.test.ts:55:        entrypoints: ["src/better-harness/ui/mount.ts"],
+tests/ui/browser-e2e.test.ts:67:    sseManager = new SseManager(eventBus, repository);
+tests/ui/browser-e2e.test.ts:265:async function closeE2EServer(sseManager: SseManager, e2eServer: E2EServer): Promise<void> {
+tests/helpers/e2e-lifecycle.ts:21:export interface SseManagerLike {
+tests/helpers/e2e-lifecycle.ts:203:    sseManager?: SseManagerLike | null
+tests/orchestration/services.test.ts:14:import { SseManager } from "../../src/orchestration/streaming/sse-manager";
+tests/orchestration/services.test.ts:397:      const sse = new SseManager(5000);
+tests/orchestration/services.test.ts:410:      const sse = new SseManager(5000);
+tests/orchestration/services.test.ts:425:      const sse = new SseManager(5000);

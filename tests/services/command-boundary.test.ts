@@ -113,7 +113,15 @@ describe("Command Boundary Security & Validation", () => {
       args: ["--version"],
     }
 
-    const res = executeValidatedCommandSync(req)
+    // bun's node-compat execFileSync on Windows can spuriously classify a
+    // fast successful spawn as "timeout" under runner load (observed at ~5ms
+    // wall time vs the 10s configured timeout — not a real timeout). Retry
+    // once for that transient infrastructure outcome; the assertion itself
+    // is unchanged (a genuine failure still fails).
+    let res = executeValidatedCommandSync(req)
+    if (res.status === "timeout") {
+      res = executeValidatedCommandSync(req)
+    }
     expect(res.status).toBe("success")
     expect(res.exitCode).toBe(0)
     expect(res.stdout).toContain("v")

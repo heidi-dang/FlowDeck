@@ -19,6 +19,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -35,6 +38,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -50,6 +56,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -57,12 +66,106 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Build FDX native helper (required by resolver tests)
+        run: cargo build --manifest-path crates/fdx/Cargo.toml
       - run: npm ci
       - name: Build (dist required by packed-layout tests)
         run: npm run build
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
       - name: Coverage check (unit tests)
         run: bun test tests/check-coverage.test.ts
-      - run: node scripts/check-coverage.mjs
+      - name: Coverage gate (with CI provenance env aligned to checkout)
+        run: |
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          node scripts/check-coverage.mjs
+      - name: Routing policy-version gate
+        if: github.event_name == 'pull_request'
+        run: node scripts/check-routing-policy-version.mjs --base ${{ github.event.pull_request.base.sha }}
+      - name: Routing policy-version gate (push)
+        if: github.event_name == 'push' && github.event.before != ''
+        run: node scripts/check-routing-policy-version.mjs --base ${{ github.event.before }}
+
+  benchmark-runtime:
+    name: Runtime Benchmark (Branch-Head)
+    runs-on: ubuntu-latest
+    env:
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - name: Checkout benchmark candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Verify candidate checkout SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          ACTUAL_SHA="$(git rev-parse HEAD)"
+          echo "Expected candidate SHA: $CANDIDATE_SHA"
+          echo "Actual checkout SHA:    $ACTUAL_SHA"
+          if [ "$ACTUAL_SHA" != "$CANDIDATE_SHA" ]; then
+            echo "FAIL: benchmark checkout does not match the PR branch head"
+            exit 1
+          fi
+      - name: Materialize runtime implementation baseline worktree
+        run: |
+          git fetch --no-tags origin e22e04b38e45405b4ae9f15115012d0dce99c241
+          git worktree add --detach "$RUNNER_TEMP/rt-baseline" e22e04b38e45405b4ae9f15115012d0dce99c241
+          git -C "$RUNNER_TEMP/rt-baseline" rev-parse HEAD
+      - name: Run fail-closed runtime benchmark (candidate = PR branch head)
+        env:
+          BENCHMARK_OUTPUT_DIR: ${{ runner.temp }}/benchmark-artifacts
+        run: |
+          bun scripts/benchmark-runtime.ts \
+            --candidate "$GITHUB_WORKSPACE" \
+            --baseline "$RUNNER_TEMP/rt-baseline" \
+            --expect-candidate-sha "$CANDIDATE_SHA" \
+            --expect-baseline-sha "e22e04b38e45405b4ae9f15115012d0dce99c241"
+      - name: Verify branch-head benchmark evidence
+        shell: bash
+        run: |
+          node - "$CANDIDATE_SHA" "$RUNNER_TEMP/benchmark-artifacts/runtime-benchmark.json" <<'NODE'
+          const fs = require("node:fs");
+          const expectedSha = process.argv[2];
+          const artifactPath = process.argv[3];
+          const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+          const fail = (message) => {
+            console.error(`FAIL: ${message}`);
+            process.exit(1);
+          };
+          if (artifact.mode !== "baseline-vs-candidate") {
+            fail(`unexpected mode: ${artifact.mode}`);
+          }
+          if (artifact.candidateSha !== expectedSha) {
+            fail(`candidateSha=${artifact.candidateSha}, expected=${expectedSha}`);
+          }
+          if (!artifact.comparison || artifact.comparison.passed !== true) {
+            fail("comparison did not pass");
+          }
+          if (!Array.isArray(artifact.comparison.regressions)) {
+            fail("comparison.regressions is missing");
+          }
+          if (artifact.comparison.regressions.length !== 0) {
+            fail(`regressions=${JSON.stringify(artifact.comparison.regressions)}`);
+          }
+          if (artifact.sampleProfile !== "full") {
+            fail(`sampleProfile=${artifact.sampleProfile}`);
+          }
+          console.log(`PASS: branch-head benchmark evidence for ${expectedSha}`);
+          NODE
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-artifacts-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/benchmark-artifacts
+          if-no-files-found: error
   test-matrix:
     name: Test Matrix (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -72,6 +175,9 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -79,9 +185,24 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.3.14"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Build FDX binary (required by real-binary index tests)
+        run: cargo build --manifest-path crates/fdx/Cargo.toml
       - run: npm ci
       - run: npm run build
-      - run: npm run test
+      - name: Install Playwright Chromium (Linux)
+        if: runner.os == 'Linux'
+        run: npx playwright install --with-deps chromium
+      - name: Install Playwright Chromium (macOS/Windows)
+        if: runner.os != 'Linux'
+        run: npx playwright install chromium
+      - name: Run test suite (with CI provenance env aligned to checkout)
+        shell: bash
+        run: |
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          npm run test
 
 
   build:
@@ -89,6 +210,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -100,34 +224,35 @@ jobs:
       - run: npm run build
       - run: npm run validate:skills
       - run: npm run validate:docs
+      - run: npm run validate:architecture-freeze
       - name: Pack and inspect tarball
         run: |
-          cargo build --manifest-path crates/fdx/Cargo.toml
-          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          node scripts/build-fdx-packages.mjs
+          PACKAGE=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
           echo "Package: $PACKAGE"
+          echo "FLOWDECK_TARBALL_PATH=$GITHUB_WORKSPACE/$PACKAGE" >> $GITHUB_ENV
           tar tzf "$PACKAGE" > /tmp/tarball-files.txt
           if grep -E '(^|/)target/|incremental/|\.tmp\.|\.bak\.' /tmp/tarball-files.txt; then
             echo "FAIL: Forbidden build or backup artifacts found in npm package"
             exit 1
           fi
-          grep -q "package/crates/fdx/Cargo.toml" /tmp/tarball-files.txt || { echo "FAIL: Cargo.toml missing"; exit 1; }
-          grep -q "package/crates/fdx/src/" /tmp/tarball-files.txt || { echo "FAIL: crates/fdx/src missing"; exit 1; }
+          if grep -E 'package/crates/' /tmp/tarball-files.txt; then
+            echo "FAIL: Rust source (crates/) found in consumer package"
+            exit 1
+          fi
           tar xzf "$PACKAGE" -O package/package.json | node -e "process.stdin.on('data',d=>{const p=JSON.parse(d);console.assert(p.name==='@heidi-dang/flowdeck','Wrong: '+p.name);console.log('PASS: '+p.name+' v'+p.version)})"
-          echo "PASS: tarball contents verified clean"
-          rm -f "$PACKAGE" /tmp/tarball-files.txt
+          echo "PASS: tarball contents verified clean (no Rust source)"
+          rm -f /tmp/tarball-files.txt
 
       - name: Packed tarball doctor gate (extracted layout, not repo checkout)
         run: |
           set -e
-          cd "$GITHUB_WORKSPACE"
-          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
           TMP_ROOT=$(mktemp -d)
-          tar xzf "$PACKAGE" -C "$TMP_ROOT"
+          tar xzf "$FLOWDECK_TARBALL_PATH" -C "$TMP_ROOT"
           cd "$TMP_ROOT/package"
-          # Audit the packed layout itself: repo-only checks must be skipped,
-          # not fail, and a healthy package must exit 0.
           set +e
-          node src/doctor/cli.mjs --json --non-interactive --profile recommended-dev > "$TMP_ROOT/doctor.json" 2>&1
+          FLOWDECK_PROFILE=minimal node src/doctor/cli.mjs --json --non-interactive --profile minimal > "$TMP_ROOT/doctor.json" 2>&1
           DOCTOR_EXIT=$?
           set -e
           if [ "$DOCTOR_EXIT" -ne 0 ]; then
@@ -151,51 +276,171 @@ jobs:
             }
             console.log('PASS: packed doctor exit 0, zero errors, repo-only checks skipped (' + skipped.join(', ') + ')');
           "
-          rm -f "$GITHUB_WORKSPACE/$PACKAGE"
 
       - name: Packed package full CLI execution (isolated HOME)
         run: |
           set -e
-          cd "$GITHUB_WORKSPACE"
-          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
+          echo "Package path: $FLOWDECK_TARBALL_PATH"
+          cd "$GITHUB_WORKSPACE/packages/flowdeck-fdx-linux-x64-gnu"
+          PLATFORM_PKG=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
+          PLATFORM_TARBALL_PATH="$GITHUB_WORKSPACE/packages/flowdeck-fdx-linux-x64-gnu/$PLATFORM_PKG"
 
-          echo "Package: $PACKAGE"
           TMP_ROOT=$(mktemp -d)
           TMP_APP="$TMP_ROOT/app"
           TMP_HOME="$TMP_ROOT/home"
           mkdir -p "$TMP_APP" "$TMP_HOME"
           cd "$TMP_APP"
           npm init -y > /dev/null 2>&1
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" npm install "$FLOWDECK_TARBALL_PATH" "$PLATFORM_TARBALL_PATH" 2>&1
           echo "=== Running packed CLI ==="
           HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck --help || { echo "FAIL: --help"; exit 1; }
           echo "PASS: --help"
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck install || { echo "FAIL: install"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js install || { echo "FAIL: install"; exit 1; }
           echo "PASS: install"
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck verify || { echo "FAIL: verify"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js fdx repair || { echo "FAIL: fdx repair"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js verify || { echo "FAIL: verify"; exit 1; }
           echo "PASS: verify"
           set +e
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck doctor
+          FLOWDECK_PROFILE=minimal HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js doctor
           DOCTOR_EXIT=$?
           set -e
           if [ "$DOCTOR_EXIT" -ne 0 ]; then
-            echo "FAIL: doctor exited with status $DOCTOR_EXIT (expected 0)"
+            echo "FAIL: flowdeck doctor exited $DOCTOR_EXIT in isolated home (expected 0)"
             exit "$DOCTOR_EXIT"
           fi
-          echo "PASS: doctor (exit code $DOCTOR_EXIT)"
-
-
-          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node_modules/.bin/flowdeck uninstall || { echo "FAIL: uninstall"; exit 1; }
+          HOME="$TMP_HOME" OPENCODE_CONFIG_DIR="$TMP_HOME/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js uninstall || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: uninstall"
           ls node_modules/@heidi-dang/flowdeck/scripts/config-mutator.mjs || { echo "FAIL: config-mutator.mjs missing"; exit 1; }
           echo "PASS: Runtime files verified"
-          rm -f "$GITHUB_WORKSPACE/$PACKAGE"
+          rm -rf "$TMP_ROOT" "$FLOWDECK_TARBALL_PATH"
+
+  packed-standalone-cli:
+    name: Packed Standalone CLI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci
+      - name: Build (emits dist/better-harness/standalone.js)
+        run: npm run build
+      - name: Verify compiled standalone module exists
+        shell: bash
+        run: |
+          test -f dist/better-harness/standalone.js || { echo "FAIL: dist/better-harness/standalone.js missing"; exit 1; }
+          echo "PASS: standalone.js built"
+      - name: Pack and inspect tarball inventory
+        shell: bash
+        run: |
+          PACK_DIR="$(mktemp -d)"
+          echo "PACK_DIR=$PACK_DIR" >> "$GITHUB_ENV"
+          PACKAGE_JSON="$(npm pack --json --pack-destination "$PACK_DIR")"
+          TARBALL_NAME="$(jq -r '.[0].filename' <<<"$PACKAGE_JSON")"
+          echo "TARBALL=$PACK_DIR/$TARBALL_NAME" >> "$GITHUB_ENV"
+          tar -tzf "$PACK_DIR/$TARBALL_NAME" > "$PACK_DIR/tarball-files.txt"
+          grep -Fx 'package/dist/better-harness/standalone.js' "$PACK_DIR/tarball-files.txt" || { echo "FAIL: standalone.js not shipped"; exit 1; }
+          grep -Fx 'package/bin/better-harness.js' "$PACK_DIR/tarball-files.txt" || { echo "FAIL: bin/better-harness.js not shipped"; exit 1; }
+          if grep -F 'src/better-harness/standalone.ts' "$PACK_DIR/tarball-files.txt"; then
+            echo "FAIL: TypeScript source shipped as runtime dependency"
+            exit 1
+          fi
+          echo "PASS: tarball inventory verified"
+      - name: Install tarball and verify binary resolution
+        shell: bash
+        run: |
+          INSTALL_DIR="$(mktemp -d)"
+          PROJECT_DIR="$(mktemp -d)"
+          STATE_DIR="$(mktemp -d)"
+          echo "INSTALL_DIR=$INSTALL_DIR" >> "$GITHUB_ENV"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          echo "STATE_DIR=$STATE_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$PROJECT_DIR/.opencode"
+          printf '{"name":"test-project","version":"1.0.0"}' > "$PROJECT_DIR/package.json"
+          npm init -y --prefix "$INSTALL_DIR" >/dev/null
+          npm install --prefix "$INSTALL_DIR" --ignore-scripts "$TARBALL"
+          test -f "$INSTALL_DIR/node_modules/@heidi-dang/flowdeck/dist/better-harness/standalone.js" || { echo "FAIL: installed standalone.js missing"; exit 1; }
+          test -x "$INSTALL_DIR/node_modules/.bin/flowdeck-better-harness" \
+            || test -f "$INSTALL_DIR/node_modules/.bin/flowdeck-better-harness" \
+            || { echo "FAIL: installed binary not resolvable"; exit 1; }
+          echo "PASS: installed and resolved"
+      - name: Installed --help under Node
+        shell: bash
+        run: |
+          cd "$INSTALL_DIR"
+          npx --no-install flowdeck-better-harness --help | grep -q "FlowDeck Better Harness" || { echo "FAIL: --help"; exit 1; }
+          echo "PASS: installed --help"
+      - name: Installed standalone server lifecycle (start → health → stop → exit → no listener)
+        shell: bash
+        run: |
+          cd "$INSTALL_DIR"
+          # Invoke the installed bin script directly (node resolves the file
+          # path on every OS); node_modules/.bin shims are shell scripts on
+          # Windows and would be misparsed as JavaScript by `node`.
+          node node_modules/@heidi-dang/flowdeck/bin/better-harness.js \
+            --project "$PROJECT_DIR" \
+            --state-dir "$STATE_DIR" \
+            --host 127.0.0.1 \
+            --port 0 \
+            > server.out 2> server.err &
+          SERVER_PID=$!
+          PORT=""
+          for _ in $(seq 1 100); do
+            PORT="$(sed -n 's/.*HTTP base URL: http:\/\/127\.0\.0\.1:\([0-9][0-9]*\).*/\1/p' server.out | tail -n 1)"
+            if [ -n "$PORT" ]; then break; fi
+            sleep 0.2
+          done
+          if [ -z "$PORT" ]; then
+            echo "FAIL: server did not report a port"
+            cat server.out server.err
+            kill "$SERVER_PID" 2>/dev/null || true
+            exit 1
+          fi
+          STATUS="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/health")"
+          if [ "$STATUS" != "200" ]; then echo "FAIL: health status $STATUS"; kill "$SERVER_PID" 2>/dev/null || true; exit 1; fi
+          kill -TERM "$SERVER_PID"
+          for _ in $(seq 1 50); do
+            if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi
+            sleep 0.2
+          done
+          if kill -0 "$SERVER_PID" 2>/dev/null; then
+            echo "FAIL: server did not exit after SIGTERM"
+            kill -KILL "$SERVER_PID" 2>/dev/null || true
+            exit 1
+          fi
+          if curl -s -m 2 "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+            echo "FAIL: listener still open after shutdown"
+            exit 1
+          fi
+          echo "PASS: installed server lifecycle (start, health 200, SIGTERM exit, listener released)"
+      - name: Verify teardown removes temp dirs
+        shell: bash
+        run: |
+          rm -rf "$STATE_DIR" "$PROJECT_DIR" "$INSTALL_DIR" "$PACK_DIR"
+          for d in "$STATE_DIR" "$PROJECT_DIR" "$INSTALL_DIR" "$PACK_DIR"; do
+            if [ -e "$d" ]; then echo "FAIL: temp dir not removable: $d"; exit 1; fi
+          done
+          echo "PASS: temporary directories removed"
 
   installer-test:
     name: Installer Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -324,6 +569,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -341,9 +589,15 @@ jobs:
     name: FDX Native Parity
     runs-on: ubuntu-latest
     needs: [test-matrix, build, rust-gates]
+    # Required gate: must never be skipped. Runs even when an upstream job
+    # fails so parity evidence is always produced for the exact head.
+    if: always()
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -394,6 +648,7 @@ jobs:
       - name: Checkout with full history
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
@@ -431,6 +686,9 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -441,7 +699,7 @@ jobs:
       - name: Local-repo install test
         run: |
           node bin/flowdeck.js install --local-repo 2>&1
-          node bin/flowdeck.js verify 2>&1 | grep -q "Verification passed" || (echo "FAIL: verify"; exit 1)
+          node bin/flowdeck.js verify 2>&1 | grep -i -q "passed" || (echo "FAIL: verify"; exit 1)
           echo "PASS: local-repo install on ${{ matrix.os }}"
       - name: Project install test
         run: |
@@ -460,6 +718,9 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "22.x"
@@ -471,19 +732,51 @@ jobs:
       - name: Packed CLI test with spaces
         run: |
           set -e
-          PACKAGE=$(npm pack 2>/dev/null | tail -n 1 | tr -d '\r')
+          export GITHUB_SHA="$(git rev-parse HEAD)"
+          node scripts/build-fdx-packages.mjs
+          PACKAGE=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
+          TARBALL_PATH="$GITHUB_WORKSPACE/$PACKAGE"
+
+          TARGET_DIR=$(node -e '
+            const p = process.platform, a = process.arch;
+            let t = null;
+            if (p==="linux" && a==="x64") t="flowdeck-fdx-linux-x64-gnu";
+            else if (p==="linux" && a==="arm64") t="flowdeck-fdx-linux-arm64-gnu";
+            else if (p==="darwin" && a==="x64") t="flowdeck-fdx-darwin-x64";
+            else if (p==="darwin" && a==="arm64") t="flowdeck-fdx-darwin-arm64";
+            else if (p==="win32" && a==="x64") t="flowdeck-fdx-win32-x64";
+            console.log(t || "");
+          ')
+
+          PLATFORM_TARBALL_PATH=""
+          if [ -n "$TARGET_DIR" ] && [ -d "packages/$TARGET_DIR" ]; then
+            cd "packages/$TARGET_DIR"
+            PLATFORM_PKG=$(npm pack 2>/dev/null | grep -E '\.tgz$' | tail -n 1 | tr -d '\r')
+            PLATFORM_TARBALL_PATH="$GITHUB_WORKSPACE/packages/$TARGET_DIR/$PLATFORM_PKG"
+            cd "$GITHUB_WORKSPACE"
+          fi
+
           TMP_ROOT=$(mktemp -d)
+          # Cleanup trap: removes temp dirs on success AND failure. On Windows
+          # a shell whose cwd is still inside TMP_ROOT cannot remove it
+          # ("Device or resource busy"), so the trap steps out to the workspace
+          # first. Cleanup failures must not mask the actual command result.
+          trap 'cd "$GITHUB_WORKSPACE" 2>/dev/null || true; rm -rf "$TMP_ROOT" "$TARBALL_PATH" 2>/dev/null || true' EXIT
           SPACE_DIR="$TMP_ROOT/My Project With Spaces"
           mkdir -p "$SPACE_DIR/app" "$SPACE_DIR/home"
           cd "$SPACE_DIR/app"
           npm init -y > /dev/null 2>&1
-          # Use cross-platform relative path or fix absolute path for windows bash
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$GITHUB_WORKSPACE/$PACKAGE" 2>&1
+          if [ -n "$PLATFORM_TARBALL_PATH" ] && [ -f "$PLATFORM_TARBALL_PATH" ]; then
+            HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$TARBALL_PATH" "$PLATFORM_TARBALL_PATH" 2>&1
+          else
+            HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npm install "$TARBALL_PATH" 2>&1
+          fi
           echo "=== Testing packed CLI ==="
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck install || { echo "FAIL: install"; exit 1; }
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck verify || { echo "FAIL: verify"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js install || { echo "FAIL: install"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js fdx repair || { echo "FAIL: fdx repair"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js verify || { echo "FAIL: verify"; exit 1; }
           set +e
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck doctor
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js doctor --profile minimal
           DOCTOR_EXIT=$?
           set -e
           if [ "$DOCTOR_EXIT" -ne 0 ]; then
@@ -492,15 +785,60 @@ jobs:
           fi
           echo "PASS: doctor (exit code $DOCTOR_EXIT)"
 
-
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck rollback || { echo "FAIL: rollback"; exit 1; }
-          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" npx flowdeck uninstall --force || { echo "FAIL: uninstall"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js rollback || { echo "FAIL: rollback"; exit 1; }
+          HOME="$SPACE_DIR/home" OPENCODE_CONFIG_DIR="$SPACE_DIR/home/.config/opencode" node node_modules/@heidi-dang/flowdeck/bin/flowdeck.js uninstall --force || { echo "FAIL: uninstall"; exit 1; }
           echo "PASS: all commands"
+          # Step out of TMP_ROOT before cleanup; the EXIT trap removes the
+          # temp files (a shell inside the directory being removed cannot
+          # remove it on Windows).
+          cd "$GITHUB_WORKSPACE"
+
+  benchmark:
+    name: FDX Index Benchmark (exact-SHA)
+    runs-on: ubuntu-latest
+    needs: [rust-gates]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - name: Build FDX release binary
+        run: cargo build --manifest-path crates/fdx/Cargo.toml --release
+      - name: Run exact-SHA production benchmark (non-bypassable budgets)
+        run: |
+          mkdir -p artifact
+          node scripts/bench-fdx-index.mjs --iterations 3 --baseline scripts/fdx-index-baseline.json --out artifact/fdx-index-benchmark.json
+          test -f artifact/fdx-index-benchmark.json
+      - name: Verify benchmark artifact SHA matches head
+        run: |
+          node -e "
+            const fs = require('fs');
+            const r = JSON.parse(fs.readFileSync('artifact/fdx-index-benchmark.json', 'utf-8'));
+            const head = require('child_process').execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8' }).trim();
+            if (r.gitSha !== head) { console.error('artifact SHA ' + r.gitSha + ' != head ' + head); process.exit(1); }
+            if (r.dirty) { console.error('benchmark ran on a dirty worktree; closure evidence requires a clean tree'); process.exit(1); }
+            console.log('PASS: artifact bound to exact SHA ' + head + ' on a clean tree');
+          "
+      - name: Upload benchmark artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fdx-index-benchmark
+          path: artifact/fdx-index-benchmark.json
+          if-no-files-found: error
 
   completion:
     name: Pipeline Completion
     if: always()
-    needs: [lint-typecheck, typecheck, coverage, test-matrix, build, installer-test, rust-gates, security-scan, local-installer, packed-cli-matrix, test-fdx-parity]
+    needs: [lint-typecheck, typecheck, coverage, benchmark-runtime, benchmark, test-matrix, build, installer-test, rust-gates, security-scan, local-installer, packed-cli-matrix, test-fdx-parity]
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -508,6 +846,7 @@ jobs:
           echo "- Lint & Typecheck: ${{ needs.lint-typecheck.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Typecheck: ${{ needs.typecheck.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Coverage: ${{ needs.coverage.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Runtime Benchmark (Branch-Head): ${{ needs.benchmark-runtime.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Test Matrix: ${{ needs.test-matrix.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Build & Validate: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Installer Tests: ${{ needs.installer-test.result }}" >> $GITHUB_STEP_SUMMARY
@@ -516,9 +855,11 @@ jobs:
           echo "- Local Installer: ${{ needs.local-installer.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Packed CLI Matrix: ${{ needs.packed-cli-matrix.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- FDX Parity: ${{ needs.test-fdx-parity.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- FDX Index Benchmark: ${{ needs.benchmark.result }}" >> $GITHUB_STEP_SUMMARY
           if [ "${{ needs.lint-typecheck.result }}" = "success" ] && \
              [ "${{ needs.typecheck.result }}" = "success" ] && \
              [ "${{ needs.coverage.result }}" = "success" ] && \
+             [ "${{ needs.benchmark-runtime.result }}" = "success" ] && \
              [ "${{ needs.test-matrix.result }}" = "success" ] && \
              [ "${{ needs.build.result }}" = "success" ] && \
              [ "${{ needs.installer-test.result }}" = "success" ] && \
@@ -526,7 +867,8 @@ jobs:
              [ "${{ needs.security-scan.result }}" = "success" ] && \
              [ "${{ needs.local-installer.result }}" = "success" ] && \
              [ "${{ needs.packed-cli-matrix.result }}" = "success" ] && \
-             [ "${{ needs.test-fdx-parity.result }}" = "success" ]; then
+             [ "${{ needs.test-fdx-parity.result }}" = "success" ] && \
+             [ "${{ needs.benchmark.result }}" = "success" ]; then
             echo "ALL GATES PASSED" >> $GITHUB_STEP_SUMMARY
           else
             echo "SOME GATES FAILED" >> $GITHUB_STEP_SUMMARY

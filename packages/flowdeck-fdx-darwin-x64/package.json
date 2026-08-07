@@ -1,0 +1,24 @@
+{
+  "name": "@heidi-dang/flowdeck-fdx-darwin-x64",
+  "version": "1.0.4",
+  "description": "Prebuilt native FDX executable for FlowDeck (darwin-x64)",
+  "license": "MIT",
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "main": "fdx",
+  "bin": {
+    "fdx": "fdx"
+  },
+  "files": [
+    "fdx-secure-exec",
+    "fdx",
+    "checksum.json",
+    "LICENSE",
+    "README.md",
+    "provenance.json"
+  ]
+}

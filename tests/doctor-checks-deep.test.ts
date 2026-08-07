@@ -28,7 +28,7 @@ describe("Doctor Engine Deep Coverage Tests", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  }, 30000)
+  }, 60000)
 
   it("scoreCategory correctly calculates category score", () => {
     const checks: any[] = [
@@ -44,14 +44,40 @@ describe("Doctor Engine Deep Coverage Tests", () => {
   it("runRuntimeChecks checks node, bun, git, opencode executables", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "doc-rt-"))
     try {
-      const checks = await runRuntimeChecks(tempDir)
+      // Blocker 3: doctor aggregation unit tests inject the FDX availability
+      // result instead of running a real FDX resolution (which spawns
+      // subprocess probes and can exceed Bun's 5s default). The explicit
+      // bounded timeout covers the real node/bun/git/rustc subprocess probes.
+      const checks = await runRuntimeChecks(tempDir, undefined, {
+        fdxStatus: {
+          available: false,
+          binary: null,
+          binaryPath: null,
+          message: "injected stub",
+          source: "none",
+          target: null,
+          targetSupported: false,
+          packagePresent: false,
+          binaryPresent: false,
+          binaryIntegrity: "fail",
+          binaryVersion: null,
+          versionCompatible: false,
+          checksumStatus: "missing",
+          executionStatus: "fail",
+          fallbackAvailable: true,
+          diagnostics: [],
+        },
+      })
       expect(checks.length).toBeGreaterThan(0)
       const ids = checks.map(c => c.id)
       expect(ids).toContain("runtime.node")
+      // The injected result is used for the FDX checks (no real resolution).
+      const fdxTarget = checks.find(c => c.id === "fdx.target-supported")
+      expect(fdxTarget?.status).toBe("info")
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
     }
-  })
+  }, { timeout: 30000 })
 
   it("runRepositoryChecks checks git repo, AGENTS.md, lockfiles", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "doc-repo-"))

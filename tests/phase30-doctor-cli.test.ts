@@ -99,9 +99,8 @@ describe("Phase 30 — Doctor CLI Service", () => {
     const res = runCli(["doctor"]);
     if (res.code === 0) {
       expect(res.stdout).toContain("FlowDeck Doctor");
-      expect(res.stdout).toContain("Diagnostics");
-      expect(res.stdout).toContain("Summary");
-      expect(res.stdout).toContain("Passed");
+      expect(res.stdout).toContain("Version:");
+      expect(res.stdout).toContain("Errors:");
     }
   });
 

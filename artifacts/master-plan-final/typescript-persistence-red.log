@@ -1,0 +1,63 @@
+=== 1. Unit of Work ===
+  ✅ UoW success: all ops committed: done === done
+  ✅ UoW: 2 rows: 2 === 2
+  ✅ UoW rollback on error
+  ✅ UoW rollback: no extra rows: 2 === 2
+  ✅ nested UoW savepoint rollback
+  ✅ nested: outer+2original=3: 3 === 3
+
+=== 2. Optimistic Concurrency ===
+  ✅ optimistic lock: correct version succeeds: 1 === 1
+  ✅ optimistic lock: stale version rejected: 0 === 0
+  ✅ state unchanged after stale update: executing === executing
+
+=== 3. Event + Outbox Atomic Append ===
+  ✅ event atomically inserted: 1 === 1
+  ✅ outbox atomically inserted: 1 === 1
+  ✅ atomic rollback on failure
+  ✅ no event after rollback: 0 === 0
+  ✅ no outbox after rollback: 0 === 0
+
+=== 4. Contract Adapter Persistence ===
+  ✅ contract title persisted: Test Contract === Test Contract
+  ✅ contract family FK: fam-a === fam-a
+  ✅ lifecycle status draft: draft === draft
+  ✅ deterministic ordering: first: 1 === 1
+  ✅ deterministic ordering: second: 2 === 2
+  ✅ acceptance criterion persisted: AC 1 === AC 1
+  ✅ verification rule persisted: test_exists === test_exists
+  ✅ objective persisted: Goal 1 === Goal 1
+  ✅ constraint persisted: deadline === deadline
+  ✅ lifecycle status activated: active === active
+  ✅ superseded lifecycle: superseded === superseded
+
+=== 5. Retry Policy — Fake Clock ===
+  ✅ fake clock starts at 0
+  ✅ fake clock after 2 retries: 150ms (expected 150)
+  ✅ UNIQUE not retryable: constraint === constraint
+  ✅ FK not retryable: constraint === constraint
+  ✅ CHECK not retryable: constraint === constraint
+  ✅ BUSY is retryable: busy === busy
+  ✅ busy: retryable: true === true
+  ✅ constraint: not retryable: false === false
+  ✅ unknown: not retryable: false === false
+
+=== 6. Malformed Data Handling ===
+  ✅ malformed JSON stored as text (app validates at read time)
+  ✅ unknown enum value rejected by CHECK constraint
+26 | function eq(a, b, m) { ok(a === b, `${m}: ${a} === ${b}`); }
+27 | function thr(fn, m) { try { fn(); fail++; console.error(`  ❌ ${m}`); } catch { pass++; console.log(`  ✅ ${m}`); } }
+28 | 
+29 | function applySchema(db) {
+30 |   const sql = readFileSync('./schema-v0.2.6.sql', 'utf-8');
+31 |   db.exec(sql);
+          ^
+SQLiteError: no such table: main.objectives
+      errno: 1,
+ byteOffset: -1,
+
+      at run (bun:sqlite:336:21)
+      at applySchema (/home/heidi/flowdeck/.scratch/p12-debug.mjs:31:6)
+      at /home/heidi/flowdeck/.scratch/p12-debug.mjs:286:1
+
+Bun v1.3.14 (Linux x64)

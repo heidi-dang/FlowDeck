@@ -4,7 +4,8 @@
  * Connections are cached by resolved path.
  */
 
-import { Database } from "bun:sqlite"
+import type { Database } from "bun:sqlite"
+import { loadBunSqliteDatabase } from "./sqlite-loader"
 import { resolve } from "path"
 import { REQUIRED_PRAGMAS, type DatabaseConfig, type PragmaResult } from "./configuration"
 import { PersistenceError } from "./errors"
@@ -12,11 +13,15 @@ import { PersistenceError } from "./errors"
 const CONNECTIONS = new Map<string, Database>()
 
 export function openConnection(config: DatabaseConfig): Database {
-  const key = resolve(config.path)
-  const existing = CONNECTIONS.get(key)
-  if (existing) return existing
+  const isMemory = config.path === ':memory:' || config.path.endsWith('/:memory:');
+  const key = isMemory ? `:memory:${Math.random()}` : resolve(config.path);
+  if (!isMemory) {
+    const existing = CONNECTIONS.get(key);
+    if (existing) return existing;
+  }
 
-  const db = new Database(key, { create: true })
+  const DatabaseClass = loadBunSqliteDatabase()
+  const db = new DatabaseClass(config.path === ':memory:' ? ':memory:' : key, { create: true });
 
   // Apply pragmas immediately
   for (const p of REQUIRED_PRAGMAS) {
@@ -41,7 +46,7 @@ export function openConnection(config: DatabaseConfig): Database {
       const actual = String(raw ?? "").toLowerCase()
       const actualNormalized = PRAGMA_VALUE_MAP[p.name]?.[actual] ?? actual
       const expected = p.value.toLowerCase()
-      if (actualNormalized !== expected && !(p.name === "journal_mode" && actualNormalized === "wal")) {
+      if (actualNormalized !== expected && !(p.name === "journal_mode" && (actualNormalized === "wal" || actualNormalized === "memory"))) {
         failures.push({ name: p.name, value: actual + " (normalized: " + actualNormalized + ")", success: false })
       }
     } catch (err) {

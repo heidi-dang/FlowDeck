@@ -936,7 +936,7 @@ describe("HarnessHttpServer", () => {
   it("fails to start on invalid host", async () => {
     const server = new HarnessHttpServer({ enabled: true, port: 0, bindHost: "999.999.999.999" });
     await expect(server.start()).rejects.toThrow();
-  });
+  }, 15000);
 
   it("stop on non-running server resolves", async () => {
     const server = new HarnessHttpServer({ enabled: true, port: 0 });

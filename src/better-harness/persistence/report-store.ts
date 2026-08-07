@@ -3,7 +3,7 @@ import { join, dirname } from "path";
 import { atomicWriteFile, readJsonFile, getProjectStoreDir } from "./harness-store";
 import { HarnessReportSchema, type HarnessReport } from "../contracts/report";
 
-export function saveReport(projectId: string, report: HarnessReport): void {
+export function saveReport(projectId: string, report: HarnessReport, stateDir?: string): void {
   const parsed = HarnessReportSchema.safeParse(report);
   if (!parsed.success) {
     throw new Error(`Report validation failed: ${parsed.error.message}`);
@@ -11,7 +11,7 @@ export function saveReport(projectId: string, report: HarnessReport): void {
   // Sanitise the generatedAt timestamp for safe use as a filename:
   // colons (:) are reserved on Windows and cause ENOENT through WSL2 interop.
   const safeName = report.generatedAt.replace(/[:]/g, "-");
-  const filePath = join(getProjectStoreDir(projectId), "reports", `${safeName}.json`);
+  const filePath = join(getProjectStoreDir(projectId, stateDir), "reports", `${safeName}.json`);
   // Ensure the reports directory exists before writing (belt-and-suspenders
   // alongside the dir creation inside atomicWriteFile).
   const dir = dirname(filePath);
@@ -21,8 +21,8 @@ export function saveReport(projectId: string, report: HarnessReport): void {
   atomicWriteFile(filePath, report);
 }
 
-export function loadReport(projectId: string, reportId: string): HarnessReport | null {
-  const dir = getProjectStoreDir(projectId);
+export function loadReport(projectId: string, reportId: string, stateDir?: string): HarnessReport | null {
+  const dir = getProjectStoreDir(projectId, stateDir);
   const filePath = join(dir, "reports", `${reportId}.json`);
   const data = readJsonFile<HarnessReport>(filePath);
   if (!data) return null;
@@ -31,9 +31,9 @@ export function loadReport(projectId: string, reportId: string): HarnessReport |
   return parsed.data;
 }
 
-export function listReports(projectId: string): string[] {
+export function listReports(projectId: string, stateDir?: string): string[] {
   
-  const dir = join(getProjectStoreDir(projectId), "reports");
+  const dir = join(getProjectStoreDir(projectId, stateDir), "reports");
   if (!existsSync(dir)) return [];
   try {
     return readdirSync(dir).filter((f: string) => f.endsWith(".json")).map((f: string) => f.replace(".json", ""));

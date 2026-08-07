@@ -19,10 +19,26 @@ async function probeSecretRedaction(directory: string): Promise<{ ok: boolean; d
   const probeInput = "leaked " + "npm_" + "a".repeat(40) + " token"
   const candidates: Array<{ name: string; url: string }> = []
   try {
-    candidates.push({ name: "dist/index.js", url: pathToFileURL(resolve(directory, "dist", "index.js")).href })
+    // Standalone doctor bundle — shipped in dist of every install, node-importable.
+    const p = resolve(directory, "dist", "doctor", "doctor.js")
+    if (existsSync(p)) candidates.push({ name: "dist/doctor/doctor.js", url: pathToFileURL(p).href })
   } catch { /* ignore */ }
   try {
-    candidates.push({ name: "src/lib/secret-redaction.ts", url: pathToFileURL(resolve(directory, "src", "lib", "secret-redaction.ts")).href })
+    const p = resolve(directory, "dist", "tools", "fdx-shared.js")
+    if (existsSync(p)) candidates.push({ name: "dist/tools/fdx-shared.js", url: pathToFileURL(p).href })
+  } catch { /* ignore */ }
+  try {
+    const p = resolve(directory, "dist", "index.js")
+    const hasPlugin = existsSync(resolve(directory, "node_modules", "@opencode-ai", "plugin"))
+    if (existsSync(p) && hasPlugin) candidates.push({ name: "dist/index.js", url: pathToFileURL(p).href })
+  } catch { /* ignore */ }
+  try {
+    const p = resolve(directory, "src", "tools", "fdx-shared.ts")
+    if (existsSync(p)) candidates.push({ name: "src/tools/fdx-shared.ts", url: pathToFileURL(p).href })
+  } catch { /* ignore */ }
+  try {
+    const p = resolve(directory, "src", "lib", "secret-redaction.ts")
+    if (existsSync(p)) candidates.push({ name: "src/lib/secret-redaction.ts", url: pathToFileURL(p).href })
   } catch { /* ignore */ }
 
   for (const candidate of candidates) {

@@ -38,8 +38,8 @@ describe("FDX Transactional Migration Integration", () => {
       writeFileSync(join(legacy, "STATE.md"), "# State\n")
       writeFileSync(join(nested, "context.md"), "# Context\n")
 
-      const out = execFileSync(bin, ["context", "append", "--topic", "topic-1", "--summary", "test"], {
-        cwd: __dirname,
+      const out = execFileSync(bin, ["context", "--topic", "topic-1", "--action", "append", "--agent", "coder", "--stage", "impl", "--summary", "test"], {
+        cwd: legacy,
         env: { ...process.env, HOME: home, FDX_DISABLE_FALLBACK: "1" },
         encoding: "utf-8",
       })

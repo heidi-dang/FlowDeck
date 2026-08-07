@@ -5,20 +5,28 @@ import { homedir } from "os";
 /**
  * Module-level state directory override.
  * When set, all persistence goes to this directory instead of ~/.flowdeck/state/.
- * Used by standalone launcher to guarantee isolation from real state.
+ *
+ * @deprecated The global override is legacy. The standalone runtime and
+ * launcher pass an explicit per-instance `stateDir` through the persistence
+ * functions (see `getProjectStoreDir(projectId, stateDir?)`) so that one
+ * instance can never redirect another instance's stores. The global override
+ * is retained only for backwards compatibility with callers that never used
+ * instance scoping; it must not be called by the runtime path.
  */
 let _stateDirOverride: string | null = null;
 
 /**
- * Override the default state directory (for standalone/testing isolation).
- * All subsequent persistence calls will use `dir` instead of ~/.flowdeck/state/.
+ * @deprecated Use per-instance `stateDir` arguments instead. See
+ * `getProjectStoreDir(projectId, stateDir?)`. Setting this global redirects
+ * ALL better-harness persistence in the process and can corrupt concurrent
+ * instances; it must not be used by the standalone runtime.
  */
 export function setFlowDeckStateDir(dir: string): void {
   _stateDirOverride = dir;
 }
 
 /**
- * Reset the state directory back to the default (~/.flowdeck/state/).
+ * @deprecated Retained for backwards compatibility.
  */
 export function resetFlowDeckStateDir(): void {
   _stateDirOverride = null;
@@ -28,8 +36,17 @@ export function getFlowDeckStateDir(): string {
   return _stateDirOverride ?? join(homedir(), ".flowdeck", "state");
 }
 
-export function getProjectStoreDir(projectId: string): string {
-  return join(getFlowDeckStateDir(), projectId, "better-harness");
+/**
+ * Resolve the per-project store directory.
+ *
+ * @param projectId harness project identifier
+ * @param stateDir optional instance-scoped state directory. When provided,
+ *   persistence is confined to `stateDir` and the global override is ignored.
+ *   The standalone runtime always passes its instance state directory so
+ *   concurrent instances remain isolated.
+ */
+export function getProjectStoreDir(projectId: string, stateDir?: string): string {
+  return join(stateDir ?? getFlowDeckStateDir(), projectId, "better-harness");
 }
 
 export function atomicWriteFile(filePath: string, data: unknown): void {

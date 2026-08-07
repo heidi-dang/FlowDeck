@@ -19,9 +19,12 @@ import {
   readOrMissing,
   appendWithMkdir,
   clearFile,
-  findWorkspaceRoot
+  findWorkspaceRoot,
+  releaseCwdPinIfInside,
+  retryTransient,
+  renameWithSharingRetry,
 } from "../src/tools/planning-state-lib"
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs"
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 
@@ -142,6 +145,111 @@ describe("Planning State Lib Deep Unit Tests", () => {
       expect(wsRoot).toBe(tempDir)
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe("Legacy planning migration Windows-safety helpers", () => {
+  it("releaseCwdPinIfInside moves the process cwd out of the legacy dir", () => {
+    // realpathSync resolves the temp root (macOS /var → /private/var) so the
+    // expected paths match what process.cwd() returns after chdir.
+    const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "plan-mig-cwd-")))
+    const root = join(tempRoot, ".fd-plan")
+    const legacyDir = join(root, "my-app")
+    mkdirSync(legacyDir, { recursive: true })
+
+    const original = process.cwd()
+    try {
+      process.chdir(legacyDir)
+      expect(process.cwd()).toBe(legacyDir)
+
+      releaseCwdPinIfInside(root, legacyDir)
+      expect(process.cwd()).toBe(root)
+    } finally {
+      process.chdir(original)
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("releaseCwdPinIfInside leaves cwd untouched when outside the legacy dir", () => {
+    const tempRoot = realpathSync(mkdtempSync(join(tmpdir(), "plan-mig-cwd2-")))
+    const root = join(tempRoot, ".fd-plan")
+    mkdirSync(root, { recursive: true })
+
+    const original = process.cwd()
+    try {
+      process.chdir(root)
+      releaseCwdPinIfInside(root, join(root, "my-app"))
+      expect(process.cwd()).toBe(root)
+    } finally {
+      process.chdir(original)
+      rmSync(tempRoot, { recursive: true, force: true })
+    }
+  })
+
+  it("retryTransient retries only classified errors and succeeds after transient failures", () => {
+    let calls = 0
+    const { value, attempts } = retryTransient(
+      5,
+      1,
+      (err) => (err as NodeJS.ErrnoException).code === "EBUSY",
+      () => {
+        calls += 1
+        if (calls < 3) {
+          const e = new Error("busy") as NodeJS.ErrnoException
+          e.code = "EBUSY"
+          throw e
+        }
+        return "done"
+      },
+    )
+    expect(value).toBe("done")
+    expect(attempts).toBe(3)
+    expect(calls).toBe(3)
+  })
+
+  it("retryTransient never retries non-classified errors (permission denial)", () => {
+    let calls = 0
+    expect(() =>
+      retryTransient(
+        5,
+        1,
+        (err) => (err as NodeJS.ErrnoException).code === "EBUSY",
+        () => {
+          calls += 1
+          const e = new Error("denied") as NodeJS.ErrnoException
+          e.code = "EPERM"
+          throw e
+        },
+      ),
+    ).toThrow("denied")
+    expect(calls).toBe(1)
+  })
+
+  it("retryTransient is bounded and reports the last error after exhausting attempts", () => {
+    let calls = 0
+    expect(() =>
+      retryTransient(
+        4,
+        1,
+        () => true,
+        () => {
+          calls += 1
+          const e = new Error("always busy") as NodeJS.ErrnoException
+          e.code = "EBUSY"
+          throw e
+        },
+      ),
+    ).toThrow("always busy")
+    expect(calls).toBe(4)
+  })
+
+  it("renameWithSharingRetry propagates non-sharing errors immediately (ENOENT)", () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), "plan-mig-ren-"))
+    try {
+      expect(() => renameWithSharingRetry(join(tempRoot, "missing"), join(tempRoot, "dst"))).toThrow()
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true })
     }
   })
 })

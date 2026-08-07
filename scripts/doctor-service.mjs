@@ -50,6 +50,10 @@ function resolveDistPath() {
   return pathToFileURL(join(PKG_ROOT, "dist", "index.js")).href
 }
 
+function resolveDoctorDistPath() {
+  return pathToFileURL(join(PKG_ROOT, "dist", "doctor", "doctor.js")).href
+}
+
 async function loadDoctorEngine() {
   // Try 1: Compiled dist (packaged npm install)
   const distUrl = resolveDistPath()
@@ -64,7 +68,23 @@ async function loadDoctorEngine() {
       }
     }
   } catch {
-    // dist not available
+    // dist/index.js may fail to import if external peer dependencies (@opencode-ai/plugin) are not installed in node_modules
+  }
+
+  // Try 1b: Standalone compiled doctor bundle (zero external dependencies)
+  const doctorDistUrl = resolveDoctorDistPath()
+  try {
+    const mod = await import(doctorDistUrl)
+    if (typeof mod.runDoctor === "function") {
+      return {
+        runDoctor: mod.runDoctor,
+        formatReport: mod.formatReport,
+        formatJSON: mod.formatJSON,
+        source: "dist-doctor",
+      }
+    }
+  } catch {
+    // standalone doctor bundle not available
   }
 
   // Try 2: Run via bun (development)
@@ -93,8 +113,8 @@ function hasBun() {
 }
 
 function runViaBun(directory, options = {}) {
-  // Use bun to import and execute the TypeScript doctor module inline
-  const doctorPath = join(PKG_ROOT, "src/doctor/doctor.ts")
+  const distDoctorPath = join(PKG_ROOT, "dist/index.js")
+  const doctorPath = distDoctorPath
   const opts = {
     directory: directory || PKG_ROOT,
     options: {
@@ -102,7 +122,7 @@ function runViaBun(directory, options = {}) {
       strict: !!options.strict,
       verbose: !!options.verbose,
       applyRecommended: !!options.applyRecommended,
-      profile: options.profile || "recommended-dev",
+      profile: options.profile || process.env.FLOWDECK_PROFILE || "recommended-dev",
       nonInteractive: !!options.nonInteractive,
     },
   }
@@ -129,7 +149,7 @@ function runViaBun(directory, options = {}) {
       return JSON.parse(stdout.trim())
     } catch {
       if (stderr) {
-        throw new Error(stderr.trim().split("\n").pop() || e.message)
+        throw new Error(stderr.trim())
       }
       throw e
     }
@@ -168,7 +188,7 @@ export async function runDoctor(directory = PKG_ROOT, options = {}) {
     strict: !!options.strict,
     verbose: !!options.verbose,
     applyRecommended: !!options.applyRecommended,
-    profile: options.profile || "recommended-dev",
+    profile: options.profile || process.env.FLOWDECK_PROFILE || "recommended-dev",
     nonInteractive: !!options.nonInteractive,
   })
 }

@@ -1,0 +1,30 @@
+[
+  {
+    "scenarioId": "trivial-direct-edit",
+    "contextItemsMedian": 68,
+    "tokensMedian": 1070.5178427257486,
+    "contextPerTokenRatio": 6.35,
+    "efficiencyScore": 36.48
+  },
+  {
+    "scenarioId": "local-bug",
+    "contextItemsMedian": 59,
+    "tokensMedian": 1361.723611650757,
+    "contextPerTokenRatio": 4.33,
+    "efficiencyScore": 56.67
+  },
+  {
+    "scenarioId": "cross-module-feature",
+    "contextItemsMedian": 61,
+    "tokensMedian": 1007.3938691611445,
+    "contextPerTokenRatio": 6.06,
+    "efficiencyScore": 39.45
+  },
+  {
+    "scenarioId": "delegated-task",
+    "contextItemsMedian": 60,
+    "tokensMedian": 1202.9550542165973,
+    "contextPerTokenRatio": 4.99,
+    "efficiencyScore": 50.12
+  }
+]

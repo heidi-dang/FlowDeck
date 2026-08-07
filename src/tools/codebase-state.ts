@@ -3,11 +3,8 @@ import { writeFileSync, existsSync, readdirSync, mkdirSync } from "fs"
 import { readFile, stat } from "fs/promises"
 import { join } from "path"
 
-const CODEBASE_DIR = ".codebase"
-
-export function codebaseDir(directory: string): string {
-  return join(directory, CODEBASE_DIR)
-}
+import { codebaseDir } from "./planning-state-lib"
+export { codebaseDir }
 
 function codebaseFilePath(directory: string, filename: string): string {
   return join(codebaseDir(directory), filename)

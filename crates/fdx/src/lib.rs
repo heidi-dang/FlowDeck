@@ -1,4 +1,7 @@
+pub mod batch;
 pub mod commands;
+pub mod daemon;
+pub mod index;
 pub mod locking;
 pub mod output;
 pub mod paths;

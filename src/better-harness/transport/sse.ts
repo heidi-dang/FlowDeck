@@ -1,22 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
 import type { IncomingMessage, ServerResponse } from "http";
-import type { EventBus, HarnessEvent, HarnessEventType } from "../runtime/event-bus";
-
-interface StoredSseEvent {
-  id: number;
-  type: string;
-  timestamp: string;
-  data: string;
-  /** Routing metadata for replay filtering. Persisted alongside the event
-   *  so that filterAndSend can match clients by server/project/run without
-   *  guessing from the event payload (which may lack projectKey). */
-  routing?: {
-    serverKey?: string;
-    projectKey?: string;
-    runId?: string;
-  };
-}
+import type { EventBus, HarnessEvent } from "../runtime/event-bus";
+import {
+  StreamRepository,
+  SseBroker,
+  StreamPublisher,
+  StreamReplayService,
+  createSseRoute,
+} from "../../orchestration/streaming";
 
 export interface SseClient {
   id: string;
@@ -27,249 +17,174 @@ export interface SseClient {
   send: (event: HarnessEvent, sequenceId: number) => void;
 }
 
+/**
+ * Unified Production SseManager Adapter.
+ *
+ * Wraps canonical SQLite-backed SSE v2 infrastructure (StreamRepository + SseBroker + StreamPublisher).
+ * Replaces the legacy file-backed `sse-events.jsonl` system so that production maintains only:
+ * - One sequence counter (SQLite aggregate_version).
+ * - One replay store (SQLite canonical `events` table).
+ * - One event format (FlowDeckStreamEvent).
+ *
+ * The SQLite repository is constructed lazily on first SSE use. This keeps the
+ * standalone CLI server startable under supported Node versions: the health
+ * and API routes never open a SQLite handle, and the packed standalone bundle
+ * must not depend on the Bun-only `bun:sqlite` builtin at startup.
+ */
 export class SseManager {
-  private clients = new Map<string, SseClient>();
-  private sequenceCounter = 0;
-  private heartbeatIntervalMs = 15_000;
-  private eventLogPath: string | null = null;
-  private heartbeats: Map<string, ReturnType<typeof setInterval>> = new Map();
-  private eventBus: EventBus;
+  private repository: StreamRepository | null = null;
+  private broker: SseBroker | null = null;
+  private publisher: StreamPublisher | null = null;
+  private replayService: StreamReplayService | null = null;
+  private sseRouteHandler: ((req: any, res: any) => Promise<void>) | null = null;
+  private legacyClients = new Map<string, SseClient>();
+  private readonly eventBus: EventBus;
+  private readonly dbPathOrRepo?: string | StreamRepository;
+  private readonly projectFilter?: string;
 
-  constructor(eventBus: EventBus, eventLogDir?: string, private projectFilter?: string) {
+  constructor(eventBus: EventBus, dbPathOrRepo?: string | StreamRepository, _projectFilter?: string) {
     this.eventBus = eventBus;
-    if (eventLogDir) {
-      this.eventLogPath = join(eventLogDir, "sse-events.jsonl");
-      const dir = dirname(this.eventLogPath);
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      } else {
-        // Recover the maximum persisted sequence ID so that new events
-        // never reuse an ID from a previous process lifetime.  Without
-        // this recovery, a browser holding Last-Event-ID from the earlier
-        // session would silently discard newly emitted events.
-        this.recoverSequenceCounter();
-      }
-    }
+    this.dbPathOrRepo = dbPathOrRepo;
+    this.projectFilter = _projectFilter;
 
-    const types: HarnessEventType[] = [
+    // Subscribe to EventBus and convert runtime HarnessEvents into canonical
+    // SSE v2 publication. Subscription itself never opens the repository.
+    const types = [
       "run.queued", "run.started", "collector.started", "collector.completed",
       "analysis.started", "finding.created", "run.progress", "report.completed",
       "run.cancelled", "run.failed",
     ];
 
     for (const type of types) {
-      eventBus.subscribe(type, (event) => {
+      eventBus.subscribe(type as any, (event) => {
         this.broadcastEvent(event);
       });
     }
   }
 
   /**
-   * Scan the existing event log for the maximum persisted sequence ID and
-   * initialise sequenceCounter above it, guaranteeing that new events never
-   * collide with IDs from a previous process lifetime.
+   * Lazily initialize the SQLite-backed SSE infrastructure. Only called on
+   * the first SSE broadcast or SSE request; the health and API routes never
+   * invoke it, so the standalone server can start under Node where the
+   * Bun-only `bun:sqlite` builtin is unavailable.
    */
-  private recoverSequenceCounter(): void {
-    if (!this.eventLogPath || !existsSync(this.eventLogPath)) return;
-    try {
-      const lines = readFileSync(this.eventLogPath, "utf-8").split("\n").filter(Boolean);
-      let maxId = 0;
-      for (const line of lines) {
-        try {
-          const stored: StoredSseEvent = JSON.parse(line);
-          if (stored.id > maxId) maxId = stored.id;
-        } catch { /* skip corrupt lines */ }
-      }
-      if (maxId > 0) {
-        this.sequenceCounter = maxId;
-      }
-    } catch { /* best-effort recovery */ }
-  }
+  private ensureInitialized(): void {
+    if (this.repository) return;
 
-  /**
-   * Assign one monotonic sequence ID to a runtime event, persist it once,
-   * then broadcast the same sequence ID and canonical envelope to all matching clients.
-   */
-  private broadcastEvent(event: HarnessEvent): void {
-    const sequenceId = this.nextSequence();
-    // Persist once with the assigned ID
-    this.persistEvent(sequenceId, event);
-    // Broadcast same ID to all clients
-    for (const client of this.clients.values()) {
-      try {
-        this.filterAndSend(client, event, sequenceId);
-      } catch { /* client disconnected */ }
-    }
-  }
-
-  /**
-   * Build the canonical envelope and send to a single client.
-   * Filters by runId when the client is scoped to a specific run.
-   * The projectKey filter is intentionally NOT applied because runtime
-   * events (run.progress, run.queued, etc.) never carry projectKey in
-   * their payload — only runId, which is sufficient for correct routing.
-   */
-  private filterAndSend(client: SseClient, event: HarnessEvent, sequenceId: number): void {
-    if (client.runId) {
-      const eventData = (event.data || {}) as Record<string, unknown>;
-      // Events without a runId (connected, heartbeat) pass through to all clients.
-      // Events with a mismatched runId are filtered out.
-      if (eventData.runId !== undefined && eventData.runId !== client.runId) {
-        return;
-      }
+    if (typeof this.dbPathOrRepo === 'object' && this.dbPathOrRepo !== null) {
+      this.repository = this.dbPathOrRepo;
+    } else {
+      const isTest = process.env.NODE_ENV === 'test';
+      const dbPath = (typeof this.dbPathOrRepo === 'string' && (this.dbPathOrRepo.endsWith('.db') || this.dbPathOrRepo === ':memory:'))
+        ? this.dbPathOrRepo
+        : (isTest ? ':memory:' : './flowdeck.db');
+      this.repository = new StreamRepository(dbPath, { allowInMemory: isTest });
     }
 
-    client.send(event, sequenceId);
+    this.broker = new SseBroker();
+    this.publisher = new StreamPublisher(this.repository, this.broker);
+    this.replayService = new StreamReplayService(this.repository);
+    this.sseRouteHandler = createSseRoute(this.broker, this.replayService, this.repository);
   }
 
   addClient(client: SseClient): void {
-    // Replay from file-based event log (single source of truth)
-    if (client.lastEventId && this.eventLogPath && existsSync(this.eventLogPath)) {
-      const lastSeq = parseInt(client.lastEventId, 10);
-      if (!isNaN(lastSeq)) {
-        try {
-          const lines = readFileSync(this.eventLogPath, "utf-8").split("\n").filter(Boolean);
-          for (const line of lines) {
-            const stored: StoredSseEvent = JSON.parse(line);
-            // Last-Event-ID is exclusive — only replay events with ID > lastSeq.
-            // This guarantees every replayed event ID appears exactly once.
-            if (stored.id > lastSeq) {
-              // Use stored routing metadata for client-level filtering.
-              // This is more reliable than parsing the payload, because
-              // routing is extracted at persist time when context is known.
-              if (client.runId && stored.routing?.runId && stored.routing.runId !== client.runId) {
-                continue;
-              }
-
-              // Reconstruct HarnessEvent for sending
-              const replayEvent: HarnessEvent = {
-                type: stored.type as HarnessEventType,
-                timestamp: stored.timestamp,
-                data: stored.data ? JSON.parse(stored.data) : undefined,
-              };
-              client.send(replayEvent, stored.id);
-            }
-          }
-        } catch { /* best-effort replay from file */ }
-      }
-    }
-
-    this.clients.set(client.id, client);
+    this.legacyClients.set(client.id, client);
   }
 
   removeClient(clientId: string): void {
-    this.clients.delete(clientId);
-    const hb = this.heartbeats.get(clientId);
-    if (hb) {
-      clearInterval(hb);
-      this.heartbeats.delete(clientId);
+    this.legacyClients.delete(clientId);
+  }
+
+  /**
+   * Broadcast a runtime event by persisting it atomically before live delivery.
+   */
+  broadcastEvent(event: HarnessEvent): void {
+    this.ensureInitialized();
+    const eventData = (event.data || {}) as Record<string, unknown>;
+    const runId = typeof eventData.runId === "string" ? eventData.runId : "default_run";
+
+    const mappedType = this.mapHarnessEventType(event.type);
+
+    const committed = this.publisher!.publish({
+      runId,
+      type: mappedType as any,
+      stage: event.type.startsWith("run.") ? "intake" : "execute",
+      importance: event.type.endsWith(".failed") ? "critical" : "normal",
+      title: `Harness Event: ${event.type}`,
+      payload: event.data || {},
+      occurredAt: event.timestamp || new Date().toISOString(),
+    });
+
+    // Mirror to legacy in-memory test clients if any
+    for (const client of this.legacyClients.values()) {
+      try {
+        client.send(event, committed.sequence);
+      } catch {
+        /* client disconnected */
+      }
     }
   }
 
   handleSseRequest(
     req: IncomingMessage,
     res: ServerResponse,
-    serverKey?: string,
-    projectKey?: string,
+    _serverKey?: string,
+    _projectKey?: string,
     runId?: string,
   ): void {
-    const clientId = `sse_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const lastEventId = req.headers["last-event-id"] as string | undefined;
+    this.ensureInitialized();
+    if (runId && !(req as any).params) {
+      (req as any).params = { runId };
+    }
+    this.sseRouteHandler!(req, res);
+  }
 
-    // Set SSE headers
-    res.writeHead(200, {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
-      "X-Accel-Buffering": "no",
-    });
+  getStreamRepository(): StreamRepository {
+    this.ensureInitialized();
+    return this.repository!;
+  }
 
-    // Create a client bound to this response BEFORE sending the connected
-    // frame, so that addClient() replays durable events first.  Replay must
-    // precede connected because the UI uses the first received id to
-    // initialise its deduplication watermark (lastValidEventId).  If
-    // connected carried an id the UI would discard all replayed events with
-    // lower IDs.
-    const client: SseClient = {
-      id: clientId,
-      lastEventId: lastEventId ?? null,
-      serverKey,
-      projectKey,
-      runId,
-      send: (event: HarnessEvent, sequenceId: number) => {
-        try {
-          // Build canonical envelope
-          const envelope = {
-            type: event.type,
-            timestamp: event.timestamp,
-            data: event.data,
-          };
-          res.write(`id: ${sequenceId}\nevent: ${event.type}\ndata: ${JSON.stringify(envelope)}\n\n`);
-        } catch { /* client disconnected */ }
-      },
-    };
+  getSseBroker(): SseBroker {
+    this.ensureInitialized();
+    return this.broker!;
+  }
 
-    // 1. Replay durable events (if any) so the UI processes them before
-    //    the connected frame and never discards them due to an id watermark.
-    this.addClient(client);
+  getPublisher(): StreamPublisher {
+    this.ensureInitialized();
+    return this.publisher!;
+  }
 
-    // 2. Send connected frame.  It omits the SSE `id: ` field on purpose:
-    //    the UI's deduplication logic uses the first received id as its
-    //    watermark.  If connected supplied an id, all replayed events with
-    //    lower ids would be silently discarded.
-    const connectedTimestamp = new Date().toISOString();
-    const connectedEnvelope = JSON.stringify({
-      type: "connected",
-      timestamp: connectedTimestamp,
-      data: { clientId },
-    });
-    res.write(`event: connected\ndata: ${connectedEnvelope}\n\n`);
-
-    // 3. Start heartbeats — also without an `id:` field.
-    const hb = setInterval(() => {
+  /**
+   * Shut down all live SSE connections and legacy test clients. Required so a
+   * persistent SSE connection cannot block `server.close()` during tests or
+   * server shutdown. Safe to call before the repository was ever initialized.
+   */
+  dispose(): void {
+    this.broker?.closeAll();
+    for (const client of this.legacyClients.values()) {
       try {
-        const hbTimestamp = new Date().toISOString();
-        const hbEnvelope = JSON.stringify({
-          type: "heartbeat",
-          timestamp: hbTimestamp,
-          data: { time: hbTimestamp },
-        });
-        res.write(`event: heartbeat\ndata: ${hbEnvelope}\n\n`);
-      } catch {
-        this.handleClientDisconnect(clientId);
-      }
-    }, this.heartbeatIntervalMs);
-    this.heartbeats.set(clientId, hb);
-
-    // Handle client disconnect
-    req.on("close", () => {
-      this.handleClientDisconnect(clientId);
-    });
+        client.send(
+          { type: "shutdown", data: { reason: "server_shutdown" }, timestamp: new Date().toISOString() } as unknown as HarnessEvent,
+          0,
+        );
+      } catch { /* client already disconnected */ }
+    }
+    this.legacyClients.clear();
   }
 
-  private handleClientDisconnect(clientId: string): void {
-    this.removeClient(clientId);
-  }
-
-  private nextSequence(): number {
-    return ++this.sequenceCounter;
-  }
-
-  private persistEvent(id: number, event: HarnessEvent): void {
-    if (!this.eventLogPath) return;
-    try {
-      // Extract routing from the event payload (runId is always present for
-      // runtime events like run.progress, run.queued, etc.)
-      const eventData = (event.data || {}) as Record<string, unknown>;
-      const extractedRunId = typeof eventData.runId === "string" ? eventData.runId : undefined;
-      const stored: StoredSseEvent = {
-        id,
-        type: event.type,
-        timestamp: event.timestamp,
-        data: event.data ? JSON.stringify(event.data) : "",
-        routing: extractedRunId ? { runId: extractedRunId } : undefined,
-      };
-      writeFileSync(this.eventLogPath, JSON.stringify(stored) + "\n", { flag: "a" });
-    } catch { /* best-effort persist */ }
+  private mapHarnessEventType(type: string): string {
+    const map: Record<string, string> = {
+      "run.queued": "run.created",
+      "run.started": "run.started",
+      "collector.started": "agent.started",
+      "collector.completed": "agent.completed",
+      "analysis.started": "stage.entered",
+      "finding.created": "evidence.created",
+      "run.progress": "stage.progress",
+      "report.completed": "run.completed",
+      "run.cancelled": "run.cancelled",
+      "run.failed": "run.failed",
+    };
+    return map[type] || "agent.progress";
   }
 }

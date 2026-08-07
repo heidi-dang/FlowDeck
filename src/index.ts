@@ -62,12 +62,6 @@ import { loadRulesTool, listRulesTool } from "./tools/load-rules"
 import { planningStateTool } from "./tools/planning-state"
 import { repoMemoryTool } from "./tools/repo-memory"
 import { debugLogsTool } from "./tools/debug-logs"
-import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
-import { HarnessHttpServer } from "./better-harness/transport/http-server"
-import { SseManager } from "./better-harness/transport/sse"
-import { ProjectRegistry } from "./better-harness/runtime/project-registry"
-import type { BetterHarnessConfig } from "./config/schema"
-import type { RouterContext } from "./better-harness/runtime/router-context"
 
 // ─── Governance integration ────────────────────────────────────────────────
 import {
@@ -275,78 +269,17 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
-  // --- Better Harness integration using shared graph ------------------------
-  let betterHarnessRuntime: HarnessRuntime | null = null
-  let betterHarnessServer: HarnessHttpServer | null = null
-  let betterHarnessSseManager: SseManager | null = null
-  let _betterHarnessCleanup: (() => void) | null = null
-
-  const projectRegistry = new ProjectRegistry()
-  const bhConfig: BetterHarnessConfig | undefined = flowdeckConfig.betterHarness
-  if (bhConfig?.enabled) {
-    // Create runtime (it creates its own coordinator internally)
-    betterHarnessRuntime = new HarnessRuntime({
-      projectRoot: directory,
-      timeoutMs: 120_000,
-    })
-
-    // Register project in registry
-    projectRegistry.register({
-      serverKey: "default",
-      projectKey: basename(directory),
-      canonicalProjectRoot: directory,
-    })
-
-    const coordinator = betterHarnessRuntime.getCoordinator()
-    const eventBus = coordinator.getEventBus()
-
-    const eventLogDir = bhConfig.eventLogDir
-    betterHarnessSseManager = new SseManager(eventBus, eventLogDir)
-
-    // Build auth config
-    const authToken = bhConfig.authToken ?? null
-    const authEnabled = bhConfig.authEnabled ?? false
-
-    // Build router context with all dependencies
-    const routerContext: RouterContext = {
-      runtime: betterHarnessRuntime,
-      coordinator,
-      resolveProjectPath: (serverKey: string, projectKey: string) => {
-        return projectRegistry.resolve(serverKey, projectKey)
-      },
-      sseManager: betterHarnessSseManager,
-      authToken: authToken ?? undefined,
-      bindHost: bhConfig.bindHost ?? "127.0.0.1",
-      opencodeClient: client,
-    }
-
-    betterHarnessServer = new HarnessHttpServer({
-      enabled: true,
-      port: bhConfig.port ?? 0,
-      bindHost: bhConfig.bindHost ?? "127.0.0.1",
-      auth: {
-        token: authToken ?? undefined,
-        enabled: authEnabled,
-      },
-      maxBodySize: bhConfig.maxBodySize ?? 1024 * 1024,
-    })
-    betterHarnessServer.setSseManager(betterHarnessSseManager)
-    betterHarnessServer.setRouterContext(routerContext)
-
-    betterHarnessServer.start().then((port) => {
-      appLog("[better-harness] HTTP server started on port " + port)
-    }).catch((err: Error) => {
-      appLog("[better-harness] Failed to start HTTP server: " + err.message, "error")
-    })
-
-    coordinator.recoverActiveRuns()
-
-    // Set up cleanup
-    _betterHarnessCleanup = () => {
-      betterHarnessServer?.stop().catch(() => {})
-      projectRegistry.unregister(basename(directory))
-    }
-  }
+  // NOTE: The Better Harness runtime is intentionally NOT wired into the
+  // production plugin. It is a standalone development/QA facility with its
+  // own run IDs, JSON persistence, event bus, recovery, cancellation, HTTP
+  // API and SSE surface. The production plugin must have exactly one writable
+  // orchestration authority (the canonical schema-v0.2.6 runtime). See
+  // docs/architecture/integration/runtime-authority.md (P0-2).
+  //
+  // To run Better Harness explicitly (development/QA only):
+  //   flowdeck-better-harness --project <path> [--state-dir <dir>]
+  // or locally:
+  //   bun run src/better-harness/standalone.ts --project <path>
 
   return {
     config: async (cfg: Record<string, unknown>) => {

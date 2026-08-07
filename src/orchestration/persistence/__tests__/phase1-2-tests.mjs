@@ -7,13 +7,16 @@ let pass = 0, fail = 0;
 
 function clean() {
   try { closeAll(); } catch {}
-  for (const f of [DB, DB+'-wal', DB+'-shm', DB+'-lock', DB+'-lock-wal', DB+'-lock-shm']) { try { unlinkSync(f) } catch {} }
+  for (const f of [DB, DB+'-wal', DB+'-shm', DB+'-lock', DB+'-lock-wal', DB+'-lock-shm',
+                   DB+'-schema', DB+'-schema-wal', DB+'-schema-shm', DB+'-schema-lock']) { try { unlinkSync(f) } catch {} }
 }
 const conns = new Map();
 function openConn(p, ro = false) {
   let d = conns.get(p); if (d) return d;
-  d = new Database(p, { readonly: ro });
-  d.pragma('journal_mode = WAL'); d.pragma('foreign_keys = ON'); d.pragma('busy_timeout = 5000'); d.pragma('synchronous = NORMAL');
+  // bun:sqlite has no .pragma(); use exec. Avoid all-zero-flags options objects
+  // (SQLITE_MISUSE under bun 1.3.14), so open plain unless readonly.
+  d = ro ? new Database(p, { readonly: true }) : new Database(p);
+  d.exec('PRAGMA journal_mode = WAL'); d.exec('PRAGMA foreign_keys = ON'); d.exec('PRAGMA busy_timeout = 5000'); d.exec('PRAGMA synchronous = NORMAL');
   conns.set(p, d); return d;
 }
 function closeConn(p) { const d = conns.get(p); if (d) { d.close(); conns.delete(p); } }

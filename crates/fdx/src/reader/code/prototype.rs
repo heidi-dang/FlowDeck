@@ -215,6 +215,7 @@ pub fn map_kind(ts_kind: &str) -> String {
         "static_item" | "static_declaration" => "static".to_string(),
         "macro_definition" => "macro".to_string(),
         "impl_item" => "impl".to_string(),
+        "namespace_definition" => "namespace".to_string(),
         _ => ts_kind.to_string(),
     }
 }

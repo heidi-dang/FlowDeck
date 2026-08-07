@@ -1,0 +1,27 @@
+=== Runtime Benchmark Report ===
+Generated: 2026-08-02T05:06:35.562Z
+Mode: baseline-vs-candidate
+Candidate: /root/flowdeck
+Baseline: /tmp/rt-verify/e22e04b-baseline
+Candidate SHA: 5bd7af793200f2ec40b307c86e6b4c83c2e23f9f
+Baseline SHA: e22e04b38e45405b4ae9f15115012d0dce99c241
+Frozen baseline SHA (provenance): 5809fcf1230ff349ff0d7f5b53ed75403f44573b
+Runtime implementation baseline SHA: e22e04b38e45405b4ae9f15115012d0dce99c241
+Regression threshold: >20% relative AND >2 ms absolute
+
+Metric                     | Mean (ms) | Median (ms) | p95 (ms) | Iterations
+---------------------------|-----------|-------------|----------|-----------
+ runtimeInit                |     2.773 |       2.484 |    4.362 |        100
+ commitTransition           |     0.042 |       0.013 |    0.028 |        400
+ loadRunAfterRestart        |     0.566 |       0.258 |    1.408 |         30
+ completePath               |      0.11 |        0.06 |    0.072 |         20
+ cancellationPhase          |     0.101 |       0.034 |    0.216 |         20
+
+Comparison (candidate vs baseline, median):
+  runtimeInit            baseline    2.311 ms -> candidate    2.484 ms  (7.5%)
+  commitTransition       baseline    0.012 ms -> candidate    0.013 ms  (8.3%)
+  loadRunAfterRestart    baseline    0.222 ms -> candidate    0.258 ms  (16.2%)
+  completePath           baseline    0.058 ms -> candidate     0.06 ms  (3.4%)
+  cancellationPhase      baseline     0.03 ms -> candidate    0.034 ms  (13.3%)
+
+Overall: PASS — no regressions > 20%

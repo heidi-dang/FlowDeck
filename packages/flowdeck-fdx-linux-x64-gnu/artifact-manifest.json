@@ -1,0 +1,12 @@
+{
+  "packageName": "@heidi-dang/flowdeck-fdx-linux-x64-gnu",
+  "packageVersion": "1.0.4",
+  "target": "flowdeck-fdx-linux-x64-gnu",
+  "sourceCommitSha": "04d696c735640b6aa03fe0378112f25177502470",
+  "artifactFilename": "heidi-dang-flowdeck-fdx-linux-x64-gnu-1.0.4.tgz",
+  "artifactSha256": "25817b36c9d0b912c5d09bcc0dd908a6c01ad3922c3add17545f02af03e005b4",
+  "npmIntegrity": "sha512-E2AndLazvLJ0OQQaUz+mqmyClQAT7GPjWJrHO9O46jSx6eHgUlvNT6o6heeTfKTYAUnpE2PPtqYiiW943MGSyg==",
+  "binarySha256": "25c635ca979b7d886c8f6418dfc2807815d2fe4dabdd5a21b3d104b425452e46",
+  "provenanceSha256": "9d69b63ae6c79e25ffbe9a1066492248a61a0ff08e9df06732b3fa335826e927",
+  "builtAt": "2026-08-05T02:10:26.067Z"
+}

@@ -16,24 +16,49 @@ export const DECISIONS_FILE = "decisions.md"
 
 /** Directory names directly under the planning root that are not topics. */
 const RESERVED_PLANNING_ENTRIES = new Set(["phases", "logs", "cache"])
+const CODEBASE_DIR = ".codebase"
 
-export { codebaseDir } from "./codebase-state"
+export function codebaseDir(directory: string): string {
+  return join(directory, CODEBASE_DIR)
+}
 
 // ─── Collision-safe project identity ──────────────────────────────────────
 
 /**
- * Normalize path deterministically for project ID generation.
- * Resolves real path if exists, strips UNC prefix, resolves relative components.
+ * Canonical project-identity path normalization (algorithm v1).
+ *
+ * The canonical algorithm is documented in `docs/project-identity.md` and its
+ * expected outputs are pinned in `fixtures/fdx/project-identity-v1.json`,
+ * which BOTH the TypeScript and Rust implementations consume. Rules:
+ *
+ * 1. `\` → `/`
+ * 2. strip extended-length prefixes (`//?/`, `\\?\`)
+ * 3. uppercase the drive letter (`c:` → `C:`)
+ * 4. resolve relative paths against the process cwd
+ * 5. if the path exists (and is not a UNC path), resolve symlinks and Windows
+ *    8.3 short names via the OS canonical path (`realpathSync.native`, which
+ *    uses libuv — matching Rust's `std::fs::canonicalize`); otherwise apply
+ *    lexical `.`/`..`/repeated-separator normalization
+ * 6. strip a single trailing `/` (beyond the root)
+ * 7. uppercase the drive letter again
+ *
+ * No general case folding, no Unicode normalization, no hostname-specific
+ * handling — the identity is byte-deterministic on the canonical input.
  */
 export function normalizePathForId(directory: string): string {
   let dir = directory.replace(/\\/g, "/")
   if (/^[a-zA-Z]:/.test(dir)) {
     dir = dir[0].toUpperCase() + dir.slice(1)
   }
+  const isUnc = dir.startsWith("//")
   let resolved = resolve(dir).replace(/\\/g, "/")
-  if (!dir.startsWith("//") && !dir.startsWith("\\\\") && existsSync(resolved)) {
+  if (!isUnc && existsSync(resolved)) {
     try {
-      resolved = realpathSync(resolved).replace(/\\/g, "/")
+      // `.native` (libuv) resolves 8.3 short names on Windows exactly like
+      // Rust's `std::fs::canonicalize`; fall back to the plain variant if a
+      // runtime does not expose it.
+      const realpath = typeof realpathSync.native === "function" ? realpathSync.native : realpathSync
+      resolved = realpath(resolved).replace(/\\/g, "/")
     } catch {}
   }
   if (resolved.startsWith("//?/")) {
@@ -52,17 +77,83 @@ export function normalizePathForId(directory: string): string {
 
 /**
  * Generate stable project ID from directory path.
- * Format: `<dirname>-<8-char-sha256-hash>`
+ * Format: `<dirname>-<8-char-sha256-hash>` (root paths yield `-<hash>`).
  */
 export function generateProjectId(directory: string): string {
   const normPath = normalizePathForId(directory)
-  const name = basename(normPath) || normPath
+  // A bare drive root (`C:/`) has no basename in Rust's `file_name`; align the
+  // TypeScript side so both produce `-<hash>` for root/drive-root inputs.
+  const name = /^[A-Z]:\/$/.test(normPath) ? "" : basename(normPath) || ""
   const hash = createHash("sha256").update(normPath).digest("hex").slice(0, 8)
   return `${name}-${hash}`
 }
 
 function copyDirRecursiveSync(src: string, dest: string): void {
   cpSync(src, dest, { recursive: true, dereference: false })
+}
+
+/**
+ * On Windows a process cannot rename a directory that is its own current
+ * working directory (the OS raises a sharing violation, EBUSY in Node). The
+ * fdx-context / fdx-decisions tools can run with cwd inside the legacy
+ * planning directory, so before renaming that directory the process cwd must
+ * be moved elsewhere. Mirrors `crates/fdx/src/paths.rs:release_cwd_pin`.
+ * Exported for cross-runtime parity tests.
+ */
+export function releaseCwdPinIfInside(root: string, legacyDir: string): void {
+  const cwd = process.cwd()
+  if (cwd === legacyDir || cwd.startsWith(legacyDir + "/") || cwd.startsWith(legacyDir + "\\")) {
+    try {
+      process.chdir(root)
+    } catch {
+      // Best effort — if chdir fails the rename will fail loudly below.
+    }
+  }
+}
+
+/**
+ * Bounded retry for transient Windows sharing violations (EBUSY is how Node
+ * surfaces ERROR_SHARING_VIOLATION). `classify` decides which errors are
+ * retried; everything else propagates immediately. Backoff doubles per
+ * attempt. Mirrors `crates/fdx/src/paths.rs:retry_sharing_violation`.
+ * Exported for cross-runtime parity tests.
+ */
+export function retryTransient<T>(
+  maxAttempts: number,
+  backoffMs: number,
+  classify: (err: unknown) => boolean,
+  op: () => T,
+): { value: T; attempts: number } {
+  const attempts = Math.max(1, maxAttempts)
+  const sleeper = new Int32Array(new SharedArrayBuffer(4))
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return { value: op(), attempts: attempt }
+    } catch (err) {
+      if (!classify(err)) throw err
+      lastErr = err
+      if (attempt < attempts) {
+        Atomics.wait(sleeper, 0, 0, backoffMs * 2 ** (attempt - 1))
+      }
+    }
+  }
+  throw lastErr
+}
+
+/**
+ * Rename with bounded retry for transient Windows sharing violations.
+ * Permission denial (EPERM) and every other error is returned immediately.
+ * Mirrors `crates/fdx/src/paths.rs:rename_with_sharing_retry`. Exported for
+ * cross-runtime parity tests.
+ */
+export function renameWithSharingRetry(src: string, dst: string): void {
+  retryTransient(
+    5,
+    25,
+    (err) => process.platform === "win32" && (err as NodeJS.ErrnoException).code === "EBUSY",
+    () => renameSync(src, dst),
+  )
 }
 
 /**
@@ -81,13 +172,13 @@ export function planningDir(directory: string): string {
   const name = basename(resolvedPath)
   const legacyDir = join(root, name)
 
-  const needsMigration = existsSync(legacyDir) &&
-                         existsSync(join(legacyDir, "STATE.md")) &&
-                         (!existsSync(newDir) || !existsSync(join(newDir, "STATE.md")))
+  const legacyReady = existsSync(legacyDir) && existsSync(join(legacyDir, "STATE.md"))
+  const newDirComplete = existsSync(newDir) && existsSync(join(newDir, "STATE.md"))
 
-  if (needsMigration) {
+  if (legacyReady && !newDirComplete) {
     const ts = Date.now()
     const tmpDir = join(root, `${id}.tmp.${ts}`)
+    let migrationFailed: Error | null = null
     try {
       copyDirRecursiveSync(legacyDir, tmpDir)
 
@@ -95,6 +186,10 @@ export function planningDir(directory: string): string {
       if (!existsSync(tmpStateFile)) {
         throw new Error("Migration validation failed: STATE.md missing in destination")
       }
+
+      // Release any cwd pin into the legacy directory before it is renamed
+      // (Windows sharing violation otherwise).
+      releaseCwdPinIfInside(root, legacyDir)
 
       if (!existsSync(newDir)) {
         renameSync(tmpDir, newDir)
@@ -105,12 +200,36 @@ export function planningDir(directory: string): string {
 
       const backupDir = join(root, `${name}.bak.${ts}`)
       try {
-        renameSync(legacyDir, backupDir)
-      } catch {}
-    } catch {
-      if (existsSync(tmpDir)) {
-        try { rmSync(tmpDir, { recursive: true, force: true }) } catch {}
+        renameWithSharingRetry(legacyDir, backupDir)
+      } catch (e) {
+        // Destination is already active; leaving the legacy dir behind is
+        // recoverable (planningDir retries the backup on the next call).
+        migrationFailed = e as Error
       }
+    } catch (e) {
+      migrationFailed = e as Error
+      if (existsSync(tmpDir)) {
+        try {
+          rmSync(tmpDir, { recursive: true, force: true })
+        } catch (cleanupErr) {
+          console.error(`[planning-state] failed to clean up migration tmp dir ${tmpDir}:`, cleanupErr)
+        }
+      }
+    }
+    if (migrationFailed) {
+      console.error(`[planning-state] legacy planning migration for ${legacyDir} did not fully complete:`, migrationFailed)
+    }
+  } else if (legacyReady && newDirComplete && existsSync(legacyDir)) {
+    // AlreadyMigrated cleanup: the destination is active but a previous run's
+    // legacy backup was interrupted. Retry the backup rename on each call so
+    // the leftover legacy dir is eventually cleared.
+    releaseCwdPinIfInside(root, legacyDir)
+    const ts = Date.now()
+    const backupDir = join(root, `${name}.bak.${ts}`)
+    try {
+      renameWithSharingRetry(legacyDir, backupDir)
+    } catch (e) {
+      console.error(`[planning-state] failed to back up legacy planning dir ${legacyDir}:`, e)
     }
   }
 

@@ -1,0 +1,66 @@
+{
+  "finding": "MASTER_PLAN_REMAINING",
+  "title": "Remaining open Master Plan findings — NOT closed",
+  "generated_at": "2026-08-07",
+  "head_sha": "05b99db (PR #113 feat/orchestration-master-plan-completion, draft)",
+  "method": "Honest inventory of open work on the orchestration master plan after the P0-2 / P1-B repair gates. Nothing in this matrix is claimed complete; each entry records the open scope and the current disposition.",
+  "summary": "The P0-2 production-isolation and P1-B final repair gates are closed, but the Master Plan as a whole is NOT complete. The items below remain open and require follow-up before full completion can be claimed.",
+  "open_items": [
+    {
+      "id": "REMAINING-01",
+      "title": "fdx-secure-exec trusted package boundary",
+      "area": "fdx native / secure execution",
+      "description": "Secure-execution trusted-package boundary for the fdx native binary remains open.",
+      "status": "open",
+      "evidence": "none"
+    },
+    {
+      "id": "REMAINING-02",
+      "title": "macOS/Windows secure execution",
+      "area": "fdx native / secure execution",
+      "description": "Secure execution parity on macOS and Windows remains open (current gates cover CI matrix execution of the packed CLI, not OS-native secure execution).",
+      "status": "open",
+      "evidence": "none"
+    },
+    {
+      "id": "REMAINING-03",
+      "title": "Routing Tasks 5-12",
+      "area": "routing",
+      "description": "Routing work items 5-12 from the master plan remain unimplemented/unverified.",
+      "status": "open",
+      "evidence": "none"
+    },
+    {
+      "id": "REMAINING-04",
+      "title": "Windows daemon IPC",
+      "area": "fdx daemon",
+      "description": "Windows daemon inter-process communication path remains open (daemon IPC is validated on Linux only so far).",
+      "status": "open",
+      "evidence": "none"
+    },
+    {
+      "id": "REMAINING-05",
+      "title": "PR #112 cache transaction semantics",
+      "area": "fdx index cache",
+      "description": "PR #112 cache transaction semantics (deferred visibility / atomic publish / reuse revalidation) require final review and closure evidence.",
+      "status": "open",
+      "evidence": "none"
+    },
+    {
+      "id": "REMAINING-06",
+      "title": "verify:production authority",
+      "area": "release / production gates",
+      "description": "The verify:production gate (scripts/verify-production.mjs) has not been run to closure on this branch; its authority over release readiness remains unproven here.",
+      "status": "open",
+      "evidence": "none"
+    },
+    {
+      "id": "REMAINING-07",
+      "title": "Phase 0-12 traceability + remaining P1/P2 evidence",
+      "area": "master plan traceability",
+      "description": "Full phase 0-12 traceability matrix and the remaining P1/P2 evidence artifacts are not yet produced for this branch.",
+      "status": "open",
+      "evidence": "none"
+    }
+  ]
+}

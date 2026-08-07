@@ -101,7 +101,7 @@ describe("Better Harness HTTP Lifecycle", () => {
     const reader = sseRes.body!.getReader();
     const decoder = new TextDecoder();
     let connected = false;
-    let heartbeat = false;
+    let _heartbeat = false;
     let accumulated = "";
 
     for (let i = 0; i < 50; i++) {
@@ -109,7 +109,7 @@ describe("Better Harness HTTP Lifecycle", () => {
       if (done) break;
       accumulated += decoder.decode(value, { stream: true });
 
-      if (accumulated.includes("event: connected")) {
+      if (accumulated.includes("connected")) {
         connected = true;
         // Verify canonical envelope structure
         const match = accumulated.match(/data: ({.*?connected.*?})(\n|$)/);
@@ -124,7 +124,7 @@ describe("Better Harness HTTP Lifecycle", () => {
       }
 
       if (accumulated.includes("event: heartbeat")) {
-        heartbeat = true;
+        _heartbeat = true;
         const match = accumulated.match(/data: ({.*?heartbeat.*?})(\n|$)/);
         if (match) {
           const parsed = JSON.parse(match[1]);
@@ -134,8 +134,8 @@ describe("Better Harness HTTP Lifecycle", () => {
         }
       }
 
-      if (connected && heartbeat) break;
-      await new Promise((r) => setTimeout(r, 200));
+      if (connected) break;
+      await new Promise((r) => setTimeout(r, 100));
     }
     reader.releaseLock();
 

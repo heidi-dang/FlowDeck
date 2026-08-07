@@ -1,6 +1,6 @@
 [package]
 name = "fdx"
-version = "0.1.0"
+version = "1.0.4"
 edition = "2021"
 
 [dependencies]
@@ -23,8 +23,22 @@ glob = "0.3"
 unidiff = "0.4"
 tempfile = "3"
 sha2 = "0.10"
+fs2 = "0.4"
 
 
 [[bin]]
 name = "fdx"
 path = "src/main.rs"
+
+[[bin]]
+name = "fdxd"
+path = "src/bin/fdxd.rs"
+
+# Narrow native helper for secure process creation (Blocker 1): reads the
+# protected backing object on each supported platform (sealed memfd on Linux,
+# unlinked-descriptor fexecve on macOS, write/delete-share-denied handle via
+# CreateProcess on Windows). Zero dependencies: raw syscalls on Linux, raw
+# extern declarations on macOS/Windows.
+[[bin]]
+name = "fdx-secure-exec"
+path = "src/bin/fdx-secure-exec.rs"

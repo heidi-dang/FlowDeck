@@ -12,13 +12,14 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "bun:test"
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, utimesSync, readFileSync } from "fs"
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, utimesSync, readFileSync, chmodSync } from "fs"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"
 import { tmpdir } from "os"
 
 import { sessionStartHook } from "@/hooks/session-start"
 import { invalidateRuleCache, getRuleCacheSize } from "@/services/lazy-rule-loader"
+import { checkFdxAvailability } from "@/tools/fdx-shared"
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "flowdeck-session-start-lean-"))
@@ -372,6 +373,70 @@ describe("session-start — lean context: integration with .flowdeck/lessons.md 
       expect(result.flowdeck_supervisor_tick).toBeUndefined()
     } finally {
       delete process.env.FLOWDECK_SUPERVISOR_ENABLED
+    }
+  })
+})
+
+describe("session-start — FDX availability through the trusted resolver (P1-1)", () => {
+  let dir: string
+  let originalEnv: NodeJS.ProcessEnv
+
+  beforeEach(() => {
+    dir = makeTempDir()
+    writePlanningState(dir)
+    originalEnv = { ...process.env }
+    delete process.env.FDX_BINARY_PATH
+    delete process.env.FLOWDECK_FDX_ALLOW_LOCAL_DEV_SOURCE
+    delete process.env.FLOWDECK_PROFILE
+    delete process.env.NODE_ENV
+    // Isolate the resolution cache root: a fresh, empty cache dir so no
+    // pre-existing repair-cache binary can satisfy the resolver ahead of the
+    // PATH fixture under test.
+    process.env.XDG_CACHE_HOME = join(dir, "empty-cache")
+    mkdirSync(process.env.XDG_CACHE_HOME, { recursive: true })
+  })
+
+  afterEach(() => {
+    process.env = originalEnv
+    rmSync(dir, { recursive: true, force: true })
+    rmSync(planningDir(dir), { recursive: true, force: true })
+    invalidateRuleCache()
+  })
+
+  it("never executes an untrusted PATH candidate directly — availability comes from the trusted resolver", async () => {
+    // POSIX-only: the fixture is a shell script that cannot execute as
+    // fdx.exe on Windows (the P2-2 snapshot-boundary tests cover Windows).
+    if (process.platform === "win32") return
+    // Untrusted fixture: records the path it was executed from, then fails the
+    // version probe (invalid binary). Placed first in PATH.
+    const binDir = join(dir, "path-bin")
+    mkdirSync(binDir, { recursive: true })
+    const marker = join(dir, "executed-as.txt")
+    const fakeFdx = join(binDir, "fdx")
+    writeFileSync(
+      fakeFdx,
+      `#!/bin/sh\necho "$0" > ${JSON.stringify(marker)}\nexit 1\n`,
+      "utf-8",
+    )
+    chmodSync(fakeFdx, 0o755)
+    process.env.PATH = `${binDir}:${process.env.PATH}`
+
+    const result = await sessionStartHook({ directory: dir })
+
+    // Availability is determined by the canonical resolver — an invalid PATH
+    // candidate cannot satisfy it, so the session reports not-ready.
+    expect(result.flowdeck_fdx_ready).toBe(false)
+    // ...and that matches the resolver's own answer exactly.
+    expect(result.flowdeck_fdx_ready).toBe(checkFdxAvailability(true))
+    // The original PATH pathname was never executed directly: if the fixture
+    // ran at all (as the resolver's --version probe), it ran from the verified
+    // snapshot pipeline — either the private snapshot pathname (non-Linux) or
+    // the held snapshot descriptor (/proc/<pid>/fd/<fd> on Linux) — never from
+    // its own PATH pathname.
+    if (existsSync(marker)) {
+      const executedAs = readFileSync(marker, "utf-8").trim()
+      expect(executedAs).not.toBe(fakeFdx)
+      expect(executedAs).not.toContain("path-bin")
     }
   })
 })

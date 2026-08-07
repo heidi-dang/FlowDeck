@@ -1,0 +1,276 @@
+{
+  "finding": "P0-2",
+  "title": "Better Harness split-brain production runtime",
+  "generated_at": "2026-08-06",
+  "head_sha": "ccb43a4934a06ad9c8d8114fe7525f2dea05520f",
+  "method": "Static audit of src/index.ts, src/better-harness/**, src/config/**, src/orchestration/streaming/stream-repository.ts, package.json, bin/, and tests/.",
+  "summary": "The primary production plugin entry point (src/index.ts) statically imported and constructed HarnessRuntime, HarnessHttpServer, SseManager, ProjectRegistry and RunCoordinator whenever betterHarness.enabled was configured. DEFAULT_CONFIG defaulted betterHarness.enabled=true, so the production plugin activated a second writable orchestration authority (own run IDs, JSON persistence, event bus, recovery, cancellation, HTTP API, SSE) by default. The canonical streaming repository also imported better-harness helper modules.",
+  "entries": [
+    {
+      "module": "src/index.ts",
+      "symbol": "import { HarnessRuntime }",
+      "imported_by": ["src/index.ts (production plugin)"],
+      "production_reachable": true,
+      "runtime_constructed": true,
+      "data_read": false,
+      "data_written": true,
+      "network_surface": "indirect via HarnessHttpServer",
+      "event_surface": "indirect via SseManager/EventBus",
+      "target_disposition": "Removed from production",
+      "test_evidence": "tests/harness-production-isolation.test.ts (import graph + construction)"
+    },
+    {
+      "module": "src/index.ts",
+      "symbol": "import { HarnessHttpServer }",
+      "imported_by": ["src/index.ts"],
+      "production_reachable": true,
+      "runtime_constructed": true,
+      "data_written": false,
+      "network_surface": "HTTP server start() on configured port",
+      "event_surface": "SSE routes",
+      "target_disposition": "Removed from production",
+      "test_evidence": "tests/harness-production-isolation.test.ts (no listener on production startup)"
+    },
+    {
+      "module": "src/index.ts",
+      "symbol": "import { SseManager }",
+      "imported_by": ["src/index.ts"],
+      "production_reachable": true,
+      "runtime_constructed": true,
+      "data_written": true,
+      "network_surface": "SSE /events routes",
+      "event_surface": "EventBus -> canonical StreamRepository (flowdeck.db)",
+      "target_disposition": "Removed from production",
+      "test_evidence": "tests/harness-production-isolation.test.ts (no SSE manager on production startup)"
+    },
+    {
+      "module": "src/index.ts",
+      "symbol": "import { ProjectRegistry }",
+      "imported_by": ["src/index.ts"],
+      "production_reachable": true,
+      "runtime_constructed": true,
+      "data_written": false,
+      "network_surface": false,
+      "event_surface": false,
+      "target_disposition": "Removed from production",
+      "test_evidence": "tests/harness-production-isolation.test.ts"
+    },
+    {
+      "module": "src/index.ts",
+      "symbol": "import type { RouterContext }",
+      "imported_by": ["src/index.ts"],
+      "production_reachable": true,
+      "runtime_constructed": false,
+      "target_disposition": "Removed from production",
+      "test_evidence": "tests/harness-production-isolation.test.ts"
+    },
+    {
+      "module": "src/index.ts",
+      "symbol": "betterHarnessServer.start()",
+      "imported_by": ["src/index.ts"],
+      "production_reachable": true,
+      "runtime_constructed": true,
+      "network_surface": "HTTP listener bound in production",
+      "target_disposition": "Removed from production",
+      "test_evidence": "tests/harness-production-isolation.test.ts (no listener)"
+    },
+    {
+      "module": "src/index.ts",
+      "symbol": "coordinator.recoverActiveRuns()",
+      "imported_by": ["src/index.ts"],
+      "production_reachable": true,
+      "runtime_constructed": true,
+      "data_read": true,
+      "data_written": true,
+      "target_disposition": "Removed from production",
+      "test_evidence": "tests/harness-production-isolation.test.ts (no recovery on production startup)"
+    },
+    {
+      "module": "src/config/agent-models.ts",
+      "symbol": "DEFAULT_CONFIG.betterHarness.enabled = true",
+      "imported_by": ["src/config/agent-models.ts", "src/index.ts"],
+      "production_reachable": true,
+      "runtime_constructed": true,
+      "target_disposition": "Removed from production (default no longer enables harness)",
+      "test_evidence": "tests/harness-production-isolation.test.ts (DEFAULT_CONFIG has no betterHarness)"
+    },
+    {
+      "module": "src/config/agent-models.ts",
+      "symbol": "loadFlowDeckConfig / sanitizeConfig (betterHarness passthrough)",
+      "imported_by": ["src/index.ts"],
+      "production_reachable": true,
+      "runtime_constructed": false,
+      "target_disposition": "Read-only compatibility adapter (fail-closed migration validation)",
+      "test_evidence": "tests/harness-production-isolation.test.ts (betterHarness.enabled=true rejected)"
+    },
+    {
+      "module": "src/better-harness/runtime/harness-runtime.ts",
+      "symbol": "HarnessRuntime",
+      "imported_by": ["src/index.ts", "src/better-harness/testing/standalone-launcher.ts", "tests/better-harness/*"],
+      "production_reachable": false,
+      "runtime_constructed": false,
+      "data_written": true,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/integration.test.ts, tests/harness-production-isolation.test.ts"
+    },
+    {
+      "module": "src/better-harness/runtime/run-coordinator.ts",
+      "symbol": "RunCoordinator",
+      "imported_by": ["src/better-harness/runtime/harness-runtime.ts", "tests/better-harness/*"],
+      "production_reachable": false,
+      "runtime_constructed": false,
+      "data_written": true,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/integration.test.ts"
+    },
+    {
+      "module": "src/better-harness/transport/http-server.ts",
+      "symbol": "HarnessHttpServer",
+      "imported_by": ["src/better-harness/testing/standalone-launcher.ts", "tests/better-harness/*"],
+      "production_reachable": false,
+      "runtime_constructed": false,
+      "network_surface": "HTTP only when standalone invoked",
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/production-server-integration.test.ts"
+    },
+    {
+      "module": "src/better-harness/transport/sse.ts",
+      "symbol": "SseManager",
+      "imported_by": ["src/better-harness/testing/standalone-launcher.ts", "tests/better-harness/*"],
+      "production_reachable": false,
+      "runtime_constructed": false,
+      "data_written": true,
+      "network_surface": "SSE only when standalone invoked",
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/sse-lifecycle.test.ts"
+    },
+    {
+      "module": "src/better-harness/runtime/project-registry.ts",
+      "symbol": "ProjectRegistry",
+      "imported_by": ["src/better-harness/testing/standalone-launcher.ts", "tests/better-harness/*"],
+      "production_reachable": false,
+      "runtime_constructed": false,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/integration.test.ts"
+    },
+    {
+      "module": "src/better-harness/runtime/router-context.ts",
+      "symbol": "RouterContext",
+      "imported_by": ["src/better-harness/transport/http-server.ts", "src/better-harness/testing/standalone-launcher.ts"],
+      "production_reachable": false,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/*"
+    },
+    {
+      "module": "src/better-harness/persistence/harness-store.ts",
+      "symbol": "setFlowDeckStateDir / resetFlowDeckStateDir / getFlowDeckStateDir / getProjectStoreDir",
+      "imported_by": ["src/better-harness/**", "src/orchestration/streaming/stream-repository.ts"],
+      "production_reachable": false,
+      "runtime_constructed": false,
+      "data_written": true,
+      "target_disposition": "Standalone development authority (instance-scoped; global mutation removed from runtime path)",
+      "test_evidence": "tests/better-harness/state-isolation.test.ts, tests/harness-production-isolation.test.ts"
+    },
+    {
+      "module": "src/better-harness/persistence/run-store.ts",
+      "symbol": "saveRun / loadRun / listRuns",
+      "imported_by": ["src/better-harness/runtime/run-coordinator.ts", "src/better-harness/runtime/runtime-registry.ts"],
+      "production_reachable": false,
+      "data_written": true,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/persistence.test.ts"
+    },
+    {
+      "module": "src/better-harness/persistence/report-store.ts",
+      "symbol": "saveReport / loadReport / listReports",
+      "imported_by": ["src/better-harness/runtime/run-coordinator.ts", "src/better-harness/runtime/runtime-registry.ts"],
+      "production_reachable": false,
+      "data_written": true,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/persistence.test.ts"
+    },
+    {
+      "module": "src/better-harness/persistence/finding-store.ts",
+      "symbol": "saveFindingIndex / loadFindingIndex / getActiveFindings",
+      "imported_by": ["src/better-harness/runtime/run-coordinator.ts", "src/better-harness/runtime/runtime-registry.ts"],
+      "production_reachable": false,
+      "data_written": true,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/persistence.test.ts"
+    },
+    {
+      "module": "src/better-harness/runtime/run-cancellation.ts",
+      "symbol": "cancelRun / isRunCancelled / clearCancellation",
+      "imported_by": ["src/better-harness/runtime/run-coordinator.ts", "src/better-harness/runtime/harness-runtime.ts"],
+      "production_reachable": false,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/integration.test.ts"
+    },
+    {
+      "module": "src/better-harness/runtime/runtime-registry.ts",
+      "symbol": "registry",
+      "imported_by": ["src/better-harness/index.ts"],
+      "production_reachable": false,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/*"
+    },
+    {
+      "module": "src/better-harness/transport/router.ts",
+      "symbol": "routeRequest / routeRequestContext (HTTP API routes)",
+      "imported_by": ["src/better-harness/transport/http-server.ts"],
+      "production_reachable": false,
+      "network_surface": "HTTP API routes only when standalone invoked",
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/integration.test.ts"
+    },
+    {
+      "module": "src/orchestration/streaming/stream-repository.ts",
+      "symbol": "import { getProjectIdentity } / getProjectStoreDir from better-harness",
+      "imported_by": ["src/better-harness/transport/sse.ts"],
+      "production_reachable": false,
+      "runtime_constructed": false,
+      "data_written": true,
+      "target_disposition": "Standalone development authority (only reachable via harness SSE; canonical streaming DB path decoupled from harness global state dir)",
+      "test_evidence": "tests/better-harness/sse-lifecycle.test.ts"
+    },
+    {
+      "module": "package.json",
+      "symbol": "bin.flowdeck-better-harness -> ./bin/better-harness.js",
+      "imported_by": ["npm"],
+      "production_reachable": false,
+      "target_disposition": "Standalone development authority (explicit CLI subpath)",
+      "test_evidence": "tests/harness-production-isolation.test.ts (package-layout)"
+    },
+    {
+      "module": "package.json",
+      "symbol": "exports['./better-harness']",
+      "imported_by": ["npm consumers"],
+      "production_reachable": false,
+      "target_disposition": "Standalone development authority (explicit subpath; default '.' does not load it)",
+      "test_evidence": "tests/harness-production-isolation.test.ts (package-layout)"
+    },
+    {
+      "module": "src/better-harness/testing/standalone-launcher.ts",
+      "symbol": "launchStandaloneServer",
+      "imported_by": ["tests/better-harness/*"],
+      "production_reachable": false,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/better-harness/state-isolation.test.ts, sse-lifecycle.test.ts"
+    },
+    {
+      "module": "src/better-harness/standalone.ts",
+      "symbol": "standalone CLI entry (new)",
+      "imported_by": ["bin/better-harness.js"],
+      "production_reachable": false,
+      "target_disposition": "Standalone development authority",
+      "test_evidence": "tests/harness-production-isolation.test.ts (explicit invocation)"
+    }
+  ],
+  "allowed_dispositions_used": [
+    "Standalone development authority",
+    "Read-only compatibility adapter",
+    "Removed from production"
+  ],
+  "no_item_out_of_scope": true,
+  "notes": "No better-harness item remains 'out of scope', 'temporary', 'unknown', or ambiguously production-reachable. Every production-reachable item is either removed from production or converted to a fail-closed read-only compatibility adapter. All runtime/transport/persistence/event/network surfaces are standalone-only."
+}
