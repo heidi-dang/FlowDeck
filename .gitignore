@@ -163,3 +163,4 @@ fd-worktrees/
 *.db
 *.db-wal
 *.db-shm
+.cptr

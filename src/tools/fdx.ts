@@ -460,22 +460,28 @@ export const fdxLintTool: ToolDefinition = tool({
 
 export const fdxContextTool: ToolDefinition = tool({
   description:
-    "Per-topic agent-output log: append, read, or clear. Backed by the Rust `fdx context` " +
+    "Per-topic agent-output log: append, read, clear, or read_artifact. Backed by the Rust `fdx context` " +
     "subcommand for atomic appends under an advisory file lock. Reading or clearing a missing " +
-    "file is safe — returns a placeholder.",
+    "file is safe — returns a placeholder. Use read_artifact to retrieve externalized large tool outputs.",
   args: {
-    action: tool.schema.enum(["append", "read", "clear"]),
-    topic: tool.schema.string(),
+    action: tool.schema.enum(["append", "read", "clear", "read_artifact"]),
+    topic: tool.schema.string().optional(),
     agent: tool.schema.string().optional(),
     stage: tool.schema.string().optional(),
     summary: tool.schema.string().optional(),
+    artifact_id: tool.schema.string().optional(),
   },
   async execute(args): Promise<string> {
+    // read_artifact is handled natively regardless of fdx availability
+    if (args.action === "read_artifact") {
+      return nativeContextFallback(args as any)
+    }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeContextFallback(args)
+      return nativeContextFallback(args as any)
     }
-    const cmd: string[] = ["context", "--topic", args.topic, "--action", args.action]
+    const topic = args.topic || "general"
+    const cmd: string[] = ["context", "--topic", topic, "--action", args.action]
     if (args.action === "append") {
       if (args.agent) cmd.push("--agent", args.agent)
       if (args.stage) cmd.push("--stage", args.stage)
@@ -485,7 +491,7 @@ export const fdxContextTool: ToolDefinition = tool({
       return runFdx(cmd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeContextFallback(args)
+      return nativeContextFallback(args as any)
     }
   },
 })

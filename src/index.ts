@@ -87,6 +87,13 @@ import {
   applyIdentityMarker,
 } from "./services/runtime-agent-policy"
 import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
+import { TokenBudgetRuntime } from "./services/token-budget-runtime"
+import { getArtifactStore } from "./services/artifact-store"
+import {
+  buildAssignmentContext,
+  externalizeToolOutput,
+  compactConversationContext,
+} from "./services/context-scoping"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -262,11 +269,23 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
 
   setActiveProjectDir(directory)
+  const artifactStore = getArtifactStore(join(directory, ".flowdeck", "artifacts"))
 
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
   const orchestratorGuard = new OrchestratorGuard({ routes: getAgentRoutes() })
   const loopDetector = new LoopDetector(flowdeckConfig.governance?.loopDetection, appLog)
   let effectiveDefaultAgent: string = "heidi"
+
+  // ─── Hierarchical token-budget control ────────────────────────────────
+  const tokenBudgetRuntime = TokenBudgetRuntime.fromConfig(flowdeckConfig, {
+    directory,
+    onWarning: (runId, message) => {
+      appLog(`[token-budget] ${message}`, "warn")
+    },
+    onTerminal: (runId, reason) => {
+      appLog(`[token-budget] Run ${runId} terminal: ${reason}`, "warn")
+    },
+  })
 
   const maxToolCalls = flowdeckConfig.governance?.delegationBudget?.maxToolCalls ?? 200
   const maxRetries = flowdeckConfig.governance?.delegationBudget?.maxSameStepRetries ?? 3
@@ -432,6 +451,47 @@ const plugin: Plugin = async ({ directory, client }) => {
         throw new Error(result.reason ?? "Agent identity enforcement blocked this request")
       }
 
+      // ── Context Compaction ───────────────────────────────────────────
+      // Compact intermediate conversation turns when token footprint exceeds the
+      // configured threshold — runs before the budget gate to reduce reservation size.
+      if (sessionID && output.message?.messages && Array.isArray(output.message.messages)) {
+        const tokenConfig = tokenBudgetRuntime.getConfig()
+        const compactResult = compactConversationContext({
+          messages: output.message.messages,
+          thresholdTokens: tokenConfig.compactThresholdTokens,
+          sessionID,
+        })
+        if (compactResult.compacted) {
+          output.message.messages = compactResult.messages
+          appLog(
+            `[context-compaction] session=${sessionID} ${compactResult.originalTokens}->${compactResult.compactedTokens} tokens`,
+            "info",
+            sessionID,
+          )
+        }
+      }
+
+      // ── Hierarchical token-budget pre-dispatch gate ──────────────────
+      // Reserve budget before the model request is sent. When the run or
+      // child budget cannot cover the estimated request, abort the call.
+      if (sessionID && tokenBudgetRuntime.isEnabled()) {
+        const budgetCtx = {
+          sessionID,
+          agent,
+          parentID: sessionMeta?.parentID,
+          depth: sessionMeta?.depth ?? 0,
+        }
+        const budget = await tokenBudgetRuntime.beforeDispatch(budgetCtx, output.message, {
+          model: output.message?.modelID,
+          provider: output.message?.providerID,
+        })
+        if (!budget.allowed) {
+          throw new Error(
+            `TOKEN_BUDGET_EXCEEDED: ${budget.reason ?? "budget exhausted"} (run ${budget.runId}, remaining ${budget.remainingRun})`,
+          )
+        }
+      }
+
       // Apply identity anti-fabrication marker
       if (output.message?.system !== undefined) {
         output.message.system = applyIdentityMarker(
@@ -550,6 +610,19 @@ const plugin: Plugin = async ({ directory, client }) => {
           { sessionID, callID, agent },
           rawArgs,
         )
+
+        // Scope child prompt using buildAssignmentContext to enforce context packet boundaries
+        const rawTaskPrompt = (rawArgs.prompt as string) ?? (rawArgs.description as string) ?? ""
+        if (rawTaskPrompt) {
+          const assignmentCtx = buildAssignmentContext({
+            assignment: rawTaskPrompt,
+            target: (rawArgs.target as string) || (rawArgs.file as string) || undefined,
+            stage: (rawArgs.stage as string) || undefined,
+          })
+          rawArgs.prompt = assignmentCtx.prompt
+          if (toolOutput?.args) toolOutput.args.prompt = assignmentCtx.prompt
+          if (toolInput?.args) toolInput.args.prompt = assignmentCtx.prompt
+        }
         const targetAgent = invocation.targetAgent
 
         // Only run delegation validation if a delegation target is present.
@@ -716,6 +789,31 @@ const plugin: Plugin = async ({ directory, client }) => {
       const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
       appLog(`[tool] done tool=${toolName} session=${sessionID}`)
 
+      // ── Tool Output Externalisation ───────────────────────────────────
+      // If the tool output is oversized, archive in ArtifactStore and return reference marker
+      if (sessionID && tokenBudgetRuntime.isEnabled()) {
+        const tokenConfig = tokenBudgetRuntime.getConfig()
+        const maxChars = tokenConfig.maxToolOutputChars
+        const outputFields = ["output", "result", "content"]
+        for (const field of outputFields) {
+          if (toolOutput && typeof toolOutput[field] === "string" && toolOutput[field].length > maxChars) {
+            const ext = externalizeToolOutput(toolOutput[field], maxChars, {
+              sessionID,
+              toolName,
+              artifactStore,
+            })
+            if (ext.truncated) {
+              toolOutput[field] = ext.text
+              appLog(
+                `[tool-externalisation] Externalised output for tool=${toolName} session=${sessionID} (${ext.originalChars} -> ${ext.retainedChars} chars, id=${ext.artifactId})`,
+                "info",
+                sessionID,
+              )
+            }
+          }
+        }
+      }
+
       if (sessionID && toolName && rawArgs.file && !toolInput.error && !toolOutput?.error) {
         if (!sessionFilesChanged.has(sessionID)) {
           sessionFilesChanged.set(sessionID, new Set())
@@ -880,6 +978,47 @@ const plugin: Plugin = async ({ directory, client }) => {
               },
             })
           }
+        }
+      }
+
+      // ── Hierarchical token-budget reconciliation ─────────────────────
+      // message.updated carries the assistant message with real provider
+      // tokens + cost. Reconcile the reservation made at chat.message.
+      const eventMeta = eventSessionID ? sessionRegistry.get(eventSessionID) : undefined
+      if (tokenBudgetRuntime.isEnabled() && type === "message.updated") {
+        const msgInfo = info as {
+          id: string
+          role?: string
+          tokens?: { input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } }
+          cost?: number
+          modelID?: string
+          providerID?: string
+          error?: unknown
+        }
+        if (msgInfo?.id && msgInfo.role === "assistant") {
+          try {
+            const budgetCtx = {
+              sessionID: eventSessionID,
+              agent: sessionAgent ?? (eventSessionID ? sessionCallerAgents.get(eventSessionID) : undefined) ?? "unknown",
+              parentID,
+              depth: eventMeta?.depth ?? 0,
+            }
+            await tokenBudgetRuntime.reconcileUsage(budgetCtx, msgInfo)
+          } catch (err) {
+            appLog(`[token-budget] reconcile failed: ${err instanceof Error ? err.message : String(err)}`, "warn", eventSessionID)
+          }
+        }
+      } else if (tokenBudgetRuntime.isEnabled() && (type === "session.error" || type === "session.completed")) {
+        try {
+          const budgetCtx = {
+            sessionID: eventSessionID,
+            agent: sessionAgent ?? (eventSessionID ? sessionCallerAgents.get(eventSessionID) : undefined) ?? "unknown",
+            parentID,
+            depth: eventMeta?.depth ?? 0,
+          }
+          await tokenBudgetRuntime.onSessionEnd(budgetCtx, type === "session.error" ? "session_error" : "session_completed")
+        } catch (err) {
+          appLog(`[token-budget] session-end release failed: ${err instanceof Error ? err.message : String(err)}`, "warn", eventSessionID)
         }
       }
 

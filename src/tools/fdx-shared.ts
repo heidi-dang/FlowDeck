@@ -593,23 +593,38 @@ function escapeRegex(str: string): string {
 }
 
 export async function nativeContextFallback(args: {
-  action: "append" | "read" | "clear"
-  topic: string
+  action: "append" | "read" | "clear" | "read_artifact"
+  topic?: string
   agent?: string
   stage?: string
   summary?: string
+  artifact_id?: string
 }): Promise<string> {
-  const path = topicContextPath(activeProjectDir, args.topic)
+  if (args.action === "read_artifact") {
+    if (!args.artifact_id) {
+      return "Error: artifact_id is required when action is read_artifact"
+    }
+    const { getArtifactStore } = await import("../services/artifact-store")
+    const store = getArtifactStore()
+    const art = store.get(args.artifact_id)
+    if (!art) {
+      return `[Artifact "${args.artifact_id}" not found]`
+    }
+    return `[Artifact: ${art.id} | Tool: ${art.toolName} | Length: ${art.length} chars]\n${art.content}`
+  }
+
+  const topic = args.topic || "general"
+  const path = topicContextPath(activeProjectDir, topic)
   if (args.action === "append") {
     const line = `### ${args.agent || "Agent"} (${args.stage || "Stage"})\n${args.summary || ""}\n`
     await appendWithLock(path, line)
     return `[FDX Context Fallback] Appended to ${path}`
   } else if (args.action === "read") {
     const res = readOrMissing(path)
-    return res.exists ? res.content : `[No context logged for topic "${args.topic}"]`
+    return res.exists ? res.content : `[No context logged for topic "${topic}"]`
   } else {
     await clearFileWithLock(path)
-    return `[Context cleared for topic "${args.topic}"]`
+    return `[Context cleared for topic "${topic}"]`
   }
 }
 
