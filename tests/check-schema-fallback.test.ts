@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { execSync } from "child_process";
-import { writeFileSync, readFileSync, unlinkSync, existsSync, rmSync, chmodSync } from "fs";
+import { writeFileSync, readFileSync, rmSync, chmodSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { fileURLToPath } from "url";
