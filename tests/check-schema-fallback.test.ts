@@ -98,6 +98,31 @@ function computeChecksum(sql: string): string {
   return createHash("sha256").update(sql, "utf-8").digest("hex");
 }
 
+// ── Typed row helpers (bun:sqlite .get() rows are typed unknown) ─────────
+
+interface CountRow {
+  c: number;
+}
+
+interface IntegrityRow {
+  integrity_check: string;
+}
+
+/** Run a COUNT query and return the count, or -1 if no row is returned. */
+function getCount(db: Database, sql: string): number {
+  const row = db.query(sql).get() as CountRow | undefined;
+  return row?.c ?? -1;
+}
+
+/** Run PRAGMA integrity_check and return its value (defensive: string form). */
+function getIntegrity(db: Database): string {
+  const result = db.query("PRAGMA integrity_check;").get();
+  if (typeof result === "object" && result !== null) {
+    return (result as IntegrityRow).integrity_check;
+  }
+  return typeof result === "string" ? result : "missing";
+}
+
 // ── Test suite ────────────────────────────────────────────────────────────
 
 describe("Schema Validation SQLite Fallback", () => {
@@ -127,17 +152,11 @@ describe("Schema Validation SQLite Fallback", () => {
       const db = new Database(":memory:");
       db.run(sql);
 
-      const tables = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"'
-      ).get().c;
-      const triggers = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="trigger"'
-      ).get().c;
-      const indexes = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"'
-      ).get().c;
+      const tables = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"');
+      const triggers = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="trigger"');
+      const indexes = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"');
       const fk = db.query("PRAGMA foreign_key_check;").all().length;
-      const integ = db.query("PRAGMA integrity_check;").get()["integrity_check"];
+      const integ = getIntegrity(db);
 
       expect(tables).toBe(53);
       expect(triggers).toBe(36);
@@ -157,17 +176,11 @@ describe("Schema Validation SQLite Fallback", () => {
       const db = new Database(":memory:");
       db.run(sql);
 
-      const tables = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"'
-      ).get().c;
-      const triggers = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="trigger"'
-      ).get().c;
-      const indexes = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"'
-      ).get().c;
+      const tables = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"');
+      const triggers = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="trigger"');
+      const indexes = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"');
       const fk = db.query("PRAGMA foreign_key_check;").all().length;
-      const integ = db.query("PRAGMA integrity_check;").get()["integrity_check"];
+      const integ = getIntegrity(db);
 
       expect(tables).toBe(53);
       expect(triggers).toBe(36);
@@ -198,17 +211,11 @@ describe("Schema Validation SQLite Fallback", () => {
       const db = new Database(":memory:");
       db.run(sql);
 
-      const tables = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"'
-      ).get().c;
-      const triggers = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="trigger"'
-      ).get().c;
-      const indexes = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"'
-      ).get().c;
+      const tables = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"');
+      const triggers = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="trigger"');
+      const indexes = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"');
       const fk = db.query("PRAGMA foreign_key_check;").all().length;
-      const integ = db.query("PRAGMA integrity_check;").get()["integrity_check"];
+      const integ = getIntegrity(db);
 
       // Same expected values as CLI path
       expect(tables).toBe(53);
@@ -300,9 +307,8 @@ describe("Schema Validation SQLite Fallback", () => {
       const sql = readFileSync(SCHEMA_PATH, "utf-8");
       const db = new Database(":memory:");
       db.run(sql);
-      const result = db.query("PRAGMA integrity_check;").get();
-      // Note: bun:sqlite returns row object
-      const integVal = typeof result === "object" ? result["integrity_check"] : result;
+      // Note: bun:sqlite returns row object; getIntegrity handles both forms
+      const integVal = getIntegrity(db);
       expect(integVal).toBe("ok");
       db.close();
     });
@@ -462,17 +468,11 @@ describe("Schema Validation SQLite Fallback", () => {
       const db = new Database(":memory:");
       db.run(sql);
 
-      const tablesBun = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"'
-      ).get().c;
-      const triggersBun = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="trigger"'
-      ).get().c;
-      const indexBun = db.query(
-        'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"'
-      ).get().c;
+      const tablesBun = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"');
+      const triggersBun = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="trigger"');
+      const indexBun = getCount(db, 'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"');
       const fkBun = db.query("PRAGMA foreign_key_check;").all().length;
-      const integBun = db.query("PRAGMA integrity_check;").get()["integrity_check"];
+      const integBun = getIntegrity(db);
       db.close();
 
       // Both paths should yield identical canonical counts
