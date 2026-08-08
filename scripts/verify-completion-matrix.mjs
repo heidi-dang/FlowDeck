@@ -27,7 +27,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const DEFAULT_MATRIX = join(ROOT, "docs", "master-plan", "completion-matrix.json")
 const DEFAULT_REPORT = join(ROOT, "docs", "master-plan", "completion-matrix.md")
 
-const VALID_STATUSES = new Set(["completed", "partial", "not-started", "out-of-scope"])
+const VALID_STATUSES = new Set(["closed", "superseded", "partial", "open"])
+const NON_TERMINAL_STATUSES = new Set(["partial", "open"])
 
 function fail(message) {
   console.error(`\n✖ completion-matrix validation FAILED:\n   ${message}`)
@@ -47,7 +48,7 @@ function renderMarkdown(matrix) {
     : 0
 
   const statusIcon = (status) =>
-    status === "completed" ? "✅" : status === "partial" ? "🟡" : status === "not-started" ? "⬜" : "🚫"
+    status === "closed" ? "✅" : status === "superseded" ? "♻️" : status === "partial" ? "🟡" : status === "open" ? "🔴" : "❓"
 
   const lines = []
   lines.push("# FlowDeck Master Plan — Completion Matrix")
@@ -147,6 +148,14 @@ function validate(matrix, _matrixPath) {
     }
     report(Array.isArray(phase.gaps), `phase ${phase.id}: gaps must be an array`)
     report(Array.isArray(phase.keyDeliverables), `phase ${phase.id}: keyDeliverables must be an array`)
+    // Enforcement: "superseded" requires a non-empty justification field
+    // (SUPERSEDED is a terminal status; it must be backed by explicit
+    // governance evidence, not used as a loophole to drop unfinished work)
+    report(
+      phase.status !== "superseded" ||
+        (typeof phase.justification === "string" && phase.justification.trim().length > 0),
+      `phase ${phase.id}: "superseded" requires non-empty justification`,
+    )
   }
 
   if (matrix.overall) {
@@ -158,6 +167,69 @@ function validate(matrix, _matrixPath) {
       typeof matrix.overall.completionPercent === "number" && matrix.overall.completionPercent >= 0 && matrix.overall.completionPercent <= 100,
       "overall.completionPercent must be a number in [0, 100]",
     )
+
+    // Enforcement: every phase must be accounted for in includedPhases or excludedPhases
+    // (no phase may silently disappear from both lists — the denominator cannot be
+    // shrunk to manufacture a 100%)
+    const phaseIds = new Set(matrix.phases.map((p) => String(p.id)))
+    const includedIds = new Set(included)
+    const excludedIds = new Set(excluded)
+    const unaccounted = [...phaseIds].filter((id) => !includedIds.has(id) && !excludedIds.has(id))
+    report(
+      unaccounted.length === 0,
+      `phases not in includedPhases or excludedPhases: ${unaccounted.join(", ")}`,
+    )
+
+    // Enforcement: a SUPERSEDED phase is a terminal, completion-counting phase.
+    // It must remain in the denominator (includedPhases) — a superseded phase
+    // must never be moved to excludedPhases, because that would silently delete
+    // required work from the denominator while still claiming 100%.
+    const byId = new Map(matrix.phases.map((p) => [p.id, p]))
+    const supersededInExcluded = excluded.filter((id) => byId.get(id)?.status === "superseded")
+    report(
+      supersededInExcluded.length === 0,
+      `superseded phases must stay in includedPhases (not excludedPhases): ${supersededInExcluded.join(", ")}`,
+    )
+
+    // Enforcement: non-terminal (OPEN/PARTIAL) phases must not be hidden in
+    // excludedPhases — that would silently drop unfinished required work from
+    // the denominator while still claiming completion.
+    const nonTerminalInExcluded = excluded.filter((id) => NON_TERMINAL_STATUSES.has(byId.get(id)?.status))
+    report(
+      nonTerminalInExcluded.length === 0,
+      `non-terminal phases must not be in excludedPhases: ${nonTerminalInExcluded.join(", ")}`,
+    )
+
+    // Enforcement: a 100% claim requires the denominator to be complete —
+    // excludedPhases must be empty (no required work excluded from the rollup).
+    if (matrix.overall.completionPercent >= 100) {
+      report(
+        excluded.length === 0,
+        `completion 100% claimed but phases are excluded: ${excluded.join(", ")}`,
+      )
+    }
+
+    // Enforcement: declared completionPercent must match the computed equal-weight rollup.
+    // The percentage is computed from requirement state, not trusted from a
+    // manually entered number. Rounding tolerance (±1) is allowed.
+    const includedPhases = included.map((id) => byId.get(id)).filter(Boolean)
+    const computed = includedPhases.length
+      ? includedPhases.reduce((sum, p) => sum + (p.percent || 0), 0) / includedPhases.length
+      : 0
+    report(
+      Math.abs(matrix.overall.completionPercent - Math.round(computed)) <= 1,
+      `overall.completionPercent (${matrix.overall.completionPercent}) diverges from computed rollup (${Math.round(computed)})`,
+    )
+
+    // Enforcement: 100% completion requires ALL included phases terminal
+    // (CLOSED or SUPERSEDED). OPEN and PARTIAL requirements block a 100% claim.
+    if (matrix.overall.completionPercent >= 100) {
+      const nonTerminal = includedPhases.filter((p) => NON_TERMINAL_STATUSES.has(p.status))
+      report(
+        nonTerminal.length === 0,
+        `completion 100% claimed but non-terminal phases: ${nonTerminal.map((p) => `${p.id}:${p.status}`).join(", ")}`,
+      )
+    }
   }
 
   return { ok, problems }
@@ -221,7 +293,7 @@ function main() {
 
   console.log("\n✔ completion-matrix validation PASSED")
   console.log(`   Matrix        : ${matrixPath}`)
-  console.log(`   Phases        : ${matrix.phases.length} (${matrix.phases.filter((p) => p.status === "completed").length} completed, ${matrix.phases.filter((p) => p.status === "partial").length} partial, ${matrix.phases.filter((p) => p.status === "not-started" || p.status === "out-of-scope").length} not-started)`)
+  console.log(`   Phases        : ${matrix.phases.length} (${matrix.phases.filter((p) => p.status === "closed").length} closed, ${matrix.phases.filter((p) => p.status === "superseded").length} superseded, ${matrix.phases.filter((p) => p.status === "partial").length} partial, ${matrix.phases.filter((p) => p.status === "open").length} open)`)
   console.log(`   Declared      : ${formatPercent(matrix.overall.completionPercent)}`)
   console.log(`   Equal-weight  : ${formatPercent(equalWeight)} (included: ${included.length} phases)`)
   console.log(`   Report        : ${DEFAULT_REPORT} ${write ? "(written)" : "(in sync)"}`)
