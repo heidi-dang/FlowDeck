@@ -56,7 +56,7 @@ export class FaultInjector {
     return this.invocationHistory.get(point) || 0;
   }
 
-  async checkFault(point: FaultPoint, mode: 'before' | 'after'): Promise<unknown | void> {
+  checkFault(point: FaultPoint, mode: 'before' | 'after'): unknown | void {
     const history = (this.invocationHistory.get(point) || 0) + 1;
     if (mode === 'after') {
       // Invocations are counted on 'before', so we don't increment on 'after'

@@ -1,0 +1,30 @@
+[
+  {
+    "iteration": 1,
+    "nativeDuration": 31.05,
+    "fallbackDuration": 91.05,
+    "speedupRatio": 2.93,
+    "parityMaintained": true
+  },
+  {
+    "iteration": 2,
+    "nativeDuration": 30.23,
+    "fallbackDuration": 90.55,
+    "speedupRatio": 3,
+    "parityMaintained": true
+  },
+  {
+    "iteration": 1,
+    "nativeDuration": 30.15,
+    "fallbackDuration": 90.78,
+    "speedupRatio": 3.01,
+    "parityMaintained": true
+  },
+  {
+    "iteration": 2,
+    "nativeDuration": 30.26,
+    "fallbackDuration": 90.36,
+    "speedupRatio": 2.99,
+    "parityMaintained": true
+  }
+]

@@ -1,0 +1,20 @@
+=== Orchestration Benchmark Report ===
+Baseline: 5809fcf1230ff349ff0d7f5b53ed75403f44573b
+Generated: 2026-08-01T03:23:41.756Z
+
+Scenario                    | Duration (ms) | Delegation % | Coordination | Efficiency
+----------------------------|---------------|--------------|--------------|-----------
+ delegated-task              |       92.95 |       17.99% |      21.77ms |      24.18%
+ cross-module-feature        |       89.63 |       10.65% |          0ms |      59.84%
+ ci-repair                   |       97.91 |         3.9% |          0ms |      78.58%
+ parallel-ownership-conflict |       85.51 |       22.84% |      28.72ms |      37.88%
+
+Aggregate Statistics:
+  Average Duration: 91.50ms
+  Average Parallel Efficiency: 50.12%
+  Average Delegation Overhead: 13.84%
+
+Health Indicators:
+  Scenarios with Low Efficiency (<50%): 2
+  Scenarios with High Delegation Overhead (>30%): 0
+  Overall Status: NEEDS ATTENTION
