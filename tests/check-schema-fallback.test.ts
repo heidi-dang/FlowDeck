@@ -17,7 +17,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { execSync } from "child_process";
-import { writeFileSync, readFileSync, unlinkSync, existsSync, rmSync } from "fs";
+import { writeFileSync, readFileSync, unlinkSync, existsSync, rmSync, chmodSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { fileURLToPath } from "url";
@@ -350,6 +350,35 @@ describe("Schema Validation SQLite Fallback", () => {
       // The error should be about neither tool being available
       const combined = result.stderr + result.stdout;
       expect(combined).toMatch(/Neither sqlite3 CLI nor bun is available/);
+    });
+
+    it("fails closed when sqlite3 CLI is present but validation fails (no silent bun fallback)", () => {
+      // Regression test for the original catch-all defect: a present-but-broken
+      // sqlite3 CLI must NOT silently trigger the bun:sqlite fallback. The
+      // fallback is only legitimate when the CLI is genuinely absent, so a
+      // validation failure on the CLI path must fail the check outright.
+      const fakeSqlite3 = track(
+        join(tmpdir(), `fake-sqlite3-${Date.now()}-${Math.random().toString(36).slice(2)}.sh`)
+      );
+      writeFileSync(fakeSqlite3, "#!/bin/sh\necho 'fake sqlite3 failure' >&2\nexit 1\n");
+      chmodSync(fakeSqlite3, 0o755);
+
+      const tmpScript = track(
+        join(tmpdir(), `cli-fail-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`)
+      );
+      const original = readFileSync(SCRIPT_PATH, "utf-8");
+      const modified = original.replace(
+        /function findSqlite3Cli\(\) \{[\s\S]*?return null;\n\}/,
+        `function findSqlite3Cli() {\n  return '${fakeSqlite3}';\n}`
+      );
+      // The replacement must have matched the real function definition.
+      expect(modified).not.toBe(original);
+      writeFileSync(tmpScript, modified);
+
+      const result = runTempScript(tmpScript);
+      // CLI path failed => the script must fail, never report success.
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stderr + result.stdout).not.toContain("Schema validation: ALL PASS");
     });
   });
 
