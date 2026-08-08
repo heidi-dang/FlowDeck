@@ -1,0 +1,10 @@
+{
+  "routingPolicyVersion": "1.0.0",
+  "weightsVersion": "1.0.0",
+  "routingPolicyFingerprints": {
+    "1.0.0": "0559409812470d20700ea4aec42b8fcddc584bd85c690277b9211361e16445a9"
+  },
+  "weightsFingerprints": {
+    "1.0.0": "80af6d25b91b8f6903eef1552fb6dc77c18359bfa87581576a8cea873d4859a0"
+  }
+}
