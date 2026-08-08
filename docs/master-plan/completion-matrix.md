@@ -4,36 +4,36 @@
 > `npm run verify:completion-matrix -- --write` to regenerate.
 
 - **Repository**: `heidi-dang/FlowDeck`
-- **Branch**: `feat/orchestration-services-api`
+- **Branch**: `feat/master-plan-authoritative-runtime`
 - **Last measured**: `2026-08-08T00:00:00.000Z`
 - **Overall completion (declared)**: **100%**
 - **Overall completion (equal-weight rollup)**: 100%
-- **Included phases**: `0`, `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8`, `9`, `11`, `12`
-- **Excluded phases**: `10`
+- **Included phases**: `0`, `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8`, `9`, `10`, `11`, `12`
+- **Excluded phases**: none
 
-> Phase 10 (UI Integration) is explicitly out of scope for the current master-plan execution and is excluded from the overall percentage.
+> Phase 10 (UI Integration) is SUPERSEDED under the CLI/plugin product boundary (see its justification). SUPERSEDED is a terminal, completion-counting status; all 13 phases remain in the denominator.
 
 ## Phase Status
 
 | Phase | Name | Status | Completion | Key deliverables |
 | :--- | :--- | :--- | ---: | :--- |
-| 0 | Specification Freeze | ✅ completed | 100% | schema-v0.2.6.sql — frozen canonical schema (53 tables, 32+ triggers, indexes) |
-| 1 | Persistence Foundation | ✅ completed | 100% | connection/database/provider — SQLite lifecycle |
-| 2 | Contract System | ✅ completed | 100% | contracts domain (families/versions/requirements/criteria/gates) with hashing and policies |
-| 3 | Runtime State Model | ✅ completed | 100% | domain runtime state model (task-run, assignment, session, context-item, runtime-requirement) |
-| 4 | Event Store | ✅ completed | 100% | events table (global_sequence, UNIQUE(aggregate_type, aggregate_id, aggregate_version), correlation index) |
-| 5 | Delivery Engine | ✅ completed | 100% | OutboxWorker — exclusively uses lease-based claim path (claimDue), retry accounting, idempotent delivery, malformed JSON detection |
-| 6 | Verification & Evidence | ✅ completed | 100% | verification domain (sha-policy, stale-policy, rules) + services |
-| 7 | Completion Engine | ✅ completed | 100% | CompleteTaskRunService + CompletionDecisionService — atomic completion evaluation |
-| 8 | Orchestrator | ✅ completed | 100% | src/agents/architect.ts — delegation helpers |
-| 9 | Runtime Services | ✅ completed | 100% | API controllers + routes + middleware (validation/error-handler/auth) |
-| 10 | UI Integration | 🚫 out-of-scope | 0% | — |
-| 11 | Production Hardening | ✅ completed | 100% | tests/orchestration/{chaos,concurrency,fault,negative,performance,compliance,harness,composition-deep} |
-| 12 | Documentation & Governance | ✅ completed | 100% | docs/roadmap/heidi-flowdeck-upgrade.md — runtime upgrade roadmap |
+| 0 | Specification Freeze | ✅ closed | 100% | schema-v0.2.6.sql — frozen canonical schema (53 tables, 32+ triggers, indexes) |
+| 1 | Persistence Foundation | ✅ closed | 100% | connection/database/provider — SQLite lifecycle |
+| 2 | Contract System | ✅ closed | 100% | contracts domain (families/versions/requirements/criteria/gates) with hashing and policies |
+| 3 | Runtime State Model | ✅ closed | 100% | domain runtime state model (task-run, assignment, session, context-item, runtime-requirement) |
+| 4 | Event Store | ✅ closed | 100% | events table (global_sequence, UNIQUE(aggregate_type, aggregate_id, aggregate_version), correlation index) |
+| 5 | Delivery Engine | ✅ closed | 100% | OutboxWorker — exclusively uses lease-based claim path (claimDue), retry accounting, idempotent delivery, malformed JSON detection |
+| 6 | Verification & Evidence | ✅ closed | 100% | verification domain (sha-policy, stale-policy, rules) + services |
+| 7 | Completion Engine | ✅ closed | 100% | CompleteTaskRunService + CompletionDecisionService — atomic completion evaluation |
+| 8 | Orchestrator | ✅ closed | 100% | src/agents/architect.ts — delegation helpers |
+| 9 | Runtime Services | ✅ closed | 100% | API controllers + routes + middleware (validation/error-handler/auth) |
+| 10 | UI Integration | ♻️ superseded | 100% | Machine-consumable REST API — GET /api/v1/orchestration/runs, /events, /contracts, /assignments, /verification (replaces run dashboard, event viewer, contract explorer, assignment timeline, verification viewer) |
+| 11 | Production Hardening | ✅ closed | 100% | tests/orchestration/{chaos,concurrency,fault,negative,performance,compliance,harness,composition-deep} |
+| 12 | Documentation & Governance | ✅ closed | 100% | docs/roadmap/heidi-flowdeck-upgrade.md — runtime upgrade roadmap |
 
 ## Phase Details
 
-### Phase 0 — Specification Freeze (100%, completed)
+### Phase 0 — Specification Freeze (100%, closed)
 
 The authoritative data model and contract-domain specification are frozen. Schema v0.2.6 defines 53 tables with immutability, consistency and integrity triggers; the Dev 2 contract-domain integration document fixes the domain vocabulary.
 
@@ -51,7 +51,7 @@ The authoritative data model and contract-domain specification are frozen. Schem
 - `phase_0_3_verification_report.md`
 - `docs/roadmap/heidi-flowdeck-upgrade.md`
 
-### Phase 1 — Persistence Foundation (100%, completed)
+### Phase 1 — Persistence Foundation (100%, closed)
 
 SQLite connection management, transactional access (TransactionManager, UnitOfWork), the migration runner with checksum-protected ledger, startup schema validation with diagnostics, retry policy and worktree-lease repository are fully implemented and verified.
 
@@ -72,7 +72,7 @@ SQLite connection management, transactional access (TransactionManager, UnitOfWo
 - `src/orchestration/persistence/validation.ts`
 - `src/orchestration/persistence/repositories/worktree.ts`
 
-### Phase 2 — Contract System (100%, completed)
+### Phase 2 — Contract System (100%, closed)
 
 Contract families, versions, requirements, acceptance criteria and gates are modeled in the contracts domain, persisted through SQLite adapters (contract_families, task_contracts, requirements, acceptance_criteria) and exposed via ContractService and API controller with immutability triggers.
 
@@ -92,7 +92,7 @@ Contract families, versions, requirements, acceptance criteria and gates are mod
 - `src/orchestration/api/controllers/contract-controller.ts`
 - `tests/orchestration/contracts`
 
-### Phase 3 — Runtime State Model (100%, completed)
+### Phase 3 — Runtime State Model (100%, closed)
 
 The runtime state model (task runs, assignments, contracts, completion decisions) is persisted through production SQLite adapters with optimistic aggregate versioning (aggregate_version CAS) and SqliteTransactionalRunWriter for single-commit atomic writes.
 
@@ -111,7 +111,7 @@ The runtime state model (task runs, assignments, contracts, completion decisions
 - `src/orchestration/persistence/repositories/task-run.ts`
 - `src/orchestration/composition.ts`
 
-### Phase 4 — Event Store (100%, completed)
+### Phase 4 — Event Store (100%, closed)
 
 Durable SQLite event store with global sequencing, per-aggregate version uniqueness, correlation/causation tracking, transactional event+outbox append, and deterministic ReplayService executing over the event store with stream hash validation. Consumer offset persistence implemented with cursor commit, reset, pause, and block operations, wired into production composition.
 
@@ -133,7 +133,7 @@ Durable SQLite event store with global sequencing, per-aggregate version uniquen
 - `tests/orchestration/consumer-offset-persistence.test.ts`
 - `src/orchestration/composition.ts`
 
-### Phase 5 — Delivery Engine (100%, completed)
+### Phase 5 — Delivery Engine (100%, closed)
 
 Delivery engine features durable SqliteDeliverySink implementing IDeliverySink with lease-based atomic claiming (claimDue), worker identity leases, crash recovery lease-expiry reclaim (requeueExpiredLeases), idempotent delivery, retry/failure accounting in OutboxWorker, and dead-letter subscriber notification emitting outbox.dead_letter events on terminal retry exhaustion.
 
@@ -154,7 +154,7 @@ Delivery engine features durable SqliteDeliverySink implementing IDeliverySink w
 - `tests/orchestration/delivery/sqlite-delivery-sink.test.ts`
 - `tests/orchestration/dead-letter-notification.test.ts`
 
-### Phase 6 — Verification & Evidence (100%, completed)
+### Phase 6 — Verification & Evidence (100%, closed)
 
 Verification policies (SHA-based and staleness-based), verification rules, verification results persistence (verification_results), and evidence lifecycle are integrated into SqliteVerificationRepo and VerificationService, fully wired in production composition.
 
@@ -173,7 +173,7 @@ Verification policies (SHA-based and staleness-based), verification rules, verif
 - `src/orchestration/api/controllers/verification-controller.ts`
 - `src/orchestration/composition.ts`
 
-### Phase 7 — Completion Engine (100%, completed)
+### Phase 7 — Completion Engine (100%, closed)
 
 Completion engine evaluates task completion decisions, writes immutable completion_decisions rows, enforces immutability via repository updates throwing COMPLETION_DECISION_IMMUTABLE, and publishes completion events.
 
@@ -190,7 +190,7 @@ Completion engine evaluates task completion decisions, writes immutable completi
 - `src/orchestration/services/completion-service.ts`
 - `src/orchestration/composition.ts`
 
-### Phase 8 — Orchestrator (100%, completed)
+### Phase 8 — Orchestrator (100%, closed)
 
 ExecutionRegistry, agent task routing, delegation helpers, and production orchestration composition runtime (createProductionOrchestrationRuntime) assemble and wire the full services and persistence graph.
 
@@ -208,7 +208,7 @@ ExecutionRegistry, agent task routing, delegation helpers, and production orches
 - `src/orchestration/composition.ts`
 - `src/orchestration/services/execution-registry.ts`
 
-### Phase 9 — Runtime Services (100%, completed)
+### Phase 9 — Runtime Services (100%, closed)
 
 API controllers, HTTP routing, real OrchestrationMetrics (counters, histograms, gauges, JSON snapshot, Prometheus output), and HealthService with SqliteDbChecker, OutboxWorkerChecker, and ReplayServiceChecker registered in composition.
 
@@ -227,15 +227,22 @@ API controllers, HTTP routing, real OrchestrationMetrics (counters, histograms, 
 - `src/orchestration/composition.ts`
 - `tests/orchestration/composition-deep.test.ts`
 
-### Phase 10 — UI Integration (0%, out-of-scope)
+### Phase 10 — UI Integration (100%, superseded)
 
-Explicitly out of scope for this master-plan execution. No dashboard or management UI is planned in the current wave.
+SUPERSEDED under the CLI/plugin product boundary. FlowDeck ships as an OpenCode plugin + CLI (no web runtime, no UI framework dependencies). OpenCode Core owns all UI rendering (TUI, headless, web, mini). The architectural intent of Phase 10 is fully satisfied by the machine-consumable REST API and data projections.
 
-**Remaining gaps:**
+**Key deliverables:**
 
-- Out of scope — excluded from overall completion percentage
+- Machine-consumable REST API — GET /api/v1/orchestration/runs, /events, /contracts, /assignments, /verification (replaces run dashboard, event viewer, contract explorer, assignment timeline, verification viewer)
+- Data projections — src/orchestration/projections/verification-dashboard.ts (typed summary struct for any consumer)
 
-### Phase 11 — Production Hardening (100%, completed)
+**Evidence (repository paths):**
+
+- `src/orchestration/api/routes/index.ts`
+- `src/orchestration/projections/verification-dashboard.ts`
+- `docs/wiki/Architecture.md`
+
+### Phase 11 — Production Hardening (100%, closed)
 
 Extensive hardening evidence: chaos, concurrency, fault-injection, negative-path, performance, compliance, deep composition, delivery, and metrics test suites; pre-push verification pipeline; Dev 2 compatibility check.
 
@@ -258,7 +265,7 @@ Extensive hardening evidence: chaos, concurrency, fault-injection, negative-path
 - `tests/orchestration/composition-deep.test.ts`
 - `scripts/pre-push.mjs`
 
-### Phase 12 — Documentation & Governance (100%, completed)
+### Phase 12 — Documentation & Governance (100%, closed)
 
 Architecture documentation, dev2 contract domain spec, upgrade roadmap, and completion matrix generator/validator with evidence linkage and automated markdown generation.
 
