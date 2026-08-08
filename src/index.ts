@@ -89,11 +89,9 @@ import {
 import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
 import { TokenBudgetRuntime } from "./services/token-budget-runtime"
 import { getArtifactStore } from "./services/artifact-store"
-import {
-  buildAssignmentContext,
-  externalizeToolOutput,
-  compactConversationContext,
-} from "./services/context-scoping"
+import { buildAssignmentContext, externalizeToolOutput, compactConversationContext } from "./services/context-scoping"
+import { initializeDatabase } from "./orchestration/persistence/index"
+import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -365,6 +363,17 @@ const plugin: Plugin = async ({ directory, client }) => {
       betterHarnessServer?.stop().catch(() => {})
       projectRegistry.unregister(basename(directory))
     }
+  }
+
+  // ─── Production Orchestration Runtime Initialization ───────────────
+  let orchestrationRuntime: ProductionOrchestrationRuntime | null = null
+  try {
+    const dbPath = join(directory, ".flowdeck", "flowdeck.db")
+    const { db } = initializeDatabase({ path: dbPath })
+    orchestrationRuntime = createProductionOrchestrationRuntime(db)
+    appLog("[orchestration] Production orchestration runtime initialized successfully")
+  } catch (err) {
+    appLog(`[orchestration] Production orchestration runtime initialization skipped: ${err instanceof Error ? err.message : String(err)}`, "warn")
   }
 
   return {

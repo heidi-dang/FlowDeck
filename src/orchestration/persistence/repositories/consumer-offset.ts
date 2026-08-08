@@ -37,10 +37,60 @@ export class SqliteConsumerOffsetRepository extends BaseRepository {
         ON CONFLICT(subscriber_id) DO UPDATE SET
           last_processed_sequence = excluded.last_processed_sequence,
           last_processed_at = datetime('now'),
-          status = excluded.status`
+          status = excluded.status,
+          paused_until = CASE WHEN excluded.status = 'active' THEN NULL ELSE paused_until END,
+          blocked_by_event_id = CASE WHEN excluded.status = 'active' THEN NULL ELSE blocked_by_event_id END`
       ).run(subscriberId, lastProcessedSequence, status)
 
       return this.getOffset(subscriberId)!
+    })
+  }
+
+  resetOffset(subscriberId: string, targetSequence: number = 0): ConsumerOffsetRow | undefined {
+    return this.tx.write(() => {
+      const existing = this.getOffset(subscriberId)
+      if (!existing) return undefined
+      
+      this.db.query(
+        `UPDATE consumer_offsets SET
+          last_processed_sequence = ?,
+          last_processed_at = datetime('now'),
+          status = 'active',
+          paused_until = NULL,
+          blocked_by_event_id = NULL
+         WHERE subscriber_id = ?`
+      ).run(targetSequence, subscriberId)
+      return this.getOffset(subscriberId)
+    })
+  }
+
+  pauseOffset(subscriberId: string, until: Date): ConsumerOffsetRow | undefined {
+    return this.tx.write(() => {
+      const existing = this.getOffset(subscriberId)
+      if (!existing) return undefined
+
+      this.db.query(
+        `UPDATE consumer_offsets SET
+          status = 'paused',
+          paused_until = ?
+         WHERE subscriber_id = ?`
+      ).run(until.toISOString(), subscriberId)
+      return this.getOffset(subscriberId)
+    })
+  }
+
+  blockOffset(subscriberId: string, eventId: string): ConsumerOffsetRow | undefined {
+    return this.tx.write(() => {
+      const existing = this.getOffset(subscriberId)
+      if (!existing) return undefined
+
+      this.db.query(
+        `UPDATE consumer_offsets SET
+          status = 'blocked',
+          blocked_by_event_id = ?
+         WHERE subscriber_id = ?`
+      ).run(eventId, subscriberId)
+      return this.getOffset(subscriberId)
     })
   }
 

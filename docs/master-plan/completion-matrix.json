@@ -109,47 +109,48 @@
       "id": "4",
       "name": "Event Store",
       "status": "completed",
-      "percent": 95,
-      "summary": "Durable SQLite event store with global sequencing, per-aggregate version uniqueness, correlation/causation tracking, transactional event+outbox append, and deterministic ReplayService executing over the event store with stream hash validation.",
+      "percent": 100,
+      "summary": "Durable SQLite event store with global sequencing, per-aggregate version uniqueness, correlation/causation tracking, transactional event+outbox append, and deterministic ReplayService executing over the event store with stream hash validation. Consumer offset persistence implemented with cursor commit, reset, pause, and block operations, wired into production composition.",
       "keyDeliverables": [
         "events table (global_sequence, UNIQUE(aggregate_type, aggregate_id, aggregate_version), correlation index)",
         "SqliteEventAppenderAdapter.appendEventWithOutbox — transactional event+outbox write with version CAS",
         "SqliteEventRepo + EventService — store + outbox + live bus publish",
-        "ReplayService + SqliteReplayRepository — deterministic stream replay, hash validation, and state recording"
+        "ReplayService + SqliteReplayRepository — deterministic stream replay, hash validation, and state recording",
+        "SqliteConsumerOffsetRepository — cursor commit (setOffset), cursor reset (resetOffset), pause (pauseOffset), block (blockOffset), wired in composition.ts"
       ],
       "evidence": [
         "src/orchestration/persistence/repositories/event.ts",
         "src/orchestration/services/event-service.ts",
         "src/orchestration/services/replay-service.ts",
         "src/orchestration/persistence/adapters/sqlite-replay-repository.ts",
+        "src/orchestration/persistence/repositories/consumer-offset.ts",
+        "tests/orchestration/consumer-offset-persistence.test.ts",
         "src/orchestration/composition.ts"
       ],
-      "gaps": [
-        "Consumer offset persistence table (consumer_offsets) available for streaming subscriptions"
-      ]
+      "gaps": []
     },
     {
       "id": "5",
       "name": "Delivery Engine",
       "status": "completed",
-      "percent": 95,
-      "summary": "Delivery engine features durable SqliteDeliverySink implementing IDeliverySink with lease-based atomic claiming (claimDue), worker identity leases, crash recovery lease-expiry reclaim (requeueExpiredLeases), idempotent delivery, and retry/failure accounting in OutboxWorker.",
+      "percent": 100,
+      "summary": "Delivery engine features durable SqliteDeliverySink implementing IDeliverySink with lease-based atomic claiming (claimDue), worker identity leases, crash recovery lease-expiry reclaim (requeueExpiredLeases), idempotent delivery, retry/failure accounting in OutboxWorker, and dead-letter subscriber notification emitting outbox.dead_letter events on terminal retry exhaustion.",
       "keyDeliverables": [
         "OutboxWorker — exclusively uses lease-based claim path (claimDue), retry accounting, idempotent delivery, malformed JSON detection",
         "SqliteDeliverySink — durable delivery sink with atomic lease claiming, markDelivered, markFailed, and requeueExpiredLeases",
         "OutboxWorkerChecker — health checker for worker running state and pending outbox count",
-        "Comprehensive test suite (tests/orchestration/outbox-worker.test.ts, tests/orchestration/delivery/sqlite-delivery-sink.test.ts)"
+        "Dead-letter subscriber notification — outbox.dead_letter event emitted on terminal retry failure (attemptCount >= maxRetries)",
+        "Comprehensive test suite (tests/orchestration/outbox-worker.test.ts, tests/orchestration/delivery/sqlite-delivery-sink.test.ts, tests/orchestration/dead-letter-notification.test.ts)"
       ],
       "evidence": [
         "src/orchestration/services/outbox-worker.ts",
         "src/orchestration/persistence/adapters/sqlite-delivery-sink.ts",
         "src/orchestration/services/health-service.ts",
         "tests/orchestration/outbox-worker.test.ts",
-        "tests/orchestration/delivery/sqlite-delivery-sink.test.ts"
+        "tests/orchestration/delivery/sqlite-delivery-sink.test.ts",
+        "tests/orchestration/dead-letter-notification.test.ts"
       ],
-      "gaps": [
-        "Dead-letter event subscriber notification hooks for terminal failures"
-      ]
+      "gaps": []
     },
     {
       "id": "6",

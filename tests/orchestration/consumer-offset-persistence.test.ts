@@ -45,4 +45,29 @@ describe("Consumer Offset Persistence (Phase 4 Gap)", () => {
     expect(list.length).toBe(1)
     expect(list[0].subscriberId).toBe("subscriber-1")
   })
+
+  it("supports cursor resets, pausing, and blocking", () => {
+    const tx = createTransactionManager(db)
+    const offsetRepo = new SqliteConsumerOffsetRepository(db, tx)
+
+    offsetRepo.setOffset("sub-2", 100, "active")
+
+    const pauseUntil = new Date("2026-01-01T00:00:00Z")
+    const paused = offsetRepo.pauseOffset("sub-2", pauseUntil)
+    expect(paused?.status).toBe("paused")
+    expect(paused?.pausedUntil).toBe(pauseUntil.toISOString())
+
+    const blocked = offsetRepo.blockOffset("sub-2", "evt-999")
+    expect(blocked?.status).toBe("blocked")
+    expect(blocked?.blockedByEventId).toBe("evt-999")
+
+    const reset = offsetRepo.resetOffset("sub-2", 0)
+    expect(reset?.lastProcessedSequence).toBe(0)
+    expect(reset?.status).toBe("active")
+    expect(reset?.pausedUntil).toBeNull()
+    expect(reset?.blockedByEventId).toBeNull()
+
+    const nonExistentReset = offsetRepo.resetOffset("sub-unknown", 0)
+    expect(nonExistentReset).toBeUndefined()
+  })
 })

@@ -21,8 +21,8 @@
 | 1 | Persistence Foundation | ✅ completed | 100% | connection/database/provider — SQLite lifecycle |
 | 2 | Contract System | ✅ completed | 100% | contracts domain (families/versions/requirements/criteria/gates) with hashing and policies |
 | 3 | Runtime State Model | ✅ completed | 90% | domain runtime state model (task-run, assignment, session, context-item, runtime-requirement) |
-| 4 | Event Store | ✅ completed | 95% | events table (global_sequence, UNIQUE(aggregate_type, aggregate_id, aggregate_version), correlation index) |
-| 5 | Delivery Engine | ✅ completed | 95% | OutboxWorker — exclusively uses lease-based claim path (claimDue), retry accounting, idempotent delivery, malformed JSON detection |
+| 4 | Event Store | ✅ completed | 100% | events table (global_sequence, UNIQUE(aggregate_type, aggregate_id, aggregate_version), correlation index) |
+| 5 | Delivery Engine | ✅ completed | 100% | OutboxWorker — exclusively uses lease-based claim path (claimDue), retry accounting, idempotent delivery, malformed JSON detection |
 | 6 | Verification & Evidence | ✅ completed | 90% | verification domain (sha-policy, stale-policy, rules) + services |
 | 7 | Completion Engine | ✅ completed | 90% | CompleteTaskRunService + CompletionDecisionService — atomic completion evaluation |
 | 8 | Orchestrator | 🟡 partial | 75% | src/agents/architect.ts — delegation helpers |
@@ -115,9 +115,9 @@ The runtime state model (task runs, assignments, contracts, completion decisions
 
 - Session and context item domain persistence extensions planned for post-v1 release
 
-### Phase 4 — Event Store (95%, completed)
+### Phase 4 — Event Store (100%, completed)
 
-Durable SQLite event store with global sequencing, per-aggregate version uniqueness, correlation/causation tracking, transactional event+outbox append, and deterministic ReplayService executing over the event store with stream hash validation.
+Durable SQLite event store with global sequencing, per-aggregate version uniqueness, correlation/causation tracking, transactional event+outbox append, and deterministic ReplayService executing over the event store with stream hash validation. Consumer offset persistence implemented with cursor commit, reset, pause, and block operations, wired into production composition.
 
 **Key deliverables:**
 
@@ -125,6 +125,7 @@ Durable SQLite event store with global sequencing, per-aggregate version uniquen
 - SqliteEventAppenderAdapter.appendEventWithOutbox — transactional event+outbox write with version CAS
 - SqliteEventRepo + EventService — store + outbox + live bus publish
 - ReplayService + SqliteReplayRepository — deterministic stream replay, hash validation, and state recording
+- SqliteConsumerOffsetRepository — cursor commit (setOffset), cursor reset (resetOffset), pause (pauseOffset), block (blockOffset), wired in composition.ts
 
 **Evidence (repository paths):**
 
@@ -132,22 +133,21 @@ Durable SQLite event store with global sequencing, per-aggregate version uniquen
 - `src/orchestration/services/event-service.ts`
 - `src/orchestration/services/replay-service.ts`
 - `src/orchestration/persistence/adapters/sqlite-replay-repository.ts`
+- `src/orchestration/persistence/repositories/consumer-offset.ts`
+- `tests/orchestration/consumer-offset-persistence.test.ts`
 - `src/orchestration/composition.ts`
 
-**Remaining gaps:**
+### Phase 5 — Delivery Engine (100%, completed)
 
-- Consumer offset persistence table (consumer_offsets) available for streaming subscriptions
-
-### Phase 5 — Delivery Engine (95%, completed)
-
-Delivery engine features durable SqliteDeliverySink implementing IDeliverySink with lease-based atomic claiming (claimDue), worker identity leases, crash recovery lease-expiry reclaim (requeueExpiredLeases), idempotent delivery, and retry/failure accounting in OutboxWorker.
+Delivery engine features durable SqliteDeliverySink implementing IDeliverySink with lease-based atomic claiming (claimDue), worker identity leases, crash recovery lease-expiry reclaim (requeueExpiredLeases), idempotent delivery, retry/failure accounting in OutboxWorker, and dead-letter subscriber notification emitting outbox.dead_letter events on terminal retry exhaustion.
 
 **Key deliverables:**
 
 - OutboxWorker — exclusively uses lease-based claim path (claimDue), retry accounting, idempotent delivery, malformed JSON detection
 - SqliteDeliverySink — durable delivery sink with atomic lease claiming, markDelivered, markFailed, and requeueExpiredLeases
 - OutboxWorkerChecker — health checker for worker running state and pending outbox count
-- Comprehensive test suite (tests/orchestration/outbox-worker.test.ts, tests/orchestration/delivery/sqlite-delivery-sink.test.ts)
+- Dead-letter subscriber notification — outbox.dead_letter event emitted on terminal retry failure (attemptCount >= maxRetries)
+- Comprehensive test suite (tests/orchestration/outbox-worker.test.ts, tests/orchestration/delivery/sqlite-delivery-sink.test.ts, tests/orchestration/dead-letter-notification.test.ts)
 
 **Evidence (repository paths):**
 
@@ -156,10 +156,7 @@ Delivery engine features durable SqliteDeliverySink implementing IDeliverySink w
 - `src/orchestration/services/health-service.ts`
 - `tests/orchestration/outbox-worker.test.ts`
 - `tests/orchestration/delivery/sqlite-delivery-sink.test.ts`
-
-**Remaining gaps:**
-
-- Dead-letter event subscriber notification hooks for terminal failures
+- `tests/orchestration/dead-letter-notification.test.ts`
 
 ### Phase 6 — Verification & Evidence (90%, completed)
 
