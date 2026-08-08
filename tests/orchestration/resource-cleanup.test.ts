@@ -212,6 +212,43 @@ describe("Active reader handling", () => {
   });
 });
 
+describe("Extra connection WAL coexistence", () => {
+  it("an extra WAL connection holding a read+write lock is closed before the primary checkpoint", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const path = join(dir, "test.db");
+    const db = new Database(path);
+    db.exec("PRAGMA journal_mode=WAL");
+    db.exec("CREATE TABLE t (x INTEGER)");
+    db.exec("INSERT INTO t VALUES (1)");
+
+    // The extra connection performs a read and a write inside an open
+    // transaction, so it holds both a WAL read snapshot (which blocks a
+    // TRUNCATE checkpoint) and an uncommitted write. Only closing it releases
+    // the snapshot; the primary must not attempt its checkpoint first.
+    const extra = new Database(path);
+    extra.exec("BEGIN");
+    extra.query("SELECT * FROM t").all();
+    extra.exec("INSERT INTO t VALUES (2)");
+
+    let caught: AggregateError | null = null;
+    try {
+      await deterministicCleanup({ db, dir, extraConnections: [extra] });
+    } catch (e) {
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    expect(caught).toBeNull();
+    // Both connections are closed after cleanup.
+    expect(() => db.exec("SELECT 1")).toThrow();
+    expect(() => extra.exec("SELECT 1")).toThrow();
+    // All SQLite files (db, -wal, -shm) and the directory are removed.
+    expect(existsSync(join(dir, "test.db"))).toBe(false);
+    expect(existsSync(join(dir, "test.db-wal"))).toBe(false);
+    expect(existsSync(join(dir, "test.db-shm"))).toBe(false);
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
 describe("Worker still using database", () => {
   it("cleanup awaits worker shutdown before closing SQLite", async () => {
     const { dir, db } = createTempDbDir();
