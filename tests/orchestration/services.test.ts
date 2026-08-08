@@ -113,6 +113,10 @@ function createMockReplayRepo(): IReplayRepository {
   const items = new Map<string, any>();
   return {
     create: vi.fn(async (r: any) => { items.set(r.id, r); return r; }),
+    update: vi.fn(async (id: string, patch: any) => {
+      const e = items.get(id); if (!e) return null;
+      const u = { ...e, ...patch }; items.set(id, u); return u;
+    }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
     findMany: vi.fn(async (_: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),

@@ -37,7 +37,7 @@ const REQUIRED_TABLES = [
   "tool_invocations","model_selections","checkpoints","cancellation_tokens",
   "cancellation_acknowledgements","heartbeats","execution_metadata","command_history",
   "active_locks","recovery_attempts","context_items","context_snapshots","session_summaries",
-  "compaction_records","schema_migrations",
+  "compaction_records","schema_migrations","replays",
 ]
 
 const REQUIRED_TRIGGERS = [

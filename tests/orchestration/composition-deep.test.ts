@@ -80,16 +80,18 @@ describe("Production Composition Deep Integration", () => {
     const events = await runtime.services.eventService.listEvents({}, { page: 1, limit: 10 });
     expect(events.items.length).toBeGreaterThanOrEqual(0);
 
-    // Replay service (not configured in production — expect REPLAY_NOT_CONFIGURED)
-    try {
-      await runtime.services.replayService.createReplay({
-        sourceRunId: run.id,
-        correlationId: "corr-1",
-      });
-      expect(true).toBe(false);
-    } catch (err: unknown) {
-      expect((err as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
-    }
+    // Replay service (configured with SqliteReplayRepository + event repo)
+    const replay = await runtime.services.replayService.createReplay({
+      sourceRunId: run.id,
+      correlationId: "corr-1",
+    });
+    expect(replay.id).toBeDefined();
+    expect(replay.status).toBe("pending");
+
+    const executed = await runtime.services.replayService.runReplay(replay.id);
+    expect(executed.status).toBe("completed");
+    expect(executed.eventCount).toBeGreaterThanOrEqual(0);
+    expect(executed.failedCount).toBe(0);
   });
 
   it("completion update throws immutable error", async () => {

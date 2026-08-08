@@ -30,6 +30,7 @@ export const OrchestrationEventType = {
   REPLAY_CREATED: "replay.created",
   REPLAY_STARTED: "replay.started",
   REPLAY_COMPLETED: "replay.completed",
+  REPLAY_FAILED: "replay.failed",
   COMMAND_DISPATCHED: "command.dispatched",
   COMMAND_COMPLETED: "command.completed",
   COMMAND_FAILED: "command.failed",
