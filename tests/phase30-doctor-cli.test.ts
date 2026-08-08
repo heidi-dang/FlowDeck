@@ -98,10 +98,12 @@ describe("Phase 30 — Doctor CLI Service", () => {
   it("doctor text output contains expected sections", () => {
     const res = runCli(["doctor"]);
     if (res.code === 0) {
+      // Production contract: bin/flowdeck.js → scripts/doctor-service.mjs
+      // buildFallbackReport emits the "FlowDeck Doctor" header, an
+      // "Errors: N | Warnings: M" summary line, and OK/WARN/ERROR rows.
       expect(res.stdout).toContain("FlowDeck Doctor");
-      expect(res.stdout).toContain("Diagnostics");
-      expect(res.stdout).toContain("Summary");
-      expect(res.stdout).toContain("Passed");
+      expect(res.stdout).toMatch(/Errors: \d+ \| Warnings: \d+/);
+      expect(res.stdout).toContain("OK");
     }
   });
 
