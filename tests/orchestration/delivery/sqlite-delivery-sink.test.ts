@@ -205,3 +205,240 @@ describe("OutboxWorker with real delivery sink (end-to-end)", () => {
     expect(await sink.countByStatus("delivered")).toBe(1);
   });
 });
+
+// ─── recordDelivery and recordDeadLetter ─────────────────────────────────────
+
+describe("SqliteDeliverySink — recordDelivery", () => {
+  let db: Database;
+  let sink: SqliteDeliverySink;
+  let outbox: SqliteOutboxRepository;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    runMigrations(db);
+    sink = new SqliteDeliverySink(db, createTransactionManager(db));
+    outbox = new SqliteOutboxRepository(db, createTransactionManager(db));
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("inserts a new event_deliveries row on first call", async () => {
+    await outbox.create(makeEntry("ob-1", "c-1"));
+
+    await sink.recordDelivery({
+      eventId: "evt-ob-1",
+      destination: "my-service",
+      status: "delivered",
+      attempt: 1,
+      durationMs: 50,
+    });
+
+    const row = db
+      .query("SELECT * FROM event_deliveries LIMIT 1")
+      .get() as Record<string, unknown> | undefined;
+
+    expect(row).toBeDefined();
+    expect(row!.status).toBe("delivered");
+    expect(row!.delivery_attempts).toBe(1);
+    expect(row!.delivered_at).not.toBeNull();
+    expect(row!.last_error).toBeNull();
+  });
+
+  it("upserts on second call (updates the existing row)", async () => {
+    await outbox.create(makeEntry("ob-2", "c-2"));
+
+    await sink.recordDelivery({
+      eventId: "evt-ob-2",
+      destination: "svc-a",
+      status: "failed",
+      attempt: 1,
+      error: "timeout",
+    });
+    await sink.recordDelivery({
+      eventId: "evt-ob-2",
+      destination: "svc-a",
+      status: "delivered",
+      attempt: 2,
+    });
+
+    const rows = db.query("SELECT * FROM event_deliveries").all() as Record<string, unknown>[];
+    expect(rows.length).toBe(1);
+    expect(rows[0].status).toBe("delivered");
+    expect(rows[0].delivery_attempts).toBe(2);
+    // delivered_at was null on first insert (failed status) and now set on upsert
+    expect(rows[0].delivered_at).not.toBeNull();
+    // last_error retained from first call (COALESCE keeps old value when new is null)
+    expect(rows[0].last_error).toBe("timeout");
+  });
+
+  it("records last_error and last_error_ts when an error is provided", async () => {
+    await outbox.create(makeEntry("ob-3", "c-3"));
+
+    await sink.recordDelivery({
+      eventId: "evt-ob-3",
+      destination: "svc-b",
+      status: "failed",
+      attempt: 1,
+      error: "Network timeout",
+    });
+
+    const row = db
+      .query("SELECT last_error, last_error_ts FROM event_deliveries LIMIT 1")
+      .get() as { last_error: string; last_error_ts: string };
+
+    expect(row.last_error).toBe("Network timeout");
+    expect(row.last_error_ts).not.toBeNull();
+  });
+
+  it("creates subscriber and outbox entries automatically when they do not exist", async () => {
+    // No prior outbox row — recordDelivery must synthesise the required FK rows.
+    await sink.recordDelivery({
+      eventId: "synthetic-event-id",
+      destination: "auto-created-subscriber",
+      status: "delivered",
+      attempt: 1,
+    });
+
+    const sub = db
+      .query("SELECT id FROM event_subscribers WHERE name = 'auto-created-subscriber'")
+      .get() as { id: string } | undefined;
+    expect(sub).toBeDefined();
+
+    const outboxRow = db
+      .query("SELECT id FROM event_outbox WHERE id = 'synthetic-event-id'")
+      .get() as { id: string } | undefined;
+    expect(outboxRow).toBeDefined();
+
+    const delivery = db.query("SELECT status FROM event_deliveries LIMIT 1").get() as { status: string } | undefined;
+    expect(delivery?.status).toBe("delivered");
+  });
+});
+
+describe("SqliteDeliverySink — recordDeadLetter", () => {
+  let db: Database;
+  let sink: SqliteDeliverySink;
+  let outbox: SqliteOutboxRepository;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    runMigrations(db);
+    sink = new SqliteDeliverySink(db, createTransactionManager(db));
+    outbox = new SqliteOutboxRepository(db, createTransactionManager(db));
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("inserts into dead_letter_events and creates a delivery row when none exists", async () => {
+    await outbox.create(makeEntry("ob-dl-1", "c-dl-1"));
+
+    await sink.recordDeadLetter({
+      eventId: "evt-ob-dl-1",
+      destination: "dl-consumer",
+      reason: "Max retries exceeded",
+      lastError: "500 Internal Server Error",
+      payload: { foo: "bar" },
+    });
+
+    const dlRow = db
+      .query("SELECT * FROM dead_letter_events LIMIT 1")
+      .get() as Record<string, unknown> | undefined;
+
+    expect(dlRow).toBeDefined();
+    expect(dlRow!.final_error).toBe("Max retries exceeded");
+    expect(dlRow!.status).toBe("unresolved");
+    expect(dlRow!.event_payload).toBe(JSON.stringify({ foo: "bar" }));
+    expect(dlRow!.error_history).toBe(JSON.stringify(["500 Internal Server Error"]));
+
+    const deliveryRow = db
+      .query("SELECT status, last_error FROM event_deliveries LIMIT 1")
+      .get() as { status: string; last_error: string } | undefined;
+
+    expect(deliveryRow).toBeDefined();
+    expect(deliveryRow!.status).toBe("dead_letter");
+    expect(deliveryRow!.last_error).toBe("Max retries exceeded");
+  });
+
+  it("updates an existing delivery row to dead_letter status", async () => {
+    await outbox.create(makeEntry("ob-dl-2", "c-dl-2"));
+
+    // First record a normal delivery attempt
+    await sink.recordDelivery({
+      eventId: "evt-ob-dl-2",
+      destination: "dl-consumer",
+      status: "failed",
+      attempt: 3,
+      error: "Persistent error",
+    });
+
+    // Then dead-letter it
+    await sink.recordDeadLetter({
+      eventId: "evt-ob-dl-2",
+      destination: "dl-consumer",
+      reason: "Poison pill message",
+      payload: { id: 42 },
+    });
+
+    // Only one delivery row should exist
+    const deliveryRows = db.query("SELECT status FROM event_deliveries").all() as { status: string }[];
+    expect(deliveryRows.length).toBe(1);
+    expect(deliveryRows[0].status).toBe("dead_letter");
+
+    const dlRow = db
+      .query("SELECT final_error, event_payload, error_history FROM dead_letter_events LIMIT 1")
+      .get() as { final_error: string; event_payload: string; error_history: string } | undefined;
+
+    expect(dlRow).toBeDefined();
+    expect(dlRow!.final_error).toBe("Poison pill message");
+    expect(dlRow!.event_payload).toBe(JSON.stringify({ id: 42 }));
+    // No lastError provided, so error_history falls back to [reason]
+    expect(dlRow!.error_history).toBe(JSON.stringify(["Poison pill message"]));
+  });
+
+  it("falls back to empty payload object when payload is omitted", async () => {
+    await sink.recordDeadLetter({
+      eventId: "bare-event",
+      destination: "bare-consumer",
+      reason: "Unknown error",
+    });
+
+    const dlRow = db
+      .query("SELECT event_payload FROM dead_letter_events LIMIT 1")
+      .get() as { event_payload: string } | undefined;
+
+    expect(dlRow).toBeDefined();
+    expect(dlRow!.event_payload).toBe("{}");
+  });
+
+  it("satisfies FK constraints when PRAGMA foreign_keys is ON", async () => {
+    // Re-open a fresh DB with FK enforcement enabled
+    const fkDb = new Database(":memory:");
+    fkDb.query("PRAGMA foreign_keys = ON").run();
+    runMigrations(fkDb);
+    const fkSink = new SqliteDeliverySink(fkDb, createTransactionManager(fkDb));
+
+    // Should not throw — ensureSubscriber / ensureEventAndOutbox creates all required rows.
+    await expect(
+      fkSink.recordDelivery({
+        eventId: "fk-event-1",
+        destination: "fk-sub",
+        status: "delivered",
+        attempt: 1,
+      }),
+    ).resolves.toBeUndefined();
+
+    await expect(
+      fkSink.recordDeadLetter({
+        eventId: "fk-event-2",
+        destination: "fk-sub-2",
+        reason: "FK test failure",
+        payload: { test: true },
+      }),
+    ).resolves.toBeUndefined();
+
+    fkDb.close();
+  });
+});

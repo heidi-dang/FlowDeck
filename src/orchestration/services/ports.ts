@@ -156,6 +156,23 @@ export interface IDeliverySink {
   requeueExpiredLeases(nowSeconds?: number): Promise<number>;
   /** Count entries in a given status (monitoring). */
   countByStatus(status: DeliveryStatus): Promise<number>;
+  /** Record event delivery status into event_deliveries table. */
+  recordDelivery(delivery: {
+    eventId: string;
+    destination: string;
+    status: string;
+    attempt: number;
+    durationMs?: number;
+    error?: string;
+  }): Promise<void>;
+  /** Record dead lettered event into dead_letter_events table. */
+  recordDeadLetter(deadLetter: {
+    eventId: string;
+    destination: string;
+    reason: string;
+    lastError?: string;
+    payload?: Record<string, unknown>;
+  }): Promise<void>;
 }
 
 // ── Replay repository ─────────────────────────────────────────────────────

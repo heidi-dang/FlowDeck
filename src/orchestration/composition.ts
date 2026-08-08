@@ -31,7 +31,12 @@ import { VerificationService } from "./services/verification-service";
 import { CompletionService } from "./services/completion-service";
 import { ReplayService } from "./services/replay-service";
 import { EventService } from "./services/event-service";
-import { HealthService } from "./services/health-service";
+import {
+  HealthService,
+  SqliteDbChecker,
+  OutboxWorkerChecker,
+  ReplayServiceChecker,
+} from "./services/health-service";
 import type {
   IRunRepository,
   IContractRepository,
@@ -611,6 +616,9 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
   const replayService = new ReplayService(replayRepo, eventBus, eventRepo);
   const eventService = new EventService(eventRepo, outboxRepo, eventBus);
   const healthService = new HealthService();
+  healthService.registerChecker("db", new SqliteDbChecker(db));
+  healthService.registerChecker("outbox_worker", new OutboxWorkerChecker(outboxWorker, deliverySink));
+  healthService.registerChecker("replay_service", new ReplayServiceChecker(replayRepo));
 
   const services = {
     runService,

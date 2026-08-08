@@ -41,6 +41,10 @@ export class OutboxWorker {
     private readonly options: OutboxWorkerOptions = {},
   ) {}
 
+  get isRunning(): boolean {
+    return this.intervalTimer !== undefined;
+  }
+
   private get workerId(): string {
     return this.options.workerId ?? `worker-${process.pid ?? 0}`;
   }

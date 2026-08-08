@@ -73,7 +73,7 @@ describe("SqliteReplayRepository", () => {
 
     expect(updated?.status).toBe("completed");
     expect(updated?.eventCount).toBe(5);
-    expect((updated?.result as Record<string, unknown>).streamHash).toBe("abc123");
+    expect(updated?.result).toEqual({ streamHash: "abc123" });
 
     const reloaded = await repo.findById("r-2");
     expect(reloaded?.status).toBe("completed");

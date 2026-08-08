@@ -34,6 +34,8 @@ class MockDeliverySink implements IDeliverySink {
 
   async requeueExpiredLeases(_nowSeconds?: number) { return 0; }
   async countByStatus(_status: string) { return 0; }
+  async recordDelivery(_delivery: { eventId: string; destination: string; status: string; attempt: number; durationMs?: number; error?: string }) {}
+  async recordDeadLetter(_deadLetter: { eventId: string; destination: string; reason: string; lastError?: string; payload?: Record<string, unknown> }) {}
 }
 
 class MockEventBus implements IEventBus {

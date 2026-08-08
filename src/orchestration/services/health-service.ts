@@ -1,3 +1,7 @@
+import type { Database } from "bun:sqlite";
+import type { IDeliverySink, IReplayRepository } from "./ports";
+import type { OutboxWorker } from "./outbox-worker";
+
 export interface HealthStatus {
   status: "healthy" | "degraded" | "unhealthy";
   version: string;
@@ -67,5 +71,82 @@ export class HealthService {
       uptimeMs: Date.now() - this.startTime,
       checkedAt: new Date().toISOString(),
     };
+  }
+}
+
+export class SqliteDbChecker implements DependencyChecker {
+  constructor(private readonly db: Database) {}
+
+  async check(name: string): Promise<HealthCheck> {
+    const start = Date.now();
+    try {
+      this.db.query("SELECT 1").get();
+      const latencyMs = Date.now() - start;
+      return {
+        name,
+        status: "healthy",
+        latencyMs,
+      };
+    } catch (err) {
+      return {
+        name,
+        status: "unhealthy",
+        message: err instanceof Error ? err.message : String(err),
+        latencyMs: Date.now() - start,
+      };
+    }
+  }
+}
+
+export class OutboxWorkerChecker implements DependencyChecker {
+  constructor(
+    private readonly worker: OutboxWorker,
+    private readonly deliverySink: IDeliverySink,
+  ) {}
+
+  async check(name: string): Promise<HealthCheck> {
+    const start = Date.now();
+    try {
+      const isRunning = this.worker.isRunning;
+      const pendingCount = await this.deliverySink.countByStatus("pending");
+      const latencyMs = Date.now() - start;
+      return {
+        name,
+        status: "healthy",
+        message: `Worker is ${isRunning ? "running" : "stopped"}. Pending outbox count: ${pendingCount}`,
+        latencyMs,
+      };
+    } catch (err) {
+      return {
+        name,
+        status: "unhealthy",
+        message: err instanceof Error ? err.message : String(err),
+        latencyMs: Date.now() - start,
+      };
+    }
+  }
+}
+
+export class ReplayServiceChecker implements DependencyChecker {
+  constructor(private readonly replayRepo: IReplayRepository) {}
+
+  async check(name: string): Promise<HealthCheck> {
+    const start = Date.now();
+    try {
+      await this.replayRepo.count();
+      const latencyMs = Date.now() - start;
+      return {
+        name,
+        status: "healthy",
+        latencyMs,
+      };
+    } catch (err) {
+      return {
+        name,
+        status: "unhealthy",
+        message: err instanceof Error ? err.message : String(err),
+        latencyMs: Date.now() - start,
+      };
+    }
   }
 }

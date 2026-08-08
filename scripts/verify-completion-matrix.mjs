@@ -109,7 +109,7 @@ function renderMarkdown(matrix) {
   return lines.join("\n")
 }
 
-function validate(matrix, matrixPath) {
+function validate(matrix, _matrixPath) {
   let ok = true
   const problems = []
 

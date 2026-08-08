@@ -18,6 +18,7 @@
  * All operations run inside a TransactionManager for atomicity.
  */
 
+import { randomUUID } from "crypto";
 import type { Database } from "bun:sqlite";
 import type { TransactionManager } from "../transaction-manager";
 import type { DeliveryRecord, DeliveryStatus, IDeliverySink } from "../../services/ports";
@@ -195,4 +196,178 @@ export class SqliteDeliverySink implements IDeliverySink {
       return row.c;
     });
   }
+
+  async recordDelivery(delivery: {
+    eventId: string;
+    destination: string;
+    status: string;
+    attempt: number;
+    durationMs?: number;
+    error?: string;
+  }): Promise<void> {
+    return this.tx.write(() => {
+      const subscriberId = ensureSubscriber(this.db, delivery.destination);
+      const { outboxId } = ensureEventAndOutbox(this.db, delivery.eventId);
+
+      const nowTs = Math.floor(Date.now() / 1000);
+      const deliveredAt = delivery.status === "delivered" ? new Date().toISOString() : null;
+      const lastErrorTs = delivery.error ? new Date().toISOString() : null;
+
+      const existing = this.db
+        .query("SELECT id FROM event_deliveries WHERE outbox_id = ? AND subscriber_id = ?")
+        .get(outboxId, subscriberId) as { id: string } | undefined;
+
+      if (existing) {
+        this.db
+          .query(
+            `UPDATE event_deliveries
+             SET status = ?, delivery_attempts = ?, last_error = COALESCE(?, last_error),
+                 last_error_ts = COALESCE(?, last_error_ts), delivered_at = COALESCE(?, delivered_at)
+             WHERE id = ?`,
+          )
+          .run(
+            delivery.status,
+            delivery.attempt,
+            delivery.error ?? null,
+            lastErrorTs,
+            deliveredAt,
+            existing.id,
+          );
+      } else {
+        const id = randomUUID();
+        const idempotencyKey = `delivery-${id}`;
+        this.db
+          .query(
+            `INSERT INTO event_deliveries (
+               id, outbox_id, subscriber_id, status, delivery_attempts,
+               last_error, last_error_ts, delivered_at, idempotency_key, created_ts
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            id,
+            outboxId,
+            subscriberId,
+            delivery.status,
+            delivery.attempt,
+            delivery.error ?? null,
+            lastErrorTs,
+            deliveredAt,
+            idempotencyKey,
+            nowTs,
+          );
+      }
+    });
+  }
+
+  async recordDeadLetter(deadLetter: {
+    eventId: string;
+    destination: string;
+    reason: string;
+    lastError?: string;
+    payload?: Record<string, unknown>;
+  }): Promise<void> {
+    return this.tx.write(() => {
+      const subscriberId = ensureSubscriber(this.db, deadLetter.destination);
+      const { outboxId, eventId } = ensureEventAndOutbox(this.db, deadLetter.eventId);
+
+      let deliveryId: string;
+      const existingDelivery = this.db
+        .query("SELECT id FROM event_deliveries WHERE outbox_id = ? AND subscriber_id = ?")
+        .get(outboxId, subscriberId) as { id: string } | undefined;
+
+      if (existingDelivery) {
+        deliveryId = existingDelivery.id;
+        this.db
+          .query("UPDATE event_deliveries SET status = 'dead_letter', last_error = ? WHERE id = ?")
+          .run(deadLetter.reason, deliveryId);
+      } else {
+        deliveryId = randomUUID();
+        const idempotencyKey = `dl-delivery-${deliveryId}`;
+        const nowTs = Math.floor(Date.now() / 1000);
+        this.db
+          .query(
+            `INSERT INTO event_deliveries (
+               id, outbox_id, subscriber_id, status, delivery_attempts,
+               last_error, idempotency_key, created_ts
+             ) VALUES (?, ?, ?, 'dead_letter', 1, ?, ?, ?)`,
+          )
+          .run(deliveryId, outboxId, subscriberId, deadLetter.reason, idempotencyKey, nowTs);
+      }
+
+      const dlId = randomUUID();
+      const nowTs = Math.floor(Date.now() / 1000);
+      const payloadStr = JSON.stringify(deadLetter.payload ?? {});
+      const errorHistory = JSON.stringify(deadLetter.lastError ? [deadLetter.lastError] : [deadLetter.reason]);
+
+      this.db
+        .query(
+          `INSERT INTO dead_letter_events (
+             id, delivery_id, event_id, subscriber_id, event_payload,
+             error_history, final_error, status, created_ts
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, 'unresolved', ?)`,
+        )
+        .run(
+          dlId,
+          deliveryId,
+          eventId,
+          subscriberId,
+          payloadStr,
+          errorHistory,
+          deadLetter.reason,
+          nowTs,
+        );
+    });
+  }
+}
+
+function ensureSubscriber(db: Database, nameOrId: string): string {
+  const existing = db
+    .query("SELECT id FROM event_subscribers WHERE id = ? OR name = ? LIMIT 1")
+    .get(nameOrId, nameOrId) as { id: string } | undefined;
+  if (existing) {
+    return existing.id;
+  }
+  const id = nameOrId;
+  db.query(
+    `INSERT OR IGNORE INTO event_subscribers (id, name, subscription_type, event_types, created_at)
+     VALUES (?, ?, 'best_effort', '*', datetime('now'))`,
+  ).run(id, nameOrId);
+  return id;
+}
+
+function ensureEventAndOutbox(
+  db: Database,
+  eventIdOrOutboxId: string,
+): { outboxId: string; eventId: string } {
+  const existingOutbox = db
+    .query("SELECT id, event_id FROM event_outbox WHERE id = ? OR event_id = ? LIMIT 1")
+    .get(eventIdOrOutboxId, eventIdOrOutboxId) as { id: string; event_id: string } | undefined;
+
+  if (existingOutbox) {
+    const existingEvent = db
+      .query("SELECT event_id FROM events WHERE event_id = ?")
+      .get(existingOutbox.event_id) as { event_id: string } | undefined;
+    if (!existingEvent) {
+      db.query(
+        `INSERT OR IGNORE INTO events (event_id, event_type, aggregate_type, aggregate_id, aggregate_version, timestamp, data, created_ts)
+         VALUES (?, 'dummy.type', 'dummy', ?, 1, datetime('now'), '{}', strftime('%s','now'))`,
+      ).run(existingOutbox.event_id, existingOutbox.event_id);
+    }
+    return { outboxId: existingOutbox.id, eventId: existingOutbox.event_id };
+  }
+
+  const eventId = eventIdOrOutboxId.startsWith("evt-") ? eventIdOrOutboxId : `evt-${eventIdOrOutboxId}`;
+  const outboxId = eventIdOrOutboxId;
+
+  db.query(
+    `INSERT OR IGNORE INTO events (event_id, event_type, aggregate_type, aggregate_id, aggregate_version, timestamp, data, created_ts)
+     VALUES (?, 'dummy.type', 'dummy', ?, 1, datetime('now'), '{}', strftime('%s','now'))`,
+  ).run(eventId, eventId);
+
+  db.query(
+    `INSERT OR IGNORE INTO event_outbox (id, event_id, event_type, aggregate_id, data, status, created_ts, idempotency_key, source_component)
+     VALUES (?, ?, 'dummy.type', ?, '{}', 'pending', strftime('%s','now'), ?, 'dummy')`,
+  ).run(outboxId, eventId, outboxId, `key-${outboxId}`);
+
+  return { outboxId, eventId };
 }

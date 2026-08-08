@@ -174,4 +174,33 @@ describe("Production Composition Deep Integration", () => {
     const runEvents = await eventRepo.findByRunId(run.id);
     expect(runEvents.length).toBeGreaterThanOrEqual(1);
   });
+
+  it("health service checkHealth returns healthy status with registered dependency checkers", async () => {
+    runtime = createProductionOrchestrationRuntime(db);
+    const health = await runtime.services.healthService.checkHealth();
+    expect(health.status).toBe("healthy");
+    expect(health.checks.length).toBe(3);
+
+    const dbCheck = health.checks.find((c) => c.name === "db");
+    expect(dbCheck).toBeDefined();
+    expect(dbCheck?.status).toBe("healthy");
+    expect(typeof dbCheck?.latencyMs).toBe("number");
+
+    const outboxCheck = health.checks.find((c) => c.name === "outbox_worker");
+    expect(outboxCheck).toBeDefined();
+    expect(outboxCheck?.status).toBe("healthy");
+    expect(outboxCheck?.message).toContain("Worker is stopped");
+    expect(typeof outboxCheck?.latencyMs).toBe("number");
+
+    runtime.outboxWorker.start(10000);
+    const healthRunning = await runtime.services.healthService.checkHealth();
+    const outboxRunning = healthRunning.checks.find((c) => c.name === "outbox_worker");
+    expect(outboxRunning?.message).toContain("Worker is running");
+    runtime.outboxWorker.stop();
+
+    const replayCheck = health.checks.find((c) => c.name === "replay_service");
+    expect(replayCheck).toBeDefined();
+    expect(replayCheck?.status).toBe("healthy");
+    expect(typeof replayCheck?.latencyMs).toBe("number");
+  });
 });

@@ -42,7 +42,6 @@ import { ReplayService } from "../../src/orchestration/services/replay-service"
 import { ExecutionRegistry } from "../../src/orchestration/services/execution-registry"
 import { OutboxWorker } from "../../src/orchestration/services/outbox-worker"
 import type {
-  IOutboxRepository,
   IEventBus,
   ICompletionRepository,
   IVerificationRepository,
@@ -1035,14 +1034,12 @@ describe("RunService", () => {
 // ── OutboxWorker ──────────────────────────────────────────────────────
 
 describe("OutboxWorker", () => {
-  let outboxRepo: IOutboxRepository
   let eventBus: IEventBus
   let worker: OutboxWorker
   let tdb: TempDb
 
   beforeEach(() => {
     tdb = createTempDb()
-    outboxRepo = new SqliteOutboxRepository(tdb.db, tdb.tx)
     eventBus = new InMemoryEventBus()
     worker = new OutboxWorker(new SqliteDeliverySink(tdb.db, tdb.tx), eventBus, { batchSize: 20 })
   })
