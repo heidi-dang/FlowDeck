@@ -80,9 +80,33 @@ jobs:
         with:
           bun-version: "1.3.14"
       - run: npm ci
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
       - run: npm run build
-      - run: npm run test
+      - run: bun test --path-ignore-patterns="**/orchestration/persistence/**" --path-ignore-patterns="**/browser-e2e.test.ts"
+      - run: npm run test:production-integration
+      - run: npm run test:accessibility
+      - run: npm run test:streaming:load
 
+
+  browser-e2e:
+    name: Browser E2E (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.14"
+      - run: npm ci
+      - run: npm run build
+      - name: Install Playwright Chromium
+        run: npx playwright install chromium
+      - run: npm run test:ui:e2e
+      - run: npm run test:accessibility
 
   build:
     name: Build & Validate
@@ -500,7 +524,7 @@ jobs:
   completion:
     name: Pipeline Completion
     if: always()
-    needs: [lint-typecheck, typecheck, coverage, test-matrix, build, installer-test, rust-gates, security-scan, local-installer, packed-cli-matrix, test-fdx-parity]
+    needs: [lint-typecheck, typecheck, coverage, test-matrix, browser-e2e, build, installer-test, rust-gates, security-scan, local-installer, packed-cli-matrix, test-fdx-parity]
     runs-on: ubuntu-latest
     steps:
       - run: |
@@ -509,6 +533,7 @@ jobs:
           echo "- Typecheck: ${{ needs.typecheck.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Coverage: ${{ needs.coverage.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Test Matrix: ${{ needs.test-matrix.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Browser E2E: ${{ needs.browser-e2e.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Build & Validate: ${{ needs.build.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Installer Tests: ${{ needs.installer-test.result }}" >> $GITHUB_STEP_SUMMARY
           echo "- Rust Gates: ${{ needs.rust-gates.result }}" >> $GITHUB_STEP_SUMMARY
@@ -520,6 +545,7 @@ jobs:
              [ "${{ needs.typecheck.result }}" = "success" ] && \
              [ "${{ needs.coverage.result }}" = "success" ] && \
              [ "${{ needs.test-matrix.result }}" = "success" ] && \
+             [ "${{ needs.browser-e2e.result }}" = "success" ] && \
              [ "${{ needs.build.result }}" = "success" ] && \
              [ "${{ needs.installer-test.result }}" = "success" ] && \
              [ "${{ needs.rust-gates.result }}" = "success" ] && \

@@ -134,3 +134,6 @@ export { detectRegressions } from "./verification/regression-detector";
 export type { RegressionResult } from "./verification/regression-detector";
 export { generateLearningProposal } from "./verification/learning-capture";
 export type { LearningProposal } from "./verification/learning-capture";
+
+// UI Components
+export * from "./ui";

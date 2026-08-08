@@ -1,0 +1,53 @@
+{
+  "benchmarkSuite": "ui-projection-dom-render",
+  "benchmarkType": "microbenchmark-reducer-and-dom-render",
+  "timestamp": "2026-08-01T06:52:23.152Z",
+  "gitSha": "5ad53cfbc0d9937c7c3a93a528a00f3f2853d4f3",
+  "dirty": false,
+  "branch": "feat/performance-sse-ui-foundation",
+  "environment": "test",
+  "systemInfo": {
+    "platform": "linux",
+    "arch": "x64",
+    "cpuCount": 16,
+    "totalMemoryMb": 31398
+  },
+  "runtimeVersions": {
+    "bun": "1.3.14",
+    "node": "v24.3.0"
+  },
+  "sampleCount": 3000,
+  "fixture": "LiveDashboard UI Component",
+  "warmColdState": "warm",
+  "metrics": {
+    "browserEventToReducer": {
+      "measurementType": "in-process-reducer-microbenchmark",
+      "samples": 3000,
+      "reductionsPerSec": 636511,
+      "medianMs": 0.0007,
+      "p95Ms": 0.0034,
+      "maxMs": 0.262
+    },
+    "reducerToDomRender": {
+      "measurementType": "happy-dom-render-microbenchmark",
+      "samples": 500,
+      "rendersPerSec": 1826,
+      "medianMs": 0.4495,
+      "p95Ms": 1.2162,
+      "maxMs": 4.3912
+    },
+    "frameStability": {
+      "measurementType": "happy-dom-60fps-budget-check",
+      "targetFps": 60,
+      "maxFrameTimeMs": 16.67,
+      "measuredMaxRenderMs": 4.3912,
+      "passed": true
+    }
+  },
+  "memoryBytes": {
+    "baseline": 175406,
+    "peak": 14221689,
+    "growthMb": 13.4
+  },
+  "artifactChecksum": "sha256:44be0d8124c0b1cc6157611bd73289544fad964fef062d40a41e58c9fb76a1b9"
+}

@@ -8,10 +8,11 @@ let pass = 0, fail = 0;
 function clean() { closeAll(); for (const f of [DB,DB+'-wal',DB+'-shm']) { try { unlinkSync(f) } catch {} } }
 const conns = new Map();
 function openConn(p, ro = false) {
-  let d = conns.get(p); if (d) return d;
-  d = new Database(p, { readonly: ro });
-  d.pragma('journal_mode = WAL'); d.pragma('foreign_keys = ON'); d.pragma('busy_timeout = 5000'); d.pragma('synchronous = NORMAL');
-  conns.set(p, d); return d;
+  const key = p + (ro ? ':ro' : ':rw');
+  let d = conns.get(key); if (d) return d;
+  d = new Database(p, { create: true, readonly: ro });
+  d.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;");
+  conns.set(key, d); return d;
 }
 function closeAll() { for (const [,d] of conns) { d.close(); } conns.clear(); }
 function ok(c, m) { if (c) { pass++; console.log(`  ✅ ${m}`); } else { fail++; console.error(`  ❌ ${m}`); } }
@@ -120,12 +121,12 @@ const exhaustPolicy = {
   clock: fc, scheduler: fs,
   classify: () => 'busy', isRetryable: () => true,
 };
-const txExhaust = createTxMan(db, exhaustPolicy); db.pragma('busy_timeout = 1');
+const txExhaust = createTxMan(db, exhaustPolicy); db.exec("PRAGMA busy_timeout = 1;");
 let exhausted = false;
 try {
   // Hold write lock to cause busy
   const blocker = openConn(DB + '-block');
-  blocker.pragma('busy_timeout = 1');
+  blocker.exec("PRAGMA busy_timeout = 1;");
   blocker.exec('BEGIN IMMEDIATE');
   try { txExhaust.write(() => { db.prepare("SELECT 1").run(); }); }
   catch { exhausted = true; }

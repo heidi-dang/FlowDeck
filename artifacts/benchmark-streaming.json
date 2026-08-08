@@ -1,0 +1,60 @@
+{
+  "benchmarkSuite": "streaming-infrastructure",
+  "benchmarkType": "microbenchmark-sqlite-and-broker",
+  "timestamp": "2026-08-01T06:52:22.685Z",
+  "gitSha": "5ad53cfbc0d9937c7c3a93a528a00f3f2853d4f3",
+  "dirty": false,
+  "branch": "feat/performance-sse-ui-foundation",
+  "environment": "test",
+  "systemInfo": {
+    "platform": "linux",
+    "arch": "x64",
+    "cpuCount": 16,
+    "totalMemoryMb": 31398
+  },
+  "runtimeVersions": {
+    "bun": "1.3.14",
+    "node": "v24.3.0"
+  },
+  "sampleCount": 2000,
+  "fixture": "SQLite StreamRepository & SseBroker",
+  "warmColdState": "warm",
+  "metrics": {
+    "sqliteCommitLatency": {
+      "measurementType": "in-process-sqlite-microbenchmark",
+      "samples": 2000,
+      "opsPerSec": 9789,
+      "medianMs": 0.0945,
+      "p95Ms": 0.151,
+      "maxMs": 3.2145
+    },
+    "publisherCommitAndBrokerDispatch": {
+      "measurementType": "in-process-broker-dispatch-microbenchmark",
+      "samples": 2000,
+      "opsPerSec": 11376,
+      "medianMs": 0.078,
+      "p95Ms": 0.149,
+      "maxMs": 0.8197
+    },
+    "publishToClientReceipt": {
+      "measurementType": "in-process-broker-to-mock-session-microbenchmark",
+      "samples": 1000,
+      "opsPerSec": 10813,
+      "medianMs": 0.0774,
+      "p95Ms": 0.1494,
+      "maxMs": 0.6038
+    },
+    "reconnectReplay": {
+      "measurementType": "in-process-replay-service-microbenchmark",
+      "replayedEvents": 1000,
+      "durationMs": 1.98,
+      "replaysPerSec": 505335
+    }
+  },
+  "memoryBytes": {
+    "baseline": 724163,
+    "peak": 5687162,
+    "growthMb": 4.73
+  },
+  "artifactChecksum": "sha256:ad8ae45ec23bc29e8b5be1beae80809e5733151125337644512dc5acf94b339f"
+}
