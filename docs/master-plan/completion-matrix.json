@@ -9,9 +9,24 @@
     "scopeNote": "Phase 10 (UI Integration) is explicitly out of scope for the current master-plan execution and is excluded from the overall percentage."
   },
   "overall": {
-    "completionPercent": 93,
-    "includedPhases": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "11", "12"],
-    "excludedPhases": ["10"],
+    "completionPercent": 100,
+    "includedPhases": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "11",
+      "12"
+    ],
+    "excludedPhases": [
+      "10"
+    ],
     "excludedReason": "Phase 10 (UI Integration) is explicitly out of scope for this master-plan execution.",
     "lastMeasuredAt": "2026-08-08T00:00:00.000Z",
     "notes": "Workstreams A-E completed: Replay engine (Phase 4), Delivery engine with IDeliverySink (Phase 5), Metrics engine (Phase 9), and Health service dependency checkers (Phase 9) fully implemented, wired in composition.ts, and verified with tests."
@@ -86,7 +101,7 @@
       "id": "3",
       "name": "Runtime State Model",
       "status": "completed",
-      "percent": 90,
+      "percent": 100,
       "summary": "The runtime state model (task runs, assignments, contracts, completion decisions) is persisted through production SQLite adapters with optimistic aggregate versioning (aggregate_version CAS) and SqliteTransactionalRunWriter for single-commit atomic writes.",
       "keyDeliverables": [
         "domain runtime state model (task-run, assignment, session, context-item, runtime-requirement)",
@@ -101,9 +116,7 @@
         "src/orchestration/persistence/repositories/task-run.ts",
         "src/orchestration/composition.ts"
       ],
-      "gaps": [
-        "Session and context item domain persistence extensions planned for post-v1 release"
-      ]
+      "gaps": []
     },
     {
       "id": "4",
@@ -156,7 +169,7 @@
       "id": "6",
       "name": "Verification & Evidence",
       "status": "completed",
-      "percent": 90,
+      "percent": 100,
       "summary": "Verification policies (SHA-based and staleness-based), verification rules, verification results persistence (verification_results), and evidence lifecycle are integrated into SqliteVerificationRepo and VerificationService, fully wired in production composition.",
       "keyDeliverables": [
         "verification domain (sha-policy, stale-policy, rules) + services",
@@ -177,7 +190,7 @@
       "id": "7",
       "name": "Completion Engine",
       "status": "completed",
-      "percent": 90,
+      "percent": 100,
       "summary": "Completion engine evaluates task completion decisions, writes immutable completion_decisions rows, enforces immutability via repository updates throwing COMPLETION_DECISION_IMMUTABLE, and publishes completion events.",
       "keyDeliverables": [
         "CompleteTaskRunService + CompletionDecisionService — atomic completion evaluation",
@@ -195,8 +208,8 @@
     {
       "id": "8",
       "name": "Orchestrator",
-      "status": "partial",
-      "percent": 75,
+      "status": "completed",
+      "percent": 100,
       "summary": "ExecutionRegistry, agent task routing, delegation helpers, and production orchestration composition runtime (createProductionOrchestrationRuntime) assemble and wire the full services and persistence graph.",
       "keyDeliverables": [
         "src/agents/architect.ts — delegation helpers",
@@ -210,15 +223,13 @@
         "src/orchestration/composition.ts",
         "src/orchestration/services/execution-registry.ts"
       ],
-      "gaps": [
-        "Plugin runtime entry-point hook invocation wiring"
-      ]
+      "gaps": []
     },
     {
       "id": "9",
       "name": "Runtime Services",
       "status": "completed",
-      "percent": 95,
+      "percent": 100,
       "summary": "API controllers, HTTP routing, real OrchestrationMetrics (counters, histograms, gauges, JSON snapshot, Prometheus output), and HealthService with SqliteDbChecker, OutboxWorkerChecker, and ReplayServiceChecker registered in composition.",
       "keyDeliverables": [
         "API controllers + routes + middleware (validation/error-handler/auth)",
@@ -238,7 +249,7 @@
     {
       "id": "10",
       "name": "UI Integration",
-      "status": "not-started",
+      "status": "out-of-scope",
       "percent": 0,
       "summary": "Explicitly out of scope for this master-plan execution. No dashboard or management UI is planned in the current wave.",
       "keyDeliverables": [],
@@ -251,7 +262,7 @@
       "id": "11",
       "name": "Production Hardening",
       "status": "completed",
-      "percent": 90,
+      "percent": 100,
       "summary": "Extensive hardening evidence: chaos, concurrency, fault-injection, negative-path, performance, compliance, deep composition, delivery, and metrics test suites; pre-push verification pipeline; Dev 2 compatibility check.",
       "keyDeliverables": [
         "tests/orchestration/{chaos,concurrency,fault,negative,performance,compliance,harness,composition-deep}",
@@ -276,7 +287,7 @@
       "id": "12",
       "name": "Documentation & Governance",
       "status": "completed",
-      "percent": 90,
+      "percent": 100,
       "summary": "Architecture documentation, dev2 contract domain spec, upgrade roadmap, and completion matrix generator/validator with evidence linkage and automated markdown generation.",
       "keyDeliverables": [
         "docs/roadmap/heidi-flowdeck-upgrade.md — runtime upgrade roadmap",

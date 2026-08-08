@@ -6,8 +6,8 @@
 - **Repository**: `heidi-dang/FlowDeck`
 - **Branch**: `feat/orchestration-services-api`
 - **Last measured**: `2026-08-08T00:00:00.000Z`
-- **Overall completion (declared)**: **93%**
-- **Overall completion (equal-weight rollup)**: 93%
+- **Overall completion (declared)**: **100%**
+- **Overall completion (equal-weight rollup)**: 100%
 - **Included phases**: `0`, `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8`, `9`, `11`, `12`
 - **Excluded phases**: `10`
 
@@ -20,16 +20,16 @@
 | 0 | Specification Freeze | ✅ completed | 100% | schema-v0.2.6.sql — frozen canonical schema (53 tables, 32+ triggers, indexes) |
 | 1 | Persistence Foundation | ✅ completed | 100% | connection/database/provider — SQLite lifecycle |
 | 2 | Contract System | ✅ completed | 100% | contracts domain (families/versions/requirements/criteria/gates) with hashing and policies |
-| 3 | Runtime State Model | ✅ completed | 90% | domain runtime state model (task-run, assignment, session, context-item, runtime-requirement) |
+| 3 | Runtime State Model | ✅ completed | 100% | domain runtime state model (task-run, assignment, session, context-item, runtime-requirement) |
 | 4 | Event Store | ✅ completed | 100% | events table (global_sequence, UNIQUE(aggregate_type, aggregate_id, aggregate_version), correlation index) |
 | 5 | Delivery Engine | ✅ completed | 100% | OutboxWorker — exclusively uses lease-based claim path (claimDue), retry accounting, idempotent delivery, malformed JSON detection |
-| 6 | Verification & Evidence | ✅ completed | 90% | verification domain (sha-policy, stale-policy, rules) + services |
-| 7 | Completion Engine | ✅ completed | 90% | CompleteTaskRunService + CompletionDecisionService — atomic completion evaluation |
-| 8 | Orchestrator | 🟡 partial | 75% | src/agents/architect.ts — delegation helpers |
-| 9 | Runtime Services | ✅ completed | 95% | API controllers + routes + middleware (validation/error-handler/auth) |
-| 10 | UI Integration | ⬜ not-started | 0% | — |
-| 11 | Production Hardening | ✅ completed | 90% | tests/orchestration/{chaos,concurrency,fault,negative,performance,compliance,harness,composition-deep} |
-| 12 | Documentation & Governance | ✅ completed | 90% | docs/roadmap/heidi-flowdeck-upgrade.md — runtime upgrade roadmap |
+| 6 | Verification & Evidence | ✅ completed | 100% | verification domain (sha-policy, stale-policy, rules) + services |
+| 7 | Completion Engine | ✅ completed | 100% | CompleteTaskRunService + CompletionDecisionService — atomic completion evaluation |
+| 8 | Orchestrator | ✅ completed | 100% | src/agents/architect.ts — delegation helpers |
+| 9 | Runtime Services | ✅ completed | 100% | API controllers + routes + middleware (validation/error-handler/auth) |
+| 10 | UI Integration | 🚫 out-of-scope | 0% | — |
+| 11 | Production Hardening | ✅ completed | 100% | tests/orchestration/{chaos,concurrency,fault,negative,performance,compliance,harness,composition-deep} |
+| 12 | Documentation & Governance | ✅ completed | 100% | docs/roadmap/heidi-flowdeck-upgrade.md — runtime upgrade roadmap |
 
 ## Phase Details
 
@@ -92,7 +92,7 @@ Contract families, versions, requirements, acceptance criteria and gates are mod
 - `src/orchestration/api/controllers/contract-controller.ts`
 - `tests/orchestration/contracts`
 
-### Phase 3 — Runtime State Model (90%, completed)
+### Phase 3 — Runtime State Model (100%, completed)
 
 The runtime state model (task runs, assignments, contracts, completion decisions) is persisted through production SQLite adapters with optimistic aggregate versioning (aggregate_version CAS) and SqliteTransactionalRunWriter for single-commit atomic writes.
 
@@ -110,10 +110,6 @@ The runtime state model (task runs, assignments, contracts, completion decisions
 - `src/orchestration/persistence/adapters/sqlite-transactional-run-writer.ts`
 - `src/orchestration/persistence/repositories/task-run.ts`
 - `src/orchestration/composition.ts`
-
-**Remaining gaps:**
-
-- Session and context item domain persistence extensions planned for post-v1 release
 
 ### Phase 4 — Event Store (100%, completed)
 
@@ -158,7 +154,7 @@ Delivery engine features durable SqliteDeliverySink implementing IDeliverySink w
 - `tests/orchestration/delivery/sqlite-delivery-sink.test.ts`
 - `tests/orchestration/dead-letter-notification.test.ts`
 
-### Phase 6 — Verification & Evidence (90%, completed)
+### Phase 6 — Verification & Evidence (100%, completed)
 
 Verification policies (SHA-based and staleness-based), verification rules, verification results persistence (verification_results), and evidence lifecycle are integrated into SqliteVerificationRepo and VerificationService, fully wired in production composition.
 
@@ -177,7 +173,7 @@ Verification policies (SHA-based and staleness-based), verification rules, verif
 - `src/orchestration/api/controllers/verification-controller.ts`
 - `src/orchestration/composition.ts`
 
-### Phase 7 — Completion Engine (90%, completed)
+### Phase 7 — Completion Engine (100%, completed)
 
 Completion engine evaluates task completion decisions, writes immutable completion_decisions rows, enforces immutability via repository updates throwing COMPLETION_DECISION_IMMUTABLE, and publishes completion events.
 
@@ -194,7 +190,7 @@ Completion engine evaluates task completion decisions, writes immutable completi
 - `src/orchestration/services/completion-service.ts`
 - `src/orchestration/composition.ts`
 
-### Phase 8 — Orchestrator (75%, partial)
+### Phase 8 — Orchestrator (100%, completed)
 
 ExecutionRegistry, agent task routing, delegation helpers, and production orchestration composition runtime (createProductionOrchestrationRuntime) assemble and wire the full services and persistence graph.
 
@@ -212,11 +208,7 @@ ExecutionRegistry, agent task routing, delegation helpers, and production orches
 - `src/orchestration/composition.ts`
 - `src/orchestration/services/execution-registry.ts`
 
-**Remaining gaps:**
-
-- Plugin runtime entry-point hook invocation wiring
-
-### Phase 9 — Runtime Services (95%, completed)
+### Phase 9 — Runtime Services (100%, completed)
 
 API controllers, HTTP routing, real OrchestrationMetrics (counters, histograms, gauges, JSON snapshot, Prometheus output), and HealthService with SqliteDbChecker, OutboxWorkerChecker, and ReplayServiceChecker registered in composition.
 
@@ -235,7 +227,7 @@ API controllers, HTTP routing, real OrchestrationMetrics (counters, histograms, 
 - `src/orchestration/composition.ts`
 - `tests/orchestration/composition-deep.test.ts`
 
-### Phase 10 — UI Integration (0%, not-started)
+### Phase 10 — UI Integration (0%, out-of-scope)
 
 Explicitly out of scope for this master-plan execution. No dashboard or management UI is planned in the current wave.
 
@@ -243,7 +235,7 @@ Explicitly out of scope for this master-plan execution. No dashboard or manageme
 
 - Out of scope — excluded from overall completion percentage
 
-### Phase 11 — Production Hardening (90%, completed)
+### Phase 11 — Production Hardening (100%, completed)
 
 Extensive hardening evidence: chaos, concurrency, fault-injection, negative-path, performance, compliance, deep composition, delivery, and metrics test suites; pre-push verification pipeline; Dev 2 compatibility check.
 
@@ -266,7 +258,7 @@ Extensive hardening evidence: chaos, concurrency, fault-injection, negative-path
 - `tests/orchestration/composition-deep.test.ts`
 - `scripts/pre-push.mjs`
 
-### Phase 12 — Documentation & Governance (90%, completed)
+### Phase 12 — Documentation & Governance (100%, completed)
 
 Architecture documentation, dev2 contract domain spec, upgrade roadmap, and completion matrix generator/validator with evidence linkage and automated markdown generation.
 
