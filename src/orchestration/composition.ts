@@ -37,6 +37,11 @@ import {
   OutboxWorkerChecker,
   ReplayServiceChecker,
 } from "./services/health-service";
+import {
+  SqliteSessionRepository,
+  SqliteContextItemRepository,
+  SqliteConsumerOffsetRepository,
+} from "./persistence/repositories";
 import type {
   IRunRepository,
   IContractRepository,
@@ -68,6 +73,9 @@ export interface ProductionOrchestrationRuntime {
   eventBus: InMemoryEventBus;
   deliverySink: SqliteDeliverySink;
   outboxWorker: OutboxWorker;
+  sessionRepo: SqliteSessionRepository;
+  contextItemRepo: SqliteContextItemRepository;
+  consumerOffsetRepo: SqliteConsumerOffsetRepository;
   services: {
     runService: RunService;
     contractService: ContractService;
@@ -603,6 +611,9 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
   const verificationRepo = new SqliteVerificationRepo(verificationAdapter, db, txManager);
   const replayRepo = new SqliteReplayRepository(db, txManager);
   const eventRepo = new SqliteEventRepo(eventAppender, db, txManager);
+  const sessionRepo = new SqliteSessionRepository(db, txManager);
+  const contextItemRepo = new SqliteContextItemRepository(db, txManager);
+  const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
 
   const outboxWorker = new OutboxWorker(deliverySink, eventBus, { workerId: "orchestration-main", batchSize: 20, leaseSeconds: 60 });
 
@@ -640,6 +651,9 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
     eventBus,
     deliverySink,
     outboxWorker,
+    sessionRepo,
+    contextItemRepo,
+    consumerOffsetRepo,
     services,
     router,
   };

@@ -109,6 +109,16 @@ export class OutboxWorker {
           // 6. Idempotent delivery: already delivered elsewhere counts as
           //    success (the event reached the bus exactly once).
           await this.deliverySink.markDelivered(record.id, record.idempotencyKey ?? record.correlationId);
+          try {
+            await this.deliverySink.recordDelivery({
+              eventId: record.eventId,
+              destination: record.destination ?? "event-bus",
+              status: "delivered",
+              attempt: (record.attemptCount ?? 0) + 1,
+            });
+          } catch {
+            // Non-critical audit table update
+          }
           processed++;
         } catch (err) {
           failed++;
@@ -116,6 +126,46 @@ export class OutboxWorker {
           const maxRetries = record.maxRetries ?? 3;
           const errorMessage = err instanceof Error ? err.message : String(err);
           await this.deliverySink.markFailed(record.id, attemptCount, errorMessage, maxRetries);
+
+          if (attemptCount >= maxRetries) {
+            try {
+              await this.deliverySink.recordDeadLetter({
+                eventId: record.eventId,
+                destination: record.destination ?? "unknown",
+                reason: errorMessage,
+                lastError: errorMessage,
+                payload: record.payload,
+              });
+            } catch {
+              // Ignore duplicate or foreign key errors in recording dead letter
+            }
+
+            try {
+              await this.eventBus.publish({
+                id: `dl-${record.id}-${Date.now()}`,
+                type: "outbox.dead_letter",
+                eventVersion: 1,
+                timestamp: new Date().toISOString(),
+                correlationId: record.correlationId,
+                causationId: record.causationId,
+                aggregateId: record.aggregateId ?? "dl-system",
+                aggregateVersion: 1,
+                data: {
+                  outboxId: record.id,
+                  eventId: record.eventId,
+                  eventType: record.eventType,
+                  destination: record.destination ?? "unknown",
+                  attemptCount,
+                  maxRetries,
+                  lastError: errorMessage,
+                  payload: record.payload,
+                },
+                metadata: {},
+              });
+            } catch {
+              // Subscriber errors should not disrupt worker batch execution
+            }
+          }
         }
       }
     } finally {
