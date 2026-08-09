@@ -52,6 +52,11 @@ jobs:
       - name: Run Tests
         run: npm test
 
+      # Validate the exact packed artifact in an isolated install before any
+      # registry lookup or publication step. This is deliberately credential-free.
+      - name: Release Preflight
+        run: npm run verify:release:preflight
+
       - name: Validate Package
         run: |
           echo "Validating package identity..."
