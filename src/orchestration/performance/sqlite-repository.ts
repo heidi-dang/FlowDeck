@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite"
 import type { TransactionManager } from "../persistence/transaction-manager"
 import type { OrchestrationMetrics } from "../metrics"
-import { performanceObservationSchema, scorePerformance, type PerformanceObservation, type PerformanceProfile } from "./contracts"
+import { PERFORMANCE_POLICY_VERSION, performanceObservationSchema, scorePerformance, type PerformanceObservation, type PerformanceProfile } from "./contracts"
 
 const bool = (value: boolean) => value ? 1 : 0
 const parse = (value: unknown): string[] => { try { const parsed = JSON.parse(String(value)); return Array.isArray(parsed) ? parsed.filter(x => typeof x === "string") : [] } catch { return [] } }
@@ -20,13 +20,14 @@ export class SqlitePerformanceRepository {
   }
   recordIntegratedWorkstream(workstream: { workstreamId: string; runId: string; resolvedAgent: string; requiredCapability: string; strategy: string; budgetProfile: string }, verificationPassed: boolean, durationMs: number): PerformanceObservation {
     const band = workstream.budgetProfile === "deep-audit" || workstream.budgetProfile === "audit" ? "high" : workstream.budgetProfile === "normal" ? "medium" : "low"
-    return this.saveObservation({ observationId: `perf:${workstream.workstreamId}`, runId: workstream.runId, workstreamId: workstream.workstreamId, agentId: workstream.resolvedAgent, capability: workstream.requiredCapability, taskClass: "unknown", strategy: workstream.strategy, complexityBand: band, riskBand: workstream.strategy === "security_review" ? "high" : "low", success: verificationPassed, verificationPassed, integrationPassed: true, tokenReserved: 0, tokenUsed: 0, durationMs, retryCount: 0, reviewFindings: 0, regressionCount: 0, terminationReason: "integrated", usefulnessSignals: ["integrated_worktree"], policyVersion: "1.0.0", createdAt: new Date().toISOString() })
+    return this.saveObservation({ observationId: `perf:${workstream.workstreamId}`, runId: workstream.runId, workstreamId: workstream.workstreamId, agentId: workstream.resolvedAgent, capability: workstream.requiredCapability, taskClass: "unknown", strategy: workstream.strategy, complexityBand: band, riskBand: workstream.strategy === "security_review" ? "high" : "low", success: verificationPassed, verificationPassed, integrationPassed: true, tokenReserved: 0, tokenUsed: 0, durationMs, retryCount: 0, reviewFindings: 0, regressionCount: 0, terminationReason: "integrated", usefulnessSignals: ["integrated_worktree"], policyVersion: PERFORMANCE_POLICY_VERSION, createdAt: new Date().toISOString() })
   }
   recordWorkstreamOutcome(workstream: { workstreamId: string; planId: string; runId: string; resolvedAgent: string; requiredCapability: string; strategy: string; budgetProfile: string }, facts: PerformanceOutcomeFacts): PerformanceObservation {
     const observationId = `perf:${workstream.runId}:${workstream.workstreamId}`
     const existing = this.getObservation(observationId)
     if (existing) return existing
-    const planRow = this.db.query("SELECT routing_decision_id FROM execution_plans WHERE plan_id = ?").get(workstream.planId) as { routing_decision_id: string } | null
+    const planRow = this.db.query("SELECT run_id, routing_decision_id, policy_version FROM execution_plans WHERE plan_id = ?").get(workstream.planId) as { run_id: string; routing_decision_id: string; policy_version: string } | null
+    if (planRow && planRow.run_id !== workstream.runId) throw new Error("PERFORMANCE_RUN_MISMATCH")
     let taskClass = "unknown"; let complexity = 50; let risk = 0
     if (planRow) {
       const decision = this.db.query("SELECT data FROM events WHERE event_id = ? AND event_type = 'routing.decision.finalized'").get(planRow.routing_decision_id) as { data: string } | null
@@ -35,7 +36,7 @@ export class SqlitePerformanceRepository {
       }
     }
     const verificationPassed = facts.verificationPassed === true
-    return this.saveObservation({ observationId, runId: workstream.runId, workstreamId: workstream.workstreamId, agentId: workstream.resolvedAgent, capability: workstream.requiredCapability, taskClass, strategy: workstream.strategy, complexityBand: band(complexity), riskBand: band(risk), success: facts.status === "succeeded" && verificationPassed && facts.integrationPassed, verificationPassed, integrationPassed: facts.integrationPassed, tokenReserved: Math.max(0, facts.tokenReserved ?? 0), tokenUsed: Math.max(0, facts.tokenUsed ?? 0), durationMs: Math.max(0, facts.durationMs ?? 0), retryCount: Math.max(0, facts.retryCount ?? 0), reviewFindings: Math.max(0, facts.reviewFindings ?? 0), regressionCount: Math.max(0, facts.regressionCount ?? 0), terminationReason: facts.terminationReason ?? (facts.integrationPassed ? "integrated" : facts.status), usefulnessSignals: facts.usefulnessSignals ?? (facts.integrationPassed ? ["integrated_worktree"] : ["execution_terminal"]), policyVersion: "1.0.0", createdAt: new Date().toISOString() })
+    return this.saveObservation({ observationId, runId: workstream.runId, workstreamId: workstream.workstreamId, agentId: workstream.resolvedAgent, capability: workstream.requiredCapability, taskClass, strategy: workstream.strategy, complexityBand: band(complexity), riskBand: band(risk), success: facts.status === "succeeded" && verificationPassed && facts.integrationPassed, verificationPassed, integrationPassed: facts.integrationPassed, tokenReserved: Math.max(0, facts.tokenReserved ?? 0), tokenUsed: Math.max(0, facts.tokenUsed ?? 0), durationMs: Math.max(0, facts.durationMs ?? 0), retryCount: Math.max(0, facts.retryCount ?? 0), reviewFindings: Math.max(0, facts.reviewFindings ?? 0), regressionCount: Math.max(0, facts.regressionCount ?? 0), terminationReason: facts.terminationReason ?? (facts.integrationPassed ? "integrated" : facts.status), usefulnessSignals: facts.usefulnessSignals ?? (facts.integrationPassed ? ["integrated_worktree"] : ["execution_terminal"]), policyVersion: planRow?.policy_version ?? PERFORMANCE_POLICY_VERSION, createdAt: new Date().toISOString() })
   }
   getObservation(id: string): PerformanceObservation | null { const row = this.db.query("SELECT * FROM agent_performance_observations WHERE observation_id = ?").get(id) as Record<string, unknown> | null; return row ? this.map(row) : null }
   listObservations(runId: string): PerformanceObservation[] { return (this.db.query("SELECT * FROM agent_performance_observations WHERE run_id = ? ORDER BY created_at, observation_id").all(runId) as Record<string, unknown>[]).map(r => this.map(r)) }

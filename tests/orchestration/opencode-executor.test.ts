@@ -25,4 +25,23 @@ describe("explicit OpenCode enforce executor", () => {
   it("fails closed when the OpenCode session API is unavailable", async () => {
     await expect(new OpenCodeWorkstreamExecutor({}).execute(workstream, allocation)).rejects.toThrow("OPENCODE_WORKSTREAM_API_UNAVAILABLE")
   })
+
+  it("reserves and reconciles the existing workstream budget authority", async () => {
+    let reserveCalls = 0
+    let reconcileCalls = 0
+    let terminateCalls = 0
+    const budget = {
+      profile: "normal",
+      reserve: async () => { reserveCalls += 1; return { allowed: true, reservationId: "reservation-1", remainingRun: 1000, claimed: 100 } },
+      reconcile: async () => { reconcileCalls += 1; return { committed: true, reclaimed: 40, remainingRun: 940 } },
+      terminate: async () => { terminateCalls += 1 },
+      observe: async () => ({ stalled: false, reasons: [] }),
+    }
+    const client = { session: { create: async () => ({ data: { id: "session-budget" } }), prompt: async () => ({ data: { info: { id: "message-budget" } } }) } }
+    const result = await new OpenCodeWorkstreamExecutor(client, () => true).execute(workstream, allocation, budget as any, buildWorkstreamContext(workstream))
+    expect(result.status).toBe("succeeded")
+    expect(reserveCalls).toBe(1)
+    expect(reconcileCalls).toBe(1)
+    expect(terminateCalls).toBe(0)
+  })
 })

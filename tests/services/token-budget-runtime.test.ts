@@ -3,6 +3,7 @@ import { TokenBudgetRuntime } from "../../src/services/token-budget-runtime"
 import { mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
+import { OrchestrationMetrics } from "../../src/orchestration/metrics"
 
 function ctx(sessionID: string, agent = "heidi", parentID?: string, depth = 0) {
   return { sessionID, agent, parentID, depth }
@@ -31,6 +32,17 @@ describe("TokenBudgetRuntime", () => {
     const snap = rt.getSnapshot("s-main")
     expect(snap?.run.consumed).toBe(150)
     expect(snap?.run.reserved).toBe(0)
+  })
+
+  it("records reclaimed capacity from real provider reconciliation", async () => {
+    const metrics = new OrchestrationMetrics()
+    const rt = new TokenBudgetRuntime({
+      metrics,
+      overrides: { enabled: true, profile: "small", runTotal: 10_000, childTotal: 10_000 },
+    })
+    await rt.beforeDispatch(ctx("s-metrics"), { role: "user", content: "hello" }, { maxOutputTokens: 500 })
+    await rt.reconcileUsage(ctx("s-metrics"), { id: "msg-metrics", tokens: { input: 10, output: 10 } })
+    expect(metrics.snapshot().find(metric => metric.name === "token_budget_reclaimed_total")?.value).toBeGreaterThan(0)
   })
 
   it("blocks dispatch when budget exhausted", async () => {

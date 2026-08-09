@@ -248,7 +248,7 @@ export class TokenBudgetRuntime {
     const slot = (this.pending.get(ctx.sessionID) ?? []).shift()
     const tokens = msg.tokens
 
-    await ctrl.commitUsage({
+    const committed = await ctrl.commitUsage({
       runId: ctrl.runId,
       sessionId: ctx.sessionID,
       agentId: ctx.agent,
@@ -268,6 +268,7 @@ export class TokenBudgetRuntime {
       provider: msg.providerID,
       terminationReason: msg.error ? "message_error" : undefined,
     })
+    if (committed.releasedUnused > 0) this.metrics?.budgetReclaimed.inc(committed.releasedUnused)
 
     const snapshot = ctrl.getSnapshot()
     if (snapshot.run.warningFired) {
