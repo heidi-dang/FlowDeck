@@ -100,6 +100,11 @@ import { OpenCodeWorkstreamExecutor } from "./orchestration/execution/opencode-e
 import { FdxWorkspaceIndex } from "./services/fdx-index"
 import { FdxDaemon } from "./services/fdx-daemon"
 import { execFileSync } from "node:child_process"
+import {
+  formatGeminiSchemaDiagnostic,
+  normalizeToolSchemaForGemini,
+  providerCapabilities,
+} from "./services/gemini-tool-schema"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -109,6 +114,10 @@ const sessionBlocks = new Map<string, number>()
 const sessionWarnings = new Map<string, number>()
 const sessionStartTimes = new Map<string, number>()
 const sessionFilesChanged = new Map<string, Set<string>>()
+// OpenCode exposes the provider on chat.params and invokes tool.definition
+// immediately while constructing that request. Keep only the provider
+// capability, never credentials or request payloads, at this boundary.
+let activeToolSchemaProviderId = ""
 interface RuntimeSessionMetadata {
   sessionID: string
   parentID?: string
@@ -598,6 +607,26 @@ const plugin: Plugin = async ({ directory, client }) => {
         )
       } else if (output.message) {
         output.message.system = applyIdentityMarker("", agent, runtimeCfg.expectedAgent ?? "heidi")
+      }
+    },
+
+    "chat.params": async (input: { provider: { info: { id?: string; name?: string } } }) => {
+      activeToolSchemaProviderId = input.provider?.info?.id ?? input.provider?.info?.name ?? ""
+    },
+
+    "tool.definition": async (input: { toolID: string }, output: { description: string; parameters: any }) => {
+      if (providerCapabilities(activeToolSchemaProviderId).toolSchemaDialect !== "gemini") return
+      try {
+        output.parameters = normalizeToolSchemaForGemini({
+          toolId: input.toolID,
+          functionName: input.toolID,
+          source: "opencode.tool.definition",
+          parameters: output.parameters,
+        })
+      } catch (error) {
+        const diagnostic = formatGeminiSchemaDiagnostic(error)
+        appLog(`[gemini-schema] ${diagnostic}`, "error")
+        throw new Error(diagnostic)
       }
     },
 
@@ -1364,3 +1393,11 @@ export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
 export { resolveDoctorExitCode } from "./doctor/exit-code.mjs"
 // Redaction utilities exported for consumers (logs, reports, doctor probes)
 export { redactSecrets, containsSecrets } from "./lib/secret-redaction"
+export {
+  GeminiToolSchemaError,
+  normalizeToolSchemaForGemini,
+  normalizeToolsForProvider,
+  providerCapabilities,
+  validateGeminiToolSchema,
+} from "./services/gemini-tool-schema"
+export { classifyProviderFailure } from "./services/provider-error-classification"

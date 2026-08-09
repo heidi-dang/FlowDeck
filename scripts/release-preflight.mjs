@@ -76,6 +76,19 @@ try {
   if (!schemaOutput.includes("Schema validation: ALL PASS")) {
     throw new Error("packaged schema fallback validation did not pass");
   }
+  const packagedGeminiPath = join(installPrefix, "node_modules", "@heidi-dang", "flowdeck", "dist", "services", "gemini-tool-schema.js");
+  const packagedGemini = await import(`file://${packagedGeminiPath}`);
+  const malformed = {
+    toolId: "release-preflight-files",
+    functionName: "files",
+    source: "release-preflight",
+    parameters: { type: "object", properties: { files: { anyOf: [{ type: "string" }, { type: "array" }] } } },
+  };
+  let rejectedMalformed = false;
+  try { packagedGemini.validateGeminiToolSchema(malformed, 0); } catch { rejectedMalformed = true; }
+  if (!rejectedMalformed) throw new Error("packaged Gemini preflight accepted a malformed array schema");
+  const valid = { ...malformed, parameters: { type: "object", properties: { files: { anyOf: [{ type: "string" }, { type: "array", items: { type: "string" } }] } } } };
+  packagedGemini.validateGeminiToolSchema(valid, 0);
 
   console.log(JSON.stringify({
     status: "PASS",
@@ -87,6 +100,7 @@ try {
     install: "PASS",
     cli: "PASS",
     doctor: report.status,
+    geminiSchemaPreflight: "PASS",
   }, null, 2));
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
