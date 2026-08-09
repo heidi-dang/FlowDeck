@@ -29,6 +29,51 @@ import {
   TEST_RUNNER_ALLOWLIST,
   LINTER_ALLOWLIST,
 } from "./fdx-shared"
+import { FdxWorkspaceIndex } from "../services/fdx-index"
+import type { OrchestrationMetrics } from "../orchestration/metrics"
+
+interface FdxNextRuntime {
+  workspace: string
+  index: FdxWorkspaceIndex
+  metrics?: OrchestrationMetrics
+}
+
+let activeFdxNextRuntime: FdxNextRuntime | undefined
+
+/**
+ * Connect the optional persistent FDX index to the existing tool surface.
+ * Native FDX remains preferred; the index is used only on the supported
+ * fallback path, so daemon/index failures cannot become execution failures.
+ */
+export function configureFdxNextRuntime(runtime?: FdxNextRuntime): void {
+  activeFdxNextRuntime = runtime
+}
+
+function indexedOutline(runtime: FdxNextRuntime, paths: readonly string[], format?: "text" | "json"): string {
+  const files = runtime.index.outline(runtime.workspace, paths)
+  runtime.metrics?.recordFdx("cache", true)
+  if (format === "json") return JSON.stringify({ source: "persistent-index", files })
+  const lines = ["[FDX Persistent Index] Outline"]
+  for (const file of files) {
+    lines.push(`  ${file.path}`)
+    for (const symbol of file.symbols) lines.push(`    ${symbol}`)
+  }
+  return lines.join("\n")
+}
+
+function indexedSearch(runtime: FdxNextRuntime, query: string, path: string | undefined, format?: "text" | "json"): string {
+  const matches = runtime.index.symbols(runtime.workspace, query, path ? [path] : undefined)
+  runtime.metrics?.recordFdx("cache", true)
+  if (format === "json") return JSON.stringify({ source: "persistent-index", query, matches })
+  return [`[FDX Persistent Index] Search: ${query}`, ...matches.map(match => `  ${match.path} :: ${match.symbol}`)].join("\n")
+}
+
+function indexedImpact(runtime: FdxNextRuntime, paths: readonly string[], format?: "text" | "json"): string {
+  const impact = runtime.index.impact(runtime.workspace, paths)
+  runtime.metrics?.recordFdx("cache", true)
+  if (format === "json") return JSON.stringify({ source: "persistent-index", ...impact })
+  return [`[FDX Persistent Index] Impact`, `changed: ${impact.changedPaths.join(", ")}`, ...impact.affectedPaths.map(path => `  ${path}`)].join("\n")
+}
 
 // Re-export shared items for backward compatibility
 export {
@@ -100,6 +145,9 @@ export const fdxSearchTool: ToolDefinition = tool({
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
+      if (activeFdxNextRuntime && !args.no_cache) {
+        try { return indexedSearch(activeFdxNextRuntime, args.query, args.path, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
+      }
       return nativeSearchFallback(args.query, args.path)
     }
     const cmd: string[] = ["search", args.query]
@@ -194,6 +242,9 @@ export const fdxImpactTool: ToolDefinition = tool({
   async execute(args): Promise<string> {
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
+      if (activeFdxNextRuntime) {
+        try { return indexedImpact(activeFdxNextRuntime, args.files, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
+      }
       return await nativeImpactFallback(args.files, args.root)
     }
     const cmd: string[] = ["impact", ...args.files]
@@ -228,6 +279,9 @@ export const fdxOutlineTool: ToolDefinition = tool({
     const searchPaths = args.paths && args.paths.length > 0 ? args.paths : ["."]
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
+      if (activeFdxNextRuntime && !args.no_cache) {
+        try { return indexedOutline(activeFdxNextRuntime, searchPaths, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
+      }
       return nativeOutlineFallback(searchPaths)
     }
     const cmd: string[] = ["outline", ...searchPaths]

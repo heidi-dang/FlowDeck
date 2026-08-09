@@ -54,6 +54,7 @@ import {
   fdxSearchTool,
   fdxTestTool,
   fdxTreeTool,
+  configureFdxNextRuntime,
   setActiveProjectDir,
 } from "./tools/fdx"
 import { fdxPrMonitorTool } from "./tools/fdx-pr-monitor"
@@ -94,6 +95,7 @@ import { initializeDatabase } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
 import { OpenCodeWorkstreamExecutor } from "./orchestration/execution/opencode-executor"
+import { FdxWorkspaceIndex } from "./services/fdx-index"
 import { execFileSync } from "node:child_process"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
@@ -270,6 +272,20 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
 
   setActiveProjectDir(directory)
+  let fdxWorkspaceIndex: FdxWorkspaceIndex | undefined
+  try {
+    fdxWorkspaceIndex = new FdxWorkspaceIndex({
+      stateFile: join(directory, ".flowdeck", "fdx-index.json"),
+      maxFiles: 10_000,
+      maxFileBytes: 2_000_000,
+      maxWorkspaces: 32,
+    })
+    configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex })
+  } catch {
+    // The persistent index is optional. Native FDX and the existing
+    // TypeScript fallbacks remain the operational path if it cannot load.
+    configureFdxNextRuntime()
+  }
   const artifactStore = getArtifactStore(join(directory, ".flowdeck", "artifacts"))
 
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
@@ -374,6 +390,7 @@ const plugin: Plugin = async ({ directory, client }) => {
     const { db } = initializeDatabase({ path: dbPath })
     activeOrchestrationRuntime = createProductionOrchestrationRuntime(db, { repositoryPath: directory, worktreeRoot: join(directory, ".flowdeck", "worktrees"), routingMode: () => flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off", budgetState: () => tokenBudgetRuntime.getRunSnapshot() })
     tokenBudgetRuntime.setMetrics(activeOrchestrationRuntime.metrics)
+    if (fdxWorkspaceIndex) configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex, metrics: activeOrchestrationRuntime.metrics })
     activeOrchestrationRuntime.worktreeExecutionService?.setBudgetCoordinator({ open: workstream => tokenBudgetRuntime.openWorkstreamBudget(workstream) })
     appLog("[orchestration] Production orchestration runtime initialized successfully")
   } catch (err) {

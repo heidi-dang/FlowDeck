@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs"
 import { dirname, relative, resolve, sep } from "node:path"
 
 export interface FdxIndexOptions {
@@ -26,13 +26,18 @@ export interface FdxWorkspaceSnapshot {
   files: FdxIndexedFile[]
 }
 
+export interface FdxImpactSnapshot {
+  changedPaths: string[]
+  affectedPaths: string[]
+}
+
 function isInside(root: string, candidate: string): boolean {
   const value = relative(root, candidate)
   return value !== ".." && !value.startsWith(`..${sep}`) && !value.startsWith(sep)
 }
 
 function workspaceIdentity(workspace: string): { id: string; path: string } {
-  const path = resolve(workspace)
+  const path = existsSync(workspace) ? realpathSync(workspace) : resolve(workspace)
   return { id: createHash("sha256").update(path).digest("hex").slice(0, 32), path }
 }
 
@@ -109,14 +114,29 @@ export class FdxWorkspaceIndex {
     return value ? this.clone(value) : null
   }
 
-  symbols(workspace: string, query: string): Array<{ path: string; symbol: string }> {
+  symbols(workspace: string, query: string, paths?: readonly string[]): Array<{ path: string; symbol: string }> {
     const index = this.refresh(workspace)
     const needle = query.trim().toLowerCase()
-    return index.files.flatMap(file => file.symbols.filter(symbol => !needle || symbol.toLowerCase().includes(needle)).map(symbol => ({ path: file.path, symbol }))).slice(0, 500)
+    return this.selectFiles(index, paths).flatMap(file => file.symbols.filter(symbol => !needle || symbol.toLowerCase().includes(needle)).map(symbol => ({ path: file.path, symbol }))).slice(0, 500)
   }
 
-  outline(workspace: string): Array<{ path: string; symbols: string[] }> {
-    return this.refresh(workspace).files.map(file => ({ path: file.path, symbols: [...file.symbols] }))
+  outline(workspace: string, paths?: readonly string[]): Array<{ path: string; symbols: string[] }> {
+    const index = this.refresh(workspace)
+    return this.selectFiles(index, paths).map(file => ({ path: file.path, symbols: [...file.symbols] }))
+  }
+
+  impact(workspace: string, paths: readonly string[]): FdxImpactSnapshot {
+    const index = this.refresh(workspace)
+    const changedPaths = this.relativePaths(index.workspace, paths)
+    const changed = new Set(changedPaths)
+    const affectedPaths = index.files
+      .filter(file => changed.has(file.path) || file.dependencies.some(dependency => {
+        const normalized = dependency.replaceAll("\\", "/").replace(/^\.\//, "")
+        return changedPaths.some(path => normalized === path || normalized.endsWith(`/${path}`) || path.endsWith(`/${normalized}`) || path.split("/").at(-1) === normalized)
+      }))
+      .map(file => file.path)
+      .sort()
+    return { changedPaths, affectedPaths }
   }
 
   invalidate(workspace: string, changedPaths?: readonly string[]): void {
@@ -155,6 +175,20 @@ export class FdxWorkspaceIndex {
 
   private clone(index: FdxWorkspaceSnapshot): FdxWorkspaceSnapshot {
     return { ...index, files: index.files.map(file => ({ ...file, symbols: [...file.symbols], dependencies: [...file.dependencies] })) }
+  }
+
+  private selectFiles(index: FdxWorkspaceSnapshot, paths?: readonly string[]): FdxIndexedFile[] {
+    if (!paths?.length || paths.some(path => path === "." || path === "./")) return index.files
+    const requested = this.relativePaths(index.workspace, paths)
+    return index.files.filter(file => requested.some(path => file.path === path || file.path.startsWith(`${path}/`)))
+  }
+
+  private relativePaths(workspace: string, paths: readonly string[]): string[] {
+    return paths.map(raw => {
+      const candidate = resolve(workspace, raw)
+      if (!isInside(workspace, candidate)) throw new Error("FDX_WORKSPACE_ESCAPE")
+      return relative(workspace, candidate).replaceAll(sep, "/").replace(/\/$/, "")
+    })
   }
 
   private load(): void {

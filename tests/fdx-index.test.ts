@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { FdxWorkspaceIndex } from "../src/services/fdx-index"
 import { FdxDaemon, fdxDaemonRequest } from "../src/services/fdx-daemon"
+import { configureFdxNextRuntime, fdxImpactTool, fdxOutlineTool, fdxSearchTool, checkFdxAvailability } from "../src/tools/fdx"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, unlinkSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -45,5 +46,33 @@ describe("persistent FDX runtime", () => {
       const restarted = new FdxWorkspaceIndex({ stateFile, maxFiles: 10 })
       expect(restarted.get(root)?.files.map(file => file.path)).toEqual(["src/a.ts"])
     } finally { rmSync(root, { recursive: true, force: true }) }
+  })
+
+  it("connects the persistent index to the existing tool surface when native FDX is unavailable", async () => {
+    const root = mkdtempSync(join(tmpdir(), "flowdeck-fdx-tools-"))
+    const source = join(root, "src")
+    mkdirSync(source)
+    writeFileSync(join(source, "alpha.ts"), "export function Alpha() { return 1 }\n")
+    const previousBinary = process.env.FDX_BINARY_PATH
+    try {
+      process.env.FDX_BINARY_PATH = join(root, "missing-fdx")
+      checkFdxAvailability(true)
+      const index = new FdxWorkspaceIndex({ stateFile: join(root, "index.json") })
+      configureFdxNextRuntime({ workspace: root, index })
+      const outline = JSON.parse(await fdxOutlineTool.execute({ paths: ["src"], format: "json" }, {} as any) as string)
+      expect(outline.source).toBe("persistent-index")
+      expect(outline.files).toEqual([{ path: "src/alpha.ts", symbols: ["Alpha"] }])
+      const search = JSON.parse(await fdxSearchTool.execute({ query: "alpha", format: "json" }, {} as any) as string)
+      expect(search.matches).toEqual([{ path: "src/alpha.ts", symbol: "Alpha" }])
+      writeFileSync(join(source, "beta.ts"), "import { Alpha } from \"src/alpha.ts\"\nexport function Beta() { return Alpha() }\n")
+      const impact = JSON.parse(await fdxImpactTool.execute({ files: ["src/alpha.ts"], format: "json" }, {} as any) as string)
+      expect(impact.affectedPaths).toEqual(["src/alpha.ts", "src/beta.ts"])
+    } finally {
+      configureFdxNextRuntime()
+      if (previousBinary === undefined) delete process.env.FDX_BINARY_PATH
+      else process.env.FDX_BINARY_PATH = previousBinary
+      checkFdxAvailability(true)
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })
