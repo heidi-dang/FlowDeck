@@ -1,0 +1,29 @@
+{
+  "version": "2.0.0-alpha.3",
+  "sourceBranch": "fix/v2-alpha3-release-schema-fallback",
+  "sourceSha": "3452751e160a2f582f83259cddaddb8968312f52",
+  "baseIntegrationSha": "e6181836bd2f38f972a2a969a881f2e867047e32",
+  "immutablePreviousTag": {
+    "tag": "v2.0.0-alpha.2",
+    "sha": "e6181836bd2f38f972a2a969a881f2e867047e32",
+    "published": false
+  },
+  "packageVersion": "2.0.0-alpha.3",
+  "expectedTag": "v2.0.0-alpha.3",
+  "expectedNpmDistTag": "alpha",
+  "masterPlan": { "percentage": 100, "closed": 12, "superseded": 1, "partial": 0, "open": 0 },
+  "v2Milestones": { "percentage": 100, "closed": 8, "partial": 0, "open": 0 },
+  "validation": {
+    "schemaFallbackRegression": "PASS",
+    "releasePreflight": "PASS",
+    "coveragePercent": 82.9,
+    "benchmarkCandidate": "14/14",
+    "restartRecovery": "14/14"
+  },
+  "schema": {
+    "frozen": { "tables": 53, "triggers": 36, "indexes": 66, "foreignKeyViolations": 0, "integrity": "ok" },
+    "postMigration": { "tables": 61, "triggers": 36, "indexes": 82, "foreignKeyViolations": 0, "integrity": "ok" }
+  },
+  "security": { "p0": 0, "p1": 0, "p2Correctness": 0, "tarballSecrets": 0 },
+  "releaseStatus": "READY_NOT_RELEASED"
+}
