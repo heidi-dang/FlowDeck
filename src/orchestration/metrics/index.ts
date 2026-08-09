@@ -84,17 +84,30 @@ export class OrchestrationMetrics {
   readonly executionPlans: Counter;
   readonly workstreamsStarted: Counter;
   readonly workstreamsBlocked: Counter;
+  readonly workstreamsSucceeded: Counter;
+  readonly workstreamsFailed: Counter;
+  readonly dependencyBlocks: Counter;
   readonly worktreeLeaseConflicts: Counter;
   readonly worktreeLeaseReclaims: Counter;
+  readonly ownershipConflicts: Counter;
+  readonly duplicateWorkSuppressed: Counter;
+  readonly integrationAttempts: Counter;
+  readonly integrationsCompleted: Counter;
   readonly integrationConflicts: Counter;
   readonly budgetReclaimed: Counter;
   readonly budgetRedistributed: Counter;
   readonly executionStalls: Counter;
   readonly executionTerminations: Counter;
   readonly performanceObservations: Counter;
+  readonly performanceEligibleProfiles: Counter;
+  readonly performanceInsufficientProfiles: Counter;
   readonly fdxDaemonRequests: Counter;
   readonly fdxFallbacks: Counter;
   readonly fdxCacheHits: Counter;
+  readonly fdxCacheMisses: Counter;
+  readonly fdxIndexUpdates: Counter;
+  readonly recoveryAttempts: Counter;
+  readonly recoverySucceeded: Counter;
   readonly routingAssessmentLatency: Histogram;
 
   private readonly counters = new Map<string, number>();
@@ -120,17 +133,30 @@ export class OrchestrationMetrics {
     this.executionPlans = createCounter("execution_plans_total", this.counters);
     this.workstreamsStarted = createCounter("execution_workstreams_started_total", this.counters);
     this.workstreamsBlocked = createCounter("execution_workstreams_blocked_total", this.counters);
+    this.workstreamsSucceeded = createCounter("execution_workstreams_succeeded_total", this.counters);
+    this.workstreamsFailed = createCounter("execution_workstreams_failed_total", this.counters);
+    this.dependencyBlocks = createCounter("execution_dependency_blocks_total", this.counters);
     this.worktreeLeaseConflicts = createCounter("worktree_lease_conflicts_total", this.counters);
     this.worktreeLeaseReclaims = createCounter("worktree_lease_reclaims_total", this.counters);
+    this.ownershipConflicts = createCounter("execution_ownership_conflicts_total", this.counters);
+    this.duplicateWorkSuppressed = createCounter("execution_duplicate_work_suppressed_total", this.counters);
+    this.integrationAttempts = createCounter("execution_integration_attempts_total", this.counters);
+    this.integrationsCompleted = createCounter("execution_integrations_completed_total", this.counters);
     this.integrationConflicts = createCounter("execution_integration_conflicts_total", this.counters);
     this.budgetReclaimed = createCounter("token_budget_reclaimed_total", this.counters);
     this.budgetRedistributed = createCounter("token_budget_redistributed_total", this.counters);
     this.executionStalls = createCounter("execution_stalls_total", this.counters);
     this.executionTerminations = createCounter("execution_terminations_total", this.counters);
     this.performanceObservations = createCounter("agent_performance_observations_total", this.counters);
+    this.performanceEligibleProfiles = createCounter("agent_performance_eligible_profiles_total", this.counters);
+    this.performanceInsufficientProfiles = createCounter("agent_performance_insufficient_profiles_total", this.counters);
     this.fdxDaemonRequests = createCounter("fdx_daemon_requests_total", this.counters);
     this.fdxFallbacks = createCounter("fdx_fallbacks_total", this.counters);
     this.fdxCacheHits = createCounter("fdx_cache_hits_total", this.counters);
+    this.fdxCacheMisses = createCounter("fdx_cache_misses_total", this.counters);
+    this.fdxIndexUpdates = createCounter("fdx_index_updates_total", this.counters);
+    this.recoveryAttempts = createCounter("orchestration_recovery_attempts_total", this.counters);
+    this.recoverySucceeded = createCounter("orchestration_recovery_succeeded_total", this.counters);
 
     this.queryLatency = createHistogram("query_latency_ms", this.histograms);
     this.verificationLatency = createHistogram("verification_latency_ms", this.histograms);
@@ -141,11 +167,12 @@ export class OrchestrationMetrics {
     this.subscriberLag = createGauge("subscriber_lag", this.gauges);
   }
 
-  recordRoutingDecision(taskClass: string, strategy: string, delegated: boolean, divergent: boolean, durationMs: number): void {
+  recordRoutingDecision(taskClass: string, strategy: string, delegated: boolean, divergent: boolean, durationMs: number, parallelism = "none"): void {
     this.routingDecisions.inc()
     this.routingAssessmentLatency.observe(durationMs)
     this.incBounded("routing_task_class_total", "class", taskClass)
     this.incBounded("routing_strategy_total", "strategy", strategy)
+    this.incBounded("routing_parallelism_total", "parallelism", parallelism)
     if (delegated) this.incBounded("routing_delegation_recommended_total", "mode", "delegated")
     if (divergent) this.routingShadowDivergence.inc()
   }
@@ -155,10 +182,26 @@ export class OrchestrationMetrics {
       class: ["small_bug", "large_bug", "feature", "refactor", "architecture", "investigation", "security", "performance", "testing", "documentation", "migration", "release", "ci_infrastructure", "dependency", "code_review", "audit", "multi_component", "unknown"],
       strategy: ["direct", "investigate_then_direct", "plan_then_execute", "debug_root_cause", "parallel_implementation", "security_review", "performance_investigation", "audit_only", "change_then_independent_review"],
       mode: ["delegated"],
+      parallelism: ["none", "limited", "high"],
     }
     if (!allowed[key]?.includes(value)) throw new Error("ROUTING_METRIC_LABEL_OUT_OF_RANGE")
     const id = `${name}{${key}="${value}"}`
     this.labeledCounters.set(id, (this.labeledCounters.get(id) ?? 0) + 1)
+  }
+
+  /** Fails closed if a caller attempts to introduce an unbounded label. */
+  assertBoundedCardinality(): void {
+    const forbidden = new Set(["runId", "sessionId", "workstreamId", "decisionId", "sourceSha", "sha", "path", "filePath", "workspace", "worktreePath", "prompt", "task"])
+    for (const metric of this.snapshot()) for (const label of Object.keys(metric.labels ?? {})) if (forbidden.has(label)) throw new Error(`METRIC_FORBIDDEN_LABEL:${label}`)
+  }
+
+  recordPerformanceProfile(eligible: boolean): void { (eligible ? this.performanceEligibleProfiles : this.performanceInsufficientProfiles).inc() }
+  recordFdx(source: "daemon" | "cache" | "compute" | "fallback", indexed = false): void {
+    if (source === "daemon") this.fdxDaemonRequests.inc()
+    if (source === "fallback") this.fdxFallbacks.inc()
+    if (source === "cache") this.fdxCacheHits.inc()
+    if (source === "compute") this.fdxCacheMisses.inc()
+    if (indexed) this.fdxIndexUpdates.inc()
   }
 
   snapshot(): MetricValue[] {

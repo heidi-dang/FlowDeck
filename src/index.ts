@@ -371,7 +371,7 @@ const plugin: Plugin = async ({ directory, client }) => {
   try {
     const dbPath = join(directory, ".flowdeck", "flowdeck.db")
     const { db } = initializeDatabase({ path: dbPath })
-    activeOrchestrationRuntime = createProductionOrchestrationRuntime(db, { repositoryPath: directory, worktreeRoot: join(directory, ".flowdeck", "worktrees") })
+    activeOrchestrationRuntime = createProductionOrchestrationRuntime(db, { repositoryPath: directory, worktreeRoot: join(directory, ".flowdeck", "worktrees"), routingMode: () => flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off", budgetState: () => ({ enabled: tokenBudgetRuntime.isEnabled(), profile: tokenBudgetRuntime.getConfig().profile }) })
     activeOrchestrationRuntime.worktreeExecutionService?.setBudgetCoordinator({ open: workstream => tokenBudgetRuntime.openWorkstreamBudget(workstream) })
     appLog("[orchestration] Production orchestration runtime initialized successfully")
   } catch (err) {

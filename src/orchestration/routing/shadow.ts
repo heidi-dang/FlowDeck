@@ -12,7 +12,7 @@ export function runShadowAssessment(input: TaskIntelligenceInput, existingStrate
   try {
     const decision = routeTask(input)
     const persisted = store?.saveDecision(decision) ?? decision
-    metrics?.recordRoutingDecision(persisted.assessment.taskClass, persisted.strategy, persisted.delegate, persisted.strategy !== existingStrategy, Date.now() - started)
+    metrics?.recordRoutingDecision(persisted.assessment.taskClass, persisted.strategy, persisted.delegate, persisted.strategy !== existingStrategy, Date.now() - started, persisted.assessment.parallelism)
     return { mode, decision: persisted, existingStrategy, divergent: persisted.strategy !== existingStrategy }
   } catch (error) {
     metrics?.routingShadowFailures.inc()

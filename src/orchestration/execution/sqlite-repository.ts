@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite"
 import type { TransactionManager } from "../persistence/transaction-manager"
+import type { OrchestrationMetrics } from "../metrics"
 import { analyzeDependencies, assertPlanTransition, executionPlanSchema, type ExecutionPlan, type ExecutionWorkstream, assertWorkstreamTransition, normalizeOwnership, type ExecutionLeaseState, type ExecutionPlanStatus } from "./contracts"
 
 const ACTIVE_LEASES = "('requested','allocated','active','renewing')"
@@ -12,14 +13,14 @@ export interface IntegrationAttempt { attemptId: string; planId: string; workstr
 
 /** Authoritative M2 persistence. All execution authority is SQLite-backed and reconstructed from rows. */
 export class SqliteExecutionRepository {
-  constructor(private readonly db: Database, private readonly tx: TransactionManager) {}
+  constructor(private readonly db: Database, private readonly tx: TransactionManager, private readonly metrics?: OrchestrationMetrics) {}
 
   savePlan(plan: ExecutionPlan): ExecutionPlan {
     const parsedInput = executionPlanSchema.parse(plan)
     const parsed: ExecutionPlan = { ...parsedInput, status: parsedInput.status ?? "planned" }
     if (parsed.workstreams.some(w => w.planId !== parsed.planId || w.runId !== parsed.runId)) throw new Error("EXECUTION_PLAN_ID_MISMATCH")
     analyzeDependencies(parsed)
-    return this.tx.write(() => {
+    const saved = this.tx.write(() => {
       if (this.db.query("SELECT 1 FROM execution_plans WHERE plan_id = ?").get(parsed.planId)) throw new Error("EXECUTION_PLAN_IMMUTABLE")
       this.db.query(`INSERT INTO execution_plans (plan_id,run_id,routing_decision_id,source_sha,policy_version,created_at,status,started_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(parsed.planId, parsed.runId, parsed.routingDecisionId, parsed.sourceSha, parsed.policyVersion, parsed.createdAt, parsed.status ?? "planned", parsed.startedAt ?? null, parsed.completedAt ?? null)
       for (const workstream of parsed.workstreams) {
@@ -32,6 +33,8 @@ export class SqliteExecutionRepository {
       }
       return parsed
     })
+    this.metrics?.executionPlans.inc()
+    return saved
   }
 
   private insertWorkstream(plan: ExecutionPlan, w: ExecutionWorkstream): void {
@@ -50,6 +53,7 @@ export class SqliteExecutionRepository {
     return executionPlanSchema.parse({ planId: row.plan_id, runId: row.run_id, routingDecisionId: row.routing_decision_id, sourceSha: row.source_sha, policyVersion: row.policy_version, createdAt: row.created_at, status: row.status, startedAt: row.started_at ?? undefined, completedAt: row.completed_at ?? undefined, workstreams })
   }
   listPlansForRun(runId: string): ExecutionPlan[] { return (this.db.query("SELECT plan_id FROM execution_plans WHERE run_id = ? ORDER BY created_at, plan_id").all(runId) as Array<{ plan_id: string }>).map(r => this.getPlan(r.plan_id)!).filter(Boolean) }
+  listPlans(): ExecutionPlan[] { return (this.db.query("SELECT plan_id FROM execution_plans ORDER BY created_at, plan_id").all() as Array<{ plan_id: string }>).map(r => this.getPlan(r.plan_id)!).filter(Boolean) }
 
   transitionWorkstream(planId: string, workstreamId: string, status: ExecutionWorkstream["status"], failureReason?: string): ExecutionWorkstream {
     return this.tx.write(() => {
@@ -79,24 +83,27 @@ export class SqliteExecutionRepository {
   }
 
   acquireLease(input: WorktreeLeaseInput): WorktreeLease {
-    return this.tx.write(() => {
+    try { return this.tx.write(() => {
       const live = this.db.query(`SELECT lease_id FROM execution_worktree_leases WHERE (worktree_id = ? OR workstream_id = ?) AND state IN ${ACTIVE_LEASES} AND expires_at > datetime('now')`).get(input.worktreeId, input.workstreamId)
       if (live) throw new Error("WORKTREE_LEASE_CONFLICT")
       this.db.query(`INSERT INTO execution_worktree_leases (lease_id,run_id,plan_id,workstream_id,agent_id,worktree_id,workspace,branch,acquired_at,renewed_at,expires_at,state) VALUES (?,?,?,?,?,?,?,?,?,?,?,'allocated')`).run(input.leaseId, input.runId, input.planId, input.workstreamId, input.agentId, input.worktreeId, input.workspace, input.branch, input.acquiredAt, input.renewedAt, input.expiresAt)
       return { ...input, state: "allocated" as const }
-    })
+    }) } catch (error) { if (String(error).includes("WORKTREE_LEASE_CONFLICT") || String(error).includes("UNIQUE")) this.metrics?.worktreeLeaseConflicts.inc(); throw error }
   }
 
   renewLease(leaseId: string, renewedAt: string, expiresAt: string): WorktreeLease { return this.tx.write(() => { const row = this.db.query(`SELECT * FROM execution_worktree_leases WHERE lease_id = ? AND state IN ${ACTIVE_LEASES}`).get(leaseId) as Record<string, unknown> | null; if (!row) throw new Error("LEASE_NOT_ACTIVE"); this.db.query("UPDATE execution_worktree_leases SET renewed_at = ?, expires_at = ?, state = 'renewing' WHERE lease_id = ?").run(renewedAt, expiresAt, leaseId); return this.getLease(leaseId)! }) }
   releaseLease(leaseId: string): WorktreeLease { return this.tx.write(() => { this.db.query("UPDATE execution_worktree_leases SET state = 'released' WHERE lease_id = ? AND state <> 'released'").run(leaseId); return this.getLease(leaseId)! }) }
-  reclaimExpired(now: string): number { return this.tx.write(() => this.db.query(`UPDATE execution_worktree_leases SET state = 'reclaimable' WHERE state IN ${ACTIVE_LEASES} AND expires_at <= ?`).run(now).changes) }
+  reclaimExpired(now: string): number { const count = this.tx.write(() => this.db.query(`UPDATE execution_worktree_leases SET state = 'reclaimable' WHERE state IN ${ACTIVE_LEASES} AND expires_at <= ?`).run(now).changes); if (count) this.metrics?.worktreeLeaseReclaims.inc(count); return count }
   getLease(leaseId: string): WorktreeLease | null { const r = this.db.query("SELECT * FROM execution_worktree_leases WHERE lease_id = ?").get(leaseId) as Record<string, unknown> | null; return r ? { leaseId: r.lease_id as string, runId: r.run_id as string, planId: r.plan_id as string, workstreamId: r.workstream_id as string, agentId: r.agent_id as string, worktreeId: r.worktree_id as string, workspace: r.workspace as string, branch: r.branch as string, acquiredAt: r.acquired_at as string, renewedAt: r.renewed_at as string, expiresAt: r.expires_at as string, state: r.state as ExecutionLeaseState } : null }
   listLeases(runId: string): WorktreeLease[] { return (this.db.query("SELECT * FROM execution_worktree_leases WHERE run_id = ? ORDER BY acquired_at").all(runId) as Record<string, unknown>[]).map(r => this.getLease(r.lease_id as string)!) }
+  listAllLeases(): WorktreeLease[] { return (this.db.query("SELECT lease_id FROM execution_worktree_leases ORDER BY acquired_at, lease_id").all() as Array<{ lease_id: string }>).map(r => this.getLease(r.lease_id)!).filter(Boolean) }
 
-  recordIntegration(attempt: IntegrationAttempt): IntegrationAttempt { return this.tx.write(() => { this.db.query("INSERT INTO execution_integration_attempts (attempt_id,plan_id,workstream_id,source_sha,branch,status,verification_json,evidence_json,error,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(attempt.attemptId, attempt.planId, attempt.workstreamId, attempt.sourceSha, attempt.branch, attempt.status, json(attempt.verification), json(attempt.evidence), attempt.error ?? null, attempt.createdAt, attempt.completedAt ?? null); return attempt }) }
+  recordIntegration(attempt: IntegrationAttempt): IntegrationAttempt { const result = this.tx.write(() => { this.db.query("INSERT INTO execution_integration_attempts (attempt_id,plan_id,workstream_id,source_sha,branch,status,verification_json,evidence_json,error,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(attempt.attemptId, attempt.planId, attempt.workstreamId, attempt.sourceSha, attempt.branch, attempt.status, json(attempt.verification), json(attempt.evidence), attempt.error ?? null, attempt.createdAt, attempt.completedAt ?? null); return attempt }); this.metrics?.integrationAttempts.inc(); if (attempt.status === "integrated") this.metrics?.integrationsCompleted.inc(); if (["conflict", "failed"].includes(attempt.status)) this.metrics?.integrationConflicts.inc(); return result }
   hasIntegrated(workstreamId: string): boolean { return Boolean(this.db.query("SELECT 1 FROM execution_integration_attempts WHERE workstream_id = ? AND status = 'integrated'").get(workstreamId)) }
   reconcileIntegratedAttempts(): number {
     return this.tx.write(() => {
+      const table = this.db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'execution_integration_attempts'").get()
+      if (!table) return 0
       const rows = this.db.query("SELECT plan_id, workstream_id FROM execution_integration_attempts WHERE status = 'integrated'").all() as Array<{ plan_id: string; workstream_id: string }>
       let repaired = 0
       for (const row of rows) {

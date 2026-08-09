@@ -56,6 +56,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings",
     "validate:skills": "node scripts/validate-skills.mjs",
+    "verify:v2-milestones": "node scripts/verify-v2-milestones.mjs",
+    "benchmark:v2": "bun scripts/benchmark-v2.ts",
     "validate:docs": "node scripts/validate-docs.mjs",
     "verify:fast": "node scripts/pre-push.mjs --fast",
     "verify:full": "node scripts/pre-push.mjs --full",

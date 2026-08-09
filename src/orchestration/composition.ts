@@ -606,7 +606,7 @@ function safeParseJSON(raw: string): Record<string, unknown> {
 
 // ── Production composition factory ─────────────────────────────────────
 
-export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string } = {}): ProductionOrchestrationRuntime {
+export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown> } = {}): ProductionOrchestrationRuntime {
   const executionRegistry = new ExecutionRegistry();
   const unitOfWork = new SqliteUnitOfWork(db);
   const txManager = createTransactionManager(db);
@@ -633,14 +633,14 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
   const routingDecisionRepository = new SqliteRoutingDecisionRepository(db, txManager);
   const metrics = new OrchestrationMetrics();
-  const executionRepository = new SqliteExecutionRepository(db, txManager);
+  const executionRepository = new SqliteExecutionRepository(db, txManager, metrics);
   executionRepository.reconcileIntegratedAttempts();
   const executionScheduler = new ExecutionScheduler(executionRepository, metrics);
   const performanceRepository = new SqlitePerformanceRepository(db, txManager, metrics);
   const authoritativeRouting = new AuthoritativeRoutingService(executionRepository);
-  const snapshotService = new RuntimeSnapshotService(executionRepository, performanceRepository, metrics);
+  const snapshotService = new RuntimeSnapshotService(executionRepository, performanceRepository, metrics, options.routingMode, options.budgetState);
   const worktreeManager = options.repositoryPath && options.worktreeRoot ? new GitWorktreeManager(options.repositoryPath, options.worktreeRoot) : undefined;
-  const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath) : undefined;
+  const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath, metrics) : undefined;
   const worktreeExecutionService = worktreeManager ? new WorktreeExecutionService(executionRepository, executionScheduler, worktreeManager, integrationService, undefined, performanceRepository) : undefined;
 
   const outboxWorker = new OutboxWorker(deliverySink, eventBus, { workerId: "orchestration-main", batchSize: 20, leaseSeconds: 60 });

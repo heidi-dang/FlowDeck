@@ -4,6 +4,7 @@ import type { ExecutionWorkstream } from "./contracts"
 import { ownershipClaimMatchesPath } from "./contracts"
 import type { SqliteExecutionRepository } from "./sqlite-repository"
 import type { GitWorktreeManager } from "./worktree-manager"
+import type { OrchestrationMetrics } from "../metrics"
 
 function normalizePath(value: string): string { return value.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+/g, "/").replace(/\/$/, "") }
 export function pathOwnedBy(path: string, owner: string): boolean {
@@ -12,7 +13,7 @@ export function pathOwnedBy(path: string, owner: string): boolean {
 }
 
 export class ControlledIntegrationService {
-  constructor(private readonly repository: SqliteExecutionRepository, private readonly worktrees: GitWorktreeManager, private readonly root: string) {}
+  constructor(private readonly repository: SqliteExecutionRepository, private readonly worktrees: GitWorktreeManager, private readonly root: string, private readonly metrics?: OrchestrationMetrics) {}
   currentSourceSha(): string { return execFileSync("git", ["rev-parse", "HEAD"], { cwd: this.root, encoding: "utf8" }).trim() }
   integrate(workstream: ExecutionWorkstream, sourceSha: string, branch: string, workspace: string): void {
     if (workstream.status !== "succeeded" && workstream.status !== "integration_pending") throw new Error("INTEGRATION_STATUS_INVALID")
@@ -21,7 +22,7 @@ export class ControlledIntegrationService {
     if (current !== sourceSha) throw new Error("INTEGRATION_BASE_DRIFT")
     const branchBase = execFileSync("git", ["merge-base", sourceSha, branch], { cwd: this.root, encoding: "utf8" }).trim()
     const names = execFileSync("git", ["diff", "--name-only", `${branchBase}..${branch}`], { cwd: this.root, encoding: "utf8" }).split("\n").map(s => s.trim()).filter(Boolean)
-    for (const name of names) { const normalized = normalizePath(name); if (!workstream.ownedPaths.some(owner => pathOwnedBy(normalized, owner))) throw new Error(`OWNERSHIP_VIOLATION:${normalized}`); this.worktrees.assertOwnedPath(workspace, normalized) }
+    for (const name of names) { const normalized = normalizePath(name); if (!workstream.ownedPaths.some(owner => pathOwnedBy(normalized, owner))) { this.metrics?.ownershipConflicts.inc(); throw new Error(`OWNERSHIP_VIOLATION:${normalized}`) }; try { this.worktrees.assertOwnedPath(workspace, normalized) } catch (error) { this.metrics?.ownershipConflicts.inc(); throw error } }
     const attemptId = `integration-${workstream.workstreamId}-${Date.now()}`
     this.repository.recordIntegration({ attemptId, planId: workstream.planId, workstreamId: workstream.workstreamId, sourceSha, branch, status: "started", verification: {}, evidence: {}, createdAt: new Date().toISOString() })
     try {
@@ -29,6 +30,6 @@ export class ControlledIntegrationService {
       this.repository.recordIntegration({ attemptId: `${attemptId}-complete`, planId: workstream.planId, workstreamId: workstream.workstreamId, sourceSha, branch, status: "integrated", verification: { clean: true }, evidence: { changedFiles: names }, createdAt: new Date().toISOString(), completedAt: new Date().toISOString() })
       this.repository.transitionWorkstream(workstream.planId, workstream.workstreamId, "integration_pending")
       this.repository.transitionWorkstream(workstream.planId, workstream.workstreamId, "integrated")
-    } catch (error) { try { execFileSync("git", ["merge", "--abort"], { cwd: this.root, stdio: "pipe" }) } catch {} ; throw error }
+    } catch (error) { try { execFileSync("git", ["merge", "--abort"], { cwd: this.root, stdio: "pipe" }) } catch {} ; try { this.repository.recordIntegration({ attemptId: `${attemptId}-failed`, planId: workstream.planId, workstreamId: workstream.workstreamId, sourceSha, branch, status: String(error).includes("CONFLICT") ? "conflict" : "failed", verification: {}, evidence: { changedFiles: names }, error: error instanceof Error ? error.message : String(error), createdAt: new Date().toISOString(), completedAt: new Date().toISOString() }) } catch {} ; throw error }
   }
 }
