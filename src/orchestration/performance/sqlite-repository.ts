@@ -5,7 +5,7 @@ import { PERFORMANCE_POLICY_VERSION, performanceObservationSchema, scorePerforma
 
 const bool = (value: boolean) => value ? 1 : 0
 const parse = (value: unknown): string[] => { try { const parsed = JSON.parse(String(value)); return Array.isArray(parsed) ? parsed.filter(x => typeof x === "string") : [] } catch { return [] } }
-export interface PerformanceOutcomeFacts { status: "succeeded" | "failed"; verificationPassed?: boolean; integrationPassed: boolean; tokenReserved?: number; tokenUsed?: number; durationMs?: number; retryCount?: number; reviewFindings?: number; regressionCount?: number; terminationReason?: string; usefulnessSignals?: string[] }
+export interface PerformanceOutcomeFacts { status: "succeeded" | "failed"; verificationPassed?: boolean; integrationPassed: boolean; tokenReserved?: number; tokenUsed?: number; reservationId?: string; durationMs?: number; retryCount?: number; reviewFindings?: number; regressionCount?: number; terminationReason?: string; usefulnessSignals?: string[] }
 const band = (score: number): "low" | "medium" | "high" => score >= 70 ? "high" : score >= 40 ? "medium" : "low"
 export class SqlitePerformanceRepository {
   constructor(private readonly db: Database, private readonly tx: TransactionManager, private readonly metrics?: OrchestrationMetrics) {}

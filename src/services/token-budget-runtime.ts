@@ -165,14 +165,17 @@ export class TokenBudgetRuntime {
 
   openWorkstreamBudget(workstream: ExecutionWorkstream): WorkstreamBudgetHandle {
     const sessionID = `workstream:${workstream.runId}:${workstream.workstreamId}`
-    const control = this.getAdaptiveControlForSession({ sessionID, agent: workstream.resolvedAgent, depth: 1, runId: workstream.runId })
-    return control.openWorkstream(workstream.workstreamId, sessionID, workstream.resolvedAgent, workstream.budgetProfile)
+    // Workstream sessions are children of the durable run identity, so the
+    // existing controller enforces its child ceiling rather than treating a
+    // workstream as a second root session.
+    const control = this.getAdaptiveControlForSession({ sessionID, agent: workstream.resolvedAgent, parentID: workstream.runId, depth: 1, runId: workstream.runId })
+    return control.openWorkstream(workstream.workstreamId, sessionID, workstream.resolvedAgent, workstream.budgetProfile, workstream.runId)
   }
 
   async redistributeWorkstream(workstream: ExecutionWorkstream, amount: number, reason: string, sourceReservationId?: string): Promise<{ allowed: boolean; reservationId: string; amount: number }> {
     const sessionID = `workstream:${workstream.runId}:${workstream.workstreamId}`
-    const control = this.getAdaptiveControlForSession({ sessionID, agent: workstream.resolvedAgent, depth: 1, runId: workstream.runId })
-    return control.redistribute(workstream.runId, workstream.workstreamId, sessionID, workstream.resolvedAgent, amount, reason, sourceReservationId)
+    const control = this.getAdaptiveControlForSession({ sessionID, agent: workstream.resolvedAgent, parentID: workstream.runId, depth: 1, runId: workstream.runId })
+    return control.redistribute(workstream.runId, workstream.workstreamId, sessionID, workstream.resolvedAgent, amount, reason, sourceReservationId, workstream.budgetProfile)
   }
 
   private lookupRunId(ctx: SessionBudgetContext): string {

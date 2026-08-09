@@ -121,5 +121,7 @@ describe("TokenBudgetRuntime", () => {
     expect(a.profile).toBe("normal")
     expect(b.profile).toBe("normal")
     expect(rt.getControllersForTest().size).toBe(1)
+    const controller = rt.getControllersForTest().get("execution-run")!
+    expect(controller.getSnapshot().agents.every(agent => agent.ceiling === 5_000)).toBe(true)
   })
 })

@@ -125,13 +125,14 @@ export class WorktreeExecutionService {
         try { this.worktrees.remove(allocation) } catch { /* cleanup is recoverable through lease/worktree reconciliation */ }
       }
       if (this.budgetCoordinator?.redistribute) {
-        const reclaimed = result.succeeded.reduce((sum, workstreamId) => {
-          const outcome = facts.get(workstreamId)
-          return sum + Math.max(0, Math.floor((outcome?.tokenReserved ?? 0) - (outcome?.tokenUsed ?? 0)))
-        }, 0)
         const nextReady = this.repository.listReady(planId).sort((left, right) => (right.dependsOn.length - left.dependsOn.length) || left.workstreamId.localeCompare(right.workstreamId))[0]
-        if (reclaimed > 0 && nextReady) {
-          try { await this.budgetCoordinator.redistribute(nextReady, reclaimed, "completed_workstream_reclaim") } catch { /* adaptive control is advisory to the scheduler */ }
+        if (nextReady) {
+          for (const workstreamId of [...result.succeeded].sort()) {
+            const outcome = facts.get(workstreamId)
+            const reclaimed = Math.max(0, Math.floor((outcome?.tokenReserved ?? 0) - (outcome?.tokenUsed ?? 0)))
+            if (reclaimed <= 0) continue
+            try { await this.budgetCoordinator.redistribute(nextReady, reclaimed, "completed_workstream_reclaim", outcome?.reservationId) } catch { /* adaptive control is advisory to the scheduler */ }
+          }
         }
       }
       aggregate.succeeded.push(...result.succeeded); aggregate.failed.push(...result.failed); aggregate.blocked.push(...result.blocked)

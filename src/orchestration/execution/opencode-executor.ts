@@ -73,7 +73,7 @@ export class OpenCodeWorkstreamExecutor implements IsolatedWorkstreamExecutor {
       await budget.reconcile({ reservationId: reservation.reservationId, requestId: `workstream:${workstream.runId}:${workstream.workstreamId}`, messageId: `message:${sessionId}`, usage, reason: "workstream_completed" })
     }
     const verificationPassed = await this.verify(allocation)
-    return { status: verificationPassed ? "succeeded" : "failed", verificationPassed, integrationPassed: false, tokenReserved: reservation?.claimed, tokenUsed, durationMs: 0, usefulnessSignals: ["opencode_session", "scoped_context", ...(verificationPassed ? ["git_diff_check"] : [])], terminationReason: verificationPassed ? "awaiting_integration" : "verification_failed" }
+    return { status: verificationPassed ? "succeeded" : "failed", verificationPassed, integrationPassed: false, reservationId: reservation?.reservationId, tokenReserved: reservation?.claimed, tokenUsed, durationMs: 0, usefulnessSignals: ["opencode_session", "scoped_context", ...(verificationPassed ? ["git_diff_check"] : [])], terminationReason: verificationPassed ? "awaiting_integration" : "verification_failed" }
   }
 
   private static verifyGitState(allocation: WorktreeAllocation): boolean {
