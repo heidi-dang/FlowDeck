@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process"
 import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs"
-import { join, relative, resolve, sep } from "node:path"
+import { dirname, join, relative, resolve, sep } from "node:path"
 
 export interface WorktreeAllocation { worktreeId: string; workspace: string; branch: string; sourceSha: string }
 function safePart(value: string): string { const out = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/\.\.+/g, "-").replace(/^-+|-+$/g, ""); if (!out || out === ".") throw new Error("UNSAFE_WORKTREE_IDENTIFIER"); return out.slice(0, 80) }
@@ -22,6 +22,14 @@ export class GitWorktreeManager {
   assertOwnedPath(workspace: string, path: string): string {
     const root = realpathSync(workspace); const candidate = resolve(workspace, path.replaceAll("\\", "/"));
     if (!contained(root, candidate)) throw new Error("OWNERSHIP_PATH_ESCAPE")
+    if (/^[A-Za-z]:\//.test(path.replaceAll("\\", "/"))) throw new Error("OWNERSHIP_PATH_ESCAPE")
+    // Check the nearest existing ancestor as well as the leaf. A path such
+    // as `src/link/new.ts` must not bypass the boundary when `src/link` is a
+    // symlink to a directory outside the worktree.
+    let probe = candidate
+    while (!existsSync(probe) && probe !== root) probe = dirname(probe)
+    const realProbe = realpathSync(probe)
+    if (!contained(root, realProbe) && realProbe !== root) throw new Error("SYMLINK_ESCAPE")
     if (existsSync(candidate) && lstatSync(candidate).isSymbolicLink()) { const real = realpathSync(candidate); if (!contained(root, real) && real !== root) throw new Error("SYMLINK_ESCAPE") }
     return candidate
   }

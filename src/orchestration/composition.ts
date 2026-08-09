@@ -642,7 +642,13 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const worktreeManager = options.repositoryPath && options.worktreeRoot ? new GitWorktreeManager(options.repositoryPath, options.worktreeRoot) : undefined;
   const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath, metrics) : undefined;
   const worktreeExecutionService = worktreeManager ? new WorktreeExecutionService(executionRepository, executionScheduler, worktreeManager, integrationService, undefined, performanceRepository) : undefined;
-  if (worktreeExecutionService) authoritativeRouting.setDispatcher(worktreeExecutionService);
+  if (worktreeExecutionService) {
+    authoritativeRouting.setDispatcher(worktreeExecutionService);
+    // Reconcile running leases and in-flight work before this runtime can
+    // dispatch anything new. Recovery is durable and idempotent; it does not
+    // infer successful agent work that was not persisted.
+    worktreeExecutionService.recoverAfterRestart();
+  }
 
   const outboxWorker = new OutboxWorker(deliverySink, eventBus, { workerId: "orchestration-main", batchSize: 20, leaseSeconds: 60 });
 

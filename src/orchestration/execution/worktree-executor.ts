@@ -15,6 +15,23 @@ export interface WorkstreamBudgetCoordinator { open(workstream: ExecutionWorkstr
 export class WorktreeExecutionService {
   constructor(private readonly repository: SqliteExecutionRepository, private readonly scheduler: ExecutionScheduler, private readonly worktrees: GitWorktreeManager, private readonly integration?: IntegrationCoordinator, private budgetCoordinator?: WorkstreamBudgetCoordinator, private readonly performance?: SqlitePerformanceRepository) {}
   setBudgetCoordinator(coordinator: WorkstreamBudgetCoordinator): void { this.budgetCoordinator = coordinator }
+  /** Reconcile durable execution state before accepting new dispatches. */
+  recoverAfterRestart(now = new Date().toISOString()): { recoveredWorkstreams: string[]; reclaimedLeases: number; repairedIntegrations: number } {
+    const recovery = this.repository.recoverAfterRestart(now)
+    for (const lease of this.repository.listAllLeases().filter(item => item.state === "reclaimable")) {
+      const plan = this.repository.getPlan(lease.planId)
+      if (plan) {
+        try {
+          this.worktrees.remove({ worktreeId: lease.worktreeId, workspace: lease.workspace, branch: lease.branch, sourceSha: plan.sourceSha })
+        } catch {
+          // The worktree may already have been removed by an operator or a
+          // previous recovery attempt; the durable lease remains authoritative.
+        }
+      }
+      try { this.repository.releaseLease(lease.leaseId) } catch { /* idempotent recovery */ }
+    }
+    return recovery
+  }
   async executePlan(planId: string, sourceSha: string, executor: IsolatedWorkstreamExecutor): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }> {
     const initialPlan = this.repository.getPlan(planId)
     if (!initialPlan) throw new Error("EXECUTION_PLAN_NOT_FOUND")
@@ -29,10 +46,14 @@ export class WorktreeExecutionService {
         for (const workstream of ready) {
           if (this.budgetCoordinator) budgets.set(workstream.workstreamId, this.budgetCoordinator.open(workstream))
           const allocation = this.worktrees.allocate(workstream.runId, workstream.workstreamId, sourceSha)
+          // Git creates the worktree before the database can bind its lease.
+          // Register it immediately so a failed bind/claim is still cleaned up
+          // by the same failure path; otherwise a rejected concurrent claim
+          // could leave an orphaned writable worktree behind.
+          allocations.set(workstream.workstreamId, allocation)
           this.repository.bindWorktree(planId, workstream.workstreamId, allocation.worktreeId, allocation.branch)
           const lease = this.repository.acquireLease({ leaseId: randomUUID(), runId: workstream.runId, planId, workstreamId: workstream.workstreamId, agentId: workstream.resolvedAgent, worktreeId: allocation.worktreeId, workspace: allocation.workspace, branch: allocation.branch, acquiredAt: new Date().toISOString(), renewedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 15 * 60_000).toISOString() })
           this.repository.activateLease(lease.leaseId)
-          allocations.set(workstream.workstreamId, allocation)
         }
       } catch (error) {
         for (const allocation of allocations.values()) { const lease = this.repository.listLeases(this.repository.getPlan(planId)!.runId).find(l => l.worktreeId === allocation.worktreeId && ["allocated", "active", "renewing"].includes(l.state)); if (lease) this.repository.releaseLease(lease.leaseId); try { this.worktrees.remove(allocation) } catch {} }
