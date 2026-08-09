@@ -93,6 +93,7 @@ import { buildAssignmentContext, externalizeToolOutput, compactConversationConte
 import { initializeDatabase } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
+import { OpenCodeWorkstreamExecutor } from "./orchestration/execution/opencode-executor"
 import { execFileSync } from "node:child_process"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
@@ -459,7 +460,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         }
         const comparison = runShadowAssessment({ runId: sessionID || "sessionless", sourceSha, task: taskText }, "existing", routingMode, activeOrchestrationRuntime?.routingDecisionRepository, activeOrchestrationRuntime?.metrics)
         if (routingMode === "enforce" && comparison.decision && activeOrchestrationRuntime) {
-          const activation = activeOrchestrationRuntime.authoritativeRouting.activate(comparison.decision, sourceSha, {
+          const activation = await activeOrchestrationRuntime.authoritativeRouting.activateAndExecute(comparison.decision, sourceSha, {
             milestone1: true,
             executionPlanner: Boolean(activeOrchestrationRuntime.worktreeExecutionService),
             adaptiveBudget: tokenBudgetRuntime.isEnabled(),
@@ -469,9 +470,9 @@ const plugin: Plugin = async ({ directory, client }) => {
             modelAuthority: true,
             budgetAuthority: tokenBudgetRuntime.isEnabled(),
             completionAuthority: Boolean(activeOrchestrationRuntime.services.completionService),
-          })
+          }, new OpenCodeWorkstreamExecutor(client))
           if (activation.fallback) await appLog(`[routing] enforce fallback: ${activation.reason}`, "warn", sessionID)
-          else await appLog(`[routing] enforce plan ${activation.planId} persisted; existing model and execution authority remain unchanged`, "info", sessionID)
+          else await appLog(`[routing] enforce plan ${activation.planId} executed: ${activation.execution.succeeded.length} integrated, ${activation.execution.failed.length} failed, ${activation.execution.blocked.length} blocked; selected model/provider authority remains unchanged`, "info", sessionID)
         } else if (routingMode === "enforce" && comparison.error) {
           await appLog(`[routing] enforce assessment failed closed: ${comparison.error}`, "warn", sessionID)
         }
