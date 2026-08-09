@@ -32,10 +32,11 @@ describe("v2 production observability", () => {
       execution.savePlan(plan)
       const snapshot = new RuntimeSnapshotService(execution, performance, metrics, () => "shadow", () => ({ enabled: true, profile: "normal" })).get()
       expect(snapshot.activeRuns).toBe(1)
-      expect(snapshot.executionPlans).toEqual(["observability-plan"])
+      expect(snapshot.executionPlans).toEqual([{ planId: "observability-plan", runId: "observability-run", status: "planned", workstreams: 1 }])
       expect(snapshot.workstreams).toEqual({ ready: 0, running: 0, blocked: 0, completed: 0 })
       expect(snapshot.routingMode).toBe("shadow")
       expect(snapshot.budget).toEqual({ enabled: true, profile: "normal" })
+      expect((snapshot as { health: { fdx: unknown } }).health.fdx).toEqual({ available: false })
     } finally { db.close() }
   })
 })

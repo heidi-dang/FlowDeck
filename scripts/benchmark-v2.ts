@@ -34,6 +34,7 @@ const corpus = [
 ] as const
 
 type BenchmarkResult = Record<string, unknown> & { success: boolean }
+type ExecutionMode = "parallel" | "serial-reference"
 
 function buildPlan(decision: ReturnType<typeof routeTask>, benchmarkId: string): ExecutionPlan {
   const base = executionPlanFromRouting(decision)
@@ -44,11 +45,11 @@ function buildPlan(decision: ReturnType<typeof routeTask>, benchmarkId: string):
   return plan
 }
 
-async function runCase(spec: typeof corpus[number]): Promise<BenchmarkResult> {
+async function runCase(spec: typeof corpus[number], mode: ExecutionMode = "parallel"): Promise<BenchmarkResult> {
   const started = performance.now()
   const duplicateObjective = new Set(spec.paths).size !== spec.paths.length
   if (duplicateObjective) {
-    return { benchmarkId: spec.id, baselineSha, candidateSha, seed: spec.id, mode: "conflict-rejection", success: true, durationMs: Math.round(performance.now() - started), tokens: 0, agents: 0, workstreams: 0, parallelism: "none", retries: 0, duplicateWork: 1, verificationFailures: 0, integrationConflicts: 1, recovery: true, contextVolume: 0, fdx: null, expectedOutcome: "conflicting workstream rejected before dispatch" }
+    return { benchmarkId: spec.id, baselineSha, candidateSha, seed: spec.id, mode, executionMode: "conflict-rejection", success: true, durationMs: Math.round(performance.now() - started), tokens: 0, agents: 0, workstreams: 0, parallelism: "none", retries: 0, duplicateWork: 1, verificationFailures: 0, integrationConflicts: 1, recovery: true, contextVolume: 0, fdx: null, expectedOutcome: "conflicting workstream rejected before dispatch" }
   }
   const directory = mkdtempSync(join(tmpdir(), `flowdeck-${spec.id.toLowerCase()}-`))
   const dbPath = join(directory, "benchmark.db")
@@ -57,7 +58,7 @@ async function runCase(spec: typeof corpus[number]): Promise<BenchmarkResult> {
     runMigrations(db)
     const metrics = new OrchestrationMetrics()
     const repository = new SqliteExecutionRepository(db, createTransactionManager(db), metrics)
-    const decision = routeTask({ runId: `benchmark-${spec.id}`, task: spec.task, paths: [...spec.paths], sourceSha: candidateSha })
+    const decision = routeTask({ runId: `benchmark-${spec.id}-${mode}`, task: spec.task, paths: [...spec.paths], sourceSha: candidateSha })
     const plan = buildPlan(decision, spec.id)
     repository.savePlan(plan)
     const scheduler = new ExecutionScheduler(repository, metrics)
@@ -70,7 +71,7 @@ async function runCase(spec: typeof corpus[number]): Promise<BenchmarkResult> {
       const reconciliation = await handle.reconcile({ reservationId: reservation.reservationId, requestId: `${spec.id}-${workstream.workstreamId}`, messageId: `${spec.id}-message-${workstream.workstreamId}`, usage: { input: 40, output: 20, cacheRead: 0, cacheWrite: 0, reasoning: 0 }, model: "benchmark", provider: "local", reason: "benchmark_completed" })
       actualTokens += 60
       return reconciliation.committed ? "succeeded" : "failed"
-    } })
+    } }, { parallel: mode === "parallel" })
     const beforeRestart = repository.getPlan(plan.planId)
     db.close()
     db = new Database(dbPath)
@@ -79,7 +80,7 @@ async function runCase(spec: typeof corpus[number]): Promise<BenchmarkResult> {
     const recovery = JSON.stringify(beforeRestart) === JSON.stringify(afterRestart)
     const fdx = spec.id === "B14" ? (() => { const stateFile = join(directory, "fdx-index.json"); const index = new FdxWorkspaceIndex({ stateFile, maxFiles: 200 }); const fdxStarted = performance.now(); const outline = index.outline(process.cwd()); return { source: "persistent-index", latencyMs: Math.round(performance.now() - fdxStarted), outputBytes: Buffer.byteLength(JSON.stringify(outline)), files: outline.length } })() : null
     const success = result.failed.length === 0 && result.blocked.length === 0 && recovery
-    return { benchmarkId: spec.id, baselineSha, candidateSha, seed: spec.id, mode: "scheduler-budget-persistence", success, durationMs: Math.round(performance.now() - started), tokens: actualTokens, agents: new Set(plan.workstreams.map(workstream => workstream.resolvedAgent)).size, workstreams: plan.workstreams.length, parallelism: decision.assessment.parallelism, retries: 0, duplicateWork: 0, verificationFailures: result.failed.length, integrationConflicts: 0, recovery, contextVolume: plan.workstreams.reduce((sum, workstream) => sum + workstream.requirements.length + workstream.acceptanceCriteria.length, 0), fdx, taskClass: decision.assessment.taskClass, strategy: decision.strategy, ready: result.started.length }
+    return { benchmarkId: spec.id, baselineSha, candidateSha, seed: spec.id, mode, success, durationMs: Math.round(performance.now() - started), tokens: actualTokens, agents: new Set(plan.workstreams.map(workstream => workstream.resolvedAgent)).size, workstreams: plan.workstreams.length, parallelism: decision.assessment.parallelism, retries: 0, duplicateWork: 0, verificationFailures: result.failed.length, integrationConflicts: 0, recovery, contextVolume: plan.workstreams.reduce((sum, workstream) => sum + workstream.requirements.length + workstream.acceptanceCriteria.length, 0), fdx, taskClass: decision.assessment.taskClass, strategy: decision.strategy, ready: result.started.length }
   } finally {
     try { db.close() } catch { /* the restart branch may already have closed it */ }
     rmSync(directory, { recursive: true, force: true })
@@ -87,9 +88,28 @@ async function runCase(spec: typeof corpus[number]): Promise<BenchmarkResult> {
 }
 
 const results: BenchmarkResult[] = []
-for (const spec of corpus) results.push(await runCase(spec))
+const serialReference: BenchmarkResult[] = []
+for (const spec of corpus) {
+  results.push(await runCase(spec, "parallel"))
+  serialReference.push(await runCase(spec, "serial-reference"))
+}
 const output = process.env.FLOWDECK_BENCHMARK_OUTPUT ?? "/tmp/flowdeck-v2-benchmark.json"
-const report = { version: 2, generatedAt: new Date().toISOString(), baselineSha, candidateSha, methodology: "deterministic routing + SQLite execution scheduler + authoritative token controller + restart reconstruction", baselineComparison: { status: "not-executed", reason: "The historical baseline is recorded for reproducibility; this command never mutates the working branch or silently checks out another revision." }, results }
+const report = {
+  version: 3,
+  generatedAt: new Date().toISOString(),
+  baselineSha,
+  candidateSha,
+  methodology: "deterministic routing + SQLite execution scheduler + authoritative token controller + restart reconstruction",
+  baselineComparison: {
+    status: "serial-reference",
+    reference: "same-revision deterministic serial scheduler",
+    historicalBaselineStatus: "not-executed",
+    historicalBaselineReason: "The historical baseline predates the v2 surface; the harness does not silently checkout or fabricate a historical result.",
+    results: serialReference,
+    candidate: results,
+  },
+  results,
+}
 writeFileSync(output, JSON.stringify(report, null, 2))
 console.log(output)
-console.log(JSON.stringify({ benchmarks: results.length, success: results.every(result => result.success), recovery: results.filter(result => result.recovery === true).length, baselineSha, candidateSha }))
+console.log(JSON.stringify({ benchmarks: results.length, serialReference: serialReference.length, success: results.every(result => result.success) && serialReference.every(result => result.success), recovery: results.filter(result => result.recovery === true).length, baselineSha, candidateSha }))

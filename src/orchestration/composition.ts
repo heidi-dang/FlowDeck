@@ -606,7 +606,7 @@ function safeParseJSON(raw: string): Record<string, unknown> {
 
 // ── Production composition factory ─────────────────────────────────────
 
-export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown> } = {}): ProductionOrchestrationRuntime {
+export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown> } = {}): ProductionOrchestrationRuntime {
   const executionRegistry = new ExecutionRegistry();
   const unitOfWork = new SqliteUnitOfWork(db);
   const txManager = createTransactionManager(db);
@@ -638,7 +638,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const executionScheduler = new ExecutionScheduler(executionRepository, metrics);
   const performanceRepository = new SqlitePerformanceRepository(db, txManager, metrics);
   const authoritativeRouting = new AuthoritativeRoutingService(executionRepository);
-  const snapshotService = new RuntimeSnapshotService(executionRepository, performanceRepository, metrics, options.routingMode, options.budgetState);
+  const snapshotService = new RuntimeSnapshotService(executionRepository, performanceRepository, metrics, options.routingMode, options.budgetState, options.fdxHealth);
   const worktreeManager = options.repositoryPath && options.worktreeRoot ? new GitWorktreeManager(options.repositoryPath, options.worktreeRoot) : undefined;
   const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath, metrics) : undefined;
   const worktreeExecutionService = worktreeManager ? new WorktreeExecutionService(executionRepository, executionScheduler, worktreeManager, integrationService, undefined, performanceRepository) : undefined;

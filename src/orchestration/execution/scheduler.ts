@@ -4,6 +4,7 @@ import type { OrchestrationMetrics } from "../metrics"
 
 export interface WorkstreamExecutor { execute(workstream: ExecutionWorkstream): Promise<"succeeded" | "failed"> }
 export interface SchedulerResult { started: string[]; succeeded: string[]; failed: string[]; blocked: string[] }
+export interface SchedulerRunOptions { parallel?: boolean }
 
 /** Deterministic wave scheduler. Dispatch is injected so production can bind the existing agent/session runtime. */
 export class ExecutionScheduler {
@@ -37,7 +38,7 @@ export class ExecutionScheduler {
     const plan = this.repository.getPlan(planId)
     if (plan?.status === "running" && plan.workstreams.every(w => ["succeeded", "failed", "blocked", "cancelled", "integrated", "superseded"].includes(w.status)) && plan.workstreams.some(w => ["failed", "blocked", "cancelled"].includes(w.status))) this.repository.transitionPlanStatus(planId, "failed")
   }
-  async runReady(planId: string, executor: WorkstreamExecutor): Promise<SchedulerResult> {
+  async runReady(planId: string, executor: WorkstreamExecutor, options: SchedulerRunOptions = {}): Promise<SchedulerResult> {
     const started: string[] = []; const succeeded: string[] = []; const failed: string[] = []; const blocked: string[] = []
     const currentPlan = this.repository.getPlan(planId)
     if (!currentPlan) throw new Error("EXECUTION_PLAN_NOT_FOUND")
@@ -47,10 +48,16 @@ export class ExecutionScheduler {
       this.repository.transitionWorkstream(planId, workstream.workstreamId, "ready")
     }
     const dispatchable = this.repository.listReady(planId)
-    const outcomes = await Promise.all(dispatchable.map(async workstream => {
+    const executeOne = async (workstream: ExecutionWorkstream) => {
       this.repository.transitionWorkstream(planId, workstream.workstreamId, "running"); started.push(workstream.workstreamId); this.metrics?.workstreamsStarted.inc()
       try { return { id: workstream.workstreamId, outcome: await executor.execute(workstream) } } catch { return { id: workstream.workstreamId, outcome: "failed" as const } }
-    }))
+    }
+    const outcomes: Array<{ id: string; outcome: "succeeded" | "failed" }> = []
+    if (options.parallel === false) {
+      for (const workstream of dispatchable) outcomes.push(await executeOne(workstream))
+    } else {
+      outcomes.push(...await Promise.all(dispatchable.map(executeOne)))
+    }
     for (const result of outcomes.sort((a, b) => a.id.localeCompare(b.id))) {
       if (result.outcome === "succeeded") { this.repository.transitionWorkstream(planId, result.id, "succeeded"); succeeded.push(result.id); this.metrics?.workstreamsSucceeded.inc() }
       else { this.repository.transitionWorkstream(planId, result.id, "failed", "WORKSTREAM_EXECUTION_FAILED"); failed.push(result.id); this.metrics?.workstreamsFailed.inc() }
