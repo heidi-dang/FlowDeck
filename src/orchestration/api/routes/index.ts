@@ -7,6 +7,9 @@ import type { CompletionService } from "../../services/completion-service";
 import type { ReplayService } from "../../services/replay-service";
 import type { EventService } from "../../services/event-service";
 import type { HealthService } from "../../services/health-service";
+import type { RoutingProjection } from "../../services/routing-projection";
+import type { PerformanceProjection } from "../../services/performance-projection";
+import type { RuntimeSnapshotService } from "../../services/runtime-snapshot";
 import { createRunController } from "../controllers/run-controller";
 import { createContractController } from "../controllers/contract-controller";
 import { createAssignmentController } from "../controllers/assignment-controller";
@@ -14,6 +17,9 @@ import { createVerificationController } from "../controllers/verification-contro
 import { createCompletionController } from "../controllers/completion-controller";
 import { createReplayController } from "../controllers/replay-controller";
 import { createEventController } from "../controllers/event-controller";
+import { createRoutingController } from "../controllers/routing-controller";
+import { createPerformanceController } from "../controllers/performance-controller";
+import { createSnapshotController } from "../controllers/snapshot-controller";
 import { extractRequestContext, attachContextToResponse } from "../middleware/request-context";
 import { errorHandler } from "../middleware/error-handler";
 import type { RequestContext } from "../middleware/request-context";
@@ -75,6 +81,9 @@ export function createRouterWithControllers(deps: {
   replayService: ReplayService;
   eventService: EventService;
   healthService: HealthService;
+  routingProjection: RoutingProjection;
+  performanceProjection: PerformanceProjection;
+  snapshotService: RuntimeSnapshotService;
 }) {
   const router = createRouter();
   const base = "/api/v1/orchestration";
@@ -86,11 +95,17 @@ export function createRouterWithControllers(deps: {
   const completionCtrl = createCompletionController(deps.completionService);
   const replayCtrl = createReplayController(deps.replayService);
   const eventCtrl = createEventController(deps.eventService);
+  const routingCtrl = createRoutingController(deps.routingProjection);
+  const performanceCtrl = createPerformanceController(deps.performanceProjection);
+  const snapshotCtrl = createSnapshotController(deps.snapshotService);
 
   // Run routes
   router.add("POST", `${base}/runs`, (req, res, ctx) => runCtrl.create(req, res, ctx));
   router.add("GET", `${base}/runs`, (req, res, ctx) => runCtrl.list(req, res, ctx));
   router.add("GET", `${base}/runs/:id`, (req, res, ctx, id) => runCtrl.get(req, res, ctx, id));
+  router.add("GET", `${base}/runs/:id/routing`, (req, res, ctx, id) => routingCtrl.get(req, res, ctx, id));
+  router.add("GET", `${base}/agents/:agentId/performance/:capability`, (req, res, ctx, agentId, capability) => performanceCtrl.get(req, res, ctx, agentId, capability));
+  router.add("GET", `${base}/snapshot`, (req, res, ctx) => snapshotCtrl.get(req, res, ctx));
   router.add("PATCH", `${base}/runs/:id`, (req, res, ctx, id) => runCtrl.update(req, res, ctx, id));
   router.add("POST", `${base}/runs/:id/cancel`, (req, res, ctx, id) => runCtrl.cancel(req, res, ctx, id));
   router.add("POST", `${base}/runs/:id/pause`, (req, res, ctx, id) => runCtrl.pause(req, res, ctx, id));

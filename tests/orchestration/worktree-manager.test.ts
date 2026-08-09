@@ -1,0 +1,7 @@
+import { describe, expect, it } from "bun:test"
+import { execFileSync } from "node:child_process"
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
+import { GitWorktreeManager } from "../../src/orchestration/execution"
+describe("isolated git worktree manager", () => { it("allocates from an exact SHA and rejects boundary escapes", () => { const root = mkdtempSync(join(tmpdir(), "flowdeck-git-")); const repo = join(root, "repo"); const wroot = join(root, "worktrees"); mkdirSync(repo); execFileSync("git", ["init", "-q"], { cwd: repo }); execFileSync("git", ["config", "user.email", "test@example.test"], { cwd: repo }); execFileSync("git", ["config", "user.name", "test"], { cwd: repo }); writeFileSync(join(repo, "README.md"), "root\n"); execFileSync("git", ["add", "README.md"], { cwd: repo }); execFileSync("git", ["commit", "-qm", "initial"], { cwd: repo }); const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim(); const manager = new GitWorktreeManager(repo, wroot); const allocation = manager.allocate("run", "ws", sha); expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: allocation.workspace, encoding: "utf8" }).trim()).toBe(sha); expect(() => manager.assertOwnedPath(allocation.workspace, "../escape")).toThrow("OWNERSHIP_PATH_ESCAPE"); manager.remove(allocation); rmSync(root, { recursive: true, force: true }) }) })

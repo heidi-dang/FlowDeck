@@ -24,6 +24,7 @@ export const ErrorCodes = {
   UNAUTHENTICATED: { code: "UNAUTHENTICATED", category: ErrorCategory.AUTHENTICATION, httpStatus: 401, retryable: false },
   FORBIDDEN: { code: "FORBIDDEN", category: ErrorCategory.AUTHORIZATION, httpStatus: 403, retryable: false },
   RUN_NOT_FOUND: { code: "RUN_NOT_FOUND", category: ErrorCategory.NOT_FOUND, httpStatus: 404, retryable: false },
+  ROUTING_DECISION_NOT_FOUND: { code: "ROUTING_DECISION_NOT_FOUND", category: ErrorCategory.NOT_FOUND, httpStatus: 404, retryable: false },
   CONTRACT_NOT_FOUND: { code: "CONTRACT_NOT_FOUND", category: ErrorCategory.NOT_FOUND, httpStatus: 404, retryable: false },
   ASSIGNMENT_NOT_FOUND: { code: "ASSIGNMENT_NOT_FOUND", category: ErrorCategory.NOT_FOUND, httpStatus: 404, retryable: false },
   SESSION_NOT_FOUND: { code: "SESSION_NOT_FOUND", category: ErrorCategory.NOT_FOUND, httpStatus: 404, retryable: false },

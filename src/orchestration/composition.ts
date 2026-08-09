@@ -65,6 +65,14 @@ import type { OrchestrationEvent, EventFilter } from "./types/events";
 import type { PagePaginationRequest } from "./types/pagination";
 import { createRouterWithControllers } from "./api/routes";
 import { OrchestrationError, ErrorCodes } from "./types/errors";
+import { SqliteRoutingDecisionRepository } from "./routing/sqlite-store";
+import { RoutingProjection } from "./services/routing-projection";
+import { OrchestrationMetrics } from "./metrics";
+import { SqliteExecutionRepository, ExecutionScheduler, GitWorktreeManager, ControlledIntegrationService, WorktreeExecutionService } from "./execution";
+import { SqlitePerformanceRepository } from "./performance";
+import { PerformanceProjection } from "./services/performance-projection";
+import { RuntimeSnapshotService } from "./services/runtime-snapshot";
+import { AuthoritativeRoutingService } from "./routing/authoritative";
 
 export interface ProductionOrchestrationRuntime {
   db: Database;
@@ -87,6 +95,15 @@ export interface ProductionOrchestrationRuntime {
     healthService: HealthService;
   };
   router: ReturnType<typeof createRouterWithControllers>;
+  routingDecisionRepository: SqliteRoutingDecisionRepository;
+  metrics: OrchestrationMetrics;
+  executionRepository: SqliteExecutionRepository;
+  executionScheduler: ExecutionScheduler;
+  worktreeExecutionService?: WorktreeExecutionService;
+  performanceRepository: SqlitePerformanceRepository;
+  authoritativeRouting: AuthoritativeRoutingService;
+  worktreeManager?: GitWorktreeManager;
+  integrationService?: ControlledIntegrationService;
 }
 
 // ── SQLite-backed production repository implementations ────────────────
@@ -589,7 +606,7 @@ function safeParseJSON(raw: string): Record<string, unknown> {
 
 // ── Production composition factory ─────────────────────────────────────
 
-export function createProductionOrchestrationRuntime(db: Database): ProductionOrchestrationRuntime {
+export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown> } = {}): ProductionOrchestrationRuntime {
   const executionRegistry = new ExecutionRegistry();
   const unitOfWork = new SqliteUnitOfWork(db);
   const txManager = createTransactionManager(db);
@@ -614,6 +631,24 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
   const sessionRepo = new SqliteSessionRepository(db, txManager);
   const contextItemRepo = new SqliteContextItemRepository(db, txManager);
   const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
+  const routingDecisionRepository = new SqliteRoutingDecisionRepository(db, txManager);
+  const metrics = new OrchestrationMetrics();
+  const executionRepository = new SqliteExecutionRepository(db, txManager, metrics);
+  executionRepository.reconcileIntegratedAttempts();
+  const executionScheduler = new ExecutionScheduler(executionRepository, metrics);
+  const performanceRepository = new SqlitePerformanceRepository(db, txManager, metrics);
+  const authoritativeRouting = new AuthoritativeRoutingService(executionRepository);
+  const snapshotService = new RuntimeSnapshotService(executionRepository, performanceRepository, metrics, options.routingMode, options.budgetState, options.fdxHealth);
+  const worktreeManager = options.repositoryPath && options.worktreeRoot ? new GitWorktreeManager(options.repositoryPath, options.worktreeRoot) : undefined;
+  const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath, metrics) : undefined;
+  const worktreeExecutionService = worktreeManager ? new WorktreeExecutionService(executionRepository, executionScheduler, worktreeManager, integrationService, undefined, performanceRepository) : undefined;
+  if (worktreeExecutionService) {
+    authoritativeRouting.setDispatcher(worktreeExecutionService);
+    // Reconcile running leases and in-flight work before this runtime can
+    // dispatch anything new. Recovery is durable and idempotent; it does not
+    // infer successful agent work that was not persisted.
+    worktreeExecutionService.recoverAfterRestart();
+  }
 
   const outboxWorker = new OutboxWorker(deliverySink, eventBus, { workerId: "orchestration-main", batchSize: 20, leaseSeconds: 60 });
 
@@ -640,6 +675,9 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
     replayService,
     eventService,
     healthService,
+    routingProjection: new RoutingProjection(routingDecisionRepository, runService),
+    performanceProjection: new PerformanceProjection(performanceRepository),
+    snapshotService,
   };
 
   const router = createRouterWithControllers(services);
@@ -656,5 +694,14 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
     consumerOffsetRepo,
     services,
     router,
+    routingDecisionRepository,
+    metrics,
+    executionRepository,
+    executionScheduler,
+    worktreeExecutionService,
+    performanceRepository,
+    authoritativeRouting,
+    worktreeManager,
+    integrationService,
   };
 }

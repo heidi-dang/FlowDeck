@@ -54,6 +54,7 @@ import {
   fdxSearchTool,
   fdxTestTool,
   fdxTreeTool,
+  configureFdxNextRuntime,
   setActiveProjectDir,
 } from "./tools/fdx"
 import { fdxPrMonitorTool } from "./tools/fdx-pr-monitor"
@@ -92,6 +93,13 @@ import { getArtifactStore } from "./services/artifact-store"
 import { buildAssignmentContext, externalizeToolOutput, compactConversationContext } from "./services/context-scoping"
 import { initializeDatabase } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
+import { runShadowAssessment } from "./orchestration/routing/shadow"
+import { createEnforceRun } from "./orchestration/routing/enforce-run"
+import { RunStatus } from "./orchestration/types/runs"
+import { OpenCodeWorkstreamExecutor } from "./orchestration/execution/opencode-executor"
+import { FdxWorkspaceIndex } from "./services/fdx-index"
+import { FdxDaemon } from "./services/fdx-daemon"
+import { execFileSync } from "node:child_process"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -267,6 +275,33 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
 
   setActiveProjectDir(directory)
+  let fdxWorkspaceIndex: FdxWorkspaceIndex | undefined
+  let fdxDaemon: FdxDaemon | undefined
+  let fdxDaemonSocketPath: string | undefined
+  try {
+    fdxWorkspaceIndex = new FdxWorkspaceIndex({
+      stateFile: join(directory, ".flowdeck", "fdx-index.json"),
+      maxFiles: 10_000,
+      maxFileBytes: 2_000_000,
+      maxWorkspaces: 32,
+    })
+    if (process.env.FLOWDECK_FDX_DAEMON === "on") {
+      const socketPath = join(directory, ".flowdeck", "fdx.sock")
+      const daemon = new FdxDaemon({ socketPath, workspaceRoot: directory, index: fdxWorkspaceIndex })
+      try {
+        await daemon.start()
+        fdxDaemon = daemon
+        fdxDaemonSocketPath = socketPath
+      } catch {
+        await daemon.stop()
+      }
+    }
+    configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex, daemonSocketPath: fdxDaemonSocketPath })
+  } catch {
+    // The persistent index is optional. Native FDX and the existing
+    // TypeScript fallbacks remain the operational path if it cannot load.
+    configureFdxNextRuntime()
+  }
   const artifactStore = getArtifactStore(join(directory, ".flowdeck", "artifacts"))
 
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
@@ -369,7 +404,13 @@ const plugin: Plugin = async ({ directory, client }) => {
   try {
     const dbPath = join(directory, ".flowdeck", "flowdeck.db")
     const { db } = initializeDatabase({ path: dbPath })
-    activeOrchestrationRuntime = createProductionOrchestrationRuntime(db)
+    activeOrchestrationRuntime = createProductionOrchestrationRuntime(db, { repositoryPath: directory, worktreeRoot: join(directory, ".flowdeck", "worktrees"), routingMode: () => flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off", budgetState: () => tokenBudgetRuntime.getRunSnapshot(), fdxHealth: () => fdxWorkspaceIndex ? { available: true, ...fdxWorkspaceIndex.health(), daemon: Boolean(fdxDaemon) } : { available: false, daemon: false } })
+    tokenBudgetRuntime.setMetrics(activeOrchestrationRuntime.metrics)
+    if (fdxWorkspaceIndex) configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex, daemonSocketPath: fdxDaemonSocketPath, metrics: activeOrchestrationRuntime.metrics })
+    activeOrchestrationRuntime.worktreeExecutionService?.setBudgetCoordinator({
+      open: workstream => tokenBudgetRuntime.openWorkstreamBudget(workstream),
+      redistribute: (workstream, amount, reason, sourceReservationId) => tokenBudgetRuntime.redistributeWorkstream(workstream, amount, reason, sourceReservationId),
+    })
     appLog("[orchestration] Production orchestration runtime initialized successfully")
   } catch (err) {
     appLog(`[orchestration] Production orchestration runtime initialization skipped: ${err instanceof Error ? err.message : String(err)}`, "warn")
@@ -440,6 +481,51 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
       const isSubagent = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
+
+      // Routing remains opt-in. Shadow mode is observational. Enforce mode
+      // uses a durable orchestration run as the execution-plan identity, then
+      // dispatches only through the injected isolated-workstream runtime. The
+      // normal OpenCode session remains the model/provider authority.
+      const routingMode = flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off"
+      const taskText = typeof output.message?.content === "string" ? output.message.content : ""
+      if ((routingMode === "shadow" || routingMode === "enforce") && taskText.trim()) {
+        let sourceSha = process.env.FLOWDECK_SOURCE_SHA
+        if (!sourceSha) {
+          try { sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: directory, encoding: "utf8" }).trim() } catch { sourceSha = "0000000000000000000000000000000000000000" }
+        }
+        let enforceRun: Awaited<ReturnType<typeof createEnforceRun>> | undefined
+        if (routingMode === "enforce" && activeOrchestrationRuntime) {
+          try {
+            enforceRun = await createEnforceRun(activeOrchestrationRuntime.services.runService, sessionID, agent, sourceSha)
+          } catch (error) {
+            await appLog(`[routing] enforce run creation failed closed: ${error instanceof Error ? error.message : String(error)}`, "warn", sessionID)
+          }
+        }
+        const comparison = runShadowAssessment({ runId: (enforceRun?.id ?? sessionID) || "sessionless", sourceSha, task: taskText }, "existing", routingMode, activeOrchestrationRuntime?.routingDecisionRepository, activeOrchestrationRuntime?.metrics)
+        if (routingMode === "enforce" && enforceRun && comparison.decision && activeOrchestrationRuntime) {
+          const activation = await activeOrchestrationRuntime.authoritativeRouting.activateAndExecute(comparison.decision, sourceSha, {
+            milestone1: Boolean(comparison.decision.finalized),
+            executionPlanner: Boolean(activeOrchestrationRuntime.worktreeExecutionService),
+            adaptiveBudget: tokenBudgetRuntime.isEnabled(),
+            performanceIntelligence: Boolean(activeOrchestrationRuntime.performanceRepository),
+            determinism: comparison.decision.policyVersion.length > 0 && comparison.decision.assessment.classifierVersion.length > 0,
+            safety: Boolean(activeOrchestrationRuntime.worktreeManager && activeOrchestrationRuntime.integrationService),
+            modelAuthority: true,
+            budgetAuthority: tokenBudgetRuntime.isEnabled(),
+            completionAuthority: Boolean(activeOrchestrationRuntime.services.completionService),
+          }, new OpenCodeWorkstreamExecutor(client))
+          if (activation.fallback) {
+            await activeOrchestrationRuntime.services.runService.updateRun(enforceRun.id, { status: RunStatus.FAILED, error: activation.reason })
+            await appLog(`[routing] enforce fallback: ${activation.reason}`, "warn", sessionID)
+          } else {
+            const failed = activation.execution.failed.length > 0 || activation.execution.blocked.length > 0
+            await activeOrchestrationRuntime.services.runService.updateRun(enforceRun.id, { status: failed ? RunStatus.FAILED : RunStatus.COMPLETED, error: failed ? "ONE_OR_MORE_WORKSTREAMS_FAILED" : undefined })
+            await appLog(`[routing] enforce plan ${activation.planId} executed: ${activation.execution.succeeded.length} integrated, ${activation.execution.failed.length} failed, ${activation.execution.blocked.length} blocked; selected model/provider authority remains unchanged`, "info", sessionID)
+          }
+        } else if (routingMode === "enforce" && comparison.error) {
+          await appLog(`[routing] enforce assessment failed closed: ${comparison.error}`, "warn", sessionID)
+        }
+      }
 
       const variant = input.variant
       const pkgVersion = "2.0.0-alpha.1"
@@ -1187,6 +1273,11 @@ const plugin: Plugin = async ({ directory, client }) => {
         try { _betterHarnessCleanup() } catch { /* best-effort */ }
         _betterHarnessCleanup = null
       }
+      if (fdxDaemon) {
+        try { await fdxDaemon.stop() } catch { /* optional daemon teardown */ }
+        fdxDaemon = undefined
+      }
+      configureFdxNextRuntime()
     },
   }
 }

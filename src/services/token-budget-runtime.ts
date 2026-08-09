@@ -21,7 +21,12 @@ import { join } from "path"
 import { resolveTokenBudgetConfig, type TokenBudgetOverrides } from "../config/token-budget-config"
 import { TokenBudgetController, type ReservationResult } from "./token-budget-controller"
 import { FileTokenUsageStore } from "./token-usage-store"
+import { InMemoryTokenUsageStore, type TokenUsageStore } from "./token-usage-store"
+import { AdaptiveExecutionControl } from "./adaptive-execution-control"
+import type { WorkstreamBudgetHandle } from "./adaptive-execution-control"
+import type { ExecutionWorkstream } from "../orchestration/execution/contracts"
 import { estimateTokensFromBytes } from "./token-budget"
+import type { OrchestrationMetrics } from "../orchestration/metrics"
 
 export interface TokenBudgetRuntimeOptions {
   /** user-supplied tokenBudget config section. */
@@ -32,6 +37,7 @@ export interface TokenBudgetRuntimeOptions {
   onWarning?: (runId: string, message: string) => void
   /** Hook for surfacing terminal state (e.g. app log). */
   onTerminal?: (runId: string, reason: string) => void
+  metrics?: OrchestrationMetrics
 }
 
 export interface SessionBudgetContext {
@@ -39,6 +45,7 @@ export interface SessionBudgetContext {
   agent: string
   parentID?: string
   depth: number
+  runId?: string
 }
 
 export interface PreDispatchResult {
@@ -67,16 +74,19 @@ function serializeEstimate(message: unknown): number {
 
 export class TokenBudgetRuntime {
   private readonly controllers = new Map<string, TokenBudgetController>()
+  private readonly stores = new Map<string, TokenUsageStore>()
   private readonly runForSession = new Map<string, string>() // sessionID → runId
   private readonly pending = new Map<string, PendingSlot[]>() // sessionID → FIFO
   private readonly onWarning?: (runId: string, message: string) => void
   private readonly onTerminal?: (runId: string, reason: string) => void
   private readonly persistDir: string
   private readonly config: ReturnType<typeof resolveTokenBudgetConfig>
+  private metrics?: OrchestrationMetrics
 
   constructor(opts?: TokenBudgetRuntimeOptions) {
     this.onWarning = opts?.onWarning
     this.onTerminal = opts?.onTerminal
+    this.metrics = opts?.metrics
     // Persist dir must live outside the project (never committed).
     this.persistDir = opts?.persistDir || ""
     this.config = resolveTokenBudgetConfig(opts?.overrides)
@@ -115,18 +125,16 @@ export class TokenBudgetRuntime {
     const runId = this.lookupRunId(ctx)
     let ctrl = this.controllers.get(runId)
     if (!ctrl) {
+      const store = this.getStore(runId)
       if (this.persistDir) {
         // Recover durable state for the run when present (restart/reconnect).
-        const store = new FileTokenUsageStore(this.persistDir)
         const rebuilt = store.rebuild(runId)
         if (rebuilt.consumed > 0 || rebuilt.reserved > 0 || rebuilt.terminal) {
           ctrl = TokenBudgetController.restore(this.config, runId, store)
         } else {
           ctrl = new TokenBudgetController(this.config, { runId, store })
         }
-      } else {
-        ctrl = new TokenBudgetController(this.config, { runId })
-      }
+      } else ctrl = new TokenBudgetController(this.config, { runId, store })
       this.controllers.set(runId, ctrl)
     }
     this.runForSession.set(ctx.sessionID, runId)
@@ -134,7 +142,44 @@ export class TokenBudgetRuntime {
     return ctrl
   }
 
+  private getStore(runId: string): TokenUsageStore {
+    const existing = this.stores.get(runId); if (existing) return existing
+    const store = this.persistDir ? new FileTokenUsageStore(this.persistDir) : new InMemoryTokenUsageStore()
+    this.stores.set(runId, store); return store
+  }
+
+  getAdaptiveControlForSession(ctx: SessionBudgetContext): AdaptiveExecutionControl {
+    const controller = this.getControllerForSession(ctx)
+    return new AdaptiveExecutionControl(controller, this.getStore(controller.runId), this.metrics)
+  }
+
+  setMetrics(metrics: OrchestrationMetrics): void { this.metrics = metrics }
+
+  /** Bounded operational budget state for the existing runtime snapshot. */
+  getRunSnapshot(runId?: string): Record<string, unknown> {
+    const controller = runId ? this.controllers.get(runId) : [...this.controllers.values()][0]
+    if (!controller) return { enabled: this.config.enabled, profile: this.config.profile, runs: 0 }
+    const snapshot = controller.getSnapshot()
+    return { enabled: snapshot.enabled, profile: snapshot.profile, run: { ceiling: snapshot.run.ceiling, consumed: snapshot.run.consumed, reserved: snapshot.run.reserved, releasedUnused: snapshot.run.releasedUnused, remaining: snapshot.remainingRun, terminal: snapshot.run.terminal?.reason ?? null }, workstreams: snapshot.agents.length }
+  }
+
+  openWorkstreamBudget(workstream: ExecutionWorkstream): WorkstreamBudgetHandle {
+    const sessionID = `workstream:${workstream.runId}:${workstream.workstreamId}`
+    // Workstream sessions are children of the durable run identity, so the
+    // existing controller enforces its child ceiling rather than treating a
+    // workstream as a second root session.
+    const control = this.getAdaptiveControlForSession({ sessionID, agent: workstream.resolvedAgent, parentID: workstream.runId, depth: 1, runId: workstream.runId })
+    return control.openWorkstream(workstream.workstreamId, sessionID, workstream.resolvedAgent, workstream.budgetProfile, workstream.runId)
+  }
+
+  async redistributeWorkstream(workstream: ExecutionWorkstream, amount: number, reason: string, sourceReservationId?: string): Promise<{ allowed: boolean; reservationId: string; amount: number }> {
+    const sessionID = `workstream:${workstream.runId}:${workstream.workstreamId}`
+    const control = this.getAdaptiveControlForSession({ sessionID, agent: workstream.resolvedAgent, parentID: workstream.runId, depth: 1, runId: workstream.runId })
+    return control.redistribute(workstream.runId, workstream.workstreamId, sessionID, workstream.resolvedAgent, amount, reason, sourceReservationId, workstream.budgetProfile)
+  }
+
   private lookupRunId(ctx: SessionBudgetContext): string {
+    if (ctx.runId) return ctx.runId
     const direct = this.runForSession.get(ctx.sessionID)
     if (direct) return direct
     if (ctx.parentID) {
@@ -212,7 +257,7 @@ export class TokenBudgetRuntime {
     const slot = (this.pending.get(ctx.sessionID) ?? []).shift()
     const tokens = msg.tokens
 
-    await ctrl.commitUsage({
+    const committed = await ctrl.commitUsage({
       runId: ctrl.runId,
       sessionId: ctx.sessionID,
       agentId: ctx.agent,
@@ -232,6 +277,7 @@ export class TokenBudgetRuntime {
       provider: msg.providerID,
       terminationReason: msg.error ? "message_error" : undefined,
     })
+    if (committed.releasedUnused > 0) this.metrics?.budgetReclaimed.inc(committed.releasedUnused)
 
     const snapshot = ctrl.getSnapshot()
     if (snapshot.run.warningFired) {

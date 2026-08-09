@@ -25,6 +25,8 @@ export interface BetterHarnessConfig {
 }
 
 export interface FlowDeckConfig {
+  /** Deterministic v2 routing intelligence. Shadow is advisory and non-invasive. */
+  routing?: { enabled?: boolean; mode?: "off" | "shadow" | "enforce" };
   /** Per-agent model overrides. When unset, agent inherits UI-selected model. */
   agentModels?: Record<string, AgentModelConfig>;
   /** Legacy per-agent model overrides (deprecated, use agentModels). */
@@ -122,4 +124,3 @@ export interface SupervisorConfig {
   /** Confidence threshold (0-1) for approve decision. Default: 0.7 */
   confidenceThreshold?: number;
 }
-

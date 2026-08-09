@@ -13,6 +13,7 @@ export interface AgentModelConfig {
 
 export const DEFAULT_CONFIG: FlowDeckConfig = {
   agentModels: {},
+  routing: { enabled: false, mode: "off" },
   betterHarness: {
     enabled: true,
   },
@@ -94,7 +95,8 @@ const VALID_CONFIG_KEYS: (keyof FlowDeckConfig)[] = [
   "governance",
   "maxWritesPerAgent",
   "runtimeAgent",
-  "tokenBudget"
+  "tokenBudget",
+  "routing"
 ]
 
 function sanitizeConfig(parsed: unknown): FlowDeckConfig {

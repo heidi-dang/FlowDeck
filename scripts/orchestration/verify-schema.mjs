@@ -22,17 +22,18 @@ try {
 
   // Expected counts reflect the post-migration live DB state: initializeDatabase
   // runs migration v1 (frozen schema-v0.2.6.sql, 53 tables / 66 indexes / 36
-  // triggers) PLUS migration v2 (replays table + 2 indexes) — the sanctioned
+  // triggers) PLUS migration v2 (replays table + 2 indexes) and v3 (durable
+  // execution plans/workstreams/ownership/leases/integration tables) — the sanctioned
   // additive path per E.3.1 of the master-plan task brief, implemented in
   // src/orchestration/persistence/migrations/migration-v2-replay.ts.
   // The frozen-schema gate (scripts/check-schema-generated.mjs) still asserts
   // the v1 counts and must not change.
   console.log(`Schema Validation:`);
-  console.log(`Tables: ${schemaV.cnt} (Expected: 54)`);
-  console.log(`Indexes: ${indexV.cnt} (Expected: 68)`);
+  console.log(`Tables: ${schemaV.cnt} (Expected: 61)`);
+  console.log(`Indexes: ${indexV.cnt} (Expected: 82)`);
   console.log(`Triggers: ${triggerV.cnt} (Expected: 36)`);
 
-  if (schemaV.cnt !== 54 || indexV.cnt !== 68 || triggerV.cnt !== 36) {
+  if (schemaV.cnt !== 61 || indexV.cnt !== 82 || triggerV.cnt !== 36) {
     console.error(`Schema invariants violated!`);
     process.exit(1);
   }

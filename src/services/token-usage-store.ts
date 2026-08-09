@@ -42,6 +42,8 @@ export interface TokenUsageRecord {
   cacheWrite: number
   /** Conservative billable total = input + output + reasoning + cacheRead + cacheWrite. */
   billable: number
+  /** Unused reservation returned to the run pool by this reconciliation. */
+  releasedUnused?: number
   /** Estimated monetary cost where safely derivable. */
   estimatedCost?: number
   /** Active context size (tokens) at dispatch, when known. */
@@ -60,6 +62,9 @@ export type UsageStoreEntry =
   | ({ kind: "usage" } & TokenUsageRecord)
   | ({ kind: "terminal" } & { reason: string; at: number })
   | ({ kind: "warning" } & { runId: string; at: number })
+  | ({ kind: "adaptive_reclaim" } & { eventId: string; reservationId: string; workstreamId: string; reserved: number; actual: number; reclaimed: number; reason: string; policyVersion?: string; at: number })
+  | ({ kind: "adaptive_redistribution" } & { eventId: string; reservationId: string; sourceReservationId?: string; targetWorkstreamId: string; amount: number; reason: string; policyVersion?: string; at: number })
+  | ({ kind: "workstream_termination" } & { eventId: string; workstreamId: string; reason: string; at: number })
 
 export interface RebuiltUsage {
   runId: string
@@ -70,6 +75,20 @@ export interface RebuiltUsage {
   warningFired: boolean
   /** Most recent committed usage per dedup key (messageId ?? requestId ?? reservationId). */
   records: TokenUsageRecord[]
+  /** Reservations that were durable and still active at the last append. */
+  reservations: Array<{
+    reservationId: string
+    runId: string
+    sessionId: string
+    agentId: string
+    parentSessionId?: string
+    assignmentId?: string
+    requestId: string
+    attempt: number
+    estimatedInput: number
+    maxOutput: number
+    claimed: number
+  }>
 }
 
 export interface TokenUsageStore {
@@ -185,6 +204,7 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
   // after being reserved nets to zero on rebuild.
   const reservationClaims = new Map<string, number>()
   const reservationStatus = new Map<string, string>()
+  const reservationEntries = new Map<string, RebuiltUsage["reservations"][number]>()
   const committedReservations = new Set<string>()
 
   for (const e of entries) {
@@ -196,6 +216,19 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
         if (rid) {
           reservationClaims.set(rid, claimed)
           reservationStatus.set(rid, status)
+          reservationEntries.set(rid, {
+            reservationId: rid,
+            runId,
+            sessionId: String(e.sessionId ?? ""),
+            agentId: String(e.agentId ?? e.agent ?? ""),
+            ...(e.parentSessionId ? { parentSessionId: String(e.parentSessionId) } : {}),
+            ...(e.assignmentId ? { assignmentId: String(e.assignmentId) } : {}),
+            requestId: String(e.requestId ?? ""),
+            attempt: Number(e.attempt ?? 1),
+            estimatedInput: Number(e.estimatedInput ?? 0),
+            maxOutput: Number(e.maxOutput ?? 0),
+            claimed,
+          })
         }
       }
       continue
@@ -231,6 +264,7 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
 
   // Consumed = sum of the winning (latest) record per dedup key only.
   consumed = [...byKey.values()].reduce((sum, rec) => sum + (Number.isFinite(Number(rec.billable)) ? Number(rec.billable) : 0), 0)
+  releasedUnused = [...byKey.values()].reduce((sum, rec) => sum + (Number.isFinite(Number(rec.releasedUnused)) ? Number(rec.releasedUnused) : 0), 0)
 
   return {
     runId,
@@ -240,6 +274,7 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
     terminal,
     warningFired,
     records: [...byKey.values()],
+    reservations: [...reservationEntries.entries()].filter(([rid]) => reservationStatus.get(rid) === "reserved").map(([, value]) => value),
   }
 }
 

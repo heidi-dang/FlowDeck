@@ -157,12 +157,6 @@ export class RepairOrchestrator {
     report: CiFailureReport,
     pr: PrResponse,
   ): Promise<boolean> {
-    // Fetch the diff
-    let _diff = ""
-    try {
-      _diff = await this.client.getPrDiff(repo, prNumber)
-    } catch { return false }
-
     // Create worktree
     const worktreeDir = mkdtempSync(join(tmpdir(), "pr-monitor-"))
     try {
