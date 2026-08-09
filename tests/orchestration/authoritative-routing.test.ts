@@ -48,4 +48,14 @@ describe("authoritative routing activation", () => {
     expect(calls).toBe(1)
     expect((result as { execution: { succeeded: string[] } }).execution.succeeded).toEqual(["direct"])
   })
+
+  it("does not persist an enforce plan when the execution dispatcher is unavailable", async () => {
+    const decision = routeTask({ runId: "run-no-dispatch", sourceSha, task: "small bug" })
+    let saves = 0
+    const service = new AuthoritativeRoutingService({ savePlan: () => { saves += 1; throw new Error("must not persist") } } as never)
+    const result = await service.activateAndExecute(decision, sourceSha, evidence, { execute: async () => "succeeded" })
+    expect(result.fallback).toBe(true)
+    expect((result as { reason: string }).reason).toBe("ROUTING_EXECUTION_DISPATCH_UNAVAILABLE")
+    expect(saves).toBe(0)
+  })
 })

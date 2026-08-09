@@ -10,7 +10,7 @@ import type { AssignmentContextResult } from "../../services/context-scoping"
 
 export interface IsolatedExecutionResult extends PerformanceOutcomeFacts {}
 export interface IsolatedWorkstreamExecutor { execute(workstream: ExecutionWorkstream, allocation: WorktreeAllocation, budget?: WorkstreamBudgetHandle, context?: AssignmentContextResult): Promise<"succeeded" | "failed" | IsolatedExecutionResult> }
-export interface IntegrationCoordinator { integrate(workstream: ExecutionWorkstream, sourceSha: string, branch: string, workspace: string): void; currentSourceSha?: () => string }
+export interface IntegrationCoordinator { integrate(workstream: ExecutionWorkstream, sourceSha: string, branch: string, workspace: string): void; currentSourceSha?: () => string; recoverAfterRestart?: () => number }
 export interface WorkstreamBudgetCoordinator {
   open(workstream: ExecutionWorkstream): WorkstreamBudgetHandle
   redistribute?(workstream: ExecutionWorkstream, amount: number, reason: string, sourceReservationId?: string): Promise<{ allowed: boolean; reservationId: string; amount: number }>
@@ -20,6 +20,7 @@ export class WorktreeExecutionService {
   setBudgetCoordinator(coordinator: WorkstreamBudgetCoordinator): void { this.budgetCoordinator = coordinator }
   /** Reconcile durable execution state before accepting new dispatches. */
   recoverAfterRestart(now = new Date().toISOString()): { recoveredWorkstreams: string[]; reclaimedLeases: number; repairedIntegrations: number } {
+    const integrationRepairs = this.integration?.recoverAfterRestart?.() ?? 0
     const recovery = this.repository.recoverAfterRestart(now)
     for (const lease of this.repository.listAllLeases().filter(item => item.state === "reclaimable")) {
       const plan = this.repository.getPlan(lease.planId)
@@ -33,7 +34,7 @@ export class WorktreeExecutionService {
       }
       try { this.repository.releaseLease(lease.leaseId) } catch { /* idempotent recovery */ }
     }
-    return recovery
+    return { ...recovery, repairedIntegrations: recovery.repairedIntegrations + integrationRepairs }
   }
   async executePlan(planId: string, sourceSha: string, executor: IsolatedWorkstreamExecutor): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }> {
     const initialPlan = this.repository.getPlan(planId)
@@ -42,13 +43,19 @@ export class WorktreeExecutionService {
     const aggregate = { succeeded: [] as string[], failed: [] as string[], blocked: [] as string[] }
     for (let wave = 0; wave < 100; wave++) {
       const ready = this.repository.listReady(planId); if (!ready.length) break
+      // A dependency wave must see the integrations from prior waves. The
+      // plan's sourceSha remains the immutable provenance anchor, while each
+      // wave is allocated from the current controlled-integration head.
+      // Independent workstreams in one wave intentionally share that same
+      // base and are integrated deterministically afterwards.
+      const waveSourceSha = this.integration?.currentSourceSha?.() ?? sourceSha
       const allocations = new Map<string, WorktreeAllocation>()
       const budgets = new Map<string, WorkstreamBudgetHandle>()
       const facts = new Map<string, PerformanceOutcomeFacts>()
       try {
         for (const workstream of ready) {
           if (this.budgetCoordinator) budgets.set(workstream.workstreamId, this.budgetCoordinator.open(workstream))
-          const allocation = this.worktrees.allocate(workstream.runId, workstream.workstreamId, sourceSha)
+          const allocation = this.worktrees.allocate(workstream.runId, workstream.workstreamId, waveSourceSha)
           // Git creates the worktree before the database can bind its lease.
           // Register it immediately so a failed bind/claim is still cleaned up
           // by the same failure path; otherwise a rejected concurrent claim
@@ -69,7 +76,7 @@ export class WorktreeExecutionService {
           const workstream = this.repository.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
           const recordedFacts = facts.get(workstreamId)
           if (this.integration && (!recordedFacts || recordedFacts.verificationPassed !== true)) throw new Error("VERIFICATION_REQUIRED_BEFORE_INTEGRATION")
-          if (this.integration) this.integration.integrate(workstream, this.integration.currentSourceSha?.() ?? sourceSha, allocation.branch, allocation.workspace)
+          if (this.integration) this.integration.integrate(workstream, allocation.sourceSha, allocation.branch, allocation.workspace)
           const integrated = Boolean(this.integration)
           const outcomeFacts = facts.get(workstreamId) ?? { status: "succeeded" as const, integrationPassed: integrated, verificationPassed: integrated }
           this.performance?.recordWorkstreamOutcome(workstream, { ...outcomeFacts, status: "succeeded", integrationPassed: integrated, verificationPassed: outcomeFacts.verificationPassed === true && integrated })
@@ -101,6 +108,16 @@ export class WorktreeExecutionService {
         const reason = facts.get(workstreamId)?.terminationReason
         const allowed = new Set(["duplicate", "superseded", "dependency_failed", "no_progress", "budget_exhausted", "policy_violation", "manual_cancel"])
         await budgets.get(workstreamId)?.terminate(allowed.has(reason ?? "") ? reason as "duplicate" | "superseded" | "dependency_failed" | "no_progress" | "budget_exhausted" | "policy_violation" | "manual_cancel" : "policy_violation")
+      }
+      // An integration/verification failure is discovered after the
+      // scheduler's dispatch pass. Propagate that failure before deciding the
+      // next wave so dependents cannot remain silently planned.
+      const integrationBlocked = this.scheduler.propagateDependencyFailures(planId)
+      result.blocked.push(...integrationBlocked)
+      for (const workstreamId of integrationBlocked) {
+        const workstream = this.repository.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
+        await budgets.get(workstreamId)?.terminate("dependency_failed")
+        this.performance?.recordWorkstreamOutcome(workstream, { status: "failed", integrationPassed: false, terminationReason: "dependency_failed" })
       }
       for (const [workstreamId, allocation] of allocations) {
         const lease = this.repository.listLeases(this.repository.getPlan(planId)!.runId).find(l => l.workstreamId === workstreamId && ["allocated", "active", "renewing"].includes(l.state))

@@ -17,6 +17,21 @@ describe("durable execution runtime persistence", () => {
   it("reclaims expired leases and rejects duplicate integration", () => { repo.savePlan(plan()); const lease = { leaseId: "lease", runId: "run", planId: "plan", workstreamId: "a", agentId: "a", worktreeId: "wt", workspace: "/tmp/wt", branch: "fd/plan/a", acquiredAt: "2020-01-01T00:00:00.000Z", renewedAt: "2020-01-01T00:00:00.000Z", expiresAt: "2020-01-01T00:00:00.000Z" }; repo.acquireLease(lease); expect(repo.reclaimExpired("2021-01-01T00:00:00.000Z")).toBe(1); const attempt = { attemptId: "i", planId: "plan", workstreamId: "a", sourceSha: lease.branch.padEnd(40, "0").slice(0, 40), branch: lease.branch, status: "integrated" as const, verification: {}, evidence: {}, createdAt: "2026-08-09T00:00:00.000Z" }; repo.recordIntegration(attempt); expect(repo.hasIntegrated("a")).toBe(true); expect(() => repo.recordIntegration(attempt)).toThrow(); expect(() => repo.recordIntegration({ ...attempt, attemptId: "i-2" })).toThrow() })
   it("runs independent work in parallel and blocks transitive dependents after failure", async () => { const p = plan(); p.planId = "plan-2"; p.workstreams = [{ ...p.workstreams[0], workstreamId: "a", planId: "plan-2", ownedPaths: ["src/a.ts"] }, { ...p.workstreams[0], workstreamId: "b", planId: "plan-2", ownedPaths: ["src/b.ts"] }, { ...p.workstreams[0], workstreamId: "c", planId: "plan-2", ownedPaths: ["src/c.ts"], dependsOn: ["a"] }, { ...p.workstreams[0], workstreamId: "d", planId: "plan-2", ownedPaths: ["src/d.ts"], dependsOn: ["c"] }]; repo.savePlan(p); const scheduler = new ExecutionScheduler(repo); const result = await scheduler.runReady("plan-2", { execute: async w => w.workstreamId === "a" ? "failed" : "succeeded" }); expect(result.started).toEqual(["a", "b"]); expect(result.failed).toEqual(["a"]); expect(result.succeeded).toEqual(["b"]); expect(result.blocked).toEqual(["c", "d"]); expect(repo.getPlan("plan-2")!.workstreams.filter(w => ["c", "d"].includes(w.workstreamId)).every(w => w.status === "blocked")).toBe(true); expect(repo.getPlan("plan-2")!.status).toBe("failed") })
 
+  it("propagates an integration failure to dependents without cancelling independent work", () => {
+    repo.savePlan(plan())
+    repo.transitionWorkstream("plan", "a", "ready")
+    repo.transitionWorkstream("plan", "a", "running")
+    repo.transitionWorkstream("plan", "a", "succeeded")
+    const dependent = { ...plan().workstreams[0], workstreamId: "b", planId: "plan", ownedPaths: ["src/b.ts"], dependsOn: ["a"] }
+    db.query("INSERT INTO execution_workstreams (workstream_id,plan_id,run_id,resolved_agent,required_capability,objective,requirements_json,acceptance_criteria_json,owned_paths_json,owned_symbols_json,strategy,budget_profile,context_scope,status,worktree_ref,branch_ref,blocked_by_json,failure_reason,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run("b", "plan", "run", dependent.resolvedAgent, dependent.requiredCapability, dependent.objective, JSON.stringify(dependent.requirements), JSON.stringify(dependent.acceptanceCriteria), JSON.stringify(dependent.ownedPaths), JSON.stringify(dependent.ownedSymbols), dependent.strategy, dependent.budgetProfile, dependent.contextScope, "planned", null, null, "[]", null, dependent.createdAt, dependent.createdAt)
+    db.query("INSERT INTO execution_dependencies(plan_id,workstream_id,depends_on) VALUES(?,?,?)").run("plan", "b", "a")
+    const scheduler = new ExecutionScheduler(repo)
+    repo.transitionWorkstream("plan", "a", "integration_pending")
+    repo.transitionWorkstream("plan", "a", "failed", "INTEGRATION_FAILED")
+    expect(scheduler.propagateDependencyFailures("plan")).toEqual(["b"])
+    expect(repo.getPlan("plan")?.workstreams.find(w => w.workstreamId === "b")?.failureReason).toBe("DEPENDENCY_FAILED")
+  })
+
   it("rejects cyclic or overlapping plans before any plan rows become authoritative", () => {
     const cyclic = plan(); cyclic.planId = "cyclic"; cyclic.workstreams = [
       { ...cyclic.workstreams[0], planId: "cyclic", workstreamId: "a", ownedPaths: ["src/a.ts"], dependsOn: ["b"] },

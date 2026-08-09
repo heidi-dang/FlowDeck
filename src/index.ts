@@ -391,7 +391,10 @@ const plugin: Plugin = async ({ directory, client }) => {
     activeOrchestrationRuntime = createProductionOrchestrationRuntime(db, { repositoryPath: directory, worktreeRoot: join(directory, ".flowdeck", "worktrees"), routingMode: () => flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off", budgetState: () => tokenBudgetRuntime.getRunSnapshot() })
     tokenBudgetRuntime.setMetrics(activeOrchestrationRuntime.metrics)
     if (fdxWorkspaceIndex) configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex, metrics: activeOrchestrationRuntime.metrics })
-    activeOrchestrationRuntime.worktreeExecutionService?.setBudgetCoordinator({ open: workstream => tokenBudgetRuntime.openWorkstreamBudget(workstream) })
+    activeOrchestrationRuntime.worktreeExecutionService?.setBudgetCoordinator({
+      open: workstream => tokenBudgetRuntime.openWorkstreamBudget(workstream),
+      redistribute: (workstream, amount, reason, sourceReservationId) => tokenBudgetRuntime.redistributeWorkstream(workstream, amount, reason, sourceReservationId),
+    })
     appLog("[orchestration] Production orchestration runtime initialized successfully")
   } catch (err) {
     appLog(`[orchestration] Production orchestration runtime initialization skipped: ${err instanceof Error ? err.message : String(err)}`, "warn")

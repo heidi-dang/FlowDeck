@@ -126,6 +126,24 @@ export class SqliteExecutionRepository {
   }
 
   recordIntegration(attempt: IntegrationAttempt): IntegrationAttempt { const result = this.tx.write(() => { this.db.query("INSERT INTO execution_integration_attempts (attempt_id,plan_id,workstream_id,source_sha,branch,status,verification_json,evidence_json,error,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(attempt.attemptId, attempt.planId, attempt.workstreamId, attempt.sourceSha, attempt.branch, attempt.status, json(attempt.verification), json(attempt.evidence), attempt.error ?? null, attempt.createdAt, attempt.completedAt ?? null); return attempt }); this.metrics?.integrationAttempts.inc(); if (attempt.status === "integrated") this.metrics?.integrationsCompleted.inc(); if (["conflict", "failed"].includes(attempt.status)) this.metrics?.integrationConflicts.inc(); return result }
+  listIntegrationAttempts(status?: IntegrationAttempt["status"]): IntegrationAttempt[] {
+    const rows = (status
+      ? this.db.query("SELECT * FROM execution_integration_attempts WHERE status = ? ORDER BY created_at, attempt_id").all(status)
+      : this.db.query("SELECT * FROM execution_integration_attempts ORDER BY created_at, attempt_id").all()) as Record<string, unknown>[]
+    return rows.map(row => ({
+      attemptId: row.attempt_id as string,
+      planId: row.plan_id as string,
+      workstreamId: row.workstream_id as string,
+      sourceSha: row.source_sha as string,
+      branch: row.branch as string,
+      status: row.status as IntegrationAttempt["status"],
+      verification: parse(row.verification_json, {} as Record<string, unknown>),
+      evidence: parse(row.evidence_json, {} as Record<string, unknown>),
+      ...(row.error ? { error: row.error as string } : {}),
+      createdAt: row.created_at as string,
+      ...(row.completed_at ? { completedAt: row.completed_at as string } : {}),
+    }))
+  }
   hasIntegrated(workstreamId: string): boolean { return Boolean(this.db.query("SELECT 1 FROM execution_integration_attempts WHERE workstream_id = ? AND status = 'integrated'").get(workstreamId)) }
   reconcileIntegratedAttempts(): number {
     return this.tx.write(() => {

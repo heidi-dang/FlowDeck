@@ -25,9 +25,13 @@ export class AuthoritativeRoutingService {
     } catch (error) { return { mode: "shadow", fallback: true, reason: error instanceof Error ? error.message : String(error), decisionId: decision.routingDecisionId } }
   }
   async activateAndExecute(decision: RoutingDecision, currentSourceSha: string, evidence: RoutingActivationEvidence, executor: IsolatedWorkstreamExecutor): Promise<(EnforceResult & { execution: { succeeded: string[]; failed: string[]; blocked: string[] } }) | EnforceFallback> {
+    // Do not persist an authoritative execution plan when the production
+    // dispatcher is unavailable. Enforce mode is fail-closed before any
+    // durable execution authority is created; callers can then apply the
+    // configured shadow/off fallback without leaving a stranded plan.
+    if (!this.dispatcher) return { mode: "shadow", fallback: true, reason: "ROUTING_EXECUTION_DISPATCH_UNAVAILABLE", decisionId: decision.routingDecisionId }
     const activation = this.activate(decision, currentSourceSha, evidence)
     if (activation.fallback) return activation
-    if (!this.dispatcher) return { mode: "shadow", fallback: true, reason: "ROUTING_EXECUTION_DISPATCH_UNAVAILABLE", decisionId: decision.routingDecisionId }
     try {
       const execution = await this.dispatcher.executePlan(activation.planId, currentSourceSha, executor)
       return { ...activation, execution }

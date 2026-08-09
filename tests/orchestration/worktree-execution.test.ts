@@ -60,6 +60,60 @@ describe("worktree execution production chain", () => {
     rmSync(root, { recursive: true, force: true })
   })
 
+  it("integrates independent work deterministically and gives dependent waves the new base", async () => {
+    const root = mkdtempSync(join(tmpdir(), "flowdeck-execution-waves-"))
+    const repository = join(root, "repo"); const worktreeRoot = join(root, "worktrees")
+    mkdirSync(repository); execFileSync("git", ["init", "-q"], { cwd: repository }); execFileSync("git", ["config", "user.email", "test@example.test"], { cwd: repository }); execFileSync("git", ["config", "user.name", "test"], { cwd: repository })
+    writeFileSync(join(repository, "README.md"), "base\n"); execFileSync("git", ["add", "README.md"], { cwd: repository }); execFileSync("git", ["commit", "-qm", "base"], { cwd: repository })
+    const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim()
+    const workstreams = [
+      { id: "a", path: "src/a.ts", dependsOn: [] as string[] },
+      { id: "b", path: "src/b.ts", dependsOn: [] as string[] },
+      { id: "c", path: "src/c.ts", dependsOn: ["a", "b"] },
+    ]
+    const plan: ExecutionPlan = { planId: "waves", runId: "run", routingDecisionId: "d", sourceSha, policyVersion: "2.0.0", createdAt: "2026-08-09T00:00:00.000Z", workstreams: workstreams.map(item => ({ workstreamId: item.id, runId: "run", planId: "waves", resolvedAgent: "backend-coder", requiredCapability: "backend", objective: item.id, requirements: [item.id], acceptanceCriteria: [item.id], ownedPaths: [item.path], ownedSymbols: [], dependsOn: item.dependsOn, strategy: "direct", budgetProfile: "normal", contextScope: "owned", status: "planned" as const, blockedBy: [], createdAt: "2026-08-09T00:00:00.000Z" })) }
+    repo.savePlan(plan)
+    const manager = new GitWorktreeManager(repository, worktreeRoot)
+    const integration = new ControlledIntegrationService(repo, manager, repository)
+    const service = new WorktreeExecutionService(repo, new ExecutionScheduler(repo), manager, integration)
+    const bases: string[] = []
+    const result = await service.executePlan("waves", sourceSha, { execute: async (workstream, allocation) => {
+      bases.push(allocation.sourceSha)
+      mkdirSync(join(allocation.workspace, "src"), { recursive: true })
+      writeFileSync(join(allocation.workspace, workstream.ownedPaths[0]), `export const ${workstream.workstreamId} = true\n`)
+      execFileSync("git", ["add", workstream.ownedPaths[0]], { cwd: allocation.workspace })
+      execFileSync("git", ["commit", "-qm", workstream.workstreamId], { cwd: allocation.workspace })
+      return { status: "succeeded", verificationPassed: true, integrationPassed: true }
+    } })
+    expect(result).toEqual({ succeeded: ["a", "b", "c"], failed: [], blocked: [] })
+    expect(bases[0]).toBe(sourceSha); expect(bases[1]).toBe(sourceSha)
+    expect(bases[2]).not.toBe(sourceSha)
+    expect(readFileSync(join(repository, "src", "a.ts"), "utf8")).toContain("a = true")
+    expect(readFileSync(join(repository, "src", "b.ts"), "utf8")).toContain("b = true")
+    expect(readFileSync(join(repository, "src", "c.ts"), "utf8")).toContain("c = true")
+    expect(repo.getPlan("waves")?.status).toBe("succeeded")
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it("repairs a merge acknowledged by Git but not by the durable integration row", () => {
+    const root = mkdtempSync(join(tmpdir(), "flowdeck-integration-recovery-"))
+    const repository = join(root, "repo"); const worktreeRoot = join(root, "worktrees")
+    mkdirSync(repository); execFileSync("git", ["init", "-q"], { cwd: repository }); execFileSync("git", ["config", "user.email", "test@example.test"], { cwd: repository }); execFileSync("git", ["config", "user.name", "test"], { cwd: repository })
+    writeFileSync(join(repository, "README.md"), "base\n"); execFileSync("git", ["add", "README.md"], { cwd: repository }); execFileSync("git", ["commit", "-qm", "base"], { cwd: repository })
+    const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim()
+    const plan: ExecutionPlan = { planId: "recover-plan", runId: "run", routingDecisionId: "d", sourceSha, policyVersion: "2.0.0", createdAt: "2026-08-09T00:00:00.000Z", workstreams: [{ workstreamId: "recover-ws", runId: "run", planId: "recover-plan", resolvedAgent: "backend-coder", requiredCapability: "backend", objective: "recover", requirements: ["r"], acceptanceCriteria: ["a"], ownedPaths: ["src/**"], ownedSymbols: [], dependsOn: [], strategy: "direct", budgetProfile: "normal", contextScope: "owned", status: "planned", blockedBy: [], createdAt: "2026-08-09T00:00:00.000Z" }] }
+    repo.savePlan(plan); repo.transitionWorkstream("recover-plan", "recover-ws", "ready"); repo.transitionWorkstream("recover-plan", "recover-ws", "running"); repo.transitionWorkstream("recover-plan", "recover-ws", "succeeded")
+    const manager = new GitWorktreeManager(repository, worktreeRoot); const allocation = manager.allocate("run", "recover-ws", sourceSha)
+    mkdirSync(join(allocation.workspace, "src"), { recursive: true }); writeFileSync(join(allocation.workspace, "src", "recovered.ts"), "export const recovered = true\n"); execFileSync("git", ["add", "src/recovered.ts"], { cwd: allocation.workspace }); execFileSync("git", ["commit", "-qm", "writer"], { cwd: allocation.workspace })
+    repo.recordIntegration({ attemptId: "started-recovery", planId: "recover-plan", workstreamId: "recover-ws", sourceSha, branch: allocation.branch, status: "started", verification: {}, evidence: {}, createdAt: "2026-08-09T00:00:00.000Z" })
+    execFileSync("git", ["merge", "--no-ff", "--no-edit", allocation.branch], { cwd: repository, stdio: "pipe" })
+    const integration = new ControlledIntegrationService(repo, manager, repository)
+    expect(integration.recoverAfterRestart()).toBe(1)
+    expect(repo.getPlan("recover-plan")?.workstreams[0].status).toBe("integrated")
+    expect(repo.hasIntegrated("recover-ws")).toBe(true)
+    manager.remove(allocation); rmSync(root, { recursive: true, force: true })
+  })
+
   it("rejects dispatch against a source SHA different from the persisted plan", async () => {
     const plan: ExecutionPlan = { planId: "sha-plan", runId: "run", routingDecisionId: "d", sourceSha: "0123456789abcdef0123456789abcdef01234567", policyVersion: "2.0.0", createdAt: "2026-08-09T00:00:00.000Z", workstreams: [{ workstreamId: "a", runId: "run", planId: "sha-plan", resolvedAgent: "backend-coder", requiredCapability: "backend", objective: "write", requirements: ["r"], acceptanceCriteria: ["a"], ownedPaths: ["src/**"], ownedSymbols: [], dependsOn: [], strategy: "direct", budgetProfile: "normal", contextScope: "owned", status: "planned", blockedBy: [], createdAt: "2026-08-09T00:00:00.000Z" }] }
     repo.savePlan(plan)
