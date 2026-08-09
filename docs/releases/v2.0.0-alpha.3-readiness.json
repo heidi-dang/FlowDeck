@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0-alpha.3",
+  "sourceBranch": "fix/v2-alpha3-release-schema-fallback",
+  "sourceSha": "f2f2d5f27040e09586ca4076d3a7fff96cbb3074",
+  "baseIntegrationSha": "e6181836bd2f38f972a2a969a881f2e867047e32",
+  "immutablePreviousTag": {
+    "tag": "v2.0.0-alpha.2",
+    "sha": "e6181836bd2f38f972a2a969a881f2e867047e32",
+    "published": false
+  },
+  "packageVersion": "2.0.0-alpha.3",
+  "expectedTag": "v2.0.0-alpha.3",
+  "expectedNpmDistTag": "alpha",
+  "masterPlan": { "percentage": 100, "closed": 12, "superseded": 1, "partial": 0, "open": 0 },
+  "v2Milestones": { "percentage": 100, "closed": 8, "partial": 0, "open": 0 },
+  "validation": {
+    "schemaFallbackRegression": "PASS",
+    "releasePreflight": "PASS",
+    "fullPass": 3566,
+    "fullFail": 0,
+    "expectations": 9438,
+    "coveragePercent": 82.9,
+    "benchmarkCandidate": "14/14",
+    "restartRecovery": "14/14",
+    "geminiSchemaCompatibility": "PASS",
+    "geminiSchemaTests": 13,
+    "providerErrorClassificationTests": 6,
+    "geminiRealProviderSmoke": "NOT_AVAILABLE_IN_ENVIRONMENT"
+  },
+  "schema": {
+    "frozen": { "tables": 53, "triggers": 36, "indexes": 66, "foreignKeyViolations": 0, "integrity": "ok" },
+    "postMigration": { "tables": 61, "triggers": 36, "indexes": 82, "foreignKeyViolations": 0, "integrity": "ok" }
+  },
+  "security": { "p0": 0, "p1": 0, "p2Correctness": 0, "tarballSecrets": 0 },
+  "artifact": {
+    "filename": "heidi-dang-flowdeck-2.0.0-alpha.3.tgz",
+    "sizeBytes": 1205464,
+    "sha256": "80f927516d28ba33cb3ba847e03d29ac5a802cc7289dfc2bf13813b0d10f5cbd"
+  },
+  "releaseStatus": "READY_NOT_RELEASED"
+}

@@ -64,8 +64,8 @@ function createTempScript(schemaContent: string, embedContent: string): string {
   // Read the original script and replace paths
   const original = readFileSync(SCRIPT_PATH, "utf-8");
   const modified = original
-    .replace(/const SQL_FILE = 'schema-v0.2.6.sql';/, `const SQL_FILE = '${tmpSchema}';`)
-    .replace(/src\/orchestration\/persistence\/migrations\/schema-embed\.ts/, tmpEmbed);
+    .replace(/const SQL_FILE = [^;]+;/, `const SQL_FILE = ${JSON.stringify(tmpSchema)};`)
+    .replace(/const EMBED_FILE = [^;]+;/, `const EMBED_FILE = ${JSON.stringify(tmpEmbed)};`);
 
   writeFileSync(tmpScript, modified);
   return tmpScript;
@@ -341,6 +341,8 @@ describe("Schema Validation SQLite Fallback", () => {
       const original = readFileSync(SCRIPT_PATH, "utf-8");
       // Replace the entire findSqlite3Cli and findBun functions
       let modified = original;
+      modified = modified.replace(/const SQL_FILE = [^;]+;/, `const SQL_FILE = ${JSON.stringify(SCHEMA_PATH)};`);
+      modified = modified.replace(/const EMBED_FILE = [^;]+;/, `const EMBED_FILE = ${JSON.stringify(join(__dirname, "../src/orchestration/persistence/migrations/schema-embed.ts"))};`);
       modified = modified.replace(
         /function findSqlite3Cli\(\) \{[\s\S]*?\n\}/,
         `function findSqlite3Cli() {\n  return null;\n}`
@@ -446,10 +448,13 @@ describe("Schema Validation SQLite Fallback", () => {
     it("returns 1 for checksum mismatch", () => {
       const tmpScript = track(join(tmpdir(), `checksum-mismatch-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`));
       const original = readFileSync(SCRIPT_PATH, "utf-8");
-      const modified = original.replace(
+      const modified = original
+        .replace(/const SQL_FILE = [^;]+;/, `const SQL_FILE = ${JSON.stringify(SCHEMA_PATH)};`)
+        .replace(/const EMBED_FILE = [^;]+;/, `const EMBED_FILE = ${JSON.stringify(join(__dirname, "../src/orchestration/persistence/migrations/schema-embed.ts"))};`)
+        .replace(
         /const h = m \? m\[1\] : '';/,
         `const h = 'wrong_checksum';`
-      );
+        );
       writeFileSync(tmpScript, modified);
       const result = runTempScript(tmpScript);
       expect(result.exitCode).toBe(1);

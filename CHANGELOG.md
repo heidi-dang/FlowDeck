@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.3] - Unreleased
+
+- Fixed SQLite schema validation to use the discovered CLI and module-relative schema resources across clean release checkouts.
+- Added a non-publishing release preflight that validates the exact packed artifact in an isolated install before registry publication.
+- Prepared the corrected alpha.3 candidate after immutable alpha.2 publication failure; alpha.2 remains unchanged and unpublished.
+
+
 ## [2.0.0-alpha.2] - 2026-08-09
 
 ### Added

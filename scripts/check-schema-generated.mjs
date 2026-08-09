@@ -1,13 +1,16 @@
 import { readFileSync } from "fs";
 import { createHash } from "crypto";
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { writeFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join, resolve } from 'path';
+import { fileURLToPath } from 'url';
 
-const SQL_FILE = 'schema-v0.2.6.sql';
-const EMBED_FILE = 'src/orchestration/persistence/migrations/schema-embed.ts';
-const TMP_DB = '/tmp/fd-schema-check.db';
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const ROOT_DIR = resolve(SCRIPT_DIR, '..');
+const SQL_FILE = join(ROOT_DIR, 'schema-v0.2.6.sql');
+const EMBED_FILE = join(ROOT_DIR, 'src/orchestration/persistence/migrations/schema-embed.ts');
+const TMP_DB = join(tmpdir(), `fd-schema-check-${process.pid}-${Date.now()}.db`);
 
 const sql = readFileSync(SQL_FILE, 'utf-8');
 const checksum = createHash('sha256').update(sql, 'utf-8').digest('hex');
@@ -54,24 +57,15 @@ function findBun() {
  * Validate schema using the sqlite3 CLI.
  * Throws on any schema error or CLI failure — does NOT fall back silently.
  */
-function validateWithCli() {
-  execSync(`rm -f ${TMP_DB}`);
-  execSync(`sqlite3 ${TMP_DB} < ${SQL_FILE}`);
-  const tables = execSync(
-    `sqlite3 ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"'`
-  ).toString().trim();
-  const triggers = execSync(
-    `sqlite3 ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="trigger"'`
-  ).toString().trim();
-  const indexes = execSync(
-    `sqlite3 ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"'`
-  ).toString().trim();
-  const fk = execSync(
-    `sqlite3 ${TMP_DB} 'PRAGMA foreign_key_check;' | wc -l`
-  ).toString().trim();
-  const integ = execSync(
-    `sqlite3 ${TMP_DB} 'PRAGMA integrity_check;'`
-  ).toString().trim();
+function validateWithCli(sqlite3Path) {
+  try { unlinkSync(TMP_DB); } catch { /* no prior database */ }
+  execFileSync(sqlite3Path, [TMP_DB], { input: sql });
+  const query = (statement) => execFileSync(sqlite3Path, [TMP_DB, statement], { encoding: 'utf8' }).trim();
+  const tables = query('SELECT COUNT(*) FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"');
+  const triggers = query('SELECT COUNT(*) FROM sqlite_master WHERE type="trigger"');
+  const indexes = query('SELECT COUNT(*) FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"');
+  const fk = query('PRAGMA foreign_key_check;').split('\n').filter(Boolean).length.toString();
+  const integ = query('PRAGMA integrity_check;');
   return { tables, triggers, indexes, fk, integ };
 }
 
@@ -90,7 +84,7 @@ function validateWithBun() {
   const script = [
     'import { Database } from "bun:sqlite";',
     'import { readFileSync } from "fs";',
-    'const sql = readFileSync("' + SQL_FILE + '", "utf-8");',
+    'const sql = readFileSync(' + JSON.stringify(SQL_FILE) + ', "utf-8");',
     'const db = new Database(":memory:");',
     'db.run(sql);',
     'const t = db.query(\'SELECT COUNT(*) AS c FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"\').get().c;',
@@ -129,7 +123,7 @@ let usedPath;
 const sqlite3Path = findSqlite3Cli();
 if (sqlite3Path !== null) {
   usedPath = "cli";
-  stats = validateWithCli();
+  stats = validateWithCli(sqlite3Path);
 } else {
   // sqlite3 CLI not available — safely fall back to bun:sqlite
   usedPath = "bun";
