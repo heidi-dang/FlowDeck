@@ -104,7 +104,6 @@ export class WorktreeExecutionService {
         this.performance?.recordWorkstreamOutcome(workstream, { status: "failed", integrationPassed: false, terminationReason: "dependency_failed" })
       }
       for (const workstreamId of result.failed) {
-        const workstream = this.repository.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
         const reason = facts.get(workstreamId)?.terminationReason
         const allowed = new Set(["duplicate", "superseded", "dependency_failed", "no_progress", "budget_exhausted", "policy_violation", "manual_cancel"])
         await budgets.get(workstreamId)?.terminate(allowed.has(reason ?? "") ? reason as "duplicate" | "superseded" | "dependency_failed" | "no_progress" | "budget_exhausted" | "policy_violation" | "manual_cancel" : "policy_violation")

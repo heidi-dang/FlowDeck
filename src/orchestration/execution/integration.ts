@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process"
-import { relative, resolve } from "node:path"
 import type { ExecutionWorkstream } from "./contracts"
 import { ownershipClaimMatchesPath } from "./contracts"
 import type { SqliteExecutionRepository } from "./sqlite-repository"
