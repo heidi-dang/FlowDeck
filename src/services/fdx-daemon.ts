@@ -25,6 +25,7 @@ export class FdxDaemon {
   start(): Promise<void> {
     return new Promise((resolveStart, reject) => {
       try {
+        mkdirSync(dirname(this.options.socketPath), { recursive: true })
         if (existsSync(this.options.socketPath) && lstatSync(this.options.socketPath).isSocket()) unlinkSync(this.options.socketPath)
       } catch (error) { reject(error); return }
       this.server = createServer(socket => this.handle(socket)); this.server.once("error", reject); this.server.listen(this.options.socketPath, () => { this.server?.removeListener("error", reject); resolveStart() })
