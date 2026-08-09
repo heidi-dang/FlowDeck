@@ -217,6 +217,20 @@ This is a product comparison of the stable v1 line and the current v2 foundation
 | Code intelligence | FDX | FDX retained as deterministic intelligence layer |
 | Production proof | CI/security gates | Master Plan + adversarial runtime gates |
 
+### v2 autonomous execution runtime
+
+The current v2 branch includes the implementation-backed execution foundations described in [`docs/v2/architecture.md`](docs/v2/architecture.md): deterministic routing decisions, durable SQLite execution plans, dependency waves, isolated Git worktrees, leases, controlled integration, adaptive budget handles layered on the existing token controller, immutable performance observations, bounded FDX persistence, structured runtime snapshots, and machine-readable B1–B14 benchmark output.
+
+Routing remains conservative by configuration:
+
+```jsonc
+{ "routing": { "enabled": true, "mode": "shadow" } }
+```
+
+`shadow` observes and persists recommendations without controlling OpenCode. `enforce` is explicit and fail-closed; it requires the execution prerequisites and never silently changes the selected model/provider. See [`docs/v2/configuration.md`](docs/v2/configuration.md), [`docs/v2/recovery.md`](docs/v2/recovery.md), and [`docs/v2/security.md`](docs/v2/security.md).
+
+The benchmark command is reproducible for the candidate branch, but the recorded `0ac894959587e5a2dfc11a66766fc834a64d5226` baseline predates the v2 routing/execution surface. The harness reports that comparison as unavailable rather than inventing a performance improvement.
+
 ---
 
 ## Upgrading from Alpha Releases

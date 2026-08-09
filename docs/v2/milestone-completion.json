@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "milestones": [
+    { "id": "M1", "name": "Autonomous Execution Intelligence", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true } },
+    { "id": "M2", "name": "Worktree Parallel Execution", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true } },
+    { "id": "M3", "name": "Adaptive Token Control", "status": "PARTIAL" },
+    { "id": "M4", "name": "Agent Performance Intelligence", "status": "PARTIAL" },
+    { "id": "M5", "name": "Authoritative Routing", "status": "PARTIAL" },
+    { "id": "M6", "name": "FDX Next Generation", "status": "PARTIAL" },
+    { "id": "M7", "name": "Observability & Benchmark", "status": "PARTIAL" },
+    { "id": "M8", "name": "Hardening & Release Readiness", "status": "OPEN" }
+  ]
+}
