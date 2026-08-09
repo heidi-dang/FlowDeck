@@ -1,17 +1,21 @@
 import { routeTask, type TaskIntelligenceInput } from "./intelligence"
 import type { RoutingDecisionStore } from "./store"
 import type { RoutingDecision } from "./contracts/task-intelligence"
+import type { OrchestrationMetrics } from "../metrics"
 
 export type RoutingMode = "off" | "shadow"
 export interface ShadowComparison { mode: RoutingMode; decision: RoutingDecision | null; existingStrategy: string; divergent: boolean; error?: string }
 
-export function runShadowAssessment(input: TaskIntelligenceInput, existingStrategy: string, mode: RoutingMode, store?: RoutingDecisionStore): ShadowComparison {
+export function runShadowAssessment(input: TaskIntelligenceInput, existingStrategy: string, mode: RoutingMode, store?: RoutingDecisionStore, metrics?: OrchestrationMetrics): ShadowComparison {
   if (mode === "off") return { mode, decision: null, existingStrategy, divergent: false }
+  const started = Date.now()
   try {
     const decision = routeTask(input)
-    store?.append(decision)
-    return { mode, decision, existingStrategy, divergent: decision.strategy !== existingStrategy }
+    const persisted = store?.saveDecision(decision) ?? decision
+    metrics?.recordRoutingDecision(persisted.assessment.taskClass, persisted.strategy, persisted.delegate, persisted.strategy !== existingStrategy, Date.now() - started)
+    return { mode, decision: persisted, existingStrategy, divergent: persisted.strategy !== existingStrategy }
   } catch (error) {
+    metrics?.routingShadowFailures.inc()
     return { mode, decision: null, existingStrategy, divergent: false, error: error instanceof Error ? error.message : String(error) }
   }
 }

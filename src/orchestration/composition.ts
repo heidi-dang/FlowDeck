@@ -65,6 +65,9 @@ import type { OrchestrationEvent, EventFilter } from "./types/events";
 import type { PagePaginationRequest } from "./types/pagination";
 import { createRouterWithControllers } from "./api/routes";
 import { OrchestrationError, ErrorCodes } from "./types/errors";
+import { SqliteRoutingDecisionRepository } from "./routing/sqlite-store";
+import { RoutingProjection } from "./services/routing-projection";
+import { OrchestrationMetrics } from "./metrics";
 
 export interface ProductionOrchestrationRuntime {
   db: Database;
@@ -87,6 +90,8 @@ export interface ProductionOrchestrationRuntime {
     healthService: HealthService;
   };
   router: ReturnType<typeof createRouterWithControllers>;
+  routingDecisionRepository: SqliteRoutingDecisionRepository;
+  metrics: OrchestrationMetrics;
 }
 
 // ── SQLite-backed production repository implementations ────────────────
@@ -614,6 +619,8 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
   const sessionRepo = new SqliteSessionRepository(db, txManager);
   const contextItemRepo = new SqliteContextItemRepository(db, txManager);
   const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
+  const routingDecisionRepository = new SqliteRoutingDecisionRepository(db, txManager);
+  const metrics = new OrchestrationMetrics();
 
   const outboxWorker = new OutboxWorker(deliverySink, eventBus, { workerId: "orchestration-main", batchSize: 20, leaseSeconds: 60 });
 
@@ -640,6 +647,7 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
     replayService,
     eventService,
     healthService,
+    routingProjection: new RoutingProjection(routingDecisionRepository, runService),
   };
 
   const router = createRouterWithControllers(services);
@@ -656,5 +664,7 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
     consumerOffsetRepo,
     services,
     router,
+    routingDecisionRepository,
+    metrics,
   };
 }

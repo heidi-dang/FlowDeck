@@ -92,7 +92,6 @@ import { getArtifactStore } from "./services/artifact-store"
 import { buildAssignmentContext, externalizeToolOutput, compactConversationContext } from "./services/context-scoping"
 import { initializeDatabase } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
-import { createRoutingDecisionStore } from "./orchestration/routing/store"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
 import { execFileSync } from "node:child_process"
 
@@ -273,7 +272,6 @@ const plugin: Plugin = async ({ directory, client }) => {
   const artifactStore = getArtifactStore(join(directory, ".flowdeck", "artifacts"))
 
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
-  const routingStore = createRoutingDecisionStore(directory)
   const orchestratorGuard = new OrchestratorGuard({ routes: getAgentRoutes() })
   const loopDetector = new LoopDetector(flowdeckConfig.governance?.loopDetection, appLog)
   let effectiveDefaultAgent: string = "heidi"
@@ -454,7 +452,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         if (!sourceSha) {
           try { sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: directory, encoding: "utf8" }).trim() } catch { sourceSha = "0000000000000000000000000000000000000000" }
         }
-        runShadowAssessment({ runId: sessionID || "sessionless", sourceSha, task: taskText }, "existing", routingMode, routingStore)
+        runShadowAssessment({ runId: sessionID || "sessionless", sourceSha, task: taskText }, "existing", routingMode, activeOrchestrationRuntime?.routingDecisionRepository, activeOrchestrationRuntime?.metrics)
       }
 
       const variant = input.variant

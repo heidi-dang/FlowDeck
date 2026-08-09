@@ -80,11 +80,13 @@ export class OrchestrationMetrics {
   readonly deadLetterCount: Counter;
   readonly routingDecisions: Counter;
   readonly routingShadowDivergence: Counter;
+  readonly routingShadowFailures: Counter;
   readonly routingAssessmentLatency: Histogram;
 
   private readonly counters = new Map<string, number>();
   private readonly gauges = new Map<string, number>();
   private readonly histograms = new Map<string, number[]>();
+  private readonly labeledCounters = new Map<string, number>();
 
   constructor() {
     this.commandsDispatched = createCounter("commands_dispatched", this.counters);
@@ -100,6 +102,7 @@ export class OrchestrationMetrics {
     this.deadLetterCount = createCounter("dead_letter_count", this.counters);
     this.routingDecisions = createCounter("routing_decisions_total", this.counters);
     this.routingShadowDivergence = createCounter("routing_shadow_divergence_total", this.counters);
+    this.routingShadowFailures = createCounter("routing_shadow_failures_total", this.counters);
 
     this.queryLatency = createHistogram("query_latency_ms", this.histograms);
     this.verificationLatency = createHistogram("verification_latency_ms", this.histograms);
@@ -110,6 +113,26 @@ export class OrchestrationMetrics {
     this.subscriberLag = createGauge("subscriber_lag", this.gauges);
   }
 
+  recordRoutingDecision(taskClass: string, strategy: string, delegated: boolean, divergent: boolean, durationMs: number): void {
+    this.routingDecisions.inc()
+    this.routingAssessmentLatency.observe(durationMs)
+    this.incBounded("routing_task_class_total", "class", taskClass)
+    this.incBounded("routing_strategy_total", "strategy", strategy)
+    if (delegated) this.incBounded("routing_delegation_recommended_total", "mode", "delegated")
+    if (divergent) this.routingShadowDivergence.inc()
+  }
+
+  private incBounded(name: string, key: string, value: string): void {
+    const allowed: Record<string, readonly string[]> = {
+      class: ["small_bug", "large_bug", "feature", "refactor", "architecture", "investigation", "security", "performance", "testing", "documentation", "migration", "release", "ci_infrastructure", "dependency", "code_review", "audit", "multi_component", "unknown"],
+      strategy: ["direct", "investigate_then_direct", "plan_then_execute", "debug_root_cause", "parallel_implementation", "security_review", "performance_investigation", "audit_only", "change_then_independent_review"],
+      mode: ["delegated"],
+    }
+    if (!allowed[key]?.includes(value)) throw new Error("ROUTING_METRIC_LABEL_OUT_OF_RANGE")
+    const id = `${name}{${key}="${value}"}`
+    this.labeledCounters.set(id, (this.labeledCounters.get(id) ?? 0) + 1)
+  }
+
   snapshot(): MetricValue[] {
     const timestamp = new Date().toISOString();
     const result: MetricValue[] = [];
@@ -117,6 +140,7 @@ export class OrchestrationMetrics {
     for (const [name, val] of this.counters.entries()) {
       result.push({ name, value: val, timestamp });
     }
+    for (const [name, val] of this.labeledCounters.entries()) result.push({ name, value: val, labels: parseLabels(name), timestamp });
 
     for (const [name, val] of this.gauges.entries()) {
       result.push({ name, value: val, timestamp });
@@ -158,6 +182,10 @@ export class OrchestrationMetrics {
     for (const [name, val] of this.counters.entries()) {
       output += formatMetric(name, "counter", val) + "\n";
     }
+    for (const [name, val] of this.labeledCounters.entries()) {
+      const metric = name.slice(0, name.indexOf("{"));
+      output += `${metric} ${name.slice(name.indexOf("{"))} ${val}\n`;
+    }
 
     for (const [name, val] of this.gauges.entries()) {
       output += formatMetric(name, "gauge", val) + "\n";
@@ -195,6 +223,9 @@ export class OrchestrationMetrics {
           aggregationTemporality: "AGGREGATION_TEMPORALITY_CUMULATIVE"
         }
       });
+    }
+    for (const [name, val] of this.labeledCounters.entries()) {
+      metricsList.push({ name: name.slice(0, name.indexOf("{")), description: METRIC_DESCRIPTIONS[name.slice(0, name.indexOf("{"))] ?? "", unit: "1", sum: { dataPoints: [{ asInt: val, attributes: parseLabels(name), timeUnixNano: String(timestamp * 1000000) }], isMonotonic: true, aggregationTemporality: "AGGREGATION_TEMPORALITY_CUMULATIVE" } });
     }
 
     for (const [name, val] of this.gauges.entries()) {
@@ -254,6 +285,12 @@ export class OrchestrationMetrics {
       ]
     };
   }
+}
+
+function parseLabels(metric: string): Record<string, string> {
+  const match = metric.match(/\{([^}]*)\}/); const out: Record<string, string> = {};
+  for (const pair of match?.[1]?.split(",") ?? []) { const [k, v] = pair.split("="); if (k && v) out[k] = v.replace(/^"|"$/g, ""); }
+  return out;
 }
 
 function getHistogramStats(values: number[]) {

@@ -61,7 +61,7 @@ export function routeTask(input: TaskIntelligenceInput): RoutingDecision {
   const assessment = assessTask(input), selected = chooseStrategy(assessment), ws = workstreams(input), delegations = specialists(assessment, selected.strategy, input)
   validateWorkstreams(ws)
   const budgetRecommendation: BudgetProfile = assessment.risk.score >= 75 ? "deep-audit" : assessment.complexity.score >= 40 ? "audit" : assessment.complexity.score >= 20 ? "normal" : "small"
-  const decision = { routingDecisionId: `route_${fingerprint({ input, assessment, selected, ws, delegations }).slice(0, 24)}`, runId: input.runId, sourceSha: input.sourceSha, assessment, strategy: selected.strategy, delegate: delegations.length > 0, delegations, workstreams: ws, budgetRecommendation, modelRecommendation: "advisory-only: preserve configured model", rationale: selected.rationale, rejectedAlternatives: selected.rejected, policyVersion: ROUTING_POLICY_VERSION, createdAt: new Date(0).toISOString(), finalized: true as const }
+  const decision = { routingDecisionId: `route_${fingerprint({ input, assessment, selected, ws, delegations }).slice(0, 24)}`, runId: input.runId, decisionVersion: 1, sourceSha: input.sourceSha, assessment, strategy: selected.strategy, delegate: delegations.length > 0, delegations, workstreams: ws, budgetRecommendation, modelRecommendation: "advisory-only: preserve configured model", rationale: selected.rationale, rejectedAlternatives: selected.rejected, policyVersion: ROUTING_POLICY_VERSION, createdAt: new Date(0).toISOString(), finalized: true as const }
   return routingDecisionSchema.parse(decision)
 }
 

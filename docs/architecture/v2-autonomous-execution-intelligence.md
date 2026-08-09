@@ -14,7 +14,9 @@ The historical `feat/orchestration-routing-intelligence` branch was audited agai
 
 ## Shadow mode
 
-Configuration is `routing.enabled` plus `routing.mode`, where mode is `off` or `shadow`; the default is `off`. Shadow mode stores append-only JSONL decisions under `.flowdeck/routing-decisions.jsonl`, exposes structured explanations, and compares the recommendation with the existing strategy. It does not select an agent, change a model, reserve tokens, change execution strategy, or affect completion.
+Configuration is `routing.enabled` plus `routing.mode`, where mode is `off` or `shadow`; the default is `off`. Shadow mode stores immutable `routing.decision.finalized` aggregates in the existing authoritative SQLite `events` store, exposes structured explanations at `GET /api/v1/orchestration/runs/:id/routing`, and compares the recommendation with the existing strategy. The legacy JSONL adapter is diagnostic/test-only and is not used by production composition or recovery. It does not select an agent, change a model, reserve tokens, change execution strategy, or affect completion.
+
+Successful assessments emit bounded task-class, strategy, and delegation counters plus assessment duration. Divergence means only that the recommended strategy differs from the existing execution strategy; shadow failures are observable and non-blocking.
 
 The current TokenBudgetController and canonical agent registry remain authoritative. The routing layer only recommends `small`, `normal`, `audit`, or `deep-audit`.
 
