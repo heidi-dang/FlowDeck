@@ -32,7 +32,7 @@ describe("worktree execution production chain", () => {
     const budget = { profile: "normal" as const, reserve: async () => ({ allowed: true, reservationId: "r", remainingRun: 100, claimed: 1 }), reconcile: async () => ({ committed: true, reclaimed: 0, remainingRun: 100 }), terminate: async () => {} }
     const budgetCoordinator = { open: () => { calls.push("budget"); return budget } }
     const service = new WorktreeExecutionService(repo, new ExecutionScheduler(repo), worktrees as never, integration as never, budgetCoordinator as never)
-    const result = await service.executePlan("p", plan.sourceSha, { execute: async (_workstream, _allocation, workstreamBudget) => { expect(workstreamBudget?.profile).toBe("normal"); return "succeeded" } })
+    const result = await service.executePlan("p", plan.sourceSha, { execute: async (_workstream, _allocation, workstreamBudget) => { expect(workstreamBudget?.profile).toBe("normal"); return { status: "succeeded", verificationPassed: true, integrationPassed: true } } })
     expect(result.succeeded).toEqual(["a"])
     expect(calls).toEqual(["budget", "integrate:a", "remove"])
   })
@@ -58,5 +58,13 @@ describe("worktree execution production chain", () => {
     expect(performance.getObservation("perf:run:writer")?.tokenUsed).toBe(20)
     expect(performance.getObservation("perf:run:writer")?.integrationPassed).toBe(true)
     rmSync(root, { recursive: true, force: true })
+  })
+
+  it("rejects dispatch against a source SHA different from the persisted plan", async () => {
+    const plan: ExecutionPlan = { planId: "sha-plan", runId: "run", routingDecisionId: "d", sourceSha: "0123456789abcdef0123456789abcdef01234567", policyVersion: "2.0.0", createdAt: "2026-08-09T00:00:00.000Z", workstreams: [{ workstreamId: "a", runId: "run", planId: "sha-plan", resolvedAgent: "backend-coder", requiredCapability: "backend", objective: "write", requirements: ["r"], acceptanceCriteria: ["a"], ownedPaths: ["src/**"], ownedSymbols: [], dependsOn: [], strategy: "direct", budgetProfile: "normal", contextScope: "owned", status: "planned", blockedBy: [], createdAt: "2026-08-09T00:00:00.000Z" }] }
+    repo.savePlan(plan)
+    const manager = { allocate: () => { throw new Error("must not allocate") }, remove: () => {} }
+    const service = new WorktreeExecutionService(repo, new ExecutionScheduler(repo), manager as never)
+    await expect(service.executePlan(plan.planId, "fedcba98765432100123456789abcdef01234567", { execute: async () => "succeeded" })).rejects.toThrow("EXECUTION_SOURCE_SHA_MISMATCH")
   })
 })

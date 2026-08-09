@@ -33,7 +33,7 @@ export interface DependencyDiagnostics { waves: ExecutionWave[]; ready: string[]
 
 const transitions: Record<ExecutionWorkstreamStatus, readonly ExecutionWorkstreamStatus[]> = {
   planned: ["blocked", "ready", "cancelled", "superseded"], blocked: ["ready", "cancelled", "superseded"], ready: ["running", "cancelled", "superseded"],
-  running: ["succeeded", "failed", "cancelled", "integration_pending"], succeeded: ["integration_pending", "superseded"], failed: ["superseded"], cancelled: ["superseded"],
+  running: ["ready", "succeeded", "failed", "cancelled", "integration_pending"], succeeded: ["integration_pending", "superseded"], failed: ["superseded"], cancelled: ["superseded"],
   integration_pending: ["integrated", "failed", "cancelled"], integrated: ["superseded"], superseded: [],
 }
 const planTransitions: Record<ExecutionPlanStatus, readonly ExecutionPlanStatus[]> = {
@@ -48,13 +48,14 @@ export function assertWorkstreamTransition(from: ExecutionWorkstreamStatus, to: 
 
 export function normalizeOwnership(paths: readonly string[]): string[] {
   const normalized = paths.map(p => p.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+/g, "/").replace(/\/$/, ""))
-  if (normalized.some(p => p.startsWith("../") || p === ".." || p.startsWith("/"))) throw new Error("OWNERSHIP_PATH_ESCAPE")
+  if (normalized.some(p => !p || p.includes("\0") || p.startsWith("../") || p === ".." || p.startsWith("/") || /^[A-Za-z]:\//.test(p))) throw new Error("OWNERSHIP_PATH_ESCAPE")
   return [...new Set(normalized)].sort()
 }
 
 export function ownershipClaimMatchesPath(path: string, claim: string, descendants = false): boolean {
   const candidate = path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+/g, "/").replace(/\/$/, "")
   const normalizedClaim = claim.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+/g, "/").replace(/\/$/, "")
+  if (normalizedClaim === "." || normalizedClaim === "**") return Boolean(candidate)
   if (normalizedClaim.endsWith("/**")) {
     const prefix = normalizedClaim.slice(0, -3).replace(/\/$/, "")
     return candidate.startsWith(`${prefix}/`)
@@ -68,6 +69,40 @@ export function ownershipClaimMatchesPath(path: string, claim: string, descendan
 
 export function ownershipOverlaps(a: readonly string[], b: readonly string[]): boolean {
   return normalizeOwnership(a).some(left => normalizeOwnership(b).some(right => ownershipClaimMatchesPath(left, right, true) || ownershipClaimMatchesPath(right, left, true)))
+}
+
+export type WorkstreamRelation = "independent" | "related" | "overlapping" | "duplicate" | "conflicting"
+export interface WorkstreamRelationDiagnostic { left: string; right: string; relation: WorkstreamRelation; evidence: string[] }
+
+/**
+ * Classifies pairs before dispatch. Ownership overlap is a hard conflict;
+ * identical objectives are only considered duplicate when their ownership is
+ * also equivalent, so two intentionally partitioned streams remain runnable.
+ */
+export function classifyWorkstreamRelations(plan: ExecutionPlan): WorkstreamRelationDiagnostic[] {
+  const result: WorkstreamRelationDiagnostic[] = []
+  const canonical = (values: readonly string[]) => [...new Set(values.map(value => value.trim().toLowerCase()))].sort().join("|")
+  for (let leftIndex = 0; leftIndex < plan.workstreams.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < plan.workstreams.length; rightIndex += 1) {
+      const left = plan.workstreams[leftIndex]
+      const right = plan.workstreams[rightIndex]
+      const evidence: string[] = []
+      const ownership = ownershipOverlaps(left.ownedPaths, right.ownedPaths)
+      const ownershipEquivalent = canonical(left.ownedPaths) === canonical(right.ownedPaths)
+      if (ownership) evidence.push("ownership_overlap")
+      const objective = left.objective.trim().toLowerCase() === right.objective.trim().toLowerCase()
+      const requirements = canonical(left.requirements) === canonical(right.requirements)
+      const acceptance = canonical(left.acceptanceCriteria) === canonical(right.acceptanceCriteria)
+      if (objective) evidence.push("same_objective")
+      if (requirements) evidence.push("same_requirements")
+      if (acceptance) evidence.push("same_acceptance_criteria")
+      const relation: WorkstreamRelation = ownership
+        ? (ownershipEquivalent && objective && requirements && acceptance ? "duplicate" : "overlapping")
+        : (objective || requirements || acceptance ? "related" : "independent")
+      result.push({ left: left.workstreamId, right: right.workstreamId, relation, evidence })
+    }
+  }
+  return result.sort((a, b) => `${a.left}:${a.right}`.localeCompare(`${b.left}:${b.right}`))
 }
 
 export function analyzeDependencies(plan: ExecutionPlan): DependencyDiagnostics {
@@ -84,7 +119,9 @@ export function analyzeDependencies(plan: ExecutionPlan): DependencyDiagnostics 
     }
   }
   for (let i = 0; i < plan.workstreams.length; i++) for (let j = i + 1; j < plan.workstreams.length; j++) {
-    if (ownershipOverlaps(plan.workstreams[i].ownedPaths, plan.workstreams[j].ownedPaths)) throw new Error("OVERLAPPING_OWNERSHIP")
+    const relation = classifyWorkstreamRelations(plan).find(item => item.left === plan.workstreams[i].workstreamId && item.right === plan.workstreams[j].workstreamId)
+    if (relation?.relation === "duplicate") throw new Error("DUPLICATE_WORKSTREAM")
+    if (relation?.relation === "overlapping") throw new Error("OVERLAPPING_OWNERSHIP")
   }
   const visiting = new Set<string>(); const visited = new Set<string>()
   const depth = new Map<string, number>(); const visit = (id: string): number => {

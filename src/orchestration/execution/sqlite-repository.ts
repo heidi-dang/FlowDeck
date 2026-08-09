@@ -55,12 +55,12 @@ export class SqliteExecutionRepository {
   listPlansForRun(runId: string): ExecutionPlan[] { return (this.db.query("SELECT plan_id FROM execution_plans WHERE run_id = ? ORDER BY created_at, plan_id").all(runId) as Array<{ plan_id: string }>).map(r => this.getPlan(r.plan_id)!).filter(Boolean) }
   listPlans(): ExecutionPlan[] { return (this.db.query("SELECT plan_id FROM execution_plans ORDER BY created_at, plan_id").all() as Array<{ plan_id: string }>).map(r => this.getPlan(r.plan_id)!).filter(Boolean) }
 
-  transitionWorkstream(planId: string, workstreamId: string, status: ExecutionWorkstream["status"], failureReason?: string): ExecutionWorkstream {
+  transitionWorkstream(planId: string, workstreamId: string, status: ExecutionWorkstream["status"], failureReason?: string, blockedBy: string[] = []): ExecutionWorkstream {
     return this.tx.write(() => {
       const row = this.db.query("SELECT * FROM execution_workstreams WHERE plan_id = ? AND workstream_id = ?").get(planId, workstreamId) as Record<string, unknown> | null
       if (!row) throw new Error("WORKSTREAM_NOT_FOUND")
       const from = row.status as ExecutionWorkstream["status"]; assertWorkstreamTransition(from, status)
-      this.db.query("UPDATE execution_workstreams SET status = ?, failure_reason = ?, updated_at = datetime('now') WHERE plan_id = ? AND workstream_id = ?").run(status, failureReason ?? null, planId, workstreamId)
+      this.db.query("UPDATE execution_workstreams SET status = ?, failure_reason = ?, blocked_by_json = ?, updated_at = datetime('now') WHERE plan_id = ? AND workstream_id = ?").run(status, failureReason ?? null, json(blockedBy), planId, workstreamId)
       return this.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
     })
   }
@@ -91,12 +91,39 @@ export class SqliteExecutionRepository {
     }) } catch (error) { if (String(error).includes("WORKTREE_LEASE_CONFLICT") || String(error).includes("UNIQUE")) this.metrics?.worktreeLeaseConflicts.inc(); throw error }
   }
 
+  activateLease(leaseId: string): WorktreeLease {
+    return this.tx.write(() => {
+      const row = this.db.query(`SELECT * FROM execution_worktree_leases WHERE lease_id = ? AND state IN ${ACTIVE_LEASES}`).get(leaseId) as Record<string, unknown> | null
+      if (!row) throw new Error("LEASE_NOT_ACTIVE")
+      this.db.query("UPDATE execution_worktree_leases SET state = 'active' WHERE lease_id = ?").run(leaseId)
+      return this.getLease(leaseId)!
+    })
+  }
   renewLease(leaseId: string, renewedAt: string, expiresAt: string): WorktreeLease { return this.tx.write(() => { const row = this.db.query(`SELECT * FROM execution_worktree_leases WHERE lease_id = ? AND state IN ${ACTIVE_LEASES}`).get(leaseId) as Record<string, unknown> | null; if (!row) throw new Error("LEASE_NOT_ACTIVE"); this.db.query("UPDATE execution_worktree_leases SET renewed_at = ?, expires_at = ?, state = 'renewing' WHERE lease_id = ?").run(renewedAt, expiresAt, leaseId); return this.getLease(leaseId)! }) }
+  completeLease(leaseId: string): WorktreeLease { return this.tx.write(() => { const row = this.db.query(`SELECT * FROM execution_worktree_leases WHERE lease_id = ? AND state IN ${ACTIVE_LEASES}`).get(leaseId) as Record<string, unknown> | null; if (!row) throw new Error("LEASE_NOT_ACTIVE"); this.db.query("UPDATE execution_worktree_leases SET state = 'completed' WHERE lease_id = ?").run(leaseId); return this.getLease(leaseId)! }) }
   releaseLease(leaseId: string): WorktreeLease { return this.tx.write(() => { this.db.query("UPDATE execution_worktree_leases SET state = 'released' WHERE lease_id = ? AND state <> 'released'").run(leaseId); return this.getLease(leaseId)! }) }
   reclaimExpired(now: string): number { const count = this.tx.write(() => this.db.query(`UPDATE execution_worktree_leases SET state = 'reclaimable' WHERE state IN ${ACTIVE_LEASES} AND expires_at <= ?`).run(now).changes); if (count) this.metrics?.worktreeLeaseReclaims.inc(count); return count }
   getLease(leaseId: string): WorktreeLease | null { const r = this.db.query("SELECT * FROM execution_worktree_leases WHERE lease_id = ?").get(leaseId) as Record<string, unknown> | null; return r ? { leaseId: r.lease_id as string, runId: r.run_id as string, planId: r.plan_id as string, workstreamId: r.workstream_id as string, agentId: r.agent_id as string, worktreeId: r.worktree_id as string, workspace: r.workspace as string, branch: r.branch as string, acquiredAt: r.acquired_at as string, renewedAt: r.renewed_at as string, expiresAt: r.expires_at as string, state: r.state as ExecutionLeaseState } : null }
   listLeases(runId: string): WorktreeLease[] { return (this.db.query("SELECT * FROM execution_worktree_leases WHERE run_id = ? ORDER BY acquired_at").all(runId) as Record<string, unknown>[]).map(r => this.getLease(r.lease_id as string)!) }
   listAllLeases(): WorktreeLease[] { return (this.db.query("SELECT lease_id FROM execution_worktree_leases ORDER BY acquired_at, lease_id").all() as Array<{ lease_id: string }>).map(r => this.getLease(r.lease_id)!).filter(Boolean) }
+
+  /**
+   * Reconstructs safe restart state without guessing that an in-flight agent
+   * completed. Active workstreams return to the ready queue; a later dispatch
+   * must acquire a fresh lease. Integration acknowledgements are repaired
+   * first so an acknowledged commit is never executed twice.
+   */
+  recoverAfterRestart(now: string): { recoveredWorkstreams: string[]; reclaimedLeases: number; repairedIntegrations: number } {
+    const repairedIntegrations = this.reconcileIntegratedAttempts()
+    const rows = this.db.query("SELECT plan_id, workstream_id FROM execution_workstreams WHERE status = 'running' ORDER BY plan_id, workstream_id").all() as Array<{ plan_id: string; workstream_id: string }>
+    const recoveredWorkstreams = rows.map(row => {
+      this.transitionWorkstream(row.plan_id, row.workstream_id, "ready", "ORCHESTRATOR_RESTART")
+      this.tx.write(() => this.db.query(`UPDATE execution_worktree_leases SET state = 'reclaimable' WHERE plan_id = ? AND workstream_id = ? AND state IN ${ACTIVE_LEASES}`).run(row.plan_id, row.workstream_id))
+      return `${row.plan_id}:${row.workstream_id}`
+    })
+    const reclaimedLeases = this.reclaimExpired(now)
+    return { recoveredWorkstreams, reclaimedLeases, repairedIntegrations }
+  }
 
   recordIntegration(attempt: IntegrationAttempt): IntegrationAttempt { const result = this.tx.write(() => { this.db.query("INSERT INTO execution_integration_attempts (attempt_id,plan_id,workstream_id,source_sha,branch,status,verification_json,evidence_json,error,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(attempt.attemptId, attempt.planId, attempt.workstreamId, attempt.sourceSha, attempt.branch, attempt.status, json(attempt.verification), json(attempt.evidence), attempt.error ?? null, attempt.createdAt, attempt.completedAt ?? null); return attempt }); this.metrics?.integrationAttempts.inc(); if (attempt.status === "integrated") this.metrics?.integrationsCompleted.inc(); if (["conflict", "failed"].includes(attempt.status)) this.metrics?.integrationConflicts.inc(); return result }
   hasIntegrated(workstreamId: string): boolean { return Boolean(this.db.query("SELECT 1 FROM execution_integration_attempts WHERE workstream_id = ? AND status = 'integrated'").get(workstreamId)) }

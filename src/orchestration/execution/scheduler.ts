@@ -23,18 +23,18 @@ export class ExecutionScheduler {
       try { return { id: workstream.workstreamId, outcome: await executor.execute(workstream) } } catch { return { id: workstream.workstreamId, outcome: "failed" as const } }
     }))
     for (const result of outcomes.sort((a, b) => a.id.localeCompare(b.id))) {
-      if (result.outcome === "succeeded") { this.repository.transitionWorkstream(planId, result.id, "succeeded"); succeeded.push(result.id) }
-      else { this.repository.transitionWorkstream(planId, result.id, "failed", "WORKSTREAM_EXECUTION_FAILED"); failed.push(result.id) }
+      if (result.outcome === "succeeded") { this.repository.transitionWorkstream(planId, result.id, "succeeded"); succeeded.push(result.id); this.metrics?.workstreamsSucceeded.inc() }
+      else { this.repository.transitionWorkstream(planId, result.id, "failed", "WORKSTREAM_EXECUTION_FAILED"); failed.push(result.id); this.metrics?.workstreamsFailed.inc() }
     }
     let changed = true
     while (changed) {
       changed = false
       const plan = this.repository.getPlan(planId)!
       for (const w of plan.workstreams) {
-        const dependencyStates = w.dependsOn.map(d => plan.workstreams.find(parent => parent.workstreamId === d)?.status)
-        if ((w.status === "planned" || w.status === "ready") && dependencyStates.some(state => ["failed", "blocked", "cancelled"].includes(state ?? ""))) {
-          this.repository.transitionWorkstream(planId, w.workstreamId, "blocked", "DEPENDENCY_FAILED")
-          blocked.push(w.workstreamId); this.metrics?.workstreamsBlocked.inc(); changed = true
+        const blockedBy = w.dependsOn.filter(dependency => ["failed", "blocked", "cancelled"].includes(plan.workstreams.find(parent => parent.workstreamId === dependency)?.status ?? ""))
+        if ((w.status === "planned" || w.status === "ready") && blockedBy.length) {
+          this.repository.transitionWorkstream(planId, w.workstreamId, "blocked", "DEPENDENCY_FAILED", blockedBy)
+          blocked.push(w.workstreamId); this.metrics?.workstreamsBlocked.inc(); this.metrics?.dependencyBlocks.inc(); changed = true
         }
       }
     }

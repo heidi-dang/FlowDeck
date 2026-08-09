@@ -60,6 +60,20 @@ describe("durable execution runtime persistence", () => {
     expect(repo.transitionPlanStatus("plan", "cancelled").status).toBe("cancelled")
   })
 
+  it("records lease lifecycle and recovers in-flight work after restart", () => {
+    repo.savePlan(plan())
+    repo.transitionWorkstream("plan", "a", "ready")
+    repo.transitionWorkstream("plan", "a", "running")
+    const lease = { leaseId: "lifecycle", runId: "run", planId: "plan", workstreamId: "a", agentId: "a", worktreeId: "lifecycle-wt", workspace: "/tmp/lifecycle-wt", branch: "flowdeck/lifecycle", acquiredAt: "2026-08-09T00:00:00.000Z", renewedAt: "2026-08-09T00:00:00.000Z", expiresAt: "2999-01-01T00:00:00.000Z" }
+    expect(repo.acquireLease(lease).state).toBe("allocated")
+    expect(repo.activateLease(lease.leaseId).state).toBe("active")
+    expect(repo.recoverAfterRestart("2026-08-09T00:00:00.000Z").recoveredWorkstreams).toEqual(["plan:a"])
+    expect(repo.getPlan("plan")!.workstreams[0].status).toBe("ready")
+    expect(repo.getPlan("plan")!.workstreams[0].failureReason).toBe("ORCHESTRATOR_RESTART")
+    expect(repo.getLease(lease.leaseId)?.state).toBe("reclaimable")
+    expect(repo.releaseLease(lease.leaseId).state).toBe("released")
+  })
+
   it("reconstructs plans and leases after a database restart", () => {
     const root = mkdtempSync(join(tmpdir(), "flowdeck-execution-db-")); const path = join(root, "runtime.db")
     db.close()

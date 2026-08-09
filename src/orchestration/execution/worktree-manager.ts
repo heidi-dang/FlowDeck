@@ -3,7 +3,7 @@ import { existsSync, lstatSync, mkdirSync, realpathSync } from "node:fs"
 import { join, relative, resolve, sep } from "node:path"
 
 export interface WorktreeAllocation { worktreeId: string; workspace: string; branch: string; sourceSha: string }
-function safePart(value: string): string { const out = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, ""); if (!out) throw new Error("UNSAFE_WORKTREE_IDENTIFIER"); return out.slice(0, 80) }
+function safePart(value: string): string { const out = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/\.\.+/g, "-").replace(/^-+|-+$/g, ""); if (!out || out === ".") throw new Error("UNSAFE_WORKTREE_IDENTIFIER"); return out.slice(0, 80) }
 function contained(root: string, candidate: string): boolean { const rel = relative(root, candidate); return rel !== "" && rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith(sep) }
 
 /** Git worktree boundary. It uses argument-array subprocess calls only and never mutates the root checkout. */

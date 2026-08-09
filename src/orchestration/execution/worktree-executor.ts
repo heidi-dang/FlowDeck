@@ -14,24 +14,35 @@ export class WorktreeExecutionService {
   constructor(private readonly repository: SqliteExecutionRepository, private readonly scheduler: ExecutionScheduler, private readonly worktrees: GitWorktreeManager, private readonly integration?: IntegrationCoordinator, private budgetCoordinator?: WorkstreamBudgetCoordinator, private readonly performance?: SqlitePerformanceRepository) {}
   setBudgetCoordinator(coordinator: WorkstreamBudgetCoordinator): void { this.budgetCoordinator = coordinator }
   async executePlan(planId: string, sourceSha: string, executor: IsolatedWorkstreamExecutor): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }> {
+    const initialPlan = this.repository.getPlan(planId)
+    if (!initialPlan) throw new Error("EXECUTION_PLAN_NOT_FOUND")
+    if (initialPlan.sourceSha !== sourceSha) throw new Error("EXECUTION_SOURCE_SHA_MISMATCH")
     const aggregate = { succeeded: [] as string[], failed: [] as string[], blocked: [] as string[] }
     for (let wave = 0; wave < 100; wave++) {
       const ready = this.repository.listReady(planId); if (!ready.length) break
       const allocations = new Map<string, WorktreeAllocation>()
       const budgets = new Map<string, WorkstreamBudgetHandle>()
       const facts = new Map<string, PerformanceOutcomeFacts>()
-      for (const workstream of ready) {
-        if (this.budgetCoordinator) budgets.set(workstream.workstreamId, this.budgetCoordinator.open(workstream))
-        const allocation = this.worktrees.allocate(workstream.runId, workstream.workstreamId, sourceSha)
-        this.repository.bindWorktree(planId, workstream.workstreamId, allocation.worktreeId, allocation.branch)
-        this.repository.acquireLease({ leaseId: randomUUID(), runId: workstream.runId, planId, workstreamId: workstream.workstreamId, agentId: workstream.resolvedAgent, worktreeId: allocation.worktreeId, workspace: allocation.workspace, branch: allocation.branch, acquiredAt: new Date().toISOString(), renewedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 15 * 60_000).toISOString() })
-        allocations.set(workstream.workstreamId, allocation)
+      try {
+        for (const workstream of ready) {
+          if (this.budgetCoordinator) budgets.set(workstream.workstreamId, this.budgetCoordinator.open(workstream))
+          const allocation = this.worktrees.allocate(workstream.runId, workstream.workstreamId, sourceSha)
+          this.repository.bindWorktree(planId, workstream.workstreamId, allocation.worktreeId, allocation.branch)
+          const lease = this.repository.acquireLease({ leaseId: randomUUID(), runId: workstream.runId, planId, workstreamId: workstream.workstreamId, agentId: workstream.resolvedAgent, worktreeId: allocation.worktreeId, workspace: allocation.workspace, branch: allocation.branch, acquiredAt: new Date().toISOString(), renewedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 15 * 60_000).toISOString() })
+          this.repository.activateLease(lease.leaseId)
+          allocations.set(workstream.workstreamId, allocation)
+        }
+      } catch (error) {
+        for (const allocation of allocations.values()) { const lease = this.repository.listLeases(this.repository.getPlan(planId)!.runId).find(l => l.worktreeId === allocation.worktreeId && ["allocated", "active", "renewing"].includes(l.state)); if (lease) this.repository.releaseLease(lease.leaseId); try { this.worktrees.remove(allocation) } catch {} }
+        throw error
       }
       const result = await this.scheduler.runReady(planId, { execute: async workstream => { const allocation = allocations.get(workstream.workstreamId)!; const startedAt = Date.now(); try { const output = await executor.execute(workstream, allocation, budgets.get(workstream.workstreamId)); const outcome = typeof output === "string" ? { status: output, integrationPassed: false, durationMs: Date.now() - startedAt } : { ...output, durationMs: output.durationMs ?? Date.now() - startedAt }; facts.set(workstream.workstreamId, outcome); return outcome.status } catch { facts.set(workstream.workstreamId, { status: "failed", integrationPassed: false, durationMs: Date.now() - startedAt, terminationReason: "execution_failed" }); return "failed" } } })
       for (const workstreamId of [...result.succeeded].sort()) {
         const allocation = allocations.get(workstreamId)!
         try {
           const workstream = this.repository.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
+          const recordedFacts = facts.get(workstreamId)
+          if (this.integration && (!recordedFacts || recordedFacts.verificationPassed !== true)) throw new Error("VERIFICATION_REQUIRED_BEFORE_INTEGRATION")
           if (this.integration) this.integration.integrate(workstream, this.integration.currentSourceSha?.() ?? sourceSha, allocation.branch, allocation.workspace)
           const integrated = Boolean(this.integration)
           const outcomeFacts = facts.get(workstreamId) ?? { status: "succeeded" as const, integrationPassed: integrated, verificationPassed: integrated }
@@ -56,11 +67,18 @@ export class WorktreeExecutionService {
       }
       for (const workstreamId of result.blocked) {
         const workstream = this.repository.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
+        await budgets.get(workstreamId)?.terminate("dependency_failed")
         this.performance?.recordWorkstreamOutcome(workstream, { status: "failed", integrationPassed: false, terminationReason: "dependency_failed" })
+      }
+      for (const workstreamId of result.failed) {
+        const workstream = this.repository.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
+        const reason = facts.get(workstreamId)?.terminationReason
+        const allowed = new Set(["duplicate", "superseded", "dependency_failed", "no_progress", "budget_exhausted", "policy_violation", "manual_cancel"])
+        await budgets.get(workstreamId)?.terminate(allowed.has(reason ?? "") ? reason as "duplicate" | "superseded" | "dependency_failed" | "no_progress" | "budget_exhausted" | "policy_violation" | "manual_cancel" : "policy_violation")
       }
       for (const [workstreamId, allocation] of allocations) {
         const lease = this.repository.listLeases(this.repository.getPlan(planId)!.runId).find(l => l.workstreamId === workstreamId && ["allocated", "active", "renewing"].includes(l.state))
-        if (lease) this.repository.releaseLease(lease.leaseId)
+        if (lease) { try { this.repository.completeLease(lease.leaseId) } catch {} ; this.repository.releaseLease(lease.leaseId) }
         try { this.worktrees.remove(allocation) } catch { /* cleanup is recoverable through lease/worktree reconciliation */ }
       }
       aggregate.succeeded.push(...result.succeeded); aggregate.failed.push(...result.failed); aggregate.blocked.push(...result.blocked)
