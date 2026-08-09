@@ -1,7 +1,7 @@
 import type { Database } from "bun:sqlite"
 import type { TransactionManager } from "../persistence/transaction-manager"
 import type { OrchestrationMetrics } from "../metrics"
-import { PERFORMANCE_POLICY_VERSION, performanceObservationSchema, scorePerformance, type PerformanceObservation, type PerformanceProfile } from "./contracts"
+import { PERFORMANCE_POLICY_VERSION, performanceObservationSchema, scorePerformance, type PerformanceContext, type PerformanceObservation, type PerformanceProfile } from "./contracts"
 
 const bool = (value: boolean) => value ? 1 : 0
 const parse = (value: unknown): string[] => { try { const parsed = JSON.parse(String(value)); return Array.isArray(parsed) ? parsed.filter(x => typeof x === "string") : [] } catch { return [] } }
@@ -40,8 +40,15 @@ export class SqlitePerformanceRepository {
   }
   getObservation(id: string): PerformanceObservation | null { const row = this.db.query("SELECT * FROM agent_performance_observations WHERE observation_id = ?").get(id) as Record<string, unknown> | null; return row ? this.map(row) : null }
   listObservations(runId: string): PerformanceObservation[] { return (this.db.query("SELECT * FROM agent_performance_observations WHERE run_id = ? ORDER BY created_at, observation_id").all(runId) as Record<string, unknown>[]).map(r => this.map(r)) }
-  profile(agentId: string, capability: string, minimumSamples = 3, windowMs = 90 * 24 * 60 * 60 * 1000): PerformanceProfile & { recencyStart: string } {
-    const start = new Date(Date.now() - windowMs).toISOString(); const observations = (this.db.query("SELECT * FROM agent_performance_observations WHERE agent_id = ? AND capability = ? AND created_at >= ? ORDER BY created_at, observation_id").all(agentId, capability, start) as Record<string, unknown>[]).map(r => this.map(r)); const profile = scorePerformance(observations, agentId, capability, minimumSamples); this.metrics?.recordPerformanceProfile(profile.eligible); return { ...profile, recencyStart: start }
+  profile(agentId: string, capability: string, minimumSamples = 3, windowMs = 90 * 24 * 60 * 60 * 1000, context: PerformanceContext = {}): PerformanceProfile & { recencyStart: string } {
+    const start = new Date(Date.now() - windowMs).toISOString()
+    const conditions = ["agent_id = ?", "capability = ?", "created_at >= ?"]
+    const values: (string | number)[] = [agentId, capability, start]
+    if (context.taskClass) { conditions.push("task_class = ?"); values.push(context.taskClass) }
+    if (context.complexityBand) { conditions.push("complexity_band = ?"); values.push(context.complexityBand) }
+    if (context.riskBand) { conditions.push("risk_band = ?"); values.push(context.riskBand) }
+    const observations = (this.db.query(`SELECT * FROM agent_performance_observations WHERE ${conditions.join(" AND ")} ORDER BY created_at, observation_id`).all(...values) as Record<string, unknown>[]).map(r => this.map(r))
+    const profile = scorePerformance(observations, agentId, capability, minimumSamples, context); this.metrics?.recordPerformanceProfile(profile.eligible); return { ...profile, recencyStart: start }
   }
   private map(r: Record<string, unknown>): PerformanceObservation { return performanceObservationSchema.parse({ observationId: r.observation_id, runId: r.run_id, workstreamId: r.workstream_id, agentId: r.agent_id, capability: r.capability, taskClass: r.task_class, strategy: r.strategy, complexityBand: r.complexity_band, riskBand: r.risk_band, success: Boolean(r.success), verificationPassed: Boolean(r.verification_passed), integrationPassed: Boolean(r.integration_passed), tokenReserved: r.token_reserved, tokenUsed: r.token_used, durationMs: r.duration_ms, retryCount: r.retry_count, reviewFindings: r.review_findings, regressionCount: r.regression_count, terminationReason: r.termination_reason, usefulnessSignals: parse(r.usefulness_signals_json), policyVersion: r.policy_version, createdAt: r.created_at }) }
 }
