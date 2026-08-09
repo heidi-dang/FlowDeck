@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.2] - 2026-08-09
+
+### Added
+
+- Release candidate for the integrated v2 execution runtime on the `alpha` npm channel.
+- Deterministic task intelligence, dependency-aware workstream execution, isolated worktrees, adaptive token control, capability-specific agent performance profiles, gated authoritative routing, optional FDX indexing/daemon support, unified observability, B1–B14 benchmark validation, and crash/recovery/security hardening.
+
+### Verification
+
+- Master Plan: 100% (12 CLOSED, 1 SUPERSEDED, 0 PARTIAL, 0 OPEN).
+- V2 milestones M1–M8: 100% CLOSED.
+- Historical pre-benchmark baseline is not comparable to the current benchmark surface; no unsupported historical performance improvement is claimed.
+- This release remains prerelease and is not promoted to `latest`.
+
 ## [2.0.0-alpha.1] - 2026-08-09
 
 ### Added
