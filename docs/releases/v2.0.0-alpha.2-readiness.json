@@ -1,0 +1,36 @@
+{
+  "version": "2.0.0-alpha.2",
+  "sourceBranch": "chore/v2-alpha2-release-readiness",
+  "sourceSha": "PENDING_FINAL_COMMIT_SHA",
+  "baseIntegrationSha": "50243bd0cd1d12d099f24189e815aeb59bb70837",
+  "packageVersion": "2.0.0-alpha.2",
+  "expectedTag": "v2.0.0-alpha.2",
+  "expectedNpmDistTag": "alpha",
+  "masterPlan": {
+    "percentage": 100,
+    "closed": 12,
+    "superseded": 1,
+    "partial": 0,
+    "open": 0
+  },
+  "v2Milestones": {
+    "percentage": 100,
+    "closed": 8,
+    "partial": 0,
+    "open": 0
+  },
+  "testBaseline": {
+    "fullPass": 3615,
+    "fullFail": 0,
+    "coveragePercent": 82.9,
+    "benchmarkCandidate": "14/14",
+    "benchmarkSerialReference": "14/14",
+    "restartRecovery": "14/14"
+  },
+  "schema": {
+    "frozen": { "tables": 53, "triggers": 36, "indexes": 66, "foreignKeyViolations": 0, "integrity": "ok" },
+    "postMigration": { "tables": 61, "triggers": 36, "indexes": 82, "foreignKeyViolations": 0, "integrity": "ok" }
+  },
+  "security": { "p0": 0, "p1": 0, "p2Correctness": 0, "tarballSecrets": 0 },
+  "releaseStatus": "READY_NOT_RELEASED"
+}

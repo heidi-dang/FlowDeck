@@ -2,3 +2,4 @@ crates/fdx/target/
 **/target/
 *.tmp.*
 *.bak.*
+docs/releases/*-readiness.json

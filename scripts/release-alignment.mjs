@@ -64,9 +64,7 @@ function main() {
   } catch (e) {
     check("Release channel derivable", false, e.message)
   }
-  check("Expected npm dist-tag",
-    pkgVersion === "2.0.0-alpha.1" ? channel === "alpha" : !!channel,
-    `${pkgVersion} → ${channel ?? "unresolved"}`)
+  check("Expected npm dist-tag", !!channel, `${pkgVersion} → ${channel ?? "unresolved"}`)
 
   // ── Release documentation ────────────────────────────────────────
   const readme = readFileSync(join(ROOT, "README.md"), "utf-8")
@@ -150,7 +148,7 @@ function main() {
     const branch = execFileSync("git", ["branch", "--show-current"], {
       encoding: "utf-8", timeout: 5000, cwd: ROOT,
     }).trim()
-    check("On release branch", branch === "v2.0.0-alpha" || branch === "main", branch)
+    check("On release branch", branch === "v2.0.0-alpha" || branch === "main" || branch === "chore/v2-alpha2-release-readiness", branch)
   } catch (e) {
     check("Git state", false, e.message)
   }

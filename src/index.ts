@@ -229,6 +229,9 @@ function cleanupPendingSlots(sessionID: string): void {
 }
 
 const __dir = dirname(fileURLToPath(import.meta.url))
+const flowdeckPackageVersion = JSON.parse(
+  readFileSync(join(__dir, "..", "package.json"), "utf-8"),
+).version as string
 
 function lazyLoadRulePaths(projectRoot: string): { paths: string[]; diagnostics: string } {
   const rulesDir = join(__dir, "..", "src", "rules")
@@ -528,7 +531,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
 
       const variant = input.variant
-      const pkgVersion = "2.0.0-alpha.1"
+      const pkgVersion = flowdeckPackageVersion
       const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
       const result = enforceRuntimeAgent({
         sessionID,

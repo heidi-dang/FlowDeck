@@ -30,7 +30,7 @@ if (!fs.existsSync(benchmarkFile)) throw new Error("GATEKEEPER_BENCHMARK_MISSING
 const benchmark = validateBenchmarkReport(JSON.parse(fs.readFileSync(benchmarkFile, "utf8")))
 if (!benchmark.candidateSuccess || !benchmark.referenceSuccess) throw new Error("GATEKEEPER_BENCHMARK_FAILURE")
 const packageJson = JSON.parse(read("package.json"))
-if (packageJson.version !== "2.0.0-alpha.1") throw new Error("GATEKEEPER_PACKAGE_VERSION_CHANGED")
+if (!/^2\.0\.0-alpha\.[1-9][0-9]*$/.test(packageJson.version)) throw new Error("GATEKEEPER_PACKAGE_VERSION_INVALID")
 const masterPlan = execFileSync(process.execPath, [new URL("scripts/verify-completion-matrix.mjs", root).pathname], { encoding: "utf8" })
 if (!/100%/.test(masterPlan) || !/0\s+open/i.test(masterPlan) || !/0\s+partial/i.test(masterPlan)) throw new Error("GATEKEEPER_MASTER_PLAN_NOT_TERMINAL")
 console.log(JSON.stringify({ milestoneCompletion: summary, benchmark, packageVersion: packageJson.version, masterPlan: "100% / OPEN=0 / PARTIAL=0", findings: [] }))
