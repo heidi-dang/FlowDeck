@@ -44,4 +44,16 @@ describe("explicit OpenCode enforce executor", () => {
     expect(reconcileCalls).toBe(1)
     expect(terminateCalls).toBe(0)
   })
+
+  it("terminates a response that reports deterministic no-progress signals", async () => {
+    let aborted = 0
+    let terminated = 0
+    const budget = { profile: "normal", reserve: async () => ({ allowed: true, reservationId: "stall-reservation", remainingRun: 1000, claimed: 100 }), reconcile: async () => ({ committed: true, reclaimed: 0, remainingRun: 900 }), terminate: async () => { terminated += 1 }, observe: async () => ({ stalled: true, reasons: ["repeated_failure", "repeated_tool"] }) }
+    const client = { session: { create: async () => ({ data: { id: "session-stall" } }), prompt: async () => ({ data: { flowdeckProgress: { repeatedFailure: 3, repeatedTool: 4, unchangedDiff: 0, repeatedContext: 0, evidenceDelta: 0, tokensSinceProgress: 700 } } }), abort: async () => { aborted += 1 } } }
+    const result = await new OpenCodeWorkstreamExecutor(client, () => true).execute(workstream, allocation, budget as any, buildWorkstreamContext(workstream))
+    expect(result.status).toBe("failed")
+    expect(result.terminationReason).toBe("no_progress")
+    expect(terminated).toBe(0)
+    expect(aborted).toBe(1)
+  })
 })

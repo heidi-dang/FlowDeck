@@ -568,6 +568,21 @@ export class TokenBudgetController {
     })
   }
 
+  /** Cancel one durable reservation during restart/fault recovery. This is
+   * narrower than cancelSession and cannot affect sibling workstreams. */
+  async cancelReservation(reservationId: string, reason: string): Promise<boolean> {
+    return this.mutex.run(() => {
+      const reservation = this.reservations.get(reservationId)
+      if (!reservation || reservation.status !== "reserved") return false
+      reservation.status = "cancelled"
+      this.run.reserved = Math.max(0, this.run.reserved - reservation.claimed)
+      const agent = this.agents.get(reservation.sessionId)
+      if (agent) agent.reserved = Math.max(0, agent.reserved - reservation.claimed)
+      this.store.append(this.run.runId, { kind: "reservation", ...reservation, terminationReason: reason })
+      return true
+    })
+  }
+
   private cancelAllReservations(_reason: string): void {
     for (const r of this.reservations.values()) {
       if (r.status === "reserved") {

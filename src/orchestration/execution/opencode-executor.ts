@@ -3,12 +3,13 @@ import type { AssignmentContextResult } from "../../services/context-scoping"
 import type { ExecutionWorkstream } from "./contracts"
 import type { IsolatedExecutionResult, IsolatedWorkstreamExecutor } from "./worktree-executor"
 import type { WorktreeAllocation } from "./worktree-manager"
-import type { WorkstreamBudgetHandle } from "../../services/adaptive-execution-control"
+import type { StallObservation, WorkstreamBudgetHandle } from "../../services/adaptive-execution-control"
 import { BUDGET_PROFILES } from "../../config/token-budget-config"
 
 interface OpenCodeSessionNamespace {
   create?: (input: unknown) => Promise<unknown>
   prompt?: (input: unknown) => Promise<unknown>
+  abort?: (input: unknown) => Promise<unknown>
 }
 
 interface OpenCodeClientShape { session?: OpenCodeSessionNamespace }
@@ -32,6 +33,15 @@ function responseUsage(value: unknown): { input?: number; output?: number; reaso
     cacheRead: typeof cache?.read === "number" ? cache.read : undefined,
     cacheWrite: typeof cache?.write === "number" ? cache.write : undefined,
   }
+}
+
+function responseProgress(value: unknown): StallObservation | undefined {
+  const data = responseData(value)
+  const raw = data?.flowdeckProgress ?? data?.progress
+  if (!raw || typeof raw !== "object") return undefined
+  const candidate = raw as Record<string, unknown>
+  const numeric = (key: keyof StallObservation): number => typeof candidate[key] === "number" && Number.isFinite(candidate[key]) ? Math.max(0, Math.floor(candidate[key] as number)) : 0
+  return { repeatedFailure: numeric("repeatedFailure"), repeatedTool: numeric("repeatedTool"), unchangedDiff: numeric("unchangedDiff"), repeatedContext: numeric("repeatedContext"), evidenceDelta: numeric("evidenceDelta"), tokensSinceProgress: numeric("tokensSinceProgress") }
 }
 
 /**
@@ -60,11 +70,20 @@ export class OpenCodeWorkstreamExecutor implements IsolatedWorkstreamExecutor {
       prompted = await session.prompt({ path: { id: sessionId }, query: { directory: allocation.workspace }, body: { agent: workstream.resolvedAgent, parts: [{ type: "text", text: prompt }], system: prompt } })
     } catch (error) {
       await budget?.terminate("policy_violation")
+      try { await session.abort?.({ path: { id: sessionId }, query: { directory: allocation.workspace } }) } catch { /* cancellation remains authoritative in the budget controller */ }
       throw error
     }
     if (!responseData(prompted) && !(prompted && typeof prompted === "object")) {
       await budget?.terminate("policy_violation")
       throw new Error("OPENCODE_WORKSTREAM_PROMPT_FAILED")
+    }
+    const progress = responseProgress(prompted)
+    if (budget && progress) {
+      const stall = await budget.observe(progress)
+      if (stall.stalled) {
+        try { await session.abort?.({ path: { id: sessionId }, query: { directory: allocation.workspace } }) } catch { /* best effort after authoritative cancellation */ }
+        return { status: "failed", verificationPassed: false, integrationPassed: false, reservationId: reservation?.reservationId, tokenReserved: reservation?.claimed, durationMs: 0, terminationReason: "no_progress", usefulnessSignals: ["stall_detection", ...stall.reasons] }
+      }
     }
     let tokenUsed: number | undefined
     if (budget && reservation) {

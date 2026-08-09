@@ -21,7 +21,19 @@ export function detectStall(observation: StallObservation): StallResult {
 /** Adaptive policy layered on TokenBudgetController. The controller remains responsible
  * for all ceilings, reservations, provider reconciliation, and cancellation accounting. */
 export class AdaptiveExecutionControl {
+  private recovery?: Promise<void>
   constructor(private readonly controller: TokenBudgetController, private readonly store: TokenUsageStore, private readonly metrics?: OrchestrationMetrics) {}
+  private recoverOrphanedRedistributions(): Promise<void> {
+    if (this.recovery) return this.recovery
+    this.recovery = (async () => {
+      const entries = this.store.read(this.controller.runId)
+      const completed = new Set(entries.filter((entry): entry is Extract<UsageStoreEntry, { kind: "adaptive_redistribution" }> => entry.kind === "adaptive_redistribution").map(entry => entry.reservationId))
+      const reservationEntries = entries.filter((entry): entry is Extract<UsageStoreEntry, { kind: "reservation" }> => entry.kind === "reservation")
+      const orphaned = new Set(reservationEntries.filter(entry => String(entry.requestId ?? "").startsWith("adaptive-") && String(entry.status ?? "reserved") === "reserved").map(entry => String(entry.reservationId ?? "")).filter(id => id && !completed.has(id)))
+      for (const reservationId of orphaned) await this.controller.cancelReservation(reservationId, "adaptive_redistribution_event_missing")
+    })()
+    return this.recovery
+  }
   openWorkstream(workstreamId: string, sessionId: string, agentId: string, profile: BudgetProfileName, parentSessionId?: string): WorkstreamBudgetHandle {
     this.controller.registerSession(sessionId, agentId, parentSessionId)
     const profileCeiling = BUDGET_PROFILES[profile].childTotal
@@ -29,6 +41,7 @@ export class AdaptiveExecutionControl {
     return {
       profile,
       reserve: async (input) => {
+        await this.recoverOrphanedRedistributions()
         // A redistribution is already an authoritative controller
         // reservation. Consume it for the target workstream instead of
         // creating a second reservation and double-counting the ceiling.
