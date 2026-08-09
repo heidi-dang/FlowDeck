@@ -75,4 +75,28 @@ describe("persistent FDX runtime", () => {
       rmSync(root, { recursive: true, force: true })
     }
   })
+
+  it("serves bounded search, outline, and impact through the optional daemon protocol", async () => {
+    const root = mkdtempSync(join(tmpdir(), "flowdeck-fdx-code-daemon-"))
+    const source = join(root, "src")
+    mkdirSync(source)
+    writeFileSync(join(source, "alpha.ts"), "export function Alpha() { return 1 }\n")
+    writeFileSync(join(source, "beta.ts"), "import { Alpha } from \"src/alpha.ts\"\nexport function Beta() { return Alpha() }\n")
+    const socket = join(root, "fdx.sock")
+    const index = new FdxWorkspaceIndex({ stateFile: join(root, "index.json"), maxFiles: 10 })
+    const daemon = new FdxDaemon({ socketPath: socket, workspaceRoot: root, index })
+    try {
+      await daemon.start()
+      const search = await fdxDaemonRequest<Array<{ path: string; symbol: string }>>(socket, { method: "search", workspace: root, query: "alpha" }, () => [])
+      expect(search.source).toBe("daemon")
+      expect(search.value).toEqual([{ path: "src/alpha.ts", symbol: "Alpha" }])
+      const outline = await fdxDaemonRequest<Array<{ path: string; symbols: string[] }>>(socket, { method: "outline", workspace: root, paths: ["src"] }, () => [])
+      expect(outline.value).toHaveLength(2)
+      const impact = await fdxDaemonRequest<{ affectedPaths: string[] }>(socket, { method: "impact", workspace: root, paths: ["src/alpha.ts"] }, () => ({ affectedPaths: [] }))
+      expect(impact.value.affectedPaths).toEqual(["src/alpha.ts", "src/beta.ts"])
+    } finally {
+      await daemon.stop()
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
 })

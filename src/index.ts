@@ -98,6 +98,7 @@ import { createEnforceRun } from "./orchestration/routing/enforce-run"
 import { RunStatus } from "./orchestration/types/runs"
 import { OpenCodeWorkstreamExecutor } from "./orchestration/execution/opencode-executor"
 import { FdxWorkspaceIndex } from "./services/fdx-index"
+import { FdxDaemon } from "./services/fdx-daemon"
 import { execFileSync } from "node:child_process"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
@@ -275,6 +276,8 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   setActiveProjectDir(directory)
   let fdxWorkspaceIndex: FdxWorkspaceIndex | undefined
+  let fdxDaemon: FdxDaemon | undefined
+  let fdxDaemonSocketPath: string | undefined
   try {
     fdxWorkspaceIndex = new FdxWorkspaceIndex({
       stateFile: join(directory, ".flowdeck", "fdx-index.json"),
@@ -282,7 +285,18 @@ const plugin: Plugin = async ({ directory, client }) => {
       maxFileBytes: 2_000_000,
       maxWorkspaces: 32,
     })
-    configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex })
+    if (process.env.FLOWDECK_FDX_DAEMON === "on") {
+      const socketPath = join(directory, ".flowdeck", "fdx.sock")
+      const daemon = new FdxDaemon({ socketPath, workspaceRoot: directory, index: fdxWorkspaceIndex })
+      try {
+        await daemon.start()
+        fdxDaemon = daemon
+        fdxDaemonSocketPath = socketPath
+      } catch {
+        await daemon.stop()
+      }
+    }
+    configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex, daemonSocketPath: fdxDaemonSocketPath })
   } catch {
     // The persistent index is optional. Native FDX and the existing
     // TypeScript fallbacks remain the operational path if it cannot load.
@@ -392,7 +406,7 @@ const plugin: Plugin = async ({ directory, client }) => {
     const { db } = initializeDatabase({ path: dbPath })
     activeOrchestrationRuntime = createProductionOrchestrationRuntime(db, { repositoryPath: directory, worktreeRoot: join(directory, ".flowdeck", "worktrees"), routingMode: () => flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off", budgetState: () => tokenBudgetRuntime.getRunSnapshot() })
     tokenBudgetRuntime.setMetrics(activeOrchestrationRuntime.metrics)
-    if (fdxWorkspaceIndex) configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex, metrics: activeOrchestrationRuntime.metrics })
+    if (fdxWorkspaceIndex) configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex, daemonSocketPath: fdxDaemonSocketPath, metrics: activeOrchestrationRuntime.metrics })
     activeOrchestrationRuntime.worktreeExecutionService?.setBudgetCoordinator({
       open: workstream => tokenBudgetRuntime.openWorkstreamBudget(workstream),
       redistribute: (workstream, amount, reason, sourceReservationId) => tokenBudgetRuntime.redistributeWorkstream(workstream, amount, reason, sourceReservationId),
@@ -1259,6 +1273,11 @@ const plugin: Plugin = async ({ directory, client }) => {
         try { _betterHarnessCleanup() } catch { /* best-effort */ }
         _betterHarnessCleanup = null
       }
+      if (fdxDaemon) {
+        try { await fdxDaemon.stop() } catch { /* optional daemon teardown */ }
+        fdxDaemon = undefined
+      }
+      configureFdxNextRuntime()
     },
   }
 }

@@ -30,11 +30,13 @@ import {
   LINTER_ALLOWLIST,
 } from "./fdx-shared"
 import { FdxWorkspaceIndex } from "../services/fdx-index"
+import { fdxDaemonRequest } from "../services/fdx-daemon"
 import type { OrchestrationMetrics } from "../orchestration/metrics"
 
 interface FdxNextRuntime {
   workspace: string
   index: FdxWorkspaceIndex
+  daemonSocketPath?: string
   metrics?: OrchestrationMetrics
 }
 
@@ -73,6 +75,35 @@ function indexedImpact(runtime: FdxNextRuntime, paths: readonly string[], format
   runtime.metrics?.recordFdx("cache", true)
   if (format === "json") return JSON.stringify({ source: "persistent-index", ...impact })
   return [`[FDX Persistent Index] Impact`, `changed: ${impact.changedPaths.join(", ")}`, ...impact.affectedPaths.map(path => `  ${path}`)].join("\n")
+}
+
+async function daemonSearch(runtime: FdxNextRuntime, query: string, path: string | undefined, format?: "text" | "json"): Promise<string | undefined> {
+  if (!runtime.daemonSocketPath) return undefined
+  const result = await fdxDaemonRequest<Array<{ path: string; symbol: string }>>(runtime.daemonSocketPath, { method: "search", workspace: runtime.workspace, query, paths: path ? [path] : undefined }, () => runtime.index.symbols(runtime.workspace, query, path ? [path] : undefined))
+  runtime.metrics?.recordFdx(result.source === "daemon" ? "daemon" : "fallback", result.source === "fallback")
+  const matches = result.value
+  if (format === "json") return JSON.stringify({ source: result.source === "daemon" ? "daemon" : "persistent-index", query, matches })
+  return [`[FDX ${result.source === "daemon" ? "Daemon" : "Persistent Index"}] Search: ${query}`, ...matches.map(match => `  ${match.path} :: ${match.symbol}`)].join("\n")
+}
+
+async function daemonOutline(runtime: FdxNextRuntime, paths: readonly string[], format?: "text" | "json"): Promise<string | undefined> {
+  if (!runtime.daemonSocketPath) return undefined
+  const result = await fdxDaemonRequest<Array<{ path: string; symbols: string[] }>>(runtime.daemonSocketPath, { method: "outline", workspace: runtime.workspace, paths: [...paths] }, () => runtime.index.outline(runtime.workspace, paths))
+  runtime.metrics?.recordFdx(result.source === "daemon" ? "daemon" : "fallback", result.source === "fallback")
+  const files = result.value
+  if (format === "json") return JSON.stringify({ source: result.source === "daemon" ? "daemon" : "persistent-index", files })
+  const lines = [`[FDX ${result.source === "daemon" ? "Daemon" : "Persistent Index"}] Outline`]
+  for (const file of files) { lines.push(`  ${file.path}`); for (const symbol of file.symbols) lines.push(`    ${symbol}`) }
+  return lines.join("\n")
+}
+
+async function daemonImpact(runtime: FdxNextRuntime, paths: readonly string[], format?: "text" | "json"): Promise<string | undefined> {
+  if (!runtime.daemonSocketPath) return undefined
+  const result = await fdxDaemonRequest<{ changedPaths: string[]; affectedPaths: string[] }>(runtime.daemonSocketPath, { method: "impact", workspace: runtime.workspace, paths: [...paths] }, () => runtime.index.impact(runtime.workspace, paths))
+  runtime.metrics?.recordFdx(result.source === "daemon" ? "daemon" : "fallback", result.source === "fallback")
+  const impact = result.value
+  if (format === "json") return JSON.stringify({ source: result.source === "daemon" ? "daemon" : "persistent-index", ...impact })
+  return [`[FDX ${result.source === "daemon" ? "Daemon" : "Persistent Index"}] Impact`, `changed: ${impact.changedPaths.join(", ")}`, ...impact.affectedPaths.map(path => `  ${path}`)].join("\n")
 }
 
 // Re-export shared items for backward compatibility
@@ -146,6 +177,8 @@ export const fdxSearchTool: ToolDefinition = tool({
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       if (activeFdxNextRuntime && !args.no_cache) {
+        const daemonResult = await daemonSearch(activeFdxNextRuntime, args.query, args.path, args.format)
+        if (daemonResult !== undefined) return daemonResult
         try { return indexedSearch(activeFdxNextRuntime, args.query, args.path, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
       }
       return nativeSearchFallback(args.query, args.path)
@@ -243,6 +276,8 @@ export const fdxImpactTool: ToolDefinition = tool({
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       if (activeFdxNextRuntime) {
+        const daemonResult = await daemonImpact(activeFdxNextRuntime, args.files, args.format)
+        if (daemonResult !== undefined) return daemonResult
         try { return indexedImpact(activeFdxNextRuntime, args.files, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
       }
       return await nativeImpactFallback(args.files, args.root)
@@ -280,6 +315,8 @@ export const fdxOutlineTool: ToolDefinition = tool({
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       if (activeFdxNextRuntime && !args.no_cache) {
+        const daemonResult = await daemonOutline(activeFdxNextRuntime, searchPaths, args.format)
+        if (daemonResult !== undefined) return daemonResult
         try { return indexedOutline(activeFdxNextRuntime, searchPaths, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
       }
       return nativeOutlineFallback(searchPaths)

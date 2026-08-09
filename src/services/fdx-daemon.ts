@@ -1,11 +1,20 @@
 import { createHash } from "node:crypto"
 import { createServer, createConnection, type Socket, type Server } from "node:net"
-import { existsSync, mkdirSync, realpathSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, lstatSync, mkdirSync, realpathSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, resolve, relative, sep } from "node:path"
+import type { FdxWorkspaceIndex } from "./fdx-index"
 
-export type FdxDaemonRequest = { id: string; method: "health" | "get" | "put" | "invalidate"; workspace: string; key?: string; value?: unknown }
+export type FdxDaemonRequest = {
+  id: string
+  method: "health" | "get" | "put" | "invalidate" | "search" | "outline" | "impact"
+  workspace: string
+  key?: string
+  value?: unknown
+  query?: string
+  paths?: string[]
+}
 export type FdxDaemonResponse = { id: string; ok: boolean; value?: unknown; error?: string }
-export interface FdxDaemonOptions { socketPath: string; workspaceRoot: string; stateFile?: string; maxEntries?: number; maxRequestBytes?: number; maxValueBytes?: number }
+export interface FdxDaemonOptions { socketPath: string; workspaceRoot: string; stateFile?: string; index?: FdxWorkspaceIndex; maxEntries?: number; maxRequestBytes?: number; maxValueBytes?: number }
 function inside(root: string, candidate: string): boolean { const r = relative(root, candidate); return r !== ".." && !r.startsWith(`..${sep}`) && !r.startsWith(sep) }
 function workspaceId(root: string, workspace: string): string { const canonical = realpathSync(workspace); if (!inside(root, canonical)) throw new Error("FDX_WORKSPACE_ESCAPE"); return createHash("sha256").update(canonical).digest("hex").slice(0, 32) }
 
@@ -13,10 +22,42 @@ function workspaceId(root: string, workspace: string): string { const canonical 
 export class FdxDaemon {
   private server?: Server; private readonly values = new Map<string, unknown>(); private readonly maxEntries: number; private readonly maxRequestBytes: number; private readonly maxValueBytes: number; private readonly root: string; private readonly stateFile: string
   constructor(private readonly options: FdxDaemonOptions) { this.maxEntries = options.maxEntries ?? 1000; this.maxRequestBytes = options.maxRequestBytes ?? 256_000; this.maxValueBytes = options.maxValueBytes ?? 1_000_000; this.root = realpathSync(options.workspaceRoot); this.stateFile = resolve(options.stateFile ?? `${options.socketPath}.state.json`); this.load() }
-  start(): Promise<void> { return new Promise((resolveStart, reject) => { this.server = createServer(socket => this.handle(socket)); this.server.once("error", reject); this.server.listen(this.options.socketPath, () => { this.server?.removeListener("error", reject); resolveStart() }) }) }
-  stop(): Promise<void> { return new Promise(resolveStop => { this.server?.close(() => resolveStop()); if (!this.server) resolveStop() }) }
+  start(): Promise<void> {
+    return new Promise((resolveStart, reject) => {
+      try {
+        if (existsSync(this.options.socketPath) && lstatSync(this.options.socketPath).isSocket()) unlinkSync(this.options.socketPath)
+      } catch (error) { reject(error); return }
+      this.server = createServer(socket => this.handle(socket)); this.server.once("error", reject); this.server.listen(this.options.socketPath, () => { this.server?.removeListener("error", reject); resolveStart() })
+    })
+  }
+  stop(): Promise<void> {
+    return new Promise(resolveStop => {
+      const cleanup = () => { try { if (existsSync(this.options.socketPath) && lstatSync(this.options.socketPath).isSocket()) unlinkSync(this.options.socketPath) } catch {} ; resolveStop() }
+      this.server?.close(cleanup); if (!this.server) cleanup()
+    })
+  }
   private handle(socket: Socket): void { let input = ""; socket.setEncoding("utf8"); socket.on("data", chunk => { input += chunk; if (Buffer.byteLength(input) > this.maxRequestBytes) { this.reply(socket, { id: "unknown", ok: false, error: "FDX_REQUEST_LIMIT" }); socket.destroy(); return } let index; while ((index = input.indexOf("\n")) >= 0) { const line = input.slice(0, index); input = input.slice(index + 1); try { const req = JSON.parse(line) as FdxDaemonRequest; this.reply(socket, this.execute(req)) } catch (error) { this.reply(socket, { id: "unknown", ok: false, error: error instanceof Error ? error.message : "FDX_INVALID_REQUEST" }) } } }) }
-  private execute(req: FdxDaemonRequest): FdxDaemonResponse { if (!req || typeof req.id !== "string" || req.id.length > 200 || typeof req.method !== "string" || typeof req.workspace !== "string") throw new Error("FDX_INVALID_REQUEST"); const id = workspaceId(this.root, req.workspace); const key = req.key ? `${id}:${req.key}` : id; if (req.key !== undefined && (typeof req.key !== "string" || req.key.length > 500 || req.key.includes("\0"))) throw new Error("FDX_INVALID_KEY"); if (req.method === "health") return { id: req.id, ok: true, value: { healthy: true, entries: this.values.size } }; if (req.method === "invalidate") { const next = new Map([...this.values].filter(([k]) => !k.startsWith(key))); this.persist(next); this.replace(next); return { id: req.id, ok: true }; } if (req.method === "get") return { id: req.id, ok: true, value: this.values.get(key) }; if (req.method === "put") { const encoded = JSON.stringify(req.value); if (Buffer.byteLength(encoded) > this.maxValueBytes) throw new Error("FDX_VALUE_LIMIT"); if (!this.values.has(key) && this.values.size >= this.maxEntries) throw new Error("FDX_CACHE_LIMIT"); const next = new Map(this.values); next.set(key, req.value); this.persist(next); this.replace(next); return { id: req.id, ok: true }; } throw new Error("FDX_METHOD_NOT_ALLOWED") }
+  private execute(req: FdxDaemonRequest): FdxDaemonResponse {
+    if (!req || typeof req.id !== "string" || req.id.length > 200 || typeof req.method !== "string" || typeof req.workspace !== "string") throw new Error("FDX_INVALID_REQUEST")
+    const id = workspaceId(this.root, req.workspace)
+    const key = req.key ? `${id}:${req.key}` : id
+    if (req.key !== undefined && (typeof req.key !== "string" || req.key.length > 500 || req.key.includes("\0"))) throw new Error("FDX_INVALID_KEY")
+    if (req.method === "health") return { id: req.id, ok: true, value: { healthy: true, entries: this.values.size, codeIndex: Boolean(this.options.index) } }
+    if (req.method === "search" || req.method === "outline" || req.method === "impact") {
+      if (!this.options.index) throw new Error("FDX_CODE_INDEX_UNAVAILABLE")
+      if (req.paths !== undefined && (!Array.isArray(req.paths) || req.paths.length > 100 || req.paths.some(path => typeof path !== "string" || path.length > 500))) throw new Error("FDX_PATH_LIMIT")
+      if (req.method === "search") {
+        if (typeof req.query !== "string" || req.query.length > 500) throw new Error("FDX_QUERY_LIMIT")
+        return { id: req.id, ok: true, value: this.options.index.symbols(req.workspace, req.query, req.paths) }
+      }
+      if (req.method === "outline") return { id: req.id, ok: true, value: this.options.index.outline(req.workspace, req.paths) }
+      return { id: req.id, ok: true, value: this.options.index.impact(req.workspace, req.paths ?? []) }
+    }
+    if (req.method === "invalidate") { const next = new Map([...this.values].filter(([k]) => !k.startsWith(key))); this.persist(next); this.replace(next); return { id: req.id, ok: true } }
+    if (req.method === "get") return { id: req.id, ok: true, value: this.values.get(key) }
+    if (req.method === "put") { const encoded = JSON.stringify(req.value); if (Buffer.byteLength(encoded) > this.maxValueBytes) throw new Error("FDX_VALUE_LIMIT"); if (!this.values.has(key) && this.values.size >= this.maxEntries) throw new Error("FDX_CACHE_LIMIT"); const next = new Map(this.values); next.set(key, req.value); this.persist(next); this.replace(next); return { id: req.id, ok: true } }
+    throw new Error("FDX_METHOD_NOT_ALLOWED")
+  }
   private reply(socket: Socket, response: FdxDaemonResponse): void { socket.write(`${JSON.stringify(response)}\n`) }
   private load(): void { try { if (!existsSync(this.stateFile)) return; const parsed = JSON.parse(readFileSync(this.stateFile, "utf8")) as unknown; if (!Array.isArray(parsed)) return; for (const entry of parsed) { if (!Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string") continue; if (JSON.stringify(entry[1]).length <= this.maxValueBytes) this.values.set(entry[0], entry[1]) } } catch { this.values.clear() } }
   private replace(next: Map<string, unknown>): void { this.values.clear(); for (const [key, value] of next) this.values.set(key, value) }
