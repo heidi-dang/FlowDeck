@@ -26,6 +26,7 @@ import { AdaptiveExecutionControl } from "./adaptive-execution-control"
 import type { WorkstreamBudgetHandle } from "./adaptive-execution-control"
 import type { ExecutionWorkstream } from "../orchestration/execution/contracts"
 import { estimateTokensFromBytes } from "./token-budget"
+import type { OrchestrationMetrics } from "../orchestration/metrics"
 
 export interface TokenBudgetRuntimeOptions {
   /** user-supplied tokenBudget config section. */
@@ -36,6 +37,7 @@ export interface TokenBudgetRuntimeOptions {
   onWarning?: (runId: string, message: string) => void
   /** Hook for surfacing terminal state (e.g. app log). */
   onTerminal?: (runId: string, reason: string) => void
+  metrics?: OrchestrationMetrics
 }
 
 export interface SessionBudgetContext {
@@ -79,10 +81,12 @@ export class TokenBudgetRuntime {
   private readonly onTerminal?: (runId: string, reason: string) => void
   private readonly persistDir: string
   private readonly config: ReturnType<typeof resolveTokenBudgetConfig>
+  private metrics?: OrchestrationMetrics
 
   constructor(opts?: TokenBudgetRuntimeOptions) {
     this.onWarning = opts?.onWarning
     this.onTerminal = opts?.onTerminal
+    this.metrics = opts?.metrics
     // Persist dir must live outside the project (never committed).
     this.persistDir = opts?.persistDir || ""
     this.config = resolveTokenBudgetConfig(opts?.overrides)
@@ -146,7 +150,17 @@ export class TokenBudgetRuntime {
 
   getAdaptiveControlForSession(ctx: SessionBudgetContext): AdaptiveExecutionControl {
     const controller = this.getControllerForSession(ctx)
-    return new AdaptiveExecutionControl(controller, this.getStore(controller.runId))
+    return new AdaptiveExecutionControl(controller, this.getStore(controller.runId), this.metrics)
+  }
+
+  setMetrics(metrics: OrchestrationMetrics): void { this.metrics = metrics }
+
+  /** Bounded operational budget state for the existing runtime snapshot. */
+  getRunSnapshot(runId?: string): Record<string, unknown> {
+    const controller = runId ? this.controllers.get(runId) : [...this.controllers.values()][0]
+    if (!controller) return { enabled: this.config.enabled, profile: this.config.profile, runs: 0 }
+    const snapshot = controller.getSnapshot()
+    return { enabled: snapshot.enabled, profile: snapshot.profile, run: { ceiling: snapshot.run.ceiling, consumed: snapshot.run.consumed, reserved: snapshot.run.reserved, releasedUnused: snapshot.run.releasedUnused, remaining: snapshot.remainingRun, terminal: snapshot.run.terminal?.reason ?? null }, workstreams: snapshot.agents.length }
   }
 
   openWorkstreamBudget(workstream: ExecutionWorkstream): WorkstreamBudgetHandle {

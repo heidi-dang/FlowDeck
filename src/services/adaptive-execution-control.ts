@@ -35,7 +35,7 @@ export class AdaptiveExecutionControl {
     const result = await this.controller.commitUsage({ runId: input.runId, reservationId: input.reservationId, sessionId: input.sessionId, agentId: input.agentId, parentSessionId: input.parentSessionId, assignmentId: input.assignmentId, requestId: input.requestId, messageId: input.messageId, usage: input.usage, model: input.model, provider: input.provider, terminationReason: input.reason })
     if (!result.committed) return { committed: false, reclaimed: 0, remainingRun: result.remainingRun }
     if (result.releasedUnused > 0) {
-      this.store.append(input.runId, { kind: "adaptive_reclaim", eventId: `reclaim:${input.reservationId}`, reservationId: input.reservationId, workstreamId: input.workstreamId, reserved: 0, actual: result.billable, reclaimed: result.releasedUnused, reason: input.reason, at: Date.now() })
+      this.store.append(input.runId, { kind: "adaptive_reclaim", eventId: `reclaim:${input.reservationId}`, reservationId: input.reservationId, workstreamId: input.workstreamId, reserved: result.releasedUnused + result.billable, actual: result.billable, reclaimed: result.releasedUnused, reason: input.reason, at: Date.now() })
       this.metrics?.budgetReclaimed.inc(result.releasedUnused)
     }
     return { committed: true, reclaimed: result.releasedUnused, remainingRun: result.remainingRun }
@@ -44,6 +44,11 @@ export class AdaptiveExecutionControl {
     if (!Number.isFinite(amount) || amount <= 0) return { allowed: false, reservationId: "", amount: 0 }
     const eventId = `redistribute:${targetWorkstreamId}:${sourceReservationId ?? "pool"}:${amount}`
     if (this.store.read(runId).some(e => e.kind === "adaptive_redistribution" && e.eventId === eventId)) return { allowed: false, reservationId: "", amount: 0 }
+    const entries = this.store.read(runId)
+    if (sourceReservationId && !entries.some(e => e.kind === "adaptive_reclaim" && e.reservationId === sourceReservationId)) return { allowed: false, reservationId: "", amount: 0 }
+    const reclaimed = entries.filter(e => e.kind === "adaptive_reclaim").reduce((sum, e) => sum + Math.max(0, Number(e.reclaimed ?? 0)), 0)
+    const redistributed = entries.filter(e => e.kind === "adaptive_redistribution").reduce((sum, e) => sum + Math.max(0, Number(e.amount ?? 0)), 0)
+    if (amount > Math.max(0, reclaimed - redistributed)) return { allowed: false, reservationId: "", amount: 0 }
     const result = await this.controller.reserveRequest({ runId, sessionId, agentId, requestId: `adaptive-${createHash("sha256").update(eventId).digest("hex").slice(0, 20)}`, estimatedInputTokens: 0, maxOutputTokens: amount })
     if (!result.allowed) return { allowed: false, reservationId: result.reservationId, amount: 0 }
     this.store.append(runId, { kind: "adaptive_redistribution", eventId, sourceReservationId, targetWorkstreamId, amount: result.claimed, reason, at: Date.now() })

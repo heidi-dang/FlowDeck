@@ -255,10 +255,30 @@ export class TokenBudgetController {
     ctrl.run.releasedUnused = rebuilt.releasedUnused
     ctrl.run.warningFired = rebuilt.warningFired
     ctrl.run.terminal = rebuilt.terminal
+    for (const restored of rebuilt.reservations) {
+      const agent = ctrl.agents.get(restored.sessionId) ?? ctrl.registerSession(restored.sessionId, restored.agentId, restored.parentSessionId)
+      agent.reserved += restored.claimed
+      if (restored.assignmentId && !ctrl.assignments.has(restored.assignmentId)) {
+        ctrl.assignments.set(restored.assignmentId, { assignmentId: restored.assignmentId, identity: `restored|${restored.assignmentId}`, agentId: restored.agentId, consumed: 0, reserved: restored.claimed, status: "active" })
+      } else if (restored.assignmentId) {
+        ctrl.assignments.get(restored.assignmentId)!.reserved += restored.claimed
+      }
+      ctrl.reservations.set(restored.reservationId, { ...restored, status: "reserved" })
+    }
     for (const rec of rebuilt.records) {
       ctrl.records.push(rec)
       const key = rec.messageId ?? rec.requestId ?? rec.reservationId ?? ""
       if (key) ctrl.committedKeys.add(key)
+      const agent = ctrl.agents.get(rec.sessionId) ?? ctrl.registerSession(rec.sessionId, rec.agent, rec.parentSessionId)
+      agent.consumed += rec.billable
+      if (rec.assignmentId) {
+        const assignment = ctrl.assignments.get(rec.assignmentId) ?? (() => {
+          const created: AssignmentBudgetState = { assignmentId: rec.assignmentId!, identity: `restored|${rec.assignmentId}`, agentId: rec.agent, consumed: 0, reserved: 0, status: "active" }
+          ctrl.assignments.set(created.assignmentId, created)
+          return created
+        })()
+        assignment.consumed += rec.billable
+      }
     }
     return ctrl
   }

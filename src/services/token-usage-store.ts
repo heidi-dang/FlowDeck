@@ -75,6 +75,20 @@ export interface RebuiltUsage {
   warningFired: boolean
   /** Most recent committed usage per dedup key (messageId ?? requestId ?? reservationId). */
   records: TokenUsageRecord[]
+  /** Reservations that were durable and still active at the last append. */
+  reservations: Array<{
+    reservationId: string
+    runId: string
+    sessionId: string
+    agentId: string
+    parentSessionId?: string
+    assignmentId?: string
+    requestId: string
+    attempt: number
+    estimatedInput: number
+    maxOutput: number
+    claimed: number
+  }>
 }
 
 export interface TokenUsageStore {
@@ -190,6 +204,7 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
   // after being reserved nets to zero on rebuild.
   const reservationClaims = new Map<string, number>()
   const reservationStatus = new Map<string, string>()
+  const reservationEntries = new Map<string, RebuiltUsage["reservations"][number]>()
   const committedReservations = new Set<string>()
 
   for (const e of entries) {
@@ -201,6 +216,19 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
         if (rid) {
           reservationClaims.set(rid, claimed)
           reservationStatus.set(rid, status)
+          reservationEntries.set(rid, {
+            reservationId: rid,
+            runId,
+            sessionId: String(e.sessionId ?? ""),
+            agentId: String(e.agentId ?? e.agent ?? ""),
+            ...(e.parentSessionId ? { parentSessionId: String(e.parentSessionId) } : {}),
+            ...(e.assignmentId ? { assignmentId: String(e.assignmentId) } : {}),
+            requestId: String(e.requestId ?? ""),
+            attempt: Number(e.attempt ?? 1),
+            estimatedInput: Number(e.estimatedInput ?? 0),
+            maxOutput: Number(e.maxOutput ?? 0),
+            claimed,
+          })
         }
       }
       continue
@@ -246,6 +274,7 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
     terminal,
     warningFired,
     records: [...byKey.values()],
+    reservations: [...reservationEntries.entries()].filter(([rid]) => reservationStatus.get(rid) === "reserved").map(([, value]) => value),
   }
 }
 

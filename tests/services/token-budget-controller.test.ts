@@ -238,6 +238,20 @@ describe("TokenBudgetController", () => {
     expect(restored.getUsageRecords().length).toBeGreaterThanOrEqual(1)
   })
 
+  it("restores an uncommitted reservation for restart-safe reconciliation", async () => {
+    const cfg = makeConfig({ runTotal: 10_000, childTotal: 5_000 })
+    const store = new InMemoryTokenUsageStore()
+    const first = new TokenBudgetController(cfg, { store, runId: "run-active" })
+    first.registerSession("session-active", "agent")
+    const reservation = await first.reserveRequest({ runId: "run-active", sessionId: "session-active", agentId: "agent", requestId: "request-active", estimatedInputTokens: 100, maxOutputTokens: 200 })
+    const restored = TokenBudgetController.restore(cfg, "run-active", store)
+    expect(restored.getSnapshot().run.reserved).toBe(reservation.claimed)
+    const committed = await restored.commitUsage({ runId: "run-active", sessionId: "session-active", agentId: "agent", requestId: "request-active", reservationId: reservation.reservationId, messageId: "message-active", usage: { input: 20, output: 20 } })
+    expect(committed.committed).toBe(true)
+    expect(committed.releasedUnused).toBe(260)
+    expect(restored.getSnapshot().run.reserved).toBe(0)
+  })
+
   it("derives stable assignment identity for dedup", () => {
     const id1 = TokenBudgetController.assignmentIdentity("run-1", "implementation", "heidi", "scope-a", "sha-1")
     const id2 = TokenBudgetController.assignmentIdentity("run-1", "implementation", "heidi", "scope-a", "sha-1")
