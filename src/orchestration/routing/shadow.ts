@@ -3,7 +3,7 @@ import type { RoutingDecisionStore } from "./store"
 import type { RoutingDecision } from "./contracts/task-intelligence"
 import type { OrchestrationMetrics } from "../metrics"
 
-export type RoutingMode = "off" | "shadow"
+export type RoutingMode = "off" | "shadow" | "enforce"
 export interface ShadowComparison { mode: RoutingMode; decision: RoutingDecision | null; existingStrategy: string; divergent: boolean; error?: string }
 
 export function runShadowAssessment(input: TaskIntelligenceInput, existingStrategy: string, mode: RoutingMode, store?: RoutingDecisionStore, metrics?: OrchestrationMetrics): ShadowComparison {
