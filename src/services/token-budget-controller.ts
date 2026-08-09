@@ -472,6 +472,7 @@ export class TokenBudgetController {
       opts.terminationReason,
       opts.messageId,
     )
+    record.releasedUnused = releasedUnused
     this.records.push(record)
     this.store.append(this.run.runId, { kind: "usage", ...record })
 

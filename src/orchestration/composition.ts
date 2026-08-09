@@ -636,12 +636,12 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const executionRepository = new SqliteExecutionRepository(db, txManager);
   executionRepository.reconcileIntegratedAttempts();
   const executionScheduler = new ExecutionScheduler(executionRepository, metrics);
-  const performanceRepository = new SqlitePerformanceRepository(db, txManager);
+  const performanceRepository = new SqlitePerformanceRepository(db, txManager, metrics);
   const authoritativeRouting = new AuthoritativeRoutingService(executionRepository);
   const snapshotService = new RuntimeSnapshotService(executionRepository, performanceRepository, metrics);
   const worktreeManager = options.repositoryPath && options.worktreeRoot ? new GitWorktreeManager(options.repositoryPath, options.worktreeRoot) : undefined;
-  const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath, performanceRepository) : undefined;
-  const worktreeExecutionService = worktreeManager ? new WorktreeExecutionService(executionRepository, executionScheduler, worktreeManager, integrationService) : undefined;
+  const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath) : undefined;
+  const worktreeExecutionService = worktreeManager ? new WorktreeExecutionService(executionRepository, executionScheduler, worktreeManager, integrationService, undefined, performanceRepository) : undefined;
 
   const outboxWorker = new OutboxWorker(deliverySink, eventBus, { workerId: "orchestration-main", batchSize: 20, leaseSeconds: 60 });
 

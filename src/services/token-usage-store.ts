@@ -42,6 +42,8 @@ export interface TokenUsageRecord {
   cacheWrite: number
   /** Conservative billable total = input + output + reasoning + cacheRead + cacheWrite. */
   billable: number
+  /** Unused reservation returned to the run pool by this reconciliation. */
+  releasedUnused?: number
   /** Estimated monetary cost where safely derivable. */
   estimatedCost?: number
   /** Active context size (tokens) at dispatch, when known. */
@@ -234,6 +236,7 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
 
   // Consumed = sum of the winning (latest) record per dedup key only.
   consumed = [...byKey.values()].reduce((sum, rec) => sum + (Number.isFinite(Number(rec.billable)) ? Number(rec.billable) : 0), 0)
+  releasedUnused = [...byKey.values()].reduce((sum, rec) => sum + (Number.isFinite(Number(rec.releasedUnused)) ? Number(rec.releasedUnused) : 0), 0)
 
   return {
     runId,

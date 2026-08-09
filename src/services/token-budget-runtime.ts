@@ -23,6 +23,8 @@ import { TokenBudgetController, type ReservationResult } from "./token-budget-co
 import { FileTokenUsageStore } from "./token-usage-store"
 import { InMemoryTokenUsageStore, type TokenUsageStore } from "./token-usage-store"
 import { AdaptiveExecutionControl } from "./adaptive-execution-control"
+import type { WorkstreamBudgetHandle } from "./adaptive-execution-control"
+import type { ExecutionWorkstream } from "../orchestration/execution/contracts"
 import { estimateTokensFromBytes } from "./token-budget"
 
 export interface TokenBudgetRuntimeOptions {
@@ -41,6 +43,7 @@ export interface SessionBudgetContext {
   agent: string
   parentID?: string
   depth: number
+  runId?: string
 }
 
 export interface PreDispatchResult {
@@ -146,7 +149,14 @@ export class TokenBudgetRuntime {
     return new AdaptiveExecutionControl(controller, this.getStore(controller.runId))
   }
 
+  openWorkstreamBudget(workstream: ExecutionWorkstream): WorkstreamBudgetHandle {
+    const sessionID = `workstream:${workstream.runId}:${workstream.workstreamId}`
+    const control = this.getAdaptiveControlForSession({ sessionID, agent: workstream.resolvedAgent, depth: 1, runId: workstream.runId })
+    return control.openWorkstream(workstream.workstreamId, sessionID, workstream.resolvedAgent, workstream.budgetProfile)
+  }
+
   private lookupRunId(ctx: SessionBudgetContext): string {
+    if (ctx.runId) return ctx.runId
     const direct = this.runForSession.get(ctx.sessionID)
     if (direct) return direct
     if (ctx.parentID) {

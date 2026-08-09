@@ -7,6 +7,7 @@ import { tmpdir } from "node:os"
 import { runMigrations } from "../../src/orchestration/persistence/migrations/migration-runner"
 import { createTransactionManager } from "../../src/orchestration/persistence/transaction-manager"
 import { SqliteExecutionRepository, ExecutionScheduler, WorktreeExecutionService, GitWorktreeManager, ControlledIntegrationService, type ExecutionPlan } from "../../src/orchestration/execution"
+import { SqlitePerformanceRepository } from "../../src/orchestration/performance"
 import type { WorktreeAllocation } from "../../src/orchestration/execution/worktree-manager"
 
 describe("worktree execution production chain", () => {
@@ -28,10 +29,12 @@ describe("worktree execution production chain", () => {
     const calls: string[] = []
     const worktrees = { allocate: () => allocation, assertOwnedPath: () => "/tmp/wt-a/src/a.ts", remove: () => { calls.push("remove") } }
     const integration = { integrate: (workstream: { workstreamId: string }) => { calls.push(`integrate:${workstream.workstreamId}`) } }
-    const service = new WorktreeExecutionService(repo, new ExecutionScheduler(repo), worktrees as never, integration as never)
-    const result = await service.executePlan("p", plan.sourceSha, { execute: async () => "succeeded" })
+    const budget = { profile: "normal" as const, reserve: async () => ({ allowed: true, reservationId: "r", remainingRun: 100, claimed: 1 }), reconcile: async () => ({ committed: true, reclaimed: 0, remainingRun: 100 }), terminate: async () => {} }
+    const budgetCoordinator = { open: () => { calls.push("budget"); return budget } }
+    const service = new WorktreeExecutionService(repo, new ExecutionScheduler(repo), worktrees as never, integration as never, budgetCoordinator as never)
+    const result = await service.executePlan("p", plan.sourceSha, { execute: async (_workstream, _allocation, workstreamBudget) => { expect(workstreamBudget?.profile).toBe("normal"); return "succeeded" } })
     expect(result.succeeded).toEqual(["a"])
-    expect(calls).toEqual(["integrate:a", "remove"])
+    expect(calls).toEqual(["budget", "integrate:a", "remove"])
   })
 
   it("executes a real writer in an isolated worktree and integrates exactly once", async () => {
@@ -44,13 +47,16 @@ describe("worktree execution production chain", () => {
     repo.savePlan(plan)
     const manager = new GitWorktreeManager(repository, worktreeRoot)
     const integration = new ControlledIntegrationService(repo, manager, repository)
-    const service = new WorktreeExecutionService(repo, new ExecutionScheduler(repo), manager, integration)
-    const result = await service.executePlan("real-plan", sourceSha, { execute: async (_workstream, allocation) => { mkdirSync(join(allocation.workspace, "src")); writeFileSync(join(allocation.workspace, "src", "created.ts"), "export const created = true\n"); execFileSync("git", ["add", "src/created.ts"], { cwd: allocation.workspace }); execFileSync("git", ["commit", "-qm", "writer"], { cwd: allocation.workspace }); return "succeeded" } })
+    const performance = new SqlitePerformanceRepository(db, createTransactionManager(db))
+    const service = new WorktreeExecutionService(repo, new ExecutionScheduler(repo), manager, integration, undefined, performance)
+    const result = await service.executePlan("real-plan", sourceSha, { execute: async (_workstream, allocation) => { mkdirSync(join(allocation.workspace, "src")); writeFileSync(join(allocation.workspace, "src", "created.ts"), "export const created = true\n"); execFileSync("git", ["add", "src/created.ts"], { cwd: allocation.workspace }); execFileSync("git", ["commit", "-qm", "writer"], { cwd: allocation.workspace }); return { status: "succeeded", verificationPassed: true, integrationPassed: true, tokenReserved: 100, tokenUsed: 20, retryCount: 1, usefulnessSignals: ["artifact", "verification"] } } })
     expect(result).toEqual({ succeeded: ["writer"], failed: [], blocked: [] })
     expect(readFileSync(join(repository, "src", "created.ts"), "utf8")).toContain("created = true")
     expect(repo.getPlan("real-plan")!.workstreams[0].status).toBe("integrated")
     expect(repo.getPlan("real-plan")!.status).toBe("succeeded")
     expect(repo.listLeases("run").every(lease => lease.state === "released")).toBe(true)
+    expect(performance.getObservation("perf:run:writer")?.tokenUsed).toBe(20)
+    expect(performance.getObservation("perf:run:writer")?.integrationPassed).toBe(true)
     rmSync(root, { recursive: true, force: true })
   })
 })

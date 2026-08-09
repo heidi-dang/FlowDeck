@@ -3,28 +3,39 @@ import type { ExecutionWorkstream } from "./contracts"
 import type { SqliteExecutionRepository } from "./sqlite-repository"
 import { ExecutionScheduler } from "./scheduler"
 import type { GitWorktreeManager, WorktreeAllocation } from "./worktree-manager"
+import type { WorkstreamBudgetHandle } from "../../services/adaptive-execution-control"
+import type { PerformanceOutcomeFacts, SqlitePerformanceRepository } from "../performance/sqlite-repository"
 
-export interface IsolatedWorkstreamExecutor { execute(workstream: ExecutionWorkstream, allocation: WorktreeAllocation): Promise<"succeeded" | "failed"> }
+export interface IsolatedExecutionResult extends PerformanceOutcomeFacts {}
+export interface IsolatedWorkstreamExecutor { execute(workstream: ExecutionWorkstream, allocation: WorktreeAllocation, budget?: WorkstreamBudgetHandle): Promise<"succeeded" | "failed" | IsolatedExecutionResult> }
 export interface IntegrationCoordinator { integrate(workstream: ExecutionWorkstream, sourceSha: string, branch: string, workspace: string): void; currentSourceSha?: () => string }
+export interface WorkstreamBudgetCoordinator { open(workstream: ExecutionWorkstream): WorkstreamBudgetHandle }
 export class WorktreeExecutionService {
-  constructor(private readonly repository: SqliteExecutionRepository, private readonly scheduler: ExecutionScheduler, private readonly worktrees: GitWorktreeManager, private readonly integration?: IntegrationCoordinator) {}
+  constructor(private readonly repository: SqliteExecutionRepository, private readonly scheduler: ExecutionScheduler, private readonly worktrees: GitWorktreeManager, private readonly integration?: IntegrationCoordinator, private budgetCoordinator?: WorkstreamBudgetCoordinator, private readonly performance?: SqlitePerformanceRepository) {}
+  setBudgetCoordinator(coordinator: WorkstreamBudgetCoordinator): void { this.budgetCoordinator = coordinator }
   async executePlan(planId: string, sourceSha: string, executor: IsolatedWorkstreamExecutor): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }> {
     const aggregate = { succeeded: [] as string[], failed: [] as string[], blocked: [] as string[] }
     for (let wave = 0; wave < 100; wave++) {
       const ready = this.repository.listReady(planId); if (!ready.length) break
       const allocations = new Map<string, WorktreeAllocation>()
+      const budgets = new Map<string, WorkstreamBudgetHandle>()
+      const facts = new Map<string, PerformanceOutcomeFacts>()
       for (const workstream of ready) {
+        if (this.budgetCoordinator) budgets.set(workstream.workstreamId, this.budgetCoordinator.open(workstream))
         const allocation = this.worktrees.allocate(workstream.runId, workstream.workstreamId, sourceSha)
         this.repository.bindWorktree(planId, workstream.workstreamId, allocation.worktreeId, allocation.branch)
         this.repository.acquireLease({ leaseId: randomUUID(), runId: workstream.runId, planId, workstreamId: workstream.workstreamId, agentId: workstream.resolvedAgent, worktreeId: allocation.worktreeId, workspace: allocation.workspace, branch: allocation.branch, acquiredAt: new Date().toISOString(), renewedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 15 * 60_000).toISOString() })
         allocations.set(workstream.workstreamId, allocation)
       }
-      const result = await this.scheduler.runReady(planId, { execute: async workstream => { const allocation = allocations.get(workstream.workstreamId)!; return executor.execute(workstream, allocation) } })
+      const result = await this.scheduler.runReady(planId, { execute: async workstream => { const allocation = allocations.get(workstream.workstreamId)!; const startedAt = Date.now(); try { const output = await executor.execute(workstream, allocation, budgets.get(workstream.workstreamId)); const outcome = typeof output === "string" ? { status: output, integrationPassed: false, durationMs: Date.now() - startedAt } : { ...output, durationMs: output.durationMs ?? Date.now() - startedAt }; facts.set(workstream.workstreamId, outcome); return outcome.status } catch { facts.set(workstream.workstreamId, { status: "failed", integrationPassed: false, durationMs: Date.now() - startedAt, terminationReason: "execution_failed" }); return "failed" } } })
       for (const workstreamId of [...result.succeeded].sort()) {
         const allocation = allocations.get(workstreamId)!
         try {
           const workstream = this.repository.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
           if (this.integration) this.integration.integrate(workstream, this.integration.currentSourceSha?.() ?? sourceSha, allocation.branch, allocation.workspace)
+          const integrated = Boolean(this.integration)
+          const outcomeFacts = facts.get(workstreamId) ?? { status: "succeeded" as const, integrationPassed: integrated, verificationPassed: integrated }
+          this.performance?.recordWorkstreamOutcome(workstream, { ...outcomeFacts, status: "succeeded", integrationPassed: integrated, verificationPassed: outcomeFacts.verificationPassed === true && integrated })
         } catch {
           const current = this.repository.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
           if (current.status === "succeeded") {
@@ -33,7 +44,19 @@ export class WorktreeExecutionService {
           }
           result.succeeded = result.succeeded.filter(id => id !== workstreamId)
           result.failed.push(workstreamId)
+          const outcomeFacts = facts.get(workstreamId) ?? { status: "failed" as const, integrationPassed: false }
+          this.performance?.recordWorkstreamOutcome(current, { ...outcomeFacts, status: "failed", integrationPassed: false, terminationReason: "integration_failed" })
         }
+      }
+      for (const workstreamId of result.failed) {
+        if (facts.has(workstreamId)) {
+          const workstream = this.repository.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
+          this.performance?.recordWorkstreamOutcome(workstream, { ...facts.get(workstreamId)!, status: "failed", integrationPassed: false })
+        }
+      }
+      for (const workstreamId of result.blocked) {
+        const workstream = this.repository.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
+        this.performance?.recordWorkstreamOutcome(workstream, { status: "failed", integrationPassed: false, terminationReason: "dependency_failed" })
       }
       for (const [workstreamId, allocation] of allocations) {
         const lease = this.repository.listLeases(this.repository.getPlan(planId)!.runId).find(l => l.workstreamId === workstreamId && ["allocated", "active", "renewing"].includes(l.state))

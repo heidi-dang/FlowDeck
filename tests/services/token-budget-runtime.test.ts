@@ -100,4 +100,14 @@ describe("TokenBudgetRuntime", () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it("binds multiple execution workstreams to one durable run controller", () => {
+    const rt = new TokenBudgetRuntime({ overrides: { enabled: true, profile: "normal", runTotal: 10_000, childTotal: 5_000 } })
+    const workstream = (id: string) => ({ workstreamId: id, runId: "execution-run", resolvedAgent: "backend-coder", budgetProfile: "normal" as const })
+    const a = rt.openWorkstreamBudget(workstream("a") as never)
+    const b = rt.openWorkstreamBudget(workstream("b") as never)
+    expect(a.profile).toBe("normal")
+    expect(b.profile).toBe("normal")
+    expect(rt.getControllersForTest().size).toBe(1)
+  })
 })
