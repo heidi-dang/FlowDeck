@@ -371,7 +371,7 @@ const plugin: Plugin = async ({ directory, client }) => {
   try {
     const dbPath = join(directory, ".flowdeck", "flowdeck.db")
     const { db } = initializeDatabase({ path: dbPath })
-    activeOrchestrationRuntime = createProductionOrchestrationRuntime(db)
+    activeOrchestrationRuntime = createProductionOrchestrationRuntime(db, { repositoryPath: directory, worktreeRoot: join(directory, ".flowdeck", "worktrees") })
     appLog("[orchestration] Production orchestration runtime initialized successfully")
   } catch (err) {
     appLog(`[orchestration] Production orchestration runtime initialization skipped: ${err instanceof Error ? err.message : String(err)}`, "warn")

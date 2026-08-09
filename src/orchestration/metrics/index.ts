@@ -81,6 +81,20 @@ export class OrchestrationMetrics {
   readonly routingDecisions: Counter;
   readonly routingShadowDivergence: Counter;
   readonly routingShadowFailures: Counter;
+  readonly executionPlans: Counter;
+  readonly workstreamsStarted: Counter;
+  readonly workstreamsBlocked: Counter;
+  readonly worktreeLeaseConflicts: Counter;
+  readonly worktreeLeaseReclaims: Counter;
+  readonly integrationConflicts: Counter;
+  readonly budgetReclaimed: Counter;
+  readonly budgetRedistributed: Counter;
+  readonly executionStalls: Counter;
+  readonly executionTerminations: Counter;
+  readonly performanceObservations: Counter;
+  readonly fdxDaemonRequests: Counter;
+  readonly fdxFallbacks: Counter;
+  readonly fdxCacheHits: Counter;
   readonly routingAssessmentLatency: Histogram;
 
   private readonly counters = new Map<string, number>();
@@ -103,6 +117,20 @@ export class OrchestrationMetrics {
     this.routingDecisions = createCounter("routing_decisions_total", this.counters);
     this.routingShadowDivergence = createCounter("routing_shadow_divergence_total", this.counters);
     this.routingShadowFailures = createCounter("routing_shadow_failures_total", this.counters);
+    this.executionPlans = createCounter("execution_plans_total", this.counters);
+    this.workstreamsStarted = createCounter("execution_workstreams_started_total", this.counters);
+    this.workstreamsBlocked = createCounter("execution_workstreams_blocked_total", this.counters);
+    this.worktreeLeaseConflicts = createCounter("worktree_lease_conflicts_total", this.counters);
+    this.worktreeLeaseReclaims = createCounter("worktree_lease_reclaims_total", this.counters);
+    this.integrationConflicts = createCounter("execution_integration_conflicts_total", this.counters);
+    this.budgetReclaimed = createCounter("token_budget_reclaimed_total", this.counters);
+    this.budgetRedistributed = createCounter("token_budget_redistributed_total", this.counters);
+    this.executionStalls = createCounter("execution_stalls_total", this.counters);
+    this.executionTerminations = createCounter("execution_terminations_total", this.counters);
+    this.performanceObservations = createCounter("agent_performance_observations_total", this.counters);
+    this.fdxDaemonRequests = createCounter("fdx_daemon_requests_total", this.counters);
+    this.fdxFallbacks = createCounter("fdx_fallbacks_total", this.counters);
+    this.fdxCacheHits = createCounter("fdx_cache_hits_total", this.counters);
 
     this.queryLatency = createHistogram("query_latency_ms", this.histograms);
     this.verificationLatency = createHistogram("verification_latency_ms", this.histograms);

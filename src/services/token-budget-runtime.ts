@@ -21,6 +21,8 @@ import { join } from "path"
 import { resolveTokenBudgetConfig, type TokenBudgetOverrides } from "../config/token-budget-config"
 import { TokenBudgetController, type ReservationResult } from "./token-budget-controller"
 import { FileTokenUsageStore } from "./token-usage-store"
+import { InMemoryTokenUsageStore, type TokenUsageStore } from "./token-usage-store"
+import { AdaptiveExecutionControl } from "./adaptive-execution-control"
 import { estimateTokensFromBytes } from "./token-budget"
 
 export interface TokenBudgetRuntimeOptions {
@@ -67,6 +69,7 @@ function serializeEstimate(message: unknown): number {
 
 export class TokenBudgetRuntime {
   private readonly controllers = new Map<string, TokenBudgetController>()
+  private readonly stores = new Map<string, TokenUsageStore>()
   private readonly runForSession = new Map<string, string>() // sessionID → runId
   private readonly pending = new Map<string, PendingSlot[]>() // sessionID → FIFO
   private readonly onWarning?: (runId: string, message: string) => void
@@ -115,23 +118,32 @@ export class TokenBudgetRuntime {
     const runId = this.lookupRunId(ctx)
     let ctrl = this.controllers.get(runId)
     if (!ctrl) {
+      const store = this.getStore(runId)
       if (this.persistDir) {
         // Recover durable state for the run when present (restart/reconnect).
-        const store = new FileTokenUsageStore(this.persistDir)
         const rebuilt = store.rebuild(runId)
         if (rebuilt.consumed > 0 || rebuilt.reserved > 0 || rebuilt.terminal) {
           ctrl = TokenBudgetController.restore(this.config, runId, store)
         } else {
           ctrl = new TokenBudgetController(this.config, { runId, store })
         }
-      } else {
-        ctrl = new TokenBudgetController(this.config, { runId })
-      }
+      } else ctrl = new TokenBudgetController(this.config, { runId, store })
       this.controllers.set(runId, ctrl)
     }
     this.runForSession.set(ctx.sessionID, runId)
     ctrl.registerSession(ctx.sessionID, ctx.agent, ctx.parentID)
     return ctrl
+  }
+
+  private getStore(runId: string): TokenUsageStore {
+    const existing = this.stores.get(runId); if (existing) return existing
+    const store = this.persistDir ? new FileTokenUsageStore(this.persistDir) : new InMemoryTokenUsageStore()
+    this.stores.set(runId, store); return store
+  }
+
+  getAdaptiveControlForSession(ctx: SessionBudgetContext): AdaptiveExecutionControl {
+    const controller = this.getControllerForSession(ctx)
+    return new AdaptiveExecutionControl(controller, this.getStore(controller.runId))
   }
 
   private lookupRunId(ctx: SessionBudgetContext): string {

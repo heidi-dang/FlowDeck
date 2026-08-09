@@ -68,6 +68,11 @@ import { OrchestrationError, ErrorCodes } from "./types/errors";
 import { SqliteRoutingDecisionRepository } from "./routing/sqlite-store";
 import { RoutingProjection } from "./services/routing-projection";
 import { OrchestrationMetrics } from "./metrics";
+import { SqliteExecutionRepository, ExecutionScheduler, GitWorktreeManager, ControlledIntegrationService, WorktreeExecutionService } from "./execution";
+import { SqlitePerformanceRepository } from "./performance";
+import { PerformanceProjection } from "./services/performance-projection";
+import { RuntimeSnapshotService } from "./services/runtime-snapshot";
+import { AuthoritativeRoutingService } from "./routing/authoritative";
 
 export interface ProductionOrchestrationRuntime {
   db: Database;
@@ -92,6 +97,13 @@ export interface ProductionOrchestrationRuntime {
   router: ReturnType<typeof createRouterWithControllers>;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
   metrics: OrchestrationMetrics;
+  executionRepository: SqliteExecutionRepository;
+  executionScheduler: ExecutionScheduler;
+  worktreeExecutionService?: WorktreeExecutionService;
+  performanceRepository: SqlitePerformanceRepository;
+  authoritativeRouting: AuthoritativeRoutingService;
+  worktreeManager?: GitWorktreeManager;
+  integrationService?: ControlledIntegrationService;
 }
 
 // ── SQLite-backed production repository implementations ────────────────
@@ -594,7 +606,7 @@ function safeParseJSON(raw: string): Record<string, unknown> {
 
 // ── Production composition factory ─────────────────────────────────────
 
-export function createProductionOrchestrationRuntime(db: Database): ProductionOrchestrationRuntime {
+export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string } = {}): ProductionOrchestrationRuntime {
   const executionRegistry = new ExecutionRegistry();
   const unitOfWork = new SqliteUnitOfWork(db);
   const txManager = createTransactionManager(db);
@@ -621,6 +633,14 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
   const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
   const routingDecisionRepository = new SqliteRoutingDecisionRepository(db, txManager);
   const metrics = new OrchestrationMetrics();
+  const executionRepository = new SqliteExecutionRepository(db, txManager);
+  const executionScheduler = new ExecutionScheduler(executionRepository);
+  const performanceRepository = new SqlitePerformanceRepository(db, txManager);
+  const authoritativeRouting = new AuthoritativeRoutingService(executionRepository);
+  const snapshotService = new RuntimeSnapshotService(executionRepository, performanceRepository, metrics);
+  const worktreeManager = options.repositoryPath && options.worktreeRoot ? new GitWorktreeManager(options.repositoryPath, options.worktreeRoot) : undefined;
+  const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath) : undefined;
+  const worktreeExecutionService = worktreeManager ? new WorktreeExecutionService(executionRepository, executionScheduler, worktreeManager) : undefined;
 
   const outboxWorker = new OutboxWorker(deliverySink, eventBus, { workerId: "orchestration-main", batchSize: 20, leaseSeconds: 60 });
 
@@ -648,6 +668,8 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
     eventService,
     healthService,
     routingProjection: new RoutingProjection(routingDecisionRepository, runService),
+    performanceProjection: new PerformanceProjection(performanceRepository),
+    snapshotService,
   };
 
   const router = createRouterWithControllers(services);
@@ -666,5 +688,12 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
     router,
     routingDecisionRepository,
     metrics,
+    executionRepository,
+    executionScheduler,
+    worktreeExecutionService,
+    performanceRepository,
+    authoritativeRouting,
+    worktreeManager,
+    integrationService,
   };
 }

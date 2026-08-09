@@ -1,0 +1,25 @@
+import { createHash } from "node:crypto"
+import { createServer, createConnection, type Socket, type Server } from "node:net"
+import { realpathSync } from "node:fs"
+import { resolve, relative, sep } from "node:path"
+
+export type FdxDaemonRequest = { id: string; method: "health" | "get" | "put" | "invalidate"; workspace: string; key?: string; value?: unknown }
+export type FdxDaemonResponse = { id: string; ok: boolean; value?: unknown; error?: string }
+interface Options { socketPath: string; workspaceRoot: string; maxEntries?: number; maxRequestBytes?: number; maxValueBytes?: number }
+function inside(root: string, candidate: string): boolean { const r = relative(root, candidate); return r !== ".." && !r.startsWith(`..${sep}`) && !r.startsWith(sep) }
+function workspaceId(root: string, workspace: string): string { const canonical = realpathSync(workspace); if (!inside(root, canonical)) throw new Error("FDX_WORKSPACE_ESCAPE"); return createHash("sha256").update(canonical).digest("hex").slice(0, 32) }
+
+/** Optional persistent local IPC service. It is a cache, never an execution authority. */
+export class FdxDaemon {
+  private server?: Server; private readonly values = new Map<string, unknown>(); private readonly maxEntries: number; private readonly maxRequestBytes: number; private readonly maxValueBytes: number; private readonly root: string
+  constructor(private readonly options: Options) { this.maxEntries = options.maxEntries ?? 1000; this.maxRequestBytes = options.maxRequestBytes ?? 256_000; this.maxValueBytes = options.maxValueBytes ?? 1_000_000; this.root = realpathSync(options.workspaceRoot) }
+  start(): Promise<void> { return new Promise((resolveStart, reject) => { this.server = createServer(socket => this.handle(socket)); this.server.once("error", reject); this.server.listen(this.options.socketPath, () => { this.server?.removeListener("error", reject); resolveStart() }) }) }
+  stop(): Promise<void> { return new Promise(resolveStop => { this.server?.close(() => resolveStop()); if (!this.server) resolveStop() }) }
+  private handle(socket: Socket): void { let input = ""; socket.setEncoding("utf8"); socket.on("data", chunk => { input += chunk; if (Buffer.byteLength(input) > this.maxRequestBytes) { this.reply(socket, { id: "unknown", ok: false, error: "FDX_REQUEST_LIMIT" }); socket.destroy(); return } let index; while ((index = input.indexOf("\n")) >= 0) { const line = input.slice(0, index); input = input.slice(index + 1); try { const req = JSON.parse(line) as FdxDaemonRequest; this.reply(socket, this.execute(req)) } catch (error) { this.reply(socket, { id: "unknown", ok: false, error: error instanceof Error ? error.message : "FDX_INVALID_REQUEST" }) } } }) }
+  private execute(req: FdxDaemonRequest): FdxDaemonResponse { if (!req || typeof req.id !== "string" || typeof req.method !== "string" || typeof req.workspace !== "string") throw new Error("FDX_INVALID_REQUEST"); const id = workspaceId(this.root, req.workspace); const key = req.key ? `${id}:${req.key}` : id; if (req.method === "health") return { id: req.id, ok: true, value: { healthy: true, entries: this.values.size } }; if (req.method === "invalidate") { for (const k of this.values.keys()) if (k.startsWith(key)) this.values.delete(k); return { id: req.id, ok: true }; } if (req.method === "get") return { id: req.id, ok: true, value: this.values.get(key) }; if (req.method === "put") { const encoded = JSON.stringify(req.value); if (Buffer.byteLength(encoded) > this.maxValueBytes) throw new Error("FDX_VALUE_LIMIT"); if (!this.values.has(key) && this.values.size >= this.maxEntries) throw new Error("FDX_CACHE_LIMIT"); this.values.set(key, req.value); return { id: req.id, ok: true }; } throw new Error("FDX_METHOD_NOT_ALLOWED") }
+  private reply(socket: Socket, response: FdxDaemonResponse): void { socket.write(`${JSON.stringify(response)}\n`) }
+}
+
+export function fdxDaemonRequest<T>(socketPath: string, request: Omit<FdxDaemonRequest, "id">, fallback: () => T, timeoutMs = 1000): Promise<{ value: T; source: "daemon" | "fallback" }> {
+  return new Promise(resolveResult => { const id = createHash("sha256").update(`${Date.now()}:${Math.random()}`).digest("hex").slice(0, 16); const socket = createConnection(socketPath); let done = false; const finish = (result: { value: T; source: "daemon" | "fallback" }) => { if (done) return; done = true; socket.destroy(); resolveResult(result) }; const timer = setTimeout(() => finish({ value: fallback(), source: "fallback" }), timeoutMs); socket.setEncoding("utf8"); let input = ""; socket.on("connect", () => socket.write(`${JSON.stringify({ ...request, id })}\n`)); socket.on("data", chunk => { input += chunk; const line = input.split("\n")[0]; if (!line) return; try { const response = JSON.parse(line) as FdxDaemonResponse; clearTimeout(timer); if (response.ok) finish({ value: response.value as T, source: "daemon" }); else finish({ value: fallback(), source: "fallback" }) } catch { clearTimeout(timer); finish({ value: fallback(), source: "fallback" }) } }); socket.on("error", () => { clearTimeout(timer); finish({ value: fallback(), source: "fallback" }) }) })
+}
