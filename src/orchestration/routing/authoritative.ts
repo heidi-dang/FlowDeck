@@ -1,0 +1,34 @@
+import type { RoutingDecision } from "./contracts/task-intelligence"
+import { assertEnforceReady, type RoutingActivationEvidence } from "./activation"
+import { executionPlanFromRouting } from "../execution/planner"
+import type { SqliteExecutionRepository } from "../execution/sqlite-repository"
+import type { ExecutionWorkstream } from "../execution/contracts"
+
+export interface EnforceResult { mode: "enforce"; planId: string; decisionId: string; fallback: false }
+export interface EnforceFallback { mode: "shadow" | "off"; fallback: true; reason: string; decisionId?: string }
+export interface EnforcedExecutionDispatcher {
+  executePlan(planId: string, sourceSha: string, executor: (workstream: ExecutionWorkstream) => Promise<"succeeded" | "failed">): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }>
+}
+export class AuthoritativeRoutingService {
+  constructor(private readonly execution: SqliteExecutionRepository, private readonly dispatcher?: EnforcedExecutionDispatcher) {}
+  activate(decision: RoutingDecision, currentSourceSha: string, evidence: RoutingActivationEvidence): EnforceResult | EnforceFallback {
+    try {
+      assertEnforceReady(evidence)
+      if (decision.sourceSha !== currentSourceSha) throw new Error("ROUTING_DECISION_STALE")
+      const plan = executionPlanFromRouting(decision)
+      this.execution.savePlan(plan)
+      return { mode: "enforce", planId: plan.planId, decisionId: decision.routingDecisionId, fallback: false }
+    } catch (error) { return { mode: "shadow", fallback: true, reason: error instanceof Error ? error.message : String(error), decisionId: decision.routingDecisionId } }
+  }
+  async activateAndExecute(decision: RoutingDecision, currentSourceSha: string, evidence: RoutingActivationEvidence, executor: (workstream: ExecutionWorkstream) => Promise<"succeeded" | "failed">): Promise<(EnforceResult & { execution: { succeeded: string[]; failed: string[]; blocked: string[] } }) | EnforceFallback> {
+    const activation = this.activate(decision, currentSourceSha, evidence)
+    if (activation.fallback) return activation
+    if (!this.dispatcher) return { mode: "shadow", fallback: true, reason: "ROUTING_EXECUTION_DISPATCH_UNAVAILABLE", decisionId: decision.routingDecisionId }
+    try {
+      const execution = await this.dispatcher.executePlan(activation.planId, currentSourceSha, executor)
+      return { ...activation, execution }
+    } catch (error) {
+      return { mode: "shadow", fallback: true, reason: error instanceof Error ? error.message : String(error), decisionId: decision.routingDecisionId }
+    }
+  }
+}

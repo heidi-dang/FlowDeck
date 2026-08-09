@@ -55,7 +55,8 @@ function chooseStrategy(a: TaskAssessment): { strategy: ExecutionStrategy; ratio
 }
 function specialists(a: TaskAssessment, strategy: ExecutionStrategy, input: TaskIntelligenceInput): DelegationRecommendation[] {
   const requested = a.taskClass === "security" ? ["security-auditor", "reviewer"] : strategy === "parallel_implementation" ? ["backend-coder", "frontend-coder", "tester"] : a.taskClass === "investigation" ? ["researcher", "mapper"] : []
-  return requested.filter(id => getAllAgentIds().includes(id) && !getPrimaryAgentIds().includes(id)).map(agentId => ({ agentId, capability: getCanonicalAgent(agentId)?.allowedTaskTypes[0] ?? "specialist", ownership: input.paths?.length ? [input.paths[0]] : ["task"], rationale: "Canonical registry capability match" }))
+  const ownership = [...new Set(input.paths ?? [])].sort()
+  return requested.filter(id => getAllAgentIds().includes(id) && !getPrimaryAgentIds().includes(id)).map((agentId, index) => ({ agentId, capability: getCanonicalAgent(agentId)?.allowedTaskTypes[0] ?? "specialist", ownership: ownership.length ? ownership.filter((_, pathIndex) => pathIndex % requested.length === index) : ["task"], rationale: "Canonical registry capability match with deterministic ownership partition" })).filter(recommendation => recommendation.ownership.length > 0)
 }
 export function routeTask(input: TaskIntelligenceInput): RoutingDecision {
   const assessment = assessTask(input), selected = chooseStrategy(assessment), ws = workstreams(input), delegations = specialists(assessment, selected.strategy, input)

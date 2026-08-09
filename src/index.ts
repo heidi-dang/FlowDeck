@@ -444,16 +444,36 @@ const plugin: Plugin = async ({ directory, client }) => {
       const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
       const isSubagent = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
 
-      // Milestone 1 routing is advisory only. It observes the incoming task,
-      // persists a decision, and never changes the existing execution path.
+      // Routing remains opt-in. Shadow mode is observational; enforce mode
+      // first validates and persists an execution plan, then returns control
+      // to the existing OpenCode execution path unless a separately injected
+      // workstream executor is available. No model/provider or token policy is
+      // changed by this hook.
       const routingMode = flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off"
       const taskText = typeof output.message?.content === "string" ? output.message.content : ""
-      if (routingMode === "shadow" && taskText.trim()) {
+      if ((routingMode === "shadow" || routingMode === "enforce") && taskText.trim()) {
         let sourceSha = process.env.FLOWDECK_SOURCE_SHA
         if (!sourceSha) {
           try { sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: directory, encoding: "utf8" }).trim() } catch { sourceSha = "0000000000000000000000000000000000000000" }
         }
-        runShadowAssessment({ runId: sessionID || "sessionless", sourceSha, task: taskText }, "existing", routingMode, activeOrchestrationRuntime?.routingDecisionRepository, activeOrchestrationRuntime?.metrics)
+        const comparison = runShadowAssessment({ runId: sessionID || "sessionless", sourceSha, task: taskText }, "existing", routingMode, activeOrchestrationRuntime?.routingDecisionRepository, activeOrchestrationRuntime?.metrics)
+        if (routingMode === "enforce" && comparison.decision && activeOrchestrationRuntime) {
+          const activation = activeOrchestrationRuntime.authoritativeRouting.activate(comparison.decision, sourceSha, {
+            milestone1: true,
+            executionPlanner: Boolean(activeOrchestrationRuntime.worktreeExecutionService),
+            adaptiveBudget: tokenBudgetRuntime.isEnabled(),
+            performanceIntelligence: Boolean(activeOrchestrationRuntime.performanceRepository),
+            determinism: true,
+            safety: true,
+            modelAuthority: true,
+            budgetAuthority: tokenBudgetRuntime.isEnabled(),
+            completionAuthority: Boolean(activeOrchestrationRuntime.services.completionService),
+          })
+          if (activation.fallback) await appLog(`[routing] enforce fallback: ${activation.reason}`, "warn", sessionID)
+          else await appLog(`[routing] enforce plan ${activation.planId} persisted; existing model and execution authority remain unchanged`, "info", sessionID)
+        } else if (routingMode === "enforce" && comparison.error) {
+          await appLog(`[routing] enforce assessment failed closed: ${comparison.error}`, "warn", sessionID)
+        }
       }
 
       const variant = input.variant
