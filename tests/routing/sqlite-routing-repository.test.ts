@@ -24,9 +24,10 @@ describe("authoritative SQLite routing decisions", () => {
     expect(second.decisionVersion).toBe(2)
   })
 
-  it("rejects duplicate identity and preserves finalized records", () => {
+  it("allows exact idempotent replay but rejects mutation of a finalized identity", () => {
     const saved = repo.saveDecision(decision("run-a"))
-    expect(() => repo.saveDecision(saved)).toThrow("ROUTING_DECISION_IMMUTABLE")
+    expect(repo.saveDecision(saved)).toEqual(saved)
+    expect(() => repo.saveDecision({ ...saved, rationale: ["mutated"] })).toThrow("ROUTING_DECISION_IMMUTABLE")
     const reloaded = repo.get(saved.routingDecisionId)!
     expect(() => { (reloaded as any).strategy = "direct" }).not.toThrow()
     expect(repo.get(saved.routingDecisionId)!.strategy).toBe(saved.strategy)

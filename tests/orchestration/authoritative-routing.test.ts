@@ -39,11 +39,11 @@ describe("authoritative routing activation", () => {
     const service = new AuthoritativeRoutingService({ savePlan: (plan: unknown) => plan } as never, {
       executePlan: async (_planId, _sha, executor) => {
         calls += 1
-        const result = await executor({} as never)
+        const result = await executor.execute({} as never, {} as never)
         return { succeeded: result === "succeeded" ? ["direct"] : [], failed: result === "failed" ? ["direct"] : [], blocked: [] }
       },
     })
-    const result = await service.activateAndExecute(decision, sourceSha, evidence, async () => "succeeded")
+    const result = await service.activateAndExecute(decision, sourceSha, evidence, { execute: async () => "succeeded" })
     expect(result.fallback).toBe(false)
     expect(calls).toBe(1)
     expect((result as { execution: { succeeded: string[] } }).execution.succeeded).toEqual(["direct"])
