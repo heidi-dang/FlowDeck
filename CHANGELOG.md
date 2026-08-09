@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.1] - 2026-08-09
+
+### Added
+
+- **v2 integration line**: the completed Orchestration Master Plan (Phases 0–12, 100% complete — 12 CLOSED, 1 SUPERSEDED) is now integrated into the shipped product. The durable orchestration runtime — event store, delivery/outbox engine, completion engine, verification & evidence system, contract system, health checks, and real metrics — is part of the plugin, not an internal spec.
+- **Release channel derivation**: `scripts/release-channel.mjs` is the single authority: `alpha.*` → `alpha`, `beta.*` → `beta`, `rc.*` → `next`, stable → `latest`, and unsupported/malformed versions fail closed.
+- `tests/release-channel.test.ts`: lifecycle matrix coverage, exact CLI output, and rejection regressions.
+- `tests/publish-workflow-order.test.ts`: invariant 12 requires the publish step to derive the dist-tag from `scripts/release-channel.mjs` and pass it explicitly to `npm publish --tag`.
+- `scripts/release-alignment.mjs`: verifies release-channel derivability and that pre-release/stable versions map to the correct channel.
+
+### Changed
+
+- Development version bumped to `2.0.0-alpha.1` across `package.json`, `package-lock.json`, `src/index.ts` (runtime agent-policy `pkgVersion`), and release-registry test fixtures.
+- README updated for the v2 architecture, a separate "FlowDeck v1 vs v2" comparison, stable/alpha install channels, and release-policy notes.
+
+### Compatibility
+
+- No configuration migration is required from v1.x. This is a development release on the `alpha` npm channel; stable 1.x releases remain on `latest`.
+
 ## [1.0.3] - 2026-07-31
 
 ### Fixed

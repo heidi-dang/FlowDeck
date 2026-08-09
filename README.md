@@ -8,7 +8,7 @@
 
 | Status | |
 |---|---|
-| **Version** | v1.0.3 |
+| **Version** | v2.0.0-alpha.1 (development) |
 | **License** | [MIT](LICENSE) |
 | **OpenCode** | >= 1.4.0 |
 | **Node.js** | >= 20.0.0 |
@@ -24,6 +24,7 @@
 - [Who is it for?](#who-is-it-for)
 - [Why FlowDeck?](#why-flowdeck)
 - [Installation](#installation)
+- [v2 Architecture](#v2-architecture)
 - [Upgrading from Alpha Releases](#upgrading-from-alpha-releases)
 - [Core Capabilities](#core-capabilities)
 - [Production Orchestration Architecture](#production-orchestration-architecture)
@@ -52,6 +53,8 @@
 FlowDeck does **not** replace OpenCode's model access, session management, or core tool execution. It operates as a plugin that adds governed structure on top of a working OpenCode installation.
 
 **Package**: [`@heidi-dang/flowdeck`](https://www.npmjs.com/package/@heidi-dang/flowdeck)
+
+**v2.0.0-alpha.1** integrates the completed **Orchestration Master Plan** (Phases 0–12, 100% complete) into the plugin runtime: the durable SQLite-backed orchestration engine, delivery/outbox pipeline, completion engine, verification & evidence system, and production hardening suite are now part of the shipped product, not just an internal spec.
 
 Created and maintained by [Heidi Dang](https://github.com/heidi-dang).
 
@@ -99,6 +102,121 @@ npx flowdeck verify
 npx flowdeck doctor
 ```
 
+Stable installs use the v1 line and `latest`:
+
+```bash
+npx @heidi-dang/flowdeck@latest install
+```
+
+The current v2 development package is `2.0.0-alpha.1` and uses the `alpha` channel:
+
+```bash
+npx @heidi-dang/flowdeck@alpha install
+```
+
+---
+
+## v2 Architecture
+
+v2 unifies the development branches into a single integration line on top of the stable v1 runtime. The Master Plan's orchestration runtime (Phases 0–12, **100% complete** — 12 CLOSED, 1 SUPERSEDED) is fully integrated:
+
+```
+OpenCode (model access, sessions, core tools, UI)
+  |
+  +-- FlowDeck Plugin (src/index.ts)
+        |
+        +-- Orchestration (src/orchestration/)
+        |     +-- Durable runtime with event sourcing
+        |     +-- SQLite persistence + outbox delivery
+        |     +-- Optimistic concurrency (UoW + versioned writers)
+        |     +-- Replay-safe completion and bounded cancellation
+        |
+        +-- Configuration (src/config/)
+        |     +-- JSON/JSONC schema validation
+        |     +-- Agent model overrides
+        |     +-- Governance settings (supervisor, guards, budgets)
+        |
+        +-- Agent Registry (src/agents/)
+        |     +-- Heidi (default primary agent)
+        |     +-- 12 specialist agents (depth-1 delegation, task:deny)
+        |     +-- Canonical registry + capability contracts
+        |
+        +-- Commands (src/commands/)
+        |     +-- 8 slash commands
+        |     +-- Pipeline: task → review → execute → verify → done
+        |
+        +-- Hooks (src/hooks/)
+        |     +-- Tool guard, guard rails, orchestrator guard
+        |     +-- Session lifecycle, command reference guard
+        |
+        +-- Services (src/services/)
+        |     +-- Command boundary + typed process outcomes
+        |     +-- Governance wiring, loop detector, recovery layer
+        |     +-- PR Monitor (event-driven CI auto-repair)
+        |
+        +-- Tools (src/tools/)
+        |     +-- 28 registered tools
+        |     +-- Executable allowlist + argument validation
+        |     +-- Git read-only policy enforcement
+        |
+        +-- Skills (src/skills/)
+        |     +-- 61 validated workflow patterns (SKILL.md)
+        |
+        +-- Better Harness (src/better-harness/)
+        |     +-- Collectors, analyzers, scoring, evidence, SSE transport
+        |
+        +-- FDX Native (crates/fdx/)
+              +-- 14 CLI subcommands
+              +-- tree-sitter AST parsing (5 languages)
+              +-- Dual-AST symbol diff engine
+```
+
+### Master Plan integration
+
+| Area | What v2 ships | Evidence |
+|---|---|---|
+| Persistence Foundation | SQLite lifecycle, transactions, checksummed migrations, startup schema validation | `src/orchestration/persistence/` |
+| Contract System | Contract families, versions, requirements, acceptance criteria, gates | `src/orchestration/contracts/` |
+| Runtime State Model | Task runs, assignments, sessions, context items with optimistic versioning | `src/domain/orchestration/runtime/` |
+| Event Store | Durable events, global sequencing, correlation tracking, replay service | `src/orchestration/services/event-service.ts` |
+| Delivery Engine | Lease-based outbox worker, idempotent delivery, dead-letter notifications | `src/orchestration/services/outbox-worker.ts` |
+| Verification & Evidence | SHA/staleness policies, rules, verification results persistence | `src/orchestration/verification/` |
+| Completion Engine | Atomic completion evaluation + immutable completion decisions | `src/orchestration/completion/` |
+| Orchestrator | Execution registry, task routing, delegation helpers | `src/orchestration/composition.ts` |
+| Runtime Services | REST API, health checks, real metrics (JSON + Prometheus) | `src/orchestration/api/` |
+| Production Hardening | Chaos, concurrency, fault, negative, performance, compliance suites | `tests/orchestration/` |
+
+Phase 10 (UI Integration) is **SUPERSEDED** under the CLI/plugin product boundary — FlowDeck ships as an OpenCode plugin + CLI, and OpenCode Core owns UI rendering. Its architectural intent is satisfied by the machine-consumable REST API (`GET /api/v1/orchestration/...`) and typed data projections.
+
+The authoritative completion report lives at [`docs/master-plan/completion-matrix.md`](docs/master-plan/completion-matrix.md) and is regenerated by `npm run verify:completion-matrix`.
+
+## FlowDeck v1 vs v2
+
+This is a product comparison of the stable v1 line and the current v2 foundation; future roadmap work is excluded.
+
+| Capability | FlowDeck v1 | FlowDeck v2 |
+|---|---|---|
+| Product role | Governed OpenCode plugin | Authoritative autonomous execution runtime |
+| Orchestration | Policy-driven delegation | Durable run/assignment/session orchestration |
+| Runtime state | Durable foundations | Authoritative persisted orchestration state |
+| Contracts | Governance/planning | Versioned requirements, criteria and gates |
+| Sessions | Lifecycle/checkpoints | Durable sessions + restart reconstruction |
+| Context | Context controls | Persisted context + bounded child context |
+| Token governance | Tool/execution limits | Hierarchical run/child budgets |
+| Token accounting | Basic execution accounting | Durable provider-reconciled accounting |
+| Events | Event/outbox foundation | Ordered event store + consumer offsets + replay |
+| Delivery | Transactional outbox | Lease/retry/recovery/dead-letter engine |
+| Verification | Post-write/CI | SHA-bound verification + stale detection |
+| Evidence | Audit records | Durable immutable evidence lifecycle |
+| Completion | Pipeline-driven | Authoritative completion engine |
+| Recovery | Checkpoint/resume | Full persisted runtime reconstruction |
+| Health | Doctor diagnostics | Runtime health/readiness/liveness |
+| Metrics | Operational diagnostics | JSON/Prometheus/OpenTelemetry |
+| Integration | Plugin + CLI | Plugin + CLI + REST/projections |
+| UI ownership | OpenCode | OpenCode remains UI owner |
+| Code intelligence | FDX | FDX retained as deterministic intelligence layer |
+| Production proof | CI/security gates | Master Plan + adversarial runtime gates |
+
 ---
 
 ## Upgrading from Alpha Releases
@@ -126,6 +244,7 @@ Run `npx flowdeck doctor` after upgrading to verify the environment.
 | **PR Monitor** | Event-driven CI failure detection, root-cause classification, and bounded automated repair. |
 | **FDX Native CLI** | Rust-native code intelligence with token-optimized output and TypeScript fallbacks for environments without the native binary. |
 | **Skills Library** | **61 validated skills** stored as structured `SKILL.md` files with YAML frontmatter. |
+| **Master Plan Runtime** | Durable orchestration runtime from the completed Master Plan (Phases 0–12, 100%) — event store, delivery engine, completion engine, verification & evidence, REST API, health checks, metrics. |
 | **Session Lifecycle** | Start/end hooks, session checkpoints, idle-timeout notifications, and recovery via `/fd-resume`. |
 
 FlowDeck is **not** a standalone AI platform. It requires OpenCode to provide model access, session infrastructure, and core tool execution.
@@ -133,6 +252,8 @@ FlowDeck is **not** a standalone AI platform. It requires OpenCode to provide mo
 ---
 
 ## Production Orchestration Architecture
+
+The v2 orchestration runtime is assembled by `createProductionOrchestrationRuntime` ([`src/orchestration/composition.ts`](src/orchestration/composition.ts)) — a fully wired services graph covering runs, contracts, assignments, completion decisions, verification, events, replay, delivery, and health. All persistence goes through SQLite with an event/outbox pattern (see below).
 
 ```
 OpenCode (model access, sessions, core tools, UI)
@@ -409,8 +530,8 @@ The `@opencode-ai/plugin` and `@opencode-ai/sdk` packages are required peer/decl
 Every release runs the full production gate matrix:
 
 - Build, typecheck, lint (0 warnings, 0 errors)
-- Full test suite across Linux, macOS, and Windows (3,189 tests, 0 failures across 153 files)
-- Coverage check (81.31% weighted aggregate line coverage, threshold 80%)
+- Full test suite across Linux, macOS, and Windows (3,507 tests, 0 failures across 185 files)
+- Coverage check (weighted aggregate line coverage above the 80% threshold)
 - Documentation and skills validation
 - Orchestration framework, integration, and schema validation
 - FDX Rust gates (fmt, clippy, tests) and native parity
@@ -478,9 +599,9 @@ See [Development](docs/wiki/Development.md) for detailed contribution guidelines
 
 ## Release and Support Policy
 
-- FlowDeck follows [Semantic Versioning](https://semver.org/). Breaking changes are released in new major versions with migration guidance.
+- FlowDeck follows [Semantic Versioning](https://semver.org/). Breaking changes are released in new major versions with migration guidance. v2.0.0-alpha.x is the development line for the 2.0 major; stable 1.x releases remain on `latest`.
 - Bug fixes and security patches are backported to the current stable minor line as appropriate.
-- The `latest` npm dist-tag always points to the newest stable release; `next` tracks the upcoming release.
+- The `latest` npm dist-tag always points to the newest stable release; `next` tracks the upcoming release; pre-release versions publish under `alpha`.
 - Version history is maintained in [CHANGELOG.md](CHANGELOG.md) and in the [release notes](docs/releases/).
 
 ---

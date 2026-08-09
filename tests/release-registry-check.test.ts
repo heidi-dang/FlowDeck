@@ -66,7 +66,7 @@ function setupEnv(): MockNpmSetup {
   mkdirSync(join(root, "bin"), { recursive: true })
   writeFileSync(
     join(root, "package.json"),
-    JSON.stringify({ name: "@heidi-dang/flowdeck", version: "1.0.3", type: "module" }, null, 2),
+    JSON.stringify({ name: "@heidi-dang/flowdeck", version: "2.0.0-alpha.1", type: "module" }, null, 2),
   )
 
   const npmPath = join(root, "bin", "npm")
@@ -78,14 +78,14 @@ function setupEnv(): MockNpmSetup {
       "# Simulates the outcome selected via MOCK_NPM_MODE.",
       "case \"$MOCK_NPM_MODE\" in",
       "  published)",
-      '    echo "1.0.3"',
+      '    echo "2.0.0-alpha.1"',
       "    exit 0",
       "    ;;",
       "  e404)",
       '    echo "npm error code E404" >&2',
-      '    echo "npm error 404 No match found for version 1.0.3" >&2',
+      '    echo "npm error 404 No match found for version 2.0.0-alpha.1" >&2',
       '    echo "npm error 404" >&2',
-      '    echo "npm error 404  The requested resource \'@heidi-dang/flowdeck@1.0.3\' could not be found" >&2',
+      '    echo "npm error 404  The requested resource \'@heidi-dang/flowdeck@2.0.0-alpha.1\' could not be found" >&2',
       "    exit 1",
       "    ;;",
       "  auth)",

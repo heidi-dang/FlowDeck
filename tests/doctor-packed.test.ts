@@ -54,7 +54,7 @@ function writePkg(dir: string, extra: Record<string, unknown> = {}) {
     join(dir, "package.json"),
     JSON.stringify({
       name: "@heidi-dang/flowdeck",
-      version: "1.0.1",
+      version: "2.0.0-alpha.1",
       main: "./dist/index.js",
       type: "module",
       ...extra,
