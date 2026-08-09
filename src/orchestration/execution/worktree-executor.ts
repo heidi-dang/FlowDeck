@@ -11,7 +11,10 @@ import type { AssignmentContextResult } from "../../services/context-scoping"
 export interface IsolatedExecutionResult extends PerformanceOutcomeFacts {}
 export interface IsolatedWorkstreamExecutor { execute(workstream: ExecutionWorkstream, allocation: WorktreeAllocation, budget?: WorkstreamBudgetHandle, context?: AssignmentContextResult): Promise<"succeeded" | "failed" | IsolatedExecutionResult> }
 export interface IntegrationCoordinator { integrate(workstream: ExecutionWorkstream, sourceSha: string, branch: string, workspace: string): void; currentSourceSha?: () => string }
-export interface WorkstreamBudgetCoordinator { open(workstream: ExecutionWorkstream): WorkstreamBudgetHandle }
+export interface WorkstreamBudgetCoordinator {
+  open(workstream: ExecutionWorkstream): WorkstreamBudgetHandle
+  redistribute?(workstream: ExecutionWorkstream, amount: number, reason: string, sourceReservationId?: string): Promise<{ allowed: boolean; reservationId: string; amount: number }>
+}
 export class WorktreeExecutionService {
   constructor(private readonly repository: SqliteExecutionRepository, private readonly scheduler: ExecutionScheduler, private readonly worktrees: GitWorktreeManager, private readonly integration?: IntegrationCoordinator, private budgetCoordinator?: WorkstreamBudgetCoordinator, private readonly performance?: SqlitePerformanceRepository) {}
   setBudgetCoordinator(coordinator: WorkstreamBudgetCoordinator): void { this.budgetCoordinator = coordinator }
@@ -103,6 +106,16 @@ export class WorktreeExecutionService {
         const lease = this.repository.listLeases(this.repository.getPlan(planId)!.runId).find(l => l.workstreamId === workstreamId && ["allocated", "active", "renewing"].includes(l.state))
         if (lease) { try { this.repository.completeLease(lease.leaseId) } catch {} ; this.repository.releaseLease(lease.leaseId) }
         try { this.worktrees.remove(allocation) } catch { /* cleanup is recoverable through lease/worktree reconciliation */ }
+      }
+      if (this.budgetCoordinator?.redistribute) {
+        const reclaimed = result.succeeded.reduce((sum, workstreamId) => {
+          const outcome = facts.get(workstreamId)
+          return sum + Math.max(0, Math.floor((outcome?.tokenReserved ?? 0) - (outcome?.tokenUsed ?? 0)))
+        }, 0)
+        const nextReady = this.repository.listReady(planId).sort((left, right) => (right.dependsOn.length - left.dependsOn.length) || left.workstreamId.localeCompare(right.workstreamId))[0]
+        if (reclaimed > 0 && nextReady) {
+          try { await this.budgetCoordinator.redistribute(nextReady, reclaimed, "completed_workstream_reclaim") } catch { /* adaptive control is advisory to the scheduler */ }
+        }
       }
       aggregate.succeeded.push(...result.succeeded); aggregate.failed.push(...result.failed); aggregate.blocked.push(...result.blocked)
       if (!result.started.length) break

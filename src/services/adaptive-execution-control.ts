@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import type { RawUsage, TokenBudgetController } from "./token-budget-controller"
 import type { ReservationResult } from "./token-budget-controller"
-import type { TokenUsageStore } from "./token-usage-store"
+import type { TokenUsageStore, UsageStoreEntry } from "./token-usage-store"
 import type { OrchestrationMetrics } from "../orchestration/metrics"
 import { BUDGET_PROFILES, type BudgetProfileName } from "../config/token-budget-config"
 
@@ -23,9 +23,20 @@ export class AdaptiveExecutionControl {
   openWorkstream(workstreamId: string, sessionId: string, agentId: string, profile: BudgetProfileName, parentSessionId?: string): WorkstreamBudgetHandle {
     this.controller.registerSession(sessionId, agentId, parentSessionId)
     const profileCeiling = BUDGET_PROFILES[profile].childTotal
+    const consumedRedistributions = new Set<string>()
     return {
       profile,
-      reserve: (input) => this.controller.reserveRequest({ runId: this.controller.runId, sessionId, agentId, parentSessionId, requestId: input.requestId, assignmentId: input.assignmentId, estimatedInputTokens: input.estimatedInputTokens, maxOutputTokens: Math.min(input.maxOutputTokens, profileCeiling), model: input.model, provider: input.provider }),
+      reserve: async (input) => {
+        // A redistribution is already an authoritative controller
+        // reservation. Consume it for the target workstream instead of
+        // creating a second reservation and double-counting the ceiling.
+        const pending = this.store.read(this.controller.runId).filter((entry): entry is Extract<UsageStoreEntry, { kind: "adaptive_redistribution" }> => entry.kind === "adaptive_redistribution").find(entry => entry.targetWorkstreamId === workstreamId && !consumedRedistributions.has(entry.reservationId))
+        if (pending) {
+          consumedRedistributions.add(pending.reservationId)
+          return { allowed: true, reservationId: pending.reservationId, remainingRun: this.controller.remainingRun(), claimed: pending.amount }
+        }
+        return this.controller.reserveRequest({ runId: this.controller.runId, sessionId, agentId, parentSessionId, requestId: input.requestId, assignmentId: input.assignmentId, estimatedInputTokens: input.estimatedInputTokens, maxOutputTokens: Math.min(input.maxOutputTokens, profileCeiling), model: input.model, provider: input.provider })
+      },
       reconcile: (input) => this.reconcileCompletion({ runId: this.controller.runId, reservationId: input.reservationId, workstreamId, sessionId, agentId, parentSessionId, assignmentId: input.assignmentId, requestId: input.requestId, messageId: input.messageId, usage: input.usage, model: input.model, provider: input.provider, reason: input.reason }),
       terminate: (reason) => this.terminate(this.controller.runId, sessionId, workstreamId, reason),
       observe: async (observation) => { const result = detectStall(observation); if (result.stalled) { this.metrics?.executionStalls.inc(); await this.terminate(this.controller.runId, sessionId, workstreamId, "no_progress") } return result },
@@ -51,7 +62,7 @@ export class AdaptiveExecutionControl {
     if (amount > Math.max(0, reclaimed - redistributed)) return { allowed: false, reservationId: "", amount: 0 }
     const result = await this.controller.reserveRequest({ runId, sessionId, agentId, requestId: `adaptive-${createHash("sha256").update(eventId).digest("hex").slice(0, 20)}`, estimatedInputTokens: 0, maxOutputTokens: amount })
     if (!result.allowed) return { allowed: false, reservationId: result.reservationId, amount: 0 }
-    this.store.append(runId, { kind: "adaptive_redistribution", eventId, sourceReservationId, targetWorkstreamId, amount: result.claimed, reason, at: Date.now() })
+    this.store.append(runId, { kind: "adaptive_redistribution", eventId, reservationId: result.reservationId, sourceReservationId, targetWorkstreamId, amount: result.claimed, reason, at: Date.now() })
     this.metrics?.budgetRedistributed.inc(result.claimed)
     return { allowed: true, reservationId: result.reservationId, amount: result.claimed }
   }

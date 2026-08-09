@@ -169,6 +169,12 @@ export class TokenBudgetRuntime {
     return control.openWorkstream(workstream.workstreamId, sessionID, workstream.resolvedAgent, workstream.budgetProfile)
   }
 
+  async redistributeWorkstream(workstream: ExecutionWorkstream, amount: number, reason: string, sourceReservationId?: string): Promise<{ allowed: boolean; reservationId: string; amount: number }> {
+    const sessionID = `workstream:${workstream.runId}:${workstream.workstreamId}`
+    const control = this.getAdaptiveControlForSession({ sessionID, agent: workstream.resolvedAgent, depth: 1, runId: workstream.runId })
+    return control.redistribute(workstream.runId, workstream.workstreamId, sessionID, workstream.resolvedAgent, amount, reason, sourceReservationId)
+  }
+
   private lookupRunId(ctx: SessionBudgetContext): string {
     if (ctx.runId) return ctx.runId
     const direct = this.runForSession.get(ctx.sessionID)

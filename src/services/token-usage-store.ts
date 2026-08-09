@@ -63,7 +63,7 @@ export type UsageStoreEntry =
   | ({ kind: "terminal" } & { reason: string; at: number })
   | ({ kind: "warning" } & { runId: string; at: number })
   | ({ kind: "adaptive_reclaim" } & { eventId: string; reservationId: string; workstreamId: string; reserved: number; actual: number; reclaimed: number; reason: string; at: number })
-  | ({ kind: "adaptive_redistribution" } & { eventId: string; sourceReservationId?: string; targetWorkstreamId: string; amount: number; reason: string; at: number })
+  | ({ kind: "adaptive_redistribution" } & { eventId: string; reservationId: string; sourceReservationId?: string; targetWorkstreamId: string; amount: number; reason: string; at: number })
   | ({ kind: "workstream_termination" } & { eventId: string; workstreamId: string; reason: string; at: number })
 
 export interface RebuiltUsage {
