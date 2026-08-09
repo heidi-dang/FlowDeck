@@ -92,6 +92,9 @@ import { getArtifactStore } from "./services/artifact-store"
 import { buildAssignmentContext, externalizeToolOutput, compactConversationContext } from "./services/context-scoping"
 import { initializeDatabase } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
+import { createRoutingDecisionStore } from "./orchestration/routing/store"
+import { runShadowAssessment } from "./orchestration/routing/shadow"
+import { execFileSync } from "node:child_process"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -270,6 +273,7 @@ const plugin: Plugin = async ({ directory, client }) => {
   const artifactStore = getArtifactStore(join(directory, ".flowdeck", "artifacts"))
 
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
+  const routingStore = createRoutingDecisionStore(directory)
   const orchestratorGuard = new OrchestratorGuard({ routes: getAgentRoutes() })
   const loopDetector = new LoopDetector(flowdeckConfig.governance?.loopDetection, appLog)
   let effectiveDefaultAgent: string = "heidi"
@@ -440,6 +444,18 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
       const isSubagent = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
+
+      // Milestone 1 routing is advisory only. It observes the incoming task,
+      // persists a decision, and never changes the existing execution path.
+      const routingMode = flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off"
+      const taskText = typeof output.message?.content === "string" ? output.message.content : ""
+      if (routingMode === "shadow" && taskText.trim()) {
+        let sourceSha = process.env.FLOWDECK_SOURCE_SHA
+        if (!sourceSha) {
+          try { sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: directory, encoding: "utf8" }).trim() } catch { sourceSha = "0000000000000000000000000000000000000000" }
+        }
+        runShadowAssessment({ runId: sessionID || "sessionless", sourceSha, task: taskText }, "existing", routingMode, routingStore)
+      }
 
       const variant = input.variant
       const pkgVersion = "2.0.0-alpha.1"

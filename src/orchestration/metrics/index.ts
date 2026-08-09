@@ -78,6 +78,9 @@ export class OrchestrationMetrics {
 
   // Dead-letter count
   readonly deadLetterCount: Counter;
+  readonly routingDecisions: Counter;
+  readonly routingShadowDivergence: Counter;
+  readonly routingAssessmentLatency: Histogram;
 
   private readonly counters = new Map<string, number>();
   private readonly gauges = new Map<string, number>();
@@ -95,10 +98,13 @@ export class OrchestrationMetrics {
     this.runsCompleted = createCounter("runs_completed", this.counters);
     this.runsFailed = createCounter("runs_failed", this.counters);
     this.deadLetterCount = createCounter("dead_letter_count", this.counters);
+    this.routingDecisions = createCounter("routing_decisions_total", this.counters);
+    this.routingShadowDivergence = createCounter("routing_shadow_divergence_total", this.counters);
 
     this.queryLatency = createHistogram("query_latency_ms", this.histograms);
     this.verificationLatency = createHistogram("verification_latency_ms", this.histograms);
     this.completionLatency = createHistogram("completion_latency_ms", this.histograms);
+    this.routingAssessmentLatency = createHistogram("routing_assessment_duration", this.histograms);
 
     this.activeRuns = createGauge("active_runs", this.gauges);
     this.subscriberLag = createGauge("subscriber_lag", this.gauges);
