@@ -16,6 +16,9 @@
   "validation": {
     "schemaFallbackRegression": "PASS",
     "releasePreflight": "PASS",
+    "fullPass": 3617,
+    "fullFail": 0,
+    "expectations": 9566,
     "coveragePercent": 82.9,
     "benchmarkCandidate": "14/14",
     "restartRecovery": "14/14"
@@ -25,5 +28,10 @@
     "postMigration": { "tables": 61, "triggers": 36, "indexes": 82, "foreignKeyViolations": 0, "integrity": "ok" }
   },
   "security": { "p0": 0, "p1": 0, "p2Correctness": 0, "tarballSecrets": 0 },
+  "artifact": {
+    "filename": "heidi-dang-flowdeck-2.0.0-alpha.3.tgz",
+    "sizeBytes": 1200960,
+    "sha256": "397517aacf08493dbf6c1536e5009b05cbf42e21a4d77917353e3601fad46196"
+  },
   "releaseStatus": "READY_NOT_RELEASED"
 }
