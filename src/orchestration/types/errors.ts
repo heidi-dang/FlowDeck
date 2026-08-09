@@ -41,6 +41,8 @@ export const ErrorCodes = {
   INTERNAL_ERROR: { code: "INTERNAL_ERROR", category: ErrorCategory.INTERNAL, httpStatus: 500, retryable: false },
   UNSUPPORTED_CAPABILITY: { code: "UNSUPPORTED_CAPABILITY", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },
   REPLAY_NOT_CONFIGURED: { code: "REPLAY_NOT_CONFIGURED", category: ErrorCategory.INTERNAL, httpStatus: 501, retryable: false },
+  REPLAY_IN_PROGRESS: { code: "REPLAY_IN_PROGRESS", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
+  REPLAY_STREAM_INVALID: { code: "REPLAY_STREAM_INVALID", category: ErrorCategory.VALIDATION, httpStatus: 400, retryable: false },
   COMPLETION_DECISION_IMMUTABLE: { code: "COMPLETION_DECISION_IMMUTABLE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   VERIFICATION_RESULT_IMMUTABLE: { code: "VERIFICATION_RESULT_IMMUTABLE", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },
   RUN_STATUS_TRANSITION_INVALID: { code: "RUN_STATUS_TRANSITION_INVALID", category: ErrorCategory.CONFLICT, httpStatus: 409, retryable: false },

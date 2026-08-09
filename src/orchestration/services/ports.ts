@@ -114,10 +114,72 @@ export interface IOutboxRepository {
   markFailed(id: string, attemptCount: number, lastError: string): Promise<void>;
 }
 
+// ── Durable delivery sink ─────────────────────────────────────────────────
+// Single, idempotent, lease-based delivery path for outbox entries. The
+// OutboxWorker uses this exclusively; the sink owns claiming, lease expiry,
+// idempotent delivery and retry/failure accounting.
+
+export type DeliveryStatus = "pending" | "delivering" | "delivered" | "failed";
+
+export interface DeliveryLease {
+  workerId: string;
+  leaseUntil: number;
+}
+
+export interface DeliveryRecord {
+  id: string;
+  eventId: string;
+  eventType: string;
+  destination?: string;
+  payload: Record<string, unknown>;
+  correlationId: string;
+  causationId?: string;
+  aggregateId?: string;
+  status: DeliveryStatus;
+  attemptCount: number;
+  maxRetries: number;
+  lastError?: string;
+  idempotencyKey?: string;
+  lease?: DeliveryLease | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IDeliverySink {
+  /** Atomically claim up to batchSize due entries (pending or expired lease) for delivery. */
+  claimDue(workerId: string, batchSize: number, leaseSeconds: number): Promise<DeliveryRecord[]>;
+  /** Idempotently mark a claimed entry delivered. False when already delivered by another worker. */
+  markDelivered(id: string, idempotencyKey?: string): Promise<boolean>;
+  /** Record a failed attempt; requeues to pending until maxRetries, then transitions to failed. */
+  markFailed(id: string, attemptCount: number, lastError: string, maxRetries: number): Promise<void>;
+  /** Requeue entries whose delivery lease expired (crash recovery). Returns requeued count. */
+  requeueExpiredLeases(nowSeconds?: number): Promise<number>;
+  /** Count entries in a given status (monitoring). */
+  countByStatus(status: DeliveryStatus): Promise<number>;
+  /** Record event delivery status into event_deliveries table. */
+  recordDelivery(delivery: {
+    eventId: string;
+    destination: string;
+    status: string;
+    attempt: number;
+    durationMs?: number;
+    error?: string;
+  }): Promise<void>;
+  /** Record dead lettered event into dead_letter_events table. */
+  recordDeadLetter(deadLetter: {
+    eventId: string;
+    destination: string;
+    reason: string;
+    lastError?: string;
+    payload?: Record<string, unknown>;
+  }): Promise<void>;
+}
+
 // ── Replay repository ─────────────────────────────────────────────────────
 
 export interface IReplayRepository {
   create(replay: Replay): Promise<Replay>;
+  update(id: string, patch: Partial<Replay>): Promise<Replay | null>;
   findById(id: string): Promise<Replay | null>;
   findMany(pagination: PagePaginationRequest): Promise<PaginatedResult<Replay>>;
   count(): Promise<number>;

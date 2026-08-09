@@ -16,6 +16,8 @@ import { OutboxWorker } from "./services/outbox-worker";
 import { SqliteTaskRunAdapter } from "./persistence/adapters/sqlite-runtime-adapter";
 import { SqliteContractAdapter } from "./persistence/adapters/sqlite-contract-adapter";
 import { SqliteOutboxRepository } from "./persistence/adapters/sqlite-outbox-repository";
+import { SqliteReplayRepository } from "./persistence/adapters/sqlite-replay-repository";
+import { SqliteDeliverySink } from "./persistence/adapters/sqlite-delivery-sink";
 import { SqliteTransactionalRunWriter } from "./persistence/adapters/sqlite-transactional-run-writer";
 import {
   SqliteCompletionRepoAdapter,
@@ -29,14 +31,23 @@ import { VerificationService } from "./services/verification-service";
 import { CompletionService } from "./services/completion-service";
 import { ReplayService } from "./services/replay-service";
 import { EventService } from "./services/event-service";
-import { HealthService } from "./services/health-service";
+import {
+  HealthService,
+  SqliteDbChecker,
+  OutboxWorkerChecker,
+  ReplayServiceChecker,
+} from "./services/health-service";
+import {
+  SqliteSessionRepository,
+  SqliteContextItemRepository,
+  SqliteConsumerOffsetRepository,
+} from "./persistence/repositories";
 import type {
   IRunRepository,
   IContractRepository,
   IAssignmentRepository,
   IVerificationRepository,
   ICompletionRepository,
-  IReplayRepository,
   IEventRepository,
   PaginatedResult,
 } from "./services/ports";
@@ -50,7 +61,6 @@ import type { Contract } from "./types/contracts";
 import type { Assignment } from "./types/assignments";
 import type { VerificationResult } from "./types/verification";
 import type { Completion } from "./types/completion";
-import type { Replay } from "./types/replay";
 import type { OrchestrationEvent, EventFilter } from "./types/events";
 import type { PagePaginationRequest } from "./types/pagination";
 import { createRouterWithControllers } from "./api/routes";
@@ -61,7 +71,11 @@ export interface ProductionOrchestrationRuntime {
   executionRegistry: ExecutionRegistry;
   unitOfWork: SqliteUnitOfWork;
   eventBus: InMemoryEventBus;
+  deliverySink: SqliteDeliverySink;
   outboxWorker: OutboxWorker;
+  sessionRepo: SqliteSessionRepository;
+  contextItemRepo: SqliteContextItemRepository;
+  consumerOffsetRepo: SqliteConsumerOffsetRepository;
   services: {
     runService: RunService;
     contractService: ContractService;
@@ -514,29 +528,6 @@ class SqliteVerificationRepo implements IVerificationRepository {
   }
 }
 
-export class UnsupportedReplayRepository implements IReplayRepository {
-  async create(_replay: Replay): Promise<Replay> {
-    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
-    });
-  }
-  async findById(_id: string): Promise<Replay | null> {
-    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
-    });
-  }
-  async findMany(_pagination: PagePaginationRequest): Promise<PaginatedResult<Replay>> {
-    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
-    });
-  }
-  async count(): Promise<number> {
-    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
-    });
-  }
-}
-
 class SqliteEventRepo implements IEventRepository {
   constructor(
     private readonly adapter: SqliteEventAppenderAdapter,
@@ -609,6 +600,7 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
 
   const outboxRepo = new SqliteOutboxRepository(db, txManager);
   const eventAppender = new SqliteEventAppenderAdapter(db, txManager);
+  const deliverySink = new SqliteDeliverySink(db, txManager);
 
   const runRepo = new SqliteRunRepository(taskRunAdapter, db, txManager);
   const contractRepo = new SqliteContractRepo(contractAdapter, db, txManager);
@@ -617,10 +609,13 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
   const completionRepo = new SqliteCompletionRepo(completionAdapter, db, txManager);
   const verificationAdapter = new SqliteVerificationRepoAdapter(db, txManager);
   const verificationRepo = new SqliteVerificationRepo(verificationAdapter, db, txManager);
-  const replayRepo = new UnsupportedReplayRepository();
+  const replayRepo = new SqliteReplayRepository(db, txManager);
   const eventRepo = new SqliteEventRepo(eventAppender, db, txManager);
+  const sessionRepo = new SqliteSessionRepository(db, txManager);
+  const contextItemRepo = new SqliteContextItemRepository(db, txManager);
+  const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
 
-  const outboxWorker = new OutboxWorker(outboxRepo, eventBus);
+  const outboxWorker = new OutboxWorker(deliverySink, eventBus, { workerId: "orchestration-main", batchSize: 20, leaseSeconds: 60 });
 
   const transactionalRunWriter = new SqliteTransactionalRunWriter();
 
@@ -629,9 +624,12 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
   const assignmentService = new AssignmentService(assignmentRepo, eventBus);
   const verificationService = new VerificationService(verificationRepo, eventBus);
   const completionService = new CompletionService(completionRepo, eventBus);
-  const replayService = new ReplayService(replayRepo, eventBus);
+  const replayService = new ReplayService(replayRepo, eventBus, eventRepo);
   const eventService = new EventService(eventRepo, outboxRepo, eventBus);
   const healthService = new HealthService();
+  healthService.registerChecker("db", new SqliteDbChecker(db));
+  healthService.registerChecker("outbox_worker", new OutboxWorkerChecker(outboxWorker, deliverySink));
+  healthService.registerChecker("replay_service", new ReplayServiceChecker(replayRepo));
 
   const services = {
     runService,
@@ -651,7 +649,11 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
     executionRegistry,
     unitOfWork,
     eventBus,
+    deliverySink,
     outboxWorker,
+    sessionRepo,
+    contextItemRepo,
+    consumerOffsetRepo,
     services,
     router,
   };

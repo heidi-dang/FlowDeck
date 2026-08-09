@@ -84,6 +84,29 @@ describe("Cleanup lifecycle", () => {
     expect(owned.closed).toBe(true);
   });
 
+  it("ownership guard: an owned primary already closed and marked is never re-closed", async () => {
+    // Reconnect scenario: the fixture closes its own connection and records
+    // the ownership transfer (closed=true) before handing the context back to
+    // cleanup. The ownership guard must skip WAL shutdown + strict close on
+    // the already-closed primary (both would throw on a closed handle) while
+    // still completing the remaining work — file removal — without errors.
+    const { dir, db } = createTempDbDir();
+    const owned: OwnedDatabase = { db, closed: false };
+    db.close();
+    owned.closed = true;
+
+    let caught: AggregateError | null = null;
+    try {
+      await deterministicCleanup({ db: owned, dir });
+    } catch (e) {
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    expect(caught).toBeNull();
+    expect(owned.closed).toBe(true);
+    expect(existsSync(dir)).toBe(false);
+  });
+
   it("partial setup: empty context and dir-only context are no-ops", async () => {
     await deterministicCleanup({});
     await deterministicCleanup({ dir: undefined });
@@ -212,6 +235,43 @@ describe("Active reader handling", () => {
   });
 });
 
+describe("Extra connection WAL coexistence", () => {
+  it("an extra WAL connection holding a read+write lock is closed before the primary checkpoint", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "res-clean-"));
+    const path = join(dir, "test.db");
+    const db = new Database(path);
+    db.exec("PRAGMA journal_mode=WAL");
+    db.exec("CREATE TABLE t (x INTEGER)");
+    db.exec("INSERT INTO t VALUES (1)");
+
+    // The extra connection performs a read and a write inside an open
+    // transaction, so it holds both a WAL read snapshot (which blocks a
+    // TRUNCATE checkpoint) and an uncommitted write. Only closing it releases
+    // the snapshot; the primary must not attempt its checkpoint first.
+    const extra = new Database(path);
+    extra.exec("BEGIN");
+    extra.query("SELECT * FROM t").all();
+    extra.exec("INSERT INTO t VALUES (2)");
+
+    let caught: AggregateError | null = null;
+    try {
+      await deterministicCleanup({ db, dir, extraConnections: [extra] });
+    } catch (e) {
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    expect(caught).toBeNull();
+    // Both connections are closed after cleanup.
+    expect(() => db.exec("SELECT 1")).toThrow();
+    expect(() => extra.exec("SELECT 1")).toThrow();
+    // All SQLite files (db, -wal, -shm) and the directory are removed.
+    expect(existsSync(join(dir, "test.db"))).toBe(false);
+    expect(existsSync(join(dir, "test.db-wal"))).toBe(false);
+    expect(existsSync(join(dir, "test.db-shm"))).toBe(false);
+    expect(existsSync(dir)).toBe(false);
+  });
+});
+
 describe("Worker still using database", () => {
   it("cleanup awaits worker shutdown before closing SQLite", async () => {
     const { dir, db } = createTempDbDir();
@@ -305,6 +365,30 @@ describe("Execution cancellation", () => {
     expect(
       caught!.errors.some((e) => e.message.includes("timed out") && e.message.includes(runId)),
     ).toBe(true);
+  });
+
+  it("bad run id: cancelling an unknown run is a no-op, never a cleanup failure", async () => {
+    const { dir, db } = createTempDbDir();
+    const registry = new ExecutionRegistry();
+
+    // A run id that was never registered must resolve as a benign no-op
+    // (cancelled: false) instead of throwing or reporting a cleanup error.
+    const result = await registry.cancelRunExecution("never-registered", "runtime_cleanup");
+    expect(result).toEqual({ cancelled: false, cleanupErrors: [], timedOut: false });
+    expect(registry.getActiveRunIds()).toEqual([]);
+
+    // Cleanup with a registry that holds no active runs (and therefore cannot
+    // be asked to cancel anything) completes without any diagnostic errors.
+    let caught: AggregateError | null = null;
+    try {
+      await deterministicCleanup({ db, dir, executionRegistry: registry as any });
+    } catch (e) {
+      caught = e instanceof AggregateError ? e : null;
+    }
+
+    expect(caught).toBeNull();
+    expect(registry.getActiveRunIds()).toEqual([]);
+    expect(existsSync(dir)).toBe(false);
   });
 });
 

@@ -89,11 +89,9 @@ import {
 import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
 import { TokenBudgetRuntime } from "./services/token-budget-runtime"
 import { getArtifactStore } from "./services/artifact-store"
-import {
-  buildAssignmentContext,
-  externalizeToolOutput,
-  compactConversationContext,
-} from "./services/context-scoping"
+import { buildAssignmentContext, externalizeToolOutput, compactConversationContext } from "./services/context-scoping"
+import { initializeDatabase } from "./orchestration/persistence/index"
+import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -365,6 +363,16 @@ const plugin: Plugin = async ({ directory, client }) => {
       betterHarnessServer?.stop().catch(() => {})
       projectRegistry.unregister(basename(directory))
     }
+  }
+
+  // ─── Production Orchestration Runtime Initialization ───────────────
+  try {
+    const dbPath = join(directory, ".flowdeck", "flowdeck.db")
+    const { db } = initializeDatabase({ path: dbPath })
+    activeOrchestrationRuntime = createProductionOrchestrationRuntime(db)
+    appLog("[orchestration] Production orchestration runtime initialized successfully")
+  } catch (err) {
+    appLog(`[orchestration] Production orchestration runtime initialization skipped: ${err instanceof Error ? err.message : String(err)}`, "warn")
   }
 
   return {
@@ -1167,6 +1175,19 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
       orchestratorGuard.onEvent(event)
     },
+
+    dispose: async () => {
+      // Stop the outbox worker and run the better-harness cleanup (best-effort teardown)
+      if (activeOrchestrationRuntime) {
+        try {
+          activeOrchestrationRuntime.outboxWorker.stop()
+        } catch { /* teardown best-effort */ }
+      }
+      if (_betterHarnessCleanup) {
+        try { _betterHarnessCleanup() } catch { /* best-effort */ }
+        _betterHarnessCleanup = null
+      }
+    },
   }
 }
 
@@ -1223,6 +1244,14 @@ export function getSessionMetricsDiagnostics(sessionID: string): {
     startTime: sessionStartTimes.get(sessionID),
     filesChangedCount: sessionFilesChanged.get(sessionID)?.size ?? 0,
   }
+}
+
+// ─── Production orchestration runtime accessor ───────────────────────
+// Module-level holder so the runtime can be torn down via the plugin
+// `dispose` hook and queried externally (Phase 8 getOrchestrationRuntime).
+let activeOrchestrationRuntime: ProductionOrchestrationRuntime | null = null
+export function getOrchestrationRuntime(): ProductionOrchestrationRuntime | null {
+  return activeOrchestrationRuntime
 }
 
 const flowDeckPlugin = {
