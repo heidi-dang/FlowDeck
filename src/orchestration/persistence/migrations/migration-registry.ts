@@ -5,6 +5,7 @@ import { SCHEMA_V_0_2_6 } from "./schema-embed"
 import { MIGRATION_V2_REPLAY_SQL } from "./migration-v2-replay"
 import { MIGRATION_V3_EXECUTION_SQL } from "./migration-v3-execution"
 import { MIGRATION_V4_PERFORMANCE_SQL } from "./migration-v4-performance"
+import { MIGRATION_V5_EXECUTION_CONSTRAINTS_SQL } from "./migration-v5-execution-constraints"
 
 export interface MigrationEntry {
   version: number
@@ -37,5 +38,11 @@ export const MIGRATIONS: MigrationEntry[] = [
     name: "agent_performance_v0.2.9",
     sql: MIGRATION_V4_PERFORMANCE_SQL,
     checksum: computeChecksum(MIGRATION_V4_PERFORMANCE_SQL),
+  },
+  {
+    version: 5,
+    name: "execution_integrity_constraints_v0.2.10",
+    sql: MIGRATION_V5_EXECUTION_CONSTRAINTS_SQL,
+    checksum: computeChecksum(MIGRATION_V5_EXECUTION_CONSTRAINTS_SQL),
   },
 ]

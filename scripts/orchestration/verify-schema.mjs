@@ -30,10 +30,10 @@ try {
   // the v1 counts and must not change.
   console.log(`Schema Validation:`);
   console.log(`Tables: ${schemaV.cnt} (Expected: 61)`);
-  console.log(`Indexes: ${indexV.cnt} (Expected: 79)`);
+  console.log(`Indexes: ${indexV.cnt} (Expected: 82)`);
   console.log(`Triggers: ${triggerV.cnt} (Expected: 36)`);
 
-  if (schemaV.cnt !== 61 || indexV.cnt !== 79 || triggerV.cnt !== 36) {
+  if (schemaV.cnt !== 61 || indexV.cnt !== 82 || triggerV.cnt !== 36) {
     console.error(`Schema invariants violated!`);
     process.exit(1);
   }

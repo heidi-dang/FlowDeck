@@ -2,6 +2,8 @@ import { z } from "zod"
 
 export const EXECUTION_WORKSTREAM_STATUSES = ["planned", "blocked", "ready", "running", "succeeded", "failed", "cancelled", "integration_pending", "integrated", "superseded"] as const
 export type ExecutionWorkstreamStatus = typeof EXECUTION_WORKSTREAM_STATUSES[number]
+export const EXECUTION_PLAN_STATUSES = ["planned", "running", "succeeded", "failed", "cancelled", "superseded"] as const
+export type ExecutionPlanStatus = typeof EXECUTION_PLAN_STATUSES[number]
 export const EXECUTION_LEASE_STATES = ["requested", "allocated", "active", "renewing", "completed", "reclaimable", "released", "failed"] as const
 export type ExecutionLeaseState = typeof EXECUTION_LEASE_STATES[number]
 
@@ -22,7 +24,7 @@ export type ExecutionWorkstream = z.infer<typeof executionWorkstreamSchema>
 
 export const executionPlanSchema = z.object({
   planId: id, runId: id, routingDecisionId: id, sourceSha: sha, policyVersion: id,
-  workstreams: z.array(executionWorkstreamSchema).min(1), createdAt: z.string().datetime(),
+  workstreams: z.array(executionWorkstreamSchema).min(1), createdAt: z.string().datetime(), status: z.enum(EXECUTION_PLAN_STATUSES).optional(), startedAt: z.string().datetime().optional(), completedAt: z.string().datetime().optional(),
 }).strict()
 export type ExecutionPlan = z.infer<typeof executionPlanSchema>
 
@@ -34,6 +36,12 @@ const transitions: Record<ExecutionWorkstreamStatus, readonly ExecutionWorkstrea
   running: ["succeeded", "failed", "cancelled", "integration_pending"], succeeded: ["integration_pending", "superseded"], failed: ["superseded"], cancelled: ["superseded"],
   integration_pending: ["integrated", "failed", "cancelled"], integrated: ["superseded"], superseded: [],
 }
+const planTransitions: Record<ExecutionPlanStatus, readonly ExecutionPlanStatus[]> = {
+  planned: ["running", "cancelled", "superseded"], running: ["succeeded", "failed", "cancelled", "superseded"], succeeded: ["superseded"], failed: ["superseded"], cancelled: ["superseded"], superseded: [],
+}
+export function assertPlanTransition(from: ExecutionPlanStatus, to: ExecutionPlanStatus): void {
+  if (!planTransitions[from].includes(to)) throw new Error(`INVALID_EXECUTION_PLAN_TRANSITION:${from}->${to}`)
+}
 export function assertWorkstreamTransition(from: ExecutionWorkstreamStatus, to: ExecutionWorkstreamStatus): void {
   if (!transitions[from].includes(to)) throw new Error(`INVALID_WORKSTREAM_TRANSITION:${from}->${to}`)
 }
@@ -44,8 +52,22 @@ export function normalizeOwnership(paths: readonly string[]): string[] {
   return [...new Set(normalized)].sort()
 }
 
+export function ownershipClaimMatchesPath(path: string, claim: string, descendants = false): boolean {
+  const candidate = path.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+/g, "/").replace(/\/$/, "")
+  const normalizedClaim = claim.replaceAll("\\", "/").replace(/^\.\//, "").replace(/\/+/g, "/").replace(/\/$/, "")
+  if (normalizedClaim.endsWith("/**")) {
+    const prefix = normalizedClaim.slice(0, -3).replace(/\/$/, "")
+    return candidate.startsWith(`${prefix}/`)
+  }
+  if (normalizedClaim.endsWith("/*")) {
+    const prefix = normalizedClaim.slice(0, -2).replace(/\/$/, "")
+    return candidate.startsWith(`${prefix}/`) && !candidate.slice(prefix.length + 1).includes("/")
+  }
+  return candidate === normalizedClaim || descendants && candidate.startsWith(`${normalizedClaim}/`)
+}
+
 export function ownershipOverlaps(a: readonly string[], b: readonly string[]): boolean {
-  return normalizeOwnership(a).some(left => normalizeOwnership(b).some(right => left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`)))
+  return normalizeOwnership(a).some(left => normalizeOwnership(b).some(right => ownershipClaimMatchesPath(left, right, true) || ownershipClaimMatchesPath(right, left, true)))
 }
 
 export function analyzeDependencies(plan: ExecutionPlan): DependencyDiagnostics {

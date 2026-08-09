@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite"
 import type { TransactionManager } from "../persistence/transaction-manager"
-import { executionPlanSchema, type ExecutionPlan, type ExecutionWorkstream, assertWorkstreamTransition, normalizeOwnership, type ExecutionLeaseState } from "./contracts"
+import { analyzeDependencies, assertPlanTransition, executionPlanSchema, type ExecutionPlan, type ExecutionWorkstream, assertWorkstreamTransition, normalizeOwnership, type ExecutionLeaseState, type ExecutionPlanStatus } from "./contracts"
 
 const ACTIVE_LEASES = "('requested','allocated','active','renewing')"
 const json = (value: unknown) => JSON.stringify(value)
@@ -15,10 +15,13 @@ export class SqliteExecutionRepository {
   constructor(private readonly db: Database, private readonly tx: TransactionManager) {}
 
   savePlan(plan: ExecutionPlan): ExecutionPlan {
-    const parsed = executionPlanSchema.parse(plan)
+    const parsedInput = executionPlanSchema.parse(plan)
+    const parsed: ExecutionPlan = { ...parsedInput, status: parsedInput.status ?? "planned" }
+    if (parsed.workstreams.some(w => w.planId !== parsed.planId || w.runId !== parsed.runId)) throw new Error("EXECUTION_PLAN_ID_MISMATCH")
+    analyzeDependencies(parsed)
     return this.tx.write(() => {
       if (this.db.query("SELECT 1 FROM execution_plans WHERE plan_id = ?").get(parsed.planId)) throw new Error("EXECUTION_PLAN_IMMUTABLE")
-      this.db.query(`INSERT INTO execution_plans (plan_id,run_id,routing_decision_id,source_sha,policy_version,created_at,status) VALUES (?,?,?,?,?,?,?)`).run(parsed.planId, parsed.runId, parsed.routingDecisionId, parsed.sourceSha, parsed.policyVersion, parsed.createdAt, "planned")
+      this.db.query(`INSERT INTO execution_plans (plan_id,run_id,routing_decision_id,source_sha,policy_version,created_at,status,started_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(parsed.planId, parsed.runId, parsed.routingDecisionId, parsed.sourceSha, parsed.policyVersion, parsed.createdAt, parsed.status ?? "planned", parsed.startedAt ?? null, parsed.completedAt ?? null)
       for (const workstream of parsed.workstreams) {
         this.insertWorkstream(parsed, workstream)
         for (const dependency of workstream.dependsOn) this.db.query("INSERT INTO execution_dependencies(plan_id,workstream_id,depends_on) VALUES(?,?,?)").run(parsed.planId, workstream.workstreamId, dependency)
@@ -44,7 +47,7 @@ export class SqliteExecutionRepository {
     const deps = this.db.query("SELECT workstream_id, depends_on FROM execution_dependencies WHERE plan_id = ? ORDER BY workstream_id, depends_on").all(planId) as Array<{ workstream_id: string; depends_on: string }>
     const byDeps = new Map<string, string[]>(); for (const d of deps) byDeps.set(d.workstream_id, [...(byDeps.get(d.workstream_id) ?? []), d.depends_on])
     const workstreams = rows.map(r => ({ workstreamId: r.workstream_id as string, runId: r.run_id as string, planId: r.plan_id as string, resolvedAgent: r.resolved_agent as string, requiredCapability: r.required_capability as string, objective: r.objective as string, requirements: parse(r.requirements_json, [] as string[]), acceptanceCriteria: parse(r.acceptance_criteria_json, [] as string[]), ownedPaths: parse(r.owned_paths_json, [] as string[]), ownedSymbols: parse(r.owned_symbols_json, [] as string[]), dependsOn: byDeps.get(r.workstream_id as string) ?? [], strategy: r.strategy as string, budgetProfile: r.budget_profile as ExecutionWorkstream["budgetProfile"], contextScope: r.context_scope as ExecutionWorkstream["contextScope"], status: r.status as ExecutionWorkstream["status"], ...(r.worktree_ref ? { worktreeRef: r.worktree_ref as string } : {}), ...(r.branch_ref ? { branchRef: r.branch_ref as string } : {}), blockedBy: parse(r.blocked_by_json, [] as string[]), ...(r.failure_reason ? { failureReason: r.failure_reason as string } : {}), createdAt: r.created_at as string }))
-    return executionPlanSchema.parse({ planId: row.plan_id, runId: row.run_id, routingDecisionId: row.routing_decision_id, sourceSha: row.source_sha, policyVersion: row.policy_version, createdAt: row.created_at, workstreams })
+    return executionPlanSchema.parse({ planId: row.plan_id, runId: row.run_id, routingDecisionId: row.routing_decision_id, sourceSha: row.source_sha, policyVersion: row.policy_version, createdAt: row.created_at, status: row.status, startedAt: row.started_at ?? undefined, completedAt: row.completed_at ?? undefined, workstreams })
   }
   listPlansForRun(runId: string): ExecutionPlan[] { return (this.db.query("SELECT plan_id FROM execution_plans WHERE run_id = ? ORDER BY created_at, plan_id").all(runId) as Array<{ plan_id: string }>).map(r => this.getPlan(r.plan_id)!).filter(Boolean) }
 
@@ -55,6 +58,16 @@ export class SqliteExecutionRepository {
       const from = row.status as ExecutionWorkstream["status"]; assertWorkstreamTransition(from, status)
       this.db.query("UPDATE execution_workstreams SET status = ?, failure_reason = ?, updated_at = datetime('now') WHERE plan_id = ? AND workstream_id = ?").run(status, failureReason ?? null, planId, workstreamId)
       return this.getPlan(planId)!.workstreams.find(w => w.workstreamId === workstreamId)!
+    })
+  }
+  transitionPlanStatus(planId: string, status: ExecutionPlanStatus): ExecutionPlan {
+    return this.tx.write(() => {
+      const row = this.db.query("SELECT status FROM execution_plans WHERE plan_id = ?").get(planId) as { status: ExecutionPlanStatus } | null
+      if (!row) throw new Error("EXECUTION_PLAN_NOT_FOUND")
+      assertPlanTransition(row.status, status)
+      const now = new Date().toISOString()
+      this.db.query("UPDATE execution_plans SET status = ?, started_at = CASE WHEN ? = 'running' AND started_at IS NULL THEN ? ELSE started_at END, completed_at = CASE WHEN ? IN ('succeeded','failed','cancelled','superseded') THEN ? ELSE completed_at END WHERE plan_id = ?").run(status, status, now, status, now, planId)
+      return this.getPlan(planId)!
     })
   }
   bindWorktree(planId: string, workstreamId: string, worktreeRef: string, branchRef: string): void { this.tx.write(() => { const row = this.db.query("SELECT status FROM execution_workstreams WHERE plan_id = ? AND workstream_id = ?").get(planId, workstreamId) as { status: string } | null; if (!row) throw new Error("WORKSTREAM_NOT_FOUND"); if (!["planned", "ready"].includes(row.status)) throw new Error("WORKTREE_BINDING_TOO_LATE"); this.db.query("UPDATE execution_workstreams SET worktree_ref = ?, branch_ref = ?, updated_at = datetime('now') WHERE plan_id = ? AND workstream_id = ?").run(worktreeRef, branchRef, planId, workstreamId) }) }
@@ -82,4 +95,17 @@ export class SqliteExecutionRepository {
 
   recordIntegration(attempt: IntegrationAttempt): IntegrationAttempt { return this.tx.write(() => { this.db.query("INSERT INTO execution_integration_attempts (attempt_id,plan_id,workstream_id,source_sha,branch,status,verification_json,evidence_json,error,created_at,completed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)").run(attempt.attemptId, attempt.planId, attempt.workstreamId, attempt.sourceSha, attempt.branch, attempt.status, json(attempt.verification), json(attempt.evidence), attempt.error ?? null, attempt.createdAt, attempt.completedAt ?? null); return attempt }) }
   hasIntegrated(workstreamId: string): boolean { return Boolean(this.db.query("SELECT 1 FROM execution_integration_attempts WHERE workstream_id = ? AND status = 'integrated'").get(workstreamId)) }
+  reconcileIntegratedAttempts(): number {
+    return this.tx.write(() => {
+      const rows = this.db.query("SELECT plan_id, workstream_id FROM execution_integration_attempts WHERE status = 'integrated'").all() as Array<{ plan_id: string; workstream_id: string }>
+      let repaired = 0
+      for (const row of rows) {
+        const current = this.db.query("SELECT status FROM execution_workstreams WHERE plan_id = ? AND workstream_id = ?").get(row.plan_id, row.workstream_id) as { status: string } | null
+        if (current && ["succeeded", "integration_pending"].includes(current.status)) {
+          repaired += this.db.query("UPDATE execution_workstreams SET status = 'integrated', updated_at = datetime('now') WHERE plan_id = ? AND workstream_id = ? AND status IN ('succeeded','integration_pending')").run(row.plan_id, row.workstream_id).changes
+        }
+      }
+      return repaired
+    })
+  }
 }
