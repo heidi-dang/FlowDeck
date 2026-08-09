@@ -73,7 +73,7 @@ jobs:
             const { execFileSync } = require('child_process');
             const out = JSON.parse(execFileSync('npm', ['pack', '--dry-run', '--json'], { encoding: 'utf-8' }))[0];
             const paths = out.files.map(f => f.path);
-            const required = ['install.sh', 'dist/index.js', 'bin/flowdeck.js', 'postinstall.mjs', 'src/doctor/cli.mjs'];
+            const required = ['install.sh', 'dist/index.js', 'bin/flowdeck.js', 'postinstall.mjs', 'src/doctor/cli.mjs', 'scripts/check-schema-generated.mjs', 'schema-v0.2.6.sql', 'src/orchestration/persistence/migrations/schema-embed.ts'];
             const missing = required.filter(r => !paths.some(p => p === r || p.startsWith(r + '/')));
             if (missing.length > 0) {
               console.error('FAIL: required runtime files missing from package:', missing.join(', '));

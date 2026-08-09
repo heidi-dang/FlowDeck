@@ -43,7 +43,16 @@ try {
   if (!packed?.filename) throw new Error("npm pack returned no artifact");
   const artifact = join(work, packed.filename);
   const files = packed.files.map((entry) => entry.path);
-  const required = ["package.json", "bin/flowdeck.js", "dist/index.js", "src/doctor/cli.mjs", "postinstall.mjs"];
+  const required = [
+    "package.json",
+    "bin/flowdeck.js",
+    "dist/index.js",
+    "src/doctor/cli.mjs",
+    "postinstall.mjs",
+    "scripts/check-schema-generated.mjs",
+    "schema-v0.2.6.sql",
+    "src/orchestration/persistence/migrations/schema-embed.ts",
+  ];
   const missing = required.filter((path) => !files.includes(path));
   if (missing.length) throw new Error(`required package files missing: ${missing.join(", ")}`);
 
@@ -61,6 +70,11 @@ try {
   const report = JSON.parse(doctor);
   if (!report || typeof report !== "object" || !report.status) {
     throw new Error("packaged doctor returned an invalid report");
+  }
+  const packagedSchema = join(installPrefix, "node_modules", "@heidi-dang", "flowdeck", "scripts", "check-schema-generated.mjs");
+  const schemaOutput = run("node", [packagedSchema], { cwd: join(installPrefix, "node_modules", "@heidi-dang", "flowdeck") });
+  if (!schemaOutput.includes("Schema validation: ALL PASS")) {
+    throw new Error("packaged schema fallback validation did not pass");
   }
 
   console.log(JSON.stringify({
