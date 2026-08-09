@@ -10,12 +10,13 @@ FlowDeck v2 keeps OpenCode as the model, session, tool, and UI authority. FlowDe
 4. A controlled integration service validates source ancestry, changed paths, ownership, verification evidence, and dependency order before merging.
 5. The existing token-budget controller remains authoritative. Workstream budget handles add reclaim, redistribution, stall observation, and safe termination without creating a second controller.
 6. Completed workstreams produce immutable capability-specific performance observations.
+7. When enforce is explicitly selected, the plugin first creates a durable orchestration run, then binds the routing decision to an execution plan and dispatches through isolated workstream sessions. A failed precondition produces a durable diagnostic failure and leaves the normal model/session authority unchanged.
 
 The production chat hook defaults to the existing execution behavior. Routing is configured explicitly as `off`, `shadow`, or `enforce`; enforce mode fails closed when its prerequisites are missing and never changes the selected model or provider.
 
 ## Persistence and recovery
 
-Execution plans, workstreams, dependency edges, ownership claims, leases, integration attempts, token usage, routing decisions, and performance observations are durable. Startup reconciliation repairs an integration acknowledgement that was persisted before the workstream status update. Lease expiry is explicit and reclaimable; an expired lease is not silently treated as live ownership.
+Execution plans, workstreams, dependency edges, ownership claims, leases, integration attempts, token usage, routing decisions, and performance observations are durable. Startup reconciliation repairs an integration acknowledgement that was persisted before the workstream status update. Lease expiry is explicit and reclaimable; an expired lease is not silently treated as live ownership. The optional FDX daemon persists a bounded workspace-aware index and exposes only structured search, outline, and impact requests.
 
 ## API projections
 

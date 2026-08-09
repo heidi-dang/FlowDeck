@@ -229,7 +229,7 @@ Routing remains conservative by configuration:
 
 `shadow` observes and persists recommendations without controlling OpenCode. `enforce` is explicit and fail-closed; it requires the execution prerequisites and never silently changes the selected model/provider. See [`docs/v2/configuration.md`](docs/v2/configuration.md), [`docs/v2/recovery.md`](docs/v2/recovery.md), and [`docs/v2/security.md`](docs/v2/security.md).
 
-The benchmark command is reproducible for the candidate branch, but the recorded `0ac894959587e5a2dfc11a66766fc834a64d5226` baseline predates the v2 routing/execution surface. The harness reports that comparison as unavailable rather than inventing a performance improvement.
+The benchmark command is reproducible for the candidate branch and includes a same-revision serial reference for B1–B14. The recorded `0ac894959587e5a2dfc11a66766fc834a64d5226` baseline predates the v2 routing/execution surface, so the harness reports the historical comparison as unavailable rather than inventing a performance improvement. Validate generated output with `npm run verify:benchmark:v2`.
 
 ---
 

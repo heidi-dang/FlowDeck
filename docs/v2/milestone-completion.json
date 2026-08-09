@@ -1,13 +1,13 @@
 {
   "version": 1,
   "milestones": [
-    { "id": "M1", "name": "Autonomous Execution Intelligence", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true } },
-    { "id": "M2", "name": "Worktree Parallel Execution", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true } },
-    { "id": "M3", "name": "Adaptive Token Control", "status": "PARTIAL" },
-    { "id": "M4", "name": "Agent Performance Intelligence", "status": "PARTIAL" },
-    { "id": "M5", "name": "Authoritative Routing", "status": "PARTIAL" },
-    { "id": "M6", "name": "FDX Next Generation", "status": "PARTIAL" },
-    { "id": "M7", "name": "Observability & Benchmark", "status": "PARTIAL" },
-    { "id": "M8", "name": "Hardening & Release Readiness", "status": "OPEN" }
+    { "id": "M1", "name": "Autonomous Execution Intelligence", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/orchestration/routing/intelligence.ts"], "testFiles": ["tests/routing/task-intelligence.test.ts"] } },
+    { "id": "M2", "name": "Worktree Parallel Execution", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/orchestration/execution/worktree-executor.ts"], "testFiles": ["tests/orchestration/worktree-execution.test.ts"] } },
+    { "id": "M3", "name": "Adaptive Token Control", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/services/adaptive-execution-control.ts"], "testFiles": ["tests/services/adaptive-execution-control.test.ts"] } },
+    { "id": "M4", "name": "Agent Performance Intelligence", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/orchestration/performance/sqlite-repository.ts"], "testFiles": ["tests/orchestration/performance-persistence.test.ts"] } },
+    { "id": "M5", "name": "Authoritative Routing", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/orchestration/routing/authoritative.ts"], "testFiles": ["tests/orchestration/authoritative-routing.test.ts"] } },
+    { "id": "M6", "name": "FDX Next Generation", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/services/fdx-daemon.ts"], "testFiles": ["tests/fdx-index.test.ts"] } },
+    { "id": "M7", "name": "Observability & Benchmark", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["scripts/benchmark-v2.ts"], "testFiles": ["tests/v2-benchmark-validator.test.ts"] } },
+    { "id": "M8", "name": "Hardening & Release Readiness", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["scripts/verify-v2-milestones.mjs"], "testFiles": ["tests/v2-hardening.test.ts"] } }
   ]
 }

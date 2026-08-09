@@ -1,6 +1,10 @@
 import { describe, expect, it } from "bun:test"
+import { Database } from "bun:sqlite"
 import { AuthoritativeRoutingService } from "../../src/orchestration/routing"
 import { routeTask } from "../../src/orchestration/routing/intelligence"
+import { runMigrations } from "../../src/orchestration/persistence/migrations/migration-runner"
+import { createTransactionManager } from "../../src/orchestration/persistence/transaction-manager"
+import { SqliteExecutionRepository } from "../../src/orchestration/execution"
 
 const sourceSha = "0123456789abcdef0123456789abcdef01234567"
 const evidence = { milestone1: true, executionPlanner: true, adaptiveBudget: true, performanceIntelligence: true, determinism: true, safety: true, modelAuthority: true, budgetAuthority: true, completionAuthority: true }
@@ -57,5 +61,23 @@ describe("authoritative routing activation", () => {
     expect(result.fallback).toBe(true)
     expect((result as { reason: string }).reason).toBe("ROUTING_EXECUTION_DISPATCH_UNAVAILABLE")
     expect(saves).toBe(0)
+  })
+
+  it("persists an enforce plan only for a durable task run and reconstructs it after reopen", () => {
+    const db = new Database(":memory:")
+    try {
+      runMigrations(db)
+      db.query("INSERT INTO contract_families VALUES ('f','f',NULL,'test',datetime('now'))").run()
+      db.query("INSERT INTO task_contracts(contract_id,family_id,version,title,description,repo_url,repo_sha,created_by,created_at) VALUES ('c','f',1,'c','c','https://example.test','0123456789abcdef0123456789abcdef01234567','test',datetime('now'))").run()
+      db.query("INSERT INTO task_runs(run_id,contract_id,strategy,state,baseline_sha,repo_branch,created_at,created_ts) VALUES ('durable-run','c','planned','created','0123456789abcdef0123456789abcdef01234567','main',datetime('now'),strftime('%s','now'))").run()
+      const repo = new SqliteExecutionRepository(db, createTransactionManager(db))
+      const decision = routeTask({ runId: "durable-run", sourceSha, task: "small bug" })
+      const service = new AuthoritativeRoutingService(repo)
+      const result = service.activate(decision, sourceSha, evidence)
+      expect(result.fallback).toBe(false)
+      expect(repo.getPlan((result as { planId: string }).planId)?.runId).toBe("durable-run")
+      const reopened = new SqliteExecutionRepository(db, createTransactionManager(db))
+      expect(reopened.getPlan((result as { planId: string }).planId)?.routingDecisionId).toBe(decision.routingDecisionId)
+    } finally { db.close() }
   })
 })
