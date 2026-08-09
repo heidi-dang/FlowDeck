@@ -94,6 +94,8 @@ import { buildAssignmentContext, externalizeToolOutput, compactConversationConte
 import { initializeDatabase } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
+import { createEnforceRun } from "./orchestration/routing/enforce-run"
+import { RunStatus } from "./orchestration/types/runs"
 import { OpenCodeWorkstreamExecutor } from "./orchestration/execution/opencode-executor"
 import { FdxWorkspaceIndex } from "./services/fdx-index"
 import { execFileSync } from "node:child_process"
@@ -466,11 +468,10 @@ const plugin: Plugin = async ({ directory, client }) => {
       const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
       const isSubagent = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
 
-      // Routing remains opt-in. Shadow mode is observational; enforce mode
-      // first validates and persists an execution plan, then returns control
-      // to the existing OpenCode execution path unless a separately injected
-      // workstream executor is available. No model/provider or token policy is
-      // changed by this hook.
+      // Routing remains opt-in. Shadow mode is observational. Enforce mode
+      // uses a durable orchestration run as the execution-plan identity, then
+      // dispatches only through the injected isolated-workstream runtime. The
+      // normal OpenCode session remains the model/provider authority.
       const routingMode = flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off"
       const taskText = typeof output.message?.content === "string" ? output.message.content : ""
       if ((routingMode === "shadow" || routingMode === "enforce") && taskText.trim()) {
@@ -478,21 +479,35 @@ const plugin: Plugin = async ({ directory, client }) => {
         if (!sourceSha) {
           try { sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: directory, encoding: "utf8" }).trim() } catch { sourceSha = "0000000000000000000000000000000000000000" }
         }
-        const comparison = runShadowAssessment({ runId: sessionID || "sessionless", sourceSha, task: taskText }, "existing", routingMode, activeOrchestrationRuntime?.routingDecisionRepository, activeOrchestrationRuntime?.metrics)
-        if (routingMode === "enforce" && comparison.decision && activeOrchestrationRuntime) {
+        let enforceRun: Awaited<ReturnType<typeof createEnforceRun>> | undefined
+        if (routingMode === "enforce" && activeOrchestrationRuntime) {
+          try {
+            enforceRun = await createEnforceRun(activeOrchestrationRuntime.services.runService, sessionID, agent, sourceSha)
+          } catch (error) {
+            await appLog(`[routing] enforce run creation failed closed: ${error instanceof Error ? error.message : String(error)}`, "warn", sessionID)
+          }
+        }
+        const comparison = runShadowAssessment({ runId: (enforceRun?.id ?? sessionID) || "sessionless", sourceSha, task: taskText }, "existing", routingMode, activeOrchestrationRuntime?.routingDecisionRepository, activeOrchestrationRuntime?.metrics)
+        if (routingMode === "enforce" && enforceRun && comparison.decision && activeOrchestrationRuntime) {
           const activation = await activeOrchestrationRuntime.authoritativeRouting.activateAndExecute(comparison.decision, sourceSha, {
-            milestone1: true,
+            milestone1: Boolean(comparison.decision.finalized),
             executionPlanner: Boolean(activeOrchestrationRuntime.worktreeExecutionService),
             adaptiveBudget: tokenBudgetRuntime.isEnabled(),
             performanceIntelligence: Boolean(activeOrchestrationRuntime.performanceRepository),
-            determinism: true,
-            safety: true,
+            determinism: comparison.decision.policyVersion.length > 0 && comparison.decision.assessment.classifierVersion.length > 0,
+            safety: Boolean(activeOrchestrationRuntime.worktreeManager && activeOrchestrationRuntime.integrationService),
             modelAuthority: true,
             budgetAuthority: tokenBudgetRuntime.isEnabled(),
             completionAuthority: Boolean(activeOrchestrationRuntime.services.completionService),
           }, new OpenCodeWorkstreamExecutor(client))
-          if (activation.fallback) await appLog(`[routing] enforce fallback: ${activation.reason}`, "warn", sessionID)
-          else await appLog(`[routing] enforce plan ${activation.planId} executed: ${activation.execution.succeeded.length} integrated, ${activation.execution.failed.length} failed, ${activation.execution.blocked.length} blocked; selected model/provider authority remains unchanged`, "info", sessionID)
+          if (activation.fallback) {
+            await activeOrchestrationRuntime.services.runService.updateRun(enforceRun.id, { status: RunStatus.FAILED, error: activation.reason })
+            await appLog(`[routing] enforce fallback: ${activation.reason}`, "warn", sessionID)
+          } else {
+            const failed = activation.execution.failed.length > 0 || activation.execution.blocked.length > 0
+            await activeOrchestrationRuntime.services.runService.updateRun(enforceRun.id, { status: failed ? RunStatus.FAILED : RunStatus.COMPLETED, error: failed ? "ONE_OR_MORE_WORKSTREAMS_FAILED" : undefined })
+            await appLog(`[routing] enforce plan ${activation.planId} executed: ${activation.execution.succeeded.length} integrated, ${activation.execution.failed.length} failed, ${activation.execution.blocked.length} blocked; selected model/provider authority remains unchanged`, "info", sessionID)
+          }
         } else if (routingMode === "enforce" && comparison.error) {
           await appLog(`[routing] enforce assessment failed closed: ${comparison.error}`, "warn", sessionID)
         }
