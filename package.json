@@ -36,6 +36,7 @@
     "src/skills",
     "src/doctor",
     "docs",
+    "!docs/releases/*-readiness.json",
     "postinstall.mjs",
     "install.sh",
     "crates/fdx",
