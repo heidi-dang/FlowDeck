@@ -81,6 +81,7 @@ export class DurableCommandExecutor {
     private readonly invocationRepo: SqliteCommandInvocationRepository,
     private readonly runtime: Pick<ProductionOrchestrationRuntime, "services" | "executionRepository" | "executionScheduler"> & {
       worktreeExecutionService?: { executePlan(planId: string, sourceSha: string, executor: { execute(workstream: unknown, allocation: unknown, budget?: unknown, context?: unknown): Promise<unknown> }): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }> }
+      agentExecutor?: { execute(workstream: unknown, allocation: unknown, budget?: unknown, context?: unknown): Promise<unknown> }
       commandVerification?: { verifyCommand(input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string }): Promise<{ passed: boolean; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[] }> }
       commandCompletion?: { evaluateCommand(input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[] }): Promise<{ outcome: string; decisionId: string }> }
     },
@@ -192,15 +193,19 @@ export class DurableCommandExecutor {
       }
       const scheduler = this.runtime.executionScheduler as any;
       if (!scheduler?.runReady && !this.runtime.worktreeExecutionService) throw new Error("CANONICAL_SCHEDULER_UNAVAILABLE");
-      const dispatch = { execute: async (workstream: any, _allocation?: unknown, budget?: any) => {
+      const dispatch = { execute: async (workstream: any, _allocation?: unknown, budget?: any, context?: unknown) => {
         const assignmentId = assignmentIds.get(workstream.workstreamId);
         if (assignmentId && assignmentService?.assignAssignment) await assignmentService.assignAssignment(assignmentId);
         if (assignmentId && assignmentService?.startAssignment) await assignmentService.startAssignment(assignmentId);
         try {
           if (budget) {
-            const reservation = await budget.reserve({ requestId: `command:${invocationId}:${workstream.workstreamId}`, estimatedInputTokens: 0, maxOutputTokens: 1 });
-            if (!reservation.allowed) throw new Error("COMMAND_TOKEN_BUDGET_EXHAUSTED");
-            await budget.reconcile({ reservationId: reservation.reservationId, requestId: `command:${invocationId}:${workstream.workstreamId}`, messageId: `command-result:${invocationId}:${workstream.workstreamId}`, usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, reason: "command_completed" });
+            if (!this.runtime.agentExecutor) throw new Error("CANONICAL_AGENT_EXECUTOR_UNAVAILABLE");
+            const result = await this.runtime.agentExecutor.execute(workstream, _allocation, budget, context);
+            if (result && typeof result === "object" && "status" in result && result.status !== "succeeded") throw new Error("CANONICAL_AGENT_EXECUTION_FAILED");
+          } else if (this.runtime.worktreeExecutionService) {
+            if (!this.runtime.agentExecutor) throw new Error("CANONICAL_AGENT_EXECUTOR_UNAVAILABLE");
+            const result = await this.runtime.agentExecutor.execute(workstream, _allocation, undefined, context);
+            if (result && typeof result === "object" && "status" in result && result.status !== "succeeded") throw new Error("CANONICAL_AGENT_EXECUTION_FAILED");
           }
           if (assignmentId && assignmentService?.completeAssignment) await assignmentService.completeAssignment(assignmentId);
           return this.runtime.worktreeExecutionService ? { status: "succeeded" as const, verificationPassed: true, integrationPassed: false, durationMs: 0 } : "succeeded" as const;

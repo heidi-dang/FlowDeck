@@ -74,6 +74,7 @@ import { PerformanceProjection } from "./services/performance-projection";
 import { RuntimeSnapshotService } from "./services/runtime-snapshot";
 import { AuthoritativeRoutingService } from "./routing/authoritative";
 import { TokenBudgetRuntime } from "../services/token-budget-runtime";
+import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
 import type { CommandRegistry } from "./commands/domain/command-registry";
 import type { DurableCommandExecutor } from "./commands/services/durable-command-executor";
 import { createCoreCommandRuntime } from "./commands/services/command-runtime";
@@ -109,6 +110,7 @@ export interface ProductionOrchestrationRuntime {
   worktreeManager?: GitWorktreeManager;
   integrationService?: ControlledIntegrationService;
   tokenRuntime?: TokenBudgetRuntime;
+  agentExecutor?: IsolatedWorkstreamExecutor;
   commands: {
     registry: CommandRegistry;
     executor: DurableCommandExecutor;
@@ -618,7 +620,7 @@ function safeParseJSON(raw: string): Record<string, unknown> {
 
 // ── Production composition factory ─────────────────────────────────────
 
-export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown> } = {}): ProductionOrchestrationRuntime {
+export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown>; agentExecutor?: IsolatedWorkstreamExecutor } = {}): ProductionOrchestrationRuntime {
   const executionRegistry = new ExecutionRegistry();
   const unitOfWork = new SqliteUnitOfWork(db);
   const txManager = createTransactionManager(db);
@@ -705,7 +707,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     sessionRepo, contextItemRepo, consumerOffsetRepo, services, router,
     routingDecisionRepository, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
-    worktreeManager, integrationService,
+    worktreeManager, integrationService, agentExecutor: options.agentExecutor,
   });
 
   return {
@@ -730,6 +732,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     worktreeManager,
     integrationService,
     tokenRuntime,
+    agentExecutor: options.agentExecutor,
     commands,
   };
 }
