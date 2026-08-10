@@ -15,6 +15,9 @@
       "src/orchestration/commands/domain/command-validator.ts",
       "src/orchestration/commands/persistence/sqlite-command-invocation-repository.ts",
       "src/orchestration/commands/services/durable-command-executor.ts",
+      "src/orchestration/commands/services/command-runtime.ts",
+      "src/orchestration/persistence/migrations/migration-v6-commands.ts",
+      "scripts/benchmark-m9-commands.ts",
       "src/orchestration/commands/definitions/core-commands.ts",
       "src/orchestration/commands/security/command-security.ts"
     ], "testFiles": [
@@ -22,7 +25,9 @@
       "tests/orchestration/commands/command-persistence.test.ts",
       "tests/orchestration/commands/command-execution.test.ts",
       "tests/orchestration/commands/command-recovery-cancellation.test.ts",
-      "tests/orchestration/commands/command-security.test.ts"
+      "tests/orchestration/commands/command-security.test.ts",
+      "tests/orchestration/commands/command-concurrency.test.ts",
+      "tests/orchestration/persistence/migration-safety.test.ts"
     ] } }
   ]
 }
