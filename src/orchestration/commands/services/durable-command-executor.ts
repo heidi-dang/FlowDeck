@@ -80,6 +80,7 @@ export class DurableCommandExecutor {
     private readonly registry: CommandRegistry,
     private readonly invocationRepo: SqliteCommandInvocationRepository,
     private readonly runtime: Pick<ProductionOrchestrationRuntime, "services" | "executionRepository" | "executionScheduler"> & {
+      worktreeExecutionService?: { executePlan(planId: string, sourceSha: string, executor: { execute(workstream: unknown, allocation: unknown, budget?: unknown, context?: unknown): Promise<"succeeded" | "failed"> }): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }> }
       commandVerification?: { verifyCommand(input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string }): Promise<{ passed: boolean; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[] }> }
       commandCompletion?: { evaluateCommand(input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[] }): Promise<{ outcome: string; decisionId: string }> }
     },
@@ -179,14 +180,22 @@ export class DurableCommandExecutor {
       invocation.taskRunId = plan.taskRunId;
       invocation.contractId = plan.contractId;
       const canonicalPlan = this.persistCanonicalPlan(plan, input);
+      invocation.planId = canonicalPlan.planId;
+      await this.invocationRepo.saveInvocation(invocation);
       const scheduler = this.runtime.executionScheduler as any;
-      if (!scheduler?.runReady) throw new Error("CANONICAL_SCHEDULER_UNAVAILABLE");
-      const scheduleResult = await scheduler.runReady(canonicalPlan.planId, { execute: async () => "succeeded" });
+      if (!scheduler?.runReady && !this.runtime.worktreeExecutionService) throw new Error("CANONICAL_SCHEDULER_UNAVAILABLE");
+      const scheduleResult = this.runtime.worktreeExecutionService
+        ? await this.runtime.worktreeExecutionService.executePlan(canonicalPlan.planId, canonicalPlan.sourceSha, { execute: async () => "succeeded" })
+        : await scheduler.runReady(canonicalPlan.planId, { execute: async () => "succeeded" });
+      const durableAfterSchedule = await this.invocationRepo.getByInvocationId(invocationId);
+      if (durableAfterSchedule?.status === "cancelled") {
+        invocation.status = "cancelled";
+        invocation.error = durableAfterSchedule.error;
+        throw new Error("COMMAND_CANCELLED");
+      }
       if (scheduleResult.failed.length > 0 || scheduleResult.blocked.length > 0) throw new Error("CANONICAL_SCHEDULER_FAILED");
       const executionRepository = this.runtime.executionRepository as any;
       if (executionRepository.transitionPlanStatus) executionRepository.transitionPlanStatus(canonicalPlan.planId, "succeeded");
-      invocation.planId = canonicalPlan.planId;
-      await this.invocationRepo.saveInvocation(invocation);
 
       // 4. Verification Check Integration
       let verificationPassed = false;
@@ -232,6 +241,7 @@ export class DurableCommandExecutor {
         },
       };
     } catch (error: any) {
+      if (invocation.status === "cancelled") return this.failedResult(invocation, "COMMAND_CANCELLED", invocation.error?.message ?? "Command cancelled", startTime, "cancelled")
       const failedAt = new Date().toISOString();
       invocation.status = "failed";
       invocation.completedAt = failedAt;
@@ -264,11 +274,30 @@ export class DurableCommandExecutor {
     const runService = (this.runtime.services as any)?.runService
     if (invocation.taskRunId && !runService?.cancelRun) throw new Error("CANONICAL_CANCELLATION_UNAVAILABLE")
     if (invocation.taskRunId) await runService.cancelRun(invocation.taskRunId, reason)
+    if (invocation.planId && (this.runtime.executionRepository as any)?.cancelPlan) {
+      ;(this.runtime.executionRepository as any).cancelPlan(invocation.planId, reason)
+    }
     invocation.status = "cancelled"
     invocation.error = { code: "COMMAND_CANCELLED", message: reason }
     invocation.completedAt = new Date().toISOString()
     await this.invocationRepo.saveInvocation(invocation)
-    return this.failedResult(invocation, "COMMAND_CANCELLED", reason, Date.now())
+    return this.failedResult(invocation, "COMMAND_CANCELLED", reason, Date.now(), "cancelled")
+  }
+
+  async recoverCommand(invocationId: string): Promise<CommandResult> {
+    const invocation = await this.invocationRepo.getByInvocationId(invocationId)
+    if (!invocation) throw new Error("COMMAND_INVOCATION_NOT_FOUND")
+    if (invocation.status === "completed" || invocation.status === "cancelled" || invocation.status === "failed") {
+      return this.failedResult(invocation, "COMMAND_TERMINAL", `Command is already ${invocation.status}`, Date.now())
+    }
+    const repository = this.runtime.executionRepository as any
+    if (repository?.recoverAfterRestart) repository.recoverAfterRestart()
+    if (!invocation.planId || !repository?.getPlan || !repository.getPlan(invocation.planId)) throw new Error("CANONICAL_RECOVERY_STATE_MISSING")
+    return {
+      invocationId: invocation.invocationId, commandId: invocation.commandId, commandVersion: invocation.commandVersion,
+      taskRunId: invocation.taskRunId, status: invocation.status, summary: "Recovered canonical command state",
+      timestamps: { startedAt: invocation.createdAt, completedAt: invocation.updatedAt, durationMs: Date.now() - Date.parse(invocation.createdAt) },
+    }
   }
 
   private persistCanonicalPlan(plan: ExecutableCommandPlan, input: Record<string, unknown>): ExecutionPlan {
@@ -306,13 +335,13 @@ export class DurableCommandExecutor {
     return repository.savePlan(canonical);
   }
 
-  private failedResult(invocation: CommandInvocation, code: string, message: string, startTime: number): CommandResult {
+  private failedResult(invocation: CommandInvocation, code: string, message: string, startTime: number, projectedStatus: CommandInvocation["status"] = "failed"): CommandResult {
     return {
       invocationId: invocation.invocationId,
       commandId: invocation.commandId,
       commandVersion: invocation.commandVersion,
       taskRunId: invocation.taskRunId,
-      status: "failed",
+      status: projectedStatus,
       summary: message,
       error: { code, message },
       timestamps: {

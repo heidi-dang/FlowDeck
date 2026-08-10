@@ -74,6 +74,20 @@ export class SqliteExecutionRepository {
       return this.getPlan(planId)!
     })
   }
+
+  cancelPlan(planId: string, reason = "COMMAND_CANCELLED"): ExecutionPlan {
+    const plan = this.getPlan(planId)
+    if (!plan) throw new Error("EXECUTION_PLAN_NOT_FOUND")
+    for (const workstream of plan.workstreams) {
+      if (["planned", "ready", "running"].includes(workstream.status)) {
+        this.transitionWorkstream(planId, workstream.workstreamId, "cancelled", reason)
+      }
+    }
+    for (const lease of this.listLeases(plan.runId)) {
+      if (["allocated", "active", "renewing"].includes(lease.state)) this.releaseLease(lease.leaseId)
+    }
+    return this.transitionPlanStatus(planId, "cancelled")
+  }
   bindWorktree(planId: string, workstreamId: string, worktreeRef: string, branchRef: string): void { this.tx.write(() => { const row = this.db.query("SELECT status FROM execution_workstreams WHERE plan_id = ? AND workstream_id = ?").get(planId, workstreamId) as { status: string } | null; if (!row) throw new Error("WORKSTREAM_NOT_FOUND"); if (!["planned", "ready"].includes(row.status)) throw new Error("WORKTREE_BINDING_TOO_LATE"); this.db.query("UPDATE execution_workstreams SET worktree_ref = ?, branch_ref = ?, updated_at = datetime('now') WHERE plan_id = ? AND workstream_id = ?").run(worktreeRef, branchRef, planId, workstreamId) }) }
 
   listReady(planId: string): ExecutionWorkstream[] {
