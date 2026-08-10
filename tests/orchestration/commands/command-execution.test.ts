@@ -5,7 +5,7 @@ import { CommandRegistry } from "../../../src/orchestration/commands/domain/comm
 import { SqliteCommandInvocationRepository } from "../../../src/orchestration/commands/persistence/sqlite-command-invocation-repository";
 import { DurableCommandExecutor } from "../../../src/orchestration/commands/services/durable-command-executor";
 import { CORE_M9_COMMANDS } from "../../../src/orchestration/commands/definitions/core-commands";
-import { SCHEMA_V_0_2_6 } from "../../../src/orchestration/persistence/migrations/schema-embed";
+import { runMigrations } from "../../../src/orchestration/persistence/migrations/migration-runner";
 
 describe("M9 Durable Command Executor", () => {
   let db: Database;
@@ -15,7 +15,7 @@ describe("M9 Durable Command Executor", () => {
 
   beforeEach(() => {
     db = new Database(":memory:");
-    db.exec(SCHEMA_V_0_2_6);
+    runMigrations(db);
     const tx = createTransactionManager(db);
     repo = new SqliteCommandInvocationRepository(db, tx);
     
@@ -43,7 +43,8 @@ describe("M9 Durable Command Executor", () => {
     const res1 = await executor.executeCommand("fd-task", { taskDescription: "A" }, { idempotencyKey });
     const res2 = await executor.executeCommand("fd-task", { taskDescription: "B" }, { idempotencyKey });
     
-    expect(res1.invocationId).toBe(res2.invocationId);
-    expect(res2.summary).toContain("Idempotent invocation retrieved");
+    expect(res2.invocationId).toBe(res1.invocationId);
+    expect(res2.status).toBe("failed");
+    expect(res2.error?.code).toBe("COMMAND_IDEMPOTENCY_CONFLICT");
   });
 });

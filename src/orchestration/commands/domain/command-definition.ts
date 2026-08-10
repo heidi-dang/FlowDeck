@@ -90,6 +90,8 @@ export interface CommandInvocation<TInput = Record<string, unknown>> {
   planId?: string;
   workstreamIds?: string[];
   retryCount: number;
+  requestFingerprint?: string;
+  result?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
   completedAt?: string;

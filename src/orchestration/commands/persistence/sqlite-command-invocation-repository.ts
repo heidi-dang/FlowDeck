@@ -1,123 +1,67 @@
-import type { Database } from "bun:sqlite";
-import type { TransactionManager } from "../../persistence/transaction-manager";
-import type { CommandInvocation, CommandInvocationStatus } from "../domain/command-definition";
-import { createHash } from "crypto";
+import type { Database } from "bun:sqlite"
+import type { TransactionManager } from "../../persistence/transaction-manager"
+import type { CommandInvocation, CommandInvocationStatus } from "../domain/command-definition"
+import { commandRequestFingerprint } from "../domain/command-fingerprint"
 
-export interface CommandInvocationRecord {
-  invocationId: string;
-  commandId: string;
-  commandVersion: number;
-  idempotencyKey: string;
-  inputHash: string;
-  status: CommandInvocationStatus;
-  inputJson: string;
-  taskRunId?: string;
-  contractId?: string;
-  planId?: string;
-  retryCount: number;
-  createdAt: string;
-  updatedAt: string;
-  completedAt?: string;
-  errorJson?: string;
+export class CommandIdempotencyConflictError extends Error {
+  constructor(message: string) { super(message); this.name = "CommandIdempotencyConflictError" }
 }
 
 export class SqliteCommandInvocationRepository {
-  constructor(
-    private readonly db: Database,
-    private readonly tx: TransactionManager,
-  ) {}
+  constructor(private readonly db: Database, private readonly tx: TransactionManager) {}
 
-  /**
-   * Save a new command invocation or update an existing one.
-   */
   async saveInvocation(invocation: CommandInvocation): Promise<void> {
-    const inputJson = JSON.stringify(invocation.input ?? {});
-    const inputHash = createHash("sha256").update(inputJson).digest("hex");
-    const errorJson = invocation.error ? JSON.stringify(invocation.error) : null;
-
-    this.tx.write(() => {
-      this.db
-        .query(
-          `INSERT INTO command_idempotency (
-            idempotency_key, command_type, aggregate_type, aggregate_id, status, owner, started_at, completed_at, event_id, completion_decision_id, error, created_ts
-          ) VALUES (?, ?, 'command_invocation', ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
-          ON CONFLICT(idempotency_key) DO UPDATE SET
-            status = excluded.status,
-            completed_at = excluded.completed_at,
-            error = excluded.error`,
+    const inputJson = JSON.stringify(invocation.input ?? {})
+    const fingerprint = invocation.requestFingerprint ?? commandRequestFingerprint(invocation.commandId, invocation.commandVersion, invocation.input)
+    const terminalAt = ["completed", "failed", "cancelled"].includes(invocation.status) ? (invocation.completedAt ?? invocation.updatedAt) : null
+    try {
+      this.tx.write(() => {
+        this.db.query(`
+          INSERT INTO command_invocations
+            (invocation_id, command_id, command_version, idempotency_key, request_fingerprint, input_json, status, task_run_id, plan_id, result_json, error_json, retry_count, created_at, updated_at, terminal_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(invocation_id) DO UPDATE SET
+            status=excluded.status, task_run_id=excluded.task_run_id, plan_id=excluded.plan_id,
+            result_json=excluded.result_json, error_json=excluded.error_json,
+            retry_count=excluded.retry_count, updated_at=excluded.updated_at, terminal_at=excluded.terminal_at
+        `).run(
+          invocation.invocationId, invocation.commandId, invocation.commandVersion, invocation.idempotencyKey,
+          fingerprint, inputJson, invocation.status, invocation.taskRunId ?? null, invocation.planId ?? null,
+          invocation.result ? JSON.stringify(invocation.result) : null, invocation.error ? JSON.stringify(invocation.error) : null,
+          invocation.retryCount, invocation.createdAt, invocation.updatedAt, terminalAt,
         )
-        .run(
-          invocation.idempotencyKey,
-          `${invocation.commandId}:v${invocation.commandVersion}`,
-          invocation.invocationId,
-          invocation.status === "completed" ? "completed" : invocation.status === "failed" || invocation.status === "cancelled" ? "failed" : "executing",
-          JSON.stringify({
-            invocationId: invocation.invocationId,
-            commandId: invocation.commandId,
-            commandVersion: invocation.commandVersion,
-            inputHash,
-            inputJson,
-            taskRunId: invocation.taskRunId,
-            contractId: invocation.contractId,
-            planId: invocation.planId,
-            retryCount: invocation.retryCount,
-          }),
-          invocation.createdAt,
-          invocation.completedAt ?? null,
-          invocation.taskRunId ?? null,
-          null,
-          errorJson,
-        );
-    });
+      })
+    } catch (error) {
+      if (String(error).includes("UNIQUE constraint failed: command_invocations.idempotency_key")) {
+        const existing = await this.getByIdempotencyKey(invocation.idempotencyKey)
+        if (existing && (existing.commandId !== invocation.commandId || existing.commandVersion !== invocation.commandVersion || existing.requestFingerprint !== fingerprint)) {
+          throw new CommandIdempotencyConflictError("Idempotency key is already bound to an incompatible command request")
+        }
+        throw new Error("CONCURRENCY_CONFLICT")
+      }
+      throw error
+    }
   }
 
-  /**
-   * Get command invocation by idempotency key.
-   */
   async getByIdempotencyKey(idempotencyKey: string): Promise<CommandInvocation | null> {
-    const row = this.db
-      .query(`SELECT * FROM command_idempotency WHERE idempotency_key = ?`)
-      .get(idempotencyKey) as any;
+    const row = this.db.query("SELECT * FROM command_invocations WHERE idempotency_key = ?").get(idempotencyKey) as Record<string, unknown> | null
+    return row ? this.map(row) : null
+  }
 
-    if (!row) return null;
+  async getByInvocationId(invocationId: string): Promise<CommandInvocation | null> {
+    const row = this.db.query("SELECT * FROM command_invocations WHERE invocation_id = ?").get(invocationId) as Record<string, unknown> | null
+    return row ? this.map(row) : null
+  }
 
-    let ownerData: any = {};
-    try {
-      if (row.owner) ownerData = JSON.parse(row.owner);
-    } catch {}
-
-    const [commandId, versionStr] = (row.command_type ?? "").split(":v");
-    const commandVersion = versionStr ? parseInt(versionStr, 10) : 1;
-
-    let input: any = {};
-    try {
-      if (ownerData.inputJson) input = JSON.parse(ownerData.inputJson);
-    } catch {}
-
-    let error: any = undefined;
-    try {
-      if (row.error) error = JSON.parse(row.error);
-    } catch {}
-
-    let status: CommandInvocationStatus = "running";
-    if (row.status === "completed") status = "completed";
-    else if (row.status === "failed") status = "failed";
-
+  private map(row: Record<string, unknown>): CommandInvocation {
+    const parse = (value: unknown): any => { try { return value ? JSON.parse(String(value)) : undefined } catch { return undefined } }
     return {
-      invocationId: ownerData.invocationId ?? row.aggregate_id,
-      commandId: ownerData.commandId ?? commandId,
-      commandVersion: ownerData.commandVersion ?? commandVersion,
-      idempotencyKey: row.idempotency_key,
-      status,
-      input,
-      taskRunId: ownerData.taskRunId,
-      contractId: ownerData.contractId,
-      planId: ownerData.planId,
-      retryCount: ownerData.retryCount ?? 0,
-      createdAt: row.started_at,
-      updatedAt: row.started_at,
-      completedAt: row.completed_at ?? undefined,
-      error,
-    };
+      invocationId: String(row.invocation_id), commandId: String(row.command_id), commandVersion: Number(row.command_version),
+      idempotencyKey: String(row.idempotency_key), requestFingerprint: String(row.request_fingerprint),
+      status: String(row.status) as CommandInvocationStatus, input: parse(row.input_json) ?? {},
+      taskRunId: row.task_run_id ? String(row.task_run_id) : undefined, planId: row.plan_id ? String(row.plan_id) : undefined,
+      result: parse(row.result_json), error: parse(row.error_json), retryCount: Number(row.retry_count),
+      createdAt: String(row.created_at), updatedAt: String(row.updated_at), completedAt: row.terminal_at ? String(row.terminal_at) : undefined,
+    }
   }
 }

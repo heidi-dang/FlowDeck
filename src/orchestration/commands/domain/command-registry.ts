@@ -19,7 +19,7 @@ export class CommandRegistry {
    * Fails closed if duplicate ID+version or if alias collides with a different command ID.
    */
   register(definition: CommandDefinition): void {
-    if (!definition || !definition.id || typeof definition.version !== "number") {
+    if (!definition || !definition.id || typeof definition.version !== "number" || definition.version < 1 || !definition.description || !definition.strategy || !definition.capabilities || !definition.planningPolicy || !definition.executionPolicy || !definition.verificationPolicy || !definition.completionPolicy || !definition.retryPolicy || !definition.tokenPolicy) {
       throw new CommandRegistryError("INVALID_DEFINITION", "Command definition must have id and version");
     }
 

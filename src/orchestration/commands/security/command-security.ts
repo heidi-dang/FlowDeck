@@ -14,21 +14,21 @@ export function enforceCommandSecurity(invocation: CommandInvocation): void {
   const inputStr = JSON.stringify(invocation.input);
   
   // 1. Path Traversal & Symlink Escapes
-  if (inputStr.includes("../") || inputStr.match(/\/\.\.\//)) {
+  if (inputStr.includes("../") || inputStr.includes("..\\") || inputStr.match(/(^|[\\/])\.\.($|[\\/])/)) {
     throw new CommandSecurityException("Path traversal attempt detected", "PATH_TRAVERSAL");
   }
 
   // 2. Shell Metacharacters (we disallow shell characters in common inputs)
   // Check typical shell injection vectors if any value contains them.
   // We'll inspect string values recursively.
-  const hasShellChars = checkValuesForRegex(invocation.input, /[;|&$><`\\]/);
+  const hasShellChars = checkValuesForRegex(invocation.input, /[;|&$><`\\\n\r]/);
   if (hasShellChars) {
     throw new CommandSecurityException("Shell metacharacters detected in input", "SHELL_INJECTION");
   }
 
   // 3. Ownership / Validation Bypasses
   // Ensure we aren't allowing direct mutation of system tokens if we expect a safe payload
-  const hasBypassKeys = checkKeysForRegex(invocation.input, /bypassVerification|forceCompletion/);
+  const hasBypassKeys = checkKeysForRegex(invocation.input, /bypass|forceCompletion|skipVerification|skipCompletion|ignoreBudget|unapprovedTool|strategyOverride/i);
   if (hasBypassKeys) {
     throw new CommandSecurityException("Attempt to bypass verification or completion gates", "VERIFICATION_BYPASS");
   }
@@ -42,7 +42,7 @@ function checkValuesForRegex(obj: unknown, regex: RegExp): boolean {
     return obj.some(val => checkValuesForRegex(val, regex));
   }
   if (obj && typeof obj === "object") {
-    return Object.values(obj).some(val => checkValuesForRegex(val, regex));
+    return Object.entries(obj).some(([key, val]) => regex.test(key) || checkValuesForRegex(val, regex));
   }
   return false;
 }

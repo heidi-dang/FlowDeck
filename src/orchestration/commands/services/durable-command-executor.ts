@@ -7,6 +7,8 @@ import type {
 import { CommandRegistry } from "../domain/command-registry";
 import { validateCommandInput, CommandValidationException } from "../domain/command-validator";
 import { enforceCommandSecurity } from "../security/command-security";
+import { commandRequestFingerprint } from "../domain/command-fingerprint";
+import { CommandIdempotencyConflictError } from "../persistence/sqlite-command-invocation-repository";
 import type { SqliteCommandInvocationRepository } from "../persistence/sqlite-command-invocation-repository";
 import type { ProductionOrchestrationRuntime } from "../../composition";
 import { randomUUID } from "crypto";
@@ -89,10 +91,15 @@ export class DurableCommandExecutor {
     const startTime = Date.now();
     const definition = this.registry.resolve(commandIdOrAlias, options?.version);
     const idempotencyKey = options?.idempotencyKey ?? (input.idempotencyKey as string) ?? `ik_cmd_${randomUUID()}`;
+    const requestFingerprint = commandRequestFingerprint(definition.id, definition.version, input);
 
     // 1. Idempotency Check
     const existing = await this.invocationRepo.getByIdempotencyKey(idempotencyKey);
-    if (existing && (existing.status === "completed" || existing.status === "running")) {
+    if (existing) {
+      if (existing.commandId !== definition.id || existing.commandVersion !== definition.version || existing.requestFingerprint !== requestFingerprint) {
+        return this.failedResult(existing, "COMMAND_IDEMPOTENCY_CONFLICT", "Idempotency key is already bound to an incompatible command request", startTime);
+      }
+      if (existing.status === "failed" || existing.status === "cancelled" || existing.status === "completed" || existing.status === "running" || existing.status === "verifying" || existing.status === "accepted" || existing.status === "pending") {
       return {
         invocationId: existing.invocationId,
         commandId: existing.commandId,
@@ -106,6 +113,7 @@ export class DurableCommandExecutor {
           durationMs: Date.now() - startTime,
         },
       };
+      }
     }
 
     const invocationId = `inv_${randomUUID()}`;
@@ -116,13 +124,42 @@ export class DurableCommandExecutor {
       idempotencyKey,
       status: "pending",
       input,
+      requestFingerprint,
       retryCount: 0,
       createdAt: new Date(startTime).toISOString(),
       updatedAt: new Date(startTime).toISOString(),
     };
 
     // 2. Persist Pending Invocation
-    await this.invocationRepo.saveInvocation(invocation);
+    try {
+      await this.invocationRepo.saveInvocation(invocation);
+    } catch (e: any) {
+      if (e.message === 'CONCURRENCY_CONFLICT') {
+        const raceExisting = await this.invocationRepo.getByIdempotencyKey(idempotencyKey);
+        if (raceExisting) {
+          if (raceExisting.commandId !== definition.id || raceExisting.commandVersion !== definition.version || raceExisting.requestFingerprint !== requestFingerprint) {
+            return this.failedResult(raceExisting, "COMMAND_IDEMPOTENCY_CONFLICT", "Idempotency key is already bound to an incompatible command request", startTime);
+          }
+          return {
+            invocationId: raceExisting.invocationId,
+            commandId: raceExisting.commandId,
+            commandVersion: raceExisting.commandVersion,
+            taskRunId: raceExisting.taskRunId,
+            status: raceExisting.status,
+            summary: `Idempotent invocation retrieved (${raceExisting.status})`,
+            timestamps: {
+              startedAt: raceExisting.createdAt,
+              completedAt: raceExisting.completedAt ?? new Date().toISOString(),
+              durationMs: Date.now() - startTime,
+            },
+          };
+        }
+      }
+      if (e instanceof CommandIdempotencyConflictError) {
+        return this.failedResult(invocation, "COMMAND_IDEMPOTENCY_CONFLICT", e.message, startTime);
+      }
+      throw e;
+    }
 
     try {
       // 3. Compile Executable Plan
@@ -186,5 +223,22 @@ export class DurableCommandExecutor {
         },
       };
     }
+  }
+
+  private failedResult(invocation: CommandInvocation, code: string, message: string, startTime: number): CommandResult {
+    return {
+      invocationId: invocation.invocationId,
+      commandId: invocation.commandId,
+      commandVersion: invocation.commandVersion,
+      taskRunId: invocation.taskRunId,
+      status: "failed",
+      summary: message,
+      error: { code, message },
+      timestamps: {
+        startedAt: invocation.createdAt,
+        completedAt: invocation.completedAt ?? new Date().toISOString(),
+        durationMs: Date.now() - startTime,
+      },
+    };
   }
 }

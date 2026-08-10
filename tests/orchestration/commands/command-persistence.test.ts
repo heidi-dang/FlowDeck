@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { createTransactionManager } from "../../../src/orchestration/persistence/transaction-manager";
 import { SqliteCommandInvocationRepository } from "../../../src/orchestration/commands/persistence/sqlite-command-invocation-repository";
 import type { CommandInvocation } from "../../../src/orchestration/commands/domain/command-definition";
-import { SCHEMA_V_0_2_6 } from "../../../src/orchestration/persistence/migrations/schema-embed";
+import { runMigrations } from "../../../src/orchestration/persistence/migrations/migration-runner";
 
 describe("M9 Command Invocation Persistence", () => {
   let db: Database;
@@ -11,7 +11,7 @@ describe("M9 Command Invocation Persistence", () => {
 
   beforeEach(() => {
     db = new Database(":memory:");
-    db.exec(SCHEMA_V_0_2_6);
+    runMigrations(db);
     const tx = createTransactionManager(db);
     repo = new SqliteCommandInvocationRepository(db, tx);
   });
@@ -69,5 +69,15 @@ describe("M9 Command Invocation Persistence", () => {
     const retrieved = await repo.getByIdempotencyKey("ik-task-start-2");
     expect(retrieved!.status).toBe("completed");
     expect(retrieved!.completedAt).not.toBeUndefined();
+  });
+
+  it("rejects incompatible reuse of an idempotency key", async () => {
+    const first: CommandInvocation = {
+      invocationId: "inv-first", commandId: "task/start", commandVersion: 1,
+      idempotencyKey: "ik-incompatible", status: "pending", input: { taskDescription: "one" },
+      retryCount: 0, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    await repo.saveInvocation(first);
+    await expect(repo.saveInvocation({ ...first, invocationId: "inv-second", input: { taskDescription: "two" } })).rejects.toThrow("incompatible")
   });
 });

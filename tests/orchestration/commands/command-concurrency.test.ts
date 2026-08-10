@@ -7,7 +7,7 @@ import { DurableCommandExecutor } from "../../../src/orchestration/commands/serv
 import { CORE_M9_COMMANDS } from "../../../src/orchestration/commands/definitions/core-commands";
 import { runMigrations } from "../../../src/orchestration/persistence/migrations/migration-runner";
 
-describe("M9 Recovery & Cancellation", () => {
+describe("M9 Command Concurrency & Idempotency", () => {
   let db: Database;
   let registry: CommandRegistry;
   let repo: SqliteCommandInvocationRepository;
@@ -29,32 +29,23 @@ describe("M9 Recovery & Cancellation", () => {
     db.close();
   });
 
-  it("reconstructs state after process restart simulation", async () => {
-    const idempotencyKey = "ik-recovery-test";
+  it("handles 20 concurrent identical submissions with single logical run", async () => {
+    const idempotencyKey = "ik-concurrent-1";
+    const submissions = Array.from({ length: 20 }, () => 
+      executor.executeCommand("task/start", { taskDescription: "build auth" }, { idempotencyKey })
+    );
     
-    // Simulate initial attempt
-    await repo.saveInvocation({
-      invocationId: "inv-crash-1",
-      commandId: "task/start",
-      commandVersion: 1,
-      idempotencyKey,
-      status: "running",
-      input: { taskDescription: "Interrupted task" },
-      taskRunId: "run-crash-1",
-      retryCount: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    });
-
-    // Simulate process restart with new repo instance over same SQLite DB
-    const tx2 = createTransactionManager(db);
-    const repo2 = new SqliteCommandInvocationRepository(db, tx2);
-    const executor2 = new DurableCommandExecutor(registry, repo2, {} as any);
-
-    const result = await executor2.executeCommand("task/start", { taskDescription: "Interrupted task" }, { idempotencyKey });
+    const results = await Promise.all(submissions);
     
-    expect(result.status).toBe("running"); // Idempotent hit on existing running state
-    expect(result.invocationId).toBe("inv-crash-1");
-    expect(result.taskRunId).toBe("run-crash-1");
+    // Check that we got 20 results successfully
+    expect(results.length).toBe(20);
+    
+    // Extract unique invocation IDs
+    const invocationIds = new Set(results.map(r => r.invocationId));
+    expect(invocationIds.size).toBe(1);
+    
+    // Validate we persisted exactly 1 invocation
+    const count = (db.query(`SELECT COUNT(*) as c FROM command_invocations WHERE idempotency_key = ?`).get(idempotencyKey) as any).c;
+    expect(count).toBe(1);
   });
 });
