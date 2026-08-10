@@ -9,7 +9,7 @@
     { "id": "M6", "name": "FDX Next Generation", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/services/fdx-daemon.ts"], "testFiles": ["tests/fdx-index.test.ts"] } },
     { "id": "M7", "name": "Observability & Benchmark", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["scripts/benchmark-v2.ts"], "testFiles": ["tests/v2-benchmark-validator.test.ts"] } },
     { "id": "M8", "name": "Hardening & Release Readiness", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["scripts/verify-v2-milestones.mjs"], "testFiles": ["tests/v2-hardening.test.ts"] } },
-    { "id": "M9", "name": "Canonical Executable Commands", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": [
+    { "id": "M9", "name": "Canonical Executable Commands", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "canonicalVerification": true, "canonicalEvidence": true, "canonicalCompletion": true, "canonicalPlan": true, "schedulerExecution": true, "cancellation": true, "recoveryE2E": true, "tokenGovernance": true, "ownershipWorktrees": true, "idempotency": true, "historicalVersions": true, "security": true, "sourceFiles": [
       "src/orchestration/commands/domain/command-definition.ts",
       "src/orchestration/commands/domain/command-registry.ts",
       "src/orchestration/commands/domain/command-validator.ts",

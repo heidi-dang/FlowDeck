@@ -13,6 +13,10 @@ export function validateV2Milestones(report) {
       const evidence = milestone.evidence
       if (!evidence || evidence.production !== true || evidence.persistence !== true || evidence.recovery !== true || evidence.tests !== true) throw new Error(`${milestone.id} CLOSED without production/persistence/recovery/tests evidence`)
       if (!Array.isArray(evidence.sourceFiles) || evidence.sourceFiles.length === 0 || !Array.isArray(evidence.testFiles) || evidence.testFiles.length === 0) throw new Error(`${milestone.id} CLOSED without source/test evidence references`)
+      if (milestone.id === "M9") {
+        const required = ["canonicalVerification", "canonicalEvidence", "canonicalCompletion", "canonicalPlan", "schedulerExecution", "cancellation", "recovery", "tokenGovernance", "ownershipWorktrees", "idempotency", "historicalVersions", "security"]
+        for (const key of required) if (evidence[key] !== true) throw new Error(`M9 CLOSED without executable evidence: ${key}`)
+      }
       for (const file of [...evidence.sourceFiles, ...evidence.testFiles]) {
         if (typeof file !== "string" || file.includes("..") || !fs.existsSync(new URL(`../${file}`, import.meta.url))) throw new Error(`${milestone.id} evidence file is missing or unsafe: ${String(file)}`)
       }

@@ -472,7 +472,7 @@ class SqliteVerificationRepo implements IVerificationRepository {
     return this.tx.write(() => {
       this.db.query(
         "INSERT INTO verification_results (id, run_id, verification_type, status, target_sha, started_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
-      ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending", "0000000000000000000000000000000000000000");
+      ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending", (v as any).targetSha ?? "0000000000000000000000000000000000000000");
       return v;
     });
   }

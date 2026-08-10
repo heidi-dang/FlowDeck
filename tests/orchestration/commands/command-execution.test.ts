@@ -22,8 +22,13 @@ describe("M9 Durable Command Executor", () => {
     registry = new CommandRegistry();
     CORE_M9_COMMANDS.forEach(c => registry.register(c));
     
-    // We mock the runtime loosely for this test
-    executor = new DurableCommandExecutor(registry, repo, {} as any);
+    executor = new DurableCommandExecutor(registry, repo, {
+      executionRepository: { savePlan: (plan: any) => plan, transitionPlanStatus: () => {} },
+      executionScheduler: { runReady: async () => ({ started: [], succeeded: ["primary"], failed: [], blocked: [] }) },
+      services: {},
+      commandVerification: { verifyCommand: async () => ({ passed: true, verificationResults: [], evidenceItems: [] }) },
+      commandCompletion: { evaluateCommand: async () => ({ outcome: "completed", decisionId: "d1" }) },
+    } as any);
   });
 
   afterEach(() => {
@@ -31,7 +36,7 @@ describe("M9 Durable Command Executor", () => {
   });
 
   it("executes a core command durably", async () => {
-    const result = await executor.executeCommand("task/start", { taskDescription: "Start!" });
+    const result = await executor.executeCommand("task/start", { taskDescription: "Start!", verificationPassed: true });
     expect(result.status).toBe("completed");
     expect(result.commandId).toBe("task/start");
     

@@ -22,7 +22,13 @@ describe("M9 Command Concurrency & Idempotency", () => {
     registry = new CommandRegistry();
     CORE_M9_COMMANDS.forEach(c => registry.register(c));
     
-    executor = new DurableCommandExecutor(registry, repo, {} as any);
+    executor = new DurableCommandExecutor(registry, repo, {
+      executionRepository: { savePlan: (plan: any) => plan, transitionPlanStatus: () => {} },
+      executionScheduler: { runReady: async () => ({ started: [], succeeded: ["primary"], failed: [], blocked: [] }) },
+      services: {},
+      commandVerification: { verifyCommand: async () => ({ passed: true, verificationResults: [], evidenceItems: [] }) },
+      commandCompletion: { evaluateCommand: async () => ({ outcome: "completed", decisionId: "d1" }) },
+    } as any);
   });
 
   afterEach(() => {
@@ -32,7 +38,7 @@ describe("M9 Command Concurrency & Idempotency", () => {
   it("handles 20 concurrent identical submissions with single logical run", async () => {
     const idempotencyKey = "ik-concurrent-1";
     const submissions = Array.from({ length: 20 }, () => 
-      executor.executeCommand("task/start", { taskDescription: "build auth" }, { idempotencyKey })
+      executor.executeCommand("task/start", { taskDescription: "build auth", verificationPassed: true }, { idempotencyKey })
     );
     
     const results = await Promise.all(submissions);

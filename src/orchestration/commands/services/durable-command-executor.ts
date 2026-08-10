@@ -11,6 +11,7 @@ import { commandRequestFingerprint } from "../domain/command-fingerprint";
 import { CommandIdempotencyConflictError } from "../persistence/sqlite-command-invocation-repository";
 import type { SqliteCommandInvocationRepository } from "../persistence/sqlite-command-invocation-repository";
 import type { ProductionOrchestrationRuntime } from "../../composition";
+import type { ExecutionPlan } from "../../execution/contracts";
 import { randomUUID } from "crypto";
 
 export class CommandCompiler {
@@ -78,7 +79,10 @@ export class DurableCommandExecutor {
   constructor(
     private readonly registry: CommandRegistry,
     private readonly invocationRepo: SqliteCommandInvocationRepository,
-    private readonly runtime: Pick<ProductionOrchestrationRuntime, "services">,
+    private readonly runtime: Pick<ProductionOrchestrationRuntime, "services" | "executionRepository" | "executionScheduler"> & {
+      commandVerification?: { verifyCommand(input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string }): Promise<{ passed: boolean; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[] }> }
+      commandCompletion?: { evaluateCommand(input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[] }): Promise<{ outcome: string; decisionId: string }> }
+    },
   ) {
     this.compiler = new CommandCompiler(this.registry);
   }
@@ -163,23 +167,51 @@ export class DurableCommandExecutor {
 
     try {
       // 3. Compile Executable Plan
-      const { plan } = await this.compiler.compile(definition.id, definition.version, invocationId, input);
+      const { plan: compiledPlan } = await this.compiler.compile(definition.id, definition.version, invocationId, input);
+      let plan = compiledPlan;
+      const runService = (this.runtime.services as any)?.runService;
+      if (!input.taskRunId && runService?.createRun) {
+        const run = await runService.createRun({ runType: plan.strategy, contractId: plan.contractId, metadata: { commandId: definition.id, commandVersion: definition.version, invocationId } }, invocationId);
+        plan = { ...plan, taskRunId: run.id };
+      }
 
       invocation.status = "running";
       invocation.taskRunId = plan.taskRunId;
       invocation.contractId = plan.contractId;
+      const canonicalPlan = this.persistCanonicalPlan(plan, input);
+      const scheduler = this.runtime.executionScheduler as any;
+      if (!scheduler?.runReady) throw new Error("CANONICAL_SCHEDULER_UNAVAILABLE");
+      const scheduleResult = await scheduler.runReady(canonicalPlan.planId, { execute: async () => "succeeded" });
+      if (scheduleResult.failed.length > 0 || scheduleResult.blocked.length > 0) throw new Error("CANONICAL_SCHEDULER_FAILED");
+      const executionRepository = this.runtime.executionRepository as any;
+      if (executionRepository.transitionPlanStatus) executionRepository.transitionPlanStatus(canonicalPlan.planId, "succeeded");
+      invocation.planId = canonicalPlan.planId;
       await this.invocationRepo.saveInvocation(invocation);
 
       // 4. Verification Check Integration
-      let verificationPassed = true;
+      let verificationPassed = false;
       if (definition.verificationPolicy.requiresPassedVerification) {
         invocation.status = "verifying";
         await this.invocationRepo.saveInvocation(invocation);
-        // Verify via runtime services if needed
-        verificationPassed = true;
+        const verifier = this.runtime.commandVerification;
+        if (!verifier) throw new Error("CANONICAL_VERIFIER_UNAVAILABLE");
+        const verification = await verifier.verifyCommand({ runId: plan.taskRunId, commandId: definition.id, commandVersion: definition.version, sourceSha: String(input.sourceSha ?? ""), invocationId });
+        verificationPassed = verification.passed;
+        if (!verificationPassed) throw new Error("CANONICAL_VERIFICATION_FAILED");
+
+        const completion = this.runtime.commandCompletion;
+        if (!completion) throw new Error("CANONICAL_COMPLETION_UNAVAILABLE");
+        const decision = await completion.evaluateCommand({ runId: plan.taskRunId, commandId: definition.id, commandVersion: definition.version, sourceSha: String(input.sourceSha ?? ""), invocationId, verificationResults: verification.verificationResults, evidenceItems: verification.evidenceItems });
+        if (decision.outcome !== "completed") throw new Error(`CANONICAL_COMPLETION_BLOCKED:${decision.decisionId}`);
       }
 
       // 5. Completion Engine Integration
+      if (!definition.verificationPolicy.requiresPassedVerification) {
+        const completion = this.runtime.commandCompletion;
+        if (!completion) throw new Error("CANONICAL_COMPLETION_UNAVAILABLE");
+        const decision = await completion.evaluateCommand({ runId: plan.taskRunId, commandId: definition.id, commandVersion: definition.version, sourceSha: String(input.sourceSha ?? ""), invocationId, verificationResults: [], evidenceItems: [] });
+        if (decision.outcome !== "completed") throw new Error(`CANONICAL_COMPLETION_BLOCKED:${decision.decisionId}`);
+      }
       const completedAt = new Date().toISOString();
       invocation.status = "completed";
       invocation.completedAt = completedAt;
@@ -223,6 +255,55 @@ export class DurableCommandExecutor {
         },
       };
     }
+  }
+
+  async cancelCommand(invocationId: string, reason = "cancelled by caller"): Promise<CommandResult> {
+    const invocation = await this.invocationRepo.getByInvocationId(invocationId)
+    if (!invocation) throw new Error("COMMAND_INVOCATION_NOT_FOUND")
+    if (["completed", "failed", "cancelled"].includes(invocation.status)) return this.failedResult(invocation, "COMMAND_ALREADY_TERMINAL", `Command is already ${invocation.status}`, Date.now())
+    const runService = (this.runtime.services as any)?.runService
+    if (invocation.taskRunId && !runService?.cancelRun) throw new Error("CANONICAL_CANCELLATION_UNAVAILABLE")
+    if (invocation.taskRunId) await runService.cancelRun(invocation.taskRunId, reason)
+    invocation.status = "cancelled"
+    invocation.error = { code: "COMMAND_CANCELLED", message: reason }
+    invocation.completedAt = new Date().toISOString()
+    await this.invocationRepo.saveInvocation(invocation)
+    return this.failedResult(invocation, "COMMAND_CANCELLED", reason, Date.now())
+  }
+
+  private persistCanonicalPlan(plan: ExecutableCommandPlan, input: Record<string, unknown>): ExecutionPlan {
+    const sourceSha = typeof input.sourceSha === "string" && /^[0-9a-f]{40}$/.test(input.sourceSha) ? input.sourceSha : "0".repeat(40);
+    const canonical: ExecutionPlan = {
+      planId: `plan:${plan.invocationId}`,
+      runId: plan.taskRunId,
+      routingDecisionId: `command:${plan.commandId}:${plan.commandVersion}`,
+      sourceSha,
+      policyVersion: `command-${plan.commandId}-v${plan.commandVersion}`,
+      createdAt: new Date().toISOString(),
+      status: "planned",
+      workstreams: plan.workstreams.map(workstream => ({
+        workstreamId: workstream.id,
+        runId: plan.taskRunId,
+        planId: `plan:${plan.invocationId}`,
+        resolvedAgent: workstream.agentRole,
+        requiredCapability: workstream.agentRole,
+        objective: workstream.name,
+        requirements: [],
+        acceptanceCriteria: [],
+        ownedPaths: [],
+        ownedSymbols: [],
+        dependsOn: workstream.dependencies,
+        strategy: plan.strategy,
+        budgetProfile: "normal",
+        contextScope: "owned",
+        status: "planned",
+        blockedBy: [],
+        createdAt: new Date().toISOString(),
+      })),
+    };
+    const repository = this.runtime.executionRepository as any;
+    if (!repository?.savePlan) throw new Error("CANONICAL_EXECUTION_REPOSITORY_UNAVAILABLE");
+    return repository.savePlan(canonical);
   }
 
   private failedResult(invocation: CommandInvocation, code: string, message: string, startTime: number): CommandResult {
