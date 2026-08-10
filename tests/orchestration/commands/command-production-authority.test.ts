@@ -16,6 +16,7 @@ describe("M9 production command authority", () => {
     expect(invocation.plan_id).toBe(`plan:${result.invocationId}`)
     const runId = result.taskRunId!
     expect((db.query("SELECT COUNT(*) AS c FROM execution_plans WHERE plan_id = ?").get(invocation.plan_id as string) as any).c).toBe(1)
+    expect((db.query("SELECT COUNT(*) AS c FROM assignments WHERE run_id = ? AND status = 'completed'").get(runId) as any).c).toBe(1)
     expect((db.query("SELECT COUNT(*) AS c FROM verification_results WHERE run_id = ? AND status = 'passed'").get(runId) as any).c).toBeGreaterThan(0)
     expect((db.query("SELECT COUNT(*) AS c FROM evidence WHERE run_id = ?").get(runId) as any).c).toBeGreaterThan(0)
     expect((db.query("SELECT COUNT(*) AS c FROM completion_decisions WHERE run_id = ? AND decision = 'pass'").get(runId) as any).c).toBe(1)

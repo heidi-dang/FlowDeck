@@ -10,6 +10,7 @@ export const TASK_START_COMMAND: CommandDefinition = {
     properties: {
       taskDescription: { type: "string", required: true },
       isTrivial: { type: "boolean" },
+      ownedPaths: { type: "array" } as any,
     },
     required: ["taskDescription"],
   },

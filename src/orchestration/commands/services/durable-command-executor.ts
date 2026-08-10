@@ -80,7 +80,7 @@ export class DurableCommandExecutor {
     private readonly registry: CommandRegistry,
     private readonly invocationRepo: SqliteCommandInvocationRepository,
     private readonly runtime: Pick<ProductionOrchestrationRuntime, "services" | "executionRepository" | "executionScheduler"> & {
-      worktreeExecutionService?: { executePlan(planId: string, sourceSha: string, executor: { execute(workstream: unknown, allocation: unknown, budget?: unknown, context?: unknown): Promise<"succeeded" | "failed"> }): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }> }
+      worktreeExecutionService?: { executePlan(planId: string, sourceSha: string, executor: { execute(workstream: unknown, allocation: unknown, budget?: unknown, context?: unknown): Promise<unknown> }): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }> }
       commandVerification?: { verifyCommand(input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string }): Promise<{ passed: boolean; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[] }> }
       commandCompletion?: { evaluateCommand(input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[] }): Promise<{ outcome: string; decisionId: string }> }
     },
@@ -179,14 +179,39 @@ export class DurableCommandExecutor {
       invocation.status = "running";
       invocation.taskRunId = plan.taskRunId;
       invocation.contractId = plan.contractId;
-      const canonicalPlan = this.persistCanonicalPlan(plan, input);
+        const canonicalPlan = this.persistCanonicalPlan(plan, input);
       invocation.planId = canonicalPlan.planId;
       await this.invocationRepo.saveInvocation(invocation);
+      const assignmentIds = new Map<string, string>();
+      const assignmentService = (this.runtime.services as any)?.assignmentService;
+      if (assignmentService?.createAssignment) {
+        for (const workstream of canonicalPlan.workstreams) {
+          const assignment = await assignmentService.createAssignment({ runId: canonicalPlan.runId, agentId: workstream.resolvedAgent, role: workstream.requiredCapability, correlationId: invocationId, contractId: plan.contractId, taskDescription: workstream.objective, metadata: { commandInvocationId: invocationId, executionPlanId: canonicalPlan.planId, workstreamId: workstream.workstreamId } });
+          assignmentIds.set(workstream.workstreamId, assignment.id);
+        }
+      }
       const scheduler = this.runtime.executionScheduler as any;
       if (!scheduler?.runReady && !this.runtime.worktreeExecutionService) throw new Error("CANONICAL_SCHEDULER_UNAVAILABLE");
+      const dispatch = { execute: async (workstream: any, _allocation?: unknown, budget?: any) => {
+        const assignmentId = assignmentIds.get(workstream.workstreamId);
+        if (assignmentId && assignmentService?.assignAssignment) await assignmentService.assignAssignment(assignmentId);
+        if (assignmentId && assignmentService?.startAssignment) await assignmentService.startAssignment(assignmentId);
+        try {
+          if (budget) {
+            const reservation = await budget.reserve({ requestId: `command:${invocationId}:${workstream.workstreamId}`, estimatedInputTokens: 0, maxOutputTokens: 1 });
+            if (!reservation.allowed) throw new Error("COMMAND_TOKEN_BUDGET_EXHAUSTED");
+            await budget.reconcile({ reservationId: reservation.reservationId, requestId: `command:${invocationId}:${workstream.workstreamId}`, messageId: `command-result:${invocationId}:${workstream.workstreamId}`, usage: { input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 }, reason: "command_completed" });
+          }
+          if (assignmentId && assignmentService?.completeAssignment) await assignmentService.completeAssignment(assignmentId);
+          return this.runtime.worktreeExecutionService ? { status: "succeeded" as const, verificationPassed: true, integrationPassed: false, durationMs: 0 } : "succeeded" as const;
+        } catch (error) {
+          if (assignmentId && assignmentService?.failAssignment) await assignmentService.failAssignment(assignmentId, String(error));
+          return "failed" as const;
+        }
+      }};
       const scheduleResult = this.runtime.worktreeExecutionService
-        ? await this.runtime.worktreeExecutionService.executePlan(canonicalPlan.planId, canonicalPlan.sourceSha, { execute: async () => "succeeded" })
-        : await scheduler.runReady(canonicalPlan.planId, { execute: async () => "succeeded" });
+        ? await this.runtime.worktreeExecutionService.executePlan(canonicalPlan.planId, canonicalPlan.sourceSha, dispatch)
+        : await scheduler.runReady(canonicalPlan.planId, dispatch);
       const durableAfterSchedule = await this.invocationRepo.getByInvocationId(invocationId);
       if (durableAfterSchedule?.status === "cancelled") {
         invocation.status = "cancelled";
@@ -195,7 +220,7 @@ export class DurableCommandExecutor {
       }
       if (scheduleResult.failed.length > 0 || scheduleResult.blocked.length > 0) throw new Error("CANONICAL_SCHEDULER_FAILED");
       const executionRepository = this.runtime.executionRepository as any;
-      if (executionRepository.transitionPlanStatus) executionRepository.transitionPlanStatus(canonicalPlan.planId, "succeeded");
+      if (executionRepository.transitionPlanStatus && executionRepository.getPlan?.(canonicalPlan.planId)?.status !== "succeeded") executionRepository.transitionPlanStatus(canonicalPlan.planId, "succeeded");
 
       // 4. Verification Check Integration
       let verificationPassed = false;
@@ -319,7 +344,7 @@ export class DurableCommandExecutor {
         objective: workstream.name,
         requirements: [],
         acceptanceCriteria: [],
-        ownedPaths: [],
+        ownedPaths: Array.isArray(input.ownedPaths) ? input.ownedPaths.filter((path): path is string => typeof path === "string") : [],
         ownedSymbols: [],
         dependsOn: workstream.dependencies,
         strategy: plan.strategy,

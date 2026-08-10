@@ -73,6 +73,7 @@ import { SqlitePerformanceRepository } from "./performance";
 import { PerformanceProjection } from "./services/performance-projection";
 import { RuntimeSnapshotService } from "./services/runtime-snapshot";
 import { AuthoritativeRoutingService } from "./routing/authoritative";
+import { TokenBudgetRuntime } from "../services/token-budget-runtime";
 import type { CommandRegistry } from "./commands/domain/command-registry";
 import type { DurableCommandExecutor } from "./commands/services/durable-command-executor";
 import { createCoreCommandRuntime } from "./commands/services/command-runtime";
@@ -107,6 +108,7 @@ export interface ProductionOrchestrationRuntime {
   authoritativeRouting: AuthoritativeRoutingService;
   worktreeManager?: GitWorktreeManager;
   integrationService?: ControlledIntegrationService;
+  tokenRuntime?: TokenBudgetRuntime;
   commands: {
     registry: CommandRegistry;
     executor: DurableCommandExecutor;
@@ -364,7 +366,10 @@ export class SqliteAssignmentRepo implements IAssignmentRepository {
       // Map input fields to assignments table columns
       if (input.status !== undefined) {
         sets.push("status = ?");
-        values.push(input.status);
+        // The frozen schema stores the durable execution states pending/running/
+        // completed/failed/skipped/cancelled; the API's assigned/in_progress
+        // aliases project onto those canonical states.
+        values.push(input.status === "assigned" ? "pending" : input.status === "in_progress" ? "running" : input.status);
       }
       if (input.agentId !== undefined) {
         sets.push("agent_id = ?");
@@ -649,6 +654,13 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const worktreeManager = options.repositoryPath && options.worktreeRoot ? new GitWorktreeManager(options.repositoryPath, options.worktreeRoot) : undefined;
   const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath, metrics) : undefined;
   const worktreeExecutionService = worktreeManager ? new WorktreeExecutionService(executionRepository, executionScheduler, worktreeManager, integrationService, undefined, performanceRepository) : undefined;
+  const tokenRuntime = TokenBudgetRuntime.fromConfig(undefined, { directory: options.repositoryPath });
+  if (worktreeExecutionService) {
+    worktreeExecutionService.setBudgetCoordinator({
+      open: workstream => tokenRuntime.openWorkstreamBudget(workstream),
+      redistribute: (workstream, amount, reason, sourceReservationId) => tokenRuntime.redistributeWorkstream(workstream, amount, reason, sourceReservationId),
+    });
+  }
   if (worktreeExecutionService) {
     authoritativeRouting.setDispatcher(worktreeExecutionService);
     // Reconcile running leases and in-flight work before this runtime can
@@ -717,6 +729,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     authoritativeRouting,
     worktreeManager,
     integrationService,
+    tokenRuntime,
     commands,
   };
 }
