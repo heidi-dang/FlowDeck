@@ -11,7 +11,7 @@ describe("M9 Recovery & Cancellation", () => {
   let db: Database;
   let registry: CommandRegistry;
   let repo: SqliteCommandInvocationRepository;
-  let executor: DurableCommandExecutor;
+  let _executor: DurableCommandExecutor;
 
   beforeEach(() => {
     db = new Database(":memory:");
@@ -22,7 +22,7 @@ describe("M9 Recovery & Cancellation", () => {
     registry = new CommandRegistry();
     CORE_M9_COMMANDS.forEach(c => registry.register(c));
     
-    executor = new DurableCommandExecutor(registry, repo, {} as any);
+    _executor = new DurableCommandExecutor(registry, repo, {} as any);
   });
 
   afterEach(() => {

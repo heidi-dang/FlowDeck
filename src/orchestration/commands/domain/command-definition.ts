@@ -1,4 +1,3 @@
-import { z } from "zod";
 export interface CommandInputSchema {
   type: "object";
   properties: Record<string, { type: string; description?: string; required?: boolean }>;
@@ -50,7 +49,7 @@ export interface TokenPolicy {
   allowContextCompaction?: boolean;
 }
 
-export interface CommandDefinition<TInput = Record<string, unknown>, TOutput = Record<string, unknown>> {
+export interface CommandDefinition<TInput = Record<string, unknown>, _TOutput = Record<string, unknown>> {
   id: string;
   version: number;
   description: string;

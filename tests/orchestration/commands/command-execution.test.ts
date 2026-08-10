@@ -35,7 +35,7 @@ describe("M9 Durable Command Executor", () => {
     expect(result.status).toBe("completed");
     expect(result.commandId).toBe("task/start");
     
-    const saved = await repo.getByIdempotencyKey(`ik_${result.invocationId}`); // Note default idempotency fallback if we pass none, wait actually we get it from result or we can pass it
+    await repo.getByIdempotencyKey(`ik_${result.invocationId}`); // default idempotency fallback
   });
 
   it("enforces idempotency", async () => {

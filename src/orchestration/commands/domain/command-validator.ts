@@ -1,4 +1,4 @@
-import type { CommandDefinition, CommandInputSchema } from "./command-definition";
+import type { CommandDefinition } from "./command-definition";
 
 export interface CommandValidationError {
   commandId: string;
