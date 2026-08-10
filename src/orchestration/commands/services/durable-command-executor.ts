@@ -78,7 +78,7 @@ export class DurableCommandExecutor {
   constructor(
     private readonly registry: CommandRegistry,
     private readonly invocationRepo: SqliteCommandInvocationRepository,
-    private readonly runtime: ProductionOrchestrationRuntime,
+    private readonly runtime: Pick<ProductionOrchestrationRuntime, "services">,
   ) {
     this.compiler = new CommandCompiler(this.registry);
   }

@@ -73,6 +73,9 @@ import { SqlitePerformanceRepository } from "./performance";
 import { PerformanceProjection } from "./services/performance-projection";
 import { RuntimeSnapshotService } from "./services/runtime-snapshot";
 import { AuthoritativeRoutingService } from "./routing/authoritative";
+import type { CommandRegistry } from "./commands/domain/command-registry";
+import type { DurableCommandExecutor } from "./commands/services/durable-command-executor";
+import { createCoreCommandRuntime } from "./commands/services/command-runtime";
 
 export interface ProductionOrchestrationRuntime {
   db: Database;
@@ -104,6 +107,10 @@ export interface ProductionOrchestrationRuntime {
   authoritativeRouting: AuthoritativeRoutingService;
   worktreeManager?: GitWorktreeManager;
   integrationService?: ControlledIntegrationService;
+  commands: {
+    registry: CommandRegistry;
+    executor: DurableCommandExecutor;
+  };
 }
 
 // ── SQLite-backed production repository implementations ────────────────
@@ -681,6 +688,13 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   };
 
   const router = createRouterWithControllers(services);
+  const commands = createCoreCommandRuntime(db, txManager, {
+    db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
+    sessionRepo, contextItemRepo, consumerOffsetRepo, services, router,
+    routingDecisionRepository, metrics, executionRepository, executionScheduler,
+    worktreeExecutionService, performanceRepository, authoritativeRouting,
+    worktreeManager, integrationService,
+  });
 
   return {
     db,
@@ -703,5 +717,6 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     authoritativeRouting,
     worktreeManager,
     integrationService,
+    commands,
   };
 }
