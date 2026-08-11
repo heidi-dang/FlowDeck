@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.3] - 2026-08-11
+
+### Added
+
+- M1-M9 V2 autonomous execution: 9/9 milestones CLOSED, Master Plan 100%.
+- Canonical executable commands (task/start, plan, execute, verify, complete, review/audit, resume/recover, status) with durable idempotency (20-way).
+- Scheduler/workstream/Assignment dispatch with durable assignment binding.
+- Canonical token governance, worktree isolation, ownership controls.
+- Canonical verification, evidence, and six-gate Completion Engine.
+- Fresh-runtime recovery R1-R15: nonterminal resume after process restart, terminal projection with zero rerun, concurrent-recovery single-flight, historical command-version preservation.
+- Pre-merge controlled dogfooding (D1-D15) + soak: 57 runs, zero unexpected failures/hangs/leaks.
+
+### Fixed
+
+- Completion regression: real VerificationResult/Evidence now reach the Completion Engine on the required-verification path (current-SHA gate no longer starved).
+- Worktree integration gate no longer bypassed (agent verificationPassed is authoritative).
+- Cancellation now cascades to logical Assignments (no zombie assignments).
+- Recovery claim acquisition serialized (BEGIN IMMEDIATE); SHA-scoped recovery fast-path.
+
+### Known limitations (alpha)
+
+- Semver prerelease: 2.0.0-alpha.3 does not imply stable-channel guarantees.
+- Verification-reuse fast-path still re-verifies on recovery (outcome-correct, decision deduped) — see milestone evidence.
+
 ## [2.0.0-alpha.2] - 2026-08-09
 
 ### Added
