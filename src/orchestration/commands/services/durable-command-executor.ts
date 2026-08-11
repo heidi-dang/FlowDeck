@@ -353,7 +353,7 @@ export class DurableCommandExecutor {
       const verifier = this.runtime.commandVerification;
       if (!verifier) throw new CommandRecoveryError("CANONICAL_VERIFIER_UNAVAILABLE", "Canonical verifier unavailable");
       const existingResult = this.loadExistingVerification(canonicalPlan.runId);
-      const existingPassDecision = this.loadPassCompletionDecision(canonicalPlan.runId);
+      const existingPassDecision = this.loadPassCompletionDecision(canonicalPlan.runId, sourceSha);
       let verificationResults: readonly unknown[] = [];
       let evidenceItems: readonly unknown[] = [];
       if (existingResult && existingResult.status === "passed" && existingPassDecision) {
@@ -590,9 +590,10 @@ export class DurableCommandExecutor {
     return row ? { status: row.status } : null;
   }
 
-  private loadPassCompletionDecision(runId: string): boolean {
+  private loadPassCompletionDecision(runId: string, sourceSha: string): boolean {
     const db = this.runtime.executionRepository.getDb();
-    const row = db.query("SELECT id FROM completion_decisions WHERE run_id = ? AND decision = 'pass' ORDER BY decided_at DESC LIMIT 1").get(runId);
+    const sha = /^[0-9a-f]{40}$/.test(sourceSha) ? sourceSha : "0".repeat(40);
+    const row = db.query("SELECT id FROM completion_decisions WHERE run_id = ? AND decision = 'pass' AND sha = ? ORDER BY decided_at DESC LIMIT 1").get(runId, sha);
     return row !== null;
   }
 
@@ -601,7 +602,8 @@ export class DurableCommandExecutor {
     input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[]; verificationRequired: boolean },
   ): Promise<{ outcome: string; decisionId: string }> {
     const db = this.runtime.executionRepository.getDb();
-    const existing = db.query("SELECT id, decision, sha FROM completion_decisions WHERE run_id = ? ORDER BY decided_at DESC LIMIT 1").get(input.runId) as { id: string; decision: string; sha: string } | null;
+    const sha = /^[0-9a-f]{40}$/.test(input.sourceSha) ? input.sourceSha : "0".repeat(40);
+    const existing = db.query("SELECT id, decision, sha FROM completion_decisions WHERE run_id = ? AND decision = 'pass' AND sha = ? ORDER BY decided_at DESC LIMIT 1").get(input.runId, sha) as { id: string; decision: string; sha: string } | null;
     if (existing && existing.decision === "pass") {
       return { outcome: "completed", decisionId: existing.id };
     }
