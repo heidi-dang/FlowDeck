@@ -105,6 +105,10 @@ export class AssignmentService {
     return this.updateAssignment(id, { status: AssignmentStatus.FAILED });
   }
 
+  async cancelAssignment(id: string): Promise<Assignment> {
+    return this.updateAssignment(id, { status: AssignmentStatus.CANCELLED });
+  }
+
   /** Exhaustive status → event mapping. Adding a new AssignmentStatus triggers a compile error. */
   private getStatusEvent(status: string): string {
     switch (status) {
@@ -112,6 +116,7 @@ export class AssignmentService {
       case AssignmentStatus.IN_PROGRESS: return OrchestrationEventType.ASSIGNMENT_STARTED;
       case AssignmentStatus.COMPLETED: return OrchestrationEventType.ASSIGNMENT_COMPLETED;
       case AssignmentStatus.FAILED: return OrchestrationEventType.ASSIGNMENT_FAILED;
+      case AssignmentStatus.CANCELLED: return OrchestrationEventType.ASSIGNMENT_CANCELLED;
       case AssignmentStatus.PENDING:
       case AssignmentStatus.SKIPPED:
       default:

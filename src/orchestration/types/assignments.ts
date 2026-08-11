@@ -7,6 +7,7 @@ export const AssignmentStatus = {
   COMPLETED: "completed",
   FAILED: "failed",
   SKIPPED: "skipped",
+  CANCELLED: "cancelled",
 } as const;
 
 export type AssignmentStatus = (typeof AssignmentStatus)[keyof typeof AssignmentStatus];
@@ -92,7 +93,7 @@ export const CreateAssignmentInputSchema = z.object({
 });
 
 export const UpdateAssignmentInputSchema = z.object({
-  status: z.enum([AssignmentStatus.PENDING, AssignmentStatus.ASSIGNED, AssignmentStatus.IN_PROGRESS, AssignmentStatus.COMPLETED, AssignmentStatus.FAILED, AssignmentStatus.SKIPPED]).optional(),
+  status: z.enum([AssignmentStatus.PENDING, AssignmentStatus.ASSIGNED, AssignmentStatus.IN_PROGRESS, AssignmentStatus.COMPLETED, AssignmentStatus.FAILED, AssignmentStatus.SKIPPED, AssignmentStatus.CANCELLED]).optional(),
   task: z.string().max(5000).optional(),
   tools: z.array(z.string().max(255)).max(100).optional(),
   context: z.record(z.string(), z.unknown()).optional(),

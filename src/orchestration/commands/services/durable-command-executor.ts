@@ -440,6 +440,7 @@ export class DurableCommandExecutor {
     }
     for (const binding of this.runtime.assignmentBindingCoordinator.listByPlan(invocation.planId ?? "")) {
       this.runtime.assignmentBindingCoordinator.markCancelled(binding.assignmentId);
+      if (this.runtime.services.assignmentService?.cancelAssignment) await this.runtime.services.assignmentService.cancelAssignment(binding.assignmentId);
     }
     invocation.status = "cancelled";
     invocation.error = { code: "COMMAND_CANCELLED", message: reason };
