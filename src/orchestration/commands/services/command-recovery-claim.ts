@@ -18,7 +18,9 @@ export class CommandRecoveryClaim {
   acquire(invocationId: string): boolean {
     const key = `command-recovery:${invocationId}`
     try {
-      return this.tx.write(() => {
+      // BEGIN IMMEDIATE: the SELECT-then-INSERT must be serialized so two
+      // processes cannot both observe a live claim and both proceed.
+      return this.tx.writeImmediate(() => {
         const live = this.db
           .query("SELECT 1 FROM command_idempotency WHERE idempotency_key = ? AND status = 'executing' AND started_at >= datetime('now', ?)")
           .get(key, `-${CommandRecoveryClaim.TTL_SECONDS} seconds`)
