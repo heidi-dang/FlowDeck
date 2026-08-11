@@ -78,7 +78,7 @@ import { AuthoritativeRoutingService } from "./routing/authoritative";
 import { TokenBudgetRuntime } from "../services/token-budget-runtime";
 import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
 import type { CommandRegistry } from "./commands/domain/command-registry";
-import type { DurableCommandExecutor } from "./commands/services/durable-command-executor";
+import type { DurableCommandExecutor, CommandFaultHook } from "./commands/services/durable-command-executor";
 import { createCoreCommandRuntime } from "./commands/services/command-runtime";
 
 export interface ProductionOrchestrationRuntime {
@@ -115,6 +115,7 @@ export interface ProductionOrchestrationRuntime {
   tokenRuntime?: TokenBudgetRuntime;
   agentExecutor?: IsolatedWorkstreamExecutor;
   assignmentBindingCoordinator: AssignmentBindingCoordinator;
+  faultHook?: CommandFaultHook;
   commands: {
     registry: CommandRegistry;
     executor: DurableCommandExecutor;
@@ -624,7 +625,7 @@ function safeParseJSON(raw: string): Record<string, unknown> {
 
 // ── Production composition factory ─────────────────────────────────────
 
-export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown>; agentExecutor?: IsolatedWorkstreamExecutor } = {}): ProductionOrchestrationRuntime {
+export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown>; agentExecutor?: IsolatedWorkstreamExecutor; faultHook?: CommandFaultHook } = {}): ProductionOrchestrationRuntime {
   const executionRegistry = new ExecutionRegistry();
   const unitOfWork = new SqliteUnitOfWork(db);
   const txManager = createTransactionManager(db);
@@ -715,7 +716,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     routingDecisionRepository, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
-    assignmentBindingCoordinator,
+    assignmentBindingCoordinator, faultHook: options.faultHook,
   });
 
   return {
@@ -742,6 +743,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     tokenRuntime,
     agentExecutor: options.agentExecutor,
     assignmentBindingCoordinator,
+    faultHook: options.faultHook,
     commands,
   };
 }

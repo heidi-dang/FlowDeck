@@ -47,6 +47,11 @@ export interface CommandFaultHook {
    *  verification/completion. Dependency-injected; never persisted. Used by
    *  tests to simulate a crash at a precise fault boundary. */
   afterDispatch?(invocationId: string): void;
+  /** Called immediately before the Completion Engine evaluation, after
+   *  verification results/evidence have been persisted. Dependency-injected;
+   *  never persisted. Used by tests to simulate a crash between verification
+   *  and completion (R12-R14 recovery boundary). */
+  beforeCompletion?(invocationId: string): void;
 }
 
 export class CommandCompiler {
@@ -357,6 +362,7 @@ export class DurableCommandExecutor {
 
       const completion = this.runtime.commandCompletion;
       if (!completion) throw new CommandRecoveryError("CANONICAL_COMPLETION_UNAVAILABLE", "Canonical completion unavailable");
+      this.runtime.faultHook?.beforeCompletion?.(invocation.invocationId);
       const decision = await this.reuseOrEvaluateCompletion(completion, {
         runId: canonicalPlan.runId,
         commandId: definition.id,
@@ -374,6 +380,7 @@ export class DurableCommandExecutor {
     if (!definition.verificationPolicy.requiresPassedVerification) {
       const completion = this.runtime.commandCompletion;
       if (!completion) throw new CommandRecoveryError("CANONICAL_COMPLETION_UNAVAILABLE", "Canonical completion unavailable");
+      this.runtime.faultHook?.beforeCompletion?.(invocation.invocationId);
       const decision = await this.reuseOrEvaluateCompletion(completion, {
         runId: canonicalPlan.runId,
         commandId: definition.id,
