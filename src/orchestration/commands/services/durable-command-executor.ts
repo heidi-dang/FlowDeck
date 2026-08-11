@@ -317,9 +317,9 @@ export class DurableCommandExecutor {
   async recoverCommand(invocationId: string): Promise<CommandResult> {
     const invocation = await this.invocationRepo.getByInvocationId(invocationId)
     if (!invocation) throw new Error("COMMAND_INVOCATION_NOT_FOUND")
-    if (invocation.status === "completed" || invocation.status === "cancelled" || invocation.status === "failed") {
-      return this.failedResult(invocation, "COMMAND_TERMINAL", `Command is already ${invocation.status}`, Date.now())
-    }
+    if (invocation.status === "completed") return this.terminalResult(invocation, Date.now())
+    if (invocation.status === "cancelled") return this.terminalResult(invocation, Date.now())
+    if (invocation.status === "failed") return this.terminalResult(invocation, Date.now())
     const repository = this.runtime.executionRepository as any
     if (repository?.recoverAfterRestart) repository.recoverAfterRestart()
     if (!invocation.planId || !repository?.getPlan || !repository.getPlan(invocation.planId)) throw new Error("CANONICAL_RECOVERY_STATE_MISSING")
@@ -380,5 +380,22 @@ export class DurableCommandExecutor {
         durationMs: Date.now() - startTime,
       },
     };
+  }
+
+  private terminalResult(invocation: CommandInvocation, startTime: number): CommandResult {
+    return {
+      invocationId: invocation.invocationId,
+      commandId: invocation.commandId,
+      commandVersion: invocation.commandVersion,
+      taskRunId: invocation.taskRunId,
+      status: invocation.status,
+      summary: `Command ${invocation.commandId} recovered in terminal state: ${invocation.status}`,
+      error: invocation.error,
+      timestamps: {
+        startedAt: invocation.createdAt,
+        completedAt: invocation.completedAt ?? invocation.updatedAt,
+        durationMs: Date.now() - startTime,
+      },
+    }
   }
 }
