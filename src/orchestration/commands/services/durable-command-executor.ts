@@ -188,6 +188,9 @@ export class DurableCommandExecutor {
       updatedAt: new Date(startTime).toISOString(),
     };
 
+    // Security boundary: reject malicious input before it is durably persisted.
+    enforceCommandSecurity(invocation);
+
     // 2. Persist Pending Invocation (R1 boundary)
     try {
       await this.invocationRepo.saveInvocation(invocation);
