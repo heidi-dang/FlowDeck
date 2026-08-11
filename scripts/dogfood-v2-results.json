@@ -4,7 +4,7 @@
     "branch": "feat/v2-m9-commands-as-code",
     "head": "b0fc0f0",
     "bun": "v24.3.0",
-    "ranAt": "2026-08-11T09:14:23.046Z",
+    "ranAt": "2026-08-11T09:17:13.395Z",
     "hangTimeoutMs": 45000,
     "note": "Dogfood mocks ONLY the agent; orchestration (runtime composition, git worktrees, SQLite, budget, scheduler, verification, completion, recovery, idempotency) is the real production path."
   },
@@ -14,8 +14,8 @@
       "status": "PASS",
       "durationMs": 53,
       "result": {
-        "runId": "31243ab4-c1db-49a0-803b-e3eb4b7127e4",
-        "invocationId": "inv_f4996c88-4589-4218-8675-c42e1ca09e24"
+        "runId": "34fd0861-4e40-4933-9021-d7c33de06f2b",
+        "invocationId": "inv_37d6ac3d-97b1-4be3-89f0-71bf8b7a9aad"
       },
       "checks": {
         "commandCompleted": true,
@@ -70,7 +70,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "31243ab4-c1db-49a0-803b-e3eb4b7127e4": {
+            "34fd0861-4e40-4933-9021-d7c33de06f2b": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -86,7 +86,7 @@
       "status": "PASS",
       "durationMs": 38,
       "result": {
-        "runId": "cf222e59-c667-447e-ba89-6eb39461fd8a",
+        "runId": "26e07db4-a38d-4213-941e-91ac4e86fe5b",
         "before": {
           "src/math.ts": "8d344bcb231aaa7f94df684340b260c5edc259441a6e56f600f23f736b3f2f5e",
           "src/strings.ts": "772979d2bc94a2d6a59cafec5281d20e93f60fe4b2e3f02dfc3ce2dbcb3fbbbd",
@@ -94,15 +94,15 @@
           "package.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
         },
         "after": {
-          "src/math.ts": "ffa24ce5c59c33053a6f860953d54bf4fdeaf243b19fc2f0863a5b3bb5484c9f",
-          "src/strings.ts": "20005547456a41326dac6e7a3476304787f0d0da385c36143ab279474db67508",
+          "src/math.ts": "e792770be6a67d185f2b010e30bbcd6e3a3f05ed9146733c30cb401e8e7c0738",
+          "src/strings.ts": "94b6bd5925505f717365146cd31c93f781828a0278cdce7e70bbb50064c80ea3",
           "README.md": "f3a92bb85c24313688d2476bc8894f75eb35417963007ff9b01db4a53ee9297b",
           "package.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
         },
         "worktreeSnapshots": {
-          "ws_b1a10762-342a-4109-a4f4-e0affaa55746": [
-            "src/math.ts:ffa24ce5c59c33053a6f860953d54bf4fdeaf243b19fc2f0863a5b3bb5484c9f",
-            "src/strings.ts:20005547456a41326dac6e7a3476304787f0d0da385c36143ab279474db67508"
+          "ws_3cbd283d-39ae-4201-8fa0-860a73d5b1e1": [
+            "src/math.ts:e792770be6a67d185f2b010e30bbcd6e3a3f05ed9146733c30cb401e8e7c0738",
+            "src/strings.ts:94b6bd5925505f717365146cd31c93f781828a0278cdce7e70bbb50064c80ea3"
           ]
         }
       },
@@ -159,7 +159,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "cf222e59-c667-447e-ba89-6eb39461fd8a": {
+            "26e07db4-a38d-4213-941e-91ac4e86fe5b": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -173,9 +173,9 @@
     {
       "scenario": "D3",
       "status": "PASS",
-      "durationMs": 66,
+      "durationMs": 67,
       "result": {
-        "runId": "3ff114e7-4e04-40d3-9759-b8e87591bf0f",
+        "runId": "3e28afd2-25bc-452b-972c-d8c511423269",
         "planId": "plan:inv_d3_dependency",
         "workstreams": [
           {
@@ -254,7 +254,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "3ff114e7-4e04-40d3-9759-b8e87591bf0f": {
+            "3e28afd2-25bc-452b-972c-d8c511423269": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -268,9 +268,9 @@
     {
       "scenario": "D4",
       "status": "PASS",
-      "durationMs": 96,
+      "durationMs": 91,
       "result": {
-        "runId": "5e3c94ec-f327-495d-bdf1-4592c89cb25e",
+        "runId": "8276b829-976d-4f63-8d3e-45de30199eb0",
         "planId": "plan:inv_d4_parallel",
         "workstreams": [
           {
@@ -346,7 +346,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "5e3c94ec-f327-495d-bdf1-4592c89cb25e": {
+            "8276b829-976d-4f63-8d3e-45de30199eb0": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -415,7 +415,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "b769f9f0-f67e-4f6a-9626-5cb48d93067f": {
+            "387b9378-895f-46c1-9f14-4901d475ff68": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -429,7 +429,7 @@
     {
       "scenario": "D6",
       "status": "PASS",
-      "durationMs": 77,
+      "durationMs": 72,
       "result": {
         "partA": {
           "status": "completed",
@@ -453,7 +453,7 @@
             "releasedUnused": 135,
             "negative": false,
             "perRun": {
-              "f0e3e2c1-796b-4471-bc65-89942c79cbca": {
+              "7fb618a0-3a12-41b1-b7da-515bcc594e74": {
                 "reserved": 0,
                 "consumed": 15,
                 "releasedUnused": 135,
@@ -506,7 +506,7 @@
               "releasedUnused": 135,
               "negative": false,
               "perRun": {
-                "f0e3e2c1-796b-4471-bc65-89942c79cbca": {
+                "7fb618a0-3a12-41b1-b7da-515bcc594e74": {
                   "reserved": 0,
                   "consumed": 15,
                   "releasedUnused": 135,
@@ -520,7 +520,7 @@
         "partB": {
           "status": "failed",
           "errorCode": "CANONICAL_SCHEDULER_FAILED",
-          "runId": "b595b6aa-fd0e-428a-9b18-be7286b970b4",
+          "runId": "9e0b0d6b-58d9-4d93-b023-939189c00d36",
           "tokenScan": {
             "files": 0,
             "reserved": 0,
@@ -528,7 +528,7 @@
             "releasedUnused": 0,
             "negative": false,
             "perRun": {
-              "b595b6aa-fd0e-428a-9b18-be7286b970b4": {
+              "9e0b0d6b-58d9-4d93-b023-939189c00d36": {
                 "reserved": 0,
                 "consumed": 0,
                 "releasedUnused": 0,
@@ -591,7 +591,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "b595b6aa-fd0e-428a-9b18-be7286b970b4": {
+            "9e0b0d6b-58d9-4d93-b023-939189c00d36": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -605,7 +605,7 @@
     {
       "scenario": "D7",
       "status": "PASS",
-      "durationMs": 47,
+      "durationMs": 43,
       "result": {
         "failResult": {
           "status": "failed",
@@ -681,14 +681,14 @@
     },
     {
       "scenario": "D8",
-      "status": "FAIL",
+      "status": "PASS",
       "durationMs": 19,
       "result": {
-        "invocationId": "inv_0e061adc-6144-40b1-a84d-10e46ca45af4",
+        "invocationId": "inv_f1d9f708-de40-404e-a3b3-f3bfdf0a51e6",
         "resultStatus": "cancelled",
         "errorCode": "COMMAND_CANCELLED",
         "planStatus": "cancelled",
-        "zombieAssignments": 1
+        "zombieAssignments": 0
       },
       "checks": {
         "commandCancelled": true,
@@ -697,7 +697,7 @@
         "noRunnableWorkstreams": true,
         "invocationCancelled": true,
         "noPassDecision": true,
-        "noZombieAssignments": false
+        "noZombieAssignments": true
       },
       "leakScan": {
         "worktreeLeases": {
@@ -710,7 +710,7 @@
         "ownershipClaims": 0,
         "assignments": {
           "total": 1,
-          "zombie": 1
+          "zombie": 0
         },
         "bindings": {
           "total": 1,
@@ -744,7 +744,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "eaf164c5-fe9d-4bf0-8c41-4b021d27f3c2": {
+            "45a3354e-13b7-4445-a1e7-438219500e9b": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -758,18 +758,18 @@
     {
       "scenario": "D9",
       "status": "PASS",
-      "durationMs": 42,
+      "durationMs": 41,
       "result": {
-        "dbPath": "/tmp/dogfood-v2-eCmmYu/d9.sqlite",
+        "dbPath": "/tmp/dogfood-v2-O6qIBD/d9.sqlite",
         "invocation": {
-          "invocation_id": "inv_5b13582d-08dc-49c8-a063-6fdd90b03561",
-          "task_run_id": "ff3a834e-1833-4d5d-af6f-186daf94ade4",
-          "plan_id": "plan:inv_5b13582d-08dc-49c8-a063-6fdd90b03561",
+          "invocation_id": "inv_9a79ba75-c090-45bd-a030-43c86e268a47",
+          "task_run_id": "d2598c30-75b6-4fbe-b126-833cee40a137",
+          "plan_id": "plan:inv_9a79ba75-c090-45bd-a030-43c86e268a47",
           "status": "running"
         },
         "recovered": {
           "status": "completed",
-          "taskRunId": "ff3a834e-1833-4d5d-af6f-186daf94ade4"
+          "taskRunId": "d2598c30-75b6-4fbe-b126-833cee40a137"
         },
         "thrown": "RangeError: Cannot use a closed database"
       },
@@ -832,7 +832,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "ff3a834e-1833-4d5d-af6f-186daf94ade4": {
+            "d2598c30-75b6-4fbe-b126-833cee40a137": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -846,10 +846,10 @@
     {
       "scenario": "D10",
       "status": "PASS",
-      "durationMs": 21,
+      "durationMs": 22,
       "result": {
         "errorCode": "CANONICAL_SCHEDULER_FAILED",
-        "runId": "4cea8ef1-e962-436d-b753-a79fc3dfeac2",
+        "runId": "361e1a96-6f4d-42c4-8160-6c02e8742858",
         "workstream": {
           "status": "failed",
           "failure_reason": "WORKSTREAM_EXECUTION_FAILED"
@@ -911,7 +911,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "4cea8ef1-e962-436d-b753-a79fc3dfeac2": {
+            "361e1a96-6f4d-42c4-8160-6c02e8742858": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -986,7 +986,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "d0bf1212-3e3a-4d46-a8f0-b206116af9a1": {
+            "b902af3b-9985-408e-aff1-56a81f442bdc": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -1000,15 +1000,15 @@
     {
       "scenario": "D12",
       "status": "PASS",
-      "durationMs": 38,
+      "durationMs": 39,
       "result": {
-        "runId": "8f224089-2a76-4ea9-b882-77caeafe96b4",
-        "invocationId": "inv_bb88ff1d-569a-403a-aa9a-4fe0311b8ba5",
+        "runId": "359d4f16-499e-4bc9-bff5-46b23ddef36b",
+        "invocationId": "inv_9961dc93-1da9-4119-94a3-487b437cfac2",
         "d12": {
-          "dbPath": "/tmp/dogfood-v2-eCmmYu/d12.sqlite",
-          "invocationId": "inv_bb88ff1d-569a-403a-aa9a-4fe0311b8ba5",
-          "runId": "8f224089-2a76-4ea9-b882-77caeafe96b4",
-          "planId": "plan:inv_bb88ff1d-569a-403a-aa9a-4fe0311b8ba5",
+          "dbPath": "/tmp/dogfood-v2-O6qIBD/d12.sqlite",
+          "invocationId": "inv_9961dc93-1da9-4119-94a3-487b437cfac2",
+          "runId": "359d4f16-499e-4bc9-bff5-46b23ddef36b",
+          "planId": "plan:inv_9961dc93-1da9-4119-94a3-487b437cfac2",
           "counts": {
             "runs": 1,
             "plans": 1,
@@ -1072,7 +1072,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "8f224089-2a76-4ea9-b882-77caeafe96b4": {
+            "359d4f16-499e-4bc9-bff5-46b23ddef36b": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -1086,7 +1086,7 @@
     {
       "scenario": "D13",
       "status": "PASS",
-      "durationMs": 5,
+      "durationMs": 4,
       "result": {
         "d12Recover": {
           "status": "completed",
@@ -1179,7 +1179,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "8f224089-2a76-4ea9-b882-77caeafe96b4": {
+            "359d4f16-499e-4bc9-bff5-46b23ddef36b": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -1193,11 +1193,11 @@
     {
       "scenario": "D14",
       "status": "PASS",
-      "durationMs": 11,
+      "durationMs": 12,
       "result": {
         "idempotencyKey": "ik_d14_concurrent",
         "uniqueInvocationIds": [
-          "inv_ff12b98c-e2cf-4901-b41b-9952954fd2cd"
+          "inv_6df5c128-541b-465e-822a-aa31e6a7ad21"
         ],
         "statuses": [
           "completed",
@@ -1221,7 +1221,7 @@
           "pending",
           "pending"
         ],
-        "runId": "5ea4fcfe-d7bb-489f-9eba-3856411c1a62"
+        "runId": "e53d1686-7aae-414e-ba1a-1f07202d2c7f"
       },
       "checks": {
         "allReturned": true,
@@ -1275,7 +1275,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "5ea4fcfe-d7bb-489f-9eba-3856411c1a62": {
+            "e53d1686-7aae-414e-ba1a-1f07202d2c7f": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -1289,19 +1289,19 @@
     {
       "scenario": "D15",
       "status": "PASS",
-      "durationMs": 61,
+      "durationMs": 63,
       "result": {
-        "runId": "dcd834cb-88c9-4ecf-8673-88f5a94922a5",
+        "runId": "1a3f3217-6745-4fda-a1e3-42f9f841533f",
         "planId": "plan:inv_d15_integration",
         "integratedAttempts": [
           {
-            "attempt_id": "integration-ws-1-1786439661757-complete",
+            "attempt_id": "integration-ws-1-1786439831848-complete",
             "plan_id": "plan:inv_d15_integration",
             "workstream_id": "ws-1",
             "status": "integrated"
           },
           {
-            "attempt_id": "integration-ws-2-1786439661768-complete",
+            "attempt_id": "integration-ws-2-1786439831859-complete",
             "plan_id": "plan:inv_d15_integration",
             "workstream_id": "ws-2",
             "status": "integrated"
@@ -1375,7 +1375,7 @@
           "releasedUnused": 0,
           "negative": false,
           "perRun": {
-            "dcd834cb-88c9-4ecf-8673-88f5a94922a5": {
+            "1a3f3217-6745-4fda-a1e3-42f9f841533f": {
               "reserved": 0,
               "consumed": 0,
               "releasedUnused": 0,
@@ -1406,7 +1406,7 @@
       {
         "commandId": "task/start",
         "status": "cancelled",
-        "durationMs": 17,
+        "durationMs": 11,
         "expected": "cancelled",
         "note": "gated cancellation"
       }
@@ -1415,14 +1415,14 @@
       {
         "commandId": "task/start",
         "status": "failed",
-        "durationMs": 18,
+        "durationMs": 12,
         "expected": "failed",
         "note": "expected agent failure"
       }
     ],
     "leaks": {
       "zombies": {
-        "assignments": 1,
+        "assignments": 0,
         "bindings": 0
       },
       "activeLeases": 0,
@@ -1439,25 +1439,19 @@
       {
         "commandId": "task/start",
         "status": "completed",
-        "durationMs": 21,
+        "durationMs": 23,
         "expected": "completed"
       },
       {
         "commandId": "task/start(dup)",
         "status": "completed",
-        "durationMs": 1,
+        "durationMs": 0,
         "expected": "completed",
         "note": "idempotent retrieval"
       },
       {
         "commandId": "status",
         "status": "completed",
-        "durationMs": 19,
-        "expected": "completed"
-      },
-      {
-        "commandId": "status",
-        "status": "completed",
         "durationMs": 20,
         "expected": "completed"
       },
@@ -1476,7 +1470,19 @@
       {
         "commandId": "status",
         "status": "completed",
+        "durationMs": 19,
+        "expected": "completed"
+      },
+      {
+        "commandId": "status",
+        "status": "completed",
         "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "status",
+        "status": "completed",
+        "durationMs": 21,
         "expected": "completed"
       },
       {
@@ -1488,203 +1494,227 @@
       {
         "commandId": "status",
         "status": "completed",
+        "durationMs": 27,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 33,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 34,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 34,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 36,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 33,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 32,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 34,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 35,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 35,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 35,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 35,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 35,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 34,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 35,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 34,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 35,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 36,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 35,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 36,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 36,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 50,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 53,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 27,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
         "durationMs": 19,
         "expected": "completed"
       },
       {
-        "commandId": "status",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "plan",
-        "status": "completed",
-        "durationMs": 19,
-        "expected": "completed"
-      },
-      {
-        "commandId": "plan",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "plan",
-        "status": "completed",
-        "durationMs": 19,
-        "expected": "completed"
-      },
-      {
-        "commandId": "plan",
-        "status": "completed",
-        "durationMs": 19,
-        "expected": "completed"
-      },
-      {
-        "commandId": "plan",
-        "status": "completed",
-        "durationMs": 19,
-        "expected": "completed"
-      },
-      {
-        "commandId": "plan",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "plan",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "plan",
-        "status": "completed",
-        "durationMs": 18,
-        "expected": "completed"
-      },
-      {
-        "commandId": "verify",
-        "status": "completed",
-        "durationMs": 21,
-        "expected": "completed"
-      },
-      {
-        "commandId": "verify",
-        "status": "completed",
-        "durationMs": 21,
-        "expected": "completed"
-      },
-      {
-        "commandId": "verify",
-        "status": "completed",
-        "durationMs": 21,
-        "expected": "completed"
-      },
-      {
-        "commandId": "verify",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "verify",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "verify",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "verify",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "verify",
-        "status": "completed",
-        "durationMs": 21,
-        "expected": "completed"
-      },
-      {
-        "commandId": "complete",
-        "status": "completed",
-        "durationMs": 21,
-        "expected": "completed"
-      },
-      {
-        "commandId": "complete",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "complete",
-        "status": "completed",
-        "durationMs": 21,
-        "expected": "completed"
-      },
-      {
-        "commandId": "complete",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "complete",
-        "status": "completed",
-        "durationMs": 19,
-        "expected": "completed"
-      },
-      {
-        "commandId": "complete",
-        "status": "completed",
-        "durationMs": 21,
-        "expected": "completed"
-      },
-      {
-        "commandId": "complete",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "complete",
-        "status": "completed",
-        "durationMs": 25,
-        "expected": "completed"
-      },
-      {
-        "commandId": "review/audit",
-        "status": "completed",
-        "durationMs": 25,
-        "expected": "completed"
-      },
-      {
         "commandId": "review/audit",
         "status": "completed",
         "durationMs": 20,
         "expected": "completed"
       },
       {
-        "commandId": "review/audit",
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "resume/recover",
         "status": "completed",
         "durationMs": 21,
         "expected": "completed"
       },
       {
-        "commandId": "review/audit",
+        "commandId": "resume/recover",
         "status": "completed",
         "durationMs": 20,
         "expected": "completed"
       },
       {
-        "commandId": "review/audit",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "review/audit",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "review/audit",
-        "status": "completed",
-        "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "review/audit",
+        "commandId": "resume/recover",
         "status": "completed",
         "durationMs": 22,
         "expected": "completed"
@@ -1692,24 +1722,6 @@
       {
         "commandId": "resume/recover",
         "status": "completed",
-        "durationMs": 21,
-        "expected": "completed"
-      },
-      {
-        "commandId": "resume/recover",
-        "status": "completed",
-        "durationMs": 21,
-        "expected": "completed"
-      },
-      {
-        "commandId": "resume/recover",
-        "status": "completed",
-        "durationMs": 21,
-        "expected": "completed"
-      },
-      {
-        "commandId": "resume/recover",
-        "status": "completed",
         "durationMs": 20,
         "expected": "completed"
       },
@@ -1723,75 +1735,63 @@
         "commandId": "resume/recover",
         "status": "completed",
         "durationMs": 20,
-        "expected": "completed"
-      },
-      {
-        "commandId": "resume/recover",
-        "status": "completed",
-        "durationMs": 25,
-        "expected": "completed"
-      },
-      {
-        "commandId": "resume/recover",
-        "status": "completed",
-        "durationMs": 31,
         "expected": "completed"
       },
       {
         "commandId": "execute",
         "status": "completed",
-        "durationMs": 34,
+        "durationMs": 21,
         "expected": "completed"
       },
       {
         "commandId": "execute",
         "status": "completed",
-        "durationMs": 32,
+        "durationMs": 21,
         "expected": "completed"
       },
       {
         "commandId": "task/start",
         "status": "completed",
-        "durationMs": 32,
+        "durationMs": 21,
         "expected": "completed"
       },
       {
         "commandId": "task/start",
         "status": "failed",
-        "durationMs": 18,
+        "durationMs": 12,
         "expected": "failed",
         "note": "expected agent failure"
       },
       {
         "commandId": "task/start",
         "status": "completed",
-        "durationMs": 35,
+        "durationMs": 21,
         "expected": "completed"
       },
       {
         "commandId": "task/start",
         "status": "cancelled",
-        "durationMs": 17,
+        "durationMs": 11,
         "expected": "cancelled",
         "note": "gated cancellation"
       },
       {
         "commandId": "resume/recover",
         "status": "completed",
-        "durationMs": 2,
+        "durationMs": 1,
         "expected": "completed",
         "note": "restart recovery"
       }
     ]
   },
   "summary": {
-    "pass": 13,
+    "pass": 14,
     "expectedFail": 1,
-    "fail": 1,
+    "fail": 0,
     "hang": 0
   },
   "acceptance": {
-    "scenariosClean": false,
-    "soakClean": false
+    "scenariosClean": true,
+    "soakClean": true
   }
 }
