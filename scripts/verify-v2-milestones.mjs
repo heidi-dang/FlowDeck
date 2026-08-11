@@ -1,11 +1,11 @@
 import fs from "node:fs"
 const file = new URL("../docs/v2/milestone-completion.json", import.meta.url)
-const expected = ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8"]
+const expected = ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9"]
 const allowed = new Set(["CLOSED", "PARTIAL", "OPEN", "SUPERSEDED"])
 export function validateV2Milestones(report) {
-  if (!Array.isArray(report?.milestones) || report.milestones.length !== expected.length) throw new Error("V2 milestone denominator must contain exactly M1-M8")
+  if (!Array.isArray(report?.milestones) || report.milestones.length !== expected.length) throw new Error("V2 milestone denominator must contain exactly M1-M9")
   const ids = report.milestones.map(m => m.id)
-  if (new Set(ids).size !== expected.length || expected.some(id => !ids.includes(id))) throw new Error("V2 milestone ids must be exactly M1-M8")
+  if (new Set(ids).size !== expected.length || expected.some(id => !ids.includes(id))) throw new Error("V2 milestone ids must be exactly M1-M9")
   for (const milestone of report.milestones) {
     if (!allowed.has(milestone.status)) throw new Error(`Invalid milestone status: ${milestone.id}`)
     if (milestone.status === "SUPERSEDED" && !milestone.justification) throw new Error(`${milestone.id} superseded without justification`)
@@ -13,6 +13,10 @@ export function validateV2Milestones(report) {
       const evidence = milestone.evidence
       if (!evidence || evidence.production !== true || evidence.persistence !== true || evidence.recovery !== true || evidence.tests !== true) throw new Error(`${milestone.id} CLOSED without production/persistence/recovery/tests evidence`)
       if (!Array.isArray(evidence.sourceFiles) || evidence.sourceFiles.length === 0 || !Array.isArray(evidence.testFiles) || evidence.testFiles.length === 0) throw new Error(`${milestone.id} CLOSED without source/test evidence references`)
+      if (milestone.id === "M9") {
+        const required = ["canonicalVerification", "canonicalEvidence", "canonicalCompletion", "canonicalPlan", "schedulerExecution", "cancellation", "recovery", "tokenGovernance", "tokenE2E", "assignmentDispatch", "ownershipWorktrees", "worktreeE2E", "restartMatrix", "idempotency", "historicalVersions", "security"]
+        for (const key of required) if (evidence[key] !== true) throw new Error(`M9 CLOSED without executable evidence: ${key}`)
+      }
       for (const file of [...evidence.sourceFiles, ...evidence.testFiles]) {
         if (typeof file !== "string" || file.includes("..") || !fs.existsSync(new URL(`../${file}`, import.meta.url))) throw new Error(`${milestone.id} evidence file is missing or unsafe: ${String(file)}`)
       }

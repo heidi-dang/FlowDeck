@@ -7,6 +7,7 @@ export const AssignmentStatus = {
   COMPLETED: "completed",
   FAILED: "failed",
   SKIPPED: "skipped",
+  CANCELLED: "cancelled",
 } as const;
 
 export type AssignmentStatus = (typeof AssignmentStatus)[keyof typeof AssignmentStatus];
@@ -31,6 +32,10 @@ export interface Assignment {
 }
 
 export interface CreateAssignmentInput {
+  /** Optional caller-supplied id. When provided it is used verbatim so a
+   *  durable, reusable logical Assignment identity can be preserved across
+   *  restarts (recovery must not recreate the Assignment graph). */
+  id?: string;
   runId: string;
   agentId: string;
   role: string;
@@ -73,6 +78,7 @@ export interface AssignmentDTO {
 }
 
 export const CreateAssignmentInputSchema = z.object({
+  id: z.string().min(1).max(255).optional(),
   runId: z.string().min(1).max(255),
   agentId: z.string().min(1).max(255),
   role: z.string().min(1).max(100),
@@ -87,7 +93,7 @@ export const CreateAssignmentInputSchema = z.object({
 });
 
 export const UpdateAssignmentInputSchema = z.object({
-  status: z.enum([AssignmentStatus.PENDING, AssignmentStatus.ASSIGNED, AssignmentStatus.IN_PROGRESS, AssignmentStatus.COMPLETED, AssignmentStatus.FAILED, AssignmentStatus.SKIPPED]).optional(),
+  status: z.enum([AssignmentStatus.PENDING, AssignmentStatus.ASSIGNED, AssignmentStatus.IN_PROGRESS, AssignmentStatus.COMPLETED, AssignmentStatus.FAILED, AssignmentStatus.SKIPPED, AssignmentStatus.CANCELLED]).optional(),
   task: z.string().max(5000).optional(),
   tools: z.array(z.string().max(255)).max(100).optional(),
   context: z.record(z.string(), z.unknown()).optional(),

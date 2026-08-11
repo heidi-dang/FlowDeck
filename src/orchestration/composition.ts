@@ -27,6 +27,7 @@ import {
 import { RunService } from "./services/run-service";
 import { ContractService } from "./services/contract-service";
 import { AssignmentService } from "./services/assignment-service";
+import { AssignmentBindingCoordinator } from "./execution/assignment-binding-coordinator";
 import { VerificationService } from "./services/verification-service";
 import { CompletionService } from "./services/completion-service";
 import { ReplayService } from "./services/replay-service";
@@ -69,10 +70,16 @@ import { SqliteRoutingDecisionRepository } from "./routing/sqlite-store";
 import { RoutingProjection } from "./services/routing-projection";
 import { OrchestrationMetrics } from "./metrics";
 import { SqliteExecutionRepository, ExecutionScheduler, GitWorktreeManager, ControlledIntegrationService, WorktreeExecutionService } from "./execution";
+import { SqliteAssignmentExecutionBindingRepository } from "./execution/assignment-execution-binding-repository";
 import { SqlitePerformanceRepository } from "./performance";
 import { PerformanceProjection } from "./services/performance-projection";
 import { RuntimeSnapshotService } from "./services/runtime-snapshot";
 import { AuthoritativeRoutingService } from "./routing/authoritative";
+import { TokenBudgetRuntime } from "../services/token-budget-runtime";
+import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
+import type { CommandRegistry } from "./commands/domain/command-registry";
+import type { DurableCommandExecutor, CommandFaultHook } from "./commands/services/durable-command-executor";
+import { createCoreCommandRuntime } from "./commands/services/command-runtime";
 
 export interface ProductionOrchestrationRuntime {
   db: Database;
@@ -93,6 +100,7 @@ export interface ProductionOrchestrationRuntime {
     replayService: ReplayService;
     eventService: EventService;
     healthService: HealthService;
+    runRepo: IRunRepository;
   };
   router: ReturnType<typeof createRouterWithControllers>;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
@@ -104,6 +112,14 @@ export interface ProductionOrchestrationRuntime {
   authoritativeRouting: AuthoritativeRoutingService;
   worktreeManager?: GitWorktreeManager;
   integrationService?: ControlledIntegrationService;
+  tokenRuntime?: TokenBudgetRuntime;
+  agentExecutor?: IsolatedWorkstreamExecutor;
+  assignmentBindingCoordinator: AssignmentBindingCoordinator;
+  faultHook?: CommandFaultHook;
+  commands: {
+    registry: CommandRegistry;
+    executor: DurableCommandExecutor;
+  };
 }
 
 // ── SQLite-backed production repository implementations ────────────────
@@ -357,7 +373,10 @@ export class SqliteAssignmentRepo implements IAssignmentRepository {
       // Map input fields to assignments table columns
       if (input.status !== undefined) {
         sets.push("status = ?");
-        values.push(input.status);
+        // The frozen schema stores the durable execution states pending/running/
+        // completed/failed/skipped/cancelled; the API's assigned/in_progress
+        // aliases project onto those canonical states.
+        values.push(input.status === "assigned" ? "pending" : input.status === "in_progress" ? "running" : input.status);
       }
       if (input.agentId !== undefined) {
         sets.push("agent_id = ?");
@@ -465,7 +484,7 @@ class SqliteVerificationRepo implements IVerificationRepository {
     return this.tx.write(() => {
       this.db.query(
         "INSERT INTO verification_results (id, run_id, verification_type, status, target_sha, started_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
-      ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending", "0000000000000000000000000000000000000000");
+      ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending", (v as any).targetSha ?? "0000000000000000000000000000000000000000");
       return v;
     });
   }
@@ -606,7 +625,7 @@ function safeParseJSON(raw: string): Record<string, unknown> {
 
 // ── Production composition factory ─────────────────────────────────────
 
-export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown> } = {}): ProductionOrchestrationRuntime {
+export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown>; agentExecutor?: IsolatedWorkstreamExecutor; faultHook?: CommandFaultHook } = {}): ProductionOrchestrationRuntime {
   const executionRegistry = new ExecutionRegistry();
   const unitOfWork = new SqliteUnitOfWork(db);
   const txManager = createTransactionManager(db);
@@ -622,6 +641,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const runRepo = new SqliteRunRepository(taskRunAdapter, db, txManager);
   const contractRepo = new SqliteContractRepo(contractAdapter, db, txManager);
   const assignmentRepo = new SqliteAssignmentRepo(db, txManager);
+  const assignmentBindingRepo = new SqliteAssignmentExecutionBindingRepository(db, txManager);
   const completionAdapter = new SqliteCompletionRepoAdapter(db, txManager);
   const completionRepo = new SqliteCompletionRepo(completionAdapter, db, txManager);
   const verificationAdapter = new SqliteVerificationRepoAdapter(db, txManager);
@@ -642,6 +662,13 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const worktreeManager = options.repositoryPath && options.worktreeRoot ? new GitWorktreeManager(options.repositoryPath, options.worktreeRoot) : undefined;
   const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath, metrics) : undefined;
   const worktreeExecutionService = worktreeManager ? new WorktreeExecutionService(executionRepository, executionScheduler, worktreeManager, integrationService, undefined, performanceRepository) : undefined;
+  const tokenRuntime = TokenBudgetRuntime.fromConfig(undefined, { directory: options.repositoryPath });
+  if (worktreeExecutionService) {
+    worktreeExecutionService.setBudgetCoordinator({
+      open: workstream => tokenRuntime.openWorkstreamBudget(workstream),
+      redistribute: (workstream, amount, reason, sourceReservationId) => tokenRuntime.redistributeWorkstream(workstream, amount, reason, sourceReservationId),
+    });
+  }
   if (worktreeExecutionService) {
     authoritativeRouting.setDispatcher(worktreeExecutionService);
     // Reconcile running leases and in-flight work before this runtime can
@@ -657,6 +684,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db);
   const contractService = new ContractService(contractRepo, eventBus);
   const assignmentService = new AssignmentService(assignmentRepo, eventBus);
+  const assignmentBindingCoordinator = new AssignmentBindingCoordinator({ assignmentService, bindingRepo: assignmentBindingRepo });
   const verificationService = new VerificationService(verificationRepo, eventBus);
   const completionService = new CompletionService(completionRepo, eventBus);
   const replayService = new ReplayService(replayRepo, eventBus, eventRepo);
@@ -678,9 +706,18 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     routingProjection: new RoutingProjection(routingDecisionRepository, runService),
     performanceProjection: new PerformanceProjection(performanceRepository),
     snapshotService,
+    runRepo,
   };
 
   const router = createRouterWithControllers(services);
+  const commands = createCoreCommandRuntime(db, txManager, {
+    db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
+    sessionRepo, contextItemRepo, consumerOffsetRepo, services, router,
+    routingDecisionRepository, metrics, executionRepository, executionScheduler,
+    worktreeExecutionService, performanceRepository, authoritativeRouting,
+    worktreeManager, integrationService, agentExecutor: options.agentExecutor,
+    assignmentBindingCoordinator, faultHook: options.faultHook,
+  });
 
   return {
     db,
@@ -703,5 +740,10 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     authoritativeRouting,
     worktreeManager,
     integrationService,
+    tokenRuntime,
+    agentExecutor: options.agentExecutor,
+    assignmentBindingCoordinator,
+    faultHook: options.faultHook,
+    commands,
   };
 }

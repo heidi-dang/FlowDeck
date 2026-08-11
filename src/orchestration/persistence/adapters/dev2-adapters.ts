@@ -50,7 +50,7 @@ export class SqliteVerificationRepoAdapter {
     return (this.db.query("SELECT * FROM verification_results WHERE run_id=? ORDER BY started_at").all(v) as any[]).map(r => ({ id: r.id, contractVersionId: r.run_id, targetSha: r.target_sha, status: r.status, createdAt: new Date(r.started_at), completedAt: r.completed_at?new Date(r.completed_at):undefined }))
   }
   async saveResult(result: VerResultData): Promise<void> {
-    this.tx.write(() => { this.db.query("INSERT INTO verification_results (id,run_id,verification_type,status,started_at) VALUES (?,?,?,?,datetime('now')) ON CONFLICT(id) DO UPDATE SET status=excluded.status").run(result.id,result.runId,'result',result.status) })
+    this.tx.write(() => { this.db.query("INSERT INTO verification_results (id,run_id,verification_type,status,target_sha,started_at) VALUES (?,?,?,?,?,datetime('now')) ON CONFLICT(id) DO UPDATE SET status=excluded.status").run(result.id,result.runId,'result',result.status,"0".repeat(40)) })
   }
   async getResult(id: string): Promise<VerResultData | undefined> {
     const r = this.db.query("SELECT * FROM verification_results WHERE id=?").get(id) as any; if(!r)return undefined
@@ -66,7 +66,7 @@ export class SqliteVerificationRepoAdapter {
 export class SqliteEvidenceRepoAdapter {
   constructor(private db: Database, private tx: TransactionManager) {}
   async saveEvidence(e: EvData): Promise<void> {
-    return this.tx.write(() => { this.db.query("INSERT INTO evidence (id,run_id,evidence_type,title,content_hash,sha,created_at) VALUES (?,?,?,?,?,?,datetime('now')) ON CONFLICT(id) DO UPDATE SET status='current'").run(e.id,e.runId,e.contentType,e.content?.substring(0,80)??'ev',e.content,e.sha) })
+    return this.tx.write(() => { this.db.query("INSERT INTO evidence (id,run_id,evidence_type,title,description,source,content_hash,sha,created_at) VALUES (?,?,?,?,?,?,?, ?,datetime('now')) ON CONFLICT(id) DO NOTHING").run(e.id,e.runId,e.contentType,e.content?.substring(0,80)??'ev',e.content,'command-verification',e.content,e.sha) })
   }
   async getEvidence(id: string): Promise<EvData | undefined> {
     const r = this.db.query("SELECT * FROM evidence WHERE id=?").get(id) as any; if(!r)return undefined

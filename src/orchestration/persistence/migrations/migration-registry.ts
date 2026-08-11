@@ -6,6 +6,8 @@ import { MIGRATION_V2_REPLAY_SQL } from "./migration-v2-replay"
 import { MIGRATION_V3_EXECUTION_SQL } from "./migration-v3-execution"
 import { MIGRATION_V4_PERFORMANCE_SQL } from "./migration-v4-performance"
 import { MIGRATION_V5_EXECUTION_CONSTRAINTS_SQL } from "./migration-v5-execution-constraints"
+import { MIGRATION_V6_COMMANDS_SQL } from "./migration-v6-commands"
+import { MIGRATION_V7_ASSIGNMENT_BINDING_SQL } from "./migration-v7-assignment-binding"
 
 export interface MigrationEntry {
   version: number
@@ -44,5 +46,17 @@ export const MIGRATIONS: MigrationEntry[] = [
     name: "execution_integrity_constraints_v0.2.10",
     sql: MIGRATION_V5_EXECUTION_CONSTRAINTS_SQL,
     checksum: computeChecksum(MIGRATION_V5_EXECUTION_CONSTRAINTS_SQL),
+  },
+  {
+    version: 6,
+    name: "canonical_command_invocations_v0.2.11",
+    sql: MIGRATION_V6_COMMANDS_SQL,
+    checksum: computeChecksum(MIGRATION_V6_COMMANDS_SQL),
+  },
+  {
+    version: 7,
+    name: "assignment_execution_binding_v0.2.12",
+    sql: MIGRATION_V7_ASSIGNMENT_BINDING_SQL,
+    checksum: computeChecksum(MIGRATION_V7_ASSIGNMENT_BINDING_SQL),
   },
 ]

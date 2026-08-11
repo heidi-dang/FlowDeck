@@ -65,12 +65,20 @@ export function createTransactionManager(
     },
 
     writeImmediate<T>(fn: () => T): T {
+      // BEGIN IMMEDIATE takes the write lock up front so the callback's
+      // read-then-write critical section is serialized against other
+      // connections. The outer transaction is committed here explicitly —
+      // the transaction wrapper alone would only release a nested savepoint
+      // and leave the write lock held indefinitely.
       db.exec("BEGIN IMMEDIATE")
       try {
-        const txn = db.transaction(() => { const r = fn(); assertSync(r); return r })
-        return txn()
-      } finally {
-        // Transaction wrapper handles COMMIT/ROLLBACK
+        const r = fn()
+        assertSync(r)
+        db.exec("COMMIT")
+        return r
+      } catch (error) {
+        try { db.exec("ROLLBACK") } catch { /* the connection may already be unusable */ }
+        throw error
       }
     },
 

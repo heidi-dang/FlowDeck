@@ -100,10 +100,10 @@ describe("migration atomicity — interruption safety", () => {
     expect(getCurrentVersion(db)).toBe(0)
 
     runMigrations(db)
-    expect(getCurrentVersion(db)).toBe(5)
+    expect(getCurrentVersion(db)).toBe(7)
 
     runMigrations(db)
-    expect(getCurrentVersion(db)).toBe(5)
+    expect(getCurrentVersion(db)).toBe(7)
 
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
     const names = tables.map(r => r.name)
@@ -119,7 +119,7 @@ describe("migration atomicity — interruption safety", () => {
     const db = new Database(TEST_DB, { create: true })
 
     runMigrations(db)
-    expect(getCurrentVersion(db)).toBe(5)
+    expect(getCurrentVersion(db)).toBe(7)
 
     db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = 1").run("tampered_checksum")
 
@@ -134,7 +134,7 @@ describe("migration atomicity — interruption safety", () => {
   it("normal migration succeeds and creates core tables", () => {
     const db = new Database(TEST_DB, { create: true })
     runMigrations(db)
-    expect(getCurrentVersion(db)).toBe(5)
+    expect(getCurrentVersion(db)).toBe(7)
 
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]
     const names = tables.map(r => r.name)
@@ -148,11 +148,11 @@ describe("migration atomicity — interruption safety", () => {
   it("repeated startup is idempotent", () => {
     const db = new Database(TEST_DB, { create: true })
     runMigrations(db)
-    expect(getCurrentVersion(db)).toBe(5)
+    expect(getCurrentVersion(db)).toBe(7)
 
     for (let i = 0; i < 3; i++) {
       runMigrations(db)
-      expect(getCurrentVersion(db)).toBe(5)
+      expect(getCurrentVersion(db)).toBe(7)
     }
 
     db.close()
