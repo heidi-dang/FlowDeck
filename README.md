@@ -8,7 +8,7 @@
 
 | Status | |
 |---|---|
-| **Version** | v2.0.0-alpha.2 (development) |
+| **Version** | v2.0.0-alpha.3 (development) |
 | **License** | [MIT](LICENSE) |
 | **OpenCode** | >= 1.4.0 |
 | **Node.js** | >= 20.0.0 |
@@ -108,7 +108,7 @@ Stable installs use the v1 line and `latest`:
 npx @heidi-dang/flowdeck@latest install
 ```
 
-The current v2 development package is `2.0.0-alpha.2` and uses the `alpha` channel:
+The current v2 development package is `2.0.0-alpha.3` and uses the `alpha` channel:
 
 ```bash
 npx @heidi-dang/flowdeck@alpha install
