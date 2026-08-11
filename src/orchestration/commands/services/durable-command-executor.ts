@@ -297,20 +297,27 @@ export class DurableCommandExecutor {
           if (assignmentId && this.runtime.services.assignmentService?.startAssignment) await this.runtime.services.assignmentService.startAssignment(assignmentId);
         }
         try {
-          if (budget) {
+          let agentResult: { status: string; verificationPassed?: boolean; integrationPassed?: boolean; durationMs?: number } | null = null;
+          if (budget || this.runtime.worktreeExecutionService) {
             if (!this.runtime.agentExecutor) throw new CommandRecoveryError("CANONICAL_AGENT_EXECUTOR_UNAVAILABLE", "Canonical agent executor unavailable");
-            const result = await this.runtime.agentExecutor.execute(workstream, _allocation, budget, context as any);
-            if (result && typeof result === "object" && "status" in result && result.status !== "succeeded") throw new Error("CANONICAL_AGENT_EXECUTION_FAILED");
-          } else if (this.runtime.worktreeExecutionService) {
-            if (!this.runtime.agentExecutor) throw new CommandRecoveryError("CANONICAL_AGENT_EXECUTOR_UNAVAILABLE", "Canonical agent executor unavailable");
-            const result = await this.runtime.agentExecutor.execute(workstream, _allocation, undefined, context as any);
-            if (result && typeof result === "object" && "status" in result && result.status !== "succeeded") throw new Error("CANONICAL_AGENT_EXECUTION_FAILED");
+            const result = await this.runtime.agentExecutor.execute(workstream, _allocation, budget ?? undefined, context as any);
+            if (result && typeof result === "object" && "status" in result) {
+              agentResult = result as any;
+            }
+            // The agent's verification verdict is authoritative: a succeeded
+            // workstream that reports verification-failed must not reach the
+            // integration gate (VERIFICATION_REQUIRED_BEFORE_INTEGRATION).
+            if (agentResult && (agentResult.status !== "succeeded" || agentResult.verificationPassed === false)) {
+              throw new Error("CANONICAL_AGENT_EXECUTION_FAILED");
+            }
           }
           if (assignmentId) {
             this.runtime.assignmentBindingCoordinator.markSucceeded(assignmentId);
             if (this.runtime.services.assignmentService?.completeAssignment) await this.runtime.services.assignmentService.completeAssignment(assignmentId);
           }
-          return this.runtime.worktreeExecutionService ? { status: "succeeded" as const, verificationPassed: true, integrationPassed: false, durationMs: 0 } : "succeeded" as const;
+          return this.runtime.worktreeExecutionService
+            ? { status: "succeeded" as const, verificationPassed: agentResult?.verificationPassed ?? true, integrationPassed: agentResult?.integrationPassed ?? false, durationMs: agentResult?.durationMs ?? 0 }
+            : "succeeded" as const;
         } catch (error) {
           if (assignmentId) {
             this.runtime.assignmentBindingCoordinator.markFailed(assignmentId);
