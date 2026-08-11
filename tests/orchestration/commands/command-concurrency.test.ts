@@ -23,11 +23,13 @@ describe("M9 Command Concurrency & Idempotency", () => {
     CORE_M9_COMMANDS.forEach(c => registry.register(c));
     
     executor = new DurableCommandExecutor(registry, repo, {
-      executionRepository: { savePlan: (plan: any) => plan, transitionPlanStatus: () => {} },
+      executionRepository: { savePlan: (plan: any) => plan, transitionPlanStatus: () => {}, getDb: () => db },
       executionScheduler: { runReady: async () => ({ started: [], succeeded: ["primary"], failed: [], blocked: [] }) },
       services: {},
       commandVerification: { verifyCommand: async () => ({ passed: true, verificationResults: [], evidenceItems: [] }) },
       commandCompletion: { evaluateCommand: async () => ({ outcome: "completed", decisionId: "d1" }) },
+      assignmentBindingCoordinator: { ensureAssignments: async () => new Map<string, string>(), recordAttempt: () => ({}), markSucceeded: () => ({}), markFailed: () => ({}), markCancelled: () => ({}), listByPlan: () => [] },
+      recoveryClaim: { acquire: () => true, release: () => {} },
     } as any);
   });
 

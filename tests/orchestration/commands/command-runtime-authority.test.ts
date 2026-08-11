@@ -15,17 +15,19 @@ describe("M9 command authority integration", () => {
     CORE_M9_COMMANDS.forEach(command => registry.register(command))
     const repo = new SqliteCommandInvocationRepository(db, createTransactionManager(db))
     const runtime = {
-      executionRepository: { savePlan: (plan: any) => plan },
+      executionRepository: { savePlan: (plan: any) => plan, getDb: () => db },
       executionScheduler: { runReady: async () => ({ started: [], succeeded: ["primary"], failed: [], blocked: [] }) },
       services: {
         verificationService: { createVerification: async () => { throw new Error("canonical verifier required") } },
         completionService: { createCompletion: async () => { throw new Error("canonical completion required") } },
       },
+      assignmentBindingCoordinator: { ensureAssignments: async () => new Map<string, string>(), recordAttempt: () => ({}), markSucceeded: () => ({}), markFailed: () => ({}), markCancelled: () => ({}), listByPlan: () => [] },
+      recoveryClaim: { acquire: () => true, release: () => {} },
     } as any
     const executor = new DurableCommandExecutor(registry, repo, runtime)
     const result = await executor.executeCommand("execute", { taskRunId: "run-authority", sourceSha: "0".repeat(40) }, { idempotencyKey: "authority-test" })
     expect(result.status).toBe("failed")
-    expect(result.error?.message).toContain("CANONICAL")
+    expect(result.error?.code).toBe("CANONICAL_VERIFIER_UNAVAILABLE")
     db.close()
   })
 })
