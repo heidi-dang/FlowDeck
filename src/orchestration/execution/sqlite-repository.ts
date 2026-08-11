@@ -15,6 +15,11 @@ export interface IntegrationAttempt { attemptId: string; planId: string; workstr
 export class SqliteExecutionRepository {
   constructor(private readonly db: Database, private readonly tx: TransactionManager, private readonly metrics?: OrchestrationMetrics) {}
 
+  /** Read-only access to the underlying database handle. Used by canonical
+   *  command recovery to read back durable verification/evidence/completion
+   *  state without duplicating authority. */
+  getDb(): Database { return this.db; }
+
   savePlan(plan: ExecutionPlan): ExecutionPlan {
     const parsedInput = executionPlanSchema.parse(plan)
     const parsed: ExecutionPlan = { ...parsedInput, status: parsedInput.status ?? "planned" }

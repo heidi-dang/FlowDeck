@@ -184,6 +184,11 @@ export class RunService {
     return run;
   }
 
+  /** Non-throwing lookup. Returns null when the run does not exist. */
+  async findRun(id: string): Promise<Run | null> {
+    return this.runRepo.findById(id);
+  }
+
   async listRuns(filter: RunFilter, pagination: PagePaginationRequest): Promise<PaginatedResult<Run>> {
     return this.runRepo.findMany(filter, pagination);
   }

@@ -27,6 +27,7 @@ import {
 import { RunService } from "./services/run-service";
 import { ContractService } from "./services/contract-service";
 import { AssignmentService } from "./services/assignment-service";
+import { AssignmentBindingCoordinator } from "./execution/assignment-binding-coordinator";
 import { VerificationService } from "./services/verification-service";
 import { CompletionService } from "./services/completion-service";
 import { ReplayService } from "./services/replay-service";
@@ -69,6 +70,7 @@ import { SqliteRoutingDecisionRepository } from "./routing/sqlite-store";
 import { RoutingProjection } from "./services/routing-projection";
 import { OrchestrationMetrics } from "./metrics";
 import { SqliteExecutionRepository, ExecutionScheduler, GitWorktreeManager, ControlledIntegrationService, WorktreeExecutionService } from "./execution";
+import { SqliteAssignmentExecutionBindingRepository } from "./execution/assignment-execution-binding-repository";
 import { SqlitePerformanceRepository } from "./performance";
 import { PerformanceProjection } from "./services/performance-projection";
 import { RuntimeSnapshotService } from "./services/runtime-snapshot";
@@ -98,6 +100,7 @@ export interface ProductionOrchestrationRuntime {
     replayService: ReplayService;
     eventService: EventService;
     healthService: HealthService;
+    runRepo: IRunRepository;
   };
   router: ReturnType<typeof createRouterWithControllers>;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
@@ -111,6 +114,7 @@ export interface ProductionOrchestrationRuntime {
   integrationService?: ControlledIntegrationService;
   tokenRuntime?: TokenBudgetRuntime;
   agentExecutor?: IsolatedWorkstreamExecutor;
+  assignmentBindingCoordinator: AssignmentBindingCoordinator;
   commands: {
     registry: CommandRegistry;
     executor: DurableCommandExecutor;
@@ -636,6 +640,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const runRepo = new SqliteRunRepository(taskRunAdapter, db, txManager);
   const contractRepo = new SqliteContractRepo(contractAdapter, db, txManager);
   const assignmentRepo = new SqliteAssignmentRepo(db, txManager);
+  const assignmentBindingRepo = new SqliteAssignmentExecutionBindingRepository(db, txManager);
   const completionAdapter = new SqliteCompletionRepoAdapter(db, txManager);
   const completionRepo = new SqliteCompletionRepo(completionAdapter, db, txManager);
   const verificationAdapter = new SqliteVerificationRepoAdapter(db, txManager);
@@ -678,6 +683,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db);
   const contractService = new ContractService(contractRepo, eventBus);
   const assignmentService = new AssignmentService(assignmentRepo, eventBus);
+  const assignmentBindingCoordinator = new AssignmentBindingCoordinator({ assignmentService, bindingRepo: assignmentBindingRepo });
   const verificationService = new VerificationService(verificationRepo, eventBus);
   const completionService = new CompletionService(completionRepo, eventBus);
   const replayService = new ReplayService(replayRepo, eventBus, eventRepo);
@@ -699,6 +705,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     routingProjection: new RoutingProjection(routingDecisionRepository, runService),
     performanceProjection: new PerformanceProjection(performanceRepository),
     snapshotService,
+    runRepo,
   };
 
   const router = createRouterWithControllers(services);
@@ -708,6 +715,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     routingDecisionRepository, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
+    assignmentBindingCoordinator,
   });
 
   return {
@@ -733,6 +741,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     integrationService,
     tokenRuntime,
     agentExecutor: options.agentExecutor,
+    assignmentBindingCoordinator,
     commands,
   };
 }

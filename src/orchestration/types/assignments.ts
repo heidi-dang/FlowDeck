@@ -31,6 +31,10 @@ export interface Assignment {
 }
 
 export interface CreateAssignmentInput {
+  /** Optional caller-supplied id. When provided it is used verbatim so a
+   *  durable, reusable logical Assignment identity can be preserved across
+   *  restarts (recovery must not recreate the Assignment graph). */
+  id?: string;
   runId: string;
   agentId: string;
   role: string;
@@ -73,6 +77,7 @@ export interface AssignmentDTO {
 }
 
 export const CreateAssignmentInputSchema = z.object({
+  id: z.string().min(1).max(255).optional(),
   runId: z.string().min(1).max(255),
   agentId: z.string().min(1).max(255),
   role: z.string().min(1).max(100),

@@ -13,7 +13,7 @@ export class AssignmentService {
 
   async createAssignment(input: CreateAssignmentInput): Promise<Assignment> {
     const now = new Date().toISOString();
-    const id = randomUUID();
+    const id = input.id ?? randomUUID();
 
     const assignment: Assignment = {
       id,
