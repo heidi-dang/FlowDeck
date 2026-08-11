@@ -5,6 +5,7 @@ import { CORE_M9_COMMANDS } from "../definitions/core-commands"
 import { CommandRegistry } from "../domain/command-registry"
 import { SqliteCommandInvocationRepository } from "../persistence/sqlite-command-invocation-repository"
 import { DurableCommandExecutor } from "./durable-command-executor"
+import { CommandRecoveryClaim } from "./command-recovery-claim"
 import { CompletionDecisionService } from "../../completion/services/decision-service"
 import { VerificationResult } from "../../verification/domain/verification-result"
 import { Evidence } from "../../evidence/domain/evidence"
@@ -47,9 +48,14 @@ function createCanonicalCommandServices(db: Database, tx: TransactionManager, ru
       },
     },
     commandCompletion: {
-      async evaluateCommand(input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[] }) {
+      async evaluateCommand(input: { runId: string; commandId: string; commandVersion: number; sourceSha: string; invocationId: string; verificationResults: readonly unknown[]; evidenceItems: readonly unknown[]; verificationRequired: boolean }) {
         const sha = /^[0-9a-f]{40}$/.test(input.sourceSha) ? input.sourceSha : "0".repeat(40)
-        const result = await completion.evaluateAndDecide({ taskRunId: input.runId, contractFamilyId: `command:${input.commandId}`, contractVersionId: `${input.commandId}:v${input.commandVersion}`, evaluatedSha: sha, evaluationInput: { requiredAssignmentsComplete: true, currentSha: sha, verificationResults: input.verificationResults as any, expectedRunId: input.runId, requirements: [], acceptanceCriteria: [], evidenceItems: input.evidenceItems as any }, overrides: [], approvalPairs: [], correlationId: input.invocationId, idempotencyKey: `command-completion:${input.invocationId}`, now: toInstant(new Date()) })
+        const verificationResults = input.verificationResults.length > 0
+          ? input.verificationResults
+          : input.verificationRequired
+            ? []
+            : [new VerificationResult({ id: `verification:${input.invocationId}:waived`, runId: input.runId, ruleId: `${input.commandId}:policy-waived`, ruleDescription: `${input.commandId} verification policy waived`, scope: "integration", required: false, failureClass: "blocking", status: "passed", targetSha: sha, evidenceIds: [], createdAt: new Date(), completedAt: new Date() })]
+        const result = await completion.evaluateAndDecide({ taskRunId: input.runId, contractFamilyId: `command:${input.commandId}`, contractVersionId: `${input.commandId}:v${input.commandVersion}`, evaluatedSha: sha, evaluationInput: { requiredAssignmentsComplete: true, currentSha: sha, verificationResults: verificationResults as any, expectedRunId: input.runId, requirements: [], acceptanceCriteria: [], evidenceItems: input.evidenceItems as any }, overrides: [], approvalPairs: [], correlationId: input.invocationId, idempotencyKey: `command-completion:${input.invocationId}`, now: toInstant(new Date()) })
         return { outcome: result.decision.outcome, decisionId: result.decision.id }
       },
     },
@@ -70,5 +76,6 @@ export function createCoreCommandRuntime(
   for (const definition of CORE_M9_COMMANDS) registry.register(definition)
   const invocationRepo = new SqliteCommandInvocationRepository(db, tx)
   const canonical = createCanonicalCommandServices(db, tx, runtime)
-  return { registry, executor: new DurableCommandExecutor(registry, invocationRepo, { ...runtime, ...canonical }) }
+  const recoveryClaim = new CommandRecoveryClaim(db, tx)
+  return { registry, executor: new DurableCommandExecutor(registry, invocationRepo, { ...runtime, ...canonical, assignmentBindingCoordinator: runtime.assignmentBindingCoordinator, recoveryClaim }) }
 }
