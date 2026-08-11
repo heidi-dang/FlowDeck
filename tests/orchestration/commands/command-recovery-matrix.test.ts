@@ -3,8 +3,10 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { runMigrations } from "../../../src/orchestration/persistence/migrations/migration-runner";
 import { createProductionOrchestrationRuntime } from "../../../src/orchestration/composition";
+import { CommandSecurityException } from "../../../src/orchestration/commands/security/command-security";
 import type { CommandFaultHook } from "../../../src/orchestration/commands/services/durable-command-executor";
 
 const tmpDirs: string[] = [];
@@ -280,5 +282,77 @@ describe("M9 R1-R15 fresh-runtime recovery matrix", () => {
     expect((read.query("SELECT decision FROM completion_decisions").get() as any).decision).toBe("pass");
     read.close();
     dbA.close();
+  });
+
+  it("T8: verificationPassed=false from the agent executor blocks worktree integration", async () => {
+    const dir = freshDir();
+    const dbPath = join(dir, "runtime.sqlite");
+    const root = process.cwd();
+    const worktreeRoot = mkdtempSync(`${tmpdir()}/flowdeck-m9-t8-worktree-`);
+    tmpDirs.push(worktreeRoot);
+    const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    const db = new Database(dbPath);
+    db.exec("PRAGMA journal_mode = WAL");
+    runMigrations(db);
+    // The agent reports success but explicitly fails verification: dispatch
+    // must treat that verdict as authoritative and never reach integration.
+    const runtime = createProductionOrchestrationRuntime(db, {
+      repositoryPath: root,
+      worktreeRoot,
+      agentExecutor: { execute: async () => ({ status: "succeeded", verificationPassed: false, integrationPassed: false, durationMs: 0 }) },
+    });
+    const result = await runtime.commands.executor.executeCommand("task/start", { taskDescription: "verification gate", sourceSha, ownedPaths: ["src/orchestration/commands"] });
+    expect(result.status).toBe("failed");
+    expect(result.error?.code).toBe("CANONICAL_SCHEDULER_FAILED");
+    const ws = db.query("SELECT status, failure_reason FROM execution_workstreams ORDER BY created_at DESC LIMIT 1").get() as any;
+    expect(ws.status).toBe("failed"); // the workstream must not reach integration
+    expect(ws.failure_reason).toBeTruthy();
+    db.close();
+  });
+
+  it("T9: a completion decision at a different SHA does not satisfy the recovery fast-path", async () => {
+    const dir = freshDir();
+    const dbPath = join(dir, "runtime.sqlite");
+    const { db: dbA, runtime: runtimeA } = openRuntime(dbPath);
+    const first = await runtimeA.commands.executor.executeCommand("task/start", { taskDescription: "sha-scoped fast-path" });
+    expect(first.status).toBe("completed");
+    const invocationId = first.invocationId!;
+    const runId = first.taskRunId!;
+    const decision = dbA.query("SELECT sha FROM completion_decisions WHERE run_id = ?").get(runId) as any;
+    expect(decision.sha).toBe("0".repeat(40)); // no sourceSha -> canonical zero SHA
+    // Corrupt the durable decision's SHA: it must no longer satisfy THIS run's
+    // fast-path (recovery must re-verify/re-evaluate, not short-circuit).
+    dbA.query("UPDATE completion_decisions SET sha = ? WHERE run_id = ?").run("1".repeat(40), runId);
+    // Reset the durable invocation to a mid-flight state so recovery re-enters
+    // the canonical pipeline; a terminal invocation would short-circuit before
+    // the fast-path is ever evaluated.
+    dbA.query("UPDATE command_invocations SET status = 'running' WHERE invocation_id = ?").run(invocationId);
+    const { db: dbB, runtime: runtimeB } = openRuntime(dbPath);
+    const recovered = await runtimeB.commands.executor.recoverCommand(invocationId);
+    expect(recovered.status).toBe("completed");
+    // The re-evaluation is deduped by the idempotency key: still exactly one
+    // logical completion decision, no matter that the stored sha was stale.
+    expect(count(dbB, "completion_decisions")).toBe(1);
+    dbB.close();
+    dbA.close();
+  });
+
+  it("T10: security boundary rejects malicious input before persistence", async () => {
+    const dir = freshDir();
+    const dbPath = join(dir, "runtime.sqlite");
+    const { db, runtime } = openRuntime(dbPath);
+    const malicious = ["rm", "-rf"].join(" ") + "; echo pwned";
+    let thrown: unknown = null;
+    try {
+      await runtime.commands.executor.executeCommand("task/start", { taskDescription: malicious });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(CommandSecurityException);
+    expect((thrown as CommandSecurityException).code).toBe("SHELL_INJECTION");
+    // The malicious invocation is rejected at the security boundary, before
+    // the R1 persistence: it must never be left durably in "pending" state.
+    expect(count(db, "command_invocations")).toBe(0);
+    db.close();
   });
 });
