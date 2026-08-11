@@ -321,7 +321,7 @@ export class DurableCommandExecutor {
           return this.runtime.worktreeExecutionService
             ? { status: "succeeded" as const, verificationPassed: agentResult?.verificationPassed ?? true, integrationPassed: agentResult?.integrationPassed ?? false, durationMs: agentResult?.durationMs ?? 0 }
             : "succeeded" as const;
-        } catch (error) {
+        } catch {
           if (assignmentId) {
             this.runtime.assignmentBindingCoordinator.markFailed(assignmentId);
             if (this.runtime.services.assignmentService?.failAssignment) await this.runtime.services.assignmentService.failAssignment(assignmentId);
