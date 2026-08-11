@@ -311,7 +311,7 @@ interface LeakScanResult {
 
 function leakScan(db: Database, runId: string | undefined, opts: LeakScanOptions = {}): LeakScanResult {
   const byRun = (where: string) => (runId ? where : "")
-  const params = (where: string): SQLQueryBindings[] => (runId ? [runId] : [])
+  const params = (_where: string): SQLQueryBindings[] => (runId ? [runId] : [])
   const whereRun = "run_id = ?"
   const runIds = opts.runIds ?? (runId ? [runId] : [])
   const out: LeakScanResult = {}

@@ -162,7 +162,7 @@ describe("M9 R1-R15 fresh-runtime recovery matrix", () => {
   it("R15: terminal failure restart remains the same logical failed invocation — no silent fresh invocation", async () => {
     const dir = freshDir();
     const dbPath = join(dir, "runtime.sqlite");
-    const { db: dbA, runtime: runtimeA } = openRuntime(dbPath, {
+    const { db: _dbA, runtime: runtimeA } = openRuntime(dbPath, {
       faultHook: { afterDispatch: () => { throw new Error("simulated unrecoverable failure") } },
     } as any);
     const failed = await runtimeA.commands.executor.executeCommand("task/start", { taskDescription: "terminal failure" });
