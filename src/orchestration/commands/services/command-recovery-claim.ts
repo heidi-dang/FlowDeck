@@ -10,7 +10,7 @@ import type { TransactionManager } from "../../persistence/transaction-manager"
  * carries a bounded TTL so a crashed recoverer does not block forever.
  */
 export class CommandRecoveryClaim {
-  private static readonly TTL_SECONDS = 120
+  private static readonly TTL_SECONDS = 600
 
   constructor(private readonly db: Database, private readonly tx: TransactionManager) {}
 

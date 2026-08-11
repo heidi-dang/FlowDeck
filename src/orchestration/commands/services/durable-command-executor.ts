@@ -545,18 +545,19 @@ export class DurableCommandExecutor {
   }
 
   private async awaitConcurrentRecovery(invocation: CommandInvocation, startTime: number): Promise<CommandResult> {
-    // Bounded poll: the winning recoverer will drive the invocation to a
-    // terminal state; we converge on that durable result.
-    for (let i = 0; i < 50; i++) {
+    // Bounded poll (~30s): the winning recoverer will drive the invocation to
+    // a terminal state; we converge on that durable result. A legitimate long
+    // recovery is not abandoned while its claim is still live.
+    for (let i = 0; i < 300; i++) {
       const current = await this.invocationRepo.getByInvocationId(invocation.invocationId);
       if (current && ["completed", "failed", "cancelled"].includes(current.status)) {
         return this.projectTerminal(current, startTime);
       }
-      await new Promise((r) => setTimeout(r, 20));
+      await new Promise((r) => setTimeout(r, 100));
     }
-    // If the winner has not finished, fall back to a direct terminal projection
-    // only when the durable state is already terminal; otherwise report the
-    // current non-terminal state without re-dispatching.
+    // A concurrent recoverer still owning its 600s claim after the poll means
+    // the durable state is not yet terminal; report the current non-terminal
+    // state without re-dispatching.
     const current = await this.invocationRepo.getByInvocationId(invocation.invocationId);
     if (current && ["completed", "failed", "cancelled"].includes(current.status)) return this.projectTerminal(current, startTime);
     return {
