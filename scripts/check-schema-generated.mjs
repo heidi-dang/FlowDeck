@@ -52,25 +52,26 @@ function findBun() {
 
 /**
  * Validate schema using the sqlite3 CLI.
- * Throws on any schema error or CLI failure — does NOT fall back silently.
+ * Uses the CLI path detected by findSqlite3Cli().
+ * Throws on any schema error or CLI failure — does NOT fall back silently (fail closed).
  */
-function validateWithCli() {
+function validateWithCli(sqlite3Path) {
   execSync(`rm -f ${TMP_DB}`);
-  execSync(`sqlite3 ${TMP_DB} < ${SQL_FILE}`);
+  execSync(`"${sqlite3Path}" ${TMP_DB} < ${SQL_FILE}`);
   const tables = execSync(
-    `sqlite3 ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"'`
+    `"${sqlite3Path}" ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"'`
   ).toString().trim();
   const triggers = execSync(
-    `sqlite3 ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="trigger"'`
+    `"${sqlite3Path}" ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="trigger"'`
   ).toString().trim();
   const indexes = execSync(
-    `sqlite3 ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"'`
+    `"${sqlite3Path}" ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"'`
   ).toString().trim();
   const fk = execSync(
-    `sqlite3 ${TMP_DB} 'PRAGMA foreign_key_check;' | wc -l`
+    `"${sqlite3Path}" ${TMP_DB} 'PRAGMA foreign_key_check;' | wc -l`
   ).toString().trim();
   const integ = execSync(
-    `sqlite3 ${TMP_DB} 'PRAGMA integrity_check;'`
+    `"${sqlite3Path}" ${TMP_DB} 'PRAGMA integrity_check;'`
   ).toString().trim();
   return { tables, triggers, indexes, fk, integ };
 }
@@ -129,7 +130,7 @@ let usedPath;
 const sqlite3Path = findSqlite3Cli();
 if (sqlite3Path !== null) {
   usedPath = "cli";
-  stats = validateWithCli();
+  stats = validateWithCli(sqlite3Path);
 } else {
   // sqlite3 CLI not available — safely fall back to bun:sqlite
   usedPath = "bun";
