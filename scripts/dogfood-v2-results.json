@@ -1,0 +1,1797 @@
+{
+  "harness": {
+    "repo": "FlowDeck-m9",
+    "branch": "feat/v2-m9-commands-as-code",
+    "head": "b0fc0f0",
+    "bun": "v24.3.0",
+    "ranAt": "2026-08-11T09:14:23.046Z",
+    "hangTimeoutMs": 45000,
+    "note": "Dogfood mocks ONLY the agent; orchestration (runtime composition, git worktrees, SQLite, budget, scheduler, verification, completion, recovery, idempotency) is the real production path."
+  },
+  "scenarios": [
+    {
+      "scenario": "D1",
+      "status": "PASS",
+      "durationMs": 53,
+      "result": {
+        "runId": "31243ab4-c1db-49a0-803b-e3eb4b7127e4",
+        "invocationId": "inv_f4996c88-4589-4218-8675-c42e1ca09e24"
+      },
+      "checks": {
+        "commandCompleted": true,
+        "repoUnchanged": true,
+        "oneWorkstreamDispatched": true,
+        "readFactsRecorded": true,
+        "planSucceeded": true,
+        "integrationMergedEmpty": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 1,
+          "active": 1,
+          "activeStates": 0,
+          "released": 1,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 2,
+        "assignments": {
+          "total": 1,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 1,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 1
+        },
+        "evidence": 1,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 1,
+          "assignments": 1,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "31243ab4-c1db-49a0-803b-e3eb4b7127e4": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D2",
+      "status": "PASS",
+      "durationMs": 38,
+      "result": {
+        "runId": "cf222e59-c667-447e-ba89-6eb39461fd8a",
+        "before": {
+          "src/math.ts": "8d344bcb231aaa7f94df684340b260c5edc259441a6e56f600f23f736b3f2f5e",
+          "src/strings.ts": "772979d2bc94a2d6a59cafec5281d20e93f60fe4b2e3f02dfc3ce2dbcb3fbbbd",
+          "README.md": "f3a92bb85c24313688d2476bc8894f75eb35417963007ff9b01db4a53ee9297b",
+          "package.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+        },
+        "after": {
+          "src/math.ts": "ffa24ce5c59c33053a6f860953d54bf4fdeaf243b19fc2f0863a5b3bb5484c9f",
+          "src/strings.ts": "20005547456a41326dac6e7a3476304787f0d0da385c36143ab279474db67508",
+          "README.md": "f3a92bb85c24313688d2476bc8894f75eb35417963007ff9b01db4a53ee9297b",
+          "package.json": "ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356"
+        },
+        "worktreeSnapshots": {
+          "ws_b1a10762-342a-4109-a4f4-e0affaa55746": [
+            "src/math.ts:ffa24ce5c59c33053a6f860953d54bf4fdeaf243b19fc2f0863a5b3bb5484c9f",
+            "src/strings.ts:20005547456a41326dac6e7a3476304787f0d0da385c36143ab279474db67508"
+          ]
+        }
+      },
+      "checks": {
+        "commandCompleted": true,
+        "bothFilesChangedInRepo": true,
+        "worktreeFilesChanged": true,
+        "markersLanded": true,
+        "twoOwnedPathsDispatched": true,
+        "integrated": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 1,
+          "active": 1,
+          "activeStates": 0,
+          "released": 1,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 2,
+        "assignments": {
+          "total": 1,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 1,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 1
+        },
+        "evidence": 1,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 1,
+          "assignments": 1,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "cf222e59-c667-447e-ba89-6eb39461fd8a": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D3",
+      "status": "PASS",
+      "durationMs": 66,
+      "result": {
+        "runId": "3ff114e7-4e04-40d3-9759-b8e87591bf0f",
+        "planId": "plan:inv_d3_dependency",
+        "workstreams": [
+          {
+            "workstream_id": "ws-1",
+            "status": "integrated",
+            "failure_reason": null
+          },
+          {
+            "workstream_id": "ws-2",
+            "status": "integrated",
+            "failure_reason": null
+          }
+        ],
+        "dependencies": [
+          {
+            "workstream_id": "ws-2",
+            "depends_on": "ws-1"
+          }
+        ],
+        "agentOrder": [
+          "ws-1",
+          "ws-2"
+        ]
+      },
+      "checks": {
+        "commandCompleted": true,
+        "exactlyTwoWorkstreams": true,
+        "noDuplicates": true,
+        "dependencyPersisted": true,
+        "ws2RanAfterWs1": true,
+        "bothIntegrated": true,
+        "noFailures": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 2,
+          "active": 2,
+          "activeStates": 0,
+          "released": 2,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 2,
+        "assignments": {
+          "total": 2,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 2,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 1
+        },
+        "evidence": 1,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 2,
+          "assignments": 2,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "3ff114e7-4e04-40d3-9759-b8e87591bf0f": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D4",
+      "status": "PASS",
+      "durationMs": 96,
+      "result": {
+        "runId": "5e3c94ec-f327-495d-bdf1-4592c89cb25e",
+        "planId": "plan:inv_d4_parallel",
+        "workstreams": [
+          {
+            "workstream_id": "ws-a",
+            "status": "integrated"
+          },
+          {
+            "workstream_id": "ws-b",
+            "status": "integrated"
+          },
+          {
+            "workstream_id": "ws-c",
+            "status": "integrated"
+          }
+        ],
+        "assignmentsForPlan": 3,
+        "agentOrder": [
+          "ws-a",
+          "ws-b",
+          "ws-c"
+        ]
+      },
+      "checks": {
+        "commandCompleted": true,
+        "exactlyThreeWorkstreams": true,
+        "allSucceeded": true,
+        "exactlyThreeAssignments": true,
+        "allDispatched": true,
+        "noDuplicates": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 3,
+          "active": 3,
+          "activeStates": 0,
+          "released": 3,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 3,
+        "assignments": {
+          "total": 3,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 3,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 1
+        },
+        "evidence": 1,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 3,
+          "assignments": 3,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "5e3c94ec-f327-495d-bdf1-4592c89cb25e": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D5",
+      "status": "EXPECTED_FAIL",
+      "durationMs": 12,
+      "result": {
+        "outcome": "conflict",
+        "error": "Error: OVERLAPPING_OWNERSHIP",
+        "note": "Overlapping ownership rejected at plan persistence (OVERLAPPING_OWNERSHIP) — fail-closed conflict detection, no partial execution."
+      },
+      "checks": {
+        "conflictDetected": true,
+        "planBlockedFromPersistence": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 0,
+          "active": 0,
+          "activeStates": 0,
+          "released": 0,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 0,
+        "assignments": {
+          "total": 0,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 0,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 0,
+          "pass": 0
+        },
+        "verifications": {
+          "passed": 0
+        },
+        "evidence": 0,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 0,
+          "workstreams": 0,
+          "assignments": 0,
+          "completionDecisions": 0
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "b769f9f0-f67e-4f6a-9626-5cb48d93067f": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D6",
+      "status": "PASS",
+      "durationMs": 77,
+      "result": {
+        "partA": {
+          "status": "completed",
+          "snapshot": {
+            "enabled": true,
+            "profile": "normal",
+            "run": {
+              "ceiling": 500,
+              "consumed": 15,
+              "reserved": 0,
+              "releasedUnused": 135,
+              "remaining": 485,
+              "terminal": null
+            },
+            "workstreams": 1
+          },
+          "tokenScan": {
+            "files": 1,
+            "reserved": 0,
+            "consumed": 15,
+            "releasedUnused": 135,
+            "negative": false,
+            "perRun": {
+              "f0e3e2c1-796b-4471-bc65-89942c79cbca": {
+                "reserved": 0,
+                "consumed": 15,
+                "releasedUnused": 135,
+                "terminal": null
+              }
+            }
+          },
+          "leak": {
+            "worktreeLeases": {
+              "total": 1,
+              "active": 1,
+              "activeStates": 0,
+              "released": 1,
+              "reclaimable": 0
+            },
+            "ownershipClaims": 1,
+            "assignments": {
+              "total": 1,
+              "zombie": 0
+            },
+            "bindings": {
+              "total": 1,
+              "zombie": 0
+            },
+            "completionDecisions": {
+              "total": 1,
+              "pass": 1
+            },
+            "verifications": {
+              "passed": 1
+            },
+            "evidence": 1,
+            "graph": {
+              "taskRuns": 1,
+              "plans": 1,
+              "workstreams": 1,
+              "assignments": 1,
+              "completionDecisions": 1
+            },
+            "duplicates": {
+              "plans": false,
+              "workstreams": false,
+              "assignments": false,
+              "completionDecisions": false
+            },
+            "token": {
+              "files": 1,
+              "reserved": 0,
+              "consumed": 15,
+              "releasedUnused": 135,
+              "negative": false,
+              "perRun": {
+                "f0e3e2c1-796b-4471-bc65-89942c79cbca": {
+                  "reserved": 0,
+                  "consumed": 15,
+                  "releasedUnused": 135,
+                  "terminal": null
+                }
+              }
+            },
+            "passWithoutEvidence": 0
+          }
+        },
+        "partB": {
+          "status": "failed",
+          "errorCode": "CANONICAL_SCHEDULER_FAILED",
+          "runId": "b595b6aa-fd0e-428a-9b18-be7286b970b4",
+          "tokenScan": {
+            "files": 0,
+            "reserved": 0,
+            "consumed": 0,
+            "releasedUnused": 0,
+            "negative": false,
+            "perRun": {
+              "b595b6aa-fd0e-428a-9b18-be7286b970b4": {
+                "reserved": 0,
+                "consumed": 0,
+                "releasedUnused": 0,
+                "terminal": null
+              }
+            }
+          }
+        },
+        "failure": null
+      },
+      "checks": {
+        "partACompleted": true,
+        "partAAccounting": true,
+        "partANoNegative": true,
+        "partBControlledFailure": true,
+        "partBNoNegative": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 1,
+          "active": 1,
+          "activeStates": 0,
+          "released": 1,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 1,
+        "assignments": {
+          "total": 1,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 1,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 0,
+          "pass": 0
+        },
+        "verifications": {
+          "passed": 0
+        },
+        "evidence": 0,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 1,
+          "assignments": 1,
+          "completionDecisions": 0
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "b595b6aa-fd0e-428a-9b18-be7286b970b4": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D7",
+      "status": "PASS",
+      "durationMs": 47,
+      "result": {
+        "failResult": {
+          "status": "failed",
+          "errorCode": "CANONICAL_SCHEDULER_FAILED"
+        },
+        "assignment": {
+          "status": "failed"
+        },
+        "binding": {
+          "dispatch_state": "failed"
+        },
+        "retryResult": {
+          "status": "completed"
+        }
+      },
+      "checks": {
+        "commandFailed": true,
+        "failureCode": true,
+        "assignmentFailed": true,
+        "bindingFailed": true,
+        "noZombies": true,
+        "noPassDecision": true,
+        "retryCompleted": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 2,
+          "active": 2,
+          "activeStates": 0,
+          "released": 2,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 2,
+        "assignments": {
+          "total": 2,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 2,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 1
+        },
+        "evidence": 1,
+        "graph": {
+          "taskRuns": 2,
+          "plans": 2,
+          "workstreams": 2,
+          "assignments": 2,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {}
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D8",
+      "status": "FAIL",
+      "durationMs": 19,
+      "result": {
+        "invocationId": "inv_0e061adc-6144-40b1-a84d-10e46ca45af4",
+        "resultStatus": "cancelled",
+        "errorCode": "COMMAND_CANCELLED",
+        "planStatus": "cancelled",
+        "zombieAssignments": 1
+      },
+      "checks": {
+        "commandCancelled": true,
+        "cancelCode": true,
+        "planCancelled": true,
+        "noRunnableWorkstreams": true,
+        "invocationCancelled": true,
+        "noPassDecision": true,
+        "noZombieAssignments": false
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 0,
+          "active": 0,
+          "activeStates": 0,
+          "released": 0,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 0,
+        "assignments": {
+          "total": 1,
+          "zombie": 1
+        },
+        "bindings": {
+          "total": 1,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 0,
+          "pass": 0
+        },
+        "verifications": {
+          "passed": 0
+        },
+        "evidence": 0,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 1,
+          "assignments": 1,
+          "completionDecisions": 0
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "eaf164c5-fe9d-4bf0-8c41-4b021d27f3c2": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D9",
+      "status": "PASS",
+      "durationMs": 42,
+      "result": {
+        "dbPath": "/tmp/dogfood-v2-eCmmYu/d9.sqlite",
+        "invocation": {
+          "invocation_id": "inv_5b13582d-08dc-49c8-a063-6fdd90b03561",
+          "task_run_id": "ff3a834e-1833-4d5d-af6f-186daf94ade4",
+          "plan_id": "plan:inv_5b13582d-08dc-49c8-a063-6fdd90b03561",
+          "status": "running"
+        },
+        "recovered": {
+          "status": "completed",
+          "taskRunId": "ff3a834e-1833-4d5d-af6f-186daf94ade4"
+        },
+        "thrown": "RangeError: Cannot use a closed database"
+      },
+      "checks": {
+        "crashSimulated": true,
+        "recoveredCompleted": true,
+        "singleRun": true,
+        "singlePlan": true,
+        "singleWorkstream": true,
+        "singleAssignment": true,
+        "singleDecision": true,
+        "singleIntegration": true,
+        "samePlanId": true,
+        "workstreamIntegrated": true,
+        "noActiveLeases": true,
+        "noZombies": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 1,
+          "active": 1,
+          "activeStates": 0,
+          "released": 1,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 1,
+        "assignments": {
+          "total": 1,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 1,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 1
+        },
+        "evidence": 1,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 1,
+          "assignments": 1,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "ff3a834e-1833-4d5d-af6f-186daf94ade4": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D10",
+      "status": "PASS",
+      "durationMs": 21,
+      "result": {
+        "errorCode": "CANONICAL_SCHEDULER_FAILED",
+        "runId": "4cea8ef1-e962-436d-b753-a79fc3dfeac2",
+        "workstream": {
+          "status": "failed",
+          "failure_reason": "WORKSTREAM_EXECUTION_FAILED"
+        },
+        "note": "Verification gate rejects at dispatch: agent verificationPassed=false is authoritative (VERIFICATION_REQUIRED_BEFORE_INTEGRATION); recorded failure_reason reflects the dispatch-boundary rejection."
+      },
+      "checks": {
+        "commandFailed": true,
+        "failureCode": true,
+        "workstreamFailed": true,
+        "failureReasonPresent": true,
+        "neverIntegrated": true,
+        "noPassDecision": true,
+        "singleWorkstream": true,
+        "noZombies": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 1,
+          "active": 1,
+          "activeStates": 0,
+          "released": 1,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 1,
+        "assignments": {
+          "total": 1,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 1,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 0,
+          "pass": 0
+        },
+        "verifications": {
+          "passed": 0
+        },
+        "evidence": 0,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 1,
+          "assignments": 1,
+          "completionDecisions": 0
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "4cea8ef1-e962-436d-b753-a79fc3dfeac2": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D11",
+      "status": "PASS",
+      "durationMs": 14,
+      "result": {
+        "note": "Canonical path always generates evidence; a pass completion decision is produced ONLY when evidence rows exist. Global invariant: no run has a pass decision with zero evidence.",
+        "evidenceCount": 2,
+        "passedVerifications": 2,
+        "passDecisions": 1,
+        "passWithoutEvidence": 0
+      },
+      "checks": {
+        "taskStartCompleted": true,
+        "completeCompleted": true,
+        "evidenceGenerated": true,
+        "verificationPassed": true,
+        "passDecisionWithEvidence": true,
+        "passWithoutEvidenceCount": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 0,
+          "active": 0,
+          "activeStates": 0,
+          "released": 0,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 0,
+        "assignments": {
+          "total": 2,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 2,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 2
+        },
+        "evidence": 2,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 2,
+          "workstreams": 2,
+          "assignments": 2,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "d0bf1212-3e3a-4d46-a8f0-b206116af9a1": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D12",
+      "status": "PASS",
+      "durationMs": 38,
+      "result": {
+        "runId": "8f224089-2a76-4ea9-b882-77caeafe96b4",
+        "invocationId": "inv_bb88ff1d-569a-403a-aa9a-4fe0311b8ba5",
+        "d12": {
+          "dbPath": "/tmp/dogfood-v2-eCmmYu/d12.sqlite",
+          "invocationId": "inv_bb88ff1d-569a-403a-aa9a-4fe0311b8ba5",
+          "runId": "8f224089-2a76-4ea9-b882-77caeafe96b4",
+          "planId": "plan:inv_bb88ff1d-569a-403a-aa9a-4fe0311b8ba5",
+          "counts": {
+            "runs": 1,
+            "plans": 1,
+            "workstreams": 1,
+            "assignments": 1,
+            "decisions": 1,
+            "verifications": 1,
+            "evidence": 1
+          }
+        }
+      },
+      "checks": {
+        "commandCompleted": true,
+        "verificationPassedRows": true,
+        "evidenceRows": true,
+        "singlePassDecision": true,
+        "integrated": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 1,
+          "active": 1,
+          "activeStates": 0,
+          "released": 1,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 2,
+        "assignments": {
+          "total": 1,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 1,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 1
+        },
+        "evidence": 1,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 1,
+          "assignments": 1,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "8f224089-2a76-4ea9-b882-77caeafe96b4": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D13",
+      "status": "PASS",
+      "durationMs": 5,
+      "result": {
+        "d12Recover": {
+          "status": "completed",
+          "counts": {
+            "runs": 1,
+            "plans": 1,
+            "workstreams": 1,
+            "assignments": 1,
+            "decisions": 1,
+            "verifications": 1,
+            "evidence": 1
+          },
+          "countsAfterAgain": {
+            "runs": 1,
+            "plans": 1,
+            "workstreams": 1,
+            "assignments": 1,
+            "decisions": 1,
+            "verifications": 1,
+            "evidence": 1
+          }
+        },
+        "d9Recover": {
+          "status": "completed",
+          "before": {
+            "runs": 1,
+            "plans": 1,
+            "workstreams": 1,
+            "assignments": 1,
+            "decisions": 1
+          },
+          "after": {
+            "runs": 1,
+            "plans": 1,
+            "workstreams": 1,
+            "assignments": 1,
+            "decisions": 1
+          }
+        }
+      },
+      "checks": {
+        "d12RecoverCompleted": true,
+        "d12RecoverIdempotent": true,
+        "d12CountsFrozen": true,
+        "d12NoRerunOnRepeat": true,
+        "d9RecoverIdempotent": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 1,
+          "active": 1,
+          "activeStates": 0,
+          "released": 1,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 2,
+        "assignments": {
+          "total": 1,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 1,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 1
+        },
+        "evidence": 1,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 1,
+          "assignments": 1,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "8f224089-2a76-4ea9-b882-77caeafe96b4": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D14",
+      "status": "PASS",
+      "durationMs": 11,
+      "result": {
+        "idempotencyKey": "ik_d14_concurrent",
+        "uniqueInvocationIds": [
+          "inv_ff12b98c-e2cf-4901-b41b-9952954fd2cd"
+        ],
+        "statuses": [
+          "completed",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending",
+          "pending"
+        ],
+        "runId": "5ea4fcfe-d7bb-489f-9eba-3856411c1a62"
+      },
+      "checks": {
+        "allReturned": true,
+        "singleInvocationId": true,
+        "singleInvocationRow": true,
+        "singleCompletionDecision": true,
+        "noFailedStatus": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 0,
+          "active": 0,
+          "activeStates": 0,
+          "released": 0,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 0,
+        "assignments": {
+          "total": 1,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 1,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 1
+        },
+        "evidence": 1,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 1,
+          "assignments": 1,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "5ea4fcfe-d7bb-489f-9eba-3856411c1a62": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    },
+    {
+      "scenario": "D15",
+      "status": "PASS",
+      "durationMs": 61,
+      "result": {
+        "runId": "dcd834cb-88c9-4ecf-8673-88f5a94922a5",
+        "planId": "plan:inv_d15_integration",
+        "integratedAttempts": [
+          {
+            "attempt_id": "integration-ws-1-1786439661757-complete",
+            "plan_id": "plan:inv_d15_integration",
+            "workstream_id": "ws-1",
+            "status": "integrated"
+          },
+          {
+            "attempt_id": "integration-ws-2-1786439661768-complete",
+            "plan_id": "plan:inv_d15_integration",
+            "workstream_id": "ws-2",
+            "status": "integrated"
+          }
+        ],
+        "perWorkstreamCounts": {
+          "ws-1": 1,
+          "ws-2": 1
+        },
+        "workstreams": [
+          {
+            "workstream_id": "ws-1",
+            "status": "integrated"
+          },
+          {
+            "workstream_id": "ws-2",
+            "status": "integrated"
+          }
+        ],
+        "planStatus": "succeeded"
+      },
+      "checks": {
+        "commandCompleted": true,
+        "everyWorkstreamIntegrated": true,
+        "integrationRanOncePerWorkstream": true,
+        "noDuplicateIntegration": true,
+        "planSucceeded": true
+      },
+      "leakScan": {
+        "worktreeLeases": {
+          "total": 2,
+          "active": 2,
+          "activeStates": 0,
+          "released": 2,
+          "reclaimable": 0
+        },
+        "ownershipClaims": 2,
+        "assignments": {
+          "total": 2,
+          "zombie": 0
+        },
+        "bindings": {
+          "total": 2,
+          "zombie": 0
+        },
+        "completionDecisions": {
+          "total": 1,
+          "pass": 1
+        },
+        "verifications": {
+          "passed": 1
+        },
+        "evidence": 1,
+        "graph": {
+          "taskRuns": 1,
+          "plans": 1,
+          "workstreams": 2,
+          "assignments": 2,
+          "completionDecisions": 1
+        },
+        "duplicates": {
+          "plans": false,
+          "workstreams": false,
+          "assignments": false,
+          "completionDecisions": false
+        },
+        "token": {
+          "files": 0,
+          "reserved": 0,
+          "consumed": 0,
+          "releasedUnused": 0,
+          "negative": false,
+          "perRun": {
+            "dcd834cb-88c9-4ecf-8673-88f5a94922a5": {
+              "reserved": 0,
+              "consumed": 0,
+              "releasedUnused": 0,
+              "terminal": null
+            }
+          }
+        },
+        "passWithoutEvidence": 0
+      }
+    }
+  ],
+  "soak": {
+    "totalRuns": 57,
+    "distribution": {
+      "task/start": 5,
+      "task/start(dup)": 1,
+      "status": 8,
+      "plan": 8,
+      "verify": 8,
+      "complete": 8,
+      "review/audit": 8,
+      "resume/recover": 9,
+      "execute": 2
+    },
+    "unexpectedFailures": [],
+    "hangs": [],
+    "cancellations": [
+      {
+        "commandId": "task/start",
+        "status": "cancelled",
+        "durationMs": 17,
+        "expected": "cancelled",
+        "note": "gated cancellation"
+      }
+    ],
+    "expectedFailures": [
+      {
+        "commandId": "task/start",
+        "status": "failed",
+        "durationMs": 18,
+        "expected": "failed",
+        "note": "expected agent failure"
+      }
+    ],
+    "leaks": {
+      "zombies": {
+        "assignments": 1,
+        "bindings": 0
+      },
+      "activeLeases": 0,
+      "negativeTokenBalance": false,
+      "duplicateRows": {
+        "plans": false,
+        "workstreams": false,
+        "assignments": false,
+        "completionDecisions": false
+      },
+      "passWithoutEvidence": 0
+    },
+    "entries": [
+      {
+        "commandId": "task/start",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "task/start(dup)",
+        "status": "completed",
+        "durationMs": 1,
+        "expected": "completed",
+        "note": "idempotent retrieval"
+      },
+      {
+        "commandId": "status",
+        "status": "completed",
+        "durationMs": 19,
+        "expected": "completed"
+      },
+      {
+        "commandId": "status",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "status",
+        "status": "completed",
+        "durationMs": 19,
+        "expected": "completed"
+      },
+      {
+        "commandId": "status",
+        "status": "completed",
+        "durationMs": 19,
+        "expected": "completed"
+      },
+      {
+        "commandId": "status",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "status",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "status",
+        "status": "completed",
+        "durationMs": 19,
+        "expected": "completed"
+      },
+      {
+        "commandId": "status",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 19,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 19,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 19,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 19,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "plan",
+        "status": "completed",
+        "durationMs": 18,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "verify",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 19,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "complete",
+        "status": "completed",
+        "durationMs": 25,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 25,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "review/audit",
+        "status": "completed",
+        "durationMs": 22,
+        "expected": "completed"
+      },
+      {
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 21,
+        "expected": "completed"
+      },
+      {
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 20,
+        "expected": "completed"
+      },
+      {
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 25,
+        "expected": "completed"
+      },
+      {
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 31,
+        "expected": "completed"
+      },
+      {
+        "commandId": "execute",
+        "status": "completed",
+        "durationMs": 34,
+        "expected": "completed"
+      },
+      {
+        "commandId": "execute",
+        "status": "completed",
+        "durationMs": 32,
+        "expected": "completed"
+      },
+      {
+        "commandId": "task/start",
+        "status": "completed",
+        "durationMs": 32,
+        "expected": "completed"
+      },
+      {
+        "commandId": "task/start",
+        "status": "failed",
+        "durationMs": 18,
+        "expected": "failed",
+        "note": "expected agent failure"
+      },
+      {
+        "commandId": "task/start",
+        "status": "completed",
+        "durationMs": 35,
+        "expected": "completed"
+      },
+      {
+        "commandId": "task/start",
+        "status": "cancelled",
+        "durationMs": 17,
+        "expected": "cancelled",
+        "note": "gated cancellation"
+      },
+      {
+        "commandId": "resume/recover",
+        "status": "completed",
+        "durationMs": 2,
+        "expected": "completed",
+        "note": "restart recovery"
+      }
+    ]
+  },
+  "summary": {
+    "pass": 13,
+    "expectedFail": 1,
+    "fail": 1,
+    "hang": 0
+  },
+  "acceptance": {
+    "scenariosClean": false,
+    "soakClean": false
+  }
+}
