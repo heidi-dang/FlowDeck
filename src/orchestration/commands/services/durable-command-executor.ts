@@ -340,7 +340,6 @@ export class DurableCommandExecutor {
     }
     if (scheduleResult.failed.length > 0 || scheduleResult.blocked.length > 0) throw new CommandRecoveryError("CANONICAL_SCHEDULER_FAILED", "Canonical scheduler reported failed/blocked workstreams");
     const executionRepository = this.runtime.executionRepository;
-    if (executionRepository.transitionPlanStatus && executionRepository.getPlan?.(canonicalPlan.planId)?.status !== "succeeded") executionRepository.transitionPlanStatus(canonicalPlan.planId, "succeeded");
 
     // Fault-injection seam: simulate a crash after dispatch but before
     // verification/completion. Dependency-injected; never persisted.
@@ -400,6 +399,10 @@ export class DurableCommandExecutor {
       });
       if (decision.outcome !== "completed") throw new CommandRecoveryError("CANONICAL_COMPLETION_BLOCKED", `Canonical completion blocked:${decision.decisionId}`, { decisionId: decision.decisionId });
     }
+
+    // Plan reaches "succeeded" only when the command actually completes;
+    // a verification/completion failure leaves it non-succeeded.
+    if (executionRepository.transitionPlanStatus && executionRepository.getPlan?.(canonicalPlan.planId)?.status !== "succeeded") executionRepository.transitionPlanStatus(canonicalPlan.planId, "succeeded");
 
     const completedAt = new Date().toISOString();
     invocation.status = "completed";
