@@ -483,4 +483,64 @@ describe("Schema Validation SQLite Fallback", () => {
       expect(integBun).toBe("ok");
     });
   });
+
+  // ── Detected executable path honouring ──────────────────────────────
+  // Regression for the alpha.3 publish-runner failure (run 31480180293):
+  // the discovered sqlite3 CLI path must be the EXACT executable invoked.
+  // The old code detected a path via findSqlite3Cli() but then invoked a
+  // literal `sqlite3` from PATH, so an injected/broken discovered binary was
+  // silently bypassed and the validation falsely reported ALL PASS.
+  describe("detected executable path honouring", () => {
+    it("invokes the detected sqlite3 path (not a literal sqlite3) and succeeds for a valid schema", () => {
+      const marker = join(tmpdir(), `fake-marker-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
+      const fakeSqlite3 = track(
+        join(tmpdir(), `fake-sqlite3-ok-${Date.now()}-${Math.random().toString(36).slice(2)}.sh`)
+      );
+      writeFileSync(
+        fakeSqlite3,
+        `#!/bin/sh\n` +
+        `echo "INVOKED:$(basename "$0"):$*" >> '${marker}'\n` +
+        `last=""; for a in "$@"; do last="$a"; done\n` +
+        `case "$last" in\n` +
+        `  *PRAGMA\\ integrity_check*) echo ok ;;\n` +
+        `  *PRAGMA\\ foreign_key_check*) : ;;\n` +
+        `  *sqlite_master*) case "$last" in\n` +
+        `      *type=\\"table\\"*) echo 53 ;;\n` +
+        `      *type=\\"trigger\\"*) echo 36 ;;\n` +
+        `      *type=\\"index\\"*) echo 66 ;;\n` +
+        `    esac ;;\n` +
+        `  *) : ;;\n` +
+        `esac\nexit 0\n`
+      );
+      chmodSync(fakeSqlite3, 0o755);
+
+      const tmpScript = track(
+        join(tmpdir(), `detected-path-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`)
+      );
+      const original = readFileSync(SCRIPT_PATH, "utf-8");
+      const modified = original.replace(
+        /function findSqlite3Cli\(\) \{[\s\S]*?return null;\n\}/,
+        `function findSqlite3Cli() {\n  return '${fakeSqlite3}';\n}`
+      );
+      expect(modified).not.toBe(original);
+      writeFileSync(tmpScript, modified);
+
+      const result = runTempScript(tmpScript);
+
+      // Valid schema through the detected executable => ALL PASS, exit 0.
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout + result.stderr).toContain("Schema validation: ALL PASS");
+
+      // The detected fake executable must be the exact binary invoked. Mark
+      // every invocation with basename($0); a literal `sqlite3` fallback would
+      // log "INVOKED:sqlite3:". At least six invocations are expected
+      // (schema load + table/trigger/index/FK/integrity queries).
+      const lines = readFileSync(marker, "utf-8").trim().split("\n").filter(Boolean);
+      expect(lines.length).toBeGreaterThanOrEqual(6);
+      for (const line of lines) {
+        expect(line).toMatch(/^INVOKED:fake-sqlite3-ok-/);
+        expect(line).not.toMatch(/^INVOKED:sqlite3:/);
+      }
+    });
+  });
 });
