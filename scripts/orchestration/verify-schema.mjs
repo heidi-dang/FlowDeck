@@ -8,20 +8,22 @@ try {
   const indexV = database.query("SELECT count(*) as cnt FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%'").get();
   const triggerV = database.query("SELECT count(*) as cnt FROM sqlite_master WHERE type='trigger'").get();
 
-  // Expected counts reflect the post-migration live DB state: initializeDatabase
-  // runs migration v1 (frozen schema-v0.2.6.sql, 53 tables / 66 indexes / 36
-  // triggers) PLUS migration v2 (replays table + 2 indexes) and v3 (durable
-  // execution plans/workstreams/ownership/leases/integration tables) and the
-  // durable M9 command_invocations table. The frozen-schema gate remains
-  // separate and must not change.
+  // Expected counts reflect the ACTUAL post-migration live DB state, aligned
+  // with the migration registry as merged on the release line:
+  //   v1 frozen schema-v0.2.6.sql (53 tables / 66 indexes / 36 triggers)
+  //   + v2 replay table + 2 indexes
+  //   + v3 durable execution plans/workstreams/ownership/leases/integration
+  //   + v4 agent performance + v5 execution integrity + v6 command_invocations
+  //   + v7 assignment_execution_bindings (1 table + 3 indexes)
+  // = 63 tables / 87 indexes / 36 triggers.
   // The frozen-schema gate (scripts/check-schema-generated.mjs) still asserts
-  // the v1 counts and must not change.
+  // ONLY the v1 counts and must not change.
   console.log(`Schema Validation:`);
-  console.log(`Tables: ${schemaV.cnt} (Expected: 62)`);
-  console.log(`Indexes: ${indexV.cnt} (Expected: 84)`);
+  console.log(`Tables: ${schemaV.cnt} (Expected: 63)`);
+  console.log(`Indexes: ${indexV.cnt} (Expected: 87)`);
   console.log(`Triggers: ${triggerV.cnt} (Expected: 36)`);
 
-  if (schemaV.cnt !== 62 || indexV.cnt !== 84 || triggerV.cnt !== 36) {
+  if (schemaV.cnt !== 63 || indexV.cnt !== 87 || triggerV.cnt !== 36) {
     console.error(`Schema invariants violated!`);
     process.exit(1);
   }
