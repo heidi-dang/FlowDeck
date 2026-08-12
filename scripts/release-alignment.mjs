@@ -148,7 +148,7 @@ function main() {
     const branch = execFileSync("git", ["branch", "--show-current"], {
       encoding: "utf-8", timeout: 5000, cwd: ROOT,
     }).trim()
-    check("On release branch", branch === "v2.0.0-alpha" || branch === "main" || branch === "chore/v2-alpha2-release-readiness" || branch === "chore/v2-alpha3-release-readiness", branch)
+    check("On release branch", branch === "v2.0.0-alpha" || branch === "main" || branch === "chore/v2-alpha2-release-readiness" || branch === "chore/v2-alpha3-release-readiness" || branch === "chore/v2-alpha4-release-readiness", branch)
   } catch (e) {
     check("Git state", false, e.message)
   }

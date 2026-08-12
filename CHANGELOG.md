@@ -5,7 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-alpha.4] - 2026-08-11
+
+### Publication status
+
+- **v2.0.0-alpha.4 supersedes the failed/unpublished v2.0.0-alpha.3 publication attempt.** The alpha.3 npm release was never published (the tag-triggered publish run `31480180293` failed in `Run Tests` before the publish step).
+- The `v2.0.0-alpha.3` tag remains an immutable historical release record (tag object `51d5eb30…`, peeled commit `1a2e695`) and is not modified or republished.
+- alpha.4 is the first published candidate of the post-M9 v2 line on the `alpha` npm dist-tag.
+
+### Fixed
+
+- **Schema fail-closed release-runner fix**: `scripts/check-schema-generated.mjs` now invokes the *detected* SQLite CLI path through the validation boundary instead of a literal `sqlite3` from PATH. A detected-but-broken or injected SQLite executable fails closed (non-zero exit) and can no longer be silently bypassed. This closes the exact regression that blocked the alpha.3 publication (`tests/check-schema-fallback.test.ts`, previously failing at line 386 with "Expected: not 0").
+- **Post-migration schema gate realigned**: `scripts/orchestration/verify-schema.mjs` expected counts were stale (62/84) relative to the merged migration-registry state on the release line (migration v7 `assignment_execution_bindings` added 1 table + 3 indexes). The live post-migration contract is now asserted as 63 tables / 87 indexes / 36 triggers; the frozen v1 gate (53/66/36) is unchanged. Fresh, existing-v6→v7, and repeated-startup migrations verified.
+
+### Added
+
+- M1-M9 V2 autonomous execution remains 9/9 CLOSED with the Master Plan at 100%.
+- Release regression coverage proving alpha.4 maps to the `alpha` npm dist-tag, `latest` is never overwritten, tag/version alignment, and that the historical alpha.3 tag need not equal the current release-line HEAD.
+
+### Known limitations (alpha)
+
+- Semver prerelease: 2.0.0-alpha.4 does not imply stable-channel guarantees.
+- Verification-reuse fast-path still re-verifies on recovery (outcome-correct, decision deduped) — see milestone evidence.
+
 ## [2.0.0-alpha.3] - 2026-08-11
+
 
 ### Added
 

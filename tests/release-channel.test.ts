@@ -4,7 +4,7 @@ import { resolveReleaseChannel } from "../scripts/release-channel.mjs"
 
 describe("resolveReleaseChannel", () => {
   const cases = [
-    ["2.0.0-alpha.1", "alpha"], ["2.0.0-alpha.2", "alpha"], ["2.0.0-alpha.99", "alpha"],
+    ["2.0.0-alpha.1", "alpha"], ["2.0.0-alpha.2", "alpha"], ["2.0.0-alpha.3", "alpha"], ["2.0.0-alpha.4", "alpha"], ["2.0.0-alpha.99", "alpha"],
     ["2.0.0-beta.1", "beta"], ["2.0.0-beta.10", "beta"],
     ["2.0.0-rc.1", "next"], ["2.0.0-rc.10", "next"],
     ["2.0.0", "latest"], ["2.1.0", "latest"], ["3.0.0", "latest"],
