@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Schema fail-closed release-runner fix**: `scripts/check-schema-generated.mjs` now invokes the *detected* SQLite CLI path through the validation boundary instead of a literal `sqlite3` from PATH. A detected-but-broken or injected SQLite executable fails closed (non-zero exit) and can no longer be silently bypassed. This closes the exact regression that blocked the alpha.3 publication (`tests/check-schema-fallback.test.ts`, previously failing at line 386 with "Expected: not 0").
+- **Post-migration schema gate realigned**: `scripts/orchestration/verify-schema.mjs` expected counts were stale (62/84) relative to the merged migration-registry state on the release line (migration v7 `assignment_execution_bindings` added 1 table + 3 indexes). The live post-migration contract is now asserted as 63 tables / 87 indexes / 36 triggers; the frozen v1 gate (53/66/36) is unchanged. Fresh, existing-v6→v7, and repeated-startup migrations verified.
 
 ### Added
 
