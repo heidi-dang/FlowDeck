@@ -9,7 +9,7 @@
 
 | Metric / Specification | Value |
 |---|---|
-| **Version** | v2.0.0-alpha.4 |
+| **Version** | v2.0.0-rc.1 |
 | **Primary Coordinator** | `heidi` (UI-selectable) |
 | **Specialist Agents** | 11 specialized subagents |
 | **Slash Commands** | 15 registered commands (`/fd-*`) |

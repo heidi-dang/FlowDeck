@@ -110,6 +110,10 @@ import { OpenCodeWorkstreamExecutor } from "./orchestration/execution/opencode-e
 import { FdxWorkspaceIndex } from "./services/fdx-index"
 import { FdxDaemon } from "./services/fdx-daemon"
 import { execFileSync } from "node:child_process"
+import {
+  getExecutingRuntimeIdentity,
+  recordRuntimeSelfReport,
+} from "./services/runtime-identity"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -288,6 +292,7 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
 
   setActiveProjectDir(directory)
+  recordRuntimeSelfReport(getExecutingRuntimeIdentity(import.meta.url), directory)
   let fdxWorkspaceIndex: FdxWorkspaceIndex | undefined
   let fdxDaemon: FdxDaemon | undefined
   let fdxDaemonSocketPath: string | undefined
@@ -1431,3 +1436,10 @@ export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
 export { resolveDoctorExitCode } from "./doctor/exit-code.mjs"
 // Redaction utilities exported for consumers (logs, reports, doctor probes)
 export { redactSecrets, containsSecrets } from "./lib/secret-redaction"
+export {
+  getExecutingRuntimeIdentity,
+  recordRuntimeSelfReport,
+  readRuntimeSelfReport,
+  isRuntimeRecordFresh,
+} from "./services/runtime-identity"
+export type { FlowDeckRuntimeIdentity } from "./services/runtime-identity"

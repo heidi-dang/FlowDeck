@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.1] - 2026-08-13
+
+### Added
+
+- **Runtime Identity Verification**: Validates runtime identity and configuration consistency.
+- **Stale OpenCode FlowDeck Cache Discovery & Cleanup**: Discovers and cleans up stale OpenCode FlowDeck plugin caches.
+- **Config vs Loaded Runtime Mismatch Detection**: Detects mismatches between configured settings and loaded runtime modules.
+
+### Fixed
+
+- **Doctor Packaging Fix**: Corrected doctor check/apply module exports and packaging paths.
+
 ## [2.0.0-alpha.4] - 2026-08-11
 
 ### Publication status
