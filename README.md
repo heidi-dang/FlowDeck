@@ -24,6 +24,8 @@
 - [Who is it for?](#who-is-it-for)
 - [Why FlowDeck?](#why-flowdeck)
 - [Installation](#installation)
+- [Heidi — Persistent Engineering Agent](#heidi--persistent-engineering-agent)
+- [Heidi Before vs After](#heidi-before-vs-after)
 - [v2 Architecture](#v2-architecture)
 - [Upgrading from Alpha Releases](#upgrading-from-alpha-releases)
 - [Core Capabilities](#core-capabilities)
@@ -77,22 +79,57 @@ OpenCode is a powerful agent runtime, but production use requires structure: who
 
 ## Installation
 
-### Recommended — atomic clean install
+### Recommended — guided migration installer
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash
 ```
 
-The installer performs an atomic lifecycle:
+The installer performs a safe guided migration lifecycle:
 
-1. **Discovery** — finds all FlowDeck registrations in OpenCode config scopes
-2. **Backup** — byte-for-byte backup of every affected file
-3. **Cleanup** — safely removes old or legacy registrations
-4. **Verify** — confirms the environment is clean before proceeding
-5. **Install** — installs the exact published npm release
-6. **Static verification** — `flowdeck verify`, `doctor`, `config validate`
-7. **Runtime verification** — runs real OpenCode agent discovery
-8. **Rollback** — automatic if any stage fails
+1. **Discover** — finds all existing FlowDeck registrations, legacy packages, and conflicting state
+2. **Explain** — shows a clear summary of what was found and what cleanup is recommended
+3. **Confirm** — prompts before destructive cleanup (unless `--yes` or `--non-interactive`)
+4. **Backup** — byte-for-byte backup of every affected config file (backup fails → abort)
+5. **Remove** — removes only FlowDeck-owned registrations; preserves other plugins and settings
+6. **Verify clean** — confirms no conflicting FlowDeck state remains before installing
+7. **Install** — installs the exact requested version from npm
+8. **Register** — ensures exactly one canonical FlowDeck registration (idempotent)
+9. **Static verify** — package identity, config validation, agent registry, skills
+10. **Runtime verify** — real OpenCode agent discovery (Heidi visible, primary mode, no legacy errors)
+11. **Auto-repair** — automatically fixes known safe issues (duplicates, stale paths, missing registration)
+12. **Doctor** — comprehensive environment diagnostics
+13. **Report** — structured evidence-based success report with health status
+
+If any mandatory stage fails, the installer **rolls back** all configuration changes automatically.
+
+### Non-interactive install (CI / automation)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash -s -- --yes
+```
+
+Or:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash -s -- --non-interactive
+```
+
+Both flags skip the confirmation prompt but still perform discovery, backup, cleanup, and verification.
+
+### Dry-run
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash -s -- --dry-run
+```
+
+Shows what the installer would do without modifying any files.
+
+### Doctor-only (audit without install)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash -s -- --doctor
+```
 
 ### Alternative — npm
 
@@ -100,6 +137,9 @@ The installer performs an atomic lifecycle:
 npx @heidi-dang/flowdeck install
 npx flowdeck verify
 npx flowdeck doctor
+npx flowdeck clean-install        # atomic clean reinstall
+npx flowdeck clean-install --yes  # non-interactive
+npx flowdeck clean-install --dry-run
 ```
 
 Stable installs use the v1 line and `latest`:
@@ -113,6 +153,133 @@ The current v2 development package is `2.0.0-alpha.4` and uses the `alpha` chann
 ```bash
 npx @heidi-dang/flowdeck@alpha install
 ```
+
+### What the installer does NOT do
+
+- Silently delete user configuration without confirmation
+- Skip backups before destructive operations
+- Report success when doctor or runtime checks fail
+- Install on top of unresolved conflict state
+- Modify unrelated OpenCode settings (models, MCP, themes, other plugins)
+
+### Repair and rollback
+
+**Automatic repair** handles known safe issues without user intervention:
+
+| Issue | Repair action |
+|---|---|
+| Duplicate FlowDeck registration | Keeps canonical entry, removes extras |
+| Missing canonical registration | Adds `@heidi-dang/flowdeck` registration |
+| Stale FlowDeck path reference | Removes stale path, adds canonical package |
+
+Repair is capped at 2 attempts per issue class. If repair cannot reach a healthy state, the installer rolls back and reports what remains broken.
+
+**Rollback** restores all touched configuration files to their exact pre-install state. After rollback, the installer verifies backup hashes match the restored files.
+
+
+---
+
+## Heidi — Persistent Engineering Agent
+
+Heidi is FlowDeck's default primary agent. In v2, Heidi has evolved from a governed orchestration agent into a **persistent engineering agent** with durable memory, cross-session recall, evidence-backed learning, and a scheduler for background work.
+
+### Persistent memory
+
+Heidi maintains three memory layers in a durable SQLite database:
+
+| Memory layer | Purpose | Scope |
+|---|---|---|
+| **USER memory** | Preferences, corrections, environment facts | Cross-session, user-scoped |
+| **AGENT memory** | Operational learnings, tool quirks, workflows | Cross-session, agent-scoped |
+| **REPO memory** | Repository conventions, architecture decisions | Cross-session, repo-scoped |
+
+Memory is versioned with provenance tracking. Every memory write records the source session, timestamp, and reasoning. Memory can be rolled back if a learning proves incorrect.
+
+Memory is bounded by a projection system that prevents unbounded growth. Old or low-confidence memories are archived, not deleted.
+
+### Cross-session recall
+
+Heidi searches historical sessions using SQLite FTS5 full-text search:
+
+- **`/fd-recall`** — search past sessions by keyword, phrase, or topic
+- **Session archive** — every completed session is indexed for recall
+- **Historical task search** — find what was done, when, and why
+- **Context-efficient** — only relevant snippets are loaded into context
+
+This means Heidi can answer questions like "what did we do about the auth refactor?" by searching actual session history, not guessing.
+
+### Evidence-backed learning
+
+After completing a task, Heidi reviews the work for learnings:
+
+1. **Automatic review** — post-completion analysis identifies patterns and corrections
+2. **Verified evidence** — each learning is backed by concrete evidence (test results, file changes, user feedback)
+3. **Approval policy** — learnings require verification before being promoted to memory
+4. **Learning history** — every learning decision is logged with reasoning
+5. **Rollback** — incorrect learnings can be identified and rolled back
+
+Heidi does **not** blindly edit herself. Every learning goes through verification.
+
+### Learned skills
+
+Beyond the 61 bundled skills, Heidi can create versioned learned skills:
+
+- **`/fd-learn`** — capture a reusable workflow pattern as a skill
+- **`/fd-learn-from-session`** — extract learnings from a completed session
+- **Core skills protected** — bundled skills cannot be overwritten by learned skills
+- **Capability-aware loading** — skills are loaded based on task requirements
+- **Progressive disclosure** — skill details are loaded on demand, not all at once
+
+### Governed tool pipelines
+
+Heidi can execute bounded multi-tool workflows through registered FlowDeck tools:
+
+- Tool pipelines are registered and validated before execution
+- Each pipeline step has permission checks and budget limits
+- Pipelines retain normal OpenCode permission model and tool budgets
+- Audit logging records every pipeline execution
+
+This is **not** unrestricted code execution. Pipelines operate within the same governance model as individual tool calls.
+
+### Scheduled work
+
+Heidi can schedule durable background jobs:
+
+- **`/fd-schedule`** — create, list, and manage scheduled tasks
+- **Durable jobs** — survive process restarts via SQLite persistence
+- **Lease-based execution** — prevents concurrent execution of the same job
+- **Run history** — every execution is logged with timing and outcome
+- **OpenCode session execution** — jobs run in proper OpenCode sessions
+- **Unknown-run protection** — prevents execution of jobs with unexpected state
+
+### Delegation visibility
+
+- **`/fd-agents`** — persistent view of all agents and their current activity
+- **Ownership-scoped cancellation** — cancellation intent is tracked per ownership
+- **Child activity tracking** — delegated tasks show status and progress
+
+**Limitation:** Active child steering (redirecting a running child agent) is unsupported. OpenCode cannot guarantee observation of child state during execution. Cancellation intent is tracked, but real-time steering is not available.
+
+---
+
+## Heidi Before vs After
+
+| Capability | Earlier Heidi | Heidi v2 |
+|---|---|---|
+| Task orchestration | Yes | Yes |
+| Specialist delegation | Yes | Yes |
+| Durable execution | Yes | Yes |
+| User memory | Limited / no dedicated layer | Persistent (USER, AGENT, REPO) |
+| Agent operational memory | Lessons only | Versioned memory with provenance |
+| Cross-session search | Limited | SQLite FTS5 full-text search |
+| Automatic learning | Limited / manual | Evidence-backed post-completion |
+| Learned skills | Static bundled skills | Bundled + versioned learned skills |
+| Scheduled work | No full runtime | Durable scheduler with leases |
+| Tool pipelines | Repeated individual calls | Governed bounded pipelines |
+| Delegation inspection | Limited | Persistent `/fd-agents` projection |
+| Active child steering | Unsupported | **Unsupported** (documented limitation) |
+
+---
 
 ---
 
@@ -235,14 +402,28 @@ The benchmark command is reproducible for the candidate branch and includes a sa
 
 ## Upgrading from Alpha Releases
 
-**No configuration migration is required to upgrade from any `0.8.0-alpha.x` release to 1.0.0.** The configuration schema is backward-compatible, and the installer preserves your existing `opencode.json`:
+The guided migration installer handles upgrades automatically. When upgrading from any previous FlowDeck version:
 
-- Existing `plugin` registrations are updated to the new package version.
-- Your configured `default_agent` is preserved (FlowDeck never overwrites it).
-- JSONC comments and malformed configs are left untouched.
-- `flowdeck update` refreshes the plugin registration reference.
+1. **Discovery** detects your existing registrations (v1, v2 alpha, legacy)
+2. **Backup** preserves your current configuration
+3. **Cleanup** removes old registrations while preserving unrelated settings
+4. **Install** adds the new version
+5. **Verification** confirms Heidi is healthy
 
-Run `npx flowdeck doctor` after upgrading to verify the environment.
+Your `default_agent` setting is preserved. JSONC comments are preserved. Unrelated plugins are untouched.
+
+For manual upgrades:
+
+```bash
+npx @heidi-dang/flowdeck@alpha clean-install --yes
+npx flowdeck doctor
+```
+
+If something goes wrong:
+
+```bash
+npx flowdeck rollback
+```
 
 ---
 
@@ -544,7 +725,7 @@ The `@opencode-ai/plugin` and `@opencode-ai/sdk` packages are required peer/decl
 Every release runs the full production gate matrix:
 
 - Build, typecheck, lint (0 warnings, 0 errors)
-- Full test suite across Linux, macOS, and Windows (3,507 tests, 0 failures across 185 files)
+- Full test suite across Linux, macOS, and Windows (3,688+ tests, 0 failures across 185+ files)
 - Coverage check (weighted aggregate line coverage above the 80% threshold)
 - Documentation and skills validation
 - Orchestration framework, integration, and schema validation
