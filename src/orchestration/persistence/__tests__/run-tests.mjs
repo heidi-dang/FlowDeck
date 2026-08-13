@@ -12,11 +12,11 @@ function clean() {
 const conns = new Map();
 function openConn(p, ro = false) {
   let d = conns.get(p); if (d) return d;
-  d = new Database(p, { readonly: ro });
-  d.pragma('journal_mode = WAL');
-  d.pragma('foreign_keys = ON');
-  d.pragma('busy_timeout = 5000');
-  d.pragma('synchronous = NORMAL');
+  d = new Database(p, ro ? { readonly: true } : { create: true });
+  d.run('PRAGMA journal_mode = WAL');
+  d.run('PRAGMA foreign_keys = ON');
+  d.run('PRAGMA busy_timeout = 5000');
+  d.run('PRAGMA synchronous = NORMAL');
   conns.set(p, d); return d;
 }
 function closeConn(p) { const d = conns.get(p); if (d) { d.close(); conns.delete(p); } }
@@ -51,7 +51,7 @@ function createTx(db, policy) {
     write: (fn) => {
       for (let a = 0; a < pol.maxAttempts; a++) {
         try { return db.transaction(fn)(); }
-        catch {
+        catch (e) {
           const reason = pol.classify(e);
           if (pol.isRetryable(reason) && a < pol.maxAttempts - 1) {
             const delay = pol.baseMs * Math.pow(2, a);

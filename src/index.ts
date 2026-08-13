@@ -66,7 +66,13 @@ import { debugLogsTool } from "./tools/debug-logs"
 import { heidiMemoryTool, heidiRecallTool } from "./tools/heidi-memory"
 import { heidiArchiveSessionTool } from "./tools/heidi-session"
 import { heidiLearningTool, heidiSkillTool } from "./tools/heidi-learning"
+import { heidiAgentsTool } from "./tools/heidi-agents"
+import { HeidiDelegationRuntime } from "./services/heidi-delegation-runtime"
 import { heidiPipelineTool, heidiSchedulerTool } from "./tools/heidi-controls"
+import { configureHeidiPipelineTools } from "./services/heidi-runtime-controls"
+import { HeidiScheduler, HeidiSchedulerWorker } from "./services/heidi-runtime-controls"
+import { HeidiLearningRuntime } from "./services/heidi-learning-runtime"
+import { HeidiPersistentAgentStore } from "./services/heidi-persistent-agent"
 import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
 import { HarnessHttpServer } from "./better-harness/transport/http-server"
 import { SseManager } from "./better-harness/transport/sse"
@@ -334,11 +340,20 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
+  configureHeidiPipelineTools({
+    "fdx-search": fdxSearchTool,
+    "fdx-read": fdxReadTool,
+    "fdx-impact": fdxImpactTool,
+    "fdx-context": fdxContextTool,
+    "fdx-outline": fdxOutlineTool,
+  } as unknown as Record<string, { execute: (args: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> }>)
+
   // --- Better Harness integration using shared graph ------------------------
   let betterHarnessRuntime: HarnessRuntime | null = null
   let betterHarnessServer: HarnessHttpServer | null = null
   let betterHarnessSseManager: SseManager | null = null
   let _betterHarnessCleanup: (() => void) | null = null
+  let schedulerTimer: ReturnType<typeof setInterval> | undefined
 
   const projectRegistry = new ProjectRegistry()
   const bhConfig: BetterHarnessConfig | undefined = flowdeckConfig.betterHarness
@@ -419,6 +434,19 @@ const plugin: Plugin = async ({ directory, client }) => {
       redistribute: (workstream, amount, reason, sourceReservationId) => tokenBudgetRuntime.redistributeWorkstream(workstream, amount, reason, sourceReservationId),
     })
     appLog("[orchestration] Production orchestration runtime initialized successfully")
+    if (flowdeckConfig.heidi?.scheduler?.enabled !== false) {
+      const scheduler = new HeidiScheduler(db)
+      const sessionApi = (client as unknown as { session?: { create?: (input: { title: string; directory?: string }) => Promise<{ data?: { id?: string } }>; prompt?: (input: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) => Promise<unknown> } }).session
+      const worker = new HeidiSchedulerWorker(scheduler, async job => {
+        if (!sessionApi?.create || !sessionApi.prompt) throw new Error("OpenCode session execution API unavailable")
+        const created = await sessionApi.create({ title: `Heidi scheduled: ${job.id}`, directory: job.workspace })
+        const sessionId = created.data?.id
+        if (!sessionId) throw new Error("OpenCode did not return a scheduled session id")
+        await sessionApi.prompt({ path: { id: sessionId }, body: { parts: [{ type: "text", text: job.prompt }] } })
+      })
+      const interval = Math.max(5_000, flowdeckConfig.heidi?.scheduler?.pollIntervalMs ?? 30_000)
+      schedulerTimer = setInterval(() => { void worker.runOnce().catch(error => { void appLog(`[scheduler] worker failure: ${error instanceof Error ? error.message : String(error)}`, "warn") }) }, interval)
+    }
   } catch (err) {
     appLog(`[orchestration] Production orchestration runtime initialization skipped: ${err instanceof Error ? err.message : String(err)}`, "warn")
   }
@@ -640,6 +668,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       "heidi-skill": heidiSkillTool,
       "heidi-tool-pipeline": heidiPipelineTool,
       "heidi-scheduler": heidiSchedulerTool,
+      "heidi-agents": heidiAgentsTool,
     "fdx-pr-monitor": fdxPrMonitorTool,
     },
 
@@ -827,6 +856,10 @@ const plugin: Plugin = async ({ directory, client }) => {
           // The FIFO queue guarantees that the first-created task call
           // is linked to the first-created child session.
           enqueuePendingSlot(sessionID, callID, taskKey, targetAgent)
+          try {
+            const delegationDb = initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db
+            new HeidiDelegationRuntime(delegationDb).queued({ childId: taskKey, parentSessionId: sessionID, specialist: targetAgent, goal: String(rawArgs.prompt ?? "") })
+          } catch (error) { await appLog(`[delegation] projection queue failed: ${error instanceof Error ? error.message : String(error)}`, "warn", sessionID) }
 
           appendAuditEvent(directory, {
             kind: "delegation.started",
@@ -952,6 +985,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         const hasError = !!toolInput.error || !!toolOutput?.error || toolOutput === undefined || toolOutput === null
 
         if (taskCall) {
+          try { new HeidiDelegationRuntime(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db).transition(taskKey, hasError ? "failed" : "completed", { summary: hasError ? undefined : String(toolOutput?.output ?? toolOutput?.result ?? "Delegated task completed").slice(0, 1000), error: hasError ? String(toolInput.error ?? toolOutput?.error ?? "No result returned") : undefined, toolCalls: sessionToolCalls.get(sessionID) ?? 0 }) } catch { /* projection is secondary */ }
           const durationMs = Date.now() - taskCall.startedAt
           if (hasError) {
             appendAuditEvent(directory, {
@@ -1068,6 +1102,7 @@ const plugin: Plugin = async ({ directory, client }) => {
           const { correlation, ambiguous } = dequeuePendingSlot(parentID, effectiveTarget)
           if (correlation) {
             childSessionToTask.set(eventSessionID, correlation)
+            try { new HeidiDelegationRuntime(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db).transition(correlation.taskKey, "running") } catch { /* projection is secondary */ }
           } else if (ambiguous) {
             // Cannot determine which task call this child belongs to.
             // Emit a diagnostic instead of attaching to a potentially
@@ -1182,6 +1217,25 @@ const plugin: Plugin = async ({ directory, client }) => {
                 remainingFindings: null,
               })
               await appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
+              try {
+                const learning = new HeidiLearningRuntime(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db)
+                const review = learning.reviewCompletion({
+                  completionKey: `session:${sessionID}`,
+                  sessionId: sessionID,
+                  repository: directory,
+                  verified: blocks === 0 && warnings === 0 && toolCalls > 0,
+                  summary: `Verified FlowDeck session completed with ${toolCalls} tool calls, ${delegations} delegations, ${retries} retries, and ${filesChanged ?? 0} changed files.`,
+                  evidence: [`scorecard:${JSON.stringify(scorecard).slice(0, 1000)}`],
+                  policy: flowdeckConfig.heidi?.learning?.reviewPolicy ?? "review",
+                })
+                try {
+                  const archive = new HeidiPersistentAgentStore(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db)
+                  archive.archiveSession(sessionID, [{ role: "assistant", content: `Verified completion: ${review.status}. ${JSON.stringify(scorecard)}`, toolSummary: "completion scorecard" }], { repository: directory, agent: "heidi" })
+                } catch (archiveError) { await appLog(`[session-archive] failed: ${archiveError instanceof Error ? archiveError.message : String(archiveError)}`, "warn", sessionID) }
+                await appLog(`[learning] completion review ${review.status}`, "info", sessionID)
+              } catch (error) {
+                await appLog(`[learning] completion review failed: ${error instanceof Error ? error.message : String(error)}`, "warn", sessionID)
+              }
             }
           } else if (type === "session.error") {
             const errorMessage = event?.properties?.error ?? event?.error ?? "Session errored"
@@ -1238,6 +1292,7 @@ const plugin: Plugin = async ({ directory, client }) => {
                     resolvedFrom: matchedTaskCall.resolvedFrom,
                   },
                 })
+                try { new HeidiDelegationRuntime(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db).transition(matchedTaskKey, "failed", { error: String(errorMessage) }) } catch { /* projection is secondary */ }
                 sessionTaskCalls.delete(matchedTaskKey)
                 childSessionToTask.delete(sessionID)
               } else {
@@ -1292,6 +1347,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         fdxDaemon = undefined
       }
       configureFdxNextRuntime()
+      if (schedulerTimer) clearInterval(schedulerTimer)
     },
   }
 }

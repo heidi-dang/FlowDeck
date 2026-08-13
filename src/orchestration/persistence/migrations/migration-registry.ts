@@ -10,6 +10,7 @@ import { MIGRATION_V6_COMMANDS_SQL } from "./migration-v6-commands"
 import { MIGRATION_V7_ASSIGNMENT_BINDING_SQL } from "./migration-v7-assignment-binding"
 import { MIGRATION_V8_HEIDI_PERSISTENT_AGENT_SQL } from "./migration-v8-heidi-persistent-agent"
 import { MIGRATION_V9_HEIDI_LEARNING_RUNTIME_SQL } from "./migration-v9-heidi-learning-runtime"
+import { MIGRATION_V10_HEIDI_RUNTIME_CLOSURE_SQL } from "./migration-v10-heidi-runtime-closure"
 
 export interface MigrationEntry {
   version: number
@@ -68,4 +69,5 @@ export const MIGRATIONS: MigrationEntry[] = [
     checksum: computeChecksum(MIGRATION_V8_HEIDI_PERSISTENT_AGENT_SQL),
   },
   { version: 9, name: "heidi_learning_runtime_v2.0.0-alpha", sql: MIGRATION_V9_HEIDI_LEARNING_RUNTIME_SQL, checksum: computeChecksum(MIGRATION_V9_HEIDI_LEARNING_RUNTIME_SQL) },
+  { version: 10, name: "heidi_runtime_closure_v2.0.0-alpha", sql: MIGRATION_V10_HEIDI_RUNTIME_CLOSURE_SQL, checksum: computeChecksum(MIGRATION_V10_HEIDI_RUNTIME_CLOSURE_SQL) },
 ]

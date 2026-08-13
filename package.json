@@ -73,7 +73,7 @@
     "better-harness:serve": "node bin/better-harness.js",
     "standalone:start": "bun run src/better-harness/testing/standalone-server-cli.ts",
     "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\"",
-    "test:persistence": "node src/orchestration/persistence/__tests__/run-tests.mjs && node src/orchestration/persistence/__tests__/phase1-2-tests.mjs && node src/orchestration/persistence/__tests__/phase1-3-tests.mjs && node src/orchestration/persistence/__tests__/phase1-5-retry.mjs",
+    "test:persistence": "bun src/orchestration/persistence/__tests__/run-tests.mjs && bun src/orchestration/persistence/__tests__/phase1-2-tests.mjs && bun src/orchestration/persistence/__tests__/phase1-3-tests.mjs && bun src/orchestration/persistence/__tests__/phase1-5-retry.mjs",
     "test:persistence:node": "node src/orchestration/persistence/__tests__/run-tests.mjs",
     "check:schema-generated": "node scripts/check-schema-generated.mjs",
     "generate:schema": "node scripts/generate-schema.mjs",

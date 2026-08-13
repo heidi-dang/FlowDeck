@@ -14,6 +14,8 @@ import { readPlanCanonical } from "../services/planning-paths"
 import { getRegistryDriftSummary } from "../services/registry-snapshot"
 import { appendAuditEvent } from "../services/audit-log"
 import { FD_PIPELINE } from "../services/supervisor-binding"
+import { initializeDatabase } from "../orchestration/persistence"
+import { HeidiPersistentAgentStore } from "../services/heidi-persistent-agent"
 
 const MAX_LESSON_SECTIONS = 10
 const MAX_LESSON_CONTEXT_BYTES = 8 * 1024
@@ -116,6 +118,14 @@ function buildLeanContext(projectRoot: string, log?: (msg: string) => void | Pro
     if (log) log(`[session-start] rule selection failed: ${(err as Error).message}`)
   }
 
+  let heidiMemory: unknown[] = []
+  try {
+    const db = initializeDatabase({ path: join(projectRoot, ".flowdeck", "flowdeck.db") }).db
+    heidiMemory = new HeidiPersistentAgentStore(db).listMemory(undefined, 12).map(item => ({ scope: item.scope, kind: item.kind, content: item.content, confidence: item.confidence }))
+  } catch (error) {
+    if (log) log(`[session-start] Heidi memory projection unavailable: ${error instanceof Error ? error.message : String(error)}`)
+  }
+
   return {
     flowdeck_lessons_count: lessonsCount,
     flowdeck_lessons: lessonsContent || null,
@@ -126,6 +136,8 @@ function buildLeanContext(projectRoot: string, log?: (msg: string) => void | Pro
       (sum, p) => sum + Buffer.byteLength(p, "utf-8"),
       0,
     ),
+    heidi_memory: heidiMemory,
+    heidi_memory_count: heidiMemory.length,
   }
 }
 

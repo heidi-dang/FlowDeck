@@ -16,15 +16,16 @@ try {
   //   + v4 agent performance + v5 execution integrity + v6 command_invocations
   //   + v7 assignment_execution_bindings (1 table + 3 indexes)
   // + v8 Heidi memory/archive/audit + v9 learning/skills/scheduler
-  // = 79 tables / 89 indexes / 38 triggers.
+  // + v10 completion-review and delegation projections
+  // = 82 tables / 91 indexes / 38 triggers (the FTS virtual table is excluded by the count query).
   // The frozen-schema gate (scripts/check-schema-generated.mjs) still asserts
   // ONLY the v1 counts and must not change.
   console.log(`Schema Validation:`);
-  console.log(`Tables: ${schemaV.cnt} (Expected: 79)`);
-  console.log(`Indexes: ${indexV.cnt} (Expected: 89)`);
+  console.log(`Tables: ${schemaV.cnt} (Expected: 82)`);
+  console.log(`Indexes: ${indexV.cnt} (Expected: 91)`);
   console.log(`Triggers: ${triggerV.cnt} (Expected: 38)`);
 
-  if (schemaV.cnt !== 79 || indexV.cnt !== 89 || triggerV.cnt !== 38) {
+  if (schemaV.cnt !== 82 || indexV.cnt !== 91 || triggerV.cnt !== 38) {
     console.error(`Schema invariants violated!`);
     process.exit(1);
   }
