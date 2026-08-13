@@ -46,10 +46,9 @@ function detectThenable(r) {
 
 function createTxMan(db, policy) {
   const _p = policy || makePolicy(new FakeClock(), new FakeScheduler());
-  const writeTxn = db.transaction((fn) => fn());
   return {
-    read: (fn) => db.transaction(() => fn())(),
-    write: (fn) => { const r = writeTxn(fn); detectThenable(r); return r },
+    read: (fn) => { const txn = db.transaction(() => { const r = fn(); detectThenable(r); return r }); return txn() },
+    write: (fn) => { const txn = db.transaction(() => { const r = fn(); detectThenable(r); return r }); return txn() },
     savepoint: (name, fn) => {
       const id = ++savepointCounter;
       const sp = `sp_${name.replace(/[^a-z0-9_]/gi,'_')}_${id}`;
