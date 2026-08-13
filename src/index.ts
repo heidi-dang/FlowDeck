@@ -63,6 +63,10 @@ import { loadRulesTool, listRulesTool } from "./tools/load-rules"
 import { planningStateTool } from "./tools/planning-state"
 import { repoMemoryTool } from "./tools/repo-memory"
 import { debugLogsTool } from "./tools/debug-logs"
+import { heidiMemoryTool, heidiRecallTool } from "./tools/heidi-memory"
+import { heidiArchiveSessionTool } from "./tools/heidi-session"
+import { heidiLearningTool, heidiSkillTool } from "./tools/heidi-learning"
+import { heidiPipelineTool, heidiSchedulerTool } from "./tools/heidi-controls"
 import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
 import { HarnessHttpServer } from "./better-harness/transport/http-server"
 import { SseManager } from "./better-harness/transport/sse"
@@ -629,6 +633,13 @@ const plugin: Plugin = async ({ directory, client }) => {
       "fdx-test": fdxTestTool,
       "fdx-lint": fdxLintTool,
       "debug-audit": debugLogsTool,
+      "heidi-memory": heidiMemoryTool,
+      "heidi-recall": heidiRecallTool,
+      "heidi-archive-session": heidiArchiveSessionTool,
+      "heidi-learning": heidiLearningTool,
+      "heidi-skill": heidiSkillTool,
+      "heidi-tool-pipeline": heidiPipelineTool,
+      "heidi-scheduler": heidiSchedulerTool,
     "fdx-pr-monitor": fdxPrMonitorTool,
     },
 
