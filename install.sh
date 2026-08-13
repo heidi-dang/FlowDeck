@@ -43,6 +43,7 @@ while [ $i -le $# ]; do
     --strict)           STRICT_MODE=true; i=$((i + 1)) ;;
     --apply-recommended) APPLY_RECOMMENDED=true; i=$((i + 1)) ;;
     --non-interactive)  NON_INTERACTIVE=true; i=$((i + 1)) ;;
+    --yes|-y)           NON_INTERACTIVE=true; i=$((i + 1)) ;;
     --profile)
       i=$((i + 1)); [ $i -ge $# ] && { err "--profile requires a value"; exit 1; }
       PROFILE="${@:$i:1}"; i=$((i + 1)) ;;
@@ -67,7 +68,8 @@ if [ "$SCRIPT_MODE" = "help" ]; then
   echo "  --doctor            Audit-only mode — run doctor and exit without installing"
   echo "  --strict            Propagate doctor failures as exit code 1"
   echo "  --apply-recommended Apply safe auto-fixes idempotently"
-  echo "  --non-interactive   Never prompt; use safe defaults"
+  echo "  --non-interactive   Never prompt; use safe defaults
+  --yes, -y           Accept all prompts (same as --non-interactive)"
   echo "  --profile NAME      Select profile (minimal, recommended-dev, full-dev, ci, release)"
   echo "  --dry-run           Show what would be done, make no changes"
   echo "  --verify-only       Verify current state, do not install"
@@ -291,6 +293,7 @@ CLI_ARGS=(--exact-version "$VERSION" --remove-legacy --verify-runtime)
 [ "$SCRIPT_MODE" = "uninstall-only" ] && CLI_ARGS+=(--uninstall-only)
 [ "$KEEP_BACKUP" = true ]            && CLI_ARGS+=(--keep-backup)
 [ "$VERBOSE" = true -o "${DEBUG:-}" = true ] && CLI_ARGS+=(--verbose)
+[ "$NON_INTERACTIVE" = true ] && CLI_ARGS+=(--yes)
 [ -n "${LOCAL_REPO:-}" ]             && CLI_ARGS+=(--local-repo "$LOCAL_REPO")
 [ -n "$PROJECT_FLAG" ]               && CLI_ARGS+=("$PROJECT_FLAG")
 

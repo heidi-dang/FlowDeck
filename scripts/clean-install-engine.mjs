@@ -22,6 +22,7 @@ import { join, dirname, resolve } from "node:path"
 import { homedir, hostname } from "node:os"
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import { createInterface } from "node:readline"
 import { safeParseConfig, applyJsoncEdits, createBackup, atomicWrite } from "./config-mutator.mjs"
 
 // ─── Constants ────────────────────────────────────────────────────────────
@@ -61,6 +62,8 @@ function parseArgs() {
     localRepo: null,
     help: false,
     verbose: false,
+    yes: false,
+    nonInteractive: false,
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -80,6 +83,8 @@ function parseArgs() {
       case "--local-repo": opts.localRepo = args[++i] || process.cwd(); break
       case "--verbose": case "-v": opts.verbose = true; break
       case "--help": case "-h": opts.help = true; break
+      case "--yes": case "-y": opts.yes = true; opts.nonInteractive = true; break
+      case "--non-interactive": opts.nonInteractive = true; break
     }
   }
   return opts
@@ -93,6 +98,129 @@ function errlog(...args) { console.error("[ERR]", ...args) }
 function stage(num, total, label) {
   log(`\n[${num}/${total}] ${label}`)
 }
+
+// ─── Interactive Prompt ────────────────────────────────────────────────────
+
+function promptConfirmation(message) {
+  return new Promise((resolve) => {
+    if (!process.stdin.isTTY) {
+      // Non-TTY: default to safe (no mutation)
+      resolve(false)
+      return
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stderr })
+    rl.question(message + " [y/N] ", (answer) => {
+      rl.close()
+      resolve(answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes")
+    })
+  })
+}
+
+// ─── Discovery Summary ────────────────────────────────────────────────────
+
+function displayDiscoverySummary(discovery) {
+  const { findings } = discovery
+  log("\n  ┌─ FlowDeck installations found ──────────────────────────┐")
+
+  if (findings.length === 0) {
+    log("  │  No existing FlowDeck installations detected            │")
+    log("  └─────────────────────────────────────────────────────────┘")
+    return false
+  }
+
+  for (const f of findings) {
+    const icon = f.severity === "blocking" ? "✗" : f.severity === "cleanup_required" ? "⚠" : "ℹ"
+    const version = f.version ? `@${f.version}` : ""
+    log(`  │  ${icon} ${f.kind}: ${f.scope}${version}${f.path ? " — " + f.path : ""}`)
+  }
+
+  log("  └─────────────────────────────────────────────────────────┘")
+  log("")
+  log("  Recommended action:")
+  log("  Remove old/conflicting FlowDeck state before installing v2.")
+  log("")
+
+  return true
+}
+
+// ─── Findings Discovery ───────────────────────────────────────────────────
+
+function discoverFlowDeckFindings(scopes, opts) {
+  const findings = []
+
+  for (const scope of scopes) {
+    if (!scope.ok) {
+      findings.push({
+        kind: "config_conflict",
+        scope: scope.scope,
+        path: scope.path,
+        severity: "info",
+        detail: scope.parseError || "parse error",
+      })
+      continue
+    }
+
+    const entries = findFlowDeckPluginEntries(scope.data, opts.verbose)
+    for (const entry of entries) {
+      const isLegacy = entry.ref.includes(LEGACY_PACKAGE)
+      const isVersioned = entry.ref.includes("@")
+      const isPath = entry.ref.startsWith("file://") || entry.ref.startsWith("/") || entry.ref.startsWith(".")
+      let version = null
+      if (isVersioned) {
+        const match = entry.ref.match(/@([^@]+)$/)
+        if (match) version = match[1]
+      }
+
+      findings.push({
+        kind: isLegacy ? "legacy_registration" : isPath ? "stale_path" : "package",
+        scope: scope.scope,
+        path: scope.path,
+        version,
+        registration: entry.ref,
+        severity: isLegacy ? "cleanup_required" : "info",
+      })
+    }
+
+    // Check for manifest
+    const manifestPath = join(scope.configDir, ".flowdeck-manifest.json")
+    if (existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"))
+        if (manifest.pluginRef && isFlowDeckIdentity(manifest.pluginRef)) {
+          findings.push({
+            kind: "opencode_registration",
+            scope: scope.scope,
+            path: scope.path,
+            version: manifest.version,
+            registration: manifest.pluginRef,
+            severity: "info",
+          })
+        }
+      } catch {}
+    }
+  }
+
+  // Check for duplicate registrations
+  const registrations = findings
+    .filter(f => f.kind === "package" || f.kind === "legacy_registration")
+    .map(f => f.registration)
+  const seen = new Set()
+  for (const reg of registrations) {
+    if (seen.has(reg)) {
+      findings.push({
+        kind: "duplicate_registration",
+        scope: "global",
+        registration: reg,
+        severity: "cleanup_required",
+      })
+    }
+    seen.add(reg)
+  }
+
+  return findings
+}
+
+
 
 // ─── OpenCode Config Scope Discovery ─────────────────────────────────────
 
@@ -548,6 +676,133 @@ function cleanPackageDirectories(transaction, opts) {
   }
 }
 
+
+// ─── Automatic Repair ──────────────────────────────────────────────────────
+
+const REPAIR_MAX_ATTEMPTS = 2
+
+const REPAIR_CLASSES = [
+  {
+    id: "duplicate_registration",
+    precondition: (findings) => findings.some(f => f.kind === "duplicate_registration"),
+    action: (scopes, opts, txn) => {
+      let repaired = 0
+      for (const scope of scopes) {
+        if (!scope.ok || !scope.data || !Array.isArray(scope.data.plugin)) continue
+        const entries = findFlowDeckPluginEntries(scope.data, opts.verbose)
+        if (entries.length <= 1) continue
+
+      // Keep only the first FlowDeck entry, remove duplicates
+      const seen = new Set()
+      const plugins = [...scope.data.plugin]
+      const toRemove = []
+      for (const entry of entries) {
+        if (seen.has(entry.ref)) {
+          toRemove.push(entry.index)
+        }
+        seen.add(entry.ref)
+      }
+
+      if (toRemove.length === 0) continue
+
+      if (opts.dryRun) {
+        log(`  [DRY RUN] Would remove ${toRemove.length} duplicate FlowDeck registration(s) in ${scope.scope}`)
+        continue
+      }
+
+      txn.backup(`config: ${scope.scope} pre-repair`, scope.path)
+      const filtered = plugins.filter((_, i) => !toRemove.includes(i))
+      const edits = [{ path: ["plugin"], value: filtered }]
+      const updatedContent = applyJsoncEdits(scope.raw, edits)
+      atomicWrite(scope.path, updatedContent)
+      log(`  ✓ Removed ${toRemove.length} duplicate registration(s) in ${scope.scope}`)
+      repaired += toRemove.length
+      }
+      return repaired
+    },
+    postcondition: (_scopes) => {
+      for (const scope of discoverConfigScopes()) {
+        if (!scope.ok || !scope.data) continue
+        const entries = findFlowDeckPluginEntries(scope.data)
+        if (entries.length > 1) return false
+      }
+      return true
+    },
+  },
+  {
+    id: "missing_canonical_registration",
+    precondition: (findings, _opts) => {
+      // Only trigger if there are old registrations but no current one
+      const hasLegacy = findings.some(f => f.kind === "legacy_registration")
+      const hasCurrent = findings.some(f => f.kind === "package" && f.registration === FLOWDECK_PACKAGE)
+      return hasLegacy && !hasCurrent
+    },
+    action: (scopes, opts, txn) => {
+      // This repair requires the version to be known
+      if (!opts.exactVersion) return 0
+      let repaired = 0
+      for (const scope of scopes) {
+        if (!scope.ok || !scope.data) continue
+        const entries = findFlowDeckPluginEntries(scope.data)
+        if (entries.length > 0) continue
+
+        if (opts.dryRun) {
+          log(`  [DRY RUN] Would add canonical FlowDeck registration in ${scope.scope}`)
+          continue
+        }
+
+        txn.backup(`config: ${scope.scope} pre-repair`, scope.path)
+        const plugins = Array.isArray(scope.data.plugin) ? [...scope.data.plugin] : []
+        plugins.push(`${FLOWDECK_PACKAGE}@${opts.exactVersion}`)
+        const edits = [{ path: ["plugin"], value: plugins }]
+        const updatedContent = applyJsoncEdits(scope.raw, edits)
+        atomicWrite(scope.path, updatedContent)
+        log(`  ✓ Added canonical FlowDeck registration in ${scope.scope}`)
+        repaired++
+      }
+      return repaired
+    },
+    postcondition: (_scopes) => {
+      // Re-discover scopes to verify postcondition
+      for (const scope of discoverConfigScopes()) {
+        if (!scope.ok || !scope.data) continue
+        if (findFlowDeckPluginEntries(scope.data).length > 0) return true
+      }
+      return false
+    },
+  },
+]
+
+function runRepairs(scopes, findings, opts, transaction) {
+  const results = []
+  const attemptCounts = new Map()
+
+  for (const repairClass of REPAIR_CLASSES) {
+    if (!repairClass.precondition(findings, opts)) continue
+
+    const attempts = attemptCounts.get(repairClass.id) || 0
+    if (attempts >= REPAIR_MAX_ATTEMPTS) {
+      results.push({ id: repairClass.id, status: "max_attempts", repaired: 0 })
+      continue
+    }
+
+    attemptCounts.set(repairClass.id, attempts + 1)
+    const repaired = repairClass.action(scopes, opts, transaction)
+
+    // Re-verify
+    const postOk = repairClass.postcondition(scopes)
+    results.push({
+      id: repairClass.id,
+      status: postOk ? "repaired" : "failed",
+      repaired,
+    })
+
+    log(`  ${postOk ? "✓" : "✗"} Repair ${repairClass.id}: ${postOk ? "repaired" : "failed"} (${repaired} change(s))`)
+  }
+
+  return results
+}
+
 // ─── Exact Version Installation ──────────────────────────────────────────
 
 function installExactVersion(configDir, opts) {
@@ -765,7 +1020,7 @@ function runProviderSmoke() {
 // ─── Report ───────────────────────────────────────────────────────────────
 
 function reportResults(results) {
-  const { cleanState, runtimeResult, smokeResult, staticResult, transaction, opts, installedScope } = results
+  const { cleanState, runtimeResult, smokeResult, staticResult, repairResults, transaction, opts, installedScope } = results
 
   log(`\n${"=".repeat(60)}`)
   log(`  FlowDeck Installation Report`)
@@ -790,6 +1045,13 @@ function reportResults(results) {
   if (staticResult) {
     log(`  FlowDeck static checks: ${staticResult.fail === 0 ? "PASS" : "FAIL"}`)
   }
+  if (repairResults && repairResults.length > 0) {
+    const repaired = repairResults.filter(r => r.status === "repaired")
+    if (repaired.length > 0) {
+      log(`  Automatic repairs: ${repaired.length} applied`)
+      for (const r of repaired) log(`    ✓ ${r.id}: ${r.repaired} change(s)`)
+    }
+  }
 
   if (transaction?.backups?.length > 0) {
     log(`  Backup: ${transaction.backups[0].backupPath}`)
@@ -808,7 +1070,7 @@ function reportResults(results) {
     return { ok: true, dryRun: true }
   }
 
-  log(`  Status: INSTALLATION VERIFIED`)
+  log(`  Status: HEALTHY — ${runtimeResult?.ok ? "Heidi agent verified" : "runtime checks passed"}${staticResult?.fail === 0 ? ", static checks passed" : ""}${repairResults?.some(r => r.status === "repaired") ? ", auto-repaired" : ""}`)
   log(`  A fresh OpenCode session is required to load the new plugin.`)
 
   if (runtimeResult && !runtimeResult.skipped && runtimeResult.ok) {
@@ -826,10 +1088,10 @@ function reportResults(results) {
 // ─── Main ─────────────────────────────────────────────────────────────────
 
 async function runCleanInstall(userOpts = {}) {
-  const totalStages = STAGE_LABELS.length
+  const totalStages = STAGE_LABELS.length + 1  // +1 for repair stage
   const transaction = new Transaction()
   const opts = { ...parseArgs(), ...userOpts }
-  let pkgRoot, runtimeResult, smokeResult, staticResult, installedScope
+  let pkgRoot, runtimeResult, smokeResult, staticResult, repairResults, installedScope
 
   const __dirname = dirname(fileURLToPath(import.meta.url))
   pkgRoot = resolve(__dirname, "..")
@@ -862,6 +1124,9 @@ async function runCleanInstall(userOpts = {}) {
     // Stage 2: Configuration discovery
     stage(2, totalStages, "Configuration discovery")
     const scopes = discoverConfigScopes()
+    const findings = discoverFlowDeckFindings(scopes, opts)
+    const hasConflicts = displayDiscoverySummary({ scopes, findings })
+
     if (scopes.length === 0) {
       log("  No OpenCode configuration found — will create new")
     } else {
@@ -874,6 +1139,20 @@ async function runCleanInstall(userOpts = {}) {
         if (scope.ok && scope.data?.default_agent) {
           const ownership = checkDefaultAgentOwnership(scope.configDir)
           log(`      Default agent: "${scope.data.default_agent}"${ownership.owned ? " (FlowDeck-owned)" : ""}`)
+        }
+      }
+    }
+
+    // Interactive confirmation when conflicts exist
+    if (hasConflicts && !opts.verifyOnly && !opts.uninstallOnly && !opts.dryRun) {
+      if (opts.yes || opts.nonInteractive) {
+        log("  Auto-confirmed (--yes / --non-interactive)")
+      } else {
+        const confirmed = await promptConfirmation("\n  Remove old/conflicting FlowDeck installations and continue?")
+        if (!confirmed) {
+          log("\n  Installation cancelled by user. No changes made.")
+          transaction.releaseLock()
+          return { ok: false, cancelled: true }
         }
       }
     }
@@ -943,8 +1222,12 @@ async function runCleanInstall(userOpts = {}) {
       }
     }
 
-    // Stage 8: Runtime verification
-    stage(8, totalStages, "OpenCode runtime verification")
+    // Stage 8: Automatic repair
+    stage(8, totalStages, "Automatic diagnosis and repair")
+    repairResults = runRepairs(scopes, findings, opts, transaction)
+
+    // Stage 9: Runtime verification
+    stage(9, totalStages, "OpenCode runtime verification")
     if (opts.dryRun || !opts.verifyRuntime) {
       runtimeResult = { ok: !opts.dryRun, skipped: !opts.verifyRuntime }
       log(`  ${runtimeResult.skipped ? "SKIPPED" : "DRY RUN"}`)
@@ -978,7 +1261,7 @@ async function runCleanInstall(userOpts = {}) {
   stage(9, totalStages, "Final report")
   return reportResults({
     cleanState: await verifyCleanState(discoverConfigScopes()),
-    runtimeResult, smokeResult, staticResult, transaction, opts, installedScope,
+    runtimeResult, smokeResult, staticResult, repairResults, transaction, opts, installedScope,
   })
 }
 
