@@ -102,6 +102,37 @@ export function evaluateDelegationJustification(
   }
 }
 
+export type ParallelExecutionStrategyChoice = "parallel" | "pipeline" | "sequential"
+
+/**
+ * Determine the optimal execution strategy for Heidi:
+ * - Parallel: independent research questions, read-only architecture inspection,
+ *   backend/frontend implementation with disjoint write scopes, independent test generation,
+ *   security + review + mapping, multi-package analysis.
+ * - Pipeline: several mechanical FDX reads/searches, simple deterministic multi-tool operations.
+ * - Sequential: dependency chain, single-file surgical patch, migration -> code dependent on migration,
+ *   integrated verification, unsafe overlapping writes.
+ */
+export function chooseParallelExecutionPolicy(task: {
+  isSingleFilePatch?: boolean
+  hasSequentialDependencies?: boolean
+  hasOverlappingWriteScopes?: boolean
+  isMechanicalToolOps?: boolean
+  independentSubtasksCount?: number
+  isReadonlyAudit?: boolean
+}): ParallelExecutionStrategyChoice {
+  if (task.isSingleFilePatch || task.hasSequentialDependencies || task.hasOverlappingWriteScopes) {
+    return "sequential"
+  }
+  if (task.isMechanicalToolOps && (task.independentSubtasksCount ?? 0) <= 1) {
+    return "pipeline"
+  }
+  if ((task.independentSubtasksCount ?? 0) >= 2 || task.isReadonlyAudit) {
+    return "parallel"
+  }
+  return "sequential"
+}
+
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs"
 import { dirname, basename, extname, join, resolve, isAbsolute } from "node:path"
 
