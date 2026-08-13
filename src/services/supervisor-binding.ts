@@ -27,11 +27,18 @@ import { loadFlowDeckConfig } from "../config"
  * be modified by the supervisor under any circumstances.
  */
 export const REGISTERED_COMMANDS: readonly string[] = [
+  "fd-agents",
   "fd-checkpoint",
   "fd-done",
   "fd-execute",
+  "fd-learn",
+  "fd-learn-from-session",
+  "fd-learning",
+  "fd-memory",
+  "fd-recall",
   "fd-resume",
   "fd-review",
+  "fd-schedule",
   "fd-status",
   "fd-task",
   "fd-verify",

@@ -13,16 +13,18 @@ import { REGISTERED_COMMANDS } from "@/services/supervisor-binding"
 import { AGENT_NAMES } from "@/agents/index"
 import { readdirSync } from "fs"
 
-// The 8 registered commands
+// The 15 registered commands
 const VALID_COMMANDS = [
-  "fd-task", "fd-review", "fd-execute", "fd-verify", "fd-done",
-  "fd-checkpoint", "fd-resume", "fd-status",
+  "fd-agents", "fd-checkpoint", "fd-done", "fd-execute", "fd-learn",
+  "fd-learn-from-session", "fd-learning", "fd-memory", "fd-recall",
+  "fd-resume", "fd-review", "fd-schedule", "fd-status", "fd-task",
+  "fd-verify",
 ]
 
 describe("getCommandInventory", () => {
-  it("returns all 8 registered commands", () => {
+  it("returns all 15 registered commands", () => {
     const inventory = getCommandInventory()
-    expect(inventory).toHaveLength(8)
+    expect(inventory).toHaveLength(15)
   })
 
   it("contains every expected command", () => {

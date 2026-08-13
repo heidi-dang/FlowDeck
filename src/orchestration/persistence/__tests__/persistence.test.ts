@@ -53,7 +53,7 @@ describe("Migrations", () => {
   it("applies initial schema", () => {
     const db = openConnection({ path: TEST_DB })
     runMigrations(db)
-    expect(getCurrentVersion(db)).toBe(7)
+    expect(getCurrentVersion(db)).toBe(10)
   })
 
   it("creates required tables (50+)", () => {

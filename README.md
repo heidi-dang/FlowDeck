@@ -142,7 +142,7 @@ OpenCode (model access, sessions, core tools, UI)
         |     +-- Canonical registry + capability contracts
         |
         +-- Commands (src/commands/)
-        |     +-- 8 slash commands
+        |     +-- 15 slash commands
         |     +-- Pipeline: task → review → execute → verify → done
         |
         +-- Hooks (src/hooks/)
@@ -291,7 +291,7 @@ OpenCode (model access, sessions, core tools, UI)
         |     +-- Canonical registry + capability contracts
         |
         +-- Commands (src/commands/)
-        |     +-- 8 slash commands
+        |     +-- 15 slash commands
         |     +-- Pipeline: task → review → execute → verify → done
         |
         +-- Hooks (src/hooks/)

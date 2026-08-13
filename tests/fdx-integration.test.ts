@@ -127,13 +127,20 @@ describe("fd-resume.md — checkpoint awareness", () => {
 // ─── Bug 4: the pipeline commands are registered ──────────────────────────────
 
 describe("supervisor-binding — registered commands", () => {
-  it("registers exactly the eight pipeline and support commands", () => {
+  it("registers all fifteen pipeline and support commands", () => {
     expect([...REGISTERED_COMMANDS].sort()).toEqual([
+      "fd-agents",
       "fd-checkpoint",
       "fd-done",
       "fd-execute",
+      "fd-learn",
+      "fd-learn-from-session",
+      "fd-learning",
+      "fd-memory",
+      "fd-recall",
       "fd-resume",
       "fd-review",
+      "fd-schedule",
       "fd-status",
       "fd-task",
       "fd-verify",
