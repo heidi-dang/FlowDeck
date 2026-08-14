@@ -23,6 +23,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
 import flowDeckPlugin from "@/index"
+import { closeAllConnections } from "@/orchestration/persistence"
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "flowdeck-gov-chain-"))
@@ -69,6 +70,7 @@ describe("Governance chain integration", () => {
   })
 
   afterEach(() => {
+    closeAllConnections()
     rmSync(dir, { recursive: true, force: true })
   })
 

@@ -421,7 +421,7 @@ async function main() {
 // Guard against undefined process.argv[1] (e.g., in node -e contexts).
 const isDirectEntry =
   typeof process.argv[1] === "string" &&
-  import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href
+  fileURLToPath(import.meta.url) === resolve(process.argv[1])
 if (isDirectEntry) {
   await main()
 }

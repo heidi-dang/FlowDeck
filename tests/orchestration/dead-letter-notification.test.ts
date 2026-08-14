@@ -23,7 +23,9 @@ describe("Dead-Letter Event Subscriber Notification (Phase 5 Gap)", () => {
 
   afterEach(() => {
     closeConnection(TEST_DB)
-    if (existsSync(TEST_DB)) unlinkSync(TEST_DB)
+    if (existsSync(TEST_DB)) {
+      try { unlinkSync(TEST_DB) } catch { /* Windows may release the handle on the next tick */ }
+    }
   })
 
   it("records dead letter and emits outbox.dead_letter event on terminal retry failure", async () => {

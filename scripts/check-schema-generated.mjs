@@ -1,13 +1,13 @@
 import { readFileSync } from "fs";
 import { createHash } from "crypto";
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { writeFileSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
 const SQL_FILE = 'schema-v0.2.6.sql';
 const EMBED_FILE = 'src/orchestration/persistence/migrations/schema-embed.ts';
-const TMP_DB = '/tmp/fd-schema-check.db';
+const TMP_DB = join(tmpdir(), 'fd-schema-check.db');
 
 const sql = readFileSync(SQL_FILE, 'utf-8');
 const checksum = createHash('sha256').update(sql, 'utf-8').digest('hex');
@@ -29,7 +29,8 @@ console.log(`Schema checksum OK (${checksum})`);
  */
 function findSqlite3Cli() {
   try {
-    const path = execSync('command -v sqlite3', { stdio: 'pipe' }).toString().trim();
+    const command = process.platform === 'win32' ? 'where.exe' : 'which';
+    const path = execFileSync(command, ['sqlite3'], { stdio: 'pipe' }).toString().trim().split(/\r?\n/)[0];
     if (path) return path;
   } catch {
     // sqlite3 not on PATH
@@ -42,7 +43,8 @@ function findSqlite3Cli() {
  */
 function findBun() {
   try {
-    const path = execSync('command -v bun', { stdio: 'pipe' }).toString().trim();
+    const command = process.platform === 'win32' ? 'where.exe' : 'which';
+    const path = execFileSync(command, ['bun'], { stdio: 'pipe' }).toString().trim().split(/\r?\n/)[0];
     if (path) return path;
   } catch {
     // bun not on PATH
@@ -56,23 +58,15 @@ function findBun() {
  * Throws on any schema error or CLI failure — does NOT fall back silently (fail closed).
  */
 function validateWithCli(sqlite3Path) {
-  execSync(`rm -f ${TMP_DB}`);
-  execSync(`"${sqlite3Path}" ${TMP_DB} < ${SQL_FILE}`);
-  const tables = execSync(
-    `"${sqlite3Path}" ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"'`
-  ).toString().trim();
-  const triggers = execSync(
-    `"${sqlite3Path}" ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="trigger"'`
-  ).toString().trim();
-  const indexes = execSync(
-    `"${sqlite3Path}" ${TMP_DB} 'SELECT COUNT(*) FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"'`
-  ).toString().trim();
-  const fk = execSync(
-    `"${sqlite3Path}" ${TMP_DB} 'PRAGMA foreign_key_check;' | wc -l`
-  ).toString().trim();
-  const integ = execSync(
-    `"${sqlite3Path}" ${TMP_DB} 'PRAGMA integrity_check;'`
-  ).toString().trim();
+  try { unlinkSync(TMP_DB); } catch { /* ignore */ }
+  execFileSync(sqlite3Path, [TMP_DB], { input: sql, stdio: ['pipe', 'pipe', 'pipe'] });
+  const query = (statement) => execFileSync(sqlite3Path, [TMP_DB, statement], { encoding: 'utf-8' }).trim();
+  const tables = query('SELECT COUNT(*) FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"');
+  const triggers = query('SELECT COUNT(*) FROM sqlite_master WHERE type="trigger"');
+  const indexes = query('SELECT COUNT(*) FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"');
+  const fk = query('PRAGMA foreign_key_check;').split(/\r?\n/).filter(Boolean).length.toString();
+  const integ = query('PRAGMA integrity_check;');
+  try { unlinkSync(TMP_DB); } catch { /* ignore */ }
   return { tables, triggers, indexes, fk, integ };
 }
 
@@ -105,7 +99,7 @@ function validateWithBun() {
 
   try {
     writeFileSync(tmpScript, script);
-    const res = execSync(`${bunPath} ${tmpScript}`, { stdio: 'pipe' }).toString().trim();
+    const res = execFileSync(bunPath, [tmpScript], { stdio: 'pipe' }).toString().trim();
     const parsed = JSON.parse(res);
     return {
       tables: String(parsed.t),

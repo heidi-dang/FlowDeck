@@ -31,6 +31,15 @@ function normalizePath(p: string): string {
   return normalized
 }
 
+function portableFileUrlPath(value: string | URL): string {
+  try {
+    return fileURLToPath(value instanceof URL ? value : new URL(value))
+  } catch {
+    const url = value instanceof URL ? value : new URL(value)
+    return decodeURIComponent(url.pathname)
+  }
+}
+
 /**
  * Resolves the URL for scripts/doctor-engine.mjs based on the executing module's location.
  */
@@ -38,10 +47,10 @@ export function resolveDoctorEngineUrl(metaUrl: string | URL): URL {
   let filePath: string
 
   if (metaUrl instanceof URL) {
-    filePath = metaUrl.protocol === "file:" ? fileURLToPath(metaUrl) : metaUrl.pathname
+      filePath = metaUrl.protocol === "file:" ? portableFileUrlPath(metaUrl) : metaUrl.pathname
   } else if (typeof metaUrl === "string") {
     if (metaUrl.startsWith("file://")) {
-      filePath = fileURLToPath(new URL(metaUrl))
+      filePath = portableFileUrlPath(metaUrl)
     } else if (metaUrl.includes("://")) {
       filePath = new URL(metaUrl).pathname
     } else {
@@ -132,4 +141,3 @@ export async function runDoctorChecks(directory: string): Promise<DoctorReport> 
     checks: result.checks,
   }
 }
-
