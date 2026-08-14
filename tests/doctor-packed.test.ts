@@ -256,8 +256,11 @@ describe("packed-install doctor", () => {
     setupDeps(dir)
     writeFileSync(join(dir, "install.sh"), "#!/usr/bin/env bash\n")
     mkdirSync(join(dir, "src", "doctor"), { recursive: true })
+    mkdirSync(join(dir, "scripts"), { recursive: true })
     cpSync(join(PKG_ROOT, "src", "doctor", "cli.mjs"), join(dir, "src", "doctor", "cli.mjs"))
     cpSync(join(PKG_ROOT, "src", "doctor", "exit-code.mjs"), join(dir, "src", "doctor", "exit-code.mjs"))
+    cpSync(join(PKG_ROOT, "scripts", "doctor-engine.mjs"), join(dir, "scripts", "doctor-engine.mjs"))
+    cpSync(join(PKG_ROOT, "scripts", "config-mutator.mjs"), join(dir, "scripts", "config-mutator.mjs"))
 
     const result = spawnSync("node", [join(dir, "src", "doctor", "cli.mjs"), "--json"], {
       cwd: dir,
