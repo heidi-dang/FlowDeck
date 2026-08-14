@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-08-15
+
+### Promoted
+
+- **Official FlowDeck v2.0.0 Stable Release**: Official stable promotion of the proven `2.0.0-rc.1` runtime to npm `latest`.
+- **Zero Runtime Delta**: No new runtime behavior, features, schema changes, or breaking changes were introduced during promotion from RC.1.
+- **Heidi Persistent Memory & Recall**: Governed user, agent, and repository persistent memory with cross-session FTS5 search recall.
+- **Evidence-Backed Learning & Skills**: Continuous evidence proposal, pending review, versioned skill creation, and rollback capabilities.
+- **Governed Tool Pipelines**: Multi-tool declarative pipeline execution with advisory locking and boundary enforcement.
+- **Durable Scheduler & Task Engine**: Subcommand-backed scheduling, interval/cron tasks, state transitions, and retry handling.
+- **Durable Adaptive Parallel Execution**: Overlapping multi-specialist parallel DAG runs with process-isolated execution boundaries.
+- **Process Restart Durability**: State, memory, learning, and schedules survive full isolated OpenCode process restarts.
+- **Native FDX & TypeScript Fallback**: High-performance Rust native FDX binary integration with automated TypeScript fallback.
+- **Installer, Doctor & Identity Hardening**: Hardened plugin installation, automated Doctor health checks, duplicate registration detection, and self-healing.
+- **Platform & Runtime Compatibility**: Verified Node.js `>=20.0.0`, OpenCode `>=1.4.0`, FDX `^0.1.0`, and schema version 11.
+- **Immutable RC Baseline**: `v2.0.0-rc.1` remains an immutable historical prerelease reference.
+
 ## [2.0.0-rc.1] - 2026-08-13
 
 ### Added
