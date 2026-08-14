@@ -37,4 +37,4 @@ export function validateV2Milestones(report) {
   return summary
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) console.log(JSON.stringify(validateV2Milestones(JSON.parse(fs.readFileSync(file, "utf8")))))
+if (process.argv[1] && new URL(`file://${process.argv[1].replaceAll("\\", "/")}`).href === import.meta.url) console.log(JSON.stringify(validateV2Milestones(JSON.parse(fs.readFileSync(file, "utf8")))))

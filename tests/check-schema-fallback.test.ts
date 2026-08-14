@@ -499,11 +499,11 @@ describe("Schema Validation SQLite Fallback", () => {
     it("invokes the detected sqlite3 path (not a literal sqlite3) and succeeds for a valid schema", () => {
       const marker = join(tmpdir(), `fake-marker-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
       const fakeSqlite3 = track(
-        join(tmpdir(), `fake-sqlite3-ok-${Date.now()}-${Math.random().toString(36).slice(2)}.sh`)
+        join(tmpdir(), `fake-sqlite3-ok-${Date.now()}-${Math.random().toString(36).slice(2)}${process.platform === "win32" ? ".cmd" : ".sh"}`)
       );
-      writeFileSync(
-        fakeSqlite3,
-        `#!/bin/sh\n` +
+      const fakeSqlite3Body = process.platform === "win32"
+        ? `@echo off\r\necho INVOKED:fake-sqlite3-ok:%*>>"${marker}"\r\necho %~2 | findstr /i "integrity_check" >nul && echo ok && exit /b 0\r\necho %~2 | findstr /i "foreign_key_check" >nul && exit /b 0\r\necho %~2 | findstr /i "type=\"table\"" >nul && echo 53 && exit /b 0\r\necho %~2 | findstr /i "type=\"trigger\"" >nul && echo 36 && exit /b 0\r\necho %~2 | findstr /i "type=\"index\"" >nul && echo 66\r\n`
+        : `#!/bin/sh\n` +
         `echo "INVOKED:$(basename "$0"):$*" >> '${marker}'\n` +
         `last=""; for a in "$@"; do last="$a"; done\n` +
         `case "$last" in\n` +
@@ -515,9 +515,9 @@ describe("Schema Validation SQLite Fallback", () => {
         `      *type=\\"index\\"*) echo 66 ;;\n` +
         `    esac ;;\n` +
         `  *) : ;;\n` +
-        `esac\nexit 0\n`
-      );
-      chmodSync(fakeSqlite3, 0o755);
+        `esac\nexit 0\n`;
+      writeFileSync(fakeSqlite3, fakeSqlite3Body);
+      if (process.platform !== "win32") chmodSync(fakeSqlite3, 0o755);
 
       const tmpScript = track(
         join(tmpdir(), `detected-path-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`)

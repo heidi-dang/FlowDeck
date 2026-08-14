@@ -64,8 +64,9 @@ describe("plugin entry", () => {
     writeState(dir)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     closeAllConnections()
+    await new Promise((resolve) => setTimeout(resolve, 150))
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
   })
@@ -210,8 +211,9 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
     dir = makeTempDir()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     closeAllConnections()
+    await new Promise((resolve) => setTimeout(resolve, 150))
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
   })
@@ -273,8 +275,9 @@ describe("plugin entry: toolGuardHook wiring (bug 3b)", () => {
     writeFileSync(join(planningDir(dir), "STATE.md"), "phase: 1\nstatus: planned")
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     closeAllConnections()
+    await new Promise((resolve) => setTimeout(resolve, 150))
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
     if (prevEnv === undefined) delete process.env.FLOWDECK_TOOL_GUARD_ENABLED

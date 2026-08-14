@@ -278,7 +278,7 @@ function main() {
   } else {
     let existing = ""
     try {
-      existing = readFileSync(DEFAULT_REPORT, "utf8")
+      existing = readFileSync(DEFAULT_REPORT, "utf8").replace(/\r\n/g, "\n")
     } catch {
       /* report missing */
     }
