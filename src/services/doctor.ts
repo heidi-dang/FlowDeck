@@ -32,10 +32,13 @@ function normalizePath(p: string): string {
 }
 
 function portableFileUrlPath(value: string | URL): string {
+  const url = value instanceof URL ? value : new URL(value)
+  if (process.platform === "win32" && url.pathname.startsWith("/") && !/^\/[a-zA-Z]:\//.test(url.pathname)) {
+    return decodeURIComponent(url.pathname)
+  }
   try {
-    return fileURLToPath(value instanceof URL ? value : new URL(value))
+    return fileURLToPath(url)
   } catch {
-    const url = value instanceof URL ? value : new URL(value)
     return decodeURIComponent(url.pathname)
   }
 }

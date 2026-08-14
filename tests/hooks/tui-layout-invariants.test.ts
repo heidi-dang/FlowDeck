@@ -17,6 +17,7 @@ import { mkdirSync, writeFileSync, rmSync, mkdtempSync } from "fs"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"
 import { tmpdir } from "os"
+import { closeAllConnections } from "@/orchestration/persistence"
 
 // ── stdout/stderr capture helpers ─────────────────────────────────────────
 
@@ -77,6 +78,7 @@ function writeMockState(dir: string): void {
 }
 
 afterEach(() => {
+  closeAllConnections()
   rmSync(TEST_BASE, { recursive: true, force: true })
 })
 
@@ -395,6 +397,7 @@ describe("architectural invariant — no new log-management tool introduced", ()
       )
       expect(suspectTools).toHaveLength(0)
     } finally {
+      closeAllConnections()
       rmSync(testDir, { recursive: true, force: true })
     }
   })
@@ -425,6 +428,7 @@ describe("architectural invariant — no new log-management tool introduced", ()
       expect(toolNames).not.toContain("delegate")
       expect(toolNames).not.toContain("run-pipeline")
     } finally {
+      closeAllConnections()
       rmSync(testDir, { recursive: true, force: true })
     }
   })
