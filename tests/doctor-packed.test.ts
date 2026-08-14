@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeAll } from "bun:test"
-import { existsSync, mkdirSync, writeFileSync, cpSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync, cpSync, rmSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import {
@@ -50,11 +50,20 @@ function makeDir(prefix: string): string {
 }
 
 function writePkg(dir: string, extra: Record<string, unknown> = {}) {
+  const rootPkgPath = join(PKG_ROOT, "package.json")
+  let currentVersion = "2.0.0-rc.1"
+  if (existsSync(rootPkgPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(rootPkgPath, "utf-8"))
+      if (parsed.version) currentVersion = parsed.version
+    } catch {}
+  }
+
   writeFileSync(
     join(dir, "package.json"),
     JSON.stringify({
       name: "@heidi-dang/flowdeck",
-      version: "2.0.0-alpha.1",
+      version: currentVersion,
       main: "./dist/index.js",
       type: "module",
       ...extra,

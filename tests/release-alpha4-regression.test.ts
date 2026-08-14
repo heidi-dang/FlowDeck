@@ -85,23 +85,23 @@ describe("v2.0.0-alpha.4 release channel inheritance from alpha.3", () => {
     expect(resolveReleaseChannel("2.0.0-alpha.3")).toBe("alpha")
   })
 
-  it("the active package version is 2.0.0-alpha.4", () => {
-    expect(PKG.version).toBe("2.0.0-alpha.4")
+  it("the active package version is 2.0.0-rc.1", () => {
+    expect(PKG.version).toBe("2.0.0-rc.1")
   })
 
   it("publish workflow derives the dist-tag from release-channel.mjs and never tags a prerelease latest", () => {
     expect(PUBLISH_YML).toContain('DIST_TAG="$(node scripts/release-channel.mjs)"')
     expect(PUBLISH_YML).toContain('npm publish --provenance --access public --tag "$DIST_TAG"')
     expect(PUBLISH_YML).not.toContain("--tag latest")
-    // alpha is the only pre-release tag the workflow can emit for this release
-    expect(resolveReleaseChannel(PKG.version)).toBe("alpha")
+    // next is the pre-release tag for rc releases
+    expect(resolveReleaseChannel(PKG.version)).toBe("next")
   })
 
-  it("tag/version alignment passes only for v2.0.0-alpha.4 with package 2.0.0-alpha.4", () => {
+  it("tag/version alignment passes only for v2.0.0-rc.1 with package 2.0.0-rc.1", () => {
     const body = extractStepBody(PUBLISH_YML, "Validate Tag/Version Alignment")
-    const ok = runTagAlignment(body, "v2.0.0-alpha.4")
+    const ok = runTagAlignment(body, `v${PKG.version}`)
     expect(ok.status).toBe(0)
-    expect(ok.stdout).toContain("Tag/version alignment verified: v2.0.0-alpha.4 == v2.0.0-alpha.4")
+    expect(ok.stdout).toContain(`Tag/version alignment verified: v${PKG.version} == v${PKG.version}`)
   })
 
   it("tag/version alignment fails for a mismatched tag", () => {

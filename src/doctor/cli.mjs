@@ -162,14 +162,16 @@ function runViaBunInline(options) {
 }
 
 async function runDoctorEngine(options) {
-  // Try 1: Run via bun (development mode — faster iteration)
-  if (hasBun()) {
+  const { existsSync } = await import("node:fs")
+  const doctorSrcPath = join(PKG_ROOT, "src", "doctor", "doctor.ts")
+  const distPath = join(PKG_ROOT, "dist", "index.js")
+
+  // Try 1: Run via bun in dev mode (if bun is available AND doctor.ts source exists)
+  if (hasBun() && existsSync(doctorSrcPath)) {
     return runViaBunInline(options)
   }
 
-  // Try 2: Compiled dist (packaged npm install)
-  const { existsSync } = await import("node:fs")
-  const distPath = join(PKG_ROOT, "dist", "index.js")
+  // Try 2: Compiled dist (packaged npm install or built dist)
   if (existsSync(distPath)) {
     try {
       const distUrl = pathToFileURL(distPath).href
