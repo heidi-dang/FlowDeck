@@ -262,7 +262,7 @@ describe("packed-install doctor", () => {
 
     const bunBin = (process.env.FLOWDECK_BUN_BIN && !process.env.FLOWDECK_BUN_BIN.endsWith("/node") && !process.env.FLOWDECK_BUN_BIN.endsWith("/node.exe"))
       ? process.env.FLOWDECK_BUN_BIN
-      : "bun"
+      : (typeof (process as any).versions?.bun === "string" ? (process as any).execPath : "bun")
 
     const result = spawnSync("node", [join(dir, "src", "doctor", "cli.mjs"), "--json"], {
       cwd: dir,

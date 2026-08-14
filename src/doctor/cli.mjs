@@ -33,22 +33,25 @@ const PKG_ROOT = resolve(__dirname, "..", "..")
 let BUN_BIN = null
 function resolveBunBinary() {
   if (BUN_BIN !== null) return BUN_BIN
-  // Check if FLOWDECK_BUN_BIN env variable was passed explicitly by parent process
-  if (process.env.FLOWDECK_BUN_BIN) {
-    BUN_BIN = process.env.FLOWDECK_BUN_BIN
-    return BUN_BIN
+  const candidates = []
+  if (process.env.FLOWDECK_BUN_BIN) candidates.push(process.env.FLOWDECK_BUN_BIN)
+  if (typeof process !== "undefined" && process.versions?.bun && process.execPath) {
+    candidates.push(process.execPath)
   }
-  // Try finding bun in PATH
-  try {
-    execFileSync("bun", ["--version"], {
-      encoding: "utf-8",
-      timeout: 5000,
-      stdio: "ignore",
-    })
-    BUN_BIN = "bun"
-  } catch {
-    BUN_BIN = false
+  candidates.push("bun")
+
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate, ["--version"], {
+        encoding: "utf-8",
+        timeout: 5000,
+        stdio: "ignore",
+      })
+      BUN_BIN = candidate
+      return BUN_BIN
+    } catch {}
   }
+  BUN_BIN = false
   return BUN_BIN
 }
 
@@ -180,13 +183,21 @@ async function runDoctorEngine(options) {
 
   // Try 1: Run via bun in dev mode (if bun is available AND doctor.ts source exists)
   if (hasBun() && existsSync(doctorSrcPath)) {
-    return runViaBunInline(options, doctorSrcPath)
+    try {
+      return runViaBunInline(options, doctorSrcPath)
+    } catch {
+      // Fall through if bun execution fails
+    }
   }
 
   // Try 2: Compiled dist (packaged npm install or built dist)
   if (existsSync(distPath)) {
     if (hasBun()) {
-      return runViaBunInline(options, distPath)
+      try {
+        return runViaBunInline(options, distPath)
+      } catch {
+        // Fall through to node import if bun inline fails
+      }
     }
     try {
       const distUrl = pathToFileURL(distPath).href
@@ -400,6 +411,12 @@ Options:
 
 async function main() {
   await runDoctorCli(process.argv.slice(2));
+  if (typeof process.stdout.flushSync === "function") {
+    try { process.stdout.flushSync(); } catch {}
+  }
+  if (typeof process.stderr.flushSync === "function") {
+    try { process.stderr.flushSync(); } catch {}
+  }
   await new Promise((resolve) => {
     let resolved = false;
     const done = () => {
@@ -408,7 +425,7 @@ async function main() {
         resolve();
       }
     };
-    const timer = setTimeout(done, 200);
+    const timer = setTimeout(done, 300);
     process.stdout.write("", () => {
       process.stderr.write("", () => {
         clearTimeout(timer);
