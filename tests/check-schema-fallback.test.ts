@@ -500,12 +500,13 @@ describe("Schema Validation SQLite Fallback", () => {
       // The injected POSIX fake executable below is not a valid Windows
       // sqlite3 substitute; Windows executable resolution is covered by the
       // production validator and packed-install tests.
-      if (process.platform === "win32") return;
+      const isWindows = (process.platform as string) === "win32";
+      if (isWindows) return;
       const marker = join(tmpdir(), `fake-marker-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
       const fakeSqlite3 = track(
-        join(tmpdir(), `fake-sqlite3-ok-${Date.now()}-${Math.random().toString(36).slice(2)}${process.platform === "win32" ? ".cmd" : ".sh"}`)
+        join(tmpdir(), `fake-sqlite3-ok-${Date.now()}-${Math.random().toString(36).slice(2)}${isWindows ? ".cmd" : ".sh"}`)
       );
-      const fakeSqlite3Body = process.platform === "win32"
+      const fakeSqlite3Body = isWindows
         ? `@echo off\r\necho INVOKED:fake-sqlite3-ok:%*>>"${marker}"\r\necho %* | findstr /i "integrity_check" >nul && echo ok && exit /b 0\r\necho %* | findstr /i "foreign_key_check" >nul && exit /b 0\r\necho %* | findstr /i "type="table"" >nul && echo 53 && exit /b 0\r\necho %* | findstr /i "type="trigger"" >nul && echo 36 && exit /b 0\r\necho %* | findstr /i "type="index"" >nul && echo 66\r\n`
         : `#!/bin/sh\n` +
         `echo "INVOKED:$(basename "$0"):$*" >> '${marker}'\n` +
@@ -521,7 +522,7 @@ describe("Schema Validation SQLite Fallback", () => {
         `  *) : ;;\n` +
         `esac\nexit 0\n`;
       writeFileSync(fakeSqlite3, fakeSqlite3Body);
-      if (process.platform !== "win32") chmodSync(fakeSqlite3, 0o755);
+      if (!isWindows) chmodSync(fakeSqlite3, 0o755);
 
       const tmpScript = track(
         join(tmpdir(), `detected-path-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`)
