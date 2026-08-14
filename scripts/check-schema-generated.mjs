@@ -59,8 +59,9 @@ function findBun() {
  */
 function validateWithCli(sqlite3Path) {
   try { unlinkSync(TMP_DB); } catch { /* ignore */ }
-  execFileSync(sqlite3Path, [TMP_DB], { input: sql, stdio: ['pipe', 'pipe', 'pipe'] });
-  const query = (statement) => execFileSync(sqlite3Path, [TMP_DB, statement], { encoding: 'utf-8' }).trim();
+  const spawnOptions = { shell: process.platform === 'win32' };
+  execFileSync(sqlite3Path, [TMP_DB], { ...spawnOptions, input: sql, stdio: ['pipe', 'pipe', 'pipe'] });
+  const query = (statement) => execFileSync(sqlite3Path, [TMP_DB, statement], { ...spawnOptions, encoding: 'utf-8' }).trim();
   const tables = query('SELECT COUNT(*) FROM sqlite_master WHERE type="table" AND name!="sqlite_sequence"');
   const triggers = query('SELECT COUNT(*) FROM sqlite_master WHERE type="trigger"');
   const indexes = query('SELECT COUNT(*) FROM sqlite_master WHERE type="index" AND name NOT LIKE "sqlite_%"');
