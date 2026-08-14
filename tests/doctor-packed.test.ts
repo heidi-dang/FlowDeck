@@ -52,7 +52,7 @@ function makeDir(prefix: string): string {
 
 function writePkg(dir: string, extra: Record<string, unknown> = {}) {
   const rootPkgPath = join(PKG_ROOT, "package.json")
-  let currentVersion = "2.0.0-rc.1"
+  let currentVersion = "2.0.0"
   if (existsSync(rootPkgPath)) {
     try {
       const parsed = JSON.parse(readFileSync(rootPkgPath, "utf-8"))

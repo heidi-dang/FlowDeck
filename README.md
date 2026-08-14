@@ -9,7 +9,7 @@
 
 | Metric / Specification | Value |
 |---|---|
-| **Version** | v2.0.0-rc.1 |
+| **Version** | v2.0.0 |
 | **Primary Coordinator** | `heidi` (UI-selectable) |
 | **Specialist Agents** | 11 specialized subagents |
 | **Slash Commands** | 15 registered commands (`/fd-*`) |
@@ -423,9 +423,9 @@ bun run verify:full
 
 ## Release Status
 
-- **Current Version**: `v2.0.0-rc.1`
-- **Track**: Prerelease / Candidate Track (`@next`)
-- **Status**: Production-ready core orchestration, parallel DAG engine, persistent Heidi runtime, and verification gates complete.
+- **Current Version**: `v2.0.0`
+- **Track**: Stable (`@latest`)
+- **Status**: Official stable release. Production-ready core orchestration, parallel DAG engine, persistent Heidi runtime, and verification gates complete.
 
 ---
 
