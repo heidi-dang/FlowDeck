@@ -138,7 +138,7 @@ function runViaBunInline(options, entryPath) {
     `import * as doctorMod from ${JSON.stringify(doctorPath)};`,
     `const runFn = doctorMod.runDoctor || doctorMod.runDoctorChecks;`,
     `const r = await runFn(${JSON.stringify(PKG_ROOT)}, ${JSON.stringify(opts.options)});`,
-    `process.stdout.write(JSON.stringify(r));`,
+    `process.stdout.write("__FLOWDECK_DOCTOR_JSON_START__" + JSON.stringify(r) + "__FLOWDECK_DOCTOR_JSON_END__");`,
   ].join("\n")
 
   try {
@@ -146,16 +146,24 @@ function runViaBunInline(options, entryPath) {
       cwd: PKG_ROOT,
       encoding: "utf-8",
       timeout: 60000,
+      maxBuffer: 20 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
       env: execEnv,
     })
-    const trimmed = output.trim()
-    return JSON.parse(trimmed)
+    const match = output.match(/__FLOWDECK_DOCTOR_JSON_START__(.*)__FLOWDECK_DOCTOR_JSON_END__/s)
+    if (match) {
+      return JSON.parse(match[1])
+    }
+    return JSON.parse(output.trim())
   } catch (e) {
     const stderr = e.stderr || ""
     const stdout = e.stdout || ""
     // Try to parse JSON from stdout even on error
     try {
+      const match = stdout.match(/__FLOWDECK_DOCTOR_JSON_START__(.*)__FLOWDECK_DOCTOR_JSON_END__/s)
+      if (match) {
+        return JSON.parse(match[1])
+      }
       return JSON.parse(stdout.trim())
     } catch {
       // Extract meaningful error from stderr
