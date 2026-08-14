@@ -79,12 +79,13 @@ export function resolveDoctorEngineUrl(metaUrl: string | URL): URL {
   }
 
   for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      return pathToFileURL(candidate)
+    const absPath = resolve(candidate)
+    if (existsSync(absPath)) {
+      return pathToFileURL(absPath)
     }
   }
 
-  return pathToFileURL(candidates[0])
+  return pathToFileURL(resolve(candidates[0]))
 }
 
 /** Lazily load and cache the shared engine via dynamic import */
