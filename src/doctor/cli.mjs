@@ -192,13 +192,6 @@ async function runDoctorEngine(options) {
 
   // Try 2: Compiled dist (packaged npm install or built dist)
   if (existsSync(distPath)) {
-    if (hasBun()) {
-      try {
-        return runViaBunInline(options, distPath)
-      } catch {
-        // Fall through to node import if bun inline fails
-      }
-    }
     try {
       const distUrl = pathToFileURL(distPath).href
       const mod = await import(distUrl)
@@ -207,7 +200,14 @@ async function runDoctorEngine(options) {
         return await runFn(PKG_ROOT, options)
       }
     } catch {
-      // Fall through
+      // Fall through to bun inline if ESM import fails
+    }
+    if (hasBun()) {
+      try {
+        return runViaBunInline(options, distPath)
+      } catch {
+        // Fall through
+      }
     }
   }
 
