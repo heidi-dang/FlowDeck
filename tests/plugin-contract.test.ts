@@ -65,7 +65,7 @@ describe("modern plugin contract", () => {
       expect(typeof hooks.tool).toBe("object")
     } finally {
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -82,7 +82,7 @@ describe("modern plugin contract", () => {
       expect((hooks as any).mcp).toBeUndefined()
     } finally {
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -98,7 +98,7 @@ describe("modern plugin contract", () => {
       expect(cfg.default_agent).toBe("heidi")
     } finally {
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -120,7 +120,7 @@ describe("modern plugin contract", () => {
       expect(agent.orchestrator.mode).toBe("primary")
     } finally {
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -136,7 +136,7 @@ describe("modern plugin contract", () => {
       expect(cfg.default_agent).toBe("build")
     } finally {
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -158,7 +158,7 @@ describe("modern plugin contract", () => {
       expect(agent.heidi.mode).toBe("primary")
     } finally {
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true })
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 })

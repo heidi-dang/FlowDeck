@@ -66,7 +66,7 @@ describe("plugin entry", () => {
 
   afterEach(() => {
     closeAllConnections()
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
   })
 
@@ -212,7 +212,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
 
   afterEach(() => {
     closeAllConnections()
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
   })
 
@@ -275,7 +275,7 @@ describe("plugin entry: toolGuardHook wiring (bug 3b)", () => {
 
   afterEach(() => {
     closeAllConnections()
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
     if (prevEnv === undefined) delete process.env.FLOWDECK_TOOL_GUARD_ENABLED
     else process.env.FLOWDECK_TOOL_GUARD_ENABLED = prevEnv

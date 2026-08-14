@@ -19,7 +19,7 @@
  */
 
 import { describe, it, expect } from "bun:test";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import { writeFileSync, readFileSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -37,7 +37,7 @@ interface RunResult {
 
 function runValidator(matrixPath: string): RunResult {
   try {
-    const result = execSync(`node ${SCRIPT_PATH} ${matrixPath}`, {
+    const result = execFileSync(process.execPath, [SCRIPT_PATH, matrixPath], {
       stdio: ["pipe", "pipe", "pipe"],
       timeout: 30000,
     });

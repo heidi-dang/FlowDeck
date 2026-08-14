@@ -102,7 +102,7 @@ describe("Doctor Engine Path Resolution & Error Handling", () => {
       const resolved = resolveDoctorEngineUrl(import.meta.url)
       expect(resolved).toBeInstanceOf(URL)
       const path = fileURLToPath(resolved)
-      expect(path.endsWith("scripts/doctor-engine.mjs")).toBe(true)
+      expect(path.replace(/\\/g, "/").endsWith("scripts/doctor-engine.mjs")).toBe(true)
     })
   })
 

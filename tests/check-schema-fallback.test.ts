@@ -524,7 +524,7 @@ describe("Schema Validation SQLite Fallback", () => {
       );
       const original = readFileSync(SCRIPT_PATH, "utf-8");
       const modified = original.replace(
-        /function findSqlite3Cli\(\) \{[\s\S]*?return null;\n\}/,
+        /function findSqlite3Cli\(\) \{[\s\S]*?return null;\r?\n\}/,
         `function findSqlite3Cli() {\n  return '${fakeSqlite3}';\n}`
       );
       expect(modified).not.toBe(original);

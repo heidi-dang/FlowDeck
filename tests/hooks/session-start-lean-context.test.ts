@@ -63,7 +63,7 @@ describe("session-start — lean context: .flowdeck/lessons.md loading", () => {
 
   afterEach(() => {
     closeAllConnections()
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
     invalidateRuleCache()
   })
@@ -144,7 +144,7 @@ describe("session-start — lean context: language rule selection", () => {
 
   afterEach(() => {
     closeAllConnections()
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
     invalidateRuleCache()
   })
@@ -259,7 +259,7 @@ describe("session-start — lean context: integration with .flowdeck/lessons.md 
 
   afterEach(() => {
     closeAllConnections()
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
     invalidateRuleCache()
   })
