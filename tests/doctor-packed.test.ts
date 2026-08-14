@@ -107,6 +107,11 @@ function setupDeps(dir: string) {
   mkdirSync(jsoncDir, { recursive: true })
   writeFileSync(join(jsoncDir, "package.json"), JSON.stringify({ name: "jsonc-parser", type: "module", main: "./index.js", exports: { ".": "./index.js" } }))
   writeFileSync(join(jsoncDir, "index.js"), "export function modify() { return null }\nexport function applyEdits() { return null }\nexport function parse() { return null }\n")
+
+  const zodDir = join(dir, "node_modules", "zod")
+  mkdirSync(zodDir, { recursive: true })
+  writeFileSync(join(zodDir, "package.json"), JSON.stringify({ name: "zod", type: "module", main: "./index.js", exports: { ".": "./index.js" } }))
+  writeFileSync(join(zodDir, "index.js"), "const handler = { get: () => chain, apply: () => chain }; const chain = new Proxy(function() {}, handler); export const z = chain; export default chain;\n")
 }
 
 beforeAll(() => {
@@ -264,10 +269,11 @@ describe("packed-install doctor", () => {
       ? process.env.FLOWDECK_BUN_BIN
       : (typeof (process as any).versions?.bun === "string" ? (process as any).execPath : "bun")
 
+    const nodePath = [join(dir, "node_modules"), join(PKG_ROOT, "node_modules")].join(process.platform === "win32" ? ";" : ":")
     const result = spawnSync("node", [join(dir, "src", "doctor", "cli.mjs"), "--json"], {
       cwd: dir,
       encoding: "utf-8",
-      env: { ...process.env, FLOWDECK_BUN_BIN: bunBin },
+      env: { ...process.env, FLOWDECK_BUN_BIN: bunBin, NODE_PATH: nodePath },
     })
 
     expect(result.status, `cli.mjs failed with status ${result.status}. stderr: ${result.stderr}`).toBe(0)
