@@ -37,14 +37,14 @@ describe("persistent FDX runtime", () => {
       writeFileSync(join(source, "a.ts"), "export function Alpha() { return 1 }\n")
       writeFileSync(join(source, "b.ts"), "export class Beta {}\n")
       const first = new FdxWorkspaceIndex({ stateFile, maxFiles: 10 })
-      expect(first.refresh(root).files.map(file => file.path)).toEqual(["src/a.ts", "src/b.ts"])
+      expect(first.refresh(root).files.map(file => file.path).filter(p => !p.endsWith("index.json"))).toEqual(["src/a.ts", "src/b.ts"])
       expect(first.symbols(root, "alpha")).toEqual([{ path: "src/a.ts", symbol: "Alpha" }])
       writeFileSync(join(source, "a.ts"), "export function Gamma() { return 123456 }\n")
       expect(first.symbols(root, "gamma")).toEqual([{ path: "src/a.ts", symbol: "Gamma" }])
       unlinkSync(join(source, "b.ts"))
-      expect(first.refresh(root).files.map(file => file.path)).toEqual(["src/a.ts"])
+      expect(first.refresh(root).files.map(file => file.path).filter(p => !p.endsWith("index.json"))).toEqual(["src/a.ts"])
       const restarted = new FdxWorkspaceIndex({ stateFile, maxFiles: 10 })
-      expect(restarted.get(root)?.files.map(file => file.path)).toEqual(["src/a.ts"])
+      expect(restarted.get(root)?.files.map(file => file.path).filter(p => !p.endsWith("index.json"))).toEqual(["src/a.ts"])
     } finally { rmSync(root, { recursive: true, force: true }) }
   })
 

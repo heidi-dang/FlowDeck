@@ -63,10 +63,11 @@ function createTempScript(schemaContent: string, embedContent: string): string {
 
   // Read the original script and replace paths
   const original = readFileSync(SCRIPT_PATH, "utf-8");
-  const tmpSchemaPathEscaped = tmpSchema.replace(/\\/g, "\\\\");
+  const tmpSchemaPathEscaped = tmpSchema.replace(/\\/g, "/");
+  const tmpEmbedPathEscaped = tmpEmbed.replace(/\\/g, "/");
   const modified = original
     .replace(/const SQL_FILE = 'schema-v0.2.6.sql';/, `const SQL_FILE = '${tmpSchemaPathEscaped}';`)
-    .replace(/src\/orchestration\/persistence\/migrations\/schema-embed\.ts/, tmpEmbed.replace(/\\/g, "/"));
+    .replace(/src\/orchestration\/persistence\/migrations\/schema-embed\.ts/, tmpEmbedPathEscaped);
 
   writeFileSync(tmpScript, modified);
   return tmpScript;

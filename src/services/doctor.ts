@@ -40,8 +40,12 @@ export function resolveDoctorEngineUrl(metaUrl: string | URL): URL {
     throw new TypeError(`Invalid metaUrl provided: ${String(metaUrl)}`)
   }
 
-  const dir = dirname(filePath)
-  const normalizedPath = filePath.replace(/\\/g, "/")
+  let normalizedPath = filePath.replace(/\\/g, "/")
+  if (/^[a-zA-Z]:\//.test(normalizedPath)) {
+    normalizedPath = "/" + normalizedPath
+  }
+
+  const dir = dirname(normalizedPath)
   const candidates: string[] = []
 
   if (

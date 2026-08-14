@@ -22,6 +22,7 @@
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { execFileSync } from "node:child_process"
+import { existsSync } from "node:fs"
 import { resolveDoctorExitCode } from "./exit-code.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -108,13 +109,15 @@ function hasBun() {
   return resolveBunBinary() !== false
 }
 
-function runViaBunInline(options) {
+function runViaBunInline(options, entryPath) {
   const bunBin = resolveBunBinary()
   if (!bunBin) {
     throw new Error("Bun not available. Build the project first: bun run build")
   }
 
-  const doctorPath = join(PKG_ROOT, "src/doctor/doctor.ts")
+  const doctorSrcPath = join(PKG_ROOT, "src", "doctor", "doctor.ts")
+  const distPath = join(PKG_ROOT, "dist", "index.js")
+  const doctorPath = entryPath || (existsSync(doctorSrcPath) ? doctorSrcPath : distPath)
   // Ensure bun binary path is available to subprocesses
   const execEnv = { ...process.env, FLOWDECK_BUN_BIN: bunBin }
   const opts = {
@@ -129,11 +132,12 @@ function runViaBunInline(options) {
     },
   }
 
-  // Use bun to import and execute the TypeScript module
+  // Use bun to import and execute the TypeScript or compiled module
   // bun handles TS-to-JS transpilation automatically
   const script = [
-    `import { runDoctor, formatReport, formatJSON } from ${JSON.stringify(doctorPath)};`,
-    `const r = await runDoctor(${JSON.stringify(PKG_ROOT)}, ${JSON.stringify(opts.options)});`,
+    `import * as doctorMod from ${JSON.stringify(doctorPath)};`,
+    `const runFn = doctorMod.runDoctor || doctorMod.runDoctorChecks;`,
+    `const r = await runFn(${JSON.stringify(PKG_ROOT)}, ${JSON.stringify(opts.options)});`,
     `process.stdout.write(JSON.stringify(r));`,
   ].join("\n")
 
@@ -162,22 +166,25 @@ function runViaBunInline(options) {
 }
 
 async function runDoctorEngine(options) {
-  const { existsSync } = await import("node:fs")
   const doctorSrcPath = join(PKG_ROOT, "src", "doctor", "doctor.ts")
   const distPath = join(PKG_ROOT, "dist", "index.js")
 
   // Try 1: Run via bun in dev mode (if bun is available AND doctor.ts source exists)
   if (hasBun() && existsSync(doctorSrcPath)) {
-    return runViaBunInline(options)
+    return runViaBunInline(options, doctorSrcPath)
   }
 
   // Try 2: Compiled dist (packaged npm install or built dist)
   if (existsSync(distPath)) {
+    if (hasBun()) {
+      return runViaBunInline(options, distPath)
+    }
     try {
       const distUrl = pathToFileURL(distPath).href
       const mod = await import(distUrl)
-      if (typeof mod.runDoctor === "function") {
-        return await mod.runDoctor(PKG_ROOT, options)
+      const runFn = mod.runDoctor || mod.runDoctorChecks
+      if (typeof runFn === "function") {
+        return await runFn(PKG_ROOT, options)
       }
     } catch {
       // Fall through

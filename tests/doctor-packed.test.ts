@@ -13,6 +13,7 @@ import { describe, it, expect, beforeAll } from "bun:test"
 import { existsSync, mkdirSync, writeFileSync, cpSync, rmSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { spawnSync } from "node:child_process"
 import {
   classifyDoctorEnvironment,
   isRepoLikeEnvironment,
@@ -246,6 +247,27 @@ describe("packed-install doctor", () => {
     const { exitCode, stderr } = await runPackedService(dir, "nope")
     expect(exitCode).toBe(2)
     expect(stderr).toContain("Unknown profile")
+  })
+
+  it("executes CLI via dist/index.js when src/doctor/doctor.ts is missing", () => {
+    const dir = makeDir("cli-dist-only")
+    writePkg(dir)
+    copyDist(dir)
+    setupDeps(dir)
+    writeFileSync(join(dir, "install.sh"), "#!/usr/bin/env bash\n")
+    mkdirSync(join(dir, "src", "doctor"), { recursive: true })
+    cpSync(join(PKG_ROOT, "src", "doctor", "cli.mjs"), join(dir, "src", "doctor", "cli.mjs"))
+    cpSync(join(PKG_ROOT, "src", "doctor", "exit-code.mjs"), join(dir, "src", "doctor", "exit-code.mjs"))
+
+    const result = spawnSync("node", [join(dir, "src", "doctor", "cli.mjs"), "--json"], {
+      cwd: dir,
+      encoding: "utf-8",
+      env: { ...process.env, FLOWDECK_BUN_BIN: (process as any).execPath || "bun" },
+    })
+
+    expect(result.status).toBe(0)
+    const report = JSON.parse(result.stdout)
+    expect(report.schemaVersion).toBe(1)
   })
 })
 
