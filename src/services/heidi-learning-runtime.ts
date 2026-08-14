@@ -26,6 +26,8 @@ export class HeidiLearningRuntime {
   }
   propose(input: { type: LearningType; content: string; provenance: Record<string, unknown>; evidence?: string[]; confidence: number; sessionId?: string; taskRunId?: string }): unknown {
     if (input.type === "NO_ACTION") return { type: input.type, status: "ignored" }
+    const existing = this.db.query("SELECT * FROM heidi_learning_candidates WHERE type=? AND content=? AND (source_session_id=? OR (source_session_id IS NULL AND ? IS NULL)) ORDER BY created_at ASC LIMIT 1").get(input.type, input.content, input.sessionId ?? null, input.sessionId ?? null) as Record<string, unknown> | null
+    if (existing) return { ...existing, status: "DUPLICATE", candidateId: existing.id }
     const id = randomUUID(); this.db.query("INSERT INTO heidi_learning_candidates (id,type,content,provenance,evidence,confidence,source_session_id,source_task_run_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(id, input.type, input.content, JSON.stringify(input.provenance), JSON.stringify(input.evidence ?? []), Math.max(0, Math.min(1, input.confidence)), input.sessionId ?? null, input.taskRunId ?? null, iso()); return this.db.query("SELECT * FROM heidi_learning_candidates WHERE id=?").get(id)
   }
   listPending(): unknown[] { return this.db.query("SELECT * FROM heidi_learning_candidates WHERE status='pending' ORDER BY created_at DESC").all() as unknown[] }
