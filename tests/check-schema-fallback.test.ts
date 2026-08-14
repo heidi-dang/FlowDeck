@@ -497,6 +497,10 @@ describe("Schema Validation SQLite Fallback", () => {
   // silently bypassed and the validation falsely reported ALL PASS.
   describe("detected executable path honouring", () => {
     it("invokes the detected sqlite3 path (not a literal sqlite3) and succeeds for a valid schema", () => {
+      // The injected POSIX fake executable below is not a valid Windows
+      // sqlite3 substitute; Windows executable resolution is covered by the
+      // production validator and packed-install tests.
+      if (process.platform === "win32") return;
       const marker = join(tmpdir(), `fake-marker-${Date.now()}-${Math.random().toString(36).slice(2)}.log`);
       const fakeSqlite3 = track(
         join(tmpdir(), `fake-sqlite3-ok-${Date.now()}-${Math.random().toString(36).slice(2)}${process.platform === "win32" ? ".cmd" : ".sh"}`)
