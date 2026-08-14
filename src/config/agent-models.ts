@@ -13,11 +13,13 @@ export interface AgentModelConfig {
 
 export const DEFAULT_CONFIG: FlowDeckConfig = {
   agentModels: {},
+  routing: { enabled: false, mode: "off" },
   betterHarness: {
     enabled: true,
   },
   maxDelegationDepth: 1,
   maxWritesPerAgent: 15,
+  heidi: { memory: { enabled: true, hotBudget: 8000, writePolicy: "review" }, sessionArchive: { enabled: true, search: true }, learning: { enabled: true, reviewPolicy: "review", minimumConfidence: 0.65 }, skills: { learnedEnabled: true, progressiveLoading: true }, toolPipeline: { enabled: true, maxCalls: 20, timeoutMs: 15_000, maxOutputBytes: 32_000 }, scheduler: { enabled: true, pollIntervalMs: 30_000, defaultBudget: 20 } },
 }
 
 function getGlobalConfigDir(): string {
@@ -94,7 +96,9 @@ const VALID_CONFIG_KEYS: (keyof FlowDeckConfig)[] = [
   "governance",
   "maxWritesPerAgent",
   "runtimeAgent",
-  "tokenBudget"
+  "tokenBudget",
+  "routing",
+  "heidi"
 ]
 
 function sanitizeConfig(parsed: unknown): FlowDeckConfig {

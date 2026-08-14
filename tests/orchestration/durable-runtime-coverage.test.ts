@@ -18,6 +18,7 @@ import { randomUUID } from "crypto"
 import { deterministicCleanup } from "./harness/cleanup"
 
 import { SCHEMA_V_0_2_6 } from "../../src/orchestration/persistence/migrations/schema-embed"
+import { MIGRATION_V2_REPLAY_SQL } from "../../src/orchestration/persistence/migrations/migration-v2-replay"
 import { createTransactionManager } from "../../src/orchestration/persistence/transaction-manager"
 import type { TransactionManager } from "../../src/orchestration/persistence/transaction-manager"
 import { SqliteUnitOfWork } from "../../src/orchestration/persistence/unit-of-work"
@@ -25,21 +26,22 @@ import { SqliteTaskRunAdapter } from "../../src/orchestration/persistence/adapte
 import { SqliteContractAdapter } from "../../src/orchestration/persistence/adapters/sqlite-contract-adapter"
 import { SqliteTransactionalRunWriter } from "../../src/orchestration/persistence/adapters/sqlite-transactional-run-writer"
 import { SqliteOutboxRepository } from "../../src/orchestration/persistence/adapters/sqlite-outbox-repository"
+import { SqliteReplayRepository } from "../../src/orchestration/persistence/adapters/sqlite-replay-repository"
+import { SqliteDeliverySink } from "../../src/orchestration/persistence/adapters/sqlite-delivery-sink"
 import {
   SqliteRunRepository,
   SqliteContractRepo,
   SqliteAssignmentRepo,
-  UnsupportedReplayRepository,
 } from "../../src/orchestration/composition"
 import { InMemoryEventBus } from "../../src/orchestration/services/event-bus-impl"
 import { RunService } from "../../src/orchestration/services/run-service"
 import { CompletionService } from "../../src/orchestration/services/completion-service"
 import { VerificationService } from "../../src/orchestration/services/verification-service"
 import { EventService } from "../../src/orchestration/services/event-service"
+import { ReplayService } from "../../src/orchestration/services/replay-service"
 import { ExecutionRegistry } from "../../src/orchestration/services/execution-registry"
 import { OutboxWorker } from "../../src/orchestration/services/outbox-worker"
 import type {
-  IOutboxRepository,
   IEventBus,
   ICompletionRepository,
   IVerificationRepository,
@@ -75,6 +77,7 @@ function createTempDb(): TempDb {
   db.exec("PRAGMA journal_mode=WAL")
   db.exec("BEGIN")
   db.exec(SCHEMA_V_0_2_6)
+  db.exec(MIGRATION_V2_REPLAY_SQL)
   db.exec("COMMIT")
   const tx = createTransactionManager(db)
   return { dir, db, tx }
@@ -753,61 +756,135 @@ describe("SqliteEventRepo", () => {
   })
 })
 
-// ── UnsupportedReplayRepository ───────────────────────────────────────
+// ── SqliteReplayRepository + ReplayService ──────────────────────────────
 
-describe("UnsupportedReplayRepository", () => {
-  const repo = new UnsupportedReplayRepository()
+describe("SqliteReplayRepository + ReplayService", () => {
+  let tdb: TempDb
+  let repo: SqliteReplayRepository
+  let bus: InMemoryEventBus
+  let service: ReplayService
 
-  it("create throws REPLAY_NOT_CONFIGURED", async () => {
-    const replay: Replay = {
-      id: "r-1",
-      sourceRunId: "run-1",
-      status: "pending" as Replay["status"],
-      correlationId: "r-1",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }
-    let thrown: Error | undefined
-    try {
-      await repo.create(replay)
-    } catch (err: unknown) {
-      thrown = err as Error
-    }
-    expect(thrown).toBeDefined()
-    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
+  beforeEach(() => {
+    tdb = createTempDb()
+    repo = new SqliteReplayRepository(tdb.db, tdb.tx)
+    bus = new InMemoryEventBus()
+    service = new ReplayService(repo, bus)
   })
 
-  it("findById throws REPLAY_NOT_CONFIGURED", async () => {
-    let thrown: Error | undefined
-    try {
-      await repo.findById("any")
-    } catch (err: unknown) {
-      thrown = err as Error
-    }
-    expect(thrown).toBeDefined()
-    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
+  afterEach(async () => {
+    await destroyTempDb(tdb)
   })
 
-  it("findMany throws REPLAY_NOT_CONFIGURED", async () => {
-    let thrown: Error | undefined
-    try {
-      await repo.findMany({ page: 1, limit: 10 })
-    } catch (err: unknown) {
-      thrown = err as Error
+  function makeReplay(id: string, sourceRunId: string): Replay {
+    const now = new Date().toISOString()
+    return {
+      id,
+      sourceRunId,
+      status: "pending",
+      correlationId: id,
+      createdAt: now,
+      updatedAt: now,
     }
-    expect(thrown).toBeDefined()
-    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
+  }
+
+  it("create/findById/findMany/count/update round-trip", async () => {
+    const created = await repo.create(makeReplay("rp-1", "run-1"))
+    expect(created.status).toBe("pending")
+
+    const found = await repo.findById("rp-1")
+    expect(found?.id).toBe("rp-1")
+    expect(found?.sourceRunId).toBe("run-1")
+
+    const updated = await repo.update("rp-1", { status: "completed", eventCount: 3, processedCount: 3 })
+    expect(updated?.status).toBe("completed")
+    expect(updated?.eventCount).toBe(3)
+
+    const list = await repo.findMany({ page: 1, limit: 10 })
+    expect(list.total).toBe(1)
+    expect(list.items[0].id).toBe("rp-1")
+
+    expect(await repo.count()).toBe(1)
+    expect(await repo.findById("missing")).toBeNull()
+    expect(await repo.update("missing", { status: "failed" })).toBeNull()
   })
 
-  it("count throws REPLAY_NOT_CONFIGURED", async () => {
+  it("runReplay completes deterministically for a provided event stream", async () => {
+    const published: string[] = []
+    bus.subscribeAll((e) => { published.push(e.type) })
+
+    const events: OrchestrationEvent[] = [
+      { id: "ev-1", type: "run.created", eventVersion: 1, timestamp: "2025-01-01T00:00:00.000Z", correlationId: "rp-2", aggregateId: "run-2", aggregateVersion: 1, data: {}, metadata: {} },
+      { id: "ev-2", type: "run.started", eventVersion: 1, timestamp: "2025-01-01T00:00:01.000Z", correlationId: "rp-2", aggregateId: "run-2", aggregateVersion: 2, data: {}, metadata: {} },
+      { id: "ev-3", type: "run.completed", eventVersion: 1, timestamp: "2025-01-01T00:00:02.000Z", correlationId: "rp-2", aggregateId: "run-2", aggregateVersion: 3, data: {}, metadata: {} },
+    ]
+    const replay = await repo.create({ ...makeReplay("rp-2", "run-2"), events })
+
+    const result = await service.runReplay(replay.id)
+    expect(result.status).toBe("completed")
+    expect(result.eventCount).toBe(3)
+    expect(result.processedCount).toBe(3)
+    expect(result.failedCount).toBe(0)
+    expect(result.completedAt).toBeDefined()
+    const rr = result.result as Record<string, unknown>
+    expect(rr.replayedEventCount).toBe(3)
+    expect(rr.streamHash).toMatch(/^[0-9a-f]{64}$/)
+    expect(rr.eventIds).toEqual(["ev-1", "ev-2", "ev-3"])
+
+    const persisted = await repo.findById(replay.id)
+    expect(persisted?.status).toBe("completed")
+    expect(published).toContain("replay.started")
+    expect(published).toContain("replay.completed")
+  })
+
+  it("runReplay fails on version gaps (REPLAY_STREAM_INVALID)", async () => {
+    const events: OrchestrationEvent[] = [
+      { id: "ev-1", type: "run.created", eventVersion: 1, timestamp: "2025-01-01T00:00:00.000Z", correlationId: "rp-3", aggregateId: "run-3", aggregateVersion: 1, data: {}, metadata: {} },
+      { id: "ev-3", type: "run.completed", eventVersion: 1, timestamp: "2025-01-01T00:00:02.000Z", correlationId: "rp-3", aggregateId: "run-3", aggregateVersion: 3, data: {}, metadata: {} },
+    ]
+    const replay = await repo.create({ ...makeReplay("rp-3", "run-3"), events })
+
+    const result = await service.runReplay(replay.id)
+    expect(result.status).toBe("failed")
+    expect(result.failedCount).toBe(1)
+    expect(result.reason).toContain("REPLAY_STREAM_INVALID")
+    expect(result.reason).toContain("gap")
+  })
+
+  it("runReplay fails on duplicate versions (REPLAY_STREAM_INVALID)", async () => {
+    const events: OrchestrationEvent[] = [
+      { id: "ev-1", type: "run.created", eventVersion: 1, timestamp: "2025-01-01T00:00:00.000Z", correlationId: "rp-4", aggregateId: "run-4", aggregateVersion: 1, data: {}, metadata: {} },
+      { id: "ev-2", type: "run.updated", eventVersion: 1, timestamp: "2025-01-01T00:00:01.000Z", correlationId: "rp-4", aggregateId: "run-4", aggregateVersion: 1, data: {}, metadata: {} },
+    ]
+    const replay = await repo.create({ ...makeReplay("rp-4", "run-4"), events })
+
+    const result = await service.runReplay(replay.id)
+    expect(result.status).toBe("failed")
+    expect(result.reason).toContain("duplicate")
+  })
+
+  it("runReplay rejects concurrent execution with REPLAY_IN_PROGRESS", async () => {
+    const replay = await repo.create(makeReplay("rp-5", "run-5"))
+    await repo.update(replay.id, { status: "in_progress" })
+
     let thrown: Error | undefined
     try {
-      await repo.count()
+      await service.runReplay(replay.id)
     } catch (err: unknown) {
       thrown = err as Error
     }
     expect(thrown).toBeDefined()
-    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_NOT_CONFIGURED.code)
+    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.REPLAY_IN_PROGRESS.code)
+  })
+
+  it("runReplay returns ENTITY_NOT_FOUND for unknown replay", async () => {
+    let thrown: Error | undefined
+    try {
+      await service.runReplay("missing")
+    } catch (err: unknown) {
+      thrown = err as Error
+    }
+    expect(thrown).toBeDefined()
+    expect((thrown as OrchestrationError).code).toBe(ErrorCodes.ENTITY_NOT_FOUND.code)
   })
 })
 
@@ -957,16 +1034,14 @@ describe("RunService", () => {
 // ── OutboxWorker ──────────────────────────────────────────────────────
 
 describe("OutboxWorker", () => {
-  let outboxRepo: IOutboxRepository
   let eventBus: IEventBus
   let worker: OutboxWorker
   let tdb: TempDb
 
   beforeEach(() => {
     tdb = createTempDb()
-    outboxRepo = new SqliteOutboxRepository(tdb.db, tdb.tx)
     eventBus = new InMemoryEventBus()
-    worker = new OutboxWorker(outboxRepo, eventBus, 20)
+    worker = new OutboxWorker(new SqliteDeliverySink(tdb.db, tdb.tx), eventBus, { batchSize: 20 })
   })
 
   afterEach(async () => {

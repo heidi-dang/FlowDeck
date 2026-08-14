@@ -119,7 +119,13 @@ jobs:
 
           echo "Registry availability verified: @heidi-dang/flowdeck@${PKG_VERSION} is not published"
 
+      # Derive the npm dist-tag from the package SemVer through the canonical
+      # release-channel helper. Unknown or malformed versions fail closed.
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          DIST_TAG="$(node scripts/release-channel.mjs)"
+          echo "Publishing v$PKG_VERSION to dist-tag: $DIST_TAG"
+          npm publish --provenance --access public --tag "$DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

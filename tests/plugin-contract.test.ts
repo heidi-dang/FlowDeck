@@ -24,6 +24,7 @@ import flowDeckPlugin, {
   cleanupSessionState,
   getSessionMetricsDiagnostics,
 } from "@/index"
+import { closeAllConnections } from "@/orchestration/persistence"
 
 function createMockClient() {
   return {
@@ -63,7 +64,8 @@ describe("modern plugin contract", () => {
       expect(hooks.tool).toBeDefined()
       expect(typeof hooks.tool).toBe("object")
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      closeAllConnections()
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -79,7 +81,8 @@ describe("modern plugin contract", () => {
       expect((hooks as any).agent).toBeUndefined()
       expect((hooks as any).mcp).toBeUndefined()
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      closeAllConnections()
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -94,7 +97,8 @@ describe("modern plugin contract", () => {
 
       expect(cfg.default_agent).toBe("heidi")
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      closeAllConnections()
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -115,7 +119,8 @@ describe("modern plugin contract", () => {
       expect(agent.orchestrator).toBeDefined()
       expect(agent.orchestrator.mode).toBe("primary")
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      closeAllConnections()
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -130,7 +135,8 @@ describe("modern plugin contract", () => {
 
       expect(cfg.default_agent).toBe("build")
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      closeAllConnections()
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 
@@ -151,7 +157,8 @@ describe("modern plugin contract", () => {
       expect(agent.heidi.temperature).toBe(0.7)
       expect(agent.heidi.mode).toBe("primary")
     } finally {
-      rmSync(dir, { recursive: true, force: true })
+      closeAllConnections()
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
   })
 })

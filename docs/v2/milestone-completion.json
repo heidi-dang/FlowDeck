@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "milestones": [
+    { "id": "M1", "name": "Autonomous Execution Intelligence", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/orchestration/routing/intelligence.ts"], "testFiles": ["tests/routing/task-intelligence.test.ts"] } },
+    { "id": "M2", "name": "Worktree Parallel Execution", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/orchestration/execution/worktree-executor.ts"], "testFiles": ["tests/orchestration/worktree-execution.test.ts"] } },
+    { "id": "M3", "name": "Adaptive Token Control", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/services/adaptive-execution-control.ts"], "testFiles": ["tests/services/adaptive-execution-control.test.ts"] } },
+    { "id": "M4", "name": "Agent Performance Intelligence", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/orchestration/performance/sqlite-repository.ts"], "testFiles": ["tests/orchestration/performance-persistence.test.ts"] } },
+    { "id": "M5", "name": "Authoritative Routing", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/orchestration/routing/authoritative.ts"], "testFiles": ["tests/orchestration/authoritative-routing.test.ts"] } },
+    { "id": "M6", "name": "FDX Next Generation", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["src/services/fdx-daemon.ts"], "testFiles": ["tests/fdx-index.test.ts"] } },
+    { "id": "M7", "name": "Observability & Benchmark", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["scripts/benchmark-v2.ts"], "testFiles": ["tests/v2-benchmark-validator.test.ts"] } },
+    { "id": "M8", "name": "Hardening & Release Readiness", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "sourceFiles": ["scripts/verify-v2-milestones.mjs"], "testFiles": ["tests/v2-hardening.test.ts"] } },
+    { "id": "M9", "name": "Canonical Executable Commands", "status": "CLOSED", "evidence": { "production": true, "persistence": true, "recovery": true, "tests": true, "canonicalVerification": true, "canonicalEvidence": true, "canonicalCompletion": true, "canonicalPlan": true, "schedulerExecution": true, "cancellation": true, "recoveryE2E": true, "tokenGovernance": true, "tokenE2E": true, "assignmentDispatch": true, "ownershipWorktrees": true, "worktreeE2E": true, "restartMatrix": true, "idempotency": true, "historicalVersions": true, "security": true, "sourceFiles": [
+      "src/orchestration/commands/domain/command-definition.ts",
+      "src/orchestration/commands/domain/command-registry.ts",
+      "src/orchestration/commands/domain/command-validator.ts",
+      "src/orchestration/commands/persistence/sqlite-command-invocation-repository.ts",
+      "src/orchestration/commands/services/durable-command-executor.ts",
+      "src/orchestration/commands/services/command-runtime.ts",
+      "src/orchestration/persistence/migrations/migration-v6-commands.ts",
+      "scripts/benchmark-m9-commands.ts",
+      "src/orchestration/commands/definitions/core-commands.ts",
+      "src/orchestration/commands/security/command-security.ts",
+      "src/orchestration/commands/services/command-recovery-claim.ts",
+      "src/orchestration/execution/assignment-binding-coordinator.ts",
+      "src/orchestration/execution/assignment-execution-binding-repository.ts",
+      "src/orchestration/persistence/migrations/migration-v7-assignment-binding.ts"
+    ], "testFiles": [
+      "tests/orchestration/commands/command-domain.test.ts",
+      "tests/orchestration/commands/command-persistence.test.ts",
+      "tests/orchestration/commands/command-execution.test.ts",
+      "tests/orchestration/commands/command-recovery-cancellation.test.ts",
+      "tests/orchestration/commands/command-security.test.ts",
+      "tests/orchestration/commands/command-concurrency.test.ts",
+      "tests/orchestration/persistence/migration-safety.test.ts",
+      "tests/orchestration/commands/command-recovery-matrix.test.ts"
+    ] } }
+  ]
+}

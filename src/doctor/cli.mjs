@@ -22,6 +22,7 @@
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { execFileSync } from "node:child_process"
+import { existsSync } from "node:fs"
 import { resolveDoctorExitCode } from "./exit-code.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -32,22 +33,25 @@ const PKG_ROOT = resolve(__dirname, "..", "..")
 let BUN_BIN = null
 function resolveBunBinary() {
   if (BUN_BIN !== null) return BUN_BIN
-  // Check if FLOWDECK_BUN_BIN env variable was passed explicitly by parent process
-  if (process.env.FLOWDECK_BUN_BIN) {
-    BUN_BIN = process.env.FLOWDECK_BUN_BIN
-    return BUN_BIN
+  const candidates = []
+  if (process.env.FLOWDECK_BUN_BIN) candidates.push(process.env.FLOWDECK_BUN_BIN)
+  if (typeof process !== "undefined" && process.versions?.bun && process.execPath) {
+    candidates.push(process.execPath)
   }
-  // Try finding bun in PATH
-  try {
-    execFileSync("bun", ["--version"], {
-      encoding: "utf-8",
-      timeout: 5000,
-      stdio: "ignore",
-    })
-    BUN_BIN = "bun"
-  } catch {
-    BUN_BIN = false
+  candidates.push("bun")
+
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate, ["--version"], {
+        encoding: "utf-8",
+        timeout: 5000,
+        stdio: "ignore",
+      })
+      BUN_BIN = candidate
+      return BUN_BIN
+    } catch {}
   }
+  BUN_BIN = false
   return BUN_BIN
 }
 
@@ -108,13 +112,15 @@ function hasBun() {
   return resolveBunBinary() !== false
 }
 
-function runViaBunInline(options) {
+function runViaBunInline(options, entryPath) {
   const bunBin = resolveBunBinary()
   if (!bunBin) {
     throw new Error("Bun not available. Build the project first: bun run build")
   }
 
-  const doctorPath = join(PKG_ROOT, "src/doctor/doctor.ts")
+  const doctorSrcPath = join(PKG_ROOT, "src", "doctor", "doctor.ts")
+  const distPath = join(PKG_ROOT, "dist", "index.js")
+  const doctorPath = entryPath || (existsSync(doctorSrcPath) ? doctorSrcPath : distPath)
   // Ensure bun binary path is available to subprocesses
   const execEnv = { ...process.env, FLOWDECK_BUN_BIN: bunBin }
   const opts = {
@@ -129,12 +135,13 @@ function runViaBunInline(options) {
     },
   }
 
-  // Use bun to import and execute the TypeScript module
+  // Use bun to import and execute the TypeScript or compiled module
   // bun handles TS-to-JS transpilation automatically
   const script = [
-    `import { runDoctor, formatReport, formatJSON } from ${JSON.stringify(doctorPath)};`,
-    `const r = await runDoctor(${JSON.stringify(PKG_ROOT)}, ${JSON.stringify(opts.options)});`,
-    `process.stdout.write(JSON.stringify(r));`,
+    `import * as doctorMod from ${JSON.stringify(doctorPath)};`,
+    `const runFn = doctorMod.runDoctor || doctorMod.runDoctorChecks;`,
+    `const r = await runFn(${JSON.stringify(PKG_ROOT)}, ${JSON.stringify(opts.options)});`,
+    `process.stdout.write("__FLOWDECK_DOCTOR_JSON_START__" + JSON.stringify(r) + "__FLOWDECK_DOCTOR_JSON_END__");`,
   ].join("\n")
 
   try {
@@ -142,43 +149,65 @@ function runViaBunInline(options) {
       cwd: PKG_ROOT,
       encoding: "utf-8",
       timeout: 60000,
+      maxBuffer: 20 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
       env: execEnv,
     })
-    const trimmed = output.trim()
-    return JSON.parse(trimmed)
+    const match = output.match(/__FLOWDECK_DOCTOR_JSON_START__(.*)__FLOWDECK_DOCTOR_JSON_END__/s)
+    if (match) {
+      return JSON.parse(match[1])
+    }
+    return JSON.parse(output.trim())
   } catch (e) {
     const stderr = e.stderr || ""
     const stdout = e.stdout || ""
     // Try to parse JSON from stdout even on error
     try {
+      const match = stdout.match(/__FLOWDECK_DOCTOR_JSON_START__(.*)__FLOWDECK_DOCTOR_JSON_END__/s)
+      if (match) {
+        return JSON.parse(match[1])
+      }
       return JSON.parse(stdout.trim())
     } catch {
       // Extract meaningful error from stderr
-      const errMsg = stderr ? stderr.trim().split("\n").pop() : e.message
+      const stderrText = typeof stderr === "string" ? stderr.trim() : (stderr ? stderr.toString("utf-8").trim() : "")
+      const errMsg = stderrText || e.message
       throw new Error(errMsg)
     }
   }
 }
 
 async function runDoctorEngine(options) {
-  // Try 1: Run via bun (development mode — faster iteration)
-  if (hasBun()) {
-    return runViaBunInline(options)
+  const doctorSrcPath = join(PKG_ROOT, "src", "doctor", "doctor.ts")
+  const distPath = join(PKG_ROOT, "dist", "index.js")
+
+  // Try 1: Run via bun in dev mode (if bun is available AND doctor.ts source exists)
+  if (hasBun() && existsSync(doctorSrcPath)) {
+    try {
+      return runViaBunInline(options, doctorSrcPath)
+    } catch {
+      // Fall through if bun execution fails
+    }
   }
 
-  // Try 2: Compiled dist (packaged npm install)
-  const { existsSync } = await import("node:fs")
-  const distPath = join(PKG_ROOT, "dist", "index.js")
+  // Try 2: Compiled dist (packaged npm install or built dist)
   if (existsSync(distPath)) {
     try {
       const distUrl = pathToFileURL(distPath).href
       const mod = await import(distUrl)
-      if (typeof mod.runDoctor === "function") {
-        return await mod.runDoctor(PKG_ROOT, options)
+      const runFn = mod.runDoctor || mod.runDoctorChecks
+      if (typeof runFn === "function") {
+        return await runFn(PKG_ROOT, options)
       }
     } catch {
-      // Fall through
+      // Fall through to bun inline if ESM import fails
+    }
+    if (hasBun()) {
+      try {
+        return runViaBunInline(options, distPath)
+      } catch {
+        // Fall through
+      }
     }
   }
 
@@ -382,7 +411,9 @@ Options:
 
 async function main() {
   await runDoctorCli(process.argv.slice(2));
-  process.exit(process.exitCode ?? 0);
+  if (process.exitCode && process.exitCode !== 0) {
+    process.exit(process.exitCode);
+  }
 }
 
 // Only run main() when this file is the direct entry point.
@@ -390,7 +421,7 @@ async function main() {
 // Guard against undefined process.argv[1] (e.g., in node -e contexts).
 const isDirectEntry =
   typeof process.argv[1] === "string" &&
-  import.meta.url === (await import("node:url")).pathToFileURL(process.argv[1]).href
+  process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])
 if (isDirectEntry) {
   await main()
 }

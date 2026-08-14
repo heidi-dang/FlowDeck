@@ -16,6 +16,8 @@ import { OutboxWorker } from "./services/outbox-worker";
 import { SqliteTaskRunAdapter } from "./persistence/adapters/sqlite-runtime-adapter";
 import { SqliteContractAdapter } from "./persistence/adapters/sqlite-contract-adapter";
 import { SqliteOutboxRepository } from "./persistence/adapters/sqlite-outbox-repository";
+import { SqliteReplayRepository } from "./persistence/adapters/sqlite-replay-repository";
+import { SqliteDeliverySink } from "./persistence/adapters/sqlite-delivery-sink";
 import { SqliteTransactionalRunWriter } from "./persistence/adapters/sqlite-transactional-run-writer";
 import {
   SqliteCompletionRepoAdapter,
@@ -25,18 +27,28 @@ import {
 import { RunService } from "./services/run-service";
 import { ContractService } from "./services/contract-service";
 import { AssignmentService } from "./services/assignment-service";
+import { AssignmentBindingCoordinator } from "./execution/assignment-binding-coordinator";
 import { VerificationService } from "./services/verification-service";
 import { CompletionService } from "./services/completion-service";
 import { ReplayService } from "./services/replay-service";
 import { EventService } from "./services/event-service";
-import { HealthService } from "./services/health-service";
+import {
+  HealthService,
+  SqliteDbChecker,
+  OutboxWorkerChecker,
+  ReplayServiceChecker,
+} from "./services/health-service";
+import {
+  SqliteSessionRepository,
+  SqliteContextItemRepository,
+  SqliteConsumerOffsetRepository,
+} from "./persistence/repositories";
 import type {
   IRunRepository,
   IContractRepository,
   IAssignmentRepository,
   IVerificationRepository,
   ICompletionRepository,
-  IReplayRepository,
   IEventRepository,
   PaginatedResult,
 } from "./services/ports";
@@ -50,18 +62,35 @@ import type { Contract } from "./types/contracts";
 import type { Assignment } from "./types/assignments";
 import type { VerificationResult } from "./types/verification";
 import type { Completion } from "./types/completion";
-import type { Replay } from "./types/replay";
 import type { OrchestrationEvent, EventFilter } from "./types/events";
 import type { PagePaginationRequest } from "./types/pagination";
 import { createRouterWithControllers } from "./api/routes";
 import { OrchestrationError, ErrorCodes } from "./types/errors";
+import { SqliteRoutingDecisionRepository } from "./routing/sqlite-store";
+import { RoutingProjection } from "./services/routing-projection";
+import { OrchestrationMetrics } from "./metrics";
+import { SqliteExecutionRepository, ExecutionScheduler, GitWorktreeManager, ControlledIntegrationService, WorktreeExecutionService } from "./execution";
+import { SqliteAssignmentExecutionBindingRepository } from "./execution/assignment-execution-binding-repository";
+import { SqlitePerformanceRepository } from "./performance";
+import { PerformanceProjection } from "./services/performance-projection";
+import { RuntimeSnapshotService } from "./services/runtime-snapshot";
+import { AuthoritativeRoutingService } from "./routing/authoritative";
+import { TokenBudgetRuntime } from "../services/token-budget-runtime";
+import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
+import type { CommandRegistry } from "./commands/domain/command-registry";
+import type { DurableCommandExecutor, CommandFaultHook } from "./commands/services/durable-command-executor";
+import { createCoreCommandRuntime } from "./commands/services/command-runtime";
 
 export interface ProductionOrchestrationRuntime {
   db: Database;
   executionRegistry: ExecutionRegistry;
   unitOfWork: SqliteUnitOfWork;
   eventBus: InMemoryEventBus;
+  deliverySink: SqliteDeliverySink;
   outboxWorker: OutboxWorker;
+  sessionRepo: SqliteSessionRepository;
+  contextItemRepo: SqliteContextItemRepository;
+  consumerOffsetRepo: SqliteConsumerOffsetRepository;
   services: {
     runService: RunService;
     contractService: ContractService;
@@ -71,8 +100,26 @@ export interface ProductionOrchestrationRuntime {
     replayService: ReplayService;
     eventService: EventService;
     healthService: HealthService;
+    runRepo: IRunRepository;
   };
   router: ReturnType<typeof createRouterWithControllers>;
+  routingDecisionRepository: SqliteRoutingDecisionRepository;
+  metrics: OrchestrationMetrics;
+  executionRepository: SqliteExecutionRepository;
+  executionScheduler: ExecutionScheduler;
+  worktreeExecutionService?: WorktreeExecutionService;
+  performanceRepository: SqlitePerformanceRepository;
+  authoritativeRouting: AuthoritativeRoutingService;
+  worktreeManager?: GitWorktreeManager;
+  integrationService?: ControlledIntegrationService;
+  tokenRuntime?: TokenBudgetRuntime;
+  agentExecutor?: IsolatedWorkstreamExecutor;
+  assignmentBindingCoordinator: AssignmentBindingCoordinator;
+  faultHook?: CommandFaultHook;
+  commands: {
+    registry: CommandRegistry;
+    executor: DurableCommandExecutor;
+  };
 }
 
 // ── SQLite-backed production repository implementations ────────────────
@@ -326,7 +373,10 @@ export class SqliteAssignmentRepo implements IAssignmentRepository {
       // Map input fields to assignments table columns
       if (input.status !== undefined) {
         sets.push("status = ?");
-        values.push(input.status);
+        // The frozen schema stores the durable execution states pending/running/
+        // completed/failed/skipped/cancelled; the API's assigned/in_progress
+        // aliases project onto those canonical states.
+        values.push(input.status === "assigned" ? "pending" : input.status === "in_progress" ? "running" : input.status);
       }
       if (input.agentId !== undefined) {
         sets.push("agent_id = ?");
@@ -434,7 +484,7 @@ class SqliteVerificationRepo implements IVerificationRepository {
     return this.tx.write(() => {
       this.db.query(
         "INSERT INTO verification_results (id, run_id, verification_type, status, target_sha, started_at) VALUES (?, ?, ?, ?, ?, datetime('now'))",
-      ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending", "0000000000000000000000000000000000000000");
+      ).run(v.id, v.runId, v.checkType ?? "unknown", v.status ?? "pending", (v as any).targetSha ?? "0000000000000000000000000000000000000000");
       return v;
     });
   }
@@ -514,29 +564,6 @@ class SqliteVerificationRepo implements IVerificationRepository {
   }
 }
 
-export class UnsupportedReplayRepository implements IReplayRepository {
-  async create(_replay: Replay): Promise<Replay> {
-    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
-    });
-  }
-  async findById(_id: string): Promise<Replay | null> {
-    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
-    });
-  }
-  async findMany(_pagination: PagePaginationRequest): Promise<PaginatedResult<Replay>> {
-    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
-    });
-  }
-  async count(): Promise<number> {
-    throw OrchestrationError.fromCode(ErrorCodes.REPLAY_NOT_CONFIGURED, {
-      message: "REPLAY_NOT_CONFIGURED: Replay persistence requires a schema migration. This capability is not available in the current schema version.",
-    });
-  }
-}
-
 class SqliteEventRepo implements IEventRepository {
   constructor(
     private readonly adapter: SqliteEventAppenderAdapter,
@@ -598,7 +625,7 @@ function safeParseJSON(raw: string): Record<string, unknown> {
 
 // ── Production composition factory ─────────────────────────────────────
 
-export function createProductionOrchestrationRuntime(db: Database): ProductionOrchestrationRuntime {
+export function createProductionOrchestrationRuntime(db: Database, options: { repositoryPath?: string; worktreeRoot?: string; routingMode?: () => string; budgetState?: () => Record<string, unknown>; fdxHealth?: () => Record<string, unknown>; agentExecutor?: IsolatedWorkstreamExecutor; faultHook?: CommandFaultHook } = {}): ProductionOrchestrationRuntime {
   const executionRegistry = new ExecutionRegistry();
   const unitOfWork = new SqliteUnitOfWork(db);
   const txManager = createTransactionManager(db);
@@ -609,29 +636,63 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
 
   const outboxRepo = new SqliteOutboxRepository(db, txManager);
   const eventAppender = new SqliteEventAppenderAdapter(db, txManager);
+  const deliverySink = new SqliteDeliverySink(db, txManager);
 
   const runRepo = new SqliteRunRepository(taskRunAdapter, db, txManager);
   const contractRepo = new SqliteContractRepo(contractAdapter, db, txManager);
   const assignmentRepo = new SqliteAssignmentRepo(db, txManager);
+  const assignmentBindingRepo = new SqliteAssignmentExecutionBindingRepository(db, txManager);
   const completionAdapter = new SqliteCompletionRepoAdapter(db, txManager);
   const completionRepo = new SqliteCompletionRepo(completionAdapter, db, txManager);
   const verificationAdapter = new SqliteVerificationRepoAdapter(db, txManager);
   const verificationRepo = new SqliteVerificationRepo(verificationAdapter, db, txManager);
-  const replayRepo = new UnsupportedReplayRepository();
+  const replayRepo = new SqliteReplayRepository(db, txManager);
   const eventRepo = new SqliteEventRepo(eventAppender, db, txManager);
+  const sessionRepo = new SqliteSessionRepository(db, txManager);
+  const contextItemRepo = new SqliteContextItemRepository(db, txManager);
+  const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
+  const routingDecisionRepository = new SqliteRoutingDecisionRepository(db, txManager);
+  const metrics = new OrchestrationMetrics();
+  const executionRepository = new SqliteExecutionRepository(db, txManager, metrics);
+  executionRepository.reconcileIntegratedAttempts();
+  const executionScheduler = new ExecutionScheduler(executionRepository, metrics);
+  const performanceRepository = new SqlitePerformanceRepository(db, txManager, metrics);
+  const authoritativeRouting = new AuthoritativeRoutingService(executionRepository);
+  const snapshotService = new RuntimeSnapshotService(executionRepository, performanceRepository, metrics, options.routingMode, options.budgetState, options.fdxHealth);
+  const worktreeManager = options.repositoryPath && options.worktreeRoot ? new GitWorktreeManager(options.repositoryPath, options.worktreeRoot) : undefined;
+  const integrationService = worktreeManager && options.repositoryPath ? new ControlledIntegrationService(executionRepository, worktreeManager, options.repositoryPath, metrics) : undefined;
+  const worktreeExecutionService = worktreeManager ? new WorktreeExecutionService(executionRepository, executionScheduler, worktreeManager, integrationService, undefined, performanceRepository) : undefined;
+  const tokenRuntime = TokenBudgetRuntime.fromConfig(undefined, { directory: options.repositoryPath });
+  if (worktreeExecutionService) {
+    worktreeExecutionService.setBudgetCoordinator({
+      open: workstream => tokenRuntime.openWorkstreamBudget(workstream),
+      redistribute: (workstream, amount, reason, sourceReservationId) => tokenRuntime.redistributeWorkstream(workstream, amount, reason, sourceReservationId),
+    });
+  }
+  if (worktreeExecutionService) {
+    authoritativeRouting.setDispatcher(worktreeExecutionService);
+    // Reconcile running leases and in-flight work before this runtime can
+    // dispatch anything new. Recovery is durable and idempotent; it does not
+    // infer successful agent work that was not persisted.
+    worktreeExecutionService.recoverAfterRestart();
+  }
 
-  const outboxWorker = new OutboxWorker(outboxRepo, eventBus);
+  const outboxWorker = new OutboxWorker(deliverySink, eventBus, { workerId: "orchestration-main", batchSize: 20, leaseSeconds: 60 });
 
   const transactionalRunWriter = new SqliteTransactionalRunWriter();
 
   const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db);
   const contractService = new ContractService(contractRepo, eventBus);
   const assignmentService = new AssignmentService(assignmentRepo, eventBus);
+  const assignmentBindingCoordinator = new AssignmentBindingCoordinator({ assignmentService, bindingRepo: assignmentBindingRepo });
   const verificationService = new VerificationService(verificationRepo, eventBus);
   const completionService = new CompletionService(completionRepo, eventBus);
-  const replayService = new ReplayService(replayRepo, eventBus);
+  const replayService = new ReplayService(replayRepo, eventBus, eventRepo);
   const eventService = new EventService(eventRepo, outboxRepo, eventBus);
   const healthService = new HealthService();
+  healthService.registerChecker("db", new SqliteDbChecker(db));
+  healthService.registerChecker("outbox_worker", new OutboxWorkerChecker(outboxWorker, deliverySink));
+  healthService.registerChecker("replay_service", new ReplayServiceChecker(replayRepo));
 
   const services = {
     runService,
@@ -642,17 +703,47 @@ export function createProductionOrchestrationRuntime(db: Database): ProductionOr
     replayService,
     eventService,
     healthService,
+    routingProjection: new RoutingProjection(routingDecisionRepository, runService),
+    performanceProjection: new PerformanceProjection(performanceRepository),
+    snapshotService,
+    runRepo,
   };
 
   const router = createRouterWithControllers(services);
+  const commands = createCoreCommandRuntime(db, txManager, {
+    db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
+    sessionRepo, contextItemRepo, consumerOffsetRepo, services, router,
+    routingDecisionRepository, metrics, executionRepository, executionScheduler,
+    worktreeExecutionService, performanceRepository, authoritativeRouting,
+    worktreeManager, integrationService, agentExecutor: options.agentExecutor,
+    assignmentBindingCoordinator, faultHook: options.faultHook,
+  });
 
   return {
     db,
     executionRegistry,
     unitOfWork,
     eventBus,
+    deliverySink,
     outboxWorker,
+    sessionRepo,
+    contextItemRepo,
+    consumerOffsetRepo,
     services,
     router,
+    routingDecisionRepository,
+    metrics,
+    executionRepository,
+    executionScheduler,
+    worktreeExecutionService,
+    performanceRepository,
+    authoritativeRouting,
+    worktreeManager,
+    integrationService,
+    tokenRuntime,
+    agentExecutor: options.agentExecutor,
+    assignmentBindingCoordinator,
+    faultHook: options.faultHook,
+    commands,
   };
 }

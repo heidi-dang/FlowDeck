@@ -1,16 +1,19 @@
 /**
- * Outbox worker — claims pending outbox entries, reconstructs events,
- * publishes through the event bus, and marks delivered/failed.
+ * Outbox worker — claims due outbox entries through the durable delivery
+ * sink, publishes reconstructed events on the event bus, and records
+ * idempotent delivery/failure.
  *
- * Features:
- * - Claim-based batch processing (atomic claimNextBatch)
- * - Malformed JSON detection (skips entries with decode errors, moves to FAILED after exhaustion)
- * - Idempotent delivery (checks already-delivered via idempotency key)
+ * The worker uses ONLY the lease-based claim path (IDeliverySink.claimDue):
+ *
+ * - Lease-based claiming (claimDue) with worker identity + lease expiry
+ * - Crash recovery via lease expiry (requeueExpiredLeases)
+ * - Idempotent delivery (markDelivered guarded by idempotency key)
+ * - Retry accounting (markFailed requeues until maxRetries, then fails)
+ * - Malformed JSON detection (never publishes a malformed entry)
  * - Observable errors via optional logger
  */
 
-import type { IOutboxRepository, IEventBus } from "./ports";
-import { OutboxStatus } from "../types/outbox";
+import type { IDeliverySink, IEventBus } from "./ports";
 import type { OrchestrationEvent } from "../types/events";
 import { EVENT_VERSION } from "../types/events";
 
@@ -18,18 +21,43 @@ export interface Logger {
   error(message: string): void;
 }
 
+export interface OutboxWorkerOptions {
+  /** Unique worker identity stamped into delivery leases. */
+  workerId?: string;
+  /** Max entries claimed per batch. */
+  batchSize?: number;
+  /** Lease duration in seconds before a claim can be reclaimed by another worker. */
+  leaseSeconds?: number;
+  logger?: Logger;
+}
+
 export class OutboxWorker {
   private isProcessing = false;
   private intervalTimer?: ReturnType<typeof setInterval>;
 
   constructor(
-    private readonly outboxRepo: IOutboxRepository,
+    private readonly deliverySink: IDeliverySink,
     private readonly eventBus: IEventBus,
-    private readonly batchSize: number = 20,
-    private readonly logger?: Logger,
+    private readonly options: OutboxWorkerOptions = {},
   ) {}
 
-  /** Process a single batch of claimed outbox entries */
+  get isRunning(): boolean {
+    return this.intervalTimer !== undefined;
+  }
+
+  private get workerId(): string {
+    return this.options.workerId ?? `worker-${process.pid ?? 0}`;
+  }
+
+  private get batchSize(): number {
+    return this.options.batchSize ?? 20;
+  }
+
+  private get leaseSeconds(): number {
+    return this.options.leaseSeconds ?? 60;
+  }
+
+  /** Process a single batch of due (pending or expired-lease) outbox entries. */
   async processBatch(): Promise<{ processed: number; failed: number }> {
     if (this.isProcessing) return { processed: 0, failed: 0 };
     this.isProcessing = true;
@@ -38,73 +66,105 @@ export class OutboxWorker {
     let failed = 0;
 
     try {
-      // 1. Claim a batch atomically
-      const claimedEntries = await this.outboxRepo.claimNextBatch(this.batchSize);
+      // 1. Claim due entries atomically through the lease-based sink path.
+      const claimed = await this.deliverySink.claimDue(this.workerId, this.batchSize, this.leaseSeconds);
 
-      for (const entry of claimedEntries) {
+      for (const record of claimed) {
         try {
-          // 2. Idempotency check — skip if already delivered
-          if (entry.status === OutboxStatus.DELIVERED) {
+          // 2. Safety: never re-deliver an already delivered entry.
+          if (record.status === "delivered") {
             processed++;
             continue;
           }
 
-          // 3. Malformed JSON detection — never publish a malformed entry
-          if (entry.lastError && isDecodeError(entry.lastError)) {
+          // 3. Malformed JSON detection — never publish a malformed entry.
+          if (record.lastError && isDecodeError(record.lastError)) {
             failed++;
-            const attemptCount = (entry.attemptCount ?? 0) + 1;
-            const maxRetries = entry.maxRetries ?? 3;
-
-            if (attemptCount >= maxRetries) {
-              await this.outboxRepo.markFailed(entry.id, attemptCount, entry.lastError);
-            } else {
-              // Increment attempt count, keep as pending for retry detection
-              await this.outboxRepo.update(entry.id, {
-                attemptCount,
-                lastError: entry.lastError,
-              });
-            }
+            const attemptCount = (record.attemptCount ?? 0) + 1;
+            await this.deliverySink.markFailed(record.id, attemptCount, record.lastError, record.maxRetries ?? 3);
             continue;
           }
 
-          // 4. Validate and parse payload
-          const payload = typeof entry.payload === "string"
-            ? JSON.parse(entry.payload)
-            : entry.payload;
+          // 4. Validate and parse payload.
+          const payload = typeof record.payload === "string"
+            ? JSON.parse(record.payload)
+            : record.payload;
 
           const event: OrchestrationEvent = {
-            id: entry.eventId,
-            type: entry.eventType,
+            id: record.eventId,
+            type: record.eventType,
             eventVersion: EVENT_VERSION,
             timestamp: new Date().toISOString(),
-            correlationId: entry.correlationId,
-            causationId: entry.causationId ?? entry.correlationId,
-            aggregateId: entry.aggregateId ?? "",
+            correlationId: record.correlationId,
+            causationId: record.causationId ?? record.correlationId,
+            aggregateId: record.aggregateId ?? "",
             aggregateVersion: 1,
             data: (payload as Record<string, unknown>) ?? {},
             metadata: {},
           };
 
-          // 5. Publish event through the bus
+          // 5. Publish event through the bus.
           await this.eventBus.publish(event);
 
-          // 6. Mark delivered with idempotency key
-          await this.outboxRepo.markDelivered(entry.id, entry.correlationId);
+          // 6. Idempotent delivery: already delivered elsewhere counts as
+          //    success (the event reached the bus exactly once).
+          await this.deliverySink.markDelivered(record.id, record.idempotencyKey ?? record.correlationId);
+          try {
+            await this.deliverySink.recordDelivery({
+              eventId: record.eventId,
+              destination: record.destination ?? "event-bus",
+              status: "delivered",
+              attempt: (record.attemptCount ?? 0) + 1,
+            });
+          } catch {
+            // Non-critical audit table update
+          }
           processed++;
         } catch (err) {
           failed++;
-          const attemptCount = (entry.attemptCount ?? 0) + 1;
-          const maxRetries = entry.maxRetries ?? 3;
+          const attemptCount = (record.attemptCount ?? 0) + 1;
+          const maxRetries = record.maxRetries ?? 3;
           const errorMessage = err instanceof Error ? err.message : String(err);
+          await this.deliverySink.markFailed(record.id, attemptCount, errorMessage, maxRetries);
 
           if (attemptCount >= maxRetries) {
-            await this.outboxRepo.markFailed(entry.id, attemptCount, errorMessage);
-          } else {
-            // Keep as pending for retry
-            await this.outboxRepo.update(entry.id, {
-              attemptCount,
-              lastError: errorMessage,
-            });
+            try {
+              await this.deliverySink.recordDeadLetter({
+                eventId: record.eventId,
+                destination: record.destination ?? "unknown",
+                reason: errorMessage,
+                lastError: errorMessage,
+                payload: record.payload,
+              });
+            } catch {
+              // Ignore duplicate or foreign key errors in recording dead letter
+            }
+
+            try {
+              await this.eventBus.publish({
+                id: `dl-${record.id}-${Date.now()}`,
+                type: "outbox.dead_letter",
+                eventVersion: 1,
+                timestamp: new Date().toISOString(),
+                correlationId: record.correlationId,
+                causationId: record.causationId,
+                aggregateId: record.aggregateId ?? "dl-system",
+                aggregateVersion: 1,
+                data: {
+                  outboxId: record.id,
+                  eventId: record.eventId,
+                  eventType: record.eventType,
+                  destination: record.destination ?? "unknown",
+                  attemptCount,
+                  maxRetries,
+                  lastError: errorMessage,
+                  payload: record.payload,
+                },
+                metadata: {},
+              });
+            } catch {
+              // Subscriber errors should not disrupt worker batch execution
+            }
           }
         }
       }
@@ -115,19 +175,19 @@ export class OutboxWorker {
     return { processed, failed };
   }
 
-  /** Start periodic background outbox processing */
+  /** Start periodic background outbox processing. */
   start(intervalMs: number = 1000): void {
     if (this.intervalTimer) return;
     this.intervalTimer = setInterval(() => {
       this.processBatch().catch((err) => {
-        this.logger?.error(
+        this.options.logger?.error(
           `OutboxWorker batch error: ${err instanceof Error ? err.message : String(err)}`,
         );
       });
     }, intervalMs);
   }
 
-  /** Stop background processing */
+  /** Stop background processing. */
   stop(): void {
     if (this.intervalTimer) {
       clearInterval(this.intervalTimer);
@@ -136,7 +196,7 @@ export class OutboxWorker {
   }
 }
 
-/** Detect JSON decode/parse errors in error messages */
+/** Detect JSON decode/parse errors in error messages. */
 function isDecodeError(message: string): boolean {
   const lower = message.toLowerCase();
   return (

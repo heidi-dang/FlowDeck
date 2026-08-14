@@ -10,9 +10,10 @@
  */
 
 import { describe, it, expect, beforeAll } from "bun:test"
-import { existsSync, mkdirSync, writeFileSync, cpSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync, cpSync, rmSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { spawnSync } from "node:child_process"
 import {
   classifyDoctorEnvironment,
   isRepoLikeEnvironment,
@@ -50,11 +51,20 @@ function makeDir(prefix: string): string {
 }
 
 function writePkg(dir: string, extra: Record<string, unknown> = {}) {
+  const rootPkgPath = join(PKG_ROOT, "package.json")
+  let currentVersion = "2.0.0-rc.1"
+  if (existsSync(rootPkgPath)) {
+    try {
+      const parsed = JSON.parse(readFileSync(rootPkgPath, "utf-8"))
+      if (parsed.version) currentVersion = parsed.version
+    } catch {}
+  }
+
   writeFileSync(
     join(dir, "package.json"),
     JSON.stringify({
       name: "@heidi-dang/flowdeck",
-      version: "1.0.1",
+      version: currentVersion,
       main: "./dist/index.js",
       type: "module",
       ...extra,
@@ -97,6 +107,11 @@ function setupDeps(dir: string) {
   mkdirSync(jsoncDir, { recursive: true })
   writeFileSync(join(jsoncDir, "package.json"), JSON.stringify({ name: "jsonc-parser", type: "module", main: "./index.js", exports: { ".": "./index.js" } }))
   writeFileSync(join(jsoncDir, "index.js"), "export function modify() { return null }\nexport function applyEdits() { return null }\nexport function parse() { return null }\n")
+
+  const zodDir = join(dir, "node_modules", "zod")
+  mkdirSync(zodDir, { recursive: true })
+  writeFileSync(join(zodDir, "package.json"), JSON.stringify({ name: "zod", type: "module", main: "./index.js", exports: { ".": "./index.js" } }))
+  writeFileSync(join(zodDir, "index.js"), "const handler = { get: () => chain, apply: () => chain }; const chain = new Proxy(function() {}, handler); export const z = chain; export default chain;\n")
 }
 
 beforeAll(() => {
@@ -237,6 +252,36 @@ describe("packed-install doctor", () => {
     const { exitCode, stderr } = await runPackedService(dir, "nope")
     expect(exitCode).toBe(2)
     expect(stderr).toContain("Unknown profile")
+  })
+
+  it("executes CLI via dist/index.js when src/doctor/doctor.ts is missing", () => {
+    const dir = makeDir("cli-dist-only")
+    writePkg(dir)
+    copyDist(dir)
+    setupDeps(dir)
+    writeFileSync(join(dir, "install.sh"), "#!/usr/bin/env bash\n")
+    mkdirSync(join(dir, "src", "doctor"), { recursive: true })
+    cpSync(join(PKG_ROOT, "src", "doctor", "cli.mjs"), join(dir, "src", "doctor", "cli.mjs"))
+    cpSync(join(PKG_ROOT, "src", "doctor", "exit-code.mjs"), join(dir, "src", "doctor", "exit-code.mjs"))
+    cpSync(join(PKG_ROOT, "scripts"), join(dir, "scripts"), { recursive: true })
+
+    const bunBin = (process.env.FLOWDECK_BUN_BIN && !process.env.FLOWDECK_BUN_BIN.endsWith("/node") && !process.env.FLOWDECK_BUN_BIN.endsWith("/node.exe"))
+      ? process.env.FLOWDECK_BUN_BIN
+      : (typeof (process as any).versions?.bun === "string" ? (process as any).execPath : "bun")
+
+    const nodePath = [join(dir, "node_modules"), join(PKG_ROOT, "node_modules")].join(process.platform === "win32" ? ";" : ":")
+    const result = spawnSync(process.execPath, [join(dir, "src", "doctor", "cli.mjs"), "--json"], {
+      cwd: dir,
+      encoding: "utf-8",
+      env: { ...process.env, FLOWDECK_BUN_BIN: bunBin, NODE_PATH: nodePath },
+    })
+
+    expect(result.status, `cli.mjs failed with status ${result.status}. stderr: ${result.stderr}`).toBe(0)
+    const rawStdout = result.stdout || ""
+    const match = rawStdout.match(/\{[\s\S]*\}/)
+    expect(match, `No JSON object found in CLI stdout: ${rawStdout}; stderr: ${result.stderr || ""}`).not.toBeNull()
+    const report = JSON.parse(match![0])
+    expect(report.schemaVersion).toBe(1)
   })
 })
 

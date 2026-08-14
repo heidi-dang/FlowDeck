@@ -1,5 +1,5 @@
-// Auto-generated from schema-v0.2.6.sql — DO NOT EDIT
-// Regenerate: node scripts/generate-schema-embed.mjs
+// Auto-generated from schema-v0.2.6.sql - DO NOT EDIT
+// Regenerate: bun run generate:schema
 // Canonical checksum: dcda41acdffaeae3a58020a019636002ac263ab5ec59434db3d9b97a2916d66c
 
 export const SCHEMA_V_0_2_6 = `CREATE TABLE contract_families (

@@ -25,6 +25,16 @@ export interface BetterHarnessConfig {
 }
 
 export interface FlowDeckConfig {
+  heidi?: {
+    memory?: { enabled?: boolean; hotBudget?: number; writePolicy?: "off" | "auto" | "review" };
+    sessionArchive?: { enabled?: boolean; retention?: number; search?: boolean };
+    learning?: { enabled?: boolean; reviewPolicy?: "off" | "auto" | "review"; minimumConfidence?: number };
+    skills?: { learnedEnabled?: boolean; progressiveLoading?: boolean };
+    toolPipeline?: { enabled?: boolean; maxCalls?: number; timeoutMs?: number; maxOutputBytes?: number };
+    scheduler?: { enabled?: boolean; pollIntervalMs?: number; defaultBudget?: number };
+  };
+  /** Deterministic v2 routing intelligence. Shadow is advisory and non-invasive. */
+  routing?: { enabled?: boolean; mode?: "off" | "shadow" | "enforce" };
   /** Per-agent model overrides. When unset, agent inherits UI-selected model. */
   agentModels?: Record<string, AgentModelConfig>;
   /** Legacy per-agent model overrides (deprecated, use agentModels). */
@@ -122,4 +132,3 @@ export interface SupervisorConfig {
   /** Confidence threshold (0-1) for approve decision. Default: 0.7 */
   confidenceThreshold?: number;
 }
-

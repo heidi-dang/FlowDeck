@@ -146,4 +146,16 @@ describe("publish.yml workflow step ordering", () => {
     // could publish a broken package.
     expect(content).not.toMatch(/\|\|\s*true/)
   })
+
+  it("12. package SemVer selects the explicit dist-tag", () => {
+    // The publish step derives the dist-tag from the release-channel helper
+    // and passes it explicitly to npm publish --tag.
+    expect(stepNames).toContain("Publish to npm")
+    expect(content).toContain("scripts/release-channel.mjs")
+    expect(content).toContain('npm publish --provenance --access public --tag "$DIST_TAG"')
+    expect(content).toContain('DIST_TAG="$(node scripts/release-channel.mjs)"')
+    expect(content).not.toMatch(/grep.*alpha|grep.*beta|grep.*rc|substring|GITHUB_REF_NAME.*tag/)
+    expect(content).not.toContain('--tag latest')
+    expect(content).not.toContain('--tag alpha')
+  })
 })

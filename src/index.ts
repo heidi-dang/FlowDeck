@@ -54,6 +54,7 @@ import {
   fdxSearchTool,
   fdxTestTool,
   fdxTreeTool,
+  configureFdxNextRuntime,
   setActiveProjectDir,
 } from "./tools/fdx"
 import { fdxPrMonitorTool } from "./tools/fdx-pr-monitor"
@@ -62,6 +63,16 @@ import { loadRulesTool, listRulesTool } from "./tools/load-rules"
 import { planningStateTool } from "./tools/planning-state"
 import { repoMemoryTool } from "./tools/repo-memory"
 import { debugLogsTool } from "./tools/debug-logs"
+import { heidiMemoryTool, heidiRecallTool } from "./tools/heidi-memory"
+import { heidiArchiveSessionTool } from "./tools/heidi-session"
+import { heidiLearningTool, heidiSkillTool } from "./tools/heidi-learning"
+import { heidiAgentsTool } from "./tools/heidi-agents"
+import { HeidiDelegationRuntime } from "./services/heidi-delegation-runtime"
+import { heidiPipelineTool, heidiSchedulerTool } from "./tools/heidi-controls"
+import { configureHeidiPipelineTools } from "./services/heidi-runtime-controls"
+import { HeidiScheduler, HeidiSchedulerWorker } from "./services/heidi-runtime-controls"
+import { HeidiLearningRuntime } from "./services/heidi-learning-runtime"
+import { HeidiPersistentAgentStore } from "./services/heidi-persistent-agent"
 import { HarnessRuntime } from "./better-harness/runtime/harness-runtime"
 import { HarnessHttpServer } from "./better-harness/transport/http-server"
 import { SseManager } from "./better-harness/transport/sse"
@@ -89,11 +100,20 @@ import {
 import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
 import { TokenBudgetRuntime } from "./services/token-budget-runtime"
 import { getArtifactStore } from "./services/artifact-store"
+import { buildAssignmentContext, externalizeToolOutput, compactConversationContext } from "./services/context-scoping"
+import { initializeDatabase } from "./orchestration/persistence/index"
+import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
+import { runShadowAssessment } from "./orchestration/routing/shadow"
+import { createEnforceRun } from "./orchestration/routing/enforce-run"
+import { RunStatus } from "./orchestration/types/runs"
+import { OpenCodeWorkstreamExecutor } from "./orchestration/execution/opencode-executor"
+import { FdxWorkspaceIndex } from "./services/fdx-index"
+import { FdxDaemon } from "./services/fdx-daemon"
+import { execFileSync } from "node:child_process"
 import {
-  buildAssignmentContext,
-  externalizeToolOutput,
-  compactConversationContext,
-} from "./services/context-scoping"
+  getExecutingRuntimeIdentity,
+  recordRuntimeSelfReport,
+} from "./services/runtime-identity"
 
 // ─── Session budget tracking ──────────────────────────────────────────────
 const sessionToolCalls = new Map<string, number>()
@@ -223,6 +243,9 @@ function cleanupPendingSlots(sessionID: string): void {
 }
 
 const __dir = dirname(fileURLToPath(import.meta.url))
+const flowdeckPackageVersion = JSON.parse(
+  readFileSync(join(__dir, "..", "package.json"), "utf-8"),
+).version as string
 
 function lazyLoadRulePaths(projectRoot: string): { paths: string[]; diagnostics: string } {
   const rulesDir = join(__dir, "..", "src", "rules")
@@ -269,6 +292,34 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
 
   setActiveProjectDir(directory)
+  recordRuntimeSelfReport(getExecutingRuntimeIdentity(import.meta.url), directory)
+  let fdxWorkspaceIndex: FdxWorkspaceIndex | undefined
+  let fdxDaemon: FdxDaemon | undefined
+  let fdxDaemonSocketPath: string | undefined
+  try {
+    fdxWorkspaceIndex = new FdxWorkspaceIndex({
+      stateFile: join(directory, ".flowdeck", "fdx-index.json"),
+      maxFiles: 10_000,
+      maxFileBytes: 2_000_000,
+      maxWorkspaces: 32,
+    })
+    if (process.env.FLOWDECK_FDX_DAEMON === "on") {
+      const socketPath = join(directory, ".flowdeck", "fdx.sock")
+      const daemon = new FdxDaemon({ socketPath, workspaceRoot: directory, index: fdxWorkspaceIndex })
+      try {
+        await daemon.start()
+        fdxDaemon = daemon
+        fdxDaemonSocketPath = socketPath
+      } catch {
+        await daemon.stop()
+      }
+    }
+    configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex, daemonSocketPath: fdxDaemonSocketPath })
+  } catch {
+    // The persistent index is optional. Native FDX and the existing
+    // TypeScript fallbacks remain the operational path if it cannot load.
+    configureFdxNextRuntime()
+  }
   const artifactStore = getArtifactStore(join(directory, ".flowdeck", "artifacts"))
 
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
@@ -294,11 +345,20 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   const { mcps } = buildFlowDeckMcpsWithMeta()
 
+  configureHeidiPipelineTools({
+    "fdx-search": fdxSearchTool,
+    "fdx-read": fdxReadTool,
+    "fdx-impact": fdxImpactTool,
+    "fdx-context": fdxContextTool,
+    "fdx-outline": fdxOutlineTool,
+  } as unknown as Record<string, { execute: (args: Record<string, unknown>, context: Record<string, unknown>) => Promise<unknown> }>)
+
   // --- Better Harness integration using shared graph ------------------------
   let betterHarnessRuntime: HarnessRuntime | null = null
   let betterHarnessServer: HarnessHttpServer | null = null
   let betterHarnessSseManager: SseManager | null = null
   let _betterHarnessCleanup: (() => void) | null = null
+  let schedulerTimer: ReturnType<typeof setInterval> | undefined
 
   const projectRegistry = new ProjectRegistry()
   const bhConfig: BetterHarnessConfig | undefined = flowdeckConfig.betterHarness
@@ -367,6 +427,35 @@ const plugin: Plugin = async ({ directory, client }) => {
     }
   }
 
+  // ─── Production Orchestration Runtime Initialization ───────────────
+  try {
+    const dbPath = join(directory, ".flowdeck", "flowdeck.db")
+    const { db } = initializeDatabase({ path: dbPath })
+    activeOrchestrationRuntime = createProductionOrchestrationRuntime(db, { repositoryPath: directory, worktreeRoot: join(directory, ".flowdeck", "worktrees"), routingMode: () => flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off", budgetState: () => tokenBudgetRuntime.getRunSnapshot(), fdxHealth: () => fdxWorkspaceIndex ? { available: true, ...fdxWorkspaceIndex.health(), daemon: Boolean(fdxDaemon) } : { available: false, daemon: false } })
+    tokenBudgetRuntime.setMetrics(activeOrchestrationRuntime.metrics)
+    if (fdxWorkspaceIndex) configureFdxNextRuntime({ workspace: directory, index: fdxWorkspaceIndex, daemonSocketPath: fdxDaemonSocketPath, metrics: activeOrchestrationRuntime.metrics })
+    activeOrchestrationRuntime.worktreeExecutionService?.setBudgetCoordinator({
+      open: workstream => tokenBudgetRuntime.openWorkstreamBudget(workstream),
+      redistribute: (workstream, amount, reason, sourceReservationId) => tokenBudgetRuntime.redistributeWorkstream(workstream, amount, reason, sourceReservationId),
+    })
+    appLog("[orchestration] Production orchestration runtime initialized successfully")
+    if (flowdeckConfig.heidi?.scheduler?.enabled !== false) {
+      const scheduler = new HeidiScheduler(db)
+      const sessionApi = (client as unknown as { session?: { create?: (input: { title: string; directory?: string }) => Promise<{ data?: { id?: string } }>; prompt?: (input: { path: { id: string }; body: { parts: Array<{ type: string; text: string }> } }) => Promise<unknown> } }).session
+      const worker = new HeidiSchedulerWorker(scheduler, async job => {
+        if (!sessionApi?.create || !sessionApi.prompt) throw new Error("OpenCode session execution API unavailable")
+        const created = await sessionApi.create({ title: `Heidi scheduled: ${job.id}`, directory: job.workspace })
+        const sessionId = created.data?.id
+        if (!sessionId) throw new Error("OpenCode did not return a scheduled session id")
+        await sessionApi.prompt({ path: { id: sessionId }, body: { parts: [{ type: "text", text: job.prompt }] } })
+      })
+      const interval = Math.max(5_000, flowdeckConfig.heidi?.scheduler?.pollIntervalMs ?? 30_000)
+      schedulerTimer = setInterval(() => { void worker.runOnce().catch(error => { void appLog(`[scheduler] worker failure: ${error instanceof Error ? error.message : String(error)}`, "warn") }) }, interval)
+    }
+  } catch (err) {
+    appLog(`[orchestration] Production orchestration runtime initialization skipped: ${err instanceof Error ? err.message : String(err)}`, "warn")
+  }
+
   return {
     config: async (cfg: Record<string, unknown>) => {
       if (!(cfg as { default_agent?: string }).default_agent) {
@@ -433,8 +522,53 @@ const plugin: Plugin = async ({ directory, client }) => {
       const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
       const isSubagent = Boolean(sessionMeta?.parentID) || (sessionMeta?.depth ?? 0) > 0
 
+      // Routing remains opt-in. Shadow mode is observational. Enforce mode
+      // uses a durable orchestration run as the execution-plan identity, then
+      // dispatches only through the injected isolated-workstream runtime. The
+      // normal OpenCode session remains the model/provider authority.
+      const routingMode = flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off"
+      const taskText = typeof output.message?.content === "string" ? output.message.content : ""
+      if ((routingMode === "shadow" || routingMode === "enforce") && taskText.trim()) {
+        let sourceSha = process.env.FLOWDECK_SOURCE_SHA
+        if (!sourceSha) {
+          try { sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: directory, encoding: "utf8" }).trim() } catch { sourceSha = "0000000000000000000000000000000000000000" }
+        }
+        let enforceRun: Awaited<ReturnType<typeof createEnforceRun>> | undefined
+        if (routingMode === "enforce" && activeOrchestrationRuntime) {
+          try {
+            enforceRun = await createEnforceRun(activeOrchestrationRuntime.services.runService, sessionID, agent, sourceSha)
+          } catch (error) {
+            await appLog(`[routing] enforce run creation failed closed: ${error instanceof Error ? error.message : String(error)}`, "warn", sessionID)
+          }
+        }
+        const comparison = runShadowAssessment({ runId: (enforceRun?.id ?? sessionID) || "sessionless", sourceSha, task: taskText }, "existing", routingMode, activeOrchestrationRuntime?.routingDecisionRepository, activeOrchestrationRuntime?.metrics)
+        if (routingMode === "enforce" && enforceRun && comparison.decision && activeOrchestrationRuntime) {
+          const activation = await activeOrchestrationRuntime.authoritativeRouting.activateAndExecute(comparison.decision, sourceSha, {
+            milestone1: Boolean(comparison.decision.finalized),
+            executionPlanner: Boolean(activeOrchestrationRuntime.worktreeExecutionService),
+            adaptiveBudget: tokenBudgetRuntime.isEnabled(),
+            performanceIntelligence: Boolean(activeOrchestrationRuntime.performanceRepository),
+            determinism: comparison.decision.policyVersion.length > 0 && comparison.decision.assessment.classifierVersion.length > 0,
+            safety: Boolean(activeOrchestrationRuntime.worktreeManager && activeOrchestrationRuntime.integrationService),
+            modelAuthority: true,
+            budgetAuthority: tokenBudgetRuntime.isEnabled(),
+            completionAuthority: Boolean(activeOrchestrationRuntime.services.completionService),
+          }, new OpenCodeWorkstreamExecutor(client))
+          if (activation.fallback) {
+            await activeOrchestrationRuntime.services.runService.updateRun(enforceRun.id, { status: RunStatus.FAILED, error: activation.reason })
+            await appLog(`[routing] enforce fallback: ${activation.reason}`, "warn", sessionID)
+          } else {
+            const failed = activation.execution.failed.length > 0 || activation.execution.blocked.length > 0
+            await activeOrchestrationRuntime.services.runService.updateRun(enforceRun.id, { status: failed ? RunStatus.FAILED : RunStatus.COMPLETED, error: failed ? "ONE_OR_MORE_WORKSTREAMS_FAILED" : undefined })
+            await appLog(`[routing] enforce plan ${activation.planId} executed: ${activation.execution.succeeded.length} integrated, ${activation.execution.failed.length} failed, ${activation.execution.blocked.length} blocked; selected model/provider authority remains unchanged`, "info", sessionID)
+          }
+        } else if (routingMode === "enforce" && comparison.error) {
+          await appLog(`[routing] enforce assessment failed closed: ${comparison.error}`, "warn", sessionID)
+        }
+      }
+
       const variant = input.variant
-      const pkgVersion = "1.0.3"
+      const pkgVersion = flowdeckPackageVersion
       const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
       const result = enforceRuntimeAgent({
         sessionID,
@@ -532,6 +666,14 @@ const plugin: Plugin = async ({ directory, client }) => {
       "fdx-test": fdxTestTool,
       "fdx-lint": fdxLintTool,
       "debug-audit": debugLogsTool,
+      "heidi-memory": heidiMemoryTool,
+      "heidi-recall": heidiRecallTool,
+      "heidi-archive-session": heidiArchiveSessionTool,
+      "heidi-learning": heidiLearningTool,
+      "heidi-skill": heidiSkillTool,
+      "heidi-tool-pipeline": heidiPipelineTool,
+      "heidi-scheduler": heidiSchedulerTool,
+      "heidi-agents": heidiAgentsTool,
     "fdx-pr-monitor": fdxPrMonitorTool,
     },
 
@@ -719,6 +861,10 @@ const plugin: Plugin = async ({ directory, client }) => {
           // The FIFO queue guarantees that the first-created task call
           // is linked to the first-created child session.
           enqueuePendingSlot(sessionID, callID, taskKey, targetAgent)
+          try {
+            const delegationDb = initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db
+            new HeidiDelegationRuntime(delegationDb).queued({ childId: taskKey, parentSessionId: sessionID, specialist: targetAgent, goal: String(rawArgs.prompt ?? "") })
+          } catch (error) { await appLog(`[delegation] projection queue failed: ${error instanceof Error ? error.message : String(error)}`, "warn", sessionID) }
 
           appendAuditEvent(directory, {
             kind: "delegation.started",
@@ -844,6 +990,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         const hasError = !!toolInput.error || !!toolOutput?.error || toolOutput === undefined || toolOutput === null
 
         if (taskCall) {
+          try { new HeidiDelegationRuntime(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db).transition(taskKey, hasError ? "failed" : "completed", { summary: hasError ? undefined : String(toolOutput?.output ?? toolOutput?.result ?? "Delegated task completed").slice(0, 1000), error: hasError ? String(toolInput.error ?? toolOutput?.error ?? "No result returned") : undefined, toolCalls: sessionToolCalls.get(sessionID) ?? 0 }) } catch { /* projection is secondary */ }
           const durationMs = Date.now() - taskCall.startedAt
           if (hasError) {
             appendAuditEvent(directory, {
@@ -960,6 +1107,7 @@ const plugin: Plugin = async ({ directory, client }) => {
           const { correlation, ambiguous } = dequeuePendingSlot(parentID, effectiveTarget)
           if (correlation) {
             childSessionToTask.set(eventSessionID, correlation)
+            try { new HeidiDelegationRuntime(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db).transition(correlation.taskKey, "running") } catch { /* projection is secondary */ }
           } else if (ambiguous) {
             // Cannot determine which task call this child belongs to.
             // Emit a diagnostic instead of attaching to a potentially
@@ -1074,6 +1222,25 @@ const plugin: Plugin = async ({ directory, client }) => {
                 remainingFindings: null,
               })
               await appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
+              try {
+                const learning = new HeidiLearningRuntime(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db)
+                const review = learning.reviewCompletion({
+                  completionKey: `session:${sessionID}`,
+                  sessionId: sessionID,
+                  repository: directory,
+                  verified: blocks === 0 && warnings === 0 && toolCalls > 0,
+                  summary: `Verified FlowDeck session completed with ${toolCalls} tool calls, ${delegations} delegations, ${retries} retries, and ${filesChanged ?? 0} changed files.`,
+                  evidence: [`scorecard:${JSON.stringify(scorecard).slice(0, 1000)}`],
+                  policy: flowdeckConfig.heidi?.learning?.reviewPolicy ?? "review",
+                })
+                try {
+                  const archive = new HeidiPersistentAgentStore(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db)
+                  archive.archiveSession(sessionID, [{ role: "assistant", content: `Verified completion: ${review.status}. ${JSON.stringify(scorecard)}`, toolSummary: "completion scorecard" }], { repository: directory, agent: "heidi" })
+                } catch (archiveError) { await appLog(`[session-archive] failed: ${archiveError instanceof Error ? archiveError.message : String(archiveError)}`, "warn", sessionID) }
+                await appLog(`[learning] completion review ${review.status}`, "info", sessionID)
+              } catch (error) {
+                await appLog(`[learning] completion review failed: ${error instanceof Error ? error.message : String(error)}`, "warn", sessionID)
+              }
             }
           } else if (type === "session.error") {
             const errorMessage = event?.properties?.error ?? event?.error ?? "Session errored"
@@ -1130,6 +1297,7 @@ const plugin: Plugin = async ({ directory, client }) => {
                     resolvedFrom: matchedTaskCall.resolvedFrom,
                   },
                 })
+                try { new HeidiDelegationRuntime(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db).transition(matchedTaskKey, "failed", { error: String(errorMessage) }) } catch { /* projection is secondary */ }
                 sessionTaskCalls.delete(matchedTaskKey)
                 childSessionToTask.delete(sessionID)
               } else {
@@ -1166,6 +1334,25 @@ const plugin: Plugin = async ({ directory, client }) => {
         await sessionEventsHook({ directory }, "idle", sessionID)
       }
       orchestratorGuard.onEvent(event)
+    },
+
+    dispose: async () => {
+      // Stop the outbox worker and run the better-harness cleanup (best-effort teardown)
+      if (activeOrchestrationRuntime) {
+        try {
+          activeOrchestrationRuntime.outboxWorker.stop()
+        } catch { /* teardown best-effort */ }
+      }
+      if (_betterHarnessCleanup) {
+        try { _betterHarnessCleanup() } catch { /* best-effort */ }
+        _betterHarnessCleanup = null
+      }
+      if (fdxDaemon) {
+        try { await fdxDaemon.stop() } catch { /* optional daemon teardown */ }
+        fdxDaemon = undefined
+      }
+      configureFdxNextRuntime()
+      if (schedulerTimer) clearInterval(schedulerTimer)
     },
   }
 }
@@ -1225,6 +1412,14 @@ export function getSessionMetricsDiagnostics(sessionID: string): {
   }
 }
 
+// ─── Production orchestration runtime accessor ───────────────────────
+// Module-level holder so the runtime can be torn down via the plugin
+// `dispose` hook and queried externally (Phase 8 getOrchestrationRuntime).
+let activeOrchestrationRuntime: ProductionOrchestrationRuntime | null = null
+export function getOrchestrationRuntime(): ProductionOrchestrationRuntime | null {
+  return activeOrchestrationRuntime
+}
+
 const flowDeckPlugin = {
   id: "@heidi-dang/flowdeck",
   server: plugin,
@@ -1241,3 +1436,10 @@ export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
 export { resolveDoctorExitCode } from "./doctor/exit-code.mjs"
 // Redaction utilities exported for consumers (logs, reports, doctor probes)
 export { redactSecrets, containsSecrets } from "./lib/secret-redaction"
+export {
+  getExecutingRuntimeIdentity,
+  recordRuntimeSelfReport,
+  readRuntimeSelfReport,
+  isRuntimeRecordFresh,
+} from "./services/runtime-identity"
+export type { FlowDeckRuntimeIdentity } from "./services/runtime-identity"

@@ -1,0 +1,6 @@
+import { describe, expect, it } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { FdxRuntime } from "../src/services/fdx-runtime"
+describe("optional FDX runtime", () => { it("separates workspace caches and reuses bounded entries", () => { const dir = mkdtempSync(join(tmpdir(), "fdx-runtime-")); try { const runtime = new FdxRuntime({ cacheFile: join(dir, "cache.json") }); const a = runtime.query<unknown>("/workspace/a", "outline", () => ({ a: 1 }), () => ({ fallback: true })); const hit = runtime.query<unknown>("/workspace/a", "outline", () => ({ a: 2 }), () => ({ fallback: true })); const b = runtime.query<unknown>("/workspace/b", "outline", () => ({ b: 1 }), () => ({ fallback: true })); expect(a.source).toBe("compute"); expect(hit.source).toBe("cache"); expect(b.workspaceId).not.toBe(a.workspaceId) } finally { rmSync(dir, { recursive: true, force: true }) } }); it("falls back when cache limits are exceeded", () => { const dir = mkdtempSync(join(tmpdir(), "fdx-runtime-")); try { const runtime = new FdxRuntime({ cacheFile: join(dir, "cache.json"), maxBytes: 10 }); expect(runtime.query("/w", "x", () => "this is too large", () => "safe").source).toBe("fallback") } finally { rmSync(dir, { recursive: true, force: true }) } }) })

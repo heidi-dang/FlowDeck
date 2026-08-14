@@ -32,13 +32,13 @@ describe("FDX Transactional Migration Integration", () => {
     const home = mkdtempSync(join(tmpdir(), "fdx-mig-test-"))
     try {
       const root = join(home, ".fd-plan")
-      const legacy = join(root, "my-app")
+      const legacy = join(root, "tests")
       const nested = join(legacy, "topic-1")
       mkdirSync(nested, { recursive: true })
       writeFileSync(join(legacy, "STATE.md"), "# State\n")
       writeFileSync(join(nested, "context.md"), "# Context\n")
 
-      const out = execFileSync(bin, ["context", "append", "--topic", "topic-1", "--summary", "test"], {
+      const out = execFileSync(bin, ["context", "--action", "append", "--topic", "topic-1", "--agent", "migration-test", "--stage", "verify", "--summary", "test"], {
         cwd: __dirname,
         env: { ...process.env, HOME: home, FDX_DISABLE_FALLBACK: "1" },
         encoding: "utf-8",
@@ -47,7 +47,7 @@ describe("FDX Transactional Migration Integration", () => {
       expect(out).toBeDefined()
 
       const entries = readdirSync(root)
-      const backups = entries.filter(e => e.startsWith("my-app.bak."))
+      const backups = entries.filter(e => e.startsWith("tests.bak."))
       expect(backups.length).toBe(1)
     } finally {
       try { rmSync(home, { recursive: true, force: true }) } catch {}
@@ -60,12 +60,12 @@ describe("FDX Transactional Migration Integration", () => {
     const home = mkdtempSync(join(tmpdir(), "fdx-mig-fail-"))
     try {
       const root = join(home, ".fd-plan")
-      const legacy = join(root, "my-app")
+      const legacy = join(root, "tests")
       mkdirSync(legacy, { recursive: true })
       writeFileSync(join(legacy, "junk.txt"), "no state file")
 
       expect(() => {
-        execFileSync(bin, ["context", "append", "--topic", "topic-1", "--summary", "test"], {
+        execFileSync(bin, ["context", "--action", "append", "--topic", "topic-1", "--agent", "migration-test", "--stage", "verify", "--summary", "test"], {
           cwd: __dirname,
           env: { ...process.env, HOME: home, FDX_DISABLE_FALLBACK: "1" },
           encoding: "utf-8",

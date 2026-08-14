@@ -22,6 +22,7 @@ import { join, dirname, resolve } from "node:path"
 import { homedir, hostname } from "node:os"
 import { execFileSync } from "node:child_process"
 import { fileURLToPath } from "node:url"
+import { createInterface } from "node:readline"
 import { safeParseConfig, applyJsoncEdits, createBackup, atomicWrite } from "./config-mutator.mjs"
 
 // ─── Constants ────────────────────────────────────────────────────────────
@@ -44,6 +45,19 @@ const STAGE_LABELS = [
 
 const LOCK_FILE = ".flowdeck-install.lock"
 
+const INSTALLER_STATES = {
+  DISCOVERED: "DISCOVERED",
+  BACKED_UP: "BACKED_UP",
+  CLEANED: "CLEANED",
+  CLEAN_VERIFIED: "CLEAN_VERIFIED",
+  INSTALLED: "INSTALLED",
+  CONFIGURED: "CONFIGURED",
+  RESTART_REQUIRED: "RESTART_REQUIRED",
+  RUNTIME_VERIFIED: "RUNTIME_VERIFIED",
+  DOCTOR_VERIFIED: "DOCTOR_VERIFIED",
+  HEALTHY: "HEALTHY",
+}
+
 // ─── CLI Argument Parsing ─────────────────────────────────────────────────
 
 function parseArgs() {
@@ -61,6 +75,8 @@ function parseArgs() {
     localRepo: null,
     help: false,
     verbose: false,
+    yes: false,
+    nonInteractive: false,
   }
 
   for (let i = 0; i < args.length; i++) {
@@ -80,6 +96,8 @@ function parseArgs() {
       case "--local-repo": opts.localRepo = args[++i] || process.cwd(); break
       case "--verbose": case "-v": opts.verbose = true; break
       case "--help": case "-h": opts.help = true; break
+      case "--yes": case "-y": opts.yes = true; opts.nonInteractive = true; break
+      case "--non-interactive": opts.nonInteractive = true; break
     }
   }
   return opts
@@ -93,6 +111,141 @@ function errlog(...args) { console.error("[ERR]", ...args) }
 function stage(num, total, label) {
   log(`\n[${num}/${total}] ${label}`)
 }
+
+// ─── Interactive Prompt ────────────────────────────────────────────────────
+
+function promptConfirmation(message) {
+  return new Promise((resolve) => {
+    if (!process.stdin.isTTY) {
+      // Non-TTY: default to safe (no mutation)
+      resolve(false)
+      return
+    }
+    const rl = createInterface({ input: process.stdin, output: process.stderr })
+    rl.question(message + " [y/N] ", (answer) => {
+      rl.close()
+      resolve(answer.trim().toLowerCase() === "y" || answer.trim().toLowerCase() === "yes")
+    })
+  })
+}
+
+// ─── Discovery Summary ────────────────────────────────────────────────────
+
+function displayDiscoverySummary(discovery) {
+  const { findings } = discovery
+  log("\n  ┌─ FlowDeck installations found ──────────────────────────┐")
+
+  if (findings.length === 0) {
+    log("  │  No existing FlowDeck installations detected            │")
+    log("  └─────────────────────────────────────────────────────────┘")
+    return false
+  }
+
+  for (const f of findings) {
+    const icon = f.severity === "blocking" ? "✗" : f.severity === "cleanup_required" ? "⚠" : "ℹ"
+    const version = f.version ? `@${f.version}` : ""
+    log(`  │  ${icon} ${f.kind}: ${f.scope}${version}${f.path ? " — " + f.path : ""}`)
+  }
+
+  log("  └─────────────────────────────────────────────────────────┘")
+  log("")
+  log("  Recommended action:")
+  log("  Remove old/conflicting FlowDeck state before installing v2.")
+  log("")
+
+  return true
+}
+
+// ─── Findings Discovery ───────────────────────────────────────────────────
+
+function discoverFlowDeckFindings(scopes, opts = {}) {
+  const findings = []
+
+  for (const scope of scopes) {
+    if (!scope.ok) {
+      findings.push({
+        kind: "config_conflict",
+        scope: scope.scope,
+        path: scope.path,
+        severity: "info",
+        detail: scope.parseError || "parse error",
+      })
+      continue
+    }
+
+    const entries = findFlowDeckPluginEntries(scope.data, opts.verbose)
+    for (const entry of entries) {
+      const isLegacy = entry.ref.includes(LEGACY_PACKAGE)
+      const isVersioned = entry.ref.includes("@")
+      const isTag = entry.ref.includes("@latest") || entry.ref.includes("@alpha") || entry.ref.includes("@next")
+      const isPath = entry.ref.startsWith("file://") || entry.ref.startsWith("/") || entry.ref.startsWith(".")
+      let version = null
+      if (isVersioned) {
+        const match = entry.ref.match(/@([^@]+)$/)
+        if (match) version = match[1]
+      }
+
+      findings.push({
+        kind: isLegacy ? "legacy_registration" : isTag ? "tagged_registration" : isPath ? "stale_path" : "package",
+        scope: scope.scope,
+        path: scope.path,
+        version,
+        registration: entry.ref,
+        severity: isLegacy || isTag ? "cleanup_required" : "info",
+      })
+    }
+
+    // Check for manifest
+    const manifestPath = join(scope.configDir, ".flowdeck-manifest.json")
+    if (existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf-8"))
+        if (manifest.pluginRef && isFlowDeckIdentity(manifest.pluginRef)) {
+          findings.push({
+            kind: "opencode_registration",
+            scope: scope.scope,
+            path: scope.path,
+            version: manifest.version,
+            registration: manifest.pluginRef,
+            severity: "info",
+          })
+        }
+      } catch {}
+    }
+  }
+
+  // Discover cached package directories on disk
+  const cacheLocations = discoverCacheLocations(opts)
+  for (const loc of cacheLocations) {
+    findings.push({
+      kind: "cached_package",
+      scope: "cache",
+      path: loc,
+      severity: "cleanup_required",
+    })
+  }
+
+  // Check for duplicate registrations
+  const registrations = findings
+    .filter(f => f.kind === "package" || f.kind === "legacy_registration" || f.kind === "tagged_registration")
+    .map(f => f.registration)
+  const seen = new Set()
+  for (const reg of registrations) {
+    if (seen.has(reg)) {
+      findings.push({
+        kind: "duplicate_registration",
+        scope: "global",
+        registration: reg,
+        severity: "cleanup_required",
+      })
+    }
+    seen.add(reg)
+  }
+
+  return findings
+}
+
+
 
 // ─── OpenCode Config Scope Discovery ─────────────────────────────────────
 
@@ -231,6 +384,108 @@ function isFilePathFlowDeck(ref, verbose = false) {
   const isStale = basename.toLowerCase() === "flowdeck"
   if (isStale && verbose) log(`  [debug] Stale FlowDeck checkout reference: ${ref} -> ${resolved}`)
   return isStale
+}
+
+function isFlowDeckCacheDir(dirPath, verbose = false) {
+  if (!dirPath || typeof dirPath !== "string") return false
+  const resolved = resolve(dirPath.replace(/^~/, homedir()))
+  if (!existsSync(resolved)) return false
+
+  const pkgPath = join(resolved, "package.json")
+  if (existsSync(pkgPath)) {
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
+      const name = pkg.name || ""
+      if (SUPPORTED_IDENTITIES.has(name) || pkg.flowdeck) return true
+      if (verbose) log(`  [debug] package "${name}" at ${resolved} is not FlowDeck`)
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  const parts = resolved.split("/").filter(Boolean)
+  const basename = parts.length > 0 ? parts[parts.length - 1] : ""
+  const lowerBase = basename.toLowerCase()
+  return (
+    lowerBase === "flowdeck" ||
+    lowerBase.startsWith("flowdeck@") ||
+    lowerBase.includes("@heidi-dang/flowdeck") ||
+    lowerBase.includes("@dv.nghiem/flowdeck")
+  )
+}
+
+function discoverCacheLocations(opts = {}) {
+  const home = homedir()
+  const xdgCache = process.env.XDG_CACHE_HOME || join(home, ".cache")
+  const xdgData = process.env.XDG_DATA_HOME || join(home, ".local", "share")
+
+  const searchRoots = [
+    join(xdgCache, "opencode"),
+    join(xdgCache, "opencode", "packages"),
+    join(xdgData, "opencode"),
+    join(xdgData, "opencode", "packages"),
+    join(home, ".cache", "opencode"),
+    join(home, ".cache", "opencode", "packages"),
+    join(home, ".local", "share", "opencode"),
+    join(home, ".local", "share", "opencode", "packages"),
+  ]
+
+  const discovered = []
+
+  function inspectDir(dir) {
+    if (!dir || !existsSync(dir)) return
+    if (isFlowDeckCacheDir(dir, opts.verbose)) {
+      discovered.push(dir)
+      return
+    }
+    try {
+      const entries = readdirSync(dir, { withFileTypes: true })
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        const child = join(dir, entry.name)
+        if (isFlowDeckCacheDir(child, opts.verbose)) {
+          discovered.push(child)
+        } else if (entry.name.startsWith("@")) {
+          try {
+            const subEntries = readdirSync(child, { withFileTypes: true })
+            for (const sub of subEntries) {
+              if (sub.isDirectory()) {
+                const scoped = join(child, sub.name)
+                if (isFlowDeckCacheDir(scoped, opts.verbose)) {
+                  discovered.push(scoped)
+                }
+              }
+            }
+          } catch {}
+        }
+      }
+    } catch {}
+  }
+
+  for (const root of searchRoots) {
+    inspectDir(root)
+  }
+
+  try {
+    const globalRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf-8", timeout: 5000 }).trim()
+    if (globalRoot) {
+      inspectDir(join(globalRoot, "@heidi-dang", "flowdeck"))
+      inspectDir(join(globalRoot, "@dv.nghiem", "flowdeck"))
+    }
+  } catch {}
+
+  const cwd = process.cwd()
+  inspectDir(join(cwd, "node_modules", "@heidi-dang", "flowdeck"))
+  inspectDir(join(cwd, "node_modules", "@dv.nghiem", "flowdeck"))
+
+  const seen = new Set()
+  return discovered.filter(loc => {
+    const norm = resolve(loc)
+    if (seen.has(norm)) return false
+    seen.add(norm)
+    return true
+  })
 }
 
 function findFlowDeckPluginEntries(configData, verbose = false) {
@@ -500,52 +755,153 @@ function removeFlowDeckFromScope(scope, transaction, opts) {
 }
 
 function cleanPackageDirectories(transaction, opts) {
-  const locations = []
-
-  // npm global root
-  try {
-    const globalRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf-8", timeout: 5000 }).trim()
-    locations.push(globalRoot)
-  } catch {}
-
-  // OpenCode cache paths
-  const home = homedir()
-  for (const cachePath of [
-    join(home, ".cache", "opencode", "packages"),
-    join(home, ".local", "share", "opencode", "packages"),
-  ]) {
-    if (existsSync(cachePath)) {
-      try {
-        const entries = readdirSync(cachePath)
-        for (const entry of entries) {
-          const fullPath = join(cachePath, entry)
-          if (isFilePathFlowDeck(fullPath)) locations.push(fullPath)
-        }
-      } catch {}
-    }
-  }
-
-  // Current project node_modules
-  const projectRoot = process.cwd()
-  for (const pkg of [FLOWDECK_PACKAGE, LEGACY_PACKAGE]) {
-    const parts = pkg.split("/")
-    const scopeDir = parts[0]
-    const pkgDir = parts[1]
-    const npmPath = join(projectRoot, "node_modules", scopeDir, pkgDir)
-    if (existsSync(npmPath) && isFilePathFlowDeck(npmPath)) locations.push(npmPath)
-  }
+  const locations = discoverCacheLocations(opts)
 
   for (const loc of locations) {
-    if (!isFilePathFlowDeck(loc)) continue
+    if (!isFlowDeckCacheDir(loc, opts.verbose)) continue
     if (opts.dryRun) {
       log(`  [DRY RUN] Would remove package: ${loc}`)
       transaction.addPlanStep("dry-run", "remove package", loc)
       continue
     }
-    const pkg = JSON.parse(readFileSync(join(loc, "package.json"), "utf-8"))
-    log(`  ✓ Removed package directory: ${loc} (${pkg.name})`)
+    let pkgName = "@heidi-dang/flowdeck"
+    const pkgPath = join(loc, "package.json")
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
+        pkgName = pkg.name || pkgName
+      } catch {}
+    }
+    log(`  ✓ Removed package directory: ${loc} (${pkgName})`)
     rmSync(loc, { recursive: true, force: true })
   }
+}
+
+
+// ─── Automatic Repair ──────────────────────────────────────────────────────
+
+const REPAIR_MAX_ATTEMPTS = 2
+
+const REPAIR_CLASSES = [
+  {
+    id: "duplicate_registration",
+    precondition: (findings) => findings.some(f => f.kind === "duplicate_registration"),
+    action: (scopes, opts, txn) => {
+      let repaired = 0
+      for (const scope of scopes) {
+        if (!scope.ok || !scope.data || !Array.isArray(scope.data.plugin)) continue
+        const entries = findFlowDeckPluginEntries(scope.data, opts.verbose)
+        if (entries.length <= 1) continue
+
+      // Keep only the first FlowDeck entry, remove duplicates
+      const seen = new Set()
+      const plugins = [...scope.data.plugin]
+      const toRemove = []
+      for (const entry of entries) {
+        if (seen.has(entry.ref)) {
+          toRemove.push(entry.index)
+        }
+        seen.add(entry.ref)
+      }
+
+      if (toRemove.length === 0) continue
+
+      if (opts.dryRun) {
+        log(`  [DRY RUN] Would remove ${toRemove.length} duplicate FlowDeck registration(s) in ${scope.scope}`)
+        continue
+      }
+
+      txn.backup(`config: ${scope.scope} pre-repair`, scope.path)
+      const filtered = plugins.filter((_, i) => !toRemove.includes(i))
+      const edits = [{ path: ["plugin"], value: filtered }]
+      const updatedContent = applyJsoncEdits(scope.raw, edits)
+      atomicWrite(scope.path, updatedContent)
+      log(`  ✓ Removed ${toRemove.length} duplicate registration(s) in ${scope.scope}`)
+      repaired += toRemove.length
+      }
+      return repaired
+    },
+    postcondition: (_scopes) => {
+      for (const scope of discoverConfigScopes()) {
+        if (!scope.ok || !scope.data) continue
+        const entries = findFlowDeckPluginEntries(scope.data)
+        if (entries.length > 1) return false
+      }
+      return true
+    },
+  },
+  {
+    id: "missing_canonical_registration",
+    precondition: (findings, _opts) => {
+      // Only trigger if there are old registrations but no current one
+      const hasLegacy = findings.some(f => f.kind === "legacy_registration")
+      const hasCurrent = findings.some(f => f.kind === "package" && f.registration === FLOWDECK_PACKAGE)
+      return hasLegacy && !hasCurrent
+    },
+    action: (scopes, opts, txn) => {
+      // This repair requires the version to be known
+      if (!opts.exactVersion) return 0
+      let repaired = 0
+      for (const scope of scopes) {
+        if (!scope.ok || !scope.data) continue
+        const entries = findFlowDeckPluginEntries(scope.data)
+        if (entries.length > 0) continue
+
+        if (opts.dryRun) {
+          log(`  [DRY RUN] Would add canonical FlowDeck registration in ${scope.scope}`)
+          continue
+        }
+
+        txn.backup(`config: ${scope.scope} pre-repair`, scope.path)
+        const plugins = Array.isArray(scope.data.plugin) ? [...scope.data.plugin] : []
+        plugins.push(`${FLOWDECK_PACKAGE}@${opts.exactVersion}`)
+        const edits = [{ path: ["plugin"], value: plugins }]
+        const updatedContent = applyJsoncEdits(scope.raw, edits)
+        atomicWrite(scope.path, updatedContent)
+        log(`  ✓ Added canonical FlowDeck registration in ${scope.scope}`)
+        repaired++
+      }
+      return repaired
+    },
+    postcondition: (_scopes) => {
+      // Re-discover scopes to verify postcondition
+      for (const scope of discoverConfigScopes()) {
+        if (!scope.ok || !scope.data) continue
+        if (findFlowDeckPluginEntries(scope.data).length > 0) return true
+      }
+      return false
+    },
+  },
+]
+
+function runRepairs(scopes, findings, opts, transaction) {
+  const results = []
+  const attemptCounts = new Map()
+
+  for (const repairClass of REPAIR_CLASSES) {
+    if (!repairClass.precondition(findings, opts)) continue
+
+    const attempts = attemptCounts.get(repairClass.id) || 0
+    if (attempts >= REPAIR_MAX_ATTEMPTS) {
+      results.push({ id: repairClass.id, status: "max_attempts", repaired: 0 })
+      continue
+    }
+
+    attemptCounts.set(repairClass.id, attempts + 1)
+    const repaired = repairClass.action(scopes, opts, transaction)
+
+    // Re-verify
+    const postOk = repairClass.postcondition(scopes)
+    results.push({
+      id: repairClass.id,
+      status: postOk ? "repaired" : "failed",
+      repaired,
+    })
+
+    log(`  ${postOk ? "✓" : "✗"} Repair ${repairClass.id}: ${postOk ? "repaired" : "failed"} (${repaired} change(s))`)
+  }
+
+  return results
 }
 
 // ─── Exact Version Installation ──────────────────────────────────────────
@@ -736,6 +1092,57 @@ function verifyOpenCodeRuntime() {
   return { ok, details: { hasHeidi, hasPrimary, hasHidden, hasOrchestrator, hasLegacyError, hasLoadError }, skipped: false }
 }
 
+function readRuntimeSelfReport(directory) {
+  if (!directory || typeof directory !== "string") return null
+  const filePath = join(directory, ".flowdeck", "runtime-self-report.json")
+  if (!existsSync(filePath)) return null
+  try {
+    const raw = readFileSync(filePath, "utf-8")
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === "object" && parsed.packageName && parsed.version) {
+      return parsed
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function verifyRuntimeIdentity(targetConfigDir, expectedVersion, expectedPath) {
+  const targetDir = targetConfigDir || (process.env.OPENCODE_CONFIG_DIR ? resolve(process.env.OPENCODE_CONFIG_DIR) : join(homedir(), ".config", "opencode"))
+  const selfReport = readRuntimeSelfReport(targetDir) || readRuntimeSelfReport(process.cwd())
+
+  if (!selfReport) {
+    return {
+      ok: false,
+      status: "RESTART_REQUIRED",
+      modelStatus: "CONFIG_CHANGED",
+      reason: "Runtime self-report not present. OpenCode process reload required.",
+      restartInstruction: "OpenCode restart required: Run 'opencode' in a fresh terminal session to load the updated plugin runtime.",
+    }
+  }
+
+  const versionMatches = !expectedVersion || selfReport.version === expectedVersion
+  const pathMatches = !expectedPath || (selfReport.packageRoot && resolve(selfReport.packageRoot) === resolve(expectedPath)) || (selfReport.moduleUrl && selfReport.moduleUrl.includes(expectedPath))
+
+  if (!versionMatches || !pathMatches) {
+    return {
+      ok: false,
+      status: "RESTART_REQUIRED",
+      modelStatus: "CONFIG_CHANGED",
+      reason: `Loaded runtime identity (v${selfReport.version} at ${selfReport.packageRoot}) does not match expected target (v${expectedVersion} at ${expectedPath}).`,
+      restartInstruction: `OpenCode restart required: Active session loaded v${selfReport.version}. Restart OpenCode to reload v${expectedVersion}.`,
+    }
+  }
+
+  return {
+    ok: true,
+    status: "RUNTIME_VERIFIED",
+    modelStatus: "RUNTIME_RELOADED",
+    selfReport,
+  }
+}
+
 function runProviderSmoke() {
   log("\n  Provider smoke test:")
 
@@ -765,7 +1172,7 @@ function runProviderSmoke() {
 // ─── Report ───────────────────────────────────────────────────────────────
 
 function reportResults(results) {
-  const { cleanState, runtimeResult, smokeResult, staticResult, transaction, opts, installedScope } = results
+  const { cleanState, runtimeResult, smokeResult, staticResult, repairResults, transaction, opts, installedScope, runtimeIdentityCheck, state } = results
 
   log(`\n${"=".repeat(60)}`)
   log(`  FlowDeck Installation Report`)
@@ -790,6 +1197,13 @@ function reportResults(results) {
   if (staticResult) {
     log(`  FlowDeck static checks: ${staticResult.fail === 0 ? "PASS" : "FAIL"}`)
   }
+  if (repairResults && repairResults.length > 0) {
+    const repaired = repairResults.filter(r => r.status === "repaired")
+    if (repaired.length > 0) {
+      log(`  Automatic repairs: ${repaired.length} applied`)
+      for (const r of repaired) log(`    ✓ ${r.id}: ${r.repaired} change(s)`)
+    }
+  }
 
   if (transaction?.backups?.length > 0) {
     log(`  Backup: ${transaction.backups[0].backupPath}`)
@@ -800,15 +1214,27 @@ function reportResults(results) {
   if (transaction?.failed) {
     errlog(`  Status: FAILED at stage "${transaction.failedStage}"`)
     errlog(`  Configuration was rolled back.`)
-    return { ok: false, failedStage: transaction.failedStage }
+    return { ok: false, state: "FAILED", failedStage: transaction.failedStage }
   }
 
   if (opts?.dryRun) {
     log(`  Status: DRY RUN — no files modified`)
-    return { ok: true, dryRun: true }
+    return { ok: true, state: "DRY_RUN", dryRun: true }
   }
 
-  log(`  Status: INSTALLATION VERIFIED`)
+  if (state === INSTALLER_STATES.RESTART_REQUIRED || runtimeIdentityCheck?.status === "RESTART_REQUIRED") {
+    warn(`  Status: RESTART_REQUIRED — OpenCode process restart required`)
+    warn(`  Instruction: ${runtimeIdentityCheck?.restartInstruction || "OpenCode process restart required to reload the plugin runtime."}`)
+    transaction?.releaseLock()
+    return {
+      ok: true,
+      state: INSTALLER_STATES.RESTART_REQUIRED,
+      status: "RESTART_REQUIRED",
+      restartInstruction: runtimeIdentityCheck?.restartInstruction || "OpenCode process restart required to reload plugin.",
+    }
+  }
+
+  log(`  Status: HEALTHY — ${runtimeResult?.ok ? "Heidi agent verified" : "runtime checks passed"}${staticResult?.fail === 0 ? ", static checks passed" : ""}${repairResults?.some(r => r.status === "repaired") ? ", auto-repaired" : ""}`)
   log(`  A fresh OpenCode session is required to load the new plugin.`)
 
   if (runtimeResult && !runtimeResult.skipped && runtimeResult.ok) {
@@ -820,16 +1246,17 @@ function reportResults(results) {
   }
 
   transaction?.releaseLock()
-  return { ok: true }
+  return { ok: true, state: INSTALLER_STATES.HEALTHY, status: "HEALTHY" }
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────
 
 async function runCleanInstall(userOpts = {}) {
-  const totalStages = STAGE_LABELS.length
+  const totalStages = STAGE_LABELS.length + 1  // +1 for repair stage
   const transaction = new Transaction()
   const opts = { ...parseArgs(), ...userOpts }
-  let pkgRoot, runtimeResult, smokeResult, staticResult, installedScope
+  let pkgRoot, runtimeResult, smokeResult, staticResult, repairResults, installedScope
+  let state = INSTALLER_STATES.DISCOVERED
 
   const __dirname = dirname(fileURLToPath(import.meta.url))
   pkgRoot = resolve(__dirname, "..")
@@ -862,6 +1289,10 @@ async function runCleanInstall(userOpts = {}) {
     // Stage 2: Configuration discovery
     stage(2, totalStages, "Configuration discovery")
     const scopes = discoverConfigScopes()
+    const findings = discoverFlowDeckFindings(scopes, opts)
+    const hasConflicts = displayDiscoverySummary({ scopes, findings })
+    state = INSTALLER_STATES.DISCOVERED
+
     if (scopes.length === 0) {
       log("  No OpenCode configuration found — will create new")
     } else {
@@ -878,6 +1309,20 @@ async function runCleanInstall(userOpts = {}) {
       }
     }
 
+    // Interactive confirmation when conflicts exist
+    if (hasConflicts && !opts.verifyOnly && !opts.uninstallOnly && !opts.dryRun) {
+      if (opts.yes || opts.nonInteractive) {
+        log("  Auto-confirmed (--yes / --non-interactive)")
+      } else {
+        const confirmed = await promptConfirmation("\n  Remove old/conflicting FlowDeck installations and continue?")
+        if (!confirmed) {
+          log("\n  Installation cancelled by user. No changes made.")
+          transaction.releaseLock()
+          return { ok: false, cancelled: true }
+        }
+      }
+    }
+
     // Stage 3: Backup
     stage(3, totalStages, "Backup")
     if (!opts.dryRun) {
@@ -886,6 +1331,7 @@ async function runCleanInstall(userOpts = {}) {
         if (scope.ok) transaction.backup(`${scope.scope} pre-clean`, scope.path)
       }
       log(`  Created ${transaction.backups.length} backup(s)`)
+      state = INSTALLER_STATES.BACKED_UP
     } else { log("  [DRY RUN] Backups would be created") }
 
     // Stage 4: Remove
@@ -898,6 +1344,7 @@ async function runCleanInstall(userOpts = {}) {
         removeFlowDeckFromScope(scope, transaction, opts)
       }
       cleanPackageDirectories(transaction, opts)
+      state = INSTALLER_STATES.CLEANED
     }
 
     // Stage 5: Verify clean state (fresh re-read after removal)
@@ -908,16 +1355,17 @@ async function runCleanInstall(userOpts = {}) {
       throw new Error(`Clean state verification failed: ${cleanState.flowdeckPluginEntries} entries remain`)
     }
     log(`  Clean state: ${cleanState.clean ? "PASS" : "FAIL"}`)
+    state = INSTALLER_STATES.CLEAN_VERIFIED
 
     if (opts.uninstallOnly) {
       log("\n  Uninstall complete. Not proceeding with installation.")
       transaction.completed = true
-      return reportResults({ cleanState, transaction, opts })
+      return reportResults({ cleanState, transaction, opts, state })
     }
     if (opts.verifyOnly) {
       log("\n  Verification complete. Not proceeding with installation.")
       transaction.completed = true
-      return reportResults({ cleanState, transaction, opts })
+      return reportResults({ cleanState, transaction, opts, state })
     }
 
     // Stage 6: Install
@@ -931,6 +1379,7 @@ async function runCleanInstall(userOpts = {}) {
             ? resolve(process.env.OPENCODE_CONFIG_DIR)
             : join(homedir(), ".config", "opencode"))
       installedScope = installExactVersion(targetConfigDir, opts)
+      state = INSTALLER_STATES.INSTALLED
     }
 
     // Stage 7: Static verification
@@ -941,10 +1390,22 @@ async function runCleanInstall(userOpts = {}) {
         transaction.fail("Static verification", `${staticResult.fail} check(s) failed`)
         throw new Error(`Static verification failed`)
       }
+      state = INSTALLER_STATES.CONFIGURED
     }
 
-    // Stage 8: Runtime verification
-    stage(8, totalStages, "OpenCode runtime verification")
+    // Stage 8: Automatic repair
+    stage(8, totalStages, "Automatic diagnosis and repair")
+    repairResults = runRepairs(scopes, findings, opts, transaction)
+
+    // Stage 9: Runtime verification & identity check
+    stage(9, totalStages, "OpenCode runtime verification")
+    const targetConfigDir = opts.project
+      ? join(process.cwd(), ".opencode")
+      : (process.env.OPENCODE_CONFIG_DIR
+          ? resolve(process.env.OPENCODE_CONFIG_DIR)
+          : join(homedir(), ".config", "opencode"))
+    const runtimeIdentityCheck = verifyRuntimeIdentity(targetConfigDir, opts.exactVersion, opts.localRepo || pkgRoot)
+
     if (opts.dryRun || !opts.verifyRuntime) {
       runtimeResult = { ok: !opts.dryRun, skipped: !opts.verifyRuntime }
       log(`  ${runtimeResult.skipped ? "SKIPPED" : "DRY RUN"}`)
@@ -956,6 +1417,12 @@ async function runCleanInstall(userOpts = {}) {
       }
     }
 
+    if (!runtimeIdentityCheck.ok && !opts.dryRun && opts.verifyRuntime) {
+      state = INSTALLER_STATES.RESTART_REQUIRED
+    } else {
+      state = INSTALLER_STATES.RUNTIME_VERIFIED
+    }
+
     // Provider smoke test
     if (!opts.dryRun && opts.verifyRuntime && !opts.verifyOnly) {
       smokeResult = runProviderSmoke()
@@ -964,6 +1431,15 @@ async function runCleanInstall(userOpts = {}) {
     }
 
     transaction.completed = true
+
+    if (state !== INSTALLER_STATES.RESTART_REQUIRED) {
+      state = INSTALLER_STATES.HEALTHY
+    }
+
+    return reportResults({
+      cleanState: await verifyCleanState(discoverConfigScopes()),
+      runtimeResult, smokeResult, staticResult, repairResults, transaction, opts, installedScope, runtimeIdentityCheck, state,
+    })
 
   } catch (e) {
     if (!transaction.failed) {
@@ -978,11 +1454,18 @@ async function runCleanInstall(userOpts = {}) {
   stage(9, totalStages, "Final report")
   return reportResults({
     cleanState: await verifyCleanState(discoverConfigScopes()),
-    runtimeResult, smokeResult, staticResult, transaction, opts, installedScope,
+    runtimeResult, smokeResult, staticResult, repairResults, transaction, opts, installedScope, state: INSTALLER_STATES.FAILED,
   })
 }
 
-export { runCleanInstall }
+export {
+  runCleanInstall,
+  discoverCacheLocations,
+  isFlowDeckCacheDir,
+  isFlowDeckIdentity,
+  verifyRuntimeIdentity,
+  INSTALLER_STATES,
+}
 
 // ─── CLI Entry (only when executed directly) ─────────────────────────────
 

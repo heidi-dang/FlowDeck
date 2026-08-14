@@ -1,492 +1,436 @@
 # FlowDeck
 
-> Production-grade multi-agent orchestration for OpenCode.
+> FlowDeck is a persistent, governed multi-agent engineering runtime for OpenCode.
+> Heidi coordinates specialist agents, Rust-native code intelligence, durable orchestration, evidence-backed learning, safe parallel execution, verification, and CI repair.
 
 [![npm version](https://img.shields.io/npm/v/@heidi-dang/flowdeck.svg)](https://www.npmjs.com/package/@heidi-dang/flowdeck)
 [![CI](https://github.com/heidi-dang/FlowDeck/actions/workflows/ci.yml/badge.svg)](https://github.com/heidi-dang/FlowDeck/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-| Status | |
+| Metric / Specification | Value |
 |---|---|
-| **Version** | v1.0.3 |
-| **License** | [MIT](LICENSE) |
-| **OpenCode** | >= 1.4.0 |
-| **Node.js** | >= 20.0.0 |
-| **OS** | Linux, macOS, Windows |
-| **Rust toolchain** | Required for the FDX native CLI (optional — TypeScript fallbacks included) |
-| **Skills** | **61 validated skills** |
+| **Version** | v2.0.0-rc.1 |
+| **Primary Coordinator** | `heidi` (UI-selectable) |
+| **Specialist Agents** | 11 specialized subagents |
+| **Slash Commands** | 15 registered commands (`/fd-*`) |
+| **Validated Skills** | 61 modular skills |
+| **Custom Tools** | 36 governance, FDX & runtime tools |
+| **Database Schema** | SQLite v11 migration (53 tables, 36 triggers, 66 indexes) |
+| **Runtime Requirements** | OpenCode >= 1.4.0, Node.js >= 20.0.0, Bun |
 
 ---
 
 ## Table of Contents
 
-- [What is FlowDeck?](#what-is-flowdeck)
-- [Who is it for?](#who-is-it-for)
-- [Why FlowDeck?](#why-flowdeck)
-- [Installation](#installation)
-- [Upgrading from Alpha Releases](#upgrading-from-alpha-releases)
-- [Core Capabilities](#core-capabilities)
-- [Production Orchestration Architecture](#production-orchestration-architecture)
-- [Better Harness](#better-harness)
-- [PR Monitor and CI Auto-Repair](#pr-monitor-and-ci-auto-repair)
-- [FDX Rust-Native Code Intelligence](#fdx-rust-native-code-intelligence)
-- [Tool Governance and Command Security](#tool-governance-and-command-security)
-- [Durable SQLite and Event/Outbox Architecture](#durable-sqlite-and-eventoutbox-architecture)
-- [CLI Reference](#cli-reference)
-- [Slash-Command Workflow](#slash-command-workflow)
+- [Why FlowDeck](#why-flowdeck)
+- [Quick Start](#quick-start)
+- [What is Heidi?](#what-is-heidi)
+- [How FlowDeck Executes Work](#how-flowdeck-executes-work)
+- [Parallel Engineering Execution](#parallel-engineering-execution)
+- [Persistent Agent Runtime](#persistent-agent-runtime)
+- [Specialist Agents](#specialist-agents)
+- [FDX Code Intelligence](#fdx-code-intelligence)
+- [Commands](#commands)
+- [Skills](#skills)
+- [Verification & Better Harness](#verification--better-harness)
+- [CI Auto-Repair](#ci-auto-repair)
+- [Safety & Governance](#safety--governance)
+- [Installation / Upgrade](#installation--upgrade)
+- [Architecture](#architecture)
 - [Configuration](#configuration)
-- [Compatibility Matrix](#compatibility-matrix)
-- [Verification and Production Gates](#verification-and-production-gates)
-- [Security Model](#security-model)
-- [Troubleshooting](#troubleshooting)
-- [Development and Contribution](#development-and-contribution)
-- [Release and Support Policy](#release-and-support-policy)
-- [License and Maintainer](#license-and-maintainer)
+- [Compatibility](#compatibility)
+- [Development](#development)
+- [Release Status](#release-status)
+- [License](#license)
 
 ---
 
-## What is FlowDeck?
+## Why FlowDeck
 
-**FlowDeck** is a governed multi-agent orchestration platform for [OpenCode](https://opencode.ai). It layers structured orchestration, delegation policies, deterministic planning pipelines, tool-governance controls, an event-driven CI auto-repair system, and a Rust-native code intelligence CLI on top of OpenCode.
+OpenCode provides lightweight LLM agent sessions, but complex software engineering workloads require structured coordination, durable state, token governance, safe parallel editing, and automated verification.
 
-FlowDeck does **not** replace OpenCode's model access, session management, or core tool execution. It operates as a plugin that adds governed structure on top of a working OpenCode installation.
+FlowDeck transforms OpenCode into a governed engineering runtime by introducing:
 
-**Package**: [`@heidi-dang/flowdeck`](https://www.npmjs.com/package/@heidi-dang/flowdeck)
-
-Created and maintained by [Heidi Dang](https://github.com/heidi-dang).
-
----
-
-## Who is it for?
-
-- **Teams running OpenCode in production** that need deterministic multi-agent delegation, bounded planning pipelines, and audit trails.
-- **Engineers who want CI auto-repair** that detects failures, classifies root causes, and attempts bounded fixes without a human in the loop.
-- **Developers who want fast code intelligence** through the Rust-native FDX CLI, with automatic TypeScript fallbacks when no binary is available.
-- **Maintainers who need guardrails** — command authorization, read-only git policy, executable allowlists, and resource-bound enforcement.
+- **Heidi Execution Coordinator**: Direct execution by default, delegating only when justified by domain or parallel boundaries.
+- **Durable Parallel Execution Engine v2**: Dependency-aware DAG scheduling, adaptive concurrency, atomic token reservations, and isolated worktree editing.
+- **Persistent State & Recall**: Cross-session SQLite memory, FTS session archiving, and evidence-backed post-completion learning.
+- **FDX Code Intelligence**: High-performance Rust-native symbol indexing, search, outline, and impact analysis with TypeScript fallbacks.
+- **Pre-push & Verification Gates**: Empirical test verification, 80%+ coverage enforcement, and automated CI repair.
 
 ---
 
-## Why FlowDeck?
+## Quick Start
 
-OpenCode is a powerful agent runtime, but production use requires structure: who may delegate to whom, when a write is allowed, how failures are repaired, and how concurrent agents coordinate. FlowDeck provides that structure as a single installable plugin, with a durable orchestration runtime underneath.
-
----
-
-## Installation
-
-### Recommended — atomic clean install
+### Installation
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash
 ```
 
-The installer performs an atomic lifecycle:
-
-1. **Discovery** — finds all FlowDeck registrations in OpenCode config scopes
-2. **Backup** — byte-for-byte backup of every affected file
-3. **Cleanup** — safely removes old or legacy registrations
-4. **Verify** — confirms the environment is clean before proceeding
-5. **Install** — installs the exact published npm release
-6. **Static verification** — `flowdeck verify`, `doctor`, `config validate`
-7. **Runtime verification** — runs real OpenCode agent discovery
-8. **Rollback** — automatic if any stage fails
-
-### Alternative — npm
+### Basic Workflow
 
 ```bash
-npx @heidi-dang/flowdeck install
-npx flowdeck verify
-npx flowdeck doctor
+# Start a governed engineering task in OpenCode
+/fd-task "Implement JWT authentication endpoint with tests"
+
+# Check active parallel specialist runs and delegation DAG
+/fd-agents list
+
+# Run integrated verification gate
+/fd-verify
+
+# Complete task and checkpoint state
+/fd-done
 ```
 
 ---
 
-## Upgrading from Alpha Releases
+## What is Heidi?
 
-**No configuration migration is required to upgrade from any `0.8.0-alpha.x` release to 1.0.0.** The configuration schema is backward-compatible, and the installer preserves your existing `opencode.json`:
+**Heidi** is FlowDeck's primary execution coordinator. Unlike legacy orchestrators that delegate every trivial task to subagents, Heidi executes work directly using built-in read/write tools, shell inspection, and code intelligence. She delegates to specialist agents **only when justified**:
 
-- Existing `plugin` registrations are updated to the new package version.
-- Your configured `default_agent` is preserved (FlowDeck never overwrites it).
-- JSONC comments and malformed configs are left untouched.
-- `flowdeck update` refreshes the plugin registration reference.
-
-Run `npx flowdeck doctor` after upgrading to verify the environment.
+1. Explicit user request for a specialist.
+2. Independent tasks with non-overlapping file ownership (parallel workstreams).
+3. Specialized domain expertise (e.g. security audit, infrastructure).
+4. Read-only audit or threat review.
+5. Direct repository discovery failure.
+6. Multi-domain spanning changes requiring coordinated ownership.
 
 ---
 
-## Core Capabilities
+## How FlowDeck Executes Work
 
-| Layer | Description |
+FlowDeck follows a strict 6-stage lifecycle for engineering tasks:
+
+```
+┌─────────┐     ┌─────────┐     ┌─────────┐     ┌─────────┐     ┌─────────┐     ┌──────────┐
+│ Intake  │ ──► │  Route  │ ──► │ Context │ ──► │ Execute │ ──► │ Verify  │ ──► │ Complete │
+└─────────┘     └─────────┘     └─────────┘     └─────────┘     └─────────┘     └──────────┘
+```
+
+1. **Intake**: Understand prompt, goal, and constraints.
+2. **Route**: Select strategy (`fast_direct`, `direct`, `planner_then_execute`, `frontend_backend_parallel`, etc.).
+3. **Context**: Surface-area check (dependents, existing tests, config, error paths).
+4. **Execute**: Direct file edits or dispatch justified parallel specialists.
+5. **Verify**: Unit tests, typechecks, build, and empirical evidence check.
+6. **Complete**: Summarize changes, test results, and save checkpoint.
+
+Pipeline sequence:
+`/fd-task` → `/fd-review` → `/fd-execute` → `/fd-verify` → `/fd-done`
+
+---
+
+## Parallel Engineering Execution
+
+FlowDeck v2 introduces the **Heidi Parallel Execution Engine v2** — a dependency-aware, durable specialist execution graph designed specifically for software engineering workloads.
+
+### Comparison: Earlier Delegation vs Heidi Engine v2
+
+| Feature / Dimension | Earlier Heidi | Heidi Parallel Engine v2 |
+|---|---|---|
+| **Execution Model** | Sequential / batch delegation | Dependency-aware DAG wave scheduler |
+| **Concurrency Control** | Fixed max concurrency cap | Adaptive concurrency based on budget & provider load |
+| **Token Governance** | Post-dispatch check | Pre-dispatch atomic token reservation |
+| **Write Isolation** | Shared working tree | Isolated Git worktrees (`fdx-worktree`) per writer |
+| **Conflict Handling** | Overlapping write races | Write-scope prediction & deterministic conflict review |
+| **Persistence** | Session-scoped memory | SQLite-backed durable DAG runs (`heidi_delegation_runs`) |
+| **Restart Recovery** | Interrupted jobs lost | Automatic restart recovery & safe unverified write blocking |
+| **Dependency Scheduling**| Wait for entire batch | Incremental fan-in; unblock dependents immediately |
+| **Failure Scope** | Single failure halts batch | Partial failure isolation; independent nodes continue |
+
+### Execution Graph Example
+
+```
+Task: Add authenticated user endpoint
+                    Heidi
+                      │
+           DAG Dependency Analysis
+                      │
+       ┌──────────────┼──────────────┐
+       │              │              │
+   researcher       mapper       security
+   read-only        read-only      read-only
+       │              │              │
+       └───────┬──────┴───────┬──────┘
+               │              │
+          backend-coder    tester
+         (worktree A)    (worktree B)
+               │              │
+               └──────┬───────┘
+                      │
+             Integration & Merge
+                      │
+             Integrated Verify
+```
+
+---
+
+## Persistent Agent Runtime
+
+Heidi operates as a persistent engineering runtime across sessions:
+
+| Aspect | Capability |
 |---|---|
-| **Agent Orchestration** | Heidi executes tasks directly and delegates to specialists only when delegation conditions are met. Depth-1 delegation prevents runaway agent chains. 13 specialized agents in total. |
-| **Planning Pipeline** | Five-stage pipeline (`/fd-task` → `/fd-review` → `/fd-execute` → `/fd-verify` → `/fd-done`) enforces plan-before-execute discipline with artifact persistence and checkpoint/resume. |
-| **Tool Governance** | Permission guards, delegation depth validation, loop detection, tool-call budgets, and structured audit logging with session scorecards. |
-| **Durable Orchestration Runtime** | SQLite-backed event persistence, outbox delivery, optimistic concurrency, and replay-safe execution. |
-| **Better Harness** | Evidence-based evaluation and repair of AI-produced code changes. |
-| **PR Monitor** | Event-driven CI failure detection, root-cause classification, and bounded automated repair. |
-| **FDX Native CLI** | Rust-native code intelligence with token-optimized output and TypeScript fallbacks for environments without the native binary. |
-| **Skills Library** | **61 validated skills** stored as structured `SKILL.md` files with YAML frontmatter. |
-| **Session Lifecycle** | Start/end hooks, session checkpoints, idle-timeout notifications, and recovery via `/fd-resume`. |
-
-FlowDeck is **not** a standalone AI platform. It requires OpenCode to provide model access, session infrastructure, and core tool execution.
+| **Memory** | Persistent USER, AGENT, and REPO memory graph stored in `.codebase/MEMORY.json` and SQLite. |
+| **Session Archive** | Full FTS (Full-Text Search) session indexing allowing cross-session recall (`/fd-recall`). |
+| **Evidence Learning**| Post-completion evidence harvesting into versioned learned skills (`/fd-learn-from-session`). |
+| **Governance** | Strict tool allowlists, read-only git guards, and command authorization hooks. |
+| **Budgeting** | Hierarchical token controller with run ceilings, child limits, and atomic reservations. |
 
 ---
 
-## Production Orchestration Architecture
+## Specialist Agents
 
-```
-OpenCode (model access, sessions, core tools, UI)
-  |
-  +-- FlowDeck Plugin (src/index.ts)
-        |
-        +-- Orchestration (src/orchestration/)
-        |     +-- Durable runtime with event sourcing
-        |     +-- SQLite persistence + outbox delivery
-        |     +-- Optimistic concurrency (UoW + versioned writers)
-        |     +-- Replay-safe completion and bounded cancellation
-        |
-        +-- Configuration (src/config/)
-        |     +-- JSON/JSONC schema validation
-        |     +-- Agent model overrides
-        |     +-- Governance settings (supervisor, guards, budgets)
-        |
-        +-- Agent Registry (src/agents/)
-        |     +-- Heidi (default primary agent)
-        |     +-- 12 specialist agents (depth-1 delegation, task:deny)
-        |     +-- Canonical registry + capability contracts
-        |
-        +-- Commands (src/commands/)
-        |     +-- 8 slash commands
-        |     +-- Pipeline: task → review → execute → verify → done
-        |
-        +-- Hooks (src/hooks/)
-        |     +-- Tool guard, guard rails, orchestrator guard
-        |     +-- Session lifecycle, command reference guard
-        |
-        +-- Services (src/services/)
-        |     +-- Command boundary + typed process outcomes
-        |     +-- Governance wiring, loop detector, recovery layer
-        |     +-- PR Monitor (event-driven CI auto-repair)
-        |
-        +-- Tools (src/tools/)
-        |     +-- 28 registered tools
-        |     +-- Executable allowlist + argument validation
-        |     +-- Git read-only policy enforcement
-        |
-        +-- Skills (src/skills/)
-        |     +-- 61 validated workflow patterns (SKILL.md)
-        |
-        +-- Better Harness (src/better-harness/)
-        |     +-- Collectors, analyzers, scoring, evidence, SSE transport
-        |
-        +-- FDX Native (crates/fdx/)
-              +-- 14 CLI subcommands
-              +-- tree-sitter AST parsing (5 languages)
-              +-- Dual-AST symbol diff engine
-```
+The FlowDeck agent registry consists of **Heidi** (primary coordinator) plus **11 specialist subagents**:
 
----
-
-## Better Harness
-
-Better Harness is FlowDeck's evidence-based evaluation and repair backend for AI-produced code changes. It collects customization, foundation, and session evidence, scores changes across multiple dimensions, and generates structured remediation plans.
-
-- **Collectors** gather evidence about the workspace, project identity, and session activity.
-- **Analyzers** evaluate the evidence against harness dimensions.
-- **Scoring** produces per-dimension scores and an aggregate report.
-- **SSE transport** streams run progress (queued → started → collecting → analyzing → completed) to connected clients.
-- **Persistence** stores runs and reports durably.
-
-Run the standalone server with:
-
-```bash
-npm run better-harness:serve
-```
-
----
-
-## PR Monitor and CI Auto-Repair
-
-The FDX PR Monitor is an event-driven CI auto-repair system. It detects workflow failures, collects logs, classifies root causes, and attempts automated repair within a bounded retry budget.
-
-### Architecture
-
-```
-GitHub Webhook (workflow_job:completed)
-  │
-  ▼
-FailureCollector ──► FailureClassifier ──► RepairOrchestrator
-  │                                              │
-  ▼                                              ▼
-CiFailureReport                           State Machine (IDLE → GREEN)
-```
-
-### Safety Protections
-
-- **SHA-based dedup** — one repair per PR head SHA at a time
-- **Circuit breaker** — maximum 3 repair attempts per head SHA
-- **Stale head detection** — re-reads the PR before pushing; aborts if another commit landed
-- **Fork PR protection** — same-repository-only push policy
-- **Prohibited paths** — `.github/workflows/release.yml` and `.env` files cannot be modified
-- **Flaky classification** — infrastructure and timeout failures are retried once before code repair
-- **No auto-merge or release** — the monitor never merges or publishes
-
----
-
-## FDX Rust-Native Code Intelligence
-
-FlowDeck ships with a Rust-native code intelligence CLI (`fdx`) that provides fast, AST-aware file operations. When the binary is unavailable, every tool falls back to a TypeScript implementation — the system remains fully functional, though some operations (AST parsing, symbol-aware diff) degrade to simpler text-based equivalents.
-
-### Available Commands (14)
-
-| Command | Description | Rust Native | TS Fallback |
+| Agent ID | Role / Specialization | Mode | Allowed Tools |
 |---|---|---|---|
-| `fdx read` | AST-aware file reading (prototype/deep/raw modes) | tree-sitter | text slice |
-| `fdx search` | Identifier and symbol search | AST | substring grep |
-| `fdx grep` | Regex pattern matching with context | regex | substring (no regex) |
-| `fdx batch` | Multi-file read with glob expansion | glob + AST | per-file read |
-| `fdx impact` | Cross-file dependency analysis | AST import scan | regex import scan |
-| `fdx outline` | Project-wide symbol outline | AST | regex declarations |
-| `fdx diff` | Symbol-aware git diff (dual-AST) | tree-sitter diff | plain git diff |
-| `fdx git` | Read-only git operations | policy-enforced | same |
-| `fdx ls` | Compact directory listing | structured | flat list |
-| `fdx tree` | Gitignore-aware directory tree | tree | flat list |
-| `fdx test` | Failures-only test runner wrapper | output filter | same |
-| `fdx lint` | Failures-only lint wrapper | output filter | same |
-| `fdx context` | Per-topic agent-output log | advisory lock | same |
-| `fdx decisions` | Per-topic design-decision log | advisory lock | same |
-
-### Native Fallbacks
-
-- **`nativeImpactFallback`** — scans TypeScript/JavaScript import and require statements for dependency inference.
-- **`nativeSearchFallback`** — honors `.gitignore` patterns during directory walk in addition to the hardcoded exclude list (`node_modules`, `.git`, `dist`, `target`, `.next`, `.cache`).
-- **Bounded traversal** — directory walks are depth-limited and deterministic; search fast-rejection avoids scanning excluded roots.
+| **`heidi`** | Primary execution coordinator & direct coder | Primary | Full tool access (`read`, `write`, `edit`, `bash`, FDX, etc.) |
+| **`orchestrator`** | Compatibility alias for Heidi | Primary | Inherits Heidi capabilities |
+| **`planner`** | Task breakdown, step decomposition, and wave sizing | Subagent | Read, glob, grep, planning-state |
+| **`architect`** | System design, ADRs, and API contract specifications | Subagent | Read, glob, grep, codegraph |
+| **`researcher`** | Research documentation, vendor APIs, and libraries | Subagent | Read, search, webfetch, context7 |
+| **`mapper`** | Codebase exploration and structural mapping | Subagent | Read, glob, grep, fdx-read, fdx-outline |
+| **`backend-coder`** | Backend API, data layer, and business logic implementation | Subagent | Read, write, edit, patch, bash, FDX |
+| **`frontend-coder`** | UI components, state management, and styling implementation | Subagent | Read, write, edit, patch, bash, FDX |
+| **`devops`** | CI/CD, Docker, infrastructure scripts, and configuration | Subagent | Read, write, edit, patch, bash, FDX |
+| **`tester`** | Test suite implementation following TDD principles | Subagent | Read, write, edit, patch, bash, fdx-test |
+| **`reviewer`** | Code quality, blast radius, and regression review | Subagent | Read, glob, grep, fdx-diff, fdx-impact |
+| **`security-auditor`**| OWASP Top 10, auth, injection, and secret vulnerability audit | Subagent | Read, glob, grep, security-scan |
+| **`debug-specialist`**| Systematic root cause analysis and build/type failure repair | Subagent | Read, edit, bash, fdx-test, fdx-lint |
 
 ---
 
-## Tool Governance and Command Security
+## FDX Code Intelligence
 
-### Registered Tools (28)
+FDX is FlowDeck's Rust-native code intelligence CLI (`crates/fdx`), built for high performance and low token consumption. When the binary is not present, FlowDeck falls back seamlessly to TypeScript implementations.
 
-`doctor`, `planning-state`, `codebase-state`, `repo-memory`, `hash-edit`, `codegraph`, `load-rules`, `list-rules`, `capture-lesson`, `review-lessons`, `fdx-context`, `fdx-decisions`, `fdx-validate`, `fdx-worktree`, `fdx-read`, `fdx-search`, `fdx-grep`, `fdx-batch`, `fdx-impact`, `fdx-outline`, `fdx-diff`, `fdx-git`, `fdx-ls`, `fdx-tree`, `fdx-test`, `fdx-lint`, `debug-audit`, `fdx-pr-monitor`.
+### Supported FDX Commands
 
-### Command Boundary
+#### Discovery
+- `fdx search <query>`: Fast identifier and symbol search.
+- `fdx grep <pattern>`: Pattern matching with token-optimized context lines.
+- `fdx tree [path]`: Gitignore-aware directory tree visualization.
+- `fdx ls [path]`: Compact directory listing (directories grouped first).
 
-All subprocess execution flows through a hardened command boundary (`src/services/command-boundary.ts`) that returns **typed outcomes**:
+#### Structural Analysis
+- `fdx read <file>`: Token-optimized file reader (supports `prototype`, `deep`, and `raw` modes).
+- `fdx outline [paths...]`: Project-wide symbol and function hierarchy outline.
+- `fdx impact <files...>`: Dependency and caller impact analysis.
+- `fdx diff [commit]`: Symbol-aware git diff displaying changed definitions.
 
-- `timeout` — the process exceeded its wall-clock budget
-- `max_buffer_exceeded` — the process exceeded its output-buffer budget
-- `executable_not_found` — the executable could not be resolved
-- `parse_rejected` / `authorization_rejected` — structured validation failures at the boundary
+#### Batch Execution
+- `fdx batch <files...>`: Read multiple files in a single call to minimize round trips.
 
-Resource limits (timeout and buffer) are validated against hard bounds before any process is spawned. Pre-spawn rejection prevents zero-argument and unauthorized invocations.
+#### Verification
+- `fdx test [args...]`: Failures-only test runner wrapper (strips passing test noise).
+- `fdx lint [args...]`: Failures-only linter wrapper (groups findings by file).
 
-### Enforcement
-
-- **Executable allowlist** — only `fdx`, `git`, `npm`, `bun`, `vitest`, `oxlint`, `tsc`, `node` are permitted; absolute paths must match the allowlist basename; all invocations use `shell: false`.
-- **Argument validation** — rejects NUL bytes, caps argument count (100), per-arg length (16KB), and total length (64KB).
-- **Git read-only policy** — blocks mutating subcommands (`reset`, `clean`, `checkout`, `commit`, `merge`, `rebase`, `push`, `pull`) and dangerous config overrides.
-- **Audit logging** — every governance decision (block, warn, approve) is recorded as a structured JSON event.
-
----
-
-## Durable SQLite and Event/Outbox Architecture
-
-The orchestration runtime persists to SQLite with an event/outbox pattern:
-
-- **Event persistence** — orchestration events are appended to durable event streams.
-- **Outbox delivery** — side effects are delivered via an outbox that is written transactionally with the domain change, then dispatched reliably.
-- **Optimistic concurrency** — writes use versioned records with unit-of-work transactions; concurrent writers are rejected instead of silently overwritten.
-- **Replay and recovery** — interrupted runs can be replayed from persisted events; cleanup closes SQLite resources deterministically (WAL/SHM removal included).
-- **Schema management** — migrations are embedded and checksum-verified (53 tables, 66 indexes, 36 triggers).
+#### Durable Context
+- `fdx context <action>`: Topic-based agent context log manager.
+- `fdx decisions <action>`: Design-decision logger with rationale and ownership.
 
 ---
 
-## CLI Reference
+## Commands
+
+FlowDeck registers **15 slash commands** with OpenCode:
 
 | Command | Description |
 |---|---|
-| `flowdeck install` | Install plugin in OpenCode configuration |
-| `flowdeck install --project` | Install in project-level `.opencode/` |
-| `flowdeck install --local-repo` | Install from a local Git checkout |
-| `flowdeck clean-install` | Atomic clean reinstall with discovery, backup, rollback, and runtime verification |
-| `flowdeck update` | Update plugin registration reference |
-| `flowdeck verify` | Verify package identity and OpenCode registration |
-| `flowdeck doctor` | Run comprehensive diagnostics (exit code 0/1/2) |
-| `flowdeck config validate` | Validate JSON/JSONC configuration syntax |
-| `flowdeck migrate` | Migrate configuration from upstream (`@dv.nghiem/flowdeck`) |
-| `flowdeck rollback` | Roll back configuration from a backup |
-| `flowdeck uninstall` | Remove FlowDeck plugin registration safely |
-| `flowdeck dry-run` | Show what would be done without modifying files |
-| `flowdeck --help` | Show detailed help |
+| `/fd-task` | Start a new governed task pipeline (`intake` → `route` → `context`) |
+| `/fd-review` | Perform architecture, blast-radius, and safety review before execution |
+| `/fd-execute` | Execute planned task steps directly or via parallel specialists |
+| `/fd-verify` | Run unit tests, typechecks, linters, and verification rules |
+| `/fd-done` | Finalize task, summarize changes, and record completion evidence |
+| `/fd-status` | Display current task phase, active step, and session health |
+| `/fd-resume` | Resume an interrupted or checkpointed session |
+| `/fd-checkpoint` | Explicitly save current session state checkpoint |
+| `/fd-agents` | Operational view & control of durable delegated child runs |
+| `/fd-schedule` | Manage scheduled autonomous background tasks |
+| `/fd-memory` | Read or update persistent repository memory graph |
+| `/fd-recall` | Search cross-session FTS archive for past decisions and context |
+| `/fd-learning` | List and inspect evidence-backed learned skills |
+| `/fd-learn` | Extract reusable lesson from recent session work |
+| `/fd-learn-from-session` | Harvest evidence from completed session into a versioned skill |
 
 ---
 
-## Slash-Command Workflow
+## Skills
 
-### Pipeline Commands
+FlowDeck ships with **61 validated skills** under `src/skills/<name>/SKILL.md`. Categories include:
 
-| Command | Description |
-|---|---|
-| `/fd-task <description>` | Pipeline entrypoint — researches the codebase, drafts task/architecture/affect/plan artifacts, confirms with the user |
-| `/fd-review [--topic=<slug>]` | Two-lens review (premise challenge + design review) |
-| `/fd-execute [--topic=<slug>] [--override]` | TDD implementation with a parallel worktree guard and per-step review |
-| `/fd-verify [--topic=<slug>]` | Full verification: test suite, regression check, code review, security scan |
-| `/fd-done [--topic=<slug>]` | Close a task — summarizes built vs required, commits, pushes on confirmation |
+- **Architecture & Design**: `clean-architecture`, `hexagonal-architecture`, `ddd-architecture`, `cqrs`, `saga-architecture`, `api-design`, `app-shell-design`.
+- **Language Patterns**: `typescript-patterns`, `python-patterns`, `rust-patterns`, `golang-patterns`, `java-patterns`, `django-patterns`, `postgres-patterns`.
+- **Testing & Quality**: `tdd-workflow`, `test-coverage`, `test-gap-detector`, `django-tdd`, `verification-before-completion`.
+- **Security & Audit**: `security-scan`, `arch-constraint-guard`, `dependency-audit`, `human-review-routing`, `patch-trust-score`.
+- **Workflow & Harness**: `executing-plans`, `writing-plans`, `agent-harness-construction`, `context-steward`, `failure-replay-engine`, `regression-prediction`.
 
-### Utility Commands
+---
 
-| Command | Description |
-|---|---|
-| `/fd-status [--topic=<slug> \| --all]` | Show pipeline stage, artifact status, and blockers |
-| `/fd-resume [--yes]` | Restore from checkpoint.json (falls back to STATE.md) |
-| `/fd-checkpoint` | (Internal) force-save session state |
+## Verification & Better Harness
+
+FlowDeck enforces empirical verification before declaring any task complete:
+
+- **Red-Green-Refactor**: TDD cycle enforced for new features and bug fixes.
+- **Coverage Ceiling**: Minimum **80% line coverage** required for modified code.
+- **Regression Lock**: Failing test mandatory before applying bug fixes.
+- **Pre-Push Script**: `node scripts/pre-push.mjs` executes linting, typechecking, and test suites prior to pushing.
+
+---
+
+## CI Auto-Repair
+
+The **FDX PR Monitor** (`fdx-pr-monitor`) runs event-driven auto-repair cycles on GitHub PRs:
+
+1. **Detect**: Polls CI status for test or build failures.
+2. **Classify**: Categorizes failure into compilation, test failure, lint error, or infrastructure flake.
+3. **Isolate & Repair**: Spawns isolated `@debug-specialist` worktree to diagnose and apply minimal fix.
+4. **Validate**: Runs local test verification suite.
+5. **Push**: Pushes repair commit directly to the PR branch.
+
+---
+
+## Safety & Governance
+
+FlowDeck incorporates multi-layered defense baselines:
+
+- **Prompt Injection Protection**: Refuses instructions overriding system behavior or system prompts.
+- **Secret Protection**: Automatic redaction of API keys, tokens, and credentials in logs and outputs.
+- **Executable Allowlist**: Restricts shell tool execution to safe, declared commands (`git`, `bun`, `npm`, `tsc`, `cargo`, `pytest`).
+- **Read-Only Git Policy**: Mutating git operations on tracked branches are blocked or diverted to worktrees.
+- **Self-Delegation Guard**: Prevents recursive agent self-calls.
+
+---
+
+## Installation / Upgrade
+
+### Guided Installer
+
+Run the self-contained installation script:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash
+```
+
+### Manual Installation via NPM
+
+```bash
+npm install -g @heidi-dang/flowdeck
+flowdeck install
+```
+
+### Verify Installation
+
+```bash
+flowdeck doctor
+```
+
+---
+
+## Architecture
+
+FlowDeck follows a clean hexagonal architecture backed by SQLite persistence:
+
+```
+src/
+├── agents/             # Canonical agent definitions & factories
+├── commands/           # Command definition specifications
+├── config/             # Configuration schemas (token budget, governance, FDX)
+├── doctor/             # Environment & health diagnostic engine
+├── hooks/              # OpenCode lifecycle event hooks & guards
+├── mcp/                # Context7 & Exa MCP server integrations
+├── orchestration/      # Core execution engine
+│   ├── commands/       # Durable command execution service
+│   ├── events/         # Event bus & publisher
+│   ├── execution/      # Worktree executor, scheduler & sqlite repository
+│   └── persistence/    # SQLite migrations (v1 - v11) & transactions
+├── services/           # Parallel Engine v2, Token Controller, FDX index, Memory
+├── skills/             # 61 validated SKILL.md modules
+└── tools/              # 36 custom OpenCode tool definitions
+```
 
 ---
 
 ## Configuration
 
-FlowDeck reads configuration from `opencode.json` (or `opencode.jsonc`) in the OpenCode config directory:
-
-- **Linux/macOS**: `~/.config/opencode/opencode.json`
-- **Windows**: `%APPDATA%/opencode/opencode.json`
-- **Project-level**: `.opencode/opencode.json` in the project directory
-- **Override**: `OPENCODE_CONFIG_DIR` environment variable
-
-The `install` command adds FlowDeck to the `plugin` array and sets `default_agent` to `heidi` when no default exists.
-
-### PR Monitor Configuration
+FlowDeck reads configuration from `.flowdeck.json` or `opencode.json` in the project root:
 
 ```json
 {
   "governance": {
-    "prMonitor": {
-      "enabled": true,
-      "mode": "auto_fix",
-      "eventSource": "github_app",
-      "maxConcurrentRepairs": 1,
-      "maxAttemptsPerHeadSha": 3,
-      "retryFlakyOnce": true,
-      "push": {
-        "enabled": true,
-        "sameRepositoryOnly": true,
-        "requireUnchangedHeadSha": true,
-        "commitPrefix": "fix(ci):"
-      },
-      "validation": {
-        "requiredGate": {
-          "command": "node",
-          "args": ["scripts/pre-push.mjs"]
-        }
-      },
-      "prohibitedPaths": [".github/workflows/release.yml", ".env", ".env.*"],
-      "autoMerge": false,
-      "autoRelease": false
-    }
+    "mode": "strict",
+    "maxDelegationDepth": 1,
+    "maxToolCalls": 100
+  },
+  "parallelExecution": {
+    "enabled": true,
+    "maxChildren": 6,
+    "defaultTarget": 4,
+    "maxWriteChildren": 3,
+    "childTimeoutMs": 600000,
+    "retryLimit": 1,
+    "adaptive": true
+  },
+  "tokenBudget": {
+    "enabled": true,
+    "profile": "normal",
+    "runTotal": 500000,
+    "childTotal": 100000
   }
 }
 ```
 
 ---
 
-## Compatibility Matrix
+## Compatibility
 
-| Component | Requirement |
-|---|---|
-| Node.js | >= 20.0.0 |
-| OpenCode | >= 1.4.0 |
-| Linux | Supported (tested on ubuntu-latest) |
-| macOS | Supported (tested on macos-latest) |
-| Windows | Supported (tested on windows-latest) |
-| Rust toolchain | Optional — required only for the FDX native CLI; TypeScript fallbacks ship in the package |
-
-The `@opencode-ai/plugin` and `@opencode-ai/sdk` packages are required peer/declared dependencies.
+- **OpenCode**: `>= 1.4.0`
+- **Node.js**: `>= 20.0.0`
+- **Bun**: `>= 1.0.0` (required for build and native test runner)
+- **Platforms**: Linux (x64/arm64), macOS (x64/arm64), Windows (x64 via WSL2/Native)
 
 ---
 
-## Verification and Production Gates
+## Development
 
-Every release runs the full production gate matrix:
+### Prerequisites
 
-- Build, typecheck, lint (0 warnings, 0 errors)
-- Full test suite across Linux, macOS, and Windows (3,189 tests, 0 failures across 153 files)
-- Coverage check (81.31% weighted aggregate line coverage, threshold 80%)
-- Documentation and skills validation
-- Orchestration framework, integration, and schema validation
-- FDX Rust gates (fmt, clippy, tests) and native parity
-- Production and full dependency audits (0 vulnerabilities)
-- npm pack dry run, isolated tarball installation, packed CLI, and ESM import
+- Node.js >= 20
+- Bun >= 1.0
 
-Run the pre-push gate locally:
+### Setup & Test
 
 ```bash
-node scripts/pre-push.mjs
+# Clone repository
+git clone https://github.com/heidi-dang/FlowDeck.git
+cd FlowDeck
+
+# Install dependencies
+bun install
+
+# Build TypeScript output
+bun run build
+
+# Run unit and integration test suite
+bun test
+
+# Run full release verification gate
+bun run verify:full
 ```
 
 ---
 
-## Security Model
+## Release Status
 
-- FlowDeck governance operates within OpenCode's permission model — it is not an operating-system sandbox.
-- All subprocess invocations use `shell: false` and argument arrays — no shell command injection.
-- An executable allowlist restricts which binaries can be spawned.
-- Git operations enforce a read-only policy — mutating commands are blocked at the validation layer.
-- Timeout and output-buffer limits are enforced at the command boundary with typed failure outcomes.
-- Users remain responsible for provider credentials and tool permissions.
-- Report security vulnerabilities through GitHub Issues (private disclosure preferred).
+- **Current Version**: `v2.0.0-rc.1`
+- **Track**: Prerelease / Candidate Track (`@next`)
+- **Status**: Production-ready core orchestration, parallel DAG engine, persistent Heidi runtime, and verification gates complete.
 
 ---
 
-## Troubleshooting
+## License
 
-- **`flowdeck doctor` exits with a code other than 0** — read the diagnostics output; a non-zero exit indicates a failing check (see the exit-code contract: `0` healthy, `1` failure, `2` engine error).
-- **The FDX binary is unavailable** — FlowDeck falls back to TypeScript implementations automatically; install the Rust toolchain to enable native speed.
-- **Agent identity enforcement blocks a request** — set `runtimeAgent.enforcement` to `warn` or `off` in configuration if your workflow uses a different agent name.
-- **A write is blocked by the plan-confirmed gate** — confirm the plan first (`STATE.md` with `plan_confirmed: true`) or use `/fd-task` to establish a plan.
-- **SQLite cleanup warnings on Windows** — the runtime retries WAL/SHM removal with backoff; this is expected during heavy concurrency.
+FlowDeck is released under the [MIT License](LICENSE).
 
-See [Troubleshooting](docs/wiki/Troubleshooting.md) for more.
-
----
-
-## Development and Contribution
-
-```bash
-npm ci
-npm run build
-npm run lint           # oxlint --deny-warnings
-npm run typecheck      # tsc --noEmit
-npm test               # full suite
-npm run test:coverage  # coverage check
-npm run validate:skills
-npm run validate:docs
-node scripts/pre-push.mjs
-```
-
-### Rust Development
-
-```bash
-cargo build --manifest-path crates/fdx/Cargo.toml
-cargo test --manifest-path crates/fdx/Cargo.toml --all
-cargo clippy --manifest-path crates/fdx/Cargo.toml --all-targets -- -D warnings
-cargo fmt --manifest-path crates/fdx/Cargo.toml --check
-```
-
-See [Development](docs/wiki/Development.md) for detailed contribution guidelines.
-
----
-
-## Release and Support Policy
-
-- FlowDeck follows [Semantic Versioning](https://semver.org/). Breaking changes are released in new major versions with migration guidance.
-- Bug fixes and security patches are backported to the current stable minor line as appropriate.
-- The `latest` npm dist-tag always points to the newest stable release; `next` tracks the upcoming release.
-- Version history is maintained in [CHANGELOG.md](CHANGELOG.md) and in the [release notes](docs/releases/).
-
----
-
-## License and Maintainer
-
-MIT — see [LICENSE](LICENSE)
-
-Created and maintained by [Heidi Dang](https://github.com/heidi-dang).
+Copyright © 2026 [Heidi Dang](https://github.com/heidi-dang). All rights reserved.

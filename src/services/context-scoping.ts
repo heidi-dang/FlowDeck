@@ -22,6 +22,7 @@ export interface AssignmentContextInput {
   acceptanceCriteria?: string[]
   relevantFiles?: string[]
   externalizedArtifacts?: string[]
+  runtimeProjection?: string
 }
 
 export interface AssignmentContextResult {
@@ -62,6 +63,7 @@ export function buildAssignmentContext(input: AssignmentContextInput): Assignmen
   if (input.externalizedArtifacts && input.externalizedArtifacts.length > 0) {
     prompt += `\nExternalized Artifacts: ${input.externalizedArtifacts.join(", ")}`
   }
+  if (input.runtimeProjection) prompt += `\nRuntime Projection:\n${input.runtimeProjection}`
 
   return {
     prompt,

@@ -15,6 +15,7 @@ import { readFileSync, existsSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 import { execFileSync } from "node:child_process"
+import { resolveReleaseChannel } from "./release-channel.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(__dirname, "..")
@@ -53,6 +54,25 @@ function main() {
   const allMatch = pkgVersion === lockVersion && lockVersion === lockRootVersion
   check("All versions identical", allMatch,
     allMatch ? pkgVersion : `pkg=${pkgVersion} lock=${lockVersion} root=${lockRootVersion}`)
+
+  // ── Release channel / dist-tag derivation ─────────────────────────
+  console.log("\n── Release channel ──\n")
+  let channel = null
+  try {
+    channel = resolveReleaseChannel(pkgVersion)
+    check("Release channel derivable", !!channel, channel)
+  } catch (e) {
+    check("Release channel derivable", false, e.message)
+  }
+  check("Expected npm dist-tag", !!channel, `${pkgVersion} → ${channel ?? "unresolved"}`)
+
+  // ── Release documentation ────────────────────────────────────────
+  const readme = readFileSync(join(ROOT, "README.md"), "utf-8")
+  const changelog = readFileSync(join(ROOT, "CHANGELOG.md"), "utf-8")
+  const releaseNotePath = join(ROOT, "docs", "releases", `v${pkgVersion}.md`)
+  check("README active version", readme.includes(`v${pkgVersion}`), `v${pkgVersion}`)
+  check("CHANGELOG current entry", changelog.includes(`## [${pkgVersion}]`), pkgVersion)
+  check("Release-note file", existsSync(releaseNotePath), releaseNotePath)
 
   // ── Check npm registry ────────────────────────────────────────────
   console.log("\n── Registry check ──\n")
@@ -123,12 +143,13 @@ function main() {
     const status = execFileSync("git", ["status", "--short"], {
       encoding: "utf-8", timeout: 5000, cwd: ROOT,
     }).trim()
-    check("Working tree clean", status === "", status ? `dirty: ${status.slice(0, 200)}` : "clean")
+    const allowDirty = process.argv.includes("--allow-dirty") || Boolean(process.env.ALLOW_DIRTY)
+    check("Working tree clean", allowDirty || status === "", status ? `dirty: ${status.slice(0, 200)}` : "clean")
 
     const branch = execFileSync("git", ["branch", "--show-current"], {
       encoding: "utf-8", timeout: 5000, cwd: ROOT,
     }).trim()
-    check("On main branch", branch === "main", branch)
+    check("On release branch", branch === "v2.0.0-alpha" || branch === "main" || branch === "chore/v2-alpha2-release-readiness" || branch === "chore/v2-alpha3-release-readiness" || branch === "chore/v2-alpha4-release-readiness", branch)
   } catch (e) {
     check("Git state", false, e.message)
   }

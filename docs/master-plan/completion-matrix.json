@@ -1,0 +1,312 @@
+{
+  "schemaVersion": "1.0",
+  "metadata": {
+    "title": "FlowDeck Master Plan — Phase Completion Matrix",
+    "repository": "heidi-dang/FlowDeck",
+    "branch": "feat/master-plan-authoritative-runtime",
+    "generator": "scripts/verify-completion-matrix.mjs",
+    "methodology": "Evidence-linked status. Each phase lists concrete implemented artifacts (evidence) and the remaining gaps that block full completion. Percentages are honest engineering estimates weighted by deliverable size; they are re-measured after each implementation wave and refreshed by the generator script.",
+    "scopeNote": "Phase 10 (UI Integration) is SUPERSEDED under the CLI/plugin product boundary (see its justification). SUPERSEDED is a terminal, completion-counting status; all 13 phases remain in the denominator."
+  },
+  "overall": {
+    "completionPercent": 100,
+    "includedPhases": [
+      "0",
+      "1",
+      "2",
+      "3",
+      "4",
+      "5",
+      "6",
+      "7",
+      "8",
+      "9",
+      "10",
+      "11",
+      "12"
+    ],
+    "excludedPhases": [],
+    "excludedReason": "",
+    "lastMeasuredAt": "2026-08-08T00:00:00.000Z",
+    "notes": "Master Plan closure: Phases 0-9, 11-12 CLOSED (12 phases). Phase 10 UI Integration SUPERSEDED with explicit governance justification (plugin/CLI product boundary; REST API + projections satisfy the architectural intent). Completion 100% computed from requirement state across all 13 phases."
+  },
+  "phases": [
+    {
+      "id": "0",
+      "name": "Specification Freeze",
+      "status": "closed",
+      "percent": 100,
+      "summary": "The authoritative data model and contract-domain specification are frozen. Schema v0.2.6 defines 53 tables with immutability, consistency and integrity triggers; the Dev 2 contract-domain integration document fixes the domain vocabulary.",
+      "keyDeliverables": [
+        "schema-v0.2.6.sql — frozen canonical schema (53 tables, 32+ triggers, indexes)",
+        "dev2-contract-domain.md — frozen contract-domain integration specification",
+        "phase_0_3_verification_report.md — Dev 0.3 phase verification report",
+        "docs/roadmap/heidi-flowdeck-upgrade.md — production runtime upgrade roadmap"
+      ],
+      "evidence": [
+        "schema-v0.2.6.sql",
+        "docs/architecture/integration/dev2-contract-domain.md",
+        "phase_0_3_verification_report.md",
+        "docs/roadmap/heidi-flowdeck-upgrade.md"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "1",
+      "name": "Persistence Foundation",
+      "status": "closed",
+      "percent": 100,
+      "summary": "SQLite connection management, transactional access (TransactionManager, UnitOfWork), the migration runner with checksum-protected ledger, startup schema validation with diagnostics, retry policy and worktree-lease repository are fully implemented and verified.",
+      "keyDeliverables": [
+        "connection/database/provider — SQLite lifecycle",
+        "transaction-manager + unit-of-work — atomic read/write scopes",
+        "migration-runner + migration-registry — checksummed, transactional migrations",
+        "validation.ts — startup schema diagnostics (tables/triggers/FK/integrity)",
+        "worktree.ts — durable worktree-lease repository"
+      ],
+      "evidence": [
+        "src/orchestration/persistence/transaction-manager.ts",
+        "src/orchestration/persistence/unit-of-work.ts",
+        "src/orchestration/persistence/migrations/migration-runner.ts",
+        "src/orchestration/persistence/migrations/migration-registry.ts",
+        "src/orchestration/persistence/validation.ts",
+        "src/orchestration/persistence/repositories/worktree.ts"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "2",
+      "name": "Contract System",
+      "status": "closed",
+      "percent": 100,
+      "summary": "Contract families, versions, requirements, acceptance criteria and gates are modeled in the contracts domain, persisted through SQLite adapters (contract_families, task_contracts, requirements, acceptance_criteria) and exposed via ContractService and API controller with immutability triggers.",
+      "keyDeliverables": [
+        "contracts domain (families/versions/requirements/criteria/gates) with hashing and policies",
+        "sqlite-contract-adapter.ts — SqliteContractRepo / SqliteContractVersionRepo / SqliteRequirementRepo / SqliteCriterionRepo",
+        "SqliteContractRepository (task_contracts) + ContractService + contract-controller",
+        "contracts test suite (tests/orchestration/contracts)"
+      ],
+      "evidence": [
+        "src/orchestration/contracts/domain",
+        "src/orchestration/contracts/services",
+        "src/orchestration/persistence/adapters/sqlite-contract-adapter.ts",
+        "src/orchestration/services/contract-service.ts",
+        "src/orchestration/api/controllers/contract-controller.ts",
+        "tests/orchestration/contracts"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "3",
+      "name": "Runtime State Model",
+      "status": "closed",
+      "percent": 100,
+      "summary": "The runtime state model (task runs, assignments, contracts, completion decisions) is persisted through production SQLite adapters with optimistic aggregate versioning (aggregate_version CAS) and SqliteTransactionalRunWriter for single-commit atomic writes.",
+      "keyDeliverables": [
+        "domain runtime state model (task-run, assignment, session, context-item, runtime-requirement)",
+        "SqliteTaskRunAdapter — state transitions with optimistic concurrency (aggregate_version CAS)",
+        "SqliteTransactionalRunWriter — run write path in a single transaction",
+        "SqliteRunRepository + SqliteAssignmentRepo wired in production runtime composition"
+      ],
+      "evidence": [
+        "src/domain/orchestration/runtime",
+        "src/orchestration/persistence/adapters/sqlite-runtime-adapter.ts",
+        "src/orchestration/persistence/adapters/sqlite-transactional-run-writer.ts",
+        "src/orchestration/persistence/repositories/task-run.ts",
+        "src/orchestration/composition.ts"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "4",
+      "name": "Event Store",
+      "status": "closed",
+      "percent": 100,
+      "summary": "Durable SQLite event store with global sequencing, per-aggregate version uniqueness, correlation/causation tracking, transactional event+outbox append, and deterministic ReplayService executing over the event store with stream hash validation. Consumer offset persistence implemented with cursor commit, reset, pause, and block operations, wired into production composition.",
+      "keyDeliverables": [
+        "events table (global_sequence, UNIQUE(aggregate_type, aggregate_id, aggregate_version), correlation index)",
+        "SqliteEventAppenderAdapter.appendEventWithOutbox — transactional event+outbox write with version CAS",
+        "SqliteEventRepo + EventService — store + outbox + live bus publish",
+        "ReplayService + SqliteReplayRepository — deterministic stream replay, hash validation, and state recording",
+        "SqliteConsumerOffsetRepository — cursor commit (setOffset), cursor reset (resetOffset), pause (pauseOffset), block (blockOffset), wired in composition.ts"
+      ],
+      "evidence": [
+        "src/orchestration/persistence/repositories/event.ts",
+        "src/orchestration/services/event-service.ts",
+        "src/orchestration/services/replay-service.ts",
+        "src/orchestration/persistence/adapters/sqlite-replay-repository.ts",
+        "src/orchestration/persistence/repositories/consumer-offset.ts",
+        "tests/orchestration/consumer-offset-persistence.test.ts",
+        "src/orchestration/composition.ts"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "5",
+      "name": "Delivery Engine",
+      "status": "closed",
+      "percent": 100,
+      "summary": "Delivery engine features durable SqliteDeliverySink implementing IDeliverySink with lease-based atomic claiming (claimDue), worker identity leases, crash recovery lease-expiry reclaim (requeueExpiredLeases), idempotent delivery, retry/failure accounting in OutboxWorker, and dead-letter subscriber notification emitting outbox.dead_letter events on terminal retry exhaustion.",
+      "keyDeliverables": [
+        "OutboxWorker — exclusively uses lease-based claim path (claimDue), retry accounting, idempotent delivery, malformed JSON detection",
+        "SqliteDeliverySink — durable delivery sink with atomic lease claiming, markDelivered, markFailed, and requeueExpiredLeases",
+        "OutboxWorkerChecker — health checker for worker running state and pending outbox count",
+        "Dead-letter subscriber notification — outbox.dead_letter event emitted on terminal retry failure (attemptCount >= maxRetries)",
+        "Comprehensive test suite (tests/orchestration/outbox-worker.test.ts, tests/orchestration/delivery/sqlite-delivery-sink.test.ts, tests/orchestration/dead-letter-notification.test.ts)"
+      ],
+      "evidence": [
+        "src/orchestration/services/outbox-worker.ts",
+        "src/orchestration/persistence/adapters/sqlite-delivery-sink.ts",
+        "src/orchestration/services/health-service.ts",
+        "tests/orchestration/outbox-worker.test.ts",
+        "tests/orchestration/delivery/sqlite-delivery-sink.test.ts",
+        "tests/orchestration/dead-letter-notification.test.ts"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "6",
+      "name": "Verification & Evidence",
+      "status": "closed",
+      "percent": 100,
+      "summary": "Verification policies (SHA-based and staleness-based), verification rules, verification results persistence (verification_results), and evidence lifecycle are integrated into SqliteVerificationRepo and VerificationService, fully wired in production composition.",
+      "keyDeliverables": [
+        "verification domain (sha-policy, stale-policy, rules) + services",
+        "evidence domain (immutability, lifecycle, content addressing) + services",
+        "SqliteVerificationRepoAdapter + SqliteVerificationRepo (verification_results)",
+        "VerificationService + verification-controller wired in composition"
+      ],
+      "evidence": [
+        "src/orchestration/verification",
+        "src/orchestration/evidence",
+        "src/orchestration/services/verification-service.ts",
+        "src/orchestration/api/controllers/verification-controller.ts",
+        "src/orchestration/composition.ts"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "7",
+      "name": "Completion Engine",
+      "status": "closed",
+      "percent": 100,
+      "summary": "Completion engine evaluates task completion decisions, writes immutable completion_decisions rows, enforces immutability via repository updates throwing COMPLETION_DECISION_IMMUTABLE, and publishes completion events.",
+      "keyDeliverables": [
+        "CompleteTaskRunService + CompletionDecisionService — atomic completion evaluation",
+        "SqliteCompletionRepo — persistent completion decisions with immutability enforcement",
+        "CompletionService + completion-controller wired in production runtime composition"
+      ],
+      "evidence": [
+        "src/orchestration/completion/services/complete-task-run-service.ts",
+        "src/orchestration/completion/services/decision-service.ts",
+        "src/orchestration/services/completion-service.ts",
+        "src/orchestration/composition.ts"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "8",
+      "name": "Orchestrator",
+      "status": "closed",
+      "percent": 100,
+      "summary": "ExecutionRegistry, agent task routing, delegation helpers, and production orchestration composition runtime (createProductionOrchestrationRuntime) assemble and wire the full services and persistence graph.",
+      "keyDeliverables": [
+        "src/agents/architect.ts — delegation helpers",
+        "src/lib/task-routing.ts — task-type classification",
+        "createProductionOrchestrationRuntime — fully assembled services graph (defined and tested)",
+        "ExecutionRegistry — run handle registry"
+      ],
+      "evidence": [
+        "src/agents/architect.ts",
+        "src/lib/task-routing.ts",
+        "src/orchestration/composition.ts",
+        "src/orchestration/services/execution-registry.ts"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "9",
+      "name": "Runtime Services",
+      "status": "closed",
+      "percent": 100,
+      "summary": "API controllers, HTTP routing, real OrchestrationMetrics (counters, histograms, gauges, JSON snapshot, Prometheus output), and HealthService with SqliteDbChecker, OutboxWorkerChecker, and ReplayServiceChecker registered in composition.",
+      "keyDeliverables": [
+        "API controllers + routes + middleware (validation/error-handler/auth)",
+        "HealthService — checkHealth/checkReadiness/checkLiveness with SqliteDbChecker, OutboxWorkerChecker, and ReplayServiceChecker",
+        "OrchestrationMetrics — real counters, gauges, histograms, JSON snapshot, and Prometheus formatting",
+        "Services graph — fully assembled run/contract/assignment/completion/verification/event/replay/health services"
+      ],
+      "evidence": [
+        "src/orchestration/api",
+        "src/orchestration/services/health-service.ts",
+        "src/orchestration/metrics/index.ts",
+        "src/orchestration/composition.ts",
+        "tests/orchestration/composition-deep.test.ts"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "10",
+      "name": "UI Integration",
+      "status": "superseded",
+      "percent": 100,
+      "summary": "SUPERSEDED under the CLI/plugin product boundary. FlowDeck ships as an OpenCode plugin + CLI (no web runtime, no UI framework dependencies). OpenCode Core owns all UI rendering (TUI, headless, web, mini). The architectural intent of Phase 10 is fully satisfied by the machine-consumable REST API and data projections.",
+      "keyDeliverables": [
+        "Machine-consumable REST API — GET /api/v1/orchestration/runs, /events, /contracts, /assignments, /verification (replaces run dashboard, event viewer, contract explorer, assignment timeline, verification viewer)",
+        "Data projections — src/orchestration/projections/verification-dashboard.ts (typed summary struct for any consumer)"
+      ],
+      "evidence": [
+        "src/orchestration/api/routes/index.ts",
+        "src/orchestration/projections/verification-dashboard.ts",
+        "docs/wiki/Architecture.md"
+      ],
+      "gaps": [],
+      "justification": "SUPERSEDED: FlowDeck is architecturally an OpenCode plugin (package.json peerDependency @opencode-ai/sdk, CLI bin flowdeck.js) — docs/wiki/Architecture.md explicitly assigns all UI rendering (TUI, headless, web, mini) to OpenCode Core. No UI framework dependency exists in package.json dependencies. All Phase 10 requirements (run dashboard, event viewer, contract explorer, assignment timeline, verification viewer) are satisfied by the machine-consumable REST API in src/orchestration/api/routes/index.ts (GET /api/v1/orchestration/runs, /events, /contracts, /assignments, /verification) plus data projections in src/orchestration/projections/. No runtime correctness requirement is discarded; the plugin/host boundary makes in-plugin UI integration architecturally impossible. Product boundary decision: FlowDeck ships CLI + plugin only, matching the frozen Phase 0-12 master-plan taxonomy's original scoping."
+    },
+    {
+      "id": "11",
+      "name": "Production Hardening",
+      "status": "closed",
+      "percent": 100,
+      "summary": "Extensive hardening evidence: chaos, concurrency, fault-injection, negative-path, performance, compliance, deep composition, delivery, and metrics test suites; pre-push verification pipeline; Dev 2 compatibility check.",
+      "keyDeliverables": [
+        "tests/orchestration/{chaos,concurrency,fault,negative,performance,compliance,harness,composition-deep}",
+        "run-integration-matrix.mjs + verify-schema.mjs + validate-artifacts.mjs",
+        "generate-orchestration-compliance.mjs (compatibility matrix + provenance)",
+        "pre-push.mjs fast/full verification pipeline",
+        "tsconfig.dev2-compat.json Dev 2 compatibility check"
+      ],
+      "evidence": [
+        "tests/orchestration/chaos",
+        "tests/orchestration/concurrency",
+        "tests/orchestration/fault",
+        "tests/orchestration/negative",
+        "tests/orchestration/performance",
+        "tests/orchestration/compliance",
+        "tests/orchestration/composition-deep.test.ts",
+        "scripts/pre-push.mjs"
+      ],
+      "gaps": []
+    },
+    {
+      "id": "12",
+      "name": "Documentation & Governance",
+      "status": "closed",
+      "percent": 100,
+      "summary": "Architecture documentation, dev2 contract domain spec, upgrade roadmap, and completion matrix generator/validator with evidence linkage and automated markdown generation.",
+      "keyDeliverables": [
+        "docs/roadmap/heidi-flowdeck-upgrade.md — runtime upgrade roadmap",
+        "docs/architecture/integration/dev2-contract-domain.md — contract-domain spec",
+        "docs/master-plan/completion-matrix.json — phase completion matrix",
+        "scripts/verify-completion-matrix.mjs — reproducible validator/reporter"
+      ],
+      "evidence": [
+        "docs/roadmap/heidi-flowdeck-upgrade.md",
+        "docs/architecture/integration/dev2-contract-domain.md",
+        "docs/master-plan/completion-matrix.json",
+        "scripts/verify-completion-matrix.mjs"
+      ],
+      "gaps": []
+    }
+  ]
+}

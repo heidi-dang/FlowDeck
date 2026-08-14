@@ -1,0 +1,42 @@
+{
+  "version": "2.0.0-alpha.2",
+  "sourceBranch": "chore/v2-alpha2-release-readiness",
+  "sourceSha": "658e59598d8c8ef952e9615a209e0fce70f6eb45",
+  "baseIntegrationSha": "50243bd0cd1d12d099f24189e815aeb59bb70837",
+  "packageVersion": "2.0.0-alpha.2",
+  "expectedTag": "v2.0.0-alpha.2",
+  "expectedNpmDistTag": "alpha",
+  "masterPlan": {
+    "percentage": 100,
+    "closed": 12,
+    "superseded": 1,
+    "partial": 0,
+    "open": 0
+  },
+  "v2Milestones": {
+    "percentage": 100,
+    "closed": 8,
+    "partial": 0,
+    "open": 0
+  },
+  "testBaseline": {
+    "fullPass": 3616,
+    "fullFail": 0,
+    "expectations": 9557,
+    "coveragePercent": 82.9,
+    "benchmarkCandidate": "14/14",
+    "benchmarkSerialReference": "14/14",
+    "restartRecovery": "14/14"
+  },
+  "schema": {
+    "frozen": { "tables": 53, "triggers": 36, "indexes": 66, "foreignKeyViolations": 0, "integrity": "ok" },
+    "postMigration": { "tables": 61, "triggers": 36, "indexes": 82, "foreignKeyViolations": 0, "integrity": "ok" }
+  },
+  "artifact": {
+    "filename": "heidi-dang-flowdeck-2.0.0-alpha.2.tgz",
+    "sizeBytes": 1185413,
+    "sha256": "33245d18f82b0bd4a38c6925ff65e0b07a647d6e63132d2710c03e988a994052"
+  },
+  "security": { "p0": 0, "p1": 0, "p2Correctness": 0, "tarballSecrets": 0 },
+  "releaseStatus": "READY_NOT_RELEASED"
+}

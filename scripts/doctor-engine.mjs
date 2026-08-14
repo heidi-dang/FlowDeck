@@ -30,6 +30,22 @@ export async function runDoctorChecks(directory) {
   const tryRead = (p) => { try { return readFileSync(p, "utf-8") } catch { return null } }
   const safeList = (p) => { try { return readdirSync(p) } catch { return [] } }
 
+  // ── Heidi persistent-agent runtime ───────────────────────────────────
+  const heidiDb = join(directory, ".flowdeck", "flowdeck.db")
+  if (existsSync(heidiDb)) {
+    checks.push({ id: "heidi.database", name: "Heidi Database", status: "pass", message: "Durable Heidi database exists" })
+    try {
+      const integrity = execFileSync("sqlite3", [heidiDb, "PRAGMA integrity_check;"], { encoding: "utf8", timeout: 3000 }).trim()
+      checks.push({ id: "heidi.integrity", name: "Heidi Database Integrity", status: integrity === "ok" ? "pass" : "fail", message: integrity === "ok" ? "SQLite integrity check passed" : "SQLite integrity check failed" })
+      const tables = execFileSync("sqlite3", [heidiDb, "SELECT count(*) FROM sqlite_master WHERE name LIKE 'heidi_%';"], { encoding: "utf8", timeout: 3000 }).trim()
+      checks.push({ id: "heidi.tables", name: "Heidi Persistent Tables", status: Number(tables) >= 10 ? "pass" : "warn", message: `${tables} Heidi tables available` })
+    } catch (error) {
+      checks.push({ id: "heidi.integrity", name: "Heidi Database Integrity", status: "warn", message: `SQLite diagnostic unavailable: ${error instanceof Error ? error.message : String(error)}` })
+    }
+  } else {
+    checks.push({ id: "heidi.database", name: "Heidi Database", status: "warn", message: "No Heidi database initialized yet", remediation: "Start a FlowDeck session to initialize durable state" })
+  }
+
   // ── 1. Package identity ────────────────────────────────────────────────
   const pkgPath = join(directory, "package.json")
   const pkgRaw = tryRead(pkgPath)

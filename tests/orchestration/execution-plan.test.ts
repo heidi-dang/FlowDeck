@@ -1,0 +1,11 @@
+import { describe, expect, it } from "bun:test"
+import { analyzeDependencies, assertWorkstreamTransition, normalizeOwnership, ownershipOverlaps, type ExecutionPlan } from "../../src/orchestration/execution"
+
+const base = (id: string, deps: string[] = [], paths = [`src/${id}.ts`]) => ({ workstreamId: id, runId: "run-1", planId: "plan-1", resolvedAgent: "agent", requiredCapability: "backend", objective: id, requirements: [id], acceptanceCriteria: [id], ownedPaths: paths, ownedSymbols: [], dependsOn: deps, strategy: "direct", budgetProfile: "normal" as const, contextScope: "owned" as const, status: "planned" as const, blockedBy: [], createdAt: "2026-08-09T00:00:00.000Z" })
+const plan = (...ws: ReturnType<typeof base>[]): ExecutionPlan => ({ planId: "plan-1", runId: "run-1", routingDecisionId: "decision-1", sourceSha: "0123456789abcdef0123456789abcdef01234567", policyVersion: "2.0.0", workstreams: ws, createdAt: "2026-08-09T00:00:00.000Z" })
+
+describe("execution plan dependency safety", () => {
+  it("builds deterministic waves and critical path", () => { const d = analyzeDependencies(plan(base("a"), base("b", ["a"]), base("c", ["a"]), base("d", ["b", "c"]))); expect(d.waves).toEqual([{ index: 0, workstreamIds: ["a"] }, { index: 1, workstreamIds: ["b", "c"] }, { index: 2, workstreamIds: ["d"] }]); expect(d.criticalPath[0]).toBe("d") })
+  it("rejects cycles, missing dependencies, overlap, and path escape", () => { expect(() => analyzeDependencies(plan(base("a", ["b"]), base("b", ["a"])))).toThrow("DEPENDENCY_CYCLE"); expect(() => analyzeDependencies(plan(base("a", ["missing"])))).toThrow("UNKNOWN_DEPENDENCY"); expect(() => analyzeDependencies(plan(base("a", [], ["src/x"]), base("b", [], ["src/x/y"])))).toThrow("OVERLAPPING_OWNERSHIP"); expect(() => normalizeOwnership(["../escape"])).toThrow("OWNERSHIP_PATH_ESCAPE") })
+  it("normalizes ownership and validates transitions", () => { expect(normalizeOwnership(["src\\a.ts", "./src/a.ts"])).toEqual(["src/a.ts"]); expect(ownershipOverlaps(["src/api"], ["src/api/a.ts"])).toBe(true); assertWorkstreamTransition("planned", "ready"); expect(() => assertWorkstreamTransition("integrated", "running")).toThrow("INVALID_WORKSTREAM_TRANSITION") })
+})

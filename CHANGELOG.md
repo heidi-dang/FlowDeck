@@ -5,6 +5,99 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-rc.1] - 2026-08-13
+
+### Added
+
+- **Runtime Identity Verification**: Validates runtime identity and configuration consistency.
+- **Stale OpenCode FlowDeck Cache Discovery & Cleanup**: Discovers and cleans up stale OpenCode FlowDeck plugin caches.
+- **Config vs Loaded Runtime Mismatch Detection**: Detects mismatches between configured settings and loaded runtime modules.
+
+### Fixed
+
+- **Doctor Packaging Fix**: Corrected doctor check/apply module exports and packaging paths.
+
+## [2.0.0-alpha.4] - 2026-08-11
+
+### Publication status
+
+- **v2.0.0-alpha.4 supersedes the failed/unpublished v2.0.0-alpha.3 publication attempt.** The alpha.3 npm release was never published (the tag-triggered publish run `31480180293` failed in `Run Tests` before the publish step).
+- The `v2.0.0-alpha.3` tag remains an immutable historical release record (tag object `51d5eb30…`, peeled commit `1a2e695`) and is not modified or republished.
+- alpha.4 is the first published candidate of the post-M9 v2 line on the `alpha` npm dist-tag.
+
+### Fixed
+
+- **Schema fail-closed release-runner fix**: `scripts/check-schema-generated.mjs` now invokes the *detected* SQLite CLI path through the validation boundary instead of a literal `sqlite3` from PATH. A detected-but-broken or injected SQLite executable fails closed (non-zero exit) and can no longer be silently bypassed. This closes the exact regression that blocked the alpha.3 publication (`tests/check-schema-fallback.test.ts`, previously failing at line 386 with "Expected: not 0").
+- **Post-migration schema gate realigned**: `scripts/orchestration/verify-schema.mjs` expected counts were stale (62/84) relative to the merged migration-registry state on the release line (migration v7 `assignment_execution_bindings` added 1 table + 3 indexes). The live post-migration contract is now asserted as 63 tables / 87 indexes / 36 triggers; the frozen v1 gate (53/66/36) is unchanged. Fresh, existing-v6→v7, and repeated-startup migrations verified.
+
+### Added
+
+- M1-M9 V2 autonomous execution remains 9/9 CLOSED with the Master Plan at 100%.
+- Release regression coverage proving alpha.4 maps to the `alpha` npm dist-tag, `latest` is never overwritten, tag/version alignment, and that the historical alpha.3 tag need not equal the current release-line HEAD.
+
+### Known limitations (alpha)
+
+- Semver prerelease: 2.0.0-alpha.4 does not imply stable-channel guarantees.
+- Verification-reuse fast-path still re-verifies on recovery (outcome-correct, decision deduped) — see milestone evidence.
+
+## [2.0.0-alpha.3] - 2026-08-11
+
+
+### Added
+
+- M1-M9 V2 autonomous execution: 9/9 milestones CLOSED, Master Plan 100%.
+- Canonical executable commands (task/start, plan, execute, verify, complete, review/audit, resume/recover, status) with durable idempotency (20-way).
+- Scheduler/workstream/Assignment dispatch with durable assignment binding.
+- Canonical token governance, worktree isolation, ownership controls.
+- Canonical verification, evidence, and six-gate Completion Engine.
+- Fresh-runtime recovery R1-R15: nonterminal resume after process restart, terminal projection with zero rerun, concurrent-recovery single-flight, historical command-version preservation.
+- Pre-merge controlled dogfooding (D1-D15) + soak: 57 runs, zero unexpected failures/hangs/leaks.
+
+### Fixed
+
+- Completion regression: real VerificationResult/Evidence now reach the Completion Engine on the required-verification path (current-SHA gate no longer starved).
+- Worktree integration gate no longer bypassed (agent verificationPassed is authoritative).
+- Cancellation now cascades to logical Assignments (no zombie assignments).
+- Recovery claim acquisition serialized (BEGIN IMMEDIATE); SHA-scoped recovery fast-path.
+
+### Known limitations (alpha)
+
+- Semver prerelease: 2.0.0-alpha.3 does not imply stable-channel guarantees.
+- Verification-reuse fast-path still re-verifies on recovery (outcome-correct, decision deduped) — see milestone evidence.
+
+## [2.0.0-alpha.2] - 2026-08-09
+
+### Added
+
+- Release candidate for the integrated v2 execution runtime on the `alpha` npm channel.
+- Deterministic task intelligence, dependency-aware workstream execution, isolated worktrees, adaptive token control, capability-specific agent performance profiles, gated authoritative routing, optional FDX indexing/daemon support, unified observability, B1–B14 benchmark validation, and crash/recovery/security hardening.
+
+### Verification
+
+- Master Plan: 100% (12 CLOSED, 1 SUPERSEDED, 0 PARTIAL, 0 OPEN).
+- V2 milestones M1–M8: 100% CLOSED.
+- Historical pre-benchmark baseline is not comparable to the current benchmark surface; no unsupported historical performance improvement is claimed.
+- This release remains prerelease and is not promoted to `latest`.
+
+## [2.0.0-alpha.1] - 2026-08-09
+
+### Added
+
+- **v2 integration line**: the completed Orchestration Master Plan (Phases 0–12, 100% complete — 12 CLOSED, 1 SUPERSEDED) is now integrated into the shipped product. The durable orchestration runtime — event store, delivery/outbox engine, completion engine, verification & evidence system, contract system, health checks, and real metrics — is part of the plugin, not an internal spec.
+- **Release channel derivation**: `scripts/release-channel.mjs` is the single authority: `alpha.*` → `alpha`, `beta.*` → `beta`, `rc.*` → `next`, stable → `latest`, and unsupported/malformed versions fail closed.
+- `tests/release-channel.test.ts`: lifecycle matrix coverage, exact CLI output, and rejection regressions.
+- `tests/publish-workflow-order.test.ts`: invariant 12 requires the publish step to derive the dist-tag from `scripts/release-channel.mjs` and pass it explicitly to `npm publish --tag`.
+- `scripts/release-alignment.mjs`: verifies release-channel derivability and that pre-release/stable versions map to the correct channel.
+
+### Changed
+
+- Development version bumped to `2.0.0-alpha.1` across `package.json`, `package-lock.json`, `src/index.ts` (runtime agent-policy `pkgVersion`), and release-registry test fixtures.
+- README updated for the v2 architecture, a separate "FlowDeck v1 vs v2" comparison, stable/alpha install channels, and release-policy notes.
+
+### Compatibility
+
+- No configuration migration is required from v1.x. This is a development release on the `alpha` npm channel; stable 1.x releases remain on `latest`.
+
 ## [1.0.3] - 2026-07-31
 
 ### Fixed

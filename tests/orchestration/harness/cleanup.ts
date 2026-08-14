@@ -177,22 +177,26 @@ export async function deterministicCleanup(ctx: CleanupContext): Promise<void> {
     }
   }
 
-  // Stage 3: Shut down WAL and strict-close the owned primary connection
-  if (dbInstance && !(owned?.closed)) {
-    const walError = shutdownWal(dbInstance);
-    if (walError) failures.push(walError);
-    const closeError = strictClose(dbInstance, "primary");
-    if (closeError) failures.push(closeError);
-    else if (owned) owned.closed = true;
-  }
-
-  // Stage 4: Strict-close every extra connection
+  // Stage 3: Strict-close every extra connection BEFORE the primary WAL
+  // checkpoint. An extra connection holding a WAL read snapshot — even one
+  // whose only activity is a read plus an open write transaction — blocks a
+  // TRUNCATE checkpoint (busy: 1), so extras must be released first to get a
+  // clean shutdown. Closing first also rolls back any open extra transaction.
   if (extraConnections) {
     for (let i = 0; i < extraConnections.length; i++) {
       const conn = extraConnections[i];
       const closeError = strictClose(conn, `extra-${i}`);
       if (closeError) failures.push(closeError);
     }
+  }
+
+  // Stage 4: Shut down WAL and strict-close the owned primary connection
+  if (dbInstance && !(owned?.closed)) {
+    const walError = shutdownWal(dbInstance);
+    if (walError) failures.push(walError);
+    const closeError = strictClose(dbInstance, "primary");
+    if (closeError) failures.push(closeError);
+    else if (owned) owned.closed = true;
   }
 
   // Stage 5: Remove files with bounded per-target retry (no shared deadline).

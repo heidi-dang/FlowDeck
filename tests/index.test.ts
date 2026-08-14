@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync
 import { tmpdir } from "os"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"
+import { closeAllConnections } from "@/orchestration/persistence"
 import flowDeckPlugin from "@/index"
 
 function makeTempDir(): string {
@@ -63,8 +64,10 @@ describe("plugin entry", () => {
     writeState(dir)
   })
 
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+  afterEach(async () => {
+    closeAllConnections()
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
   })
 
@@ -208,8 +211,10 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
     dir = makeTempDir()
   })
 
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+  afterEach(async () => {
+    closeAllConnections()
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
   })
 
@@ -270,8 +275,10 @@ describe("plugin entry: toolGuardHook wiring (bug 3b)", () => {
     writeFileSync(join(planningDir(dir), "STATE.md"), "phase: 1\nstatus: planned")
   })
 
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true })
+  afterEach(async () => {
+    closeAllConnections()
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
     if (prevEnv === undefined) delete process.env.FLOWDECK_TOOL_GUARD_ENABLED
     else process.env.FLOWDECK_TOOL_GUARD_ENABLED = prevEnv

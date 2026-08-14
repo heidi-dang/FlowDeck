@@ -1,0 +1,22 @@
+import { describe, expect, it } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { FdxDaemon, fdxDaemonRequest } from "../src/services/fdx-daemon"
+describe("optional FDX daemon", () => { it("serves structured bounded cache requests and isolates workspaces", async () => { const root = mkdtempSync(join(tmpdir(), "fdx-daemon-")); const socket = join(root, "fdx.sock"); const a = join(root, "a"); const b = join(root, "b"); require("node:fs").mkdirSync(a); require("node:fs").mkdirSync(b); const daemon = new FdxDaemon({ socketPath: socket, workspaceRoot: root }); try { await daemon.start(); expect((await fdxDaemonRequest<unknown>(socket, { method: "put", workspace: a, key: "outline", value: { a: 1 } }, () => null)).source).toBe("daemon"); expect((await fdxDaemonRequest<unknown>(socket, { method: "get", workspace: a, key: "outline" }, () => null)).value).toEqual({ a: 1 }); expect((await fdxDaemonRequest<unknown>(socket, { method: "get", workspace: b, key: "outline" }, () => "fallback")).value).toBeUndefined(); expect((await fdxDaemonRequest<unknown>(socket, { method: "get", workspace: a, key: "outline" }, () => "fallback")).source).toBe("daemon") } finally { await daemon.stop(); rmSync(root, { recursive: true, force: true }) } }); it("falls back when daemon is unavailable", async () => { expect(await fdxDaemonRequest("/tmp/no-flowdeck-fdx.sock", { method: "health", workspace: "/tmp" }, () => "safe", 50)).toEqual({ value: "safe", source: "fallback" }) }) })
+
+describe("optional FDX daemon hardening", () => {
+  it("fails closed for malformed methods, traversal, and oversized values", async () => {
+    const root = mkdtempSync(join(tmpdir(), "fdx-daemon-hardening-"))
+    const socket = join(root, "fdx.sock")
+    const workspace = join(root, "workspace")
+    require("node:fs").mkdirSync(workspace)
+    const daemon = new FdxDaemon({ socketPath: socket, workspaceRoot: root, maxValueBytes: 32 })
+    try {
+      await daemon.start()
+      expect(await fdxDaemonRequest(socket, { method: "not-allowed" as never, workspace }, () => "safe")).toEqual({ value: "safe", source: "fallback" })
+      expect(await fdxDaemonRequest(socket, { method: "health", workspace: join(root, "..") }, () => "safe")).toEqual({ value: "safe", source: "fallback" })
+      expect(await fdxDaemonRequest(socket, { method: "put", workspace, key: "large", value: "x".repeat(100) }, () => "safe")).toEqual({ value: "safe", source: "fallback" })
+    } finally { await daemon.stop(); rmSync(root, { recursive: true, force: true }) }
+  })
+})

@@ -53,7 +53,7 @@ Usage:
   flowdeck install              Install plugin in opencode.json
   flowdeck install --project    Install in project .opencode/
   flowdeck install --local-repo Install from local checkout
-  flowdeck clean-install        Atomic clean reinstall with rollback
+  flowdeck clean-install        Atomic clean reinstall with guided migration
   flowdeck update               Update plugin registration
   flowdeck verify               Verify package identity and registration
   flowdeck doctor               Run comprehensive diagnostics
@@ -63,6 +63,7 @@ Usage:
   flowdeck uninstall            Remove plugin registration
   flowdeck dry-run              Show what would be done
   flowdeck --help               Show help
+  flowdeck clean-install --yes   Non-interactive clean reinstall
 
 Package: ${PKG_NAME}
 Version: ${PKG_VERSION}
@@ -852,6 +853,8 @@ async function cmdCleanInstall() {
     keepBackup: args.includes("--keep-backup"),
     localRepo: extractArg(args, "--local-repo"),
     verbose: args.includes("--verbose") || args.includes("-v"),
+    yes: args.includes("--yes") || args.includes("-y"),
+    nonInteractive: args.includes("--non-interactive") || args.includes("--yes") || args.includes("-y"),
     help: args.includes("--help") || args.includes("-h"),
   })
 
