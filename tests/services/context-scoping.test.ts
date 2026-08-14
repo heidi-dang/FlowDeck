@@ -6,8 +6,15 @@ import {
   estimateReplayTokens,
 } from "../../src/services/context-scoping"
 import { MAX_CONTEXT_PACKET_TOKENS } from "../../src/services/token-optimizer-service"
+import { buildRuntimeProjection } from "../../src/services/runtime-projection"
 
 describe("buildAssignmentContext", () => {
+  it("includes a bounded runtime projection without environment secrets", () => {
+    const result = buildAssignmentContext({ assignment: "inspect runtime", runtimeProjection: buildRuntimeProjection("/repo") })
+    expect(result.prompt).toContain("Runtime Projection")
+    expect(result.prompt).toContain("bun: 1.3.14")
+    expect(result.prompt).not.toMatch(/API_KEY|SECRET|TOKEN|authorization/i)
+  })
   it("produces a bounded prompt under the context packet budget", () => {
     const result = buildAssignmentContext({
       target: "src/services/token-budget.ts",

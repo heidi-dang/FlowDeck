@@ -9,10 +9,11 @@ export interface WorkstreamContextInput {
   contextScope: "owned" | "related" | "audit"
   strategy: string
   dependencyEvidence?: string[]
+  runtimeProjection?: string
 }
 
 /** Build the bounded child packet consumed by an execution workstream. */
-export function buildWorkstreamContext(input: WorkstreamContextInput, artifactReferences: string[] = []): AssignmentContextResult {
+export function buildWorkstreamContext(input: WorkstreamContextInput, artifactReferences: string[] = [], runtimeProjection?: string): AssignmentContextResult {
   return buildAssignmentContext({
     target: input.workstreamId,
     patterns: input.ownedPaths,
@@ -21,5 +22,6 @@ export function buildWorkstreamContext(input: WorkstreamContextInput, artifactRe
     acceptanceCriteria: input.acceptanceCriteria,
     relevantFiles: input.ownedPaths,
     externalizedArtifacts: [...(input.dependencyEvidence ?? []), ...artifactReferences],
+    runtimeProjection: runtimeProjection ?? input.runtimeProjection,
   })
 }

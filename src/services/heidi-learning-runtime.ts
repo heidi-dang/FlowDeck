@@ -3,25 +3,26 @@ import { randomUUID } from "node:crypto"
 import { HeidiPersistentAgentStore } from "./heidi-persistent-agent"
 
 export type LearningType = "USER_MEMORY" | "AGENT_MEMORY" | "REPO_MEMORY" | "SKILL_PATCH" | "SKILL_CREATE" | "SKILL_REFERENCE_ADD" | "SKILL_CORRECTION" | "NO_ACTION"
+export type LearningReviewOutcome = "NO_ACTION" | "INSUFFICIENT_EVIDENCE" | "DUPLICATE" | "REJECTED" | "POLICY_BLOCKED" | "CANDIDATE_CREATED" | "PERSISTENCE_FAILED"
 const iso = () => new Date().toISOString()
 export class HeidiLearningRuntime {
   private readonly memory: HeidiPersistentAgentStore
   constructor(private readonly db: Database) { this.memory = new HeidiPersistentAgentStore(db) }
-  reviewCompletion(input: { completionKey: string; sessionId?: string; taskRunId?: string; repository?: string; verified: boolean; summary?: string; evidence?: string[]; policy?: "off" | "auto" | "review" }): { status: string; candidateId?: string } {
+  reviewCompletion(input: { completionKey: string; sessionId?: string; taskRunId?: string; repository?: string; verified: boolean; summary?: string; evidence?: string[]; policy?: "off" | "auto" | "review" }): { status: LearningReviewOutcome; candidateId?: string } {
     const existing = this.db.query("SELECT status,candidate_id FROM heidi_completion_reviews WHERE completion_key=?").get(input.completionKey) as { status: string; candidate_id?: string } | null
-    if (existing) return { status: existing.status === "completed" ? (existing.candidate_id ? "candidate_created" : "NO_ACTION") : existing.status, candidateId: existing.candidate_id }
+    if (existing) return { status: existing.status === "completed" ? (existing.candidate_id ? "CANDIDATE_CREATED" : "NO_ACTION") : "PERSISTENCE_FAILED", candidateId: existing.candidate_id }
     const now = iso(); const reviewId = randomUUID()
     this.db.query("INSERT INTO heidi_completion_reviews (id,completion_key,session_id,task_run_id,status,created_at) VALUES (?,?,?,?,?,?)").run(reviewId,input.completionKey,input.sessionId ?? null,input.taskRunId ?? null,"running",now)
     try {
-      if (!input.verified) { this.db.query("UPDATE heidi_completion_reviews SET status='completed', completed_at=? WHERE id=?").run(iso(), reviewId); return { status: "NO_ACTION" } }
+      if (!input.verified) { this.db.query("UPDATE heidi_completion_reviews SET status='completed', completed_at=? WHERE id=?").run(iso(), reviewId); return { status: "INSUFFICIENT_EVIDENCE" } }
       const summary = (input.summary ?? "").trim()
       if (!summary || summary.length < 24 || /temporary|todo|speculation/i.test(summary)) { this.db.query("UPDATE heidi_completion_reviews SET status='completed', completed_at=? WHERE id=?").run(iso(), reviewId); return { status: "NO_ACTION" } }
-      if (input.policy === "off") { this.db.query("UPDATE heidi_completion_reviews SET status='completed', completed_at=? WHERE id=?").run(iso(), reviewId); return { status: "NO_ACTION" } }
+      if (input.policy === "off") { this.db.query("UPDATE heidi_completion_reviews SET status='completed', completed_at=? WHERE id=?").run(iso(), reviewId); return { status: "POLICY_BLOCKED" } }
       const candidate = this.propose({ type: "AGENT_MEMORY", content: summary.slice(0, 4000), provenance: { completionKey: input.completionKey, repository: input.repository, verified: true }, evidence: input.evidence, confidence: 0.75, sessionId: input.sessionId, taskRunId: input.taskRunId }) as { id: string }
       if (input.policy === "auto") this.decide(candidate.id, "approve", "automatic-policy")
       this.db.query("UPDATE heidi_completion_reviews SET status='completed', candidate_id=?, completed_at=? WHERE id=?").run(candidate.id, iso(), reviewId)
-      return { status: "candidate_created", candidateId: candidate.id }
-    } catch (error) { this.db.query("UPDATE heidi_completion_reviews SET status='failed', error=?, completed_at=? WHERE id=?").run(String(error), iso(), reviewId); return { status: "failed" } }
+      return { status: "CANDIDATE_CREATED", candidateId: candidate.id }
+    } catch (error) { this.db.query("UPDATE heidi_completion_reviews SET status='failed', error=?, completed_at=? WHERE id=?").run(String(error), iso(), reviewId); return { status: "PERSISTENCE_FAILED" } }
   }
   propose(input: { type: LearningType; content: string; provenance: Record<string, unknown>; evidence?: string[]; confidence: number; sessionId?: string; taskRunId?: string }): unknown {
     if (input.type === "NO_ACTION") return { type: input.type, status: "ignored" }

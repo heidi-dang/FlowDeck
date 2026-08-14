@@ -7,6 +7,7 @@ import type { WorkstreamBudgetHandle } from "../../services/adaptive-execution-c
 import type { PerformanceOutcomeFacts, SqlitePerformanceRepository } from "../performance/sqlite-repository"
 import { buildWorkstreamContext } from "./context"
 import type { AssignmentContextResult } from "../../services/context-scoping"
+import { buildRuntimeProjection } from "../../services/runtime-projection"
 
 export interface IsolatedExecutionResult extends PerformanceOutcomeFacts {}
 export interface IsolatedWorkstreamExecutor { execute(workstream: ExecutionWorkstream, allocation: WorktreeAllocation, budget?: WorkstreamBudgetHandle, context?: AssignmentContextResult): Promise<"succeeded" | "failed" | IsolatedExecutionResult> }
@@ -36,11 +37,12 @@ export class WorktreeExecutionService {
     }
     return { ...recovery, repairedIntegrations: recovery.repairedIntegrations + integrationRepairs }
   }
-  async executePlan(planId: string, sourceSha: string, executor: IsolatedWorkstreamExecutor): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }> {
+  async executePlan(planId: string, sourceSha: string, executor: IsolatedWorkstreamExecutor, runtimeProjection?: string): Promise<{ succeeded: string[]; failed: string[]; blocked: string[] }> {
     const initialPlan = this.repository.getPlan(planId)
     if (!initialPlan) throw new Error("EXECUTION_PLAN_NOT_FOUND")
     if (initialPlan.sourceSha !== sourceSha) throw new Error("EXECUTION_SOURCE_SHA_MISMATCH")
     const aggregate = { succeeded: [] as string[], failed: [] as string[], blocked: [] as string[] }
+    const childRuntimeProjection = runtimeProjection ?? buildRuntimeProjection()
     for (let wave = 0; wave < 100; wave++) {
       const ready = this.repository.listReady(planId); if (!ready.length) break
       // A dependency wave must see the integrations from prior waves. The
@@ -69,7 +71,7 @@ export class WorktreeExecutionService {
         for (const allocation of allocations.values()) { const lease = this.repository.listLeases(this.repository.getPlan(planId)!.runId).find(l => l.worktreeId === allocation.worktreeId && ["allocated", "active", "renewing"].includes(l.state)); if (lease) this.repository.releaseLease(lease.leaseId); try { this.worktrees.remove(allocation) } catch {} }
         throw error
       }
-      const result = await this.scheduler.runReady(planId, { execute: async workstream => { const allocation = allocations.get(workstream.workstreamId)!; const startedAt = Date.now(); try { const context = buildWorkstreamContext(workstream, []); const output = await executor.execute(workstream, allocation, budgets.get(workstream.workstreamId), context); const outcome = typeof output === "string" ? { status: output, integrationPassed: false, durationMs: Date.now() - startedAt } : { ...output, durationMs: output.durationMs ?? Date.now() - startedAt }; facts.set(workstream.workstreamId, outcome); return outcome.status } catch { facts.set(workstream.workstreamId, { status: "failed", integrationPassed: false, durationMs: Date.now() - startedAt, terminationReason: "execution_failed" }); return "failed" } } })
+      const result = await this.scheduler.runReady(planId, { execute: async workstream => { const allocation = allocations.get(workstream.workstreamId)!; const startedAt = Date.now(); try { const context = buildWorkstreamContext(workstream, [], childRuntimeProjection); const output = await executor.execute(workstream, allocation, budgets.get(workstream.workstreamId), context); const outcome = typeof output === "string" ? { status: output, integrationPassed: false, durationMs: Date.now() - startedAt } : { ...output, durationMs: output.durationMs ?? Date.now() - startedAt }; facts.set(workstream.workstreamId, outcome); return outcome.status } catch { facts.set(workstream.workstreamId, { status: "failed", integrationPassed: false, durationMs: Date.now() - startedAt, terminationReason: "execution_failed" }); return "failed" } } })
       for (const workstreamId of [...result.succeeded].sort()) {
         const allocation = allocations.get(workstreamId)!
         try {

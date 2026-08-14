@@ -205,7 +205,7 @@ export async function sessionStartHook(
   // Silent fdx availability check — does not block session start.
   const fdxReady = isFdxAvailable()
   if (log && !fdxReady) {
-    log("[session-start] fdx not available — install it with `bun run build:fdx`")
+    log("[session-start] fdx native binary unavailable — TypeScript fallback active")
   }
 
   // Every task runs the same pipeline — there is no workflow classification.

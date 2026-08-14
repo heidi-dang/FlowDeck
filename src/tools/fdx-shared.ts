@@ -10,7 +10,8 @@
 
 import { execFileSync } from "node:child_process"
 import { existsSync, readFileSync, readdirSync, statSync, promises as fsPromises } from "fs"
-import { join, resolve } from "path"
+import { dirname, join, resolve } from "path"
+import { fileURLToPath } from "node:url"
 import {
   topicContextPath,
   topicDecisionsPath,
@@ -192,17 +193,35 @@ export function resolveFdxBinaryPath(): string | null {
     if (existsSync(resolved)) {
       try {
         const st = statSync(resolved)
-        if (st.isFile()) return resolved
+      if (st.isFile() && isCompatibleFdx(resolved)) return resolved
       } catch {}
     }
     return null
   }
+  const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..")
+  const platformName = `${process.platform}-${process.arch}`
+  for (const candidate of [
+    join(packageRoot, "native", "fdx", platformName, process.platform === "win32" ? "fdx.exe" : "fdx"),
+    join(packageRoot, "native", platformName, process.platform === "win32" ? "fdx.exe" : "fdx"),
+  ]) {
+    if (!existsSync(candidate)) continue
+    try {
+      const st = statSync(candidate)
+      if (st.isFile() && (process.platform === "win32" || (st.mode & 0o111) !== 0) && isCompatibleFdx(candidate)) return candidate
+    } catch { /* continue probing */ }
+  }
   try {
     execFileSync("fdx", ["--help"], { stdio: "ignore", shell: false })
-    return "fdx"
+    const output = execFileSync("fdx", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()
+    return /^fdx\s+0\.1\./.test(output) ? "fdx" : null
   } catch {
     return null
   }
+}
+
+function isCompatibleFdx(binary: string): boolean {
+  try { return /^fdx\s+0\.1\./.test(execFileSync(binary, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000 }).trim()) }
+  catch { return false }
 }
 
 export function checkFdxAvailability(forceRefresh = false): boolean {
@@ -247,7 +266,7 @@ function fdxBin(): string {
   if (shouldDisableFallback()) {
     throw new Error(`[FDX Fallback Disabled] Native binary unavailable. FDX_BINARY_PATH="${process.env.FDX_BINARY_PATH || ""}"`)
   }
-  throw new Error("fdx not found in PATH — install it with `bun run build:fdx` or set FDX_BINARY_PATH")
+  throw new Error("fdx native binary unavailable; TypeScript fallback is active. Install a supported FlowDeck package artifact or set FDX_BINARY_PATH")
 }
 
 const FDX_TIMEOUT_MS = 30_000
@@ -645,4 +664,3 @@ export async function nativeDecisionsFallback(args: {
     return res.exists ? res.content : `[No decisions recorded for topic "${args.topic}"]`
   }
 }
-

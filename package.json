@@ -42,6 +42,7 @@
     "install.sh",
     "crates/fdx",
     "!crates/fdx/target/**",
+    "native",
     "!**/*.tmp.*",
     "!**/*.bak.*"
   ],
