@@ -16,6 +16,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, utimesSync, 
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"
 import { tmpdir } from "os"
+import { closeAllConnections } from "@/orchestration/persistence"
 
 import { sessionStartHook } from "@/hooks/session-start"
 import { invalidateRuleCache, getRuleCacheSize } from "@/services/lazy-rule-loader"
@@ -61,6 +62,7 @@ describe("session-start — lean context: .flowdeck/lessons.md loading", () => {
   })
 
   afterEach(() => {
+    closeAllConnections()
     rmSync(dir, { recursive: true, force: true })
     rmSync(planningDir(dir), { recursive: true, force: true })
     invalidateRuleCache()
@@ -141,6 +143,7 @@ describe("session-start — lean context: language rule selection", () => {
   })
 
   afterEach(() => {
+    closeAllConnections()
     rmSync(dir, { recursive: true, force: true })
     rmSync(planningDir(dir), { recursive: true, force: true })
     invalidateRuleCache()
@@ -255,6 +258,7 @@ describe("session-start — lean context: integration with .flowdeck/lessons.md 
   })
 
   afterEach(() => {
+    closeAllConnections()
     rmSync(dir, { recursive: true, force: true })
     rmSync(planningDir(dir), { recursive: true, force: true })
     invalidateRuleCache()

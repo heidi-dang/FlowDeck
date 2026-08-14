@@ -14,6 +14,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync
 import { tmpdir } from "os"
 import { join } from "path"
 import { planningDir } from "@/tools/planning-state-lib"
+import { closeAllConnections } from "@/orchestration/persistence"
 import flowDeckPlugin from "@/index"
 
 function makeTempDir(): string {
@@ -64,6 +65,7 @@ describe("plugin entry", () => {
   })
 
   afterEach(() => {
+    closeAllConnections()
     rmSync(dir, { recursive: true, force: true })
     rmSync(planningDir(dir), { recursive: true, force: true })
   })
@@ -209,6 +211,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
   })
 
   afterEach(() => {
+    closeAllConnections()
     rmSync(dir, { recursive: true, force: true })
     rmSync(planningDir(dir), { recursive: true, force: true })
   })
@@ -271,6 +274,7 @@ describe("plugin entry: toolGuardHook wiring (bug 3b)", () => {
   })
 
   afterEach(() => {
+    closeAllConnections()
     rmSync(dir, { recursive: true, force: true })
     rmSync(planningDir(dir), { recursive: true, force: true })
     if (prevEnv === undefined) delete process.env.FLOWDECK_TOOL_GUARD_ENABLED

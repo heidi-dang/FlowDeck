@@ -9,7 +9,7 @@ const SQL_FILE = 'schema-v0.2.6.sql';
 const EMBED_FILE = 'src/orchestration/persistence/migrations/schema-embed.ts';
 const TMP_DB = join(tmpdir(), 'fd-schema-check.db');
 
-const sql = readFileSync(SQL_FILE, 'utf-8');
+const sql = readFileSync(SQL_FILE, 'utf-8').replace(/\r\n/g, '\n');
 const checksum = createHash('sha256').update(sql, 'utf-8').digest('hex');
 const embed = readFileSync(EMBED_FILE, 'utf-8');
 const m = embed.match(/Canonical checksum: ([a-f0-9]+)/);

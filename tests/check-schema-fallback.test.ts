@@ -67,7 +67,10 @@ function createTempScript(schemaContent: string, embedContent: string): string {
   const tmpEmbedPathEscaped = tmpEmbed.replace(/\\/g, "/");
   const modified = original
     .replace(/const SQL_FILE = 'schema-v0.2.6.sql';/, `const SQL_FILE = '${tmpSchemaPathEscaped}';`)
-    .replace(/src\/orchestration\/persistence\/migrations\/schema-embed\.ts/, tmpEmbedPathEscaped);
+    .replace(
+      /const EMBED_FILE = 'src\/orchestration\/persistence\/migrations\/schema-embed\.ts';/,
+      `const EMBED_FILE = '${tmpEmbedPathEscaped}';`,
+    );
 
   writeFileSync(tmpScript, modified);
   return tmpScript;
