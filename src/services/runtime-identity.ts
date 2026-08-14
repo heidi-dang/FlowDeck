@@ -115,12 +115,16 @@ export function getExecutingRuntimeIdentity(metaUrl?: string): FlowDeckRuntimeId
  * Records the runtime identity self-report into `.flowdeck/runtime-self-report.json`.
  */
 export function recordRuntimeSelfReport(identity: FlowDeckRuntimeIdentity, directory: string): void {
-  const flowdeckDir = join(directory, ".flowdeck")
-  if (!existsSync(flowdeckDir)) {
-    mkdirSync(flowdeckDir, { recursive: true })
+  try {
+    const flowdeckDir = join(directory, ".flowdeck")
+    if (!existsSync(flowdeckDir)) {
+      mkdirSync(flowdeckDir, { recursive: true })
+    }
+    const filePath = join(flowdeckDir, "runtime-self-report.json")
+    writeFileSync(filePath, JSON.stringify(identity, null, 2), "utf-8")
+  } catch {
+    // Ignore filesystem write failures (e.g. invalid directory, read-only filesystem, missing permissions)
   }
-  const filePath = join(flowdeckDir, "runtime-self-report.json")
-  writeFileSync(filePath, JSON.stringify(identity, null, 2), "utf-8")
 }
 
 /**

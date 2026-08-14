@@ -141,6 +141,24 @@ describe("runtime-identity service", () => {
       expect(readBack).toEqual(identity)
     })
 
+    it("should gracefully handle filesystem write failures without throwing", () => {
+      // Arrange
+      const identity: FlowDeckRuntimeIdentity = {
+        packageName: "flowdeck-test",
+        version: "2.0.0",
+        moduleUrl: "file:///test/index.ts",
+        packageRoot: tempDir,
+        source: "file",
+        pid: 1234,
+        startedAt: new Date().toISOString(),
+      }
+
+      // Act & Assert - pass an invalid directory or path where write fails
+      expect(() => {
+        recordRuntimeSelfReport(identity, "\0invalid_path")
+      }).not.toThrow()
+    })
+
     it("should return null if runtime report does not exist", () => {
       // Act
       const result = readRuntimeSelfReport(tempDir)
