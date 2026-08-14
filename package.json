@@ -35,6 +35,7 @@
     "src/rules",
     "src/skills",
     "src/doctor",
+    "src/services",
     "docs",
     "!docs/releases/*-readiness.json",
     "postinstall.mjs",

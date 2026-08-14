@@ -20,6 +20,17 @@ export class DoctorEngineLoadError extends Error {
   }
 }
 
+function normalizePath(p: string): string {
+  const normalized = p.replace(/\\/g, "/")
+  if (/^[a-zA-Z]:\//.test(normalized)) {
+    return normalized
+  }
+  if (/^\/[a-zA-Z]:\//.test(normalized)) {
+    return normalized.slice(1)
+  }
+  return normalized
+}
+
 /**
  * Resolves the URL for scripts/doctor-engine.mjs based on the executing module's location.
  */
@@ -40,10 +51,7 @@ export function resolveDoctorEngineUrl(metaUrl: string | URL): URL {
     throw new TypeError(`Invalid metaUrl provided: ${String(metaUrl)}`)
   }
 
-  let normalizedPath = filePath.replace(/\\/g, "/")
-  if (/^[a-zA-Z]:\//.test(normalizedPath)) {
-    normalizedPath = "/" + normalizedPath
-  }
+  const normalizedPath = normalizePath(filePath)
 
   const dir = dirname(normalizedPath)
   const candidates: string[] = []

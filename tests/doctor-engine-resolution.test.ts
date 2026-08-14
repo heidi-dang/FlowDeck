@@ -73,6 +73,30 @@ describe("Doctor Engine Path Resolution & Error Handling", () => {
       expect(path.replace(/\\/g, "/")).toBe("/home/user/project/scripts/doctor-engine.mjs")
     })
 
+    it("resolves Windows drive letter paths without double drive prefix", () => {
+      const metaUrl = "file:///D:/a/FlowDeck/FlowDeck/src/services/doctor.ts"
+      const resolved = resolveDoctorEngineUrl(metaUrl)
+      expect(resolved).toBeInstanceOf(URL)
+      const path = fileURLToPath(resolved)
+      const normalized = path.replace(/\\/g, "/")
+      expect(normalized).not.toMatch(/^[a-zA-Z]:\/[a-zA-Z]:/)
+      expect(normalized).not.toContain("D:/D:")
+      expect(normalized).not.toContain("D:\\D:")
+      expect(normalized.endsWith("D:/a/FlowDeck/FlowDeck/scripts/doctor-engine.mjs")).toBe(true)
+    })
+
+    it("resolves Windows backslash filesystem path strings without double drive prefix", () => {
+      const plainPath = "D:\\a\\FlowDeck\\FlowDeck\\src\\services\\doctor.ts"
+      const resolved = resolveDoctorEngineUrl(plainPath)
+      expect(resolved).toBeInstanceOf(URL)
+      const path = fileURLToPath(resolved)
+      const normalized = path.replace(/\\/g, "/")
+      expect(normalized).not.toMatch(/^[a-zA-Z]:\/[a-zA-Z]:/)
+      expect(normalized).not.toContain("D:/D:")
+      expect(normalized).not.toContain("D:\\D:")
+      expect(normalized.endsWith("D:/a/FlowDeck/FlowDeck/scripts/doctor-engine.mjs")).toBe(true)
+    })
+
     it("resolves existing file on disk when metaUrl points to real project file", () => {
       const resolved = resolveDoctorEngineUrl(import.meta.url)
       expect(resolved).toBeInstanceOf(URL)
