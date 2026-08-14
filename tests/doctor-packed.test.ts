@@ -270,7 +270,7 @@ describe("packed-install doctor", () => {
       : (typeof (process as any).versions?.bun === "string" ? (process as any).execPath : "bun")
 
     const nodePath = [join(dir, "node_modules"), join(PKG_ROOT, "node_modules")].join(process.platform === "win32" ? ";" : ":")
-    const result = spawnSync("node", [join(dir, "src", "doctor", "cli.mjs"), "--json"], {
+    const result = spawnSync(process.execPath, [join(dir, "src", "doctor", "cli.mjs"), "--json"], {
       cwd: dir,
       encoding: "utf-8",
       env: { ...process.env, FLOWDECK_BUN_BIN: bunBin, NODE_PATH: nodePath },
@@ -279,7 +279,7 @@ describe("packed-install doctor", () => {
     expect(result.status, `cli.mjs failed with status ${result.status}. stderr: ${result.stderr}`).toBe(0)
     const rawStdout = result.stdout || ""
     const match = rawStdout.match(/\{[\s\S]*\}/)
-    expect(match, `No JSON object found in CLI stdout: ${rawStdout}`).not.toBeNull()
+    expect(match, `No JSON object found in CLI stdout: ${rawStdout}; stderr: ${result.stderr || ""}`).not.toBeNull()
     const report = JSON.parse(match![0])
     expect(report.schemaVersion).toBe(1)
   })

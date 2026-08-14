@@ -3,34 +3,35 @@ import { fileURLToPath } from "node:url"
 import { resolveDoctorEngineUrl, DoctorEngineLoadError } from "../src/services/doctor"
 
 describe("Doctor Engine Path Resolution & Error Handling", () => {
+  const expected = (posixPath: string) => process.platform === "win32" ? `D:${posixPath}` : posixPath
   describe("resolveDoctorEngineUrl layout resolution", () => {
     it("resolves source module layout (src/services/doctor.ts)", () => {
       const metaUrl = "file:///home/user/project/src/services/doctor.ts"
       const resolved = resolveDoctorEngineUrl(metaUrl)
       expect(resolved).toBeInstanceOf(URL)
       const path = fileURLToPath(resolved)
-      expect(path.replace(/\\/g, "/")).toBe("/home/user/project/scripts/doctor-engine.mjs")
+      expect(path.replace(/\\/g, "/")).toBe(expected("/home/user/project/scripts/doctor-engine.mjs"))
     })
 
     it("resolves source module layout (src/doctor/doctor.ts)", () => {
       const metaUrl = "file:///home/user/project/src/doctor/doctor.ts"
       const resolved = resolveDoctorEngineUrl(metaUrl)
       const path = fileURLToPath(resolved)
-      expect(path.replace(/\\/g, "/")).toBe("/home/user/project/scripts/doctor-engine.mjs")
+      expect(path.replace(/\\/g, "/")).toBe(expected("/home/user/project/scripts/doctor-engine.mjs"))
     })
 
     it("resolves compiled dist layout (dist/index.js)", () => {
       const metaUrl = "file:///home/user/project/dist/index.js"
       const resolved = resolveDoctorEngineUrl(metaUrl)
       const path = fileURLToPath(resolved)
-      expect(path.replace(/\\/g, "/")).toBe("/home/user/project/scripts/doctor-engine.mjs")
+      expect(path.replace(/\\/g, "/")).toBe(expected("/home/user/project/scripts/doctor-engine.mjs"))
     })
 
     it("resolves compiled dist subfolder layout (dist/services/doctor.js)", () => {
       const metaUrl = "file:///home/user/project/dist/services/doctor.js"
       const resolved = resolveDoctorEngineUrl(metaUrl)
       const path = fileURLToPath(resolved)
-      expect(path.replace(/\\/g, "/")).toBe("/home/user/project/scripts/doctor-engine.mjs")
+      expect(path.replace(/\\/g, "/")).toBe(expected("/home/user/project/scripts/doctor-engine.mjs"))
     })
 
     it("resolves npm-packed / installed layout in node_modules", () => {
@@ -38,7 +39,7 @@ describe("Doctor Engine Path Resolution & Error Handling", () => {
       const resolved = resolveDoctorEngineUrl(metaUrl)
       const path = fileURLToPath(resolved)
       expect(path.replace(/\\/g, "/")).toBe(
-        "/home/user/project/node_modules/@heidi-dang/flowdeck/scripts/doctor-engine.mjs"
+        expected("/home/user/project/node_modules/@heidi-dang/flowdeck/scripts/doctor-engine.mjs")
       )
     })
 
@@ -47,14 +48,14 @@ describe("Doctor Engine Path Resolution & Error Handling", () => {
       const resolved = resolveDoctorEngineUrl(metaUrl)
       expect(resolved.href).toContain("my%20project")
       const path = fileURLToPath(resolved)
-      expect(path.replace(/\\/g, "/")).toBe("/home/user/my project/scripts/doctor-engine.mjs")
+      expect(path.replace(/\\/g, "/")).toBe(expected("/home/user/my project/scripts/doctor-engine.mjs"))
     })
 
     it("resolves layout with Unicode paths", () => {
       const metaUrl = "file:///home/user/%E9%A0%85%20%E7%9B%AE/dist/index.js"
       const resolved = resolveDoctorEngineUrl(metaUrl)
       const path = fileURLToPath(resolved)
-      expect(path.replace(/\\/g, "/")).toBe("/home/user/項 目/scripts/doctor-engine.mjs")
+      expect(path.replace(/\\/g, "/")).toBe(expected("/home/user/項 目/scripts/doctor-engine.mjs"))
     })
 
     it("handles URL object inputs and encoding edge cases", () => {
@@ -62,7 +63,7 @@ describe("Doctor Engine Path Resolution & Error Handling", () => {
       const resolved = resolveDoctorEngineUrl(metaUrl)
       const path = fileURLToPath(resolved)
       expect(path.replace(/\\/g, "/")).toBe(
-        "/home/user/path with #hash/scripts/doctor-engine.mjs"
+        expected("/home/user/path with #hash/scripts/doctor-engine.mjs")
       )
     })
 
@@ -70,7 +71,7 @@ describe("Doctor Engine Path Resolution & Error Handling", () => {
       const plainPath = "/home/user/project/dist/index.js"
       const resolved = resolveDoctorEngineUrl(plainPath)
       const path = fileURLToPath(resolved)
-      expect(path.replace(/\\/g, "/")).toBe("/home/user/project/scripts/doctor-engine.mjs")
+      expect(path.replace(/\\/g, "/")).toBe(expected("/home/user/project/scripts/doctor-engine.mjs"))
     })
 
     it("resolves Windows drive letter paths without double drive prefix", () => {
