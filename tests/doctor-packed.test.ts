@@ -256,11 +256,9 @@ describe("packed-install doctor", () => {
     setupDeps(dir)
     writeFileSync(join(dir, "install.sh"), "#!/usr/bin/env bash\n")
     mkdirSync(join(dir, "src", "doctor"), { recursive: true })
-    mkdirSync(join(dir, "scripts"), { recursive: true })
     cpSync(join(PKG_ROOT, "src", "doctor", "cli.mjs"), join(dir, "src", "doctor", "cli.mjs"))
     cpSync(join(PKG_ROOT, "src", "doctor", "exit-code.mjs"), join(dir, "src", "doctor", "exit-code.mjs"))
-    cpSync(join(PKG_ROOT, "scripts", "doctor-engine.mjs"), join(dir, "scripts", "doctor-engine.mjs"))
-    cpSync(join(PKG_ROOT, "scripts", "config-mutator.mjs"), join(dir, "scripts", "config-mutator.mjs"))
+    cpSync(join(PKG_ROOT, "scripts"), join(dir, "scripts"), { recursive: true })
 
     const bunBin = (process.env.FLOWDECK_BUN_BIN && !process.env.FLOWDECK_BUN_BIN.endsWith("/node") && !process.env.FLOWDECK_BUN_BIN.endsWith("/node.exe"))
       ? process.env.FLOWDECK_BUN_BIN
@@ -272,7 +270,7 @@ describe("packed-install doctor", () => {
       env: { ...process.env, FLOWDECK_BUN_BIN: bunBin },
     })
 
-    expect(result.status, result.stderr || result.stdout).toBe(0)
+    expect(result.status, `cli.mjs failed with status ${result.status}. stderr: ${result.stderr}`).toBe(0)
     const rawStdout = result.stdout || ""
     const jsonStart = rawStdout.indexOf("__FLOWDECK_DOCTOR_JSON_START__")
     const jsonEnd = rawStdout.indexOf("__FLOWDECK_DOCTOR_JSON_END__")
