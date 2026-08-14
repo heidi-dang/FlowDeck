@@ -269,7 +269,13 @@ describe("packed-install doctor", () => {
     })
 
     expect(result.status).toBe(0)
-    const report = JSON.parse(result.stdout)
+    const rawStdout = result.stdout || ""
+    const jsonStart = rawStdout.indexOf("__FLOWDECK_DOCTOR_JSON_START__")
+    const jsonEnd = rawStdout.indexOf("__FLOWDECK_DOCTOR_JSON_END__")
+    const jsonText = (jsonStart !== -1 && jsonEnd !== -1)
+      ? rawStdout.slice(jsonStart + "__FLOWDECK_DOCTOR_JSON_START__".length, jsonEnd)
+      : rawStdout
+    const report = JSON.parse(jsonText)
     expect(report.schemaVersion).toBe(1)
   })
 })
