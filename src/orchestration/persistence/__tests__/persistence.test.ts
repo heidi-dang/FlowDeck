@@ -6,6 +6,7 @@ import { Database } from "bun:sqlite"
 import { openConnection, closeConnection, closeAllConnections } from "../connection"
 import { initializeDatabase } from "../database"
 import { runMigrations, getCurrentVersion } from "../migrations/migration-runner"
+import { MIGRATIONS } from "../migrations/migration-registry"
 import { createTransactionManager } from "../transaction-manager"
 import { validateSchema } from "../validation"
 
@@ -53,7 +54,7 @@ describe("Migrations", () => {
   it("applies initial schema", () => {
     const db = openConnection({ path: TEST_DB })
     runMigrations(db)
-    expect(getCurrentVersion(db)).toBe(11)
+    expect(getCurrentVersion(db)).toBe(MIGRATIONS.length)
   })
 
   it("creates required tables (50+)", () => {
