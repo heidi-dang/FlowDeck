@@ -400,6 +400,22 @@ Options:
 
 async function main() {
   await runDoctorCli(process.argv.slice(2));
+  await new Promise((resolve) => {
+    let resolved = false;
+    const done = () => {
+      if (!resolved) {
+        resolved = true;
+        resolve();
+      }
+    };
+    const timer = setTimeout(done, 200);
+    process.stdout.write("", () => {
+      process.stderr.write("", () => {
+        clearTimeout(timer);
+        done();
+      });
+    });
+  });
   process.exit(process.exitCode ?? 0);
 }
 
