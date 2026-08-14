@@ -159,7 +159,8 @@ function runViaBunInline(options, entryPath) {
       return JSON.parse(stdout.trim())
     } catch {
       // Extract meaningful error from stderr
-      const errMsg = stderr ? stderr.trim().split("\n").pop() : e.message
+      const stderrText = typeof stderr === "string" ? stderr.trim() : (stderr ? stderr.toString("utf-8").trim() : "")
+      const errMsg = stderrText || e.message
       throw new Error(errMsg)
     }
   }
