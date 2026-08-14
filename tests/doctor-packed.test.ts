@@ -272,12 +272,9 @@ describe("packed-install doctor", () => {
 
     expect(result.status, `cli.mjs failed with status ${result.status}. stderr: ${result.stderr}`).toBe(0)
     const rawStdout = result.stdout || ""
-    const jsonStart = rawStdout.indexOf("__FLOWDECK_DOCTOR_JSON_START__")
-    const jsonEnd = rawStdout.indexOf("__FLOWDECK_DOCTOR_JSON_END__")
-    const jsonText = (jsonStart !== -1 && jsonEnd !== -1)
-      ? rawStdout.slice(jsonStart + "__FLOWDECK_DOCTOR_JSON_START__".length, jsonEnd)
-      : rawStdout
-    const report = JSON.parse(jsonText)
+    const match = rawStdout.match(/\{[\s\S]*\}/)
+    expect(match, `No JSON object found in CLI stdout: ${rawStdout}`).not.toBeNull()
+    const report = JSON.parse(match![0])
     expect(report.schemaVersion).toBe(1)
   })
 })
