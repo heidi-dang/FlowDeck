@@ -423,8 +423,8 @@ bun run verify:full
 
 ## Release Status
 
-- **Current Version**: `v2.0.0-alpha.4`
-- **Track**: Alpha Development Branch (`v2.0.0-alpha`)
+- **Current Version**: `v2.0.0-rc.1`
+- **Track**: Prerelease / Candidate Track (`@next`)
 - **Status**: Production-ready core orchestration, parallel DAG engine, persistent Heidi runtime, and verification gates complete.
 
 ---

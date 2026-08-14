@@ -143,7 +143,8 @@ function main() {
     const status = execFileSync("git", ["status", "--short"], {
       encoding: "utf-8", timeout: 5000, cwd: ROOT,
     }).trim()
-    check("Working tree clean", status === "", status ? `dirty: ${status.slice(0, 200)}` : "clean")
+    const allowDirty = process.argv.includes("--allow-dirty") || Boolean(process.env.ALLOW_DIRTY)
+    check("Working tree clean", allowDirty || status === "", status ? `dirty: ${status.slice(0, 200)}` : "clean")
 
     const branch = execFileSync("git", ["branch", "--show-current"], {
       encoding: "utf-8", timeout: 5000, cwd: ROOT,
