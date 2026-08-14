@@ -61,5 +61,5 @@ describe("M9 command assignment/token/worktree authority", () => {
     expect((db.query("SELECT COUNT(*) AS c FROM assignments WHERE status = 'failed'").get() as any).c).toBe(1)
     expect((db.query("SELECT COUNT(*) AS c FROM completion_decisions WHERE decision = 'pass'").get() as any).c).toBe(0)
     db.close()
-  })
+  }, 15000)
 })

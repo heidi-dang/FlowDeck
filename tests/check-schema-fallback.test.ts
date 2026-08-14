@@ -502,7 +502,7 @@ describe("Schema Validation SQLite Fallback", () => {
         join(tmpdir(), `fake-sqlite3-ok-${Date.now()}-${Math.random().toString(36).slice(2)}${process.platform === "win32" ? ".cmd" : ".sh"}`)
       );
       const fakeSqlite3Body = process.platform === "win32"
-        ? `@echo off\r\necho INVOKED:fake-sqlite3-ok:%*>>"${marker}"\r\necho %~2 | findstr /i "integrity_check" >nul && echo ok && exit /b 0\r\necho %~2 | findstr /i "foreign_key_check" >nul && exit /b 0\r\necho %~2 | findstr /i "type="table"" >nul && echo 53 && exit /b 0\r\necho %~2 | findstr /i "type="trigger"" >nul && echo 36 && exit /b 0\r\necho %~2 | findstr /i "type="index"" >nul && echo 66\r\n`
+        ? `@echo off\r\necho INVOKED:fake-sqlite3-ok:%*>>"${marker}"\r\necho %* | findstr /i "integrity_check" >nul && echo ok && exit /b 0\r\necho %* | findstr /i "foreign_key_check" >nul && exit /b 0\r\necho %* | findstr /i "type="table"" >nul && echo 53 && exit /b 0\r\necho %* | findstr /i "type="trigger"" >nul && echo 36 && exit /b 0\r\necho %* | findstr /i "type="index"" >nul && echo 66\r\n`
         : `#!/bin/sh\n` +
         `echo "INVOKED:$(basename "$0"):$*" >> '${marker}'\n` +
         `last=""; for a in "$@"; do last="$a"; done\n` +
