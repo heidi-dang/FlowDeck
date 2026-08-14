@@ -411,29 +411,9 @@ Options:
 
 async function main() {
   await runDoctorCli(process.argv.slice(2));
-  if (typeof process.stdout.flushSync === "function") {
-    try { process.stdout.flushSync(); } catch {}
+  if (process.exitCode && process.exitCode !== 0) {
+    process.exit(process.exitCode);
   }
-  if (typeof process.stderr.flushSync === "function") {
-    try { process.stderr.flushSync(); } catch {}
-  }
-  await new Promise((resolve) => {
-    let resolved = false;
-    const done = () => {
-      if (!resolved) {
-        resolved = true;
-        resolve();
-      }
-    };
-    const timer = setTimeout(done, 300);
-    process.stdout.write("", () => {
-      process.stderr.write("", () => {
-        clearTimeout(timer);
-        done();
-      });
-    });
-  });
-  process.exit(process.exitCode ?? 0);
 }
 
 // Only run main() when this file is the direct entry point.
