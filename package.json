@@ -69,7 +69,7 @@
     "verify:installation:offline": "node scripts/verify-opencode-integration.mjs --offline",
     "verify:installation": "node scripts/verify-opencode-integration.mjs",
     "verify:release": "node scripts/release-alignment.mjs",
-    "verify:clean-install": "node bin/flowdeck.js clean-install --verify-only",
+    "verify:clean-install": "node scripts/verify-clean-install-isolated.mjs",
     "verify:completion-matrix": "node scripts/verify-completion-matrix.mjs",
     "install:clean": "node bin/flowdeck.js clean-install",
     "better-harness:serve": "node bin/better-harness.js",
