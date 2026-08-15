@@ -5,7 +5,7 @@ import type { TokenUsageStore, UsageStoreEntry } from "./token-usage-store"
 import type { OrchestrationMetrics } from "../orchestration/metrics"
 import { BUDGET_PROFILES, type BudgetProfileName } from "../config/token-budget-config"
 
-export const ADAPTIVE_BUDGET_POLICY_VERSION = "2.0.0"
+export const ADAPTIVE_BUDGET_POLICY_VERSION = "2.0.1"
 
 export interface StallObservation { repeatedFailure: number; repeatedTool: number; unchangedDiff: number; repeatedContext: number; evidenceDelta: number; tokensSinceProgress: number; }
 export interface StallResult { stalled: boolean; reasons: string[] }

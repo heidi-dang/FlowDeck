@@ -1,5 +1,5 @@
 /**
- * Curated Skill Registry & Security Subsystem for Heidi / FlowDeck v2.0.0
+ * Curated Skill Registry & Security Subsystem for Heidi / FlowDeck v2.0.1
  *
  * Manages project-controlled skill lockfile, SHA256 integrity checks, static security audits,
  * authority enforcement, conflict resolution, lazy routing, and context budgeting.
