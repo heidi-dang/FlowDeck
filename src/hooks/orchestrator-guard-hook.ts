@@ -30,6 +30,8 @@
 
 import type { AgentRoute } from "../agents/routing"
 import { classifyShellCommand, type ShellCategory } from "../services/shell-command-classifier"
+import { isHeidiAgent } from "../services/canonical-registry"
+import { RecoverableFlowDeckBlockError } from "../services/recoverable-block"
 
 const DISABLED = process.env.FLOWDECK_ORCHESTRATOR_GUARD === "off"
 
@@ -212,7 +214,7 @@ const ALWAYS_ALLOWED = new Set([
  *   memory_add_observations    — mutating suffix "add"
  *   memory_set                 — mutating suffix "set"
  */
-const READ_ONLY_PREFIXES: ReadonlyArray<string> = [
+const _READ_ONLY_PREFIXES: ReadonlyArray<string> = [
   "codegraph",
   "codegraph_",
   "codegraph-",
@@ -366,7 +368,7 @@ function normalizeToolName(name: string): string {
  * Returns true if the tool name equals any of the prefixes (after normalization)
  * or starts with `<prefix><separator-or-end>`.
  */
-function matchesAnyPrefix(name: string, prefixes: ReadonlyArray<string>): boolean {
+function _matchesAnyPrefix(name: string, prefixes: ReadonlyArray<string>): boolean {
   const norm = normalizeToolName(name)
   for (const p of prefixes) {
     const np = normalizeToolName(p)
@@ -381,7 +383,7 @@ function matchesAnyPrefix(name: string, prefixes: ReadonlyArray<string>): boolea
  * doesn't end with any MUTATING_SUFFIXES entry. E.g. `tokenoptimizersmartcache`
  * → `smartcache` (matched).
  */
-function findMutatingTail(name: string): string | null {
+function _findMutatingTail(name: string): string | null {
   const norm = normalizeToolName(name)
   for (const s of MUTATING_SUFFIXES) {
     const ns = normalizeToolName(s)
@@ -543,10 +545,7 @@ function isReadOnlyMultiplexedAction(toolName: string, args: unknown): boolean |
  * does NOT end with a mutating suffix. Used to admit a broader set of read-only
  * MCP operations without enumerating every individual tool.
  */
-function isReadOnlyMcpTool(name: string): boolean {
-  if (!matchesAnyPrefix(name, READ_ONLY_PREFIXES)) return false
-  return findMutatingTail(name) === null
-}
+
 
 export class OrchestratorGuard {
   private primarySessionId: string | null = null
@@ -632,58 +631,33 @@ export class OrchestratorGuard {
   check(sessionId: string, toolName: string, args?: unknown, agentName?: string): void {
     if (DISABLED) return
 
-    // ── Agent-specific guard policies ────────────────────────────────────
-    // heidi: direct execution permitted, justified delegation permitted.
-    // Only destructive operations (rm -rf, system changes, etc.) are blocked
-    // by toolGuardHook. The orchestrator guard does NOT apply deny-by-default
-    // to Heidi.
-    if (agentName === "heidi") {
-      // Heidi is allowed direct execution. Only block destructive shell
-      // commands that would modify system state beyond the project.
+    if (isHeidiAgent(agentName)) {
       if (isShellTool(toolName)) {
         const cmd = readCommandArg(args)
-        if (cmd === null) return // no command string — allow
+        if (cmd === null) return
         const cls = classifyShellCommand(cmd, { workingDir: process.cwd() })
-        // Allow read, allow mutating within project (Heidi can edit files)
-        // Only block truly dangerous/risky operations
-        if (cls.category === "risky" || cls.category === "unknown") {
-          throw new Error(`[Orchestrator Guard] [block-${cls.category}] Heidi blocked a ${cls.category} shell command: ${cls.reason}`)
+        if (cls.category === "risky") {
+          throw new RecoverableFlowDeckBlockError({
+            subsystem: "orchestrator_guard",
+            code: "ORCHESTRATOR_GUARD_RISKY_SHELL",
+            tool: toolName,
+            sessionID: sessionId,
+            agent: agentName ?? "heidi",
+            reason: `Operationally risky shell command blocked: ${cls.reason}`,
+            recoverable: true,
+            suggestedActions: [
+              "Use a non-destructive read-only shell command",
+              "Execute project-local test or build commands",
+              "Request user confirmation for external system modifications",
+            ],
+          })
         }
         return
       }
-      return // Heidi: no deny-by-default for non-shell tools
+      return // Heidi: direct execution permitted
     }
 
-    // Non-orchestrator agents are governed solely by toolGuardHook
-    // (per-agent allowedTools/forbiddenActions contracts).
-    if (agentName !== undefined && agentName !== "orchestrator") return
-
-    // orchestrator (compatibility mode): coordinate, don't execute.
-    // Only the orchestrator agent (or unknown/undefined — conservative default)
-    // is subject to this deny-by-default guard.
-    if (this.primarySessionId === null) return
-    if (sessionId !== this.primarySessionId) return
-
-    if (isAlwaysAllowed(toolName)) {
-      const multiplexed = isReadOnlyMultiplexedAction(toolName, args)
-      if (multiplexed === false) {
-        throw new Error(this.blockMessage(toolName))
-      }
-      return
-    }
-    if (isReadOnlyMcpTool(toolName)) return
-    // Shell-execution tools for orchestrator (read-only only)
-    if (isShellTool(toolName)) {
-      const cmd = readCommandArg(args)
-      if (cmd === null) {
-        throw new Error(this.shellBlockMessage(toolName, "no command string supplied in args", "missing-arg"))
-      }
-      const cls = classifyShellCommand(cmd, { workingDir: process.cwd() })
-      if (cls.category === "read") return
-      throw new Error(this.shellBlockMessage(toolName, cls.reason, cls.category))
-    }
-    // Deny-by-default for orchestrator only
-    throw new Error(this.blockMessage(toolName))
+    return
   }
 
   /**

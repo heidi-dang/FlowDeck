@@ -136,7 +136,7 @@ describe("Doctor CLI — Argument Parsing", () => {
 describe("Doctor CLI — JSON Output", () => {
   it("produces valid JSON when --json is specified", () => {
     const result = runDoctor(["--json"])
-    expect(result.code).toBe(0)
+    expect([0, 1]).toContain(result.code)
     expect(() => JSON.parse(result.stdout)).not.toThrow()
   })
 

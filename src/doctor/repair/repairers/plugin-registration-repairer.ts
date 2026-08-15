@@ -1,9 +1,10 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs"
-import { join, dirname } from "node:path"
+import { existsSync, readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from "node:fs"
+import { join, dirname, resolve } from "node:path"
 import { homedir } from "node:os"
 import type { AutoFixResult } from "../../types"
+import { recordRuntimeSelfReport, getExecutingRuntimeIdentity } from "../../../services/runtime-identity"
 
-export async function repairPluginRegistration(_directory: string): Promise<AutoFixResult> {
+export async function repairPluginRegistration(directory: string): Promise<AutoFixResult> {
   const PKG_NAME = "@heidi-dang/flowdeck"
   const configDir = process.env.OPENCODE_CONFIG_DIR ||
     (process.env.XDG_CONFIG_HOME
@@ -39,9 +40,47 @@ export async function repairPluginRegistration(_directory: string): Promise<Auto
     mkdirSync(dirname(configFile), { recursive: true })
     writeFileSync(configFile, JSON.stringify(cfg, null, 2), "utf-8")
 
+    // Update runtime self report for directory
+    const pkgPath = join(directory, "package.json")
+    let version = "2.0.1"
+    if (existsSync(pkgPath)) {
+      try {
+        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
+        version = pkg.version || version
+      } catch { /* ignore */ }
+    }
+    recordRuntimeSelfReport(getExecutingRuntimeIdentity(), directory)
+
+    // Clean stale package cache directories
+    const home = homedir()
+    const xdgCache = process.env.XDG_CACHE_HOME || join(home, ".cache")
+    const xdgData = process.env.XDG_DATA_HOME || join(home, ".local", "share")
+    const cacheRoots = [
+      join(xdgCache, "opencode", "packages"),
+      join(xdgData, "opencode", "packages"),
+      join(home, ".cache", "opencode", "packages"),
+      join(home, ".local", "share", "opencode", "packages"),
+    ]
+
+    const expectedPath = resolve(directory)
+    for (const cacheRoot of cacheRoots) {
+      if (existsSync(cacheRoot)) {
+        try {
+          const entries = readdirSync(cacheRoot)
+          for (const entry of entries) {
+            const fullPath = join(cacheRoot, entry)
+            if (resolve(fullPath) === expectedPath) continue
+            if (entry.toLowerCase().includes("flowdeck")) {
+              rmSync(fullPath, { recursive: true, force: true })
+            }
+          }
+        } catch { /* ignore */ }
+      }
+    }
+
     return {
       id: "plugin.registration",
-      description: "Repaired FlowDeck plugin registration in opencode.json",
+      description: "Repaired FlowDeck plugin registration and synchronized runtime identity",
       applied: true,
       reverified: true,
     }

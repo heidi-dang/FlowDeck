@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from "fs"
 import { join, resolve } from "path"
 import { homedir } from "os"
 import type { CheckResult } from "../types"
-import { getExecutingRuntimeIdentity, readRuntimeSelfReport } from "../../services/runtime-identity"
+import { getExecutingRuntimeIdentity, readRuntimeSelfReport, isRuntimeRecordFresh } from "../../services/runtime-identity"
 
 export async function runPluginChecks(directory: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
@@ -90,7 +90,8 @@ export async function runPluginChecks(directory: string): Promise<CheckResult[]>
 
   const selfReport = readRuntimeSelfReport(directory)
   const executingIdentity = getExecutingRuntimeIdentity()
-  const loadedIdentity = selfReport || executingIdentity
+  const isFresh = selfReport ? isRuntimeRecordFresh(selfReport) : false;
+  const loadedIdentity = (selfReport && isFresh) ? selfReport : executingIdentity;
 
   const loadedVersion = loadedIdentity?.version || "unknown"
   const loadedPath = loadedIdentity?.packageRoot

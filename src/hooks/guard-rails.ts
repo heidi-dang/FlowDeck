@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "fs"
 import { join } from "path"
-import { findWorkspaceRoot, getWorkspaceConfig, resolveActiveTopic, topicPlanPath, planningDir, readPlanningState } from "../tools/planning-state-lib"
+import { findWorkspaceRoot, getWorkspaceConfig, resolveActiveTopic, topicPlanPath, planningDir, readPlanningState, planningWorkspaceStatus } from "../tools/planning-state-lib"
+import { RecoverableFlowDeckBlockError } from "../services/recoverable-block"
 import { codebaseDir } from "../tools/codebase-state"
 import { isUiHeavyTask } from "../lib/task-routing"
 import { loadFlowDeckConfig, resolveDesignFirstConfig } from "../config"
@@ -459,7 +460,7 @@ export async function guardRailsHook(
 
   const dir = ctx.directory
   const planningDirPath = planningDir(dir)
-  const codebaseDirectory = codebaseDir(dir)
+  const _codebaseDirectory = codebaseDir(dir)
   const configPath = join(planningDirPath, CONFIG_FILE)
   const statePath = join(planningDirPath, STATE_FILE)
 
@@ -471,29 +472,48 @@ export async function guardRailsHook(
     }
   }
 
-  if (input.tool === "write" || input.tool === "edit") {
-    if (!existsSync(planningDirPath)) return
-    // Lockfile check: /fd-task creates .fd-task-lock during its run so the
-    // guard does not block artifact writes before STATE.md is fully initialized.
+  if (input.tool === "write" || input.tool === "edit" || input.tool === "write_file" || input.tool === "edit_file" || input.tool === "patch" || input.tool === "apply_patch") {
+    const status = planningWorkspaceStatus(dir)
+    if (status === "absent" || status === "incomplete_orphaned" || status === "valid_no_active_plan") return
     if (existsSync(join(planningDirPath, ".fd-task-lock"))) return
-    if (!existsSync(codebaseDirectory)) {
-      throw new Error(`[flowdeck] WARNING: .codebase/ not found. Run /fd-task — its init step maps the codebase.`)
-    }
+
     const execMode = resolveExecutionMode(configPath, null)
     if (execMode === "review-only") {
-      throw new Error(`[flowdeck] BLOCK (review-only mode): propose diff but do not apply. Set execution_mode in ${configPath} to change.`)
+      throw new RecoverableFlowDeckBlockError({
+        subsystem: "guard_rails",
+        code: "REVIEW_ONLY_MODE",
+        tool: input.tool,
+        reason: "Review-only mode enabled: propose diffs without applying file writes.",
+        recoverable: true,
+        suggestedActions: ["Propose the code diff in conversation", "Change execution_mode in config.json"],
+      })
     }
-    if (execMode === "guarded") {
-      throw new Error(`[flowdeck] GUARDED MODE: edit will proceed but flag for human review.`)
-    }
+
     const designGateMessage = getDesignGateMessage(dir)
-    if (designGateMessage) throw new Error(designGateMessage)
-    const effectiveSeverity = getEffectiveSeverity(configPath, statePath)
-    if (effectiveSeverity === null) return
-    if (effectiveSeverity === "warn") {
-      throw new Error(`[flowdeck] WARNING: ${getWarningMessage(planningDirPath)}`)
+    if (designGateMessage) {
+      throw new RecoverableFlowDeckBlockError({
+        subsystem: "guard_rails",
+        code: "DESIGN_GATE_BLOCKED",
+        tool: input.tool,
+        reason: designGateMessage,
+        recoverable: true,
+        suggestedActions: ["Approve UI design handoff", "Add design_override in planning state"],
+      })
     }
-    throw new Error(`[flowdeck] BLOCK: ${getBlockMessage(planningDirPath)}`)
+
+    if (status === "active_unconfirmed") {
+      const severity = effectiveSeverity(configPath, statePath)
+      if (severity === "block") {
+        throw new RecoverableFlowDeckBlockError({
+          subsystem: "guard_rails",
+          code: "PLAN_NOT_CONFIRMED",
+          tool: input.tool,
+          reason: "Active plan is not confirmed yet. Please confirm the plan before editing.",
+          recoverable: true,
+          suggestedActions: ["Confirm the plan via planning-state tool", "Ask the user to confirm the plan"],
+        })
+      }
+    }
   }
 
   // Guard bash build/deploy/publish commands
@@ -558,9 +578,7 @@ export function effectiveSeverity(configPath: string, statePath: string): Severi
   return getPlanConfirmed(statePath) ? null : "block"
 }
 
-function getEffectiveSeverity(configPath: string, statePath: string): Severity {
-  return effectiveSeverity(configPath, statePath)
-}
+
 
 export function getPlanConfirmed(statePath: string): boolean {
   if (!existsSync(statePath)) return false
@@ -569,16 +587,4 @@ export function getPlanConfirmed(statePath: string): boolean {
     const match = content.match(/plan_confirmed:\s*(true|false)/i)
     return match ? match[1].toLowerCase() === "true" : false
   } catch { return false }
-}
-
-function getWarningMessage(planningDir: string): string {
-  if (!existsSync(join(planningDir, STATE_FILE)))
-    return `No STATE.md found in ${planningDir}. The planning workspace is incomplete. Run /fd-task to initialize it, or delete the directory to bypass the guard entirely.`
-  return "Guard enforcement is set to 'warn'. Plan is not confirmed."
-}
-
-function getBlockMessage(planningDir: string): string {
-  if (!existsSync(join(planningDir, STATE_FILE)))
-    return `No STATE.md found in ${planningDir}. The planning workspace is incomplete. Run /fd-task to initialize it, or delete the directory to bypass the guard entirely.`
-  return "Plan not confirmed. Run /fd-task and confirm the plan to enable execution."
 }

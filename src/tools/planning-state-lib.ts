@@ -977,3 +977,32 @@ export function buildContextPacket(opts: BuildContextPacketOpts): string {
   }
   return lines.join("\n")
 }
+
+export type PlanningWorkspaceStatus =
+  | "absent"
+  | "incomplete_orphaned"
+  | "valid_no_active_plan"
+  | "active_unconfirmed"
+  | "active_confirmed"
+  | "corrupt_stale"
+
+export function planningWorkspaceStatus(dir: string): PlanningWorkspaceStatus {
+  const pDir = planningDir(dir)
+  if (!existsSync(pDir)) return "absent"
+
+  const statePath = join(pDir, "STATE.md")
+  if (!existsSync(statePath)) return "incomplete_orphaned"
+
+  try {
+    const content = readFileSync(statePath, "utf-8")
+    if (!content.trim()) return "incomplete_orphaned"
+
+    const match = content.match(/plan_confirmed:\s*(true|false)/i)
+    if (!match) return "valid_no_active_plan"
+
+    const isConfirmed = match[1].toLowerCase() === "true"
+    return isConfirmed ? "active_confirmed" : "active_unconfirmed"
+  } catch {
+    return "corrupt_stale"
+  }
+}

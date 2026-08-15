@@ -26,12 +26,19 @@ export interface ActionRecord {
 
 const NON_MUTATING_TOOLS = new Set([
   "read",
+  "read_file",
   "view",
   "bash",
   "shell",
   "grep",
   "glob",
   "search",
+  "fdx-read",
+  "fdx-search",
+  "fdx-grep",
+  "fdx-outline",
+  "fdx-impact",
+  "fdx-batch",
 ])
 
 const TRANSIENT_ERROR_KEYWORDS = [
@@ -122,12 +129,12 @@ export function normalizeAction(toolName: string, args: Record<string, unknown>)
     return `shell:${normalized}`
   }
 
-  if (tool === "read" || tool === "view") {
-    const filePath = typeof args.filePath === "string" ? args.filePath : ""
+  if (tool === "read" || tool === "read_file" || tool === "view" || tool === "fdx-read") {
+    const filePath = typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : ""
     try {
-      return `${tool}:${resolve(filePath || "")}`
+      return `read:${resolve(filePath || "")}`
     } catch {
-      return `${tool}:${filePath}`
+      return `read:${filePath}`
     }
   }
 
@@ -140,7 +147,7 @@ export function normalizeAction(toolName: string, args: Record<string, unknown>)
     }
   }
 
-  if (tool === "grep" || tool === "glob" || tool === "search") {
+  if (tool === "grep" || tool === "glob" || tool === "search" || tool === "fdx-grep" || tool === "fdx-search") {
     const pattern = typeof args.pattern === "string" ? args.pattern : ""
     const path = typeof args.path === "string" ? args.path : ""
     return `${tool}:${pattern}:${resolve(path || ".")}`

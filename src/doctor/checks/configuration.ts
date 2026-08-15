@@ -1,4 +1,4 @@
-import { existsSync, } from "fs"
+import { existsSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
 import type { CheckResult } from "../types"
@@ -34,9 +34,9 @@ export async function runConfigurationChecks(directory: string): Promise<CheckRe
   const userConfigPath = join(configDir, "opencode.json")
   if (existsSync(userConfigPath)) {
     try {
-      const parsed = safeParseConfig(userConfigPath)
-      const isOk = Boolean(parsed && !parsed.parseError && parsed.existing)
-      const parseErr = parsed?.parseError ?? "unknown error"
+      const parsed = safeParseConfig(userConfigPath) as any
+      const isOk = Boolean(parsed && parsed.ok && parsed.data)
+      const parseErr = parsed?.error ?? "unknown error"
 
       checks.push({
         id: "config.opencode_user",
@@ -51,8 +51,8 @@ export async function runConfigurationChecks(directory: string): Promise<CheckRe
       })
 
       // Check plugin array content
-      if (isOk && parsed.existing) {
-        const plugins = Array.isArray(parsed.existing.plugin) ? parsed.existing.plugin : []
+      if (isOk && parsed.data) {
+        const plugins = Array.isArray(parsed.data.plugin) ? parsed.data.plugin : []
         const hasCurrent = plugins.includes("@heidi-dang/flowdeck")
         const hasLegacy = plugins.includes("@dv.nghiem/flowdeck")
 
@@ -122,9 +122,9 @@ export async function runConfigurationChecks(directory: string): Promise<CheckRe
     const fullPath = join(directory, name)
     if (existsSync(fullPath)) {
       try {
-        const parsed = safeParseConfig(fullPath)
-        const isOk = Boolean(parsed && !parsed.parseError && parsed.existing)
-        const parseErr = parsed?.parseError ?? "unknown error"
+        const parsed = safeParseConfig(fullPath) as any
+        const isOk = Boolean(parsed && parsed.ok && parsed.data)
+        const parseErr = parsed?.error ?? "unknown error"
         checks.push({
           id: `config.flowdeck_project`,
           title: `FlowDeck Project Config (${name})`,

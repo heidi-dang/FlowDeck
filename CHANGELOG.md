@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-08-16
+
+### Fixed & Hardened
+
+- **FlowDeck Doctor Repair Engine (`flowdeck doctor fix`)**: Deterministic single-command machine and runtime auto-repair with transaction safety, atomic backups, repair locks, and post-fix verification.
+- **Heidi Execution Policy & Guard Recovery**: Fixed guard error recovery paths so recoverable FlowDeck blocks provide structured feedback without causing Heidi to stall or stop.
+- **Heidi UI/App Studio**: Autonomous UI creation, UI Architect, Design-System Intelligence, Native UI Generator, Visual Critic, Design Mode, and Full-Stack Builder.
+- **Autonomous Browser Debugging**: Real Chrome integration, CDP session probes, console error repair, and multi-viewport responsive testing.
+- **Curated Skills Security**: 65 validated skill modules with security provenance tracked in `skills-lock.json`.
+
 ## [2.0.0] - 2026-08-15
 
 ### Promoted

@@ -394,6 +394,10 @@ function classifySegment(segment: string): { category: ShellCategory; reason: st
     }
     return { category: "risky", reason: `\`${head}\` is an indirection wrapper; route to a specialist for safe execution`, head }
   }
+  if (head === "gh") {
+    const r = classifyGhCommand(tokens);
+    return { category: r.category, reason: r.reason, head };
+  }
   if (head === "git") {
     const cat = classifyGitInvocation(tokens)
     if (cat === "read") {
@@ -553,4 +557,62 @@ export function classifyShellCommand(
     sensitiveMatches,
     head,
   }
+}
+
+/**
+ * Decide whether a `gh <subcommand>` invocation is read-only given the tokens.
+ */
+export function classifyGhCommand(tokens: ReadonlyArray<string>): { category: ShellCategory; reason: string } {
+  if (tokens.length <= 1) {
+    return { category: "read", reason: "bare `gh` command (read-only help/status)" }
+  }
+
+  const sub = tokens[1].toLowerCase()
+
+  if (sub === "api") {
+    const hasMutatingFlag = tokens.some((t, i) => {
+      const lower = t.toLowerCase()
+      if (lower === "-x" || lower === "--method") {
+        const next = (tokens[i + 1] ?? "").toUpperCase()
+        return next === "POST" || next === "DELETE" || next === "PUT" || next === "PATCH"
+      }
+      return (
+        lower.startsWith("-xpost") ||
+        lower.startsWith("-xdelete") ||
+        lower.startsWith("-xput") ||
+        lower.startsWith("-xpatch") ||
+        lower === "-f" ||
+        lower.startsWith("--field") ||
+        lower.startsWith("--raw-field") ||
+        lower.startsWith("--input")
+      )
+    })
+
+    if (hasMutatingFlag) {
+      return { category: "mutating", reason: "`gh api` with HTTP method or field mutation" }
+    }
+    return { category: "read", reason: "`gh api` GET request (read-only inspection)" }
+  }
+
+  const readSubcommands = new Set([
+    "view", "list", "status", "browse", "search", "help", "version",
+  ])
+
+  if (tokens.length >= 3 && readSubcommands.has(tokens[2].toLowerCase())) {
+    return { category: "read", reason: "`gh` read-only subcommand" }
+  }
+
+  const mutatingSubcommands = new Set([
+    "create", "edit", "delete", "merge", "close", "reopen", "comment", "deploy", "publish",
+  ])
+
+  if (tokens.length >= 3 && mutatingSubcommands.has(tokens[2].toLowerCase())) {
+    return { category: "mutating", reason: "`gh` mutating subcommand" }
+  }
+
+  if (readSubcommands.has(sub)) {
+    return { category: "read", reason: "`gh` read-only subcommand" }
+  }
+
+  return { category: "read", reason: "`gh` read-only inspection" }
 }

@@ -429,3 +429,12 @@ export function validateDelegation(
   }
   return { allowed: true }
 }
+
+/** Check if an agent ID or alias refers to the primary Heidi execution agent. */
+export function isHeidiAgent(agentId: string | undefined | null): boolean {
+  if (!agentId) return false
+  const canonical = agentId.toLowerCase().trim()
+  if (canonical === "heidi" || canonical === "orchestrator") return true
+  const entry = getCanonicalAgent(canonical)
+  return entry?.id === "heidi" || entry?.alias === "heidi"
+}

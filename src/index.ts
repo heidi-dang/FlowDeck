@@ -24,6 +24,7 @@ import {
   selectRulePaths,
 } from "./services/lazy-rule-loader"
 import { LoopDetector } from "./services/loop-detector"
+import { RecoverableFlowDeckBlockError, isRecoverableBlockError } from "./services/recoverable-block"
 
 import { getAgentConfigs, getAgentRoutes } from "./agents/index"
 import { loadFlowDeckConfig, resolveAgentModels, type FlowDeckConfig } from "./config/index"
@@ -120,6 +121,8 @@ const sessionToolCalls = new Map<string, number>()
 const sessionRetries = new Map<string, number>()
 const sessionDelegations = new Map<string, number>()
 const sessionBlocks = new Map<string, number>()
+const sessionRecoverableBlocks = new Map<string, RecoverableFlowDeckBlockError>()
+const _sessionAutoContinuations = new Map<string, Map<string, number>>()
 const sessionWarnings = new Map<string, number>()
 const sessionStartTimes = new Map<string, number>()
 const sessionFilesChanged = new Map<string, Set<string>>()
@@ -918,13 +921,35 @@ const plugin: Plugin = async ({ directory, client }) => {
       await toolGuardHook({ directory }, toolInput, toolOutput)
 
       // ── 7. Loop detection ────────────────────────────────────────────
+      try {
       const loop = loopDetector.checkBefore(
         toolName,
         rawArgs,
         sessionID,
       )
-      if (loop.action === "block") throw new Error(loop.escalationMessage)
+      if (loop.action === "block") {
+        throw new RecoverableFlowDeckBlockError({
+          subsystem: "loop_detector",
+          code: "LOOP_GUARD_REPEATED_ACTION",
+          tool: toolName,
+          sessionID,
+          agent,
+          reason: loop.escalationMessage,
+          recoverable: true,
+          suggestedActions: [
+            "Use the output from the previous call",
+            "Inspect a different file or pattern",
+            "Proceed to the next task step",
+          ],
+        })
+      }
       if (loop.action === "warn") appLog(loop.message, "warn", sessionID)
+      } catch (err: any) {
+        if (isRecoverableBlockError(err) && sessionID) {
+          sessionRecoverableBlocks.set(sessionID, err)
+        }
+        throw err
+      }
     },
 
     "tool.execute.after": async (toolInput: any, toolOutput: any) => {

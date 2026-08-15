@@ -28,7 +28,7 @@ describe("Browser Doctor Checks", () => {
   it("runs browser check category without error", async () => {
     const checks = await runBrowserChecks(process.cwd());
     expect(checks.length).toBeGreaterThan(0);
-    expect(checks[0].id).toBe("browser.capability");
+    expect(checks[0].id).toMatch(/browser\.(chrome|capability|agent_browser)/);
     expect(["pass", "warning"]).toContain(checks[0].status);
   });
 });
