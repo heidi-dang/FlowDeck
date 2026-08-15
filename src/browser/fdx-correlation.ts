@@ -9,7 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, isAbsolute, relative } from "node:path";
 import type { BrowserFailureFingerprint, CorrelatedSourceLocation } from "./types";
-import { checkFdxAvailability, nativeSearchFallback, runFdx } from "../tools/fdx-shared";
+import { checkFdxAvailability, runFdx } from "../tools/fdx-shared";
 
 export class FdxSourceCorrelator {
   private projectRoot: string;

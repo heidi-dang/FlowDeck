@@ -5,7 +5,7 @@
  * authority enforcement, conflict resolution, lazy routing, and context budgeting.
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createHash } from "node:crypto";
 

@@ -1,4 +1,4 @@
-import { execSync, execFileSync, spawn } from "child_process";
+import { execSync, spawn } from "child_process";
 
 function safeExecSync(cmd, opts = {}) {
   try {

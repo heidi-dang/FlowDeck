@@ -16,8 +16,8 @@ export function getEnhancedPath(): string {
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
-import { createConnection, Socket } from "node:net";
+import { join, resolve } from "node:path";
+import { Socket } from "node:net";
 import type { DevServerInfo, DevServerOptions } from "./types";
 
 export interface ManagedDevServer {

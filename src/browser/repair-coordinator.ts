@@ -6,17 +6,16 @@
  * patch iteration, post-patch verification, and final fresh-browser validation.
  */
 
-import { execFileSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type {
   HeidiBrowserSession,
   BrowserRepairReport,
-  BrowserCapabilityStatus,
   BrowserFailureFingerprint,
 } from "./types";
 import { AgentBrowserSession } from "./adapter";
 import { DevServerManager, type ManagedDevServer } from "./dev-server-manager";
-import { EvidenceCollector, type CollectedBrowserEvidence } from "./evidence-collector";
+import { EvidenceCollector } from "./evidence-collector";
 import { FailureDeduplicator } from "./failure-deduplication";
 import { FdxSourceCorrelator } from "./fdx-correlation";
 import { ExplorationPolicy, type ExplorationMode } from "./exploration-policy";

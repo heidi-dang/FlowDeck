@@ -1,16 +1,6 @@
 import fs from "node:fs"
-import { execFileSync } from "node:child_process"
-function safeExecFileSync(file, args, opts = {}) {
-  try {
-    return execFileSync(file, args, { encoding: "utf8", env: process.env, ...opts });
-  } catch (err) {
-    const out = err.stdout || (err.output && err.output[1] ? err.output[1].toString() : "");
-    if (out && (err.status === 0 || err.status === null)) {
-      return out;
-    }
-    throw err;
-  }
-}
+import { } from "node:child_process"
+
 
 import { validateV2Milestones } from "./verify-v2-milestones.mjs"
 import { validateBenchmarkReport } from "./verify-v2-benchmark.mjs"

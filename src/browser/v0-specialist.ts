@@ -6,7 +6,7 @@
  * NEVER owns browser lifecycle, repository lifecycle, or completion authority.
  */
 
-import type { AgentRoute } from "../agents/routing";
+import type { } from "../agents/routing";
 
 export interface V0CapabilityStatus {
   available: boolean;

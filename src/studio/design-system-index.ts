@@ -182,7 +182,7 @@ export class DesignSystemIndexer {
   }
 }
 
-function categorizeComponent(name: string, content: string): "primitive" | "composite" | "layout" | "form" {
+function categorizeComponent(name: string, _content: string): "primitive" | "composite" | "layout" | "form" {
   const lowerName = name.toLowerCase();
   if (lowerName.includes("button") || lowerName.includes("badge") || lowerName.includes("avatar") || lowerName.includes("icon")) {
     return "primitive";

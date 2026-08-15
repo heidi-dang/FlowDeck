@@ -18,7 +18,7 @@ import { NativeUiGenerator } from "./ui-generator";
 import { VisualCritic } from "./visual-critic";
 import { HeidiDesignMode } from "./design-mode";
 import { ResponsiveVerifier } from "./responsive-verifier";
-import { FullStackBuilder, type FullStackAppSpecification } from "./fullstack-builder";
+import { FullStackBuilder } from "./fullstack-builder";
 
 export interface StudioExecuteOptions {
   taskId?: string;

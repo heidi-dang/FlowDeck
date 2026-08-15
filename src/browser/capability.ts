@@ -5,7 +5,7 @@
  * and platform dependencies without throwing unhandled exceptions.
  */
 
-import { spawnSync, execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { BrowserCapabilityStatus } from "./types";

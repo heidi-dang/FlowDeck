@@ -17,7 +17,7 @@ describe("Browser Capability Detection", () => {
   });
 
   it("finds binary when custom path or env path is provided", () => {
-    const fakePath = "/tmp/fake-agent-browser";
+    const _fakePath = "/tmp/fake-agent-browser";
     expect(findAgentBrowserBinary("/non/existent/path")).toBeNull();
   });
 });
