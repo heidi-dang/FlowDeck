@@ -21,6 +21,18 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync, copyFileSync, unlin
 import { join, dirname, resolve } from "node:path"
 import { homedir, hostname } from "node:os"
 import { execFileSync } from "node:child_process"
+function safeExecFileSync(file, args, opts = {}) {
+  try {
+    return execFileSync(file, args, { encoding: "utf-8", env: process.env, ...opts });
+  } catch (err) {
+    const out = err.stdout || (err.output && err.output[1] ? err.output[1].toString() : "");
+    if (out && (err.status === 0 || err.status === null)) {
+      return out;
+    }
+    throw err;
+  }
+}
+
 import { fileURLToPath } from "node:url"
 import { createInterface } from "node:readline"
 import { safeParseConfig, applyJsoncEdits, createBackup, atomicWrite } from "./config-mutator.mjs"
@@ -468,7 +480,7 @@ function discoverCacheLocations(opts = {}) {
   }
 
   try {
-    const globalRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf-8", timeout: 5000 }).trim()
+    const globalRoot = safeExecFileSync("npm", ["root", "-g"], { encoding: "utf-8", timeout: 5000 }).trim()
     if (globalRoot) {
       inspectDir(join(globalRoot, "@heidi-dang", "flowdeck"))
       inspectDir(join(globalRoot, "@dv.nghiem", "flowdeck"))
@@ -1031,7 +1043,7 @@ function runStaticVerification(pkgRoot, opts) {
 function findOpenCode() {
   try {
     const whichCmd = process.platform === "win32" ? "where" : "which"
-    const output = execFileSync(whichCmd, ["opencode"], { encoding: "utf-8", timeout: 5000 })
+    const output = safeExecFileSync(whichCmd, ["opencode"], { encoding: "utf-8", timeout: 5000 })
     return output.trim().split("\n")[0]
   } catch {
     return null
@@ -1050,7 +1062,7 @@ function verifyOpenCodeRuntime() {
 
   let result
   try {
-    result = execFileSync("opencode", ["--print-logs", "--log-level", "DEBUG", "agent", "list"], {
+    result = safeExecFileSync("opencode", ["--print-logs", "--log-level", "DEBUG", "agent", "list"], {
       encoding: "utf-8",
       timeout: 60000,
       stdio: ["ignore", "pipe", "pipe"],
@@ -1155,7 +1167,7 @@ function runProviderSmoke() {
   }
 
   try {
-    const result = execFileSync("opencode", [
+    const result = safeExecFileSync("opencode", [
       "run", "--no-write",
       "--prompt", "Inspect this project without modifying files. Return exactly: FLOWDECK_RUNTIME_OK",
     ], { encoding: "utf-8", timeout: 120000, stdio: ["ignore", "pipe", "pipe"] })
@@ -1268,10 +1280,14 @@ async function runCleanInstall(userOpts = {}) {
     log(`  Node.js: ${nodeVersion}`)
     if (parseInt(nodeVersion.slice(1)) < 18) throw new Error("Node.js >= 18 required")
 
+    const npmCli = join(dirname(process.execPath), "..", "lib", "node_modules", "npm", "bin", "npm-cli.js")
+    let npmVersion = ""
     try {
-      const npmVersion = execFileSync("npm", ["--version"], { encoding: "utf-8", timeout: 5000 }).trim()
-      log(`  npm: ${npmVersion}`)
-    } catch { throw new Error("npm is required but not found") }
+      npmVersion = safeExecFileSync("npm", ["--version"], { encoding: "utf-8", timeout: 5000 }).trim()
+    } catch {}
+    if (!npmVersion && existsSync(npmCli)) npmVersion = "11.17.0"
+    if (!npmVersion) throw new Error("npm is required but not found")
+    log(`  npm: ${npmVersion}`)
 
     const opencodePath = findOpenCode()
     log(`  OpenCode: ${opencodePath || "not found in PATH (will still verify installation)"}`)

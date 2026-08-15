@@ -13,7 +13,7 @@ describe("Phase 9 — Documentation and User Experience", () => {
 
       const content = readFileSync(readmePath, "utf-8")
       expect(content).toContain("11 specialized subagents")
-      expect(content).toContain("61 validated skills")
+      expect(content).toContain("89 validated skills")
       expect(content).toContain("15 registered commands")
       expect(content).toContain("heidi-dang/flowdeck/main/install.sh")
     })
@@ -23,8 +23,8 @@ describe("Phase 9 — Documentation and User Experience", () => {
       expect(existsSync(docsIndexPath)).toBe(true)
 
       const content = readFileSync(docsIndexPath, "utf-8")
-      expect(content).toContain("13 registered agents")
-      expect(content).toContain("61 skills")
+      expect(content).toContain("14 registered agents")
+      expect(content).toContain("89 skills")
       expect(content).toContain("15 commands")
       expect(content).toContain("Heidi Primary Execution Policy")
     })
@@ -41,8 +41,8 @@ describe("Phase 9 — Documentation and User Experience", () => {
   })
 
   describe("2. System Agent Count Verification", () => {
-    it("AGENT_NAMES registry matches documented 13 agents", () => {
-      expect(AGENT_NAMES.length).toBe(13)
+    it("AGENT_NAMES registry matches documented 14 agents", () => {
+      expect(AGENT_NAMES.length).toBe(14)
       expect(AGENT_NAMES).toContain("heidi")
       expect(AGENT_NAMES).toContain("orchestrator")
     })

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 
 const runnerPath = join(process.cwd(), 'scripts', 'orchestration', 'run-integration-matrix.mjs');
@@ -7,7 +7,7 @@ const runnerPath = join(process.cwd(), 'scripts', 'orchestration', 'run-integrat
 describe('Integration Runner CLI (Negative)', () => {
   it('rejects missing or invalid profile', () => {
     try {
-      execSync(`node "${runnerPath}" --profile non_existent_profile`, { stdio: 'pipe' });
+      execFileSync(process.execPath, [runnerPath, '--profile', 'non_existent_profile'], { stdio: 'pipe' });
       expect(true).toBe(false); // Should not reach here
     } catch (err: any) {
       expect(err.stderr.toString()).toContain('Invalid profile');
@@ -26,7 +26,7 @@ describe('Artifact Validator (Negative)', () => {
     const validatorPath = join(process.cwd(), 'scripts', 'orchestration', 'validate-artifacts.mjs');
     // We expect it to pass currently or if no artifacts exist, it just returns.
     try {
-      execSync(`node "${validatorPath}"`, { stdio: 'pipe' });
+      execFileSync(process.execPath, [validatorPath], { stdio: 'pipe' });
       expect(true).toBe(true);
     } catch {
       // If we manually place a bad json it would fail.

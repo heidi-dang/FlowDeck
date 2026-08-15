@@ -1,0 +1,1816 @@
+{
+  "version": "1.0.0",
+  "updatedAt": "2026-08-15T08:35:00.000Z",
+  "skills": {
+    "agent-browser": {
+      "name": "agent-browser",
+      "source": "vercel-labs/agent-browser",
+      "revision": "v0.26.0",
+      "path": "src/skills/agent-browser/SKILL.md",
+      "sha256": "b6056001ee7edd2dfebad2be5bccbf607187b1ce329598705ccb11fcef450091",
+      "authority": "specialist",
+      "priority": 10,
+      "intents": [
+        "browser-debug",
+        "console-fix",
+        "ui-repair"
+      ],
+      "tags": [
+        "browser",
+        "testing",
+        "cdp",
+        "chrome"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "agent-governance": {
+      "name": "agent-governance",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/agent-governance/SKILL.md",
+      "sha256": "6f3f071b07695c8e03c879e31621aa631ba54792902a422b824bd855c05ce557",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "agent-governance"
+      ],
+      "tags": [
+        "agent"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "agent-harness-construction": {
+      "name": "agent-harness-construction",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/agent-harness-construction/SKILL.md",
+      "sha256": "3193dc324057806d30182ed227df007451f7d3f33f90a323b197802eb29e24de",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "agent-harness-construction"
+      ],
+      "tags": [
+        "agent"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "agentic-eval": {
+      "name": "agentic-eval",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/agentic-eval/SKILL.md",
+      "sha256": "641b42194a39bc84676854a3e30907b96249323a41167c666b625f3fc0c2a263",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "agentic-eval"
+      ],
+      "tags": [
+        "agentic"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "api-design": {
+      "name": "api-design",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/api-design/SKILL.md",
+      "sha256": "8e557905b2ac6d755eaeb329bf99bc78ad5870be62c8c7de46109400b226c333",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "api-design"
+      ],
+      "tags": [
+        "api"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "app-shell-design": {
+      "name": "app-shell-design",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/app-shell-design/SKILL.md",
+      "sha256": "16011a577098b09d3b57716c3b694310eb40c02850003d217a1330e048fa080c",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "app-shell-design"
+      ],
+      "tags": [
+        "app"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "arch-constraint-guard": {
+      "name": "arch-constraint-guard",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/arch-constraint-guard/SKILL.md",
+      "sha256": "f9a91604b84e0ad2ba77eeddd959e08ba0935f5f08f43f6fb10cab547893cde6",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "arch-constraint-guard"
+      ],
+      "tags": [
+        "arch"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "backend-patterns": {
+      "name": "backend-patterns",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/backend-patterns/SKILL.md",
+      "sha256": "ffa9c16566fba582d7fbfbfba0552c0f30e0991d1bbb5b7df358bd0f2713cf05",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "backend-patterns"
+      ],
+      "tags": [
+        "backend"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "blast-radius-preview": {
+      "name": "blast-radius-preview",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/blast-radius-preview/SKILL.md",
+      "sha256": "017efccd50406a11a8f83dbca4b785b504041b07449df626fb53ae8ae490d910",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "blast-radius-preview"
+      ],
+      "tags": [
+        "blast"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "bun": {
+      "name": "bun",
+      "source": "brianlovin/agent-config",
+      "revision": "v1.0.0",
+      "path": "src/skills/bun/SKILL.md",
+      "sha256": "967917b1554371629635e7fcb498b512dd0b78f7aaf2d5227910790ee4c62259",
+      "authority": "specialist",
+      "priority": 5,
+      "intents": [
+        "bun-package",
+        "bun-test"
+      ],
+      "tags": [
+        "bun",
+        "package-manager"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "change-impact-radar": {
+      "name": "change-impact-radar",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/change-impact-radar/SKILL.md",
+      "sha256": "a96484127ce7d6e56188dc6aae162ed1c70c1189ca0dc21e39f178a4bfdf8bdf",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "change-impact-radar"
+      ],
+      "tags": [
+        "change"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "clean-architecture": {
+      "name": "clean-architecture",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/clean-architecture/SKILL.md",
+      "sha256": "5a17f637dc4c6d626edb3f897861d1e558e7ddaa8db57a3e37c578fa6a4d7b29",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "clean-architecture"
+      ],
+      "tags": [
+        "clean"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "code-review": {
+      "name": "code-review",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/code-review/SKILL.md",
+      "sha256": "dc59f559268e4c926f60c228abaee928df27bfe9998417b42ca0e0e60ca36728",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "code-review"
+      ],
+      "tags": [
+        "code"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "code-tour": {
+      "name": "code-tour",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/code-tour/SKILL.md",
+      "sha256": "0c449cfdea90b945d51e61941c275f9655bafd47bd1f248add152704abac47b1",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "code-tour"
+      ],
+      "tags": [
+        "code"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "codebase-mapping": {
+      "name": "codebase-mapping",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/codebase-mapping/SKILL.md",
+      "sha256": "ccbe85f17a775231a4766a84a14fb402c71997b76d12a8569a68d012bd786259",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "codebase-mapping"
+      ],
+      "tags": [
+        "codebase"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "codebase-onboarding": {
+      "name": "codebase-onboarding",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/codebase-onboarding/SKILL.md",
+      "sha256": "fdc6cb0294bc0499e9c2b22538da4bf7587c5cab3c1f82ba75b9380abb3bd043",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "codebase-onboarding"
+      ],
+      "tags": [
+        "codebase"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "codeql": {
+      "name": "codeql",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/codeql/SKILL.md",
+      "sha256": "bfcbc51661aca13c72406a07e547c387df95de1107cdcbdafe9a2cf5da394aab",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "codeql"
+      ],
+      "tags": [
+        "codeql"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "confidence-aware-planning": {
+      "name": "confidence-aware-planning",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/confidence-aware-planning/SKILL.md",
+      "sha256": "ed122798382cd68b59ae74c404a1b9787c15ace1394e5f9c648e63185c6203fa",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "confidence-aware-planning"
+      ],
+      "tags": [
+        "confidence"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "context-budget": {
+      "name": "context-budget",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/context-budget/SKILL.md",
+      "sha256": "21f588a788852566691b6045507daa5924327ce0c3a3a6845c1a9d21501f854e",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "context-budget"
+      ],
+      "tags": [
+        "context"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "context-guard": {
+      "name": "context-guard",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/context-guard/SKILL.md",
+      "sha256": "0c79d89061bd69cd5fce1852c0e95481a09e5705aaee03447b01d341a4acfb5e",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "context-guard"
+      ],
+      "tags": [
+        "context"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "context-load": {
+      "name": "context-load",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/context-load/SKILL.md",
+      "sha256": "18570f5eb1305e2bd76e891a220d5a1309f975404be37256b327d25c279da0f1",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "context-load"
+      ],
+      "tags": [
+        "context"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "context-steward": {
+      "name": "context-steward",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/context-steward/SKILL.md",
+      "sha256": "7ef1da9037c8d4470f49096dbdd6c5d22571e408b6fdf7f08db2e075242d9d81",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "context-steward"
+      ],
+      "tags": [
+        "context"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "cqrs": {
+      "name": "cqrs",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/cqrs/SKILL.md",
+      "sha256": "21a7830527bbc1f1779c77dcc486765cb862567135c9c6efda0cf15fee9ca7b0",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "cqrs"
+      ],
+      "tags": [
+        "cqrs"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "ddd-architecture": {
+      "name": "ddd-architecture",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/ddd-architecture/SKILL.md",
+      "sha256": "b53cbdb5154c7778124308a3ea1846508eb687bcb30284cfcf9455ad69aad8e4",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "ddd-architecture"
+      ],
+      "tags": [
+        "ddd"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "debug-flow": {
+      "name": "debug-flow",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/debug-flow/SKILL.md",
+      "sha256": "4134d4458d438f24b3db1399728adf9f300287bfed67f6b08db233df8e05b4f8",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "debug-flow"
+      ],
+      "tags": [
+        "debug"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "decision-trace": {
+      "name": "decision-trace",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/decision-trace/SKILL.md",
+      "sha256": "2a45f2ea3bc8e3ffb407ce34bf6ea37d79e18b76f57ce91bfafbb84431848b40",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "decision-trace"
+      ],
+      "tags": [
+        "decision"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "dependency-audit": {
+      "name": "dependency-audit",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/dependency-audit/SKILL.md",
+      "sha256": "2bfc29a18f63a37cf73aa7ba41cb59b748be307046bea8cdfc2b708d56dc43ad",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "dependency-audit"
+      ],
+      "tags": [
+        "dependency"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "dispatching-parallel-agents": {
+      "name": "dispatching-parallel-agents",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/dispatching-parallel-agents/SKILL.md",
+      "sha256": "918e519d5f3eed3634ded3097d589acad72aa6b88172a7651b6978e8e1857347",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "dispatching-parallel-agents"
+      ],
+      "tags": [
+        "dispatching"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "django-patterns": {
+      "name": "django-patterns",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/django-patterns/SKILL.md",
+      "sha256": "c5bcfa48a9d51de6979fccdac60c9f010d19b5f3ec3e5a26bd8ca99637ebcd48",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "django-patterns"
+      ],
+      "tags": [
+        "django"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "django-tdd": {
+      "name": "django-tdd",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/django-tdd/SKILL.md",
+      "sha256": "133b3921cb8d58890dc1f48c32b8ab3d2e0d2b8d4e8ba19e930e2cbff1c30da0",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "django-tdd"
+      ],
+      "tags": [
+        "django"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "event-driven-architecture": {
+      "name": "event-driven-architecture",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/event-driven-architecture/SKILL.md",
+      "sha256": "512c1a76d02590f7db83ea5f6309181459797e0c8ad97d44f05d7e5af90df8d8",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "event-driven-architecture"
+      ],
+      "tags": [
+        "event"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "executing-plans": {
+      "name": "executing-plans",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/executing-plans/SKILL.md",
+      "sha256": "7a4b40bba140e72936f23ce068e66b727fb6b88c6bd161a210c64f5eb2da1b81",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "executing-plans"
+      ],
+      "tags": [
+        "executing"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "failure-replay-engine": {
+      "name": "failure-replay-engine",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/failure-replay-engine/SKILL.md",
+      "sha256": "27389198c11d05aa60bf086fc7525a837c0a01190d015235844fc6fe6180e73b",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "failure-replay-engine"
+      ],
+      "tags": [
+        "failure"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "fdx-code-intelligence": {
+      "name": "fdx-code-intelligence",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/fdx-code-intelligence/SKILL.md",
+      "sha256": "3a5d5fd682843b0f6c437d6199959062b6c6e57623ffdb9e45fd4859361cce5b",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "fdx-code-intelligence"
+      ],
+      "tags": [
+        "fdx"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "find-skills": {
+      "name": "find-skills",
+      "source": "vercel-labs/skills",
+      "revision": "v1.0.0",
+      "path": "src/skills/find-skills/SKILL.md",
+      "sha256": "bd94dc201c1148440026434ceb369ee1fc907226681b99c8b0ceb594aa132c67",
+      "authority": "advisory",
+      "priority": 3,
+      "intents": [
+        "discovery"
+      ],
+      "tags": [
+        "skills"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "finishing-a-development-branch": {
+      "name": "finishing-a-development-branch",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/finishing-a-development-branch/SKILL.md",
+      "sha256": "812292cb6680fd8b27ecf7a087c9df524e0d8da61f98583b7b635dc7f480e65a",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "finishing-a-development-branch"
+      ],
+      "tags": [
+        "finishing"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "flowdeck-mcp-audit": {
+      "name": "flowdeck-mcp-audit",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/flowdeck-mcp-audit/SKILL.md",
+      "sha256": "38166acda2d2a49145c7b903bc0190b06e81bb67b63234f350c306668174b6c9",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "flowdeck-mcp-audit"
+      ],
+      "tags": [
+        "flowdeck"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "flowdeck-plugin-debugging": {
+      "name": "flowdeck-plugin-debugging",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/flowdeck-plugin-debugging/SKILL.md",
+      "sha256": "06d1de0511fd4cfadb0dc484834a4bcae58d284fd9e5fc235af0a8db91d120bc",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "flowdeck-plugin-debugging"
+      ],
+      "tags": [
+        "flowdeck"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "flowdeck-release-verification": {
+      "name": "flowdeck-release-verification",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/flowdeck-release-verification/SKILL.md",
+      "sha256": "494cae9e9aec9be7fa7dd9729953a67f5ab20790c9382926922d3fbcb0f3f75f",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "flowdeck-release-verification"
+      ],
+      "tags": [
+        "flowdeck"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "frontend-design": {
+      "name": "frontend-design",
+      "source": "anthropics/skills",
+      "revision": "v1.0.0",
+      "path": "src/skills/frontend-design/SKILL.md",
+      "sha256": "2a72bf77edc7bfab27fb87cde20ca433a7330d93696972c18ca455aaa7443793",
+      "authority": "specialist",
+      "priority": 7,
+      "intents": [
+        "frontend-design",
+        "ui-redesign",
+        "layout"
+      ],
+      "tags": [
+        "ui",
+        "frontend",
+        "design"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "frontend-pattern": {
+      "name": "frontend-pattern",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/frontend-pattern/SKILL.md",
+      "sha256": "a9855c504285779ada41e9d18c775b545f89e9afdb7494383bdf24d5f2c086a8",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "frontend-pattern"
+      ],
+      "tags": [
+        "frontend"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "git-release": {
+      "name": "git-release",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/git-release/SKILL.md",
+      "sha256": "b659b2697379024509d2e68b7b829c29dd3714dd102db1892a8680ce09fbf2e6",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "git-release"
+      ],
+      "tags": [
+        "git"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "git-workflow": {
+      "name": "git-workflow",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/git-workflow/SKILL.md",
+      "sha256": "93f2813c6966f2b42883daa1ddc6ee7a9205e953727605dad8c02f2256931b1c",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "git-workflow"
+      ],
+      "tags": [
+        "git"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "github-actions-efficiency": {
+      "name": "github-actions-efficiency",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/github-actions-efficiency/SKILL.md",
+      "sha256": "b0df7b88cbe375cd1972b056a0ee9fa60a79d9e1792d637de5cdc6125920a967",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "github-actions-efficiency"
+      ],
+      "tags": [
+        "github"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "github-actions-hardening": {
+      "name": "github-actions-hardening",
+      "source": "github/awesome-copilot",
+      "revision": "v1.0.0",
+      "path": "src/skills/github-actions-hardening/SKILL.md",
+      "sha256": "f734b431a3500a3be4fc976217d1315c01411ec22e4348b63dfa9c702decd15c",
+      "authority": "procedure",
+      "priority": 8,
+      "intents": [
+        "ci-debug",
+        "github-actions"
+      ],
+      "tags": [
+        "ci",
+        "github-actions"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "golang-patterns": {
+      "name": "golang-patterns",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/golang-patterns/SKILL.md",
+      "sha256": "b4c097b77739072b6f7d0bc2c8b305508e1ef1483c8201f2e655f8d2a38c8c7b",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "golang-patterns"
+      ],
+      "tags": [
+        "golang"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "heidi-browser-debugging": {
+      "name": "heidi-browser-debugging",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0",
+      "path": "src/skills/heidi-browser-debugging/SKILL.md",
+      "sha256": "86b58ffe2b7187ed5bd08de8ca70cfd4d1e0694c0a4b009cf04136bea02af1e1",
+      "authority": "procedure",
+      "priority": 10,
+      "intents": [
+        "browser-debug",
+        "console-fix"
+      ],
+      "tags": [
+        "heidi",
+        "browser"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "heidi-runtime-closure": {
+      "name": "heidi-runtime-closure",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/heidi-runtime-closure/SKILL.md",
+      "sha256": "15cf68d91fc0cb77b779c6448571e7253630d85336aa1223caedc35e7ad93496",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "heidi-runtime-closure"
+      ],
+      "tags": [
+        "heidi"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "hexagonal-architecture": {
+      "name": "hexagonal-architecture",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/hexagonal-architecture/SKILL.md",
+      "sha256": "14df4b92ca45a10c3b3bfe8f09f34bf00f02e0ed228694e343f22f2109fcd714",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "hexagonal-architecture"
+      ],
+      "tags": [
+        "hexagonal"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "human-review-routing": {
+      "name": "human-review-routing",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/human-review-routing/SKILL.md",
+      "sha256": "cccffffbddf0fc19852e7d6429a28251e9ad833eaf676833c7b0b8081931cd3e",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "human-review-routing"
+      ],
+      "tags": [
+        "human"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "improve-codebase-architecture": {
+      "name": "improve-codebase-architecture",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/improve-codebase-architecture/SKILL.md",
+      "sha256": "5071a460f9470e30316def55673be8e9256d4365248fe63dcf8ac614b62a430a",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "improve-codebase-architecture"
+      ],
+      "tags": [
+        "improve"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "java-patterns": {
+      "name": "java-patterns",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/java-patterns/SKILL.md",
+      "sha256": "ff15487ec28cea776f223fc3a5b42a0f7917a5ba5636b134f1649b8bed30be0d",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "java-patterns"
+      ],
+      "tags": [
+        "java"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "layered-architecture": {
+      "name": "layered-architecture",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/layered-architecture/SKILL.md",
+      "sha256": "09d371dcd8cd43d17b0f360088d49d4c2dd3af68cf87d7f250e0de7a38111cc0",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "layered-architecture"
+      ],
+      "tags": [
+        "layered"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "mcp-builder": {
+      "name": "mcp-builder",
+      "source": "anthropics/skills",
+      "revision": "v1.0.0",
+      "path": "src/skills/mcp-builder/SKILL.md",
+      "sha256": "c8491435b74bdd4c58c2008bfe8586079bf4bb8918eb66c91c4d8e8cc261f374",
+      "authority": "specialist",
+      "priority": 8,
+      "intents": [
+        "mcp-build",
+        "mcp-server"
+      ],
+      "tags": [
+        "mcp",
+        "api"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "mcp-security-audit": {
+      "name": "mcp-security-audit",
+      "source": "github/awesome-copilot",
+      "revision": "v1.0.0",
+      "path": "src/skills/mcp-security-audit/SKILL.md",
+      "sha256": "a0b2e6d42607591710c7aac1268342f26db81ffb7aa00c6c37e7659a5f9a629e",
+      "authority": "specialist",
+      "priority": 9,
+      "intents": [
+        "mcp-audit",
+        "mcp-security"
+      ],
+      "tags": [
+        "mcp",
+        "security"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "patch-trust-score": {
+      "name": "patch-trust-score",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/patch-trust-score/SKILL.md",
+      "sha256": "18b79e9914fd25d9861fe255b22cd320d092babfe44dca2826fb5b47a0541147",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "patch-trust-score"
+      ],
+      "tags": [
+        "patch"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "performance-profiling": {
+      "name": "performance-profiling",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/performance-profiling/SKILL.md",
+      "sha256": "57bc02b3b5d7243183b6d95d69d48296d9852970098cf6a1696349a44c896d97",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "performance-profiling"
+      ],
+      "tags": [
+        "performance"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "plan-task": {
+      "name": "plan-task",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/plan-task/SKILL.md",
+      "sha256": "d6a05fdc3f7fccf695193513ec75f950ada1ec93ae71a2c91bec67e36d386f33",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "plan-task"
+      ],
+      "tags": [
+        "plan"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "postgres-patterns": {
+      "name": "postgres-patterns",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/postgres-patterns/SKILL.md",
+      "sha256": "75b8ba562e9a94541b8b874c66ca9a19479226b9f064891cbc79c93ce2270063",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "postgres-patterns"
+      ],
+      "tags": [
+        "postgres"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "python-patterns": {
+      "name": "python-patterns",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/python-patterns/SKILL.md",
+      "sha256": "1797a60f7b971c3eb11a0a5828c066e9d72f1e2ba7aabceed2669e59a5e744ee",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "python-patterns"
+      ],
+      "tags": [
+        "python"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "receiving-code-review": {
+      "name": "receiving-code-review",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/receiving-code-review/SKILL.md",
+      "sha256": "f530310ca1e27c016304484f43df2e79e11bc283389b6d809ad075019e7a3c27",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "receiving-code-review"
+      ],
+      "tags": [
+        "receiving"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "refactor-guide": {
+      "name": "refactor-guide",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/refactor-guide/SKILL.md",
+      "sha256": "6f9cccf44b1ac69895d56dca294d90226ced76e350fba3f6773412686a583faf",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "refactor-guide"
+      ],
+      "tags": [
+        "refactor"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "regression-prediction": {
+      "name": "regression-prediction",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/regression-prediction/SKILL.md",
+      "sha256": "6eec078dc31c62fee0e5be723a9b1d79323a3a059d72afe7bc456a5f691a2a2c",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "regression-prediction"
+      ],
+      "tags": [
+        "regression"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "repo-memory-graph": {
+      "name": "repo-memory-graph",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/repo-memory-graph/SKILL.md",
+      "sha256": "6c675145bedf0e1bf4df1284ba14e2383c83426f116c409f456fd5812fc25ee4",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "repo-memory-graph"
+      ],
+      "tags": [
+        "repo"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "requesting-code-review": {
+      "name": "requesting-code-review",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/requesting-code-review/SKILL.md",
+      "sha256": "734313316ae3e51abd389f82f03b2353c79739375d6e8e302069d82e7565ed8d",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "requesting-code-review"
+      ],
+      "tags": [
+        "requesting"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "research-first": {
+      "name": "research-first",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/research-first/SKILL.md",
+      "sha256": "f3318b6a941b5e10de0d3209bfcbf8004c008729597a1e97faf4032bc32ff0b6",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "research-first"
+      ],
+      "tags": [
+        "research"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "responsive-review": {
+      "name": "responsive-review",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/responsive-review/SKILL.md",
+      "sha256": "75ec619eb6065c702a6c81477df403188b26db1226cfbe70213e3e4c400df305",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "responsive-review"
+      ],
+      "tags": [
+        "responsive"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "rust-patterns": {
+      "name": "rust-patterns",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/rust-patterns/SKILL.md",
+      "sha256": "5c2d42d4e0087200708c8b1508612ea6074e2a26df15474bdcf8f77cebb7c14c",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "rust-patterns"
+      ],
+      "tags": [
+        "rust"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "saga-architecture": {
+      "name": "saga-architecture",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/saga-architecture/SKILL.md",
+      "sha256": "f64c76efd5758b59303fbd3ddbbba1bf587819e99839639c291dc4b111ed436b",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "saga-architecture"
+      ],
+      "tags": [
+        "saga"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "secret-scanning": {
+      "name": "secret-scanning",
+      "source": "github/awesome-copilot",
+      "revision": "v1.0.0",
+      "path": "src/skills/secret-scanning/SKILL.md",
+      "sha256": "7408345b2f9acc86dca2fa1e0ea3f3aa4211c711925ae74f1791d58fb9bf1159",
+      "authority": "specialist",
+      "priority": 9,
+      "intents": [
+        "security-audit",
+        "secret-scan"
+      ],
+      "tags": [
+        "security",
+        "secrets"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "security-scan": {
+      "name": "security-scan",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/security-scan/SKILL.md",
+      "sha256": "85cafff1730326dee3df4fbef7779d08c300514c81d4630830e75f8da0bd708f",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "security-scan"
+      ],
+      "tags": [
+        "security"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "self-healing-policies": {
+      "name": "self-healing-policies",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/self-healing-policies/SKILL.md",
+      "sha256": "b9c09e2d2e91ec0831c550769549f99d8ea4de770cac150d01b2a253673ea785",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "self-healing-policies"
+      ],
+      "tags": [
+        "self"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "session-persistence": {
+      "name": "session-persistence",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/session-persistence/SKILL.md",
+      "sha256": "bcf1ac6b9c31e899e95274c11b83d57953d2ff41807467baa4d31cbec1c69f40",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "session-persistence"
+      ],
+      "tags": [
+        "session"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "skill-creator": {
+      "name": "skill-creator",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/skill-creator/SKILL.md",
+      "sha256": "c40565bdc8bbcec2807ea35daf5f150a64641655026dcb0c1b5fc23377d283b1",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "skill-creator"
+      ],
+      "tags": [
+        "skill"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "subagent-driven-development": {
+      "name": "subagent-driven-development",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/subagent-driven-development/SKILL.md",
+      "sha256": "bb9af5447751168c5d244444bfd6f203dd0c293016b61719dfb56fc94af4ad0b",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "subagent-driven-development"
+      ],
+      "tags": [
+        "subagent"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "systematic-debugging": {
+      "name": "systematic-debugging",
+      "source": "obra/superpowers",
+      "revision": "v1.2.0",
+      "path": "src/skills/systematic-debugging/SKILL.md",
+      "sha256": "2012361af6e274aa87d20c615c2de423f288e1a38399f375b19f6aa1940f8540",
+      "authority": "procedure",
+      "priority": 9,
+      "intents": [
+        "debug",
+        "bug-fix",
+        "root-cause"
+      ],
+      "tags": [
+        "debugging",
+        "testing"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "tdd-workflow": {
+      "name": "tdd-workflow",
+      "source": "obra/superpowers",
+      "revision": "v1.2.0",
+      "path": "src/skills/tdd-workflow/SKILL.md",
+      "sha256": "764ba2a9bbd2dd8cd5aad614bd9e5f5ae52a14c8e00777bbca5f21944285bfa1",
+      "authority": "procedure",
+      "priority": 8,
+      "intents": [
+        "tdd",
+        "unit-test",
+        "testing"
+      ],
+      "tags": [
+        "testing",
+        "tdd"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "telemetry-steward": {
+      "name": "telemetry-steward",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/telemetry-steward/SKILL.md",
+      "sha256": "9a638ea096c09c8d7e3b9ab98b6536b35cc21e707aa9bf5fde9063a68524ef0a",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "telemetry-steward"
+      ],
+      "tags": [
+        "telemetry"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "test-coverage": {
+      "name": "test-coverage",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/test-coverage/SKILL.md",
+      "sha256": "6234cadf0aecb2a7675df900b20ece19a743d1ca9df351dc3a51f06f9cf8be60",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "test-coverage"
+      ],
+      "tags": [
+        "test"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "test-gap-detector": {
+      "name": "test-gap-detector",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/test-gap-detector/SKILL.md",
+      "sha256": "5e5eab7ed78645f3054a6b61133ab0bc56a9a8679f84de233a279408c3056fa5",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "test-gap-detector"
+      ],
+      "tags": [
+        "test"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "using-git-worktrees": {
+      "name": "using-git-worktrees",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/using-git-worktrees/SKILL.md",
+      "sha256": "1e059a6089ca323468035a9002f813aca4d4a5ae5de0bd3c29168939aa670df2",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "using-git-worktrees"
+      ],
+      "tags": [
+        "using"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "vercel-composition-patterns": {
+      "name": "vercel-composition-patterns",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/vercel-composition-patterns/SKILL.md",
+      "sha256": "c5bdf59c8bead22f217cac21dd8a8883400d7e64665231b13a911b5ab5e6f3a1",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "vercel-composition-patterns"
+      ],
+      "tags": [
+        "vercel"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "vercel-react-best-practices": {
+      "name": "vercel-react-best-practices",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/vercel-react-best-practices/SKILL.md",
+      "sha256": "31225fa9873f49d02dac860510fbb2297032480067287f8b782ce88ed8fbf62a",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "vercel-react-best-practices"
+      ],
+      "tags": [
+        "vercel"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "verification-before-completion": {
+      "name": "verification-before-completion",
+      "source": "obra/superpowers",
+      "revision": "v1.2.0",
+      "path": "src/skills/verification-before-completion/SKILL.md",
+      "sha256": "d689a9ef69db20d6c6e85ba804c38da4b5f0c46c815622ec65588d2a4aa37fb4",
+      "authority": "procedure",
+      "priority": 10,
+      "intents": [
+        "verify",
+        "completion",
+        "closure"
+      ],
+      "tags": [
+        "verification",
+        "testing"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "web-design-guidelines": {
+      "name": "web-design-guidelines",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/web-design-guidelines/SKILL.md",
+      "sha256": "8f5d6c08586f5f975bfa3002160b4c5dac48fefd21fe6bc7ab5a38093f7d9743",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "web-design-guidelines"
+      ],
+      "tags": [
+        "web"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "webapp-testing": {
+      "name": "webapp-testing",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/webapp-testing/SKILL.md",
+      "sha256": "274ba713261e7839f5015b3348ab89a2d8ecf1c79d16f0d7abffebe7d52efe10",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "webapp-testing"
+      ],
+      "tags": [
+        "webapp"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "workflow-skill-creator": {
+      "name": "workflow-skill-creator",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/workflow-skill-creator/SKILL.md",
+      "sha256": "1d8b009ded1559a2c16973bb580bb2ea083a4367eefd6917d64822adae44cfa6",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "workflow-skill-creator"
+      ],
+      "tags": [
+        "workflow"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "writing-plans": {
+      "name": "writing-plans",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/writing-plans/SKILL.md",
+      "sha256": "c2aac53561067f524f63e0c4ffe765cce9f280c776345de18187d88558cf7967",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "writing-plans"
+      ],
+      "tags": [
+        "writing"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    },
+    "writing-skills": {
+      "name": "writing-skills",
+      "source": "heidi-dang/flowdeck",
+      "revision": "v2.0.0-alpha",
+      "path": "src/skills/writing-skills/SKILL.md",
+      "sha256": "7780e679e5cc68ca72ec6920540cd3452e3d7be5c0227ebdcfb57824f03e1dac",
+      "authority": "procedure",
+      "priority": 5,
+      "intents": [
+        "writing-skills"
+      ],
+      "tags": [
+        "writing"
+      ],
+      "securityStatus": "trusted-curated",
+      "mayOverrideExecutionPolicy": false,
+      "mayMarkTaskComplete": false,
+      "mayCommit": false,
+      "mayDeploy": false
+    }
+  }
+}

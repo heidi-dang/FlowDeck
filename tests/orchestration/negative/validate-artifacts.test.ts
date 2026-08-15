@@ -1,22 +1,23 @@
 import { describe, it, expect } from 'bun:test';
-import { execSync } from 'child_process';
+import { } from 'child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
+import { execFileSync } from 'child_process';
+
 function runValidator(artifactDir: string): { exitCode: number; stdout: string; stderr: string } {
   try {
-    const stdout = execSync(`node scripts/orchestration/validate-artifacts.mjs`, {
+    const stdoutBuf = execFileSync(process.execPath, ['scripts/orchestration/validate-artifacts.mjs'], {
       env: { ...process.env, ORCHESTRATION_ARTIFACT_DIR: artifactDir },
-      encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe']
     });
-    return { exitCode: 0, stdout, stderr: '' };
+    return { exitCode: 0, stdout: stdoutBuf.toString(), stderr: '' };
   } catch (err: any) {
     return {
-      exitCode: err.status || 1,
-      stdout: err.stdout?.toString() || '',
-      stderr: err.stderr?.toString() || ''
+      exitCode: typeof err.status === 'number' ? err.status : 1,
+      stdout: err.stdout ? err.stdout.toString() : '',
+      stderr: err.stderr ? err.stderr.toString() : (err.message || '')
     };
   }
 }

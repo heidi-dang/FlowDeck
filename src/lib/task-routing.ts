@@ -108,3 +108,113 @@ export function classifyUiTaskType(input: string): UiTaskType | null {
   if (normalized.includes("screen")) return "app-screen"
   return "general-ui"
 }
+
+export interface BrowserDebugIntent {
+  isBrowserDebug: boolean;
+  intent?: {
+    domain: "frontend";
+    operation: "debug-and-repair";
+    scope: "browser-runtime";
+    completion: "no-actionable-browser-failures";
+  };
+}
+
+const BROWSER_DEBUG_KEYWORDS = [
+  "console bug",
+  "console error",
+  "console errors",
+  "frontend runtime error",
+  "debug the website",
+  "browser for error",
+  "browser for errors",
+  "ui runtime bug",
+  "ui runtime bugs",
+  "react error",
+  "react errors",
+  "run the web app and fix",
+  "why this page is broken",
+  "test the frontend and repair",
+  "fix all console bugs",
+  "fix console errors",
+  "fix frontend bugs",
+  "browser debugging",
+];
+
+export function classifyBrowserDebugIntent(input: string): BrowserDebugIntent {
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) return { isBrowserDebug: false };
+
+  const matches = BROWSER_DEBUG_KEYWORDS.some((kw) => normalized.includes(kw));
+
+  if (matches) {
+    return {
+      isBrowserDebug: true,
+      intent: {
+        domain: "frontend",
+        operation: "debug-and-repair",
+        scope: "browser-runtime",
+        completion: "no-actionable-browser-failures",
+      },
+    };
+  }
+
+  return { isBrowserDebug: false };
+}
+
+import { CuratedSkillRegistry, type LazyResolveResult } from "../services/curated-skill-registry";
+
+export function resolveTaskSkills(
+  userPrompt: string,
+  packageManager?: "bun" | "npm" | "pnpm" | "yarn"
+): LazyResolveResult {
+  const registry = new CuratedSkillRegistry();
+  return registry.resolveLazySkills({
+    taskPrompt: userPrompt,
+    packageManager,
+  });
+}
+
+export interface StudioIntent {
+  isStudioTask: boolean;
+  isFullStack: boolean;
+  intent?: {
+    domain: "frontend" | "fullstack";
+    operation: "generate" | "redesign" | "design-mode" | "build-app";
+  };
+}
+
+const STUDIO_KEYWORDS = [
+  "generate ui",
+  "build ui",
+  "create ui",
+  "build page",
+  "build dashboard",
+  "redesign screen",
+  "design mode",
+  "create app",
+  "full stack app",
+  "build fullstack app",
+  "generate app screen",
+  "app studio",
+];
+
+export function classifyStudioIntent(input: string): StudioIntent {
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) return { isStudioTask: false, isFullStack: false };
+
+  const isMatch = STUDIO_KEYWORDS.some((kw) => normalized.includes(kw));
+  const isFullStack = normalized.includes("full stack") || normalized.includes("fullstack");
+
+  if (isMatch || isFullStack) {
+    return {
+      isStudioTask: true,
+      isFullStack,
+      intent: {
+        domain: isFullStack ? "fullstack" : "frontend",
+        operation: normalized.includes("redesign") ? "redesign" : normalized.includes("design mode") ? "design-mode" : "generate",
+      },
+    };
+  }
+
+  return { isStudioTask: false, isFullStack: false };
+}

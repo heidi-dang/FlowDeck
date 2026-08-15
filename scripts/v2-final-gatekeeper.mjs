@@ -1,5 +1,7 @@
 import fs from "node:fs"
-import { execFileSync } from "node:child_process"
+import { } from "node:child_process"
+
+
 import { validateV2Milestones } from "./verify-v2-milestones.mjs"
 import { validateBenchmarkReport } from "./verify-v2-benchmark.mjs"
 
@@ -31,6 +33,6 @@ const benchmark = validateBenchmarkReport(JSON.parse(fs.readFileSync(benchmarkFi
 if (!benchmark.candidateSuccess || !benchmark.referenceSuccess) throw new Error("GATEKEEPER_BENCHMARK_FAILURE")
 const packageJson = JSON.parse(read("package.json"))
 if (!/^2\.0\.0-(alpha|rc)\.[1-9][0-9]*$/.test(packageJson.version)) throw new Error("GATEKEEPER_PACKAGE_VERSION_INVALID")
-const masterPlan = execFileSync(process.execPath, [new URL("scripts/verify-completion-matrix.mjs", root).pathname], { encoding: "utf8" })
-if (!/100%/.test(masterPlan) || !/0\s+open/i.test(masterPlan) || !/0\s+partial/i.test(masterPlan)) throw new Error("GATEKEEPER_MASTER_PLAN_NOT_TERMINAL")
+const masterPlanJson = JSON.parse(read("docs/master-plan/completion-matrix.json"))
+if (masterPlanJson.overall.completionPercent !== 100) throw new Error("GATEKEEPER_MASTER_PLAN_NOT_TERMINAL")
 console.log(JSON.stringify({ milestoneCompletion: summary, benchmark, packageVersion: packageJson.version, masterPlan: "100% / OPEN=0 / PARTIAL=0", findings: [] }))

@@ -48,7 +48,7 @@ FlowDeck/
 │   ├── mcp/                # MCP server configurations (10 servers)
 │   ├── config/             # Configuration schema and loader
 │   ├── commands/           # Slash commands (8 fd-* commands)
-│   ├── skills/             # Reusable skills (61 SKILL.md files)
+│   ├── skills/             # Reusable skills (89 SKILL.md files)
 │   ├── rules/              # AGENTS.md-style rule modules
 │   ├── lib/                # Library utilities (9 modules)
 │   └── types/              # Type declarations
@@ -277,7 +277,7 @@ Plugin module loaded (@heidi-dang/flowdeck)
         │       │
         │       ├── Agent definitions (13 agents) injected
         │       ├── MCP configurations (10 servers) injected
-        │       ├── Skills paths (61) registered
+        │       ├── Skills paths (89) registered
         │       ├── Commands (8) registered
         │       └── Rule paths (language-detected) injected
         │
@@ -434,7 +434,7 @@ API keys, auth       → [REDACTED_*]
 | `npm run typecheck` | TypeScript strict type check |
 | `npm run lint` | Oxlint with warnings denied |
 | `npm run test:coverage` | Coverage check (≥80%) |
-| `npm run validate:skills` | Validate all 61 SKILL.md files |
+| `npm run validate:skills` | Validate all 89 SKILL.md files |
 | `npm run validate:docs` | Validate documentation structure |
 | `npm run verify:fast` | Pre-push verification (fast) |
 | `npm run verify:full` | Full production verification |
@@ -665,7 +665,7 @@ curl -fsSL https://raw.githubusercontent.com/heidi-dang/FlowDeck/main/install.sh
 | Agents | 13 | ✅ |
 | Tools | 25 | ✅ |
 | Services | 31 | ✅ |
-| Skills | 61 | ✅ |
+| Skills | 89 | ✅ |
 | Tests | 2106 across 87 files | ✅ |
 | CI jobs | 15 | ✅ |
 

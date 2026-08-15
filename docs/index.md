@@ -6,8 +6,8 @@ FlowDeck structures every feature through an **adaptive workflow cycle**. The pr
 
 ## Features
 
-- **13 registered agents** — `heidi` (primary policy), `orchestrator`, `planner`, `architect`, `backend-coder`, `frontend-coder`, `devops`, `tester`, `reviewer`, `researcher`, `security-auditor`, `mapper`, and `debug-specialist`.
-- **61 skills** — validated workflow patterns in `src/skills/` (TDD, verification-before-completion, systematic-debugging, subagent-driven-development, writing-plans, executing-plans, improve-codebase-architecture, workflow-skill-creator, and more).
+- **14 registered agents** — `heidi` (primary policy), `orchestrator`, `planner`, `architect`, `backend-coder`, `frontend-coder`, `devops`, `tester`, `reviewer`, `researcher`, `security-auditor`, `mapper`, `debug-specialist`, and `browser-debugger`.
+- **89 skills** — validated workflow patterns in `src/skills/` (TDD, verification-before-completion, systematic-debugging, subagent-driven-development, writing-plans, executing-plans, improve-codebase-architecture, workflow-skill-creator, and more).
 - **15 commands** — slash-command entry points for planning, execution, verification, support, memory recall, learning, delegation, and scheduling (`/fd-task`, `/fd-execute`, `/fd-verify`, `/fd-review`, `/fd-checkpoint`, `/fd-resume`, `/fd-status`, `/fd-done`, `/fd-recall`, `/fd-learning`, `/fd-memory`, `/fd-learn`, `/fd-learn-from-session`, `/fd-agents`, `/fd-schedule`).
 - **Persistent Heidi layer** — scoped user/agent memory, repository-preserving memory integration, SQLite/FTS5 session recall, evidence-backed learning candidates, versioned learned skills, progressive capability metadata, bounded tool pipelines, and durable scheduled-job claims.
 - **Heidi Primary Execution Policy** — 8 canonical execution strategies (`fast_direct`, `direct`, `explore_then_direct`, `planner_then_execute`, `debugger_root_cause`, `frontend_backend_parallel`, `audit_only`, `audit_after_change`) with justified delegation enforcement (max depth 1).

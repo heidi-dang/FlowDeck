@@ -13,7 +13,7 @@
 | **Primary Coordinator** | `heidi` (UI-selectable) |
 | **Specialist Agents** | 11 specialized subagents |
 | **Slash Commands** | 15 registered commands (`/fd-*`) |
-| **Validated Skills** | 61 modular skills |
+| **Validated Skills** | 89 modular skills |
 | **Custom Tools** | 36 governance, FDX & runtime tools |
 | **Database Schema** | SQLite v11 migration (53 tables, 36 triggers, 66 indexes) |
 | **Runtime Requirements** | OpenCode >= 1.4.0, Node.js >= 20.0.0, Bun |
@@ -258,7 +258,7 @@ FlowDeck registers **15 slash commands** with OpenCode:
 
 ## Skills
 
-FlowDeck ships with **61 validated skills** under `src/skills/<name>/SKILL.md`. Categories include:
+FlowDeck ships with **89 validated skills** under `src/skills/<name>/SKILL.md`. Categories include:
 
 - **Architecture & Design**: `clean-architecture`, `hexagonal-architecture`, `ddd-architecture`, `cqrs`, `saga-architecture`, `api-design`, `app-shell-design`.
 - **Language Patterns**: `typescript-patterns`, `python-patterns`, `rust-patterns`, `golang-patterns`, `java-patterns`, `django-patterns`, `postgres-patterns`.

@@ -22,7 +22,7 @@ FlowDeck extends OpenCode as a plugin, adding structured orchestration, governan
 │  │           │ ... 13    │ SessionEvents    │   │
 │  ├───────────┼───────────┼──────────────────┤   │
 │  │ Services  │ Tools     │ Skills           │   │
-│  │ Validator │ FDX 15    │ 61 skill files   │   │
+│  │ Validator │ FDX 15    │ 89 skill files   │   │
 │  │ Supervisor│ Doctor    │                  │   │
 │  │ AuditLog  │ CodeState │                  │   │
 │  │ Recovery  │ Rules     │                  │   │

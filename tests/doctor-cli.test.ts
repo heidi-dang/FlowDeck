@@ -27,7 +27,7 @@ function getSpawnEnv(): Record<string, string> {
 
 function runDoctor(args: string[] = [], envOverrides: Record<string, string> = {}): { code: number; stdout: string; stderr: string } {
   try {
-    const result = spawnSync("node", [CLI_PATH, ...args], {
+    const result = spawnSync(process.execPath, [CLI_PATH, ...args], {
       cwd: PKG_ROOT,
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
@@ -302,7 +302,7 @@ describe("Doctor CLI — Package-Relative Path Resolution", () => {
     // Run from a temp directory with explicit path
     const tempDir = makeTempConfig()
     try {
-      const result = spawnSync("node", [CLI_PATH, "--json"], {
+      const result = spawnSync(process.execPath, [CLI_PATH, "--json"], {
         cwd: tempDir,
         encoding: "utf-8",
         stdio: ["pipe", "pipe", "pipe"],

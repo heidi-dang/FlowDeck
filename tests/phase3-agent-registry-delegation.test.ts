@@ -68,9 +68,9 @@ describe("Phase 3 — Agent Registry, Model Inheritance, and Delegation Enforcem
   })
 
   describe("3. Agent Capability Contracts Audit", () => {
-    it("covers all 13 registered agents in AGENT_NAMES", () => {
+    it("covers all 14 registered agents in AGENT_NAMES", () => {
       const registered = listAgentsWithContracts()
-      expect(registered).toHaveLength(13)
+      expect(registered).toHaveLength(14)
       for (const name of AGENT_NAMES) {
         expect(registered).toContain(name)
       }
@@ -78,7 +78,7 @@ describe("Phase 3 — Agent Registry, Model Inheritance, and Delegation Enforcem
 
     it("verifies every contract has all required policy fields", () => {
       const contracts = getAllContracts()
-      expect(contracts).toHaveLength(13)
+      expect(contracts).toHaveLength(14)
 
       for (const c of contracts) {
         expect(c.agent, `Missing agent name in contract`).toBeTruthy()

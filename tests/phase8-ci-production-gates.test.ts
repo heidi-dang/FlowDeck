@@ -32,8 +32,8 @@ describe("Phase 8 — CI and Production Gates", () => {
   })
 
   describe("2. Production Gate Contracts and Doctor Verification", () => {
-    it("all 13 agents pass contract audit check", () => {
-      expect(AGENT_NAMES.length).toBe(13)
+    it("all 14 agents pass contract audit check", () => {
+      expect(AGENT_NAMES.length).toBe(14)
       for (const name of AGENT_NAMES) {
         const contract = getContract(name)
         expect(contract).toBeDefined()

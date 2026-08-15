@@ -31,6 +31,7 @@ import { createResearcherAgent } from './researcher';
 import { createSecurityAuditorAgent } from './security-auditor';
 import { createMapperAgent } from './mapper';
 import { createDebugSpecialistAgent } from './debug';
+import { createBrowserDebuggerAgent } from './browser-debugger';
 import { createArchitectAgent } from './architect';
 
 // ─── Derive from canonical registry ────────────────────────────────────────
@@ -97,6 +98,8 @@ const AGENT_FACTORIES: Record<string, AgentFactoryFn> = {
     createSecurityAuditorAgent(model, customPrompt, customAppendPrompt),
   'debug-specialist': (model, customPrompt, customAppendPrompt) =>
     createDebugSpecialistAgent(model, customPrompt, customAppendPrompt),
+  'browser-debugger': (model, customPrompt, customAppendPrompt) =>
+    createBrowserDebuggerAgent(model, customPrompt, customAppendPrompt),
 };
 
 /**
@@ -233,4 +236,5 @@ export {
   createReviewerAgent,
   createSecurityAuditorAgent,
   createDebugSpecialistAgent,
+  createBrowserDebuggerAgent,
 };
