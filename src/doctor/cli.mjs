@@ -63,6 +63,8 @@ function parseArgs(args) {
     strict: false,
     verbose: false,
     applyRecommended: false,
+    fix: false,
+    dryRun: false,
     profile: "recommended-dev",
     nonInteractive: false,
   }
@@ -80,6 +82,11 @@ function parseArgs(args) {
       options.verbose = true
     } else if (arg === "--apply-recommended") {
       options.applyRecommended = true
+    } else if (arg === "fix" || arg === "--fix") {
+      options.fix = true;
+      options.applyRecommended = true;
+    } else if (arg === "--dry-run") {
+      options.dryRun = true
     } else if (arg === "--non-interactive") {
       options.nonInteractive = true
     } else if (arg === "--profile") {

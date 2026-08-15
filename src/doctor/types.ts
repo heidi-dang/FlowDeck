@@ -1,8 +1,5 @@
 /**
- * Environment Doctor — shared types
- *
- * Every check, recommendation, profile, and report uses these types.
- * The doctor engine is a pure function pipeline with no AI dependency.
+ * Environment Doctor & Repair Orchestrator — Domain Types
  */
 
 export type CheckStatus = "pass" | "warning" | "error" | "info" | "skipped"
@@ -18,6 +15,21 @@ export type CheckCategory =
   | "security"
   | "performance"
   | "configuration"
+  | "fdx"
+  | "browser"
+  | "skills"
+  | "heidi"
+  | "filesystem"
+  | "process"
+
+export type DoctorCheckStatus = "healthy" | "warning" | "broken" | "blocked"
+export type DoctorSeverity = "info" | "degraded" | "critical"
+export type DoctorRepairability =
+  | "automatic"
+  | "requires-auth"
+  | "requires-privilege"
+  | "manual"
+  | "not-applicable"
 
 export interface CheckResult {
   id: string
@@ -30,6 +42,19 @@ export interface CheckResult {
   recommendation: string
   autoFixAvailable: boolean
   docsUrl?: string
+
+  // Authoritative health & repair extensions
+  affectsRuntime?: boolean
+  repairability?: DoctorRepairability
+  evidence?: Record<string, unknown>
+  remediation?: string
+  repairAction?: string
+}
+
+export interface DoctorCheckResult extends CheckResult {
+  affectsRuntime: boolean
+  repairability: DoctorRepairability
+  remediation: string
 }
 
 export interface DoctorReport {
@@ -53,6 +78,10 @@ export interface DoctorReport {
     total: number
   }
   profile: string
+  repairableCount?: number
+  requiresAuthCount?: number
+  requiresPrivilegeCount?: number
+  manualCount?: number
 }
 
 export interface Recommendation {
@@ -83,13 +112,48 @@ export interface AutoFixResult {
   description: string
   applied: boolean
   error?: string
+  reverified?: boolean
 }
 
 export interface DoctorOptions {
   json?: boolean
+  fix?: boolean
   applyRecommended?: boolean
+  dryRun?: boolean
   strict?: boolean
   verbose?: boolean
   profile?: string
   nonInteractive?: boolean
+}
+
+export interface RepairPlanItem {
+  checkId: string
+  title: string
+  category: CheckCategory
+  repairability: DoctorRepairability
+  repairAction: string
+  targetPath?: string
+  requiresPrivilege: boolean
+  requiresAuth: boolean
+}
+
+export interface RepairPlan {
+  timestamp: string
+  items: RepairPlanItem[]
+  automaticItems: RepairPlanItem[]
+  requiresAuthItems: RepairPlanItem[]
+  requiresPrivilegeItems: RepairPlanItem[]
+  manualItems: RepairPlanItem[]
+}
+
+export interface DoctorFixResult {
+  timestamp: string
+  initialReport: DoctorReport
+  repairPlan: RepairPlan
+  appliedFixes: AutoFixResult[]
+  passesExecuted: number
+  maxPasses: number
+  terminatedReason: "all_repaired" | "max_passes_reached" | "no_progress" | "lock_failed" | "error"
+  finalReport: DoctorReport
+  healthy: boolean
 }

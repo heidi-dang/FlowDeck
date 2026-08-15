@@ -3,10 +3,10 @@
  *
  * Deterministic checks (no AI required). Shared by CLI, installer, and Web UI.
  * Categories: runtime, repository, environment, mcp, plugin, lsp, hook,
- * security, performance, configuration.
+ * security, performance, configuration, fdx, browser, skills, heidi, filesystem.
  */
 
-import type { CheckResult, DoctorReport, DoctorOptions, Recommendation, AutoFixResult } from "./types"
+import type { CheckResult, DoctorReport, DoctorOptions, } from "./types"
 import { runRuntimeChecks } from "./checks/runtime"
 import { runRepositoryChecks } from "./checks/repository"
 import { runEnvironmentChecks } from "./checks/environment"
@@ -18,28 +18,28 @@ import { runConfigurationChecks } from "./checks/configuration"
 import { runBrowserChecks } from "./checks/browser"
 import { runCuratedSkillChecks } from "./checks/skills"
 import { runStudioChecks } from "./checks/studio"
+import { runFdxChecks } from "./checks/fdx"
+import { runFilesystemChecks } from "./checks/filesystem"
+import { runHeidiChecks } from "./checks/heidi"
 import { generateRecommendations } from "./recommendations/recommendations"
 import { resolveProfile } from "./profiles/profiles"
 import { applyAutoFixes } from "./apply/apply"
 import { readFileSync } from "fs"
 import { join } from "path"
 
-let PKG_VERSION = "0.0.0"
+let PKG_VERSION = "2.0.1"
 try {
   const pkg = JSON.parse(readFileSync(join(__dirname, "..", "..", "package.json"), "utf-8"))
   PKG_VERSION = pkg.version || PKG_VERSION
 } catch { /* ignore */ }
 
-export { CheckResult, DoctorReport, DoctorOptions, Recommendation, AutoFixResult }
+export type { CheckResult, DoctorReport, DoctorOptions, Recommendation, AutoFixResult } from "./types"
 export type { CheckStatus, Severity, CheckCategory } from "./types"
-
-// resolveDoctorExitCode is defined canonically in exit-code.mjs
-// and re-exported at the bottom of this file.
 
 export async function runDoctor(directory: string, options: DoctorOptions = {}): Promise<DoctorReport> {
   const allChecks: CheckResult[] = []
 
-  // Run all check categories in parallel
+  // Run all check categories
   const results = await Promise.all([
     runRuntimeChecks(directory),
     runRepositoryChecks(directory),
@@ -52,6 +52,9 @@ export async function runDoctor(directory: string, options: DoctorOptions = {}):
     runBrowserChecks(directory),
     runCuratedSkillChecks(directory),
     runStudioChecks(directory),
+    runFdxChecks(directory),
+    runFilesystemChecks(directory),
+    runHeidiChecks(directory),
   ])
 
   for (const checks of results) {
@@ -71,11 +74,17 @@ export async function runDoctor(directory: string, options: DoctorOptions = {}):
   const skipped = allChecks.filter(c => c.status === "skipped").length
   const total = allChecks.length
 
+  // Tally repairability
+  const repairableCount = allChecks.filter((c) => c.autoFixAvailable || c.repairability === "automatic").length
+  const requiresAuthCount = allChecks.filter((c) => c.repairability === "requires-auth").length
+  const requiresPrivilegeCount = allChecks.filter((c) => c.repairability === "requires-privilege").length
+  const manualCount = allChecks.filter((c) => c.repairability === "manual").length
+
   // Calculate scores (0-100)
-  const envScore = scoreCategory(allChecks, "runtime", "environment")
+  const envScore = scoreCategory(allChecks, "runtime", "environment", "filesystem")
   const secScore = scoreCategory(allChecks, "security")
   const perfScore = scoreCategory(allChecks, "performance")
-  const configScore = scoreCategory(allChecks, "configuration", "mcp", "plugin", "hook", "lsp")
+  const configScore = scoreCategory(allChecks, "configuration", "mcp", "plugin", "hook", "lsp", "fdx", "browser", "skills", "heidi")
   const overall = Math.round((envScore + secScore + perfScore + configScore) / 4)
 
   // Generate recommendations
@@ -103,6 +112,10 @@ export async function runDoctor(directory: string, options: DoctorOptions = {}):
     recommendations,
     summary: { passed, warnings, errors, info, skipped, total },
     profile: profile.name,
+    repairableCount,
+    requiresAuthCount,
+    requiresPrivilegeCount,
+    manualCount,
   }
 }
 

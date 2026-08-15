@@ -403,7 +403,7 @@ async function cmdVerify() {
 async function cmdDoctor() {
   // Collect doctor args (everything after "doctor")
   const doctorArgs = args.slice(1);
-  const validFlags = new Set(["--json", "--strict", "--verbose", "--apply-recommended", "--non-interactive", "--profile", "--help", "-h"]);
+  const validFlags = new Set(["fix", "--fix", "--dry-run", "--json", "--strict", "--verbose", "--apply-recommended", "--non-interactive", "--profile", "--help", "-h"]);
   let prevWasProfile = false;
   for (const a of doctorArgs) {
     if (prevWasProfile) { prevWasProfile = false; continue; }

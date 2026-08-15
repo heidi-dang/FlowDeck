@@ -1,73 +1,92 @@
-import { existsSync, readFileSync } from "fs"
+import { existsSync, } from "fs"
 import { join } from "path"
+import { homedir } from "os"
 import type { CheckResult } from "../types"
-import { safeParseConfig } from "../../../scripts/config-mutator.mjs"
-import { classifyDoctorEnvironment, isRepoLikeEnvironment } from "../environment"
-
-// repoOnly files exist in source checkouts but are not shipped in the npm
-// tarball (see package.json "files"). They must not fail a healthy packed install.
-const CONFIG_FILES = [
-  { name: "package.json", path: "package.json", severity: "high", repoOnly: false },
-  { name: "tsconfig.json", path: "tsconfig.json", severity: "medium", repoOnly: true },
-  { name: "install.sh", path: "install.sh", severity: "medium", repoOnly: false },
-  { name: "uninstall.sh", path: "uninstall.sh", severity: "low", repoOnly: true },
-]
+import { readConfig as safeParseConfig } from "../../../scripts/config-mutator.mjs"
 
 export async function runConfigurationChecks(directory: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
-  const env = classifyDoctorEnvironment(directory)
-  const repoOnly = isRepoLikeEnvironment(env)
 
-  for (const file of CONFIG_FILES) {
-    const fullPath = join(directory, file.path)
+  // package.json required files check
+  const requiredFiles = ["package.json", "tsconfig.json", "install.sh", "uninstall.sh"]
+  for (const file of requiredFiles) {
+    const fullPath = join(directory, file)
     const exists = existsSync(fullPath)
-
-    if (file.repoOnly && !repoOnly) {
-      checks.push({
-        id: `config.${file.name}`,
-        title: `Config: ${file.name}`,
-        category: "configuration",
-        severity: file.severity as "high" | "medium" | "low",
-        status: "skipped",
-        detected: exists ? "present" : "missing",
-        expected: `${file.path} at repository root`,
-        recommendation: `Not applicable to ${env} installs — repository-only file`,
-        autoFixAvailable: false,
-      })
-      continue
-    }
-
     checks.push({
-      id: `config.${file.name}`,
-      title: `Config: ${file.name}`,
+      id: `config.${file}`,
+      title: `Config: ${file}`,
       category: "configuration",
-      severity: file.severity as "high" | "medium" | "low",
+      severity: file === "package.json" ? "high" : file === "uninstall.sh" ? "low" : "medium",
       status: exists ? "pass" : "error",
       detected: exists ? "present" : "missing",
-      expected: `${file.path} at repository root`,
-      recommendation: exists ? "OK" : `Create or restore ${file.path}`,
+      expected: `${file} at repository root`,
+      recommendation: exists ? "OK" : `Create or restore ${file}`,
       autoFixAvailable: false,
     })
   }
 
   // OpenCode user config
-  const home = process.env.HOME || "/root"
-  const userConfigPath = join(home, ".config", "opencode", "opencode.json")
+  const configDir = process.env.OPENCODE_CONFIG_DIR ||
+    (process.env.XDG_CONFIG_HOME
+      ? join(process.env.XDG_CONFIG_HOME, "opencode")
+      : join(homedir(), ".config", "opencode"))
+
+  const userConfigPath = join(configDir, "opencode.json")
   if (existsSync(userConfigPath)) {
     try {
-      const raw = readFileSync(userConfigPath, "utf-8")
-      const parsed = safeParseConfig(raw)
+      const parsed = safeParseConfig(userConfigPath)
+      const isOk = Boolean(parsed && !parsed.parseError && parsed.existing)
+      const parseErr = parsed?.parseError ?? "unknown error"
+
       checks.push({
         id: "config.opencode_user",
         title: "OpenCode User Config",
         category: "configuration",
         severity: "high",
-        status: parsed.ok ? "pass" : "error",
-        detected: parsed.ok ? "valid JSON/JSONC" : `parse error: ${parsed.error}`,
+        status: isOk ? "pass" : "error",
+        detected: isOk ? "valid JSON/JSONC" : `parse error: ${parseErr}`,
         expected: "Valid OpenCode configuration",
-        recommendation: parsed.ok ? "OK" : "Fix syntax errors in opencode.json",
+        recommendation: isOk ? "OK" : "Fix syntax errors in opencode.json",
         autoFixAvailable: false,
       })
+
+      // Check plugin array content
+      if (isOk && parsed.existing) {
+        const plugins = Array.isArray(parsed.existing.plugin) ? parsed.existing.plugin : []
+        const hasCurrent = plugins.includes("@heidi-dang/flowdeck")
+        const hasLegacy = plugins.includes("@dv.nghiem/flowdeck")
+
+        if (hasLegacy || !hasCurrent) {
+          checks.push({
+            id: "plugin.registration",
+            title: "Plugin Registration",
+            category: "plugin",
+            severity: "high",
+            status: "error",
+            detected: hasLegacy ? "Upstream legacy reference @dv.nghiem/flowdeck" : "Missing @heidi-dang/flowdeck in plugin list",
+            expected: "@heidi-dang/flowdeck registered in opencode.json",
+            recommendation: "Run `flowdeck doctor fix` to update plugin registration",
+            autoFixAvailable: true,
+            affectsRuntime: true,
+            repairability: "automatic",
+            repairAction: "repair_plugin_registration",
+          })
+        } else {
+          checks.push({
+            id: "plugin.registration",
+            title: "Plugin Registration",
+            category: "plugin",
+            severity: "info",
+            status: "pass",
+            detected: "@heidi-dang/flowdeck registered",
+            expected: "@heidi-dang/flowdeck registered in opencode.json",
+            recommendation: "Plugin registration healthy",
+            autoFixAvailable: false,
+            affectsRuntime: false,
+            repairability: "not-applicable",
+          })
+        }
+      }
     } catch {
       checks.push({
         id: "config.opencode_user",
@@ -77,7 +96,7 @@ export async function runConfigurationChecks(directory: string): Promise<CheckRe
         status: "error",
         detected: "unparseable",
         expected: "Valid configuration",
-        recommendation: "Fix syntax errors in ~/.config/opencode/opencode.json",
+        recommendation: "Fix syntax errors in opencode.json",
         autoFixAvailable: false,
       })
     }
@@ -89,9 +108,12 @@ export async function runConfigurationChecks(directory: string): Promise<CheckRe
       severity: "medium",
       status: "info",
       detected: "not found",
-      expected: "~/.config/opencode/opencode.json created by installer",
-      recommendation: "Run the FlowDeck installer: curl -fsSL https://raw.githubusercontent.com/heidi-dang/FlowDeck/main/install.sh | bash",
+      expected: "opencode.json created by installer",
+      recommendation: "Run `flowdeck doctor fix` to generate opencode.json",
       autoFixAvailable: true,
+      affectsRuntime: true,
+      repairability: "automatic",
+      repairAction: "repair_plugin_registration",
     })
   }
 
@@ -100,44 +122,24 @@ export async function runConfigurationChecks(directory: string): Promise<CheckRe
     const fullPath = join(directory, name)
     if (existsSync(fullPath)) {
       try {
-        const raw = readFileSync(fullPath, "utf-8")
-        const parsed = safeParseConfig(raw)
+        const parsed = safeParseConfig(fullPath)
+        const isOk = Boolean(parsed && !parsed.parseError && parsed.existing)
+        const parseErr = parsed?.parseError ?? "unknown error"
         checks.push({
           id: `config.flowdeck_project`,
           title: `FlowDeck Project Config (${name})`,
           category: "configuration",
           severity: "medium",
-          status: parsed.ok ? "pass" : "error",
-          detected: parsed.ok ? "valid configuration" : "parse error",
-          expected: "Valid flowdeck configuration",
-          recommendation: parsed.ok ? "OK" : `Fix syntax errors in ${name}`,
+          status: isOk ? "pass" : "error",
+          detected: isOk ? "valid JSON/JSONC" : `parse error: ${parseErr}`,
+          expected: "Valid FlowDeck configuration",
+          recommendation: isOk ? "OK" : `Fix syntax errors in ${name}`,
           autoFixAvailable: false,
         })
       } catch {
-        /* ignore */
+        // ignore
       }
-      break
     }
-  }
-
-  // tsconfig strict mode
-  const tsconfigPath = join(directory, "tsconfig.json")
-  if (existsSync(tsconfigPath)) {
-    try {
-      const tsconfig = JSON.parse(readFileSync(tsconfigPath, "utf-8"))
-      const strict = tsconfig.compilerOptions?.strict === true
-      checks.push({
-        id: "config.tsconfig_strict",
-        title: "TypeScript Strict Mode",
-        category: "configuration",
-        severity: "high",
-        status: strict ? "pass" : "warning",
-        detected: strict ? "strict: true" : "strict not set",
-        expected: "strict: true in tsconfig.json compilerOptions",
-        recommendation: "Enable strict mode: compilerOptions.strict = true",
-        autoFixAvailable: false,
-      })
-    } catch { /* ignore */ }
   }
 
   return checks

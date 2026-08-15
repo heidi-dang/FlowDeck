@@ -1,35 +1,97 @@
-import type { CheckResult } from "../types";
-import { detectBrowserCapability } from "../../browser/capability";
+import { existsSync } from "node:fs"
+import { join } from "node:path"
+import { execFileSync } from "node:child_process"
+import type { CheckResult } from "../types"
 
-export async function runBrowserChecks(_directory: string): Promise<CheckResult[]> {
-  const checks: CheckResult[] = [];
-  const status = await detectBrowserCapability({ checkTimeoutMs: 2000 });
+export async function runBrowserChecks(directory: string): Promise<CheckResult[]> {
+  const checks: CheckResult[] = []
 
-  if (status.available) {
-    checks.push({
-      id: "browser.capability",
-      title: "Browser Runtime Subsystem",
-      category: "environment",
-      severity: "low",
-      status: "pass",
-      detected: `${status.provider} v${status.version} (${status.binaryPath})`,
-      expected: "Browser runtime available for autonomous debugging",
-      recommendation: "OK — autonomous browser debugging is active and available",
-      autoFixAvailable: false,
-    });
-  } else {
-    checks.push({
-      id: "browser.capability",
-      title: "Browser Runtime Subsystem",
-      category: "environment",
-      severity: "low",
-      status: "warning",
-      detected: `${status.reason}`,
-      expected: "Browser runtime available for autonomous debugging",
-      recommendation: status.remediation || "Install agent-browser via `npm install -g agent-browser`",
-      autoFixAvailable: false,
-    });
+  // 1. Check agent-browser module availability
+  const agentBrowserModule = join(directory, "src", "browser", "adapter.ts")
+  const hasAgentBrowser = existsSync(agentBrowserModule)
+
+  // 2. Check Chrome / Chromium executable
+  let chromeFound = false
+  let chromePath = "none"
+
+  const chromeCandidates = [
+    process.env.CHROME_BIN,
+    process.env.CHROMIUM_BIN,
+    "/usr/bin/google-chrome",
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+  ].filter(Boolean) as string[]
+
+  for (const cand of chromeCandidates) {
+    if (existsSync(cand)) {
+      chromeFound = true
+      chromePath = cand
+      break
+    }
   }
 
-  return checks;
+  if (!chromeFound) {
+    // Try which / npx chrome
+    try {
+      const out = execFileSync(process.platform === "win32" ? "where" : "which", ["google-chrome"], { encoding: "utf-8", timeout: 2000 })
+      if (out.trim()) {
+        chromeFound = true
+        chromePath = out.trim().split("\n")[0]
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  if (chromeFound) {
+    checks.push({
+      id: "browser.chrome",
+      title: "Chrome / Chromium Browser",
+      category: "browser",
+      severity: "info",
+      status: "pass",
+      detected: `Browser executable found at ${chromePath}`,
+      expected: "Chrome/Chromium available",
+      recommendation: "Browser debugging ready",
+      autoFixAvailable: false,
+      affectsRuntime: false,
+      repairability: "not-applicable",
+    })
+  } else {
+    checks.push({
+      id: "browser.chrome",
+      title: "Chrome / Chromium Browser",
+      category: "browser",
+      severity: "medium",
+      status: "warning",
+      detected: "No local Chrome / Chromium binary found",
+      expected: "Chrome or Chromium browser installed",
+      recommendation: "Run `flowdeck doctor fix` to install Chrome for Testing or set CHROME_BIN",
+      autoFixAvailable: true,
+      affectsRuntime: true,
+      repairability: "automatic",
+      repairAction: "install_chrome_for_testing",
+    })
+  }
+
+  if (hasAgentBrowser) {
+    checks.push({
+      id: "browser.agent_browser",
+      title: "Heidi Browser Adapter",
+      category: "browser",
+      severity: "info",
+      status: "pass",
+      detected: "Heidi agent-browser module ready",
+      expected: "Agent-browser module available",
+      recommendation: "Autonomous browser debugging ready",
+      autoFixAvailable: false,
+      affectsRuntime: false,
+      repairability: "not-applicable",
+    })
+  }
+
+  return checks
 }
