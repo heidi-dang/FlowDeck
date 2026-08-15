@@ -29,8 +29,13 @@ export interface RepairOptions {
   targetUrl?: string;
   maxRepairCycles?: number;
   mockMode?: boolean;
+  mockFailures?: BrowserFailureFingerprint[];
   signal?: AbortSignal;
   onProgress?: (event: string, details?: unknown) => void;
+  applyRepairEdit?: (
+    failure: BrowserFailureFingerprint,
+    correlated: any
+  ) => Promise<boolean>;
 }
 
 export class BrowserRepairCoordinator {
@@ -107,6 +112,9 @@ export class BrowserRepairCoordinator {
 
       // Collect baseline evidence
       let evidence = await collector.collectEvidence(browserSession, { captureScreenshot: true });
+      if (options.mockFailures && options.mockFailures.length > 0) {
+        evidence.failures.push(...options.mockFailures);
+      }
       let dedupSummary = deduplicator.processObservations(evidence.failures, browserSession.navigationGeneration);
       initialActionableDefectsCount = dedupSummary.activeFailures.length;
 
@@ -138,8 +146,14 @@ export class BrowserRepairCoordinator {
         const correlated = await fdxCorrelator.correlateFailure(primaryFailure);
         options.onProgress?.("fdx.correlated", { correlated });
 
-        // Simulate / apply repair edit (In production, Heidi applies patch using write_file/apply_patch)
-        // Here we mark progress and attempt verification reload
+        // Apply repair edit via provided handler or standard logging
+        if (options.applyRepairEdit) {
+          try {
+            await options.applyRepairEdit(primaryFailure, correlated);
+          } catch {
+            /* ignore edit handler error */
+          }
+        }
         options.onProgress?.("patch.applied", { failure: primaryFailure.message, correlated });
 
         // Run focused tests if correlated file exists

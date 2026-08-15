@@ -11,7 +11,7 @@ const CLI_PATH = join(process.cwd(), "bin", "flowdeck.js");
 function runCli(args: string[], env: Record<string, string>, cwd?: string): { code: number; stdout: string; stderr: string } {
   try {
     const nodePath = join(process.cwd(), "node_modules");
-    const stdout = execFileSync("node", [CLI_PATH, ...args], {
+    const stdout = execFileSync(process.execPath, [CLI_PATH, ...args], {
       cwd: cwd || process.cwd(),
       env: { ...process.env, NODE_PATH: nodePath, FLOWDECK_BUN_BIN: (process as any).execPath, ...env },
       encoding: "utf-8",

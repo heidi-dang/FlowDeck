@@ -95,8 +95,8 @@ export async function detectBrowserCapability(
  * Locate the agent-browser binary across environment paths and node_modules.
  */
 export function findAgentBrowserBinary(customPath?: string): string | null {
-  if (customPath && existsSync(customPath)) {
-    return customPath;
+  if (customPath) {
+    return existsSync(customPath) ? customPath : null;
   }
 
   const envPath = process.env.FLOWDECK_AGENT_BROWSER_PATH || process.env.AGENT_BROWSER_PATH;
@@ -104,10 +104,13 @@ export function findAgentBrowserBinary(customPath?: string): string | null {
     return envPath;
   }
 
-  // Local node_modules/.bin/agent-browser
-  const localBin = join(process.cwd(), "node_modules", ".bin", "agent-browser");
-  if (existsSync(localBin)) {
-    return localBin;
+  // Known local node_modules/.bin locations
+  const candidates = [
+    join(process.cwd(), "node_modules", ".bin", "agent-browser"),
+    "/home/heidi/.hermes/hermes-agent/node_modules/.bin/agent-browser",
+  ];
+  for (const cand of candidates) {
+    if (existsSync(cand)) return cand;
   }
 
   // PATH lookup

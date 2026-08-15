@@ -1,7 +1,11 @@
-import { describe, it, expect } from "bun:test";
-import { DevServerManager } from "../../src/browser/dev-server-manager";
+import { describe, it, expect, afterEach } from "bun:test";
+import { DevServerManager, stopAllOwnedServers, getOwnedProcessesCount } from "../../src/browser/dev-server-manager";
 
-describe("DevServerManager", () => {
+describe("DevServerManager Process Ownership & Lifecycle", () => {
+  afterEach(() => {
+    stopAllOwnedServers();
+  });
+
   it("discovers dev server command and script for current repo", async () => {
     const manager = new DevServerManager();
     const info = await manager.discoverDevServer();
@@ -11,10 +15,27 @@ describe("DevServerManager", () => {
     expect(info.isExternallyOwned).toBe(false);
   });
 
-  it("attaches to existing listening port if available", async () => {
+  it("attaches to external server with isExternallyOwned=true and stop() is a no-op", async () => {
     const manager = new DevServerManager();
-    // Ensure port detection does not throw and returns info structure
-    const info = await manager.discoverDevServer({ requestedPort: 65530 });
-    expect(info.port).toBe(65530);
+    const mockServer = await manager.ensureDevServer({ mockMode: true, requestedPort: 3000 });
+
+    expect(mockServer.info.isExternallyOwned).toBe(true);
+    expect(mockServer.info.port).toBe(3000);
+
+    // Initial owned processes count
+    const countBefore = getOwnedProcessesCount();
+    await mockServer.stop();
+    // Count remains unchanged (no external process was killed)
+    expect(getOwnedProcessesCount()).toBe(countBefore);
+  });
+
+  it("handles startup cancellation via AbortSignal", async () => {
+    const manager = new DevServerManager();
+    const controller = new AbortController();
+    controller.abort();
+
+    expect(
+      manager.ensureDevServer({ requestedPort: 59999 }, controller.signal)
+    ).rejects.toThrow("aborted");
   });
 });

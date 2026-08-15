@@ -105,6 +105,9 @@ export class DevServerManager {
     options: DevServerOptions & { mockMode?: boolean } = {},
     signal?: AbortSignal
   ): Promise<ManagedDevServer> {
+    if (signal?.aborted) {
+      throw new Error("Dev server startup aborted.");
+    }
     if (options.mockMode) {
       const port = options.requestedPort || 3000;
       return {
@@ -382,5 +385,22 @@ function stopChildProcess(child: ChildProcess, serverId: string) {
     }
   } catch {
     /* ignore */
+  }
+}
+
+export function getOwnedProcessesCount(): number {
+  return ownedProcesses.size;
+}
+
+export function stopAllOwnedServers(): void {
+  for (const [id, entry] of ownedProcesses.entries()) {
+    try {
+      if (entry.process && !entry.process.killed) {
+        entry.process.kill("SIGKILL");
+      }
+    } catch {
+      /* ignore */
+    }
+    ownedProcesses.delete(id);
   }
 }

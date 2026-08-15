@@ -86,7 +86,7 @@ describe("Phase 32 — FDX Argument Validation & Git Read-Only Policy", () => {
       ]
 
       try {
-        execFileSync("node", [fixtureScript, logFile, ...testArgs], { shell: false })
+        execFileSync(process.execPath, [fixtureScript, logFile, ...testArgs], { shell: false })
         const recorded: string[] = JSON.parse(require("node:fs").readFileSync(logFile, "utf-8"))
         expect(recorded).toEqual(testArgs)
         expect(recorded[0]).toBe("pattern;still-literal")

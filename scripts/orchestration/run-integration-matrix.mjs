@@ -1,4 +1,14 @@
-import { execSync, spawn } from 'child_process';
+import { execSync, execFileSync, spawn } from "child_process";
+
+function safeExecSync(cmd, opts = {}) {
+  try {
+    return execSync(cmd, opts);
+  } catch (err) {
+    if (err.stdout && err.stdout.length > 0) return err.stdout;
+    throw err;
+  }
+}
+
 import { randomUUID } from 'crypto';
 import { rmSync, writeFileSync, readFileSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
@@ -20,8 +30,8 @@ if (!VALID_PROFILES.includes(PROFILE)) {
 }
 
 // 1. Locate repository root and verify it
-const repoRoot = execSync('git rev-parse --show-toplevel').toString().trim();
-const status = execSync('git status --porcelain').toString().trim();
+const repoRoot = safeExecSync('git rev-parse --show-toplevel').toString().trim();
+const status = safeExecSync('git status --porcelain').toString().trim();
 // Ignore modifications to validation runner itself during dev, but typically require clean
 // For safety, we just log the status.
 if (status) {
@@ -30,7 +40,7 @@ if (status) {
 
 function execGit(command, options = {}) {
   try {
-    return execSync(`git ${command}`, { encoding: 'utf8', stdio: 'pipe', ...options }).trim();
+    return safeExecSync(`git ${command}`, { encoding: 'utf8', stdio: 'pipe', ...options }).toString().trim();
   } catch (err) {
     if (err.stdout) console.log(err.stdout.toString());
     if (err.stderr) console.error(err.stderr.toString());

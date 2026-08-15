@@ -424,7 +424,7 @@ bun run verify:full
 ## Release Status
 
 - **Current Version**: `v2.0.0-rc.1`
-- **Track**: Prerelease / Candidate Track (`@next`)
+- **Track**: Release Candidate (`next` channel)
 - **Status**: Production-ready core orchestration, parallel DAG engine, persistent Heidi runtime, and verification gates complete.
 
 ---

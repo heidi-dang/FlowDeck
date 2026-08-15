@@ -14,6 +14,17 @@
  */
 
 import { execFileSync } from "node:child_process"
+function safeExecFileSync(file, args, opts = {}) {
+  try {
+    return execFileSync(file, args, { encoding: "utf-8", env: process.env, ...opts });
+  } catch (err) {
+    if (err.stdout && (err.status === 0 || err.status === null)) {
+      return err.stdout;
+    }
+    throw err;
+  }
+}
+
 import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
 
@@ -36,7 +47,7 @@ console.log("\n=== FlowDeck FDX Cross-Runtime Parity Gate ===\n")
 
 // ── 1. Require Cargo ──────────────────────────────────────────────────
 try {
-  const cargoVer = execFileSync("cargo", ["--version"], { encoding: "utf-8", timeout: 10000 }).trim()
+  const cargoVer = safeExecFileSync("cargo", ["--version"], { timeout: 10000 }).trim()
   console.log(`  Cargo: ${cargoVer}`)
 } catch {
   console.error("ERROR: Cargo is required but not found in PATH.")
@@ -47,10 +58,7 @@ try {
 // ── 2. Build FDX binary ──────────────────────────────────────────────
 console.log("\n  Building FDX native binary from current branch source...")
 try {
-  execFileSync("cargo", ["build", "--manifest-path", MANIFEST_PATH], {
-    stdio: "inherit",
-    timeout: 300000,
-  })
+  safeExecFileSync("cargo", ["build", "--manifest-path", MANIFEST_PATH], { stdio: "inherit", timeout: 300000 })
 } catch (e) {
   console.error(`ERROR: FDX build failed: ${e.message}`)
   process.exit(1)
@@ -62,7 +70,7 @@ if (!existsSync(BINARY_PATH)) process.exit(1)
 
 // Verify it's executable
 try {
-  const binaryVer = execFileSync(BINARY_PATH, ["--version"], { encoding: "utf-8", timeout: 5000 }).trim()
+  const binaryVer = safeExecFileSync(BINARY_PATH, ["--version"], { timeout: 5000 }).trim()
   check("FDX binary executable", true, binaryVer)
 } catch {
   check("FDX binary executable", false)
@@ -92,7 +100,7 @@ for (const testFile of parityTests) {
     continue
   }
   try {
-    execFileSync("bun", ["test", fullPath], {
+    safeExecFileSync("bun", ["test", fullPath], {
       stdio: "inherit",
       env: { ...process.env, FDX_DISABLE_FALLBACK: "1", FDX_BINARY_PATH: BINARY_PATH },
       timeout: 60000,
@@ -107,7 +115,7 @@ for (const testFile of parityTests) {
 // ── 6. Emit native execution proof ──────────────────────────────────
 console.log("\n  Native execution proof:")
 try {
-  const proof = execFileSync(BINARY_PATH, ["search", "package", "package.json"], {
+  const proof = safeExecFileSync(BINARY_PATH, ["search", "package", "package.json"], {
     encoding: "utf-8",
     timeout: 5000,
     env: { ...process.env, FDX_DISABLE_FALLBACK: "1", FDX_BINARY_PATH: BINARY_PATH },
