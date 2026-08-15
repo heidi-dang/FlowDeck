@@ -22,7 +22,7 @@ describe("AGENT_NAMES", () => {
   })
 
   it("contains exactly the trimmed roster — no more, no less", () => {
-    expect(AGENT_NAMES).toHaveLength(13)
+    expect(AGENT_NAMES).toHaveLength(14)
   })
 
   it("includes all expected agents", () => {
@@ -39,6 +39,7 @@ describe("AGENT_NAMES", () => {
       "reviewer",
       "security-auditor",
       "debug-specialist",
+      "browser-debugger",
     ]
     for (const name of expected) {
       expect(AGENT_NAMES).toContain(name)

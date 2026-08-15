@@ -108,3 +108,55 @@ export function classifyUiTaskType(input: string): UiTaskType | null {
   if (normalized.includes("screen")) return "app-screen"
   return "general-ui"
 }
+
+export interface BrowserDebugIntent {
+  isBrowserDebug: boolean;
+  intent?: {
+    domain: "frontend";
+    operation: "debug-and-repair";
+    scope: "browser-runtime";
+    completion: "no-actionable-browser-failures";
+  };
+}
+
+const BROWSER_DEBUG_KEYWORDS = [
+  "console bug",
+  "console error",
+  "console errors",
+  "frontend runtime error",
+  "debug the website",
+  "browser for error",
+  "browser for errors",
+  "ui runtime bug",
+  "ui runtime bugs",
+  "react error",
+  "react errors",
+  "run the web app and fix",
+  "why this page is broken",
+  "test the frontend and repair",
+  "fix all console bugs",
+  "fix console errors",
+  "fix frontend bugs",
+  "browser debugging",
+];
+
+export function classifyBrowserDebugIntent(input: string): BrowserDebugIntent {
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) return { isBrowserDebug: false };
+
+  const matches = BROWSER_DEBUG_KEYWORDS.some((kw) => normalized.includes(kw));
+
+  if (matches) {
+    return {
+      isBrowserDebug: true,
+      intent: {
+        domain: "frontend",
+        operation: "debug-and-repair",
+        scope: "browser-runtime",
+        completion: "no-actionable-browser-failures",
+      },
+    };
+  }
+
+  return { isBrowserDebug: false };
+}

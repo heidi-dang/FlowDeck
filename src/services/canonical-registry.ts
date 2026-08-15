@@ -331,6 +331,24 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     stopConditions: ["root cause identified", "build green (tsc + build exit 0)"],
     successCriteria: ["root cause traced to specific call site", "fixes applied with minimum changes", "no new type suppressions"],
   },
+  {
+    id: "browser-debugger",
+    description: "Autonomous browser debugging specialist for reproducing, diagnosing, and repairing UI/console/network errors in web applications.",
+    mode: "subagent",
+    allowedTaskTypes: ["browser-debug", "console-fix", "ui-repair", "frontend-debug", "network-debug", "react-debug"],
+    allowedTools: ["read", "write", "edit", "bash", "glob", "grep", "apply_patch"],
+    forbiddenActions: ["destructive-form-submit", "delete-account", "make-payments"],
+    ownedPaths: [],
+    modelPolicy: "inherit",
+    delegationPolicy: "none",
+    maxDelegationDepth: 0,
+    requiredInputs: ["url or dev server output", "symptom description or console bug report"],
+    expectedOutput: ["browser_evidence", "root_cause", "applied_patch", "verification_report"],
+    progressStates: ["inspect", "launch", "explore", "diagnose", "repair", "verify"],
+    escalationConditions: ["browser process crash", "unrepairable framework error"],
+    stopConditions: ["no actionable browser failures remaining", "max repair cycles reached"],
+    successCriteria: ["zero actionable console errors", "zero uncaught exceptions", "fresh browser verification passed"],
+  },
 ]
 
 // ─── Registry exports ─────────────────────────────────────────────────────

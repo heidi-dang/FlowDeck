@@ -8,7 +8,7 @@ FlowDeck is a plugin that runs inside OpenCode. It layers a structured multi-age
 OpenCode
   └── FlowDeck Plugin
         ├── Commands (8 slash command entry points)
-        ├── Agents (13 registered agents, heidi primary execution policy)
+        ├── Agents (14 registered agents, heidi primary execution policy)
         ├── Skills (61 validated skills in src/skills/)
         ├── Services (governance, doctor, token-optimizer, memory)
         └── Hooks (session-start, tool.execute.before, tool.execute.after, session.idle/error)
@@ -26,7 +26,7 @@ Commands are registered as slash commands in the OpenCode CLI (`/fd-task`, `/fd-
 
 ### Agents
 
-FlowDeck ships 13 registered agents:
+FlowDeck ships 14 registered agents:
 
 | Agent | Role |
 |-------|------|
