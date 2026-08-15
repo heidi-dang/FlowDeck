@@ -62,7 +62,7 @@ flowdeck doctor
 - Plugin registration
 - Config validity
 - Agent registration count (expected: 13)
-- Skill validation (expected: 61 valid)
+- Skill validation (expected: 89 valid)
 - FDX binary availability
 - Install mode detection
 

@@ -396,8 +396,15 @@ export class AgentBrowserSession implements HeidiBrowserSession {
     return new Promise((resolve, reject) => {
       let child: ReturnType<typeof spawn>;
       try {
+        const chromePath = process.env.CHROME_PATH || "/home/heidi/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome";
+        const env = {
+          ...process.env,
+          TMPDIR: process.env.TMPDIR || "/tmp",
+          XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR || "/tmp",
+          ...(existsSync(chromePath) ? { CHROME_PATH: chromePath } : {}),
+        };
         child = spawn(this.binaryPath, args, {
-          env: { ...process.env },
+          env,
           stdio: ["pipe", "pipe", "pipe"],
         });
       } catch (err) {

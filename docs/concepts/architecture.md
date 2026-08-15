@@ -9,7 +9,7 @@ OpenCode
   └── FlowDeck Plugin
         ├── Commands (8 slash command entry points)
         ├── Agents (14 registered agents, heidi primary execution policy)
-        ├── Skills (61 validated skills in src/skills/)
+        ├── Skills (89 validated skills in src/skills/)
         ├── Services (governance, doctor, token-optimizer, memory)
         └── Hooks (session-start, tool.execute.before, tool.execute.after, session.idle/error)
 ```

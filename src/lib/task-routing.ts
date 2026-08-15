@@ -160,3 +160,16 @@ export function classifyBrowserDebugIntent(input: string): BrowserDebugIntent {
 
   return { isBrowserDebug: false };
 }
+
+import { CuratedSkillRegistry, type LazyResolveResult } from "../services/curated-skill-registry";
+
+export function resolveTaskSkills(
+  userPrompt: string,
+  packageManager?: "bun" | "npm" | "pnpm" | "yarn"
+): LazyResolveResult {
+  const registry = new CuratedSkillRegistry();
+  return registry.resolveLazySkills({
+    taskPrompt: userPrompt,
+    packageManager,
+  });
+}

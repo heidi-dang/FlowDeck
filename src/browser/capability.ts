@@ -150,7 +150,8 @@ function checkChromeOrBrowserAvailable(): boolean {
       "/usr/bin/google-chrome",
       "/usr/bin/chromium",
       "/usr/bin/chromium-browser",
-      "/snap/bin/chromium"
+      "/snap/bin/chromium",
+      "/home/heidi/.cache/ms-playwright/chromium-1208/chrome-linux64/chrome"
     );
   } else if (process.platform === "darwin") {
     candidates.push(
