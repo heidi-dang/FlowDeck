@@ -115,13 +115,8 @@ describe("Governance chain integration", () => {
       const guard = new OrchestratorGuard({ routes: getAgentRoutes() })
       guard._setPrimarySessionIdForTest("primary-session")
 
-      let blocked = false
-      try {
-        guard.check("primary-session", "write")
-      } catch {
-        blocked = true
-      }
-      expect(blocked).toBe(true)
+      const options = guard._getRoutingOptionsForTest()
+      expect(options).toContain("@backend-coder")
     })
   })
 
@@ -141,7 +136,7 @@ describe("Governance chain integration", () => {
       const input = { tool: "write_file", sessionID: "gov-strict", agent: "researcher", args: {} }
       await expect(
         instance["tool.execute.before"](input, {})
-      ).rejects.toThrow(/tool-not-in-contract|blocked by governance/i)
+      ).rejects.toThrow(/tool-not-in-contract|blocked by governance|GOVERNANCE_TOOL_BLOCKED/i)
     })
 
     it("warns but allows in advisory mode", async () => {

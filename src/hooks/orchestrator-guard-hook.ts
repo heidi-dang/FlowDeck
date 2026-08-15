@@ -630,34 +630,67 @@ export class OrchestratorGuard {
 
   check(sessionId: string, toolName: string, args?: unknown, agentName?: string): void {
     if (DISABLED) return
+    if (this.primarySessionId !== null && sessionId !== this.primarySessionId) return
 
-    if (isHeidiAgent(agentName)) {
+    // Non-Heidi specialist agents are governed solely by evaluateGovernanceToolCheck (Guard 2)
+    if (agentName !== undefined && !isHeidiAgent(agentName)) return
+
+    const effectiveAgent = agentName ?? "heidi"
+    const isHeidi = isHeidiAgent(effectiveAgent)
+
+    if (isHeidi) {
       if (isShellTool(toolName)) {
         const cmd = readCommandArg(args)
-        if (cmd === null) return
+        if (cmd === null || cmd.trim() === "") {
+          throw new RecoverableFlowDeckBlockError({
+            subsystem: "orchestrator_guard",
+            code: "ORCHESTRATOR_GUARD_MISSING_ARG",
+            tool: toolName,
+            sessionID: sessionId,
+            agent: effectiveAgent,
+            reason: this.shellBlockMessage(toolName, "no command string supplied in args", "missing-arg"),
+            recoverable: true,
+          })
+        }
+
         const cls = classifyShellCommand(cmd, { workingDir: process.cwd() })
+        if (cls.category === "sensitive-read") {
+          throw new RecoverableFlowDeckBlockError({
+            subsystem: "orchestrator_guard",
+            code: "ORCHESTRATOR_GUARD_SENSITIVE_READ",
+            tool: toolName,
+            sessionID: sessionId,
+            agent: effectiveAgent,
+            reason: this.shellBlockMessage(toolName, cls.reason, cls.category),
+            recoverable: true,
+          })
+        }
         if (cls.category === "risky") {
           throw new RecoverableFlowDeckBlockError({
             subsystem: "orchestrator_guard",
             code: "ORCHESTRATOR_GUARD_RISKY_SHELL",
             tool: toolName,
             sessionID: sessionId,
-            agent: agentName ?? "heidi",
-            reason: `Operationally risky shell command blocked: ${cls.reason}`,
+            agent: effectiveAgent,
+            reason: this.shellBlockMessage(toolName, cls.reason, cls.category),
             recoverable: true,
-            suggestedActions: [
-              "Use a non-destructive read-only shell command",
-              "Execute project-local test or build commands",
-              "Request user confirmation for external system modifications",
-            ],
+          })
+        }
+        if (cls.category === "unknown") {
+          throw new RecoverableFlowDeckBlockError({
+            subsystem: "orchestrator_guard",
+            code: "ORCHESTRATOR_GUARD_UNKNOWN_SHELL",
+            tool: toolName,
+            sessionID: sessionId,
+            agent: effectiveAgent,
+            reason: this.shellBlockMessage(toolName, cls.reason, cls.category),
+            recoverable: true,
           })
         }
         return
       }
       return // Heidi: direct execution permitted
     }
-
-    return
   }
 
   /**

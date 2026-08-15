@@ -41,14 +41,6 @@ export async function repairPluginRegistration(directory: string): Promise<AutoF
     writeFileSync(configFile, JSON.stringify(cfg, null, 2), "utf-8")
 
     // Update runtime self report for directory
-    const pkgPath = join(directory, "package.json")
-    let version = "2.0.1"
-    if (existsSync(pkgPath)) {
-      try {
-        const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
-        version = pkg.version || version
-      } catch { /* ignore */ }
-    }
     recordRuntimeSelfReport(getExecutingRuntimeIdentity(), directory)
 
     // Clean stale package cache directories

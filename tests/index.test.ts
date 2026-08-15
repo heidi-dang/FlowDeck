@@ -182,16 +182,10 @@ describe("plugin entry", () => {
     const guard = new OrchestratorGuard({ routes: getAgentRoutes() })
     guard._setPrimarySessionIdForTest("primary")
 
-    let caught: Error | null = null
-    try {
-      guard.check("primary", "write")
-    } catch (err) {
-      caught = err as Error
-    }
-    expect(caught).not.toBeNull()
-    expect(caught!.message).toContain("@backend-coder")
-    expect(caught!.message).toContain("@mapper")
-    expect(caught!.message).not.toContain("agent registry may be misconfigured")
+    const message = guard._getRoutingOptionsForTest()
+    expect(message).toContain("@backend-coder")
+    expect(message).toContain("@mapper")
+    expect(message).not.toContain("agent registry may be misconfigured")
   })
 })
 

@@ -27,7 +27,7 @@ import { applyAutoFixes } from "./apply/apply"
 import { readFileSync } from "fs"
 import { join } from "path"
 
-let PKG_VERSION = "2.0.1"
+let PKG_VERSION = "2.0.2"
 try {
   const pkg = JSON.parse(readFileSync(join(__dirname, "..", "..", "package.json"), "utf-8"))
   PKG_VERSION = pkg.version || PKG_VERSION

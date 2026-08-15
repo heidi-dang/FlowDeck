@@ -46,6 +46,8 @@ export interface ClassifierOptions {
 }
 
 /** Commands that are always mutating regardless of arguments. */
+const SYSTEM_RISKY_COMMANDS: ReadonlySet<string> = new Set(["ssh", "scp", "rsync", "sudo", "su", "systemctl", "service", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill", "nc", "netcat", "socat"])
+
 const ALWAYS_MUTATING: ReadonlySet<string> = new Set([
   // filesystem mutation
   "rm", "rmdir", "mv", "cp", "mkdir", "touch", "ln", "install", "mktemp",
@@ -393,6 +395,9 @@ function classifySegment(segment: string): { category: ShellCategory; reason: st
       return { category: "unknown", reason: `\`${head}\` with -c hides the real command from inspection; route to a specialist`, head }
     }
     return { category: "risky", reason: `\`${head}\` is an indirection wrapper; route to a specialist for safe execution`, head }
+  }
+  if (SYSTEM_RISKY_COMMANDS.has(head)) {
+    return { category: "risky", reason: `\`${head}\` is an operationally risky system/network command`, head }
   }
   if (head === "gh") {
     const r = classifyGhCommand(tokens);

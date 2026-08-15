@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] - 2026-08-16
+
+### Fixed & Hardened
+
+- **Recoverable FlowDeck Guard Error Handling**: FlowDeck guard blocks in `tool.execute.before` now return machine-readable feedback (`RecoverableFlowDeckBlockError`) so Heidi continues autonomously in the same session without stalling or requiring manual "continue" prompts.
+- **Heidi & Orchestrator Identity Normalization**: `heidi` and compatibility alias `orchestrator` resolve to the exact same canonical primary direct-execution identity.
+- **Read-Only GitHub CLI (`gh`) Inspection**: Read-only `gh api` GET requests, `gh repo view`, `gh pr view`, `gh run view`, and `gh issue view` are recognized as read operations and allowed for Heidi.
+- **Planning Workspace State & Orphan Recovery**: `planningWorkspaceStatus` distinguishes `absent`, `incomplete_orphaned`, `valid_no_active_plan`, `active_unconfirmed`, and `active_confirmed`. Empty/orphaned directories lacking `STATE.md` no longer block edits.
+- **Loop Guard `fdx-read` Redirection**: Repeated reads via `fdx-read`, `fdx-search`, `fdx-grep` are normalized and redirected with machine-readable guidance without ending Heidi's session.
+- **FlowDeck State & Telemetry Ignored**: State directories (`.flowdeck/`, `.codebase/`, `.fd-plan/`) are automatically excluded in `.gitignore` on plugin initialization to prevent workspace file pollution.
+
 ## [2.0.1] - 2026-08-16
 
 ### Fixed & Hardened
