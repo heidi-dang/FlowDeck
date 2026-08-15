@@ -17,6 +17,7 @@ import { runSecurityChecks } from "./checks/security"
 import { runConfigurationChecks } from "./checks/configuration"
 import { runBrowserChecks } from "./checks/browser"
 import { runCuratedSkillChecks } from "./checks/skills"
+import { runStudioChecks } from "./checks/studio"
 import { generateRecommendations } from "./recommendations/recommendations"
 import { resolveProfile } from "./profiles/profiles"
 import { applyAutoFixes } from "./apply/apply"
@@ -50,6 +51,7 @@ export async function runDoctor(directory: string, options: DoctorOptions = {}):
     runConfigurationChecks(directory),
     runBrowserChecks(directory),
     runCuratedSkillChecks(directory),
+    runStudioChecks(directory),
   ])
 
   for (const checks of results) {

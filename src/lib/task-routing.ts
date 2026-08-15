@@ -173,3 +173,48 @@ export function resolveTaskSkills(
     packageManager,
   });
 }
+
+export interface StudioIntent {
+  isStudioTask: boolean;
+  isFullStack: boolean;
+  intent?: {
+    domain: "frontend" | "fullstack";
+    operation: "generate" | "redesign" | "design-mode" | "build-app";
+  };
+}
+
+const STUDIO_KEYWORDS = [
+  "generate ui",
+  "build ui",
+  "create ui",
+  "build page",
+  "build dashboard",
+  "redesign screen",
+  "design mode",
+  "create app",
+  "full stack app",
+  "build fullstack app",
+  "generate app screen",
+  "app studio",
+];
+
+export function classifyStudioIntent(input: string): StudioIntent {
+  const normalized = input.trim().toLowerCase();
+  if (!normalized) return { isStudioTask: false, isFullStack: false };
+
+  const isMatch = STUDIO_KEYWORDS.some((kw) => normalized.includes(kw));
+  const isFullStack = normalized.includes("full stack") || normalized.includes("fullstack");
+
+  if (isMatch || isFullStack) {
+    return {
+      isStudioTask: true,
+      isFullStack,
+      intent: {
+        domain: isFullStack ? "fullstack" : "frontend",
+        operation: normalized.includes("redesign") ? "redesign" : normalized.includes("design mode") ? "design-mode" : "generate",
+      },
+    };
+  }
+
+  return { isStudioTask: false, isFullStack: false };
+}
