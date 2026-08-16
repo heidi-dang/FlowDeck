@@ -38,14 +38,22 @@ function resolveBunBinary() {
   if (typeof process !== "undefined" && process.versions?.bun && process.execPath) {
     candidates.push(process.execPath)
   }
-  candidates.push("bun")
+  try {
+    const homeOS = homedir()
+    if (homeOS) candidates.push(join(homeOS, ".bun", "bin", "bun"), join(homeOS, ".bun", "bin", "bun.exe"))
+  } catch {}
+  const homeEnv = process.env.HOME || process.env.USERPROFILE || ""
+  if (homeEnv) candidates.push(join(homeEnv, ".bun", "bin", "bun"), join(homeEnv, ".bun", "bin", "bun.exe"))
+  candidates.push("/usr/local/bin/bun", "/usr/bin/bun", "bun", "bun.exe")
 
+  
   for (const candidate of candidates) {
     try {
       execFileSync(candidate, ["--version"], {
         encoding: "utf-8",
         timeout: 5000,
-        stdio: "ignore",
+        stdio: "pipe",
+        shell: process.platform === "win32",
       })
       BUN_BIN = candidate
       return BUN_BIN
@@ -136,8 +144,8 @@ function runViaBunInline(options, entryPath) {
   const script = [
     `import * as doctorMod from ${JSON.stringify(doctorPath)};`,
     `const runFn = doctorMod.runDoctor || doctorMod.runDoctorChecks;`,
-    `const targetDir = options?.directory || process.cwd();
-    const r = await runFn(targetDir, options);`,
+    `const targetDir = ${JSON.stringify(options?.directory || process.cwd())};
+    const r = await runFn(targetDir, ${JSON.stringify(options)});`,
     `process.stdout.write("__FLOWDECK_DOCTOR_JSON_START__" + JSON.stringify(r) + "__FLOWDECK_DOCTOR_JSON_END__");`,
   ].join("\n")
 
@@ -183,7 +191,7 @@ async function runDoctorEngine(options) {
     try {
       return runViaBunInline(options, doctorSrcPath)
     } catch {
-      // Fall through if bun execution fails
+      // Fall through
     }
   }
 
