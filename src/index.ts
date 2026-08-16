@@ -102,6 +102,7 @@ import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
 import { TokenBudgetRuntime } from "./services/token-budget-runtime"
 import { getArtifactStore } from "./services/artifact-store"
 import { buildAssignmentContext, externalizeToolOutput, compactConversationContext } from "./services/context-scoping"
+import { validateHistorySafety, sanitizeReasoningOnlyHistory } from "./services/provider-history-safety"
 import { initializeDatabase } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
@@ -588,26 +589,6 @@ const plugin: Plugin = async ({ directory, client }) => {
         throw new Error(result.reason ?? "Agent identity enforcement blocked this request")
       }
 
-      // ── Context Compaction ───────────────────────────────────────────
-      // Compact intermediate conversation turns when token footprint exceeds the
-      // configured threshold — runs before the budget gate to reduce reservation size.
-      if (sessionID && output.message?.messages && Array.isArray(output.message.messages)) {
-        const tokenConfig = tokenBudgetRuntime.getConfig()
-        const compactResult = compactConversationContext({
-          messages: output.message.messages,
-          thresholdTokens: tokenConfig.compactThresholdTokens,
-          sessionID,
-        })
-        if (compactResult.compacted) {
-          output.message.messages = compactResult.messages
-          appLog(
-            `[context-compaction] session=${sessionID} ${compactResult.originalTokens}->${compactResult.compactedTokens} tokens`,
-            "info",
-            sessionID,
-          )
-        }
-      }
-
       // ── Hierarchical token-budget pre-dispatch gate ──────────────────
       // Reserve budget before the model request is sent. When the run or
       // child budget cannot cover the estimated request, abort the call.
@@ -629,16 +610,75 @@ const plugin: Plugin = async ({ directory, client }) => {
         }
       }
 
-      // Apply identity anti-fabrication marker
-      if (output.message?.system !== undefined) {
-        output.message.system = applyIdentityMarker(
-          output.message.system,
-          agent,
-          runtimeCfg.expectedAgent ?? "heidi",
-        )
-      } else if (output.message) {
-        output.message.system = applyIdentityMarker("", agent, runtimeCfg.expectedAgent ?? "heidi")
+    },
+
+    "experimental.chat.messages.transform": async (input, output) => {
+      // 1. Sanitize reasoning-only turns to prevent provider replay HTTP 400 INVALID_ARGUMENT
+      output.messages = sanitizeReasoningOnlyHistory(output.messages)
+
+      // 2. Compact intermediate conversation turns when token footprint exceeds threshold
+      // We need to map OpenCode Message[] into our ConversationTurn format
+      const turnMappedMessages = output.messages.map(m => {
+        let content = ""
+        for (const p of m.parts) {
+          if (p.type === "text" && p.text) content += p.text + "\n"
+        }
+        return {
+          role: m.info.role,
+          content: content.trim() || "[hidden or structured content]",
+          originalMessage: m // Keep reference to put it back
+        }
+      })
+      
+      const tokenConfig = tokenBudgetRuntime.getConfig()
+      const compactResult = compactConversationContext({
+        messages: turnMappedMessages,
+        thresholdTokens: tokenConfig.compactThresholdTokens,
+        sessionID: "unknown",
+      })
+      
+      if (compactResult.compacted) {
+        // We need to map back to { info: Message, parts: Part[] }
+        const newMessages: typeof output.messages = []
+        for (const m of compactResult.messages) {
+          if (m.originalMessage) {
+            newMessages.push(m.originalMessage)
+          } else {
+            // It's a synthetic compaction summary turn
+            const role = m.role === "user" || m.role === "assistant" ? m.role : "user"
+            const msgId = `compact-${Date.now()}`
+            newMessages.push({
+              info: {
+                id: msgId,
+                sessionID: "unknown",
+                role: role,
+                time: { created: Date.now() },
+                mode: "chat",
+                parentID: "unknown",
+                tools: []
+              } as unknown as any,
+              parts: [{ type: "text", text: m.content, id: `p-${msgId}`, sessionID: "unknown", messageID: msgId }]
+            })
+          }
+        }
+        output.messages = newMessages
       }
+    },
+
+    "experimental.chat.system.transform": async (input, output) => {
+      const sessionID = input.sessionID ?? ""
+      const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
+      const agent = sessionMeta?.agent ?? "unknown"
+      const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
+      
+      const combinedSystem = output.system.join("\n")
+      const markedSystem = applyIdentityMarker(
+        combinedSystem,
+        agent,
+        runtimeCfg.expectedAgent ?? "heidi"
+      )
+      
+      output.system = [markedSystem]
     },
 
     tool: {
