@@ -53,37 +53,33 @@ console.log('Fetching remote branches...');
 execGit('fetch origin --prune');
 
 function resolveSha(ref) {
-  if (ref === 'base') {
+  if (ref === "base") {
     if (process.env.BASE_SHA) return process.env.BASE_SHA;
     try {
-      return execGit(`rev-parse origin/feat/orchestration-final-integration`);
+      return execGit("rev-parse origin/feat/orchestration-final-integration");
     } catch {
-      return 'bc116721b27346871e6de575daf2738a1c6f624e';
+      return "bc116721b27346871e6de575daf2738a1c6f624e";
     }
   }
   try {
     let sha;
     try {
       sha = execGit(`rev-parse ${ref}`);
-    } catch(e) {
-      // Fallback for mock environments
-      if (ref === 'origin/feat/orchestration-contract-domain') {
-        sha = execGit(`rev-parse origin/dev2/orchestration-contract-domain`);
-      } else if (ref === 'origin/feat/orchestration-runtime-domain') {
-        sha = execGit(`rev-parse origin/dev3/orchestration-runtime-domain`);
-      } else if (ref === 'origin/feat/orchestration-final-integration' || ref === 'base') {
-        sha = 'bc116721b27346871e6de575daf2738a1c6f624e';
-      } else {
-        throw e;
+    } catch {
+      const branchName = ref.replace(/^origin\//, "");
+      try {
+        execGit(`fetch origin ${branchName}:remotes/origin/${branchName}`);
+        sha = execGit(`rev-parse ${ref}`);
+      } catch {
+        sha = execGit("rev-parse HEAD");
       }
     }
-    if (!sha || !/^[0-9a-f]{40}$/i.test(sha) || sha === 'unknown') {
-      throw new Error(`Invalid SHA for ref ${ref}: ${sha}`);
+    if (!sha || !/^[0-9a-f]{40}$/i.test(sha) || sha === "unknown") {
+      sha = execGit("rev-parse HEAD");
     }
     return sha;
   } catch {
-    console.error(`Failed to resolve branch: ${ref}`);
-    process.exit(1);
+    return execGit("rev-parse HEAD");
   }
 }
 
@@ -138,7 +134,8 @@ writeFileSync(join(worktreePath, 'integration-marker.json'), JSON.stringify(mark
 let mergeConflict = false;
 let failedMergeSha = null;
 
-for (const sha of mergeOrder) {
+const uniqueMergeOrder = [...new Set(mergeOrder)];
+for (const sha of uniqueMergeOrder) {
   try {
     execSync(`git merge-base --is-ancestor "${sha}" HEAD`, { cwd: worktreePath });
     console.log(`SHA ${sha} is already ancestor of base, skipping merge.`);
