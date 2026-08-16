@@ -9,17 +9,23 @@ import { mkdtempSync, rmSync } from "fs"
 
 describe("OpenCode Hook Contract Registration", () => {
   let tmpDir: string
+  let pluginInstance: any
+
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "fd-test-hook-"))
+    pluginInstance = null
   })
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true })
+  afterEach(async () => {
+    if (pluginInstance?.dispose) {
+      try { await pluginInstance.dispose() } catch {}
+    }
+    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   it("registers experimental.chat.messages.transform and experimental.chat.system.transform", async () => {
     const mockClient = { app: { log: async () => {} } } as any
     const mockProject = {} as any
-    const hooks = await flowDeckPlugin.server({
+    pluginInstance = await flowDeckPlugin.server({
       client: mockClient,
       project: mockProject,
       directory: tmpDir,
@@ -29,15 +35,15 @@ describe("OpenCode Hook Contract Registration", () => {
       $: {} as any,
     }) as any
 
-    expect(hooks["experimental.chat.messages.transform"]).toBeDefined()
-    expect(hooks["experimental.chat.system.transform"]).toBeDefined()
-    expect(hooks["chat.message"]).toBeDefined()
+    expect(pluginInstance["experimental.chat.messages.transform"]).toBeDefined()
+    expect(pluginInstance["experimental.chat.system.transform"]).toBeDefined()
+    expect(pluginInstance["chat.message"]).toBeDefined()
   })
 
   it("chat.message does not mutate messages or system output directly", async () => {
     const mockClient = { app: { log: async () => {} } } as any
     const mockProject = {} as any
-    const hooks = await flowDeckPlugin.server({
+    pluginInstance = await flowDeckPlugin.server({
       client: mockClient,
       project: mockProject,
       directory: tmpDir,
@@ -51,7 +57,7 @@ describe("OpenCode Hook Contract Registration", () => {
       message: { agent: "heidi", content: "test user input" }
     }
 
-    await hooks["chat.message"]!({ sessionID: "s1" }, outputObj)
+    await pluginInstance["chat.message"]!({ sessionID: "s1" }, outputObj)
 
     // output.message.messages and output.message.system should NOT be added/mutated by chat.message
     expect(outputObj.message.messages).toBeUndefined()

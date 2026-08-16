@@ -67,14 +67,19 @@ import { mkdtempSync, rmSync, writeFileSync } from "fs"
 
 describe("Heidi Reasoning Recovery Runtime Integration", () => {
   let tmpDir: string
+  let pluginInstance: any
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "fd-test-reasoning-"))
     writeFileSync(join(tmpDir, ".flowdeck.json"), JSON.stringify({ governance: { mode: "strict" } }))
+    pluginInstance = null
   })
 
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true })
+  afterEach(async () => {
+    if (pluginInstance?.dispose) {
+      try { await pluginInstance.dispose() } catch {}
+    }
+    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   it("triggers bounded continuation exactly once per signature on reasoning-only stops", async () => {
@@ -89,7 +94,7 @@ describe("Heidi Reasoning Recovery Runtime Integration", () => {
       }
     }
     
-    const pluginInstance = (await (flowDeckPlugin as any).server({ directory: tmpDir, client: mockClient as any })) as any
+    pluginInstance = (await (flowDeckPlugin as any).server({ directory: tmpDir, client: mockClient as any })) as any
     const sessionID = "ses_reasoning_1"
     
     await pluginInstance["event"]({

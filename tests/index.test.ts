@@ -54,25 +54,36 @@ interface TestHooks {
   "tool.execute.before"?: (input: any, output: any) => Promise<void>
   "tool.execute.after"?: (input: any, output: any) => Promise<void>
   event?: (input: { event: any }) => Promise<void>
+  dispose?: () => Promise<void>
 }
 
 describe("plugin entry", () => {
   let dir: string
+  let instances: TestHooks[]
 
   beforeEach(() => {
     dir = makeTempDir()
     writeState(dir)
+    instances = []
   })
 
   afterEach(async () => {
+    // Dispose all plugin instances to release file locks
+    for (const instance of instances) {
+      if (instance.dispose) {
+        try { await instance.dispose() } catch {}
+      }
+    }
     closeAllConnections()
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await new Promise((resolve) => setTimeout(resolve, 500))
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     try { rmSync(planningDir(dir), { recursive: true, force: true }) } catch {}
   })
 
   async function loadPlugin(client: any): Promise<TestHooks> {
-    return (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    instances.push(instance)
+    return instance
   }
 
   it("returns a plugin object with expected registration keys", async () => {
@@ -200,14 +211,21 @@ describe("plugin entry", () => {
  */
 describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
   let dir: string
+  let instances: TestHooks[]
 
   beforeEach(() => {
     dir = makeTempDir()
+    instances = []
   })
 
   afterEach(async () => {
+    for (const instance of instances) {
+      if (instance.dispose) {
+        try { await instance.dispose() } catch {}
+      }
+    }
     closeAllConnections()
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await new Promise((resolve) => setTimeout(resolve, 500))
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
   })
@@ -215,6 +233,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
   it("writes a flowdeck.log entry on session.idle events", async () => {
     const client = createMockClient()
     const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    instances.push(instance)
 
     await instance.event?.({ event: { type: "session.idle", properties: { sessionID: "sess-idle" } } })
 
@@ -227,6 +246,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
   it("writes a flowdeck.log entry on session.error events", async () => {
     const client = createMockClient()
     const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    instances.push(instance)
 
     await instance.event?.({ event: { type: "session.error", properties: { sessionID: "sess-err" } } })
 
@@ -240,6 +260,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
     const { recordWrite, getWriteCount, clearWriteCounter } = await import("@/hooks/tool-guard")
     const client = createMockClient()
     const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    instances.push(instance)
 
     const sessionID = "sess-clear"
     recordWrite(sessionID, "/tmp/a.ts")
@@ -258,6 +279,7 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
 describe("plugin entry: toolGuardHook wiring (bug 3b)", () => {
   let dir: string
   let prevEnv: string | undefined
+  let instances: TestHooks[]
 
   beforeEach(() => {
     dir = makeTempDir()
@@ -267,11 +289,17 @@ describe("plugin entry: toolGuardHook wiring (bug 3b)", () => {
     // Provide a STATE.md so phase enforcement has something to read.
     mkdirSync(planningDir(dir), { recursive: true })
     writeFileSync(join(planningDir(dir), "STATE.md"), "phase: 1\nstatus: planned")
+    instances = []
   })
 
   afterEach(async () => {
+    for (const instance of instances) {
+      if (instance.dispose) {
+        try { await instance.dispose() } catch {}
+      }
+    }
     closeAllConnections()
-    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await new Promise((resolve) => setTimeout(resolve, 500))
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     rmSync(planningDir(dir), { recursive: true, force: true })
     if (prevEnv === undefined) delete process.env.FLOWDECK_TOOL_GUARD_ENABLED
@@ -282,6 +310,7 @@ describe("plugin entry: toolGuardHook wiring (bug 3b)", () => {
   it("blocks a write in discuss phase when FLOWDECK_TOOL_GUARD_ENABLED=on", async () => {
     const client = createMockClient()
     const instance = (await flowDeckPlugin.server({ directory: dir, client } as any, {})) as unknown as TestHooks
+    instances.push(instance)
 
     const toolInput: any = { tool: "write", sessionID: "primary", args: { filePath: "src/x.ts" } }
 

@@ -103,7 +103,7 @@ import { TokenBudgetRuntime } from "./services/token-budget-runtime"
 import { getArtifactStore } from "./services/artifact-store"
 import { buildAssignmentContext, externalizeToolOutput, compactConversationContext } from "./services/context-scoping"
 import { validateHistorySafety, sanitizeReasoningOnlyHistory, detectNoVisibleOutputCompletion } from "./services/provider-history-safety"
-import { initializeDatabase } from "./orchestration/persistence/index"
+import { initializeDatabase, closeAllConnections } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
 import { createEnforceRun } from "./orchestration/routing/enforce-run"
@@ -1513,6 +1513,8 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
       configureFdxNextRuntime()
       if (schedulerTimer) clearInterval(schedulerTimer)
+      // Close SQLite connections so Windows file locks are released
+      try { closeAllConnections() } catch { /* best-effort */ }
     },
   }
 }
