@@ -1,15 +1,29 @@
 import { describe, it, expect } from "vitest"
 import flowDeckPlugin from "../src/index.js"
+import { beforeEach, afterEach } from "vitest"
+
+
+import { tmpdir } from "os"
+import { join } from "path"
+import { mkdtempSync, rmSync } from "fs"
 
 describe("OpenCode Hook Contract Registration", () => {
+  let tmpDir: string
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "fd-test-hook-"))
+  })
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
   it("registers experimental.chat.messages.transform and experimental.chat.system.transform", async () => {
     const mockClient = { app: { log: async () => {} } } as any
     const mockProject = {} as any
     const hooks = await flowDeckPlugin.server({
       client: mockClient,
       project: mockProject,
-      directory: "/tmp",
-      worktree: "/tmp",
+      directory: tmpDir,
+      worktree: tmpDir,
       experimental_workspace: { register: () => {} },
       serverUrl: new URL("http://localhost"),
       $: {} as any,
@@ -26,8 +40,8 @@ describe("OpenCode Hook Contract Registration", () => {
     const hooks = await flowDeckPlugin.server({
       client: mockClient,
       project: mockProject,
-      directory: "/tmp",
-      worktree: "/tmp",
+      directory: tmpDir,
+      worktree: tmpDir,
       experimental_workspace: { register: () => {} },
       serverUrl: new URL("http://localhost"),
       $: {} as any,

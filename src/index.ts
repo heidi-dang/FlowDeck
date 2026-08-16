@@ -124,6 +124,7 @@ const sessionDelegations = new Map<string, number>()
 const sessionBlocks = new Map<string, number>()
 const sessionRecoverableBlocks = new Map<string, RecoverableFlowDeckBlockError>()
 const sessionReasoningRecoveryRegistry = new Map<string, Set<string>>()
+const sessionAutoContinuationTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const _sessionAutoContinuations = new Map<string, Map<string, number>>()
 const sessionWarnings = new Map<string, number>()
 const sessionStartTimes = new Map<string, number>()
@@ -1310,7 +1311,8 @@ const plugin: Plugin = async ({ directory, client }) => {
                 const sessionApi = (client as any)?.session
                 if (sessionApi?.prompt || sessionApi?.promptAsync) {
                   const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
-                  setTimeout(() => {
+                  const timer = setTimeout(() => {
+                    sessionAutoContinuationTimers.delete(eventSessionID)
                     promptFn({
                       path: { id: eventSessionID },
                       body: {
@@ -1321,6 +1323,7 @@ const plugin: Plugin = async ({ directory, client }) => {
                       }
                     }).catch((err: Error) => appLog(`[heidi] Reasoning continuation failed: ${err.message}`, "error", eventSessionID))
                   }, 50)
+                  sessionAutoContinuationTimers.set(eventSessionID, timer)
                 }
               }
             }
@@ -1525,6 +1528,9 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionFilesChanged.delete(sessionID)
   sessionCallerAgents.delete(sessionID)
   sessionReasoningRecoveryRegistry.delete(sessionID)
+  const timer = sessionAutoContinuationTimers.get(sessionID)
+  if (timer) clearTimeout(timer)
+  sessionAutoContinuationTimers.delete(sessionID)
   sessionRegistry.delete(sessionID)
   // ── Child session correlation cleanup ──────────────────────────
   // Remove the sessionID entry from sessionTaskCalls (used as a direct key
