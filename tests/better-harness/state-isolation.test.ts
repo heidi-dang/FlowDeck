@@ -92,6 +92,8 @@ describe("harness-store override functions", () => {
   });
 
   it("getFlowDeckStateDir returns default when no override set", () => {
+    delete process.env.FLOWDECK_STATE_DIR;
+    delete process.env.FLOWDECK_STATE_DIR;
     expect(getFlowDeckStateDir()).toBe(ORIGINAL);
   });
 

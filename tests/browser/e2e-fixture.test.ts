@@ -46,7 +46,7 @@ describe("Browser Debug E2E Fixture Test", () => {
     // 4. Correlate with source code
     const correlated = await correlator.correlateFailure(summary.activeFailures[0]);
     expect(correlated).not.toBeNull();
-    expect(correlated?.file).toBe("src/browser/adapter.ts");
+    expect(correlated?.file.replace(/\\/g, "/")).toBe("src/browser/adapter.ts");
 
     await session.close();
   });

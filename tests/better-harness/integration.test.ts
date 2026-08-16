@@ -1298,6 +1298,7 @@ describe("buildRepairPrompt", () => {
 // ─── getFlowDeckStateDir ─────────────────────────────────────────
 describe("getFlowDeckStateDir", () => {
   it("returns path with .flowdeck/state", async () => {
+    delete process.env.FLOWDECK_STATE_DIR;
     const { getFlowDeckStateDir } = await import("../../src/better-harness/persistence/harness-store");
     const dir = getFlowDeckStateDir();
     expect(dir).toContain(".flowdeck");

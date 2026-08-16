@@ -108,7 +108,8 @@ export class CuratedSkillRegistry {
     }
 
     try {
-      const content = readFileSync(fullPath);
+      const raw = readFileSync(fullPath, "utf-8");
+      const content = Buffer.from(raw.replace(/\r\n/g, "\n"), "utf-8");
       const computedHash = createHash("sha256").update(content).digest("hex");
 
       if (computedHash !== entry.sha256) {
