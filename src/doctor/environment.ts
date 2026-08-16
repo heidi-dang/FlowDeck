@@ -9,7 +9,7 @@
  */
 
 import { existsSync, readFileSync } from "fs"
-import { join, resolve } from "path"
+import { join } from "path"
 
 export type DoctorEnvironment =
   | "source-checkout"

@@ -130,17 +130,6 @@ function runViaBunInline(options, entryPath) {
   const doctorPath = entryPath || (existsSync(doctorSrcPath) ? doctorSrcPath : distPath)
   // Ensure bun binary path is available to subprocesses
   const execEnv = { ...process.env, FLOWDECK_BUN_BIN: bunBin }
-  const opts = {
-    directory: options?.directory || process.cwd(),
-    options: {
-      json: false,
-      strict: !!options.strict,
-      verbose: !!options.verbose,
-      applyRecommended: !!options.applyRecommended,
-      profile: options.profile || "recommended-dev",
-      nonInteractive: !!options.nonInteractive,
-    },
-  }
 
   // Use bun to import and execute the TypeScript or compiled module
   // bun handles TS-to-JS transpilation automatically
@@ -148,7 +137,7 @@ function runViaBunInline(options, entryPath) {
     `import * as doctorMod from ${JSON.stringify(doctorPath)};`,
     `const runFn = doctorMod.runDoctor || doctorMod.runDoctorChecks;`,
     `const targetDir = options?.directory || process.cwd();
-    const r = await runFn(targetDir, opts.options);`,
+    const r = await runFn(targetDir, options);`,
     `process.stdout.write("__FLOWDECK_DOCTOR_JSON_START__" + JSON.stringify(r) + "__FLOWDECK_DOCTOR_JSON_END__");`,
   ].join("\n")
 
