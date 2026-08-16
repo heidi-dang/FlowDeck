@@ -28,7 +28,7 @@ export async function repairSkillsAndLockfile(directory: string): Promise<AutoFi
     }
 
     const lockData = {
-      version: "2.0.2",
+      version: "2.0.3",
       updatedAt: new Date().toISOString(),
       skills: skillEntries,
     }

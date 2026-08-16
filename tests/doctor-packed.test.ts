@@ -106,7 +106,7 @@ function setupDeps(dir: string) {
   const jsoncDir = join(dir, "node_modules", "jsonc-parser")
   mkdirSync(jsoncDir, { recursive: true })
   writeFileSync(join(jsoncDir, "package.json"), JSON.stringify({ name: "jsonc-parser", type: "module", main: "./index.js", exports: { ".": "./index.js" } }))
-  writeFileSync(join(jsoncDir, "index.js"), "export function modify() { return null }\nexport function applyEdits() { return null }\nexport function parse() { return null }\n")
+  writeFileSync(join(jsoncDir, "index.js"), "export function modify() { return [] }\nexport function applyEdits() { return [] }\nexport function parse(text) { try { return JSON.parse(text); } catch { return null; } }\n")
 
   const zodDir = join(dir, "node_modules", "zod")
   mkdirSync(zodDir, { recursive: true })
@@ -117,6 +117,10 @@ function setupDeps(dir: string) {
 beforeAll(() => {
   fixtureRoot = join(tmpdir(), `fd-packed-${Date.now()}`)
   mkdirSync(fixtureRoot, { recursive: true })
+  const opencodeDir = join(fixtureRoot, "opencode")
+  mkdirSync(opencodeDir, { recursive: true })
+  writeFileSync(join(opencodeDir, "opencode.json"), JSON.stringify({ plugin: ["@heidi-dang/flowdeck"] }))
+  process.env.OPENCODE_CONFIG_DIR = opencodeDir
 })
 
 // ─── Environment Classifier ─────────────────────────────────────────────

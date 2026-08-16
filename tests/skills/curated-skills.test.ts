@@ -130,9 +130,11 @@ describe("Lazy Skill Routing & Authority Enforcement", () => {
 describe("FlowDeck Doctor Curated Skill Diagnostics", () => {
   it("runs curated skill doctor checks without error", async () => {
     const checks = await runCuratedSkillChecks(process.cwd());
-    expect(checks).toHaveLength(1);
-    expect(checks[0].id).toBe("skills.curated");
-    expect(checks[0].status).toBe("pass");
-    expect(checks[0].detected).toContain("valid hashes");
+    expect(checks).toHaveLength(2);
+    expect(checks.map(c => c.id)).toContain("skills.lockfile");
+    expect(checks.map(c => c.id)).toContain("skills.integrity");
+    for (const check of checks) {
+      expect(check.status).toBe("pass");
+    }
   });
 });

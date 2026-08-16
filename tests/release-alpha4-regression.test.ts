@@ -85,8 +85,8 @@ describe("v2.0.0-alpha.4 release channel inheritance from alpha.3", () => {
     expect(resolveReleaseChannel("2.0.0-alpha.3")).toBe("alpha")
   })
 
-  it("the active package version is 2.0.0", () => {
-    expect(PKG.version).toBe("2.0.0")
+  it("the active package version matches package.json", () => {
+    expect(PKG.version).toBe(JSON.parse(require("fs").readFileSync(require("path").join(process.cwd(), "package.json"), "utf-8")).version)
   })
 
   it("publish workflow derives the dist-tag from release-channel.mjs and never tags a prerelease latest", () => {

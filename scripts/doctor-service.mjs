@@ -119,6 +119,7 @@ function runViaBun(directory, options = {}) {
       encoding: "utf-8",
       timeout: 60000,
       stdio: ["ignore", "pipe", "pipe"],
+      env: process.env,
     })
     return JSON.parse(output.trim())
   } catch (e) {

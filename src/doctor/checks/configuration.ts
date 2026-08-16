@@ -2,16 +2,34 @@ import { existsSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
 import type { CheckResult } from "../types"
+import { classifyDoctorEnvironment, isRepoLikeEnvironment } from "../environment"
 import { readConfig as safeParseConfig } from "../../../scripts/config-mutator.mjs"
 
 export async function runConfigurationChecks(directory: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
+  const env = classifyDoctorEnvironment(directory)
+  const repoOnly = isRepoLikeEnvironment(env)
 
   // package.json required files check
   const requiredFiles = ["package.json", "tsconfig.json", "install.sh", "uninstall.sh"]
   for (const file of requiredFiles) {
     const fullPath = join(directory, file)
     const exists = existsSync(fullPath)
+    const isRepoFile = file === "tsconfig.json" || file === "uninstall.sh"
+    if (!repoOnly && isRepoFile) {
+      checks.push({
+        id: `config.${file}`,
+        title: `Config: ${file}`,
+        category: "configuration",
+        severity: file === "uninstall.sh" ? "low" : "medium",
+        status: "skipped",
+        detected: exists ? "present" : "missing",
+        expected: `${file} at repository root`,
+        recommendation: `Not applicable to ${env} installs — repository-only file`,
+        autoFixAvailable: false,
+      })
+      continue
+    }
     checks.push({
       id: `config.${file}`,
       title: `Config: ${file}`,

@@ -1,6 +1,6 @@
 import { join, dirname, resolve, basename } from "path"
-import { homedir } from "os"
-import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, realpathSync, rmSync, renameSync, cpSync } from "fs"
+import { homedir, tmpdir } from "os"
+import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync, realpathSync, rmSync, renameSync, cpSync, unlinkSync } from "fs"
 import { createHash } from "crypto"
 import { withLock } from "../services/async-lock"
 
@@ -72,8 +72,28 @@ function copyDirRecursiveSync(src: string, dest: string): void {
  * they never pollute the working tree. Uses collision-safe project ID
  * to prevent same-name repos in different directories from sharing state.
  */
+function getBasePlanningDir(): string {
+  if ((globalThis as any).__mockHomedir) {
+    return join((globalThis as any).__mockHomedir, ".fd-plan");
+  }
+  if (process.env.FLOWDECK_PLAN_DIR) {
+    return process.env.FLOWDECK_PLAN_DIR;
+  }
+  const home = homedir();
+  try {
+    const homePlan = join(home, ".fd-plan");
+    const testFile = join(homePlan, ".write_test_" + Date.now());
+    mkdirSync(homePlan, { recursive: true });
+    writeFileSync(testFile, "ok");
+    unlinkSync(testFile);
+    return homePlan;
+  } catch {
+    return join(tmpdir(), ".fd-plan");
+  }
+}
+
 export function planningDir(directory: string): string {
-  const root = join(homedir(), ".fd-plan")
+  const root = getBasePlanningDir();
   const id = generateProjectId(directory)
   const newDir = join(root, id)
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.3] - 2026-08-16
+
+### Fixed
+- Fix release-environment and package validation defects from v2.0.2
+- Include Heidi recoverable-guard hotfix
+- Correct packaged Doctor runtime detection and tsconfig.json/uninstall.sh contract
+- Harden CI and test isolation across skill routing, browser capability, and adaptive budget control
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),

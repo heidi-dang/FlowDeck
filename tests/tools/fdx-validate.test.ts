@@ -1,12 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { existsSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "fs"
 import { dirname, join } from "path"
-import { homedir } from "os"
+import { homedir, tmpdir } from "os"
 import type { ToolContext } from "@opencode-ai/plugin"
 import { fdxValidateTool } from "@/tools/fdx-validate"
 import { topicTaskPath, topicAffectPath, topicPlanPath } from "@/tools/planning-state-lib"
 
-const TMP = join(homedir(), ".test-tmp-fdx-validate-" + process.pid)
+const TMP = join(tmpdir(), ".test-tmp-fdx-validate-" + process.pid)
 const ctx: ToolContext = {
   directory: TMP,
   sessionID: "test",
@@ -19,7 +19,7 @@ const ctx: ToolContext = {
 }
 
 function planningDir() {
-  return join(homedir(), ".fd-plan", basename(TMP))
+  return join(tmpdir(), ".fd-plan", basename(TMP))
 }
 
 function writeValidTopic() {

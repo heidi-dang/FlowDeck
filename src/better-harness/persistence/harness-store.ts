@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "fs";
 import { join, dirname } from "path";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
 
 /**
  * Module-level state directory override.
@@ -25,7 +25,19 @@ export function resetFlowDeckStateDir(): void {
 }
 
 export function getFlowDeckStateDir(): string {
-  return _stateDirOverride ?? join(homedir(), ".flowdeck", "state");
+  if (_stateDirOverride) return _stateDirOverride;
+  if (process.env.FLOWDECK_STATE_DIR) return process.env.FLOWDECK_STATE_DIR;
+  const home = homedir();
+  try {
+    const homeState = join(home, ".flowdeck", "state");
+    const testFile = join(homeState, ".write_test_" + Date.now());
+    mkdirSync(homeState, { recursive: true });
+    writeFileSync(testFile, "ok");
+    unlinkSync(testFile);
+    return homeState;
+  } catch {
+    return join(tmpdir(), ".flowdeck", "state");
+  }
 }
 
 export function getProjectStoreDir(projectId: string): string {

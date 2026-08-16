@@ -53,7 +53,7 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
 
   // FDX TypeScript fallback check
   const fdxTsFallbackPath = join(directory, "src", "tools", "fdx-shared.ts")
-  const hasTsFallback = existsSync(fdxTsFallbackPath)
+  const hasTsFallback = existsSync(fdxTsFallbackPath) || existsSync(join(directory, "dist", "index.js"))
 
   if (fdxRuns) {
     checks.push({
