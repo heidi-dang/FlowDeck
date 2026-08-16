@@ -68,7 +68,7 @@ describe("plugin entry", () => {
     closeAllConnections()
     await new Promise((resolve) => setTimeout(resolve, 1000))
     rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
-    rmSync(planningDir(dir), { recursive: true, force: true })
+    try { rmSync(planningDir(dir), { recursive: true, force: true }) } catch {}
   })
 
   async function loadPlugin(client: any): Promise<TestHooks> {
