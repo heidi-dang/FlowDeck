@@ -11,6 +11,14 @@ export interface AgentModelConfig {
   maxTokens?: number
 }
 
+export const DEFAULT_AUTONOMY_LIMITS = {
+  maxWritesPerAgent: 100,
+  maxDelegations: 100,
+  toolPipelineMaxCalls: 100,
+  schedulerDefaultBudget: 100,
+  maxToolCalls: 200,
+} as const
+
 export const DEFAULT_CONFIG: FlowDeckConfig = {
   agentModels: {},
   routing: { enabled: false, mode: "off" },
@@ -18,8 +26,16 @@ export const DEFAULT_CONFIG: FlowDeckConfig = {
     enabled: true,
   },
   maxDelegationDepth: 1,
-  maxWritesPerAgent: 15,
-  heidi: { memory: { enabled: true, hotBudget: 8000, writePolicy: "review" }, sessionArchive: { enabled: true, search: true }, learning: { enabled: true, reviewPolicy: "review", minimumConfidence: 0.65 }, skills: { learnedEnabled: true, progressiveLoading: true }, toolPipeline: { enabled: true, maxCalls: 20, timeoutMs: 15_000, maxOutputBytes: 32_000 }, scheduler: { enabled: true, pollIntervalMs: 30_000, defaultBudget: 20 } },
+  maxWritesPerAgent: 100,
+  heidi: { memory: { enabled: true, hotBudget: 8000, writePolicy: "review" }, sessionArchive: { enabled: true, search: true }, learning: { enabled: true, reviewPolicy: "review", minimumConfidence: 0.65 }, skills: { learnedEnabled: true, progressiveLoading: true }, toolPipeline: { enabled: true, maxCalls: 100, timeoutMs: 15_000, maxOutputBytes: 32_000 }, scheduler: { enabled: true, pollIntervalMs: 30_000, defaultBudget: 100 } },
+  governance: {
+    delegationBudget: {
+      maxToolCalls: 200,
+      maxDepth: 1,
+      maxDelegations: 100,
+      maxSameStepRetries: 3,
+    },
+  },
 }
 
 function getGlobalConfigDir(): string {

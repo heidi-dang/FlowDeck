@@ -109,6 +109,8 @@ describe("toolGuardHook - Write Limit", () => {
       join(planningDir(TMP), "STATE.md"),
       "phase: 3\nstatus: in_progress\nrequires_design_first: false",
     )
+    // Inject a small limit so boundary tests stay fast
+    writeFileSync(join(TMP, ".flowdeck.json"), JSON.stringify({ maxWritesPerAgent: 5 }))
     clearWriteCounter(TEST_SESSION)
   })
 
@@ -124,38 +126,38 @@ describe("toolGuardHook - Write Limit", () => {
     const input = { tool: "write", sessionID: TEST_SESSION }
     const { executePostWriteHook } = await import("@/hooks/tool-guard")
 
-    for (let i = 1; i <= 14; i++) {
+    for (let i = 1; i <= 4; i++) {
       const output = { args: { filePath: `src/file${i}.ts` } }
       await toolGuardHook(ctx, input, output)
       executePostWriteHook(TMP, TEST_SESSION, "coder", "write", output.args)
     }
   })
 
-  it("allows the 15th unique file write", async () => {
+  it("allows the 5th unique file write", async () => {
     const ctx = { directory: TMP }
     const input = { tool: "write", sessionID: TEST_SESSION }
     const { executePostWriteHook } = await import("@/hooks/tool-guard")
 
-    for (let i = 1; i <= 15; i++) {
+    for (let i = 1; i <= 5; i++) {
       const output = { args: { filePath: `src/file${i}.ts` } }
       await toolGuardHook(ctx, input, output)
       executePostWriteHook(TMP, TEST_SESSION, "coder", "write", output.args)
     }
   })
 
-  it("blocks the 16th unique file write", async () => {
+  it("blocks the 6th unique file write", async () => {
     const ctx = { directory: TMP }
     const input = { tool: "write", sessionID: TEST_SESSION }
     const { executePostWriteHook } = await import("@/hooks/tool-guard")
 
-    for (let i = 1; i <= 15; i++) {
+    for (let i = 1; i <= 5; i++) {
       const output = { args: { filePath: `src/file${i}.ts` } }
       await toolGuardHook(ctx, input, output)
       executePostWriteHook(TMP, TEST_SESSION, "coder", "write", output.args)
     }
 
-    const output16 = { args: { filePath: "src/file16.ts" } }
-    await expect(toolGuardHook(ctx, input, output16)).rejects.toThrow(/Write limit reached/)
+    const output6 = { args: { filePath: "src/file6.ts" } }
+    await expect(toolGuardHook(ctx, input, output6)).rejects.toThrow(/Write limit reached/)
   })
 
   it("counts repeated writes to the same file as one", async () => {
@@ -177,7 +179,7 @@ describe("toolGuardHook - Write Limit", () => {
     const input = { tool: "write", sessionID: TEST_SESSION }
     const { executePostWriteHook } = await import("@/hooks/tool-guard")
 
-    for (let i = 1; i <= 15; i++) {
+    for (let i = 1; i <= 5; i++) {
       const output = { args: { filePath: `src/file${i}.ts` } }
       await toolGuardHook(ctx, input, output)
       executePostWriteHook(TMP, TEST_SESSION, "coder", "write", output.args)
@@ -185,14 +187,14 @@ describe("toolGuardHook - Write Limit", () => {
 
     clearWriteCounter(TEST_SESSION)
 
-    for (let i = 1; i <= 15; i++) {
+    for (let i = 1; i <= 5; i++) {
       const output = { args: { filePath: `src/after${i}.ts` } }
       await toolGuardHook(ctx, input, output)
       executePostWriteHook(TMP, TEST_SESSION, "coder", "write", output.args)
     }
 
-    const output16 = { args: { filePath: "src/after16.ts" } }
-    await expect(toolGuardHook(ctx, input, output16)).rejects.toThrow(/Write limit reached/)
+    const output6 = { args: { filePath: "src/after6.ts" } }
+    await expect(toolGuardHook(ctx, input, output6)).rejects.toThrow(/Write limit reached/)
   })
 })
 

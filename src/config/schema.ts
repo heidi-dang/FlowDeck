@@ -41,7 +41,7 @@ export interface FlowDeckConfig {
   agents?: Record<string, AgentModelConfig>;
   /** Maximum delegation depth. Default: 1. Must be exactly 1. */
   maxDelegationDepth?: number;
-  /** Maximum unique files an agent can write per session. Default: 15. 0 = unlimited. */
+  /** Maximum unique files an agent can write per session. Default: 100. 0 = unlimited. */
   maxWritesPerAgent?: number;
   /** Design-first workflow configuration. */
   designFirst?: {

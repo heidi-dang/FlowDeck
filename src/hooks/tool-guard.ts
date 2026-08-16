@@ -362,7 +362,7 @@ export async function toolGuardHook(
     const filePath = getFilePath(args) ?? ""
     if (filePath) {
       const config: FlowDeckConfig = loadFlowDeckConfig(ctx.directory)
-      const maxWrites = config.maxWritesPerAgent ?? 15
+      const maxWrites = config.maxWritesPerAgent ?? 100
       if (maxWrites > 0) {
         const limitMsg = checkWriteLimit(sessionID, filePath, maxWrites)
         if (limitMsg) {

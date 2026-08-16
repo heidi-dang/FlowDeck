@@ -343,7 +343,7 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   const maxToolCalls = flowdeckConfig.governance?.delegationBudget?.maxToolCalls ?? 200
   const maxRetries = flowdeckConfig.governance?.delegationBudget?.maxSameStepRetries ?? 3
-  const maxDelegations = flowdeckConfig.governance?.delegationBudget?.maxDelegations ?? 20
+  const maxDelegations = flowdeckConfig.governance?.delegationBudget?.maxDelegations ?? 100
   const maxDepth = flowdeckConfig.governance?.delegationBudget?.maxDepth ?? 1
 
   const { mcps } = buildFlowDeckMcpsWithMeta()

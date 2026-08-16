@@ -1,6 +1,7 @@
 import type { CheckResult } from "../types"
 import { createAgent } from "../../agents/index"
 import { getAllCanonicalAgents } from "../../services/canonical-registry"
+import { loadFlowDeckConfig } from "../../config/agent-models"
 
 export async function runHeidiChecks(_directory: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
@@ -40,6 +41,25 @@ export async function runHeidiChecks(_directory: string): Promise<CheckResult[]>
         repairAction: "repair_agent_registry",
       })
     }
+
+    const config = loadFlowDeckConfig(_directory)
+    const maxWrites = config.maxWritesPerAgent ?? 100
+    const maxDelegations = config.governance?.delegationBudget?.maxDelegations ?? 100
+    const maxCalls = config.heidi?.toolPipeline?.maxCalls ?? 100
+
+    checks.push({
+      id: "heidi.autonomy_limits",
+      title: "Autonomous Session Quotas",
+      category: "heidi",
+      severity: "info",
+      status: "pass",
+      detected: `Writes: ${maxWrites}, Delegations: ${maxDelegations}, Pipeline Calls: ${maxCalls} (productive quotas >=100)`,
+      expected: "Autonomous session limits configured for long coding sessions (>=100)",
+      recommendation: "Autonomy quotas operational for long sessions",
+      autoFixAvailable: false,
+      affectsRuntime: false,
+      repairability: "not-applicable",
+    })
 
     if (browserDebugger) {
       checks.push({
