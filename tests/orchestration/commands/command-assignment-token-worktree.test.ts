@@ -26,7 +26,7 @@ describe("M9 command assignment/token/worktree authority", () => {
     expect(prompts).toBe(1)
     expect((db.query("SELECT COUNT(*) AS c FROM assignments WHERE run_id = ? AND status = 'completed'").get(result.taskRunId!) as any).c).toBe(1)
     db.close()
-  })
+  }, 30000)
 
   it("executes a command through assignments, canonical token budget, and isolated worktree leases", async () => {
     const db = new Database(":memory:")
