@@ -55,7 +55,8 @@ export function toOpenCodeTool<TArgs extends Record<string, unknown>, TResult>(
         sessionId: context?.sessionID ?? "unknown",
         directory: context?.directory ?? process.cwd(),
       }
-      return def.execute(args as TArgs, ctx)
+      const r = await def.execute(args as TArgs, ctx)
+      return r as any
     },
   })
 }

@@ -4,7 +4,8 @@
  * Connections are cached by resolved path.
  */
 
-import { Database } from "bun:sqlite"
+import { openDb } from "./db-factory";
+import type { FlowDbAdapter as Database } from "./db-adapter"
 import { resolve } from "path"
 import { REQUIRED_PRAGMAS, type DatabaseConfig, type PragmaResult } from "./configuration"
 import { PersistenceError } from "./errors"

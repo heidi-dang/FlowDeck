@@ -1468,3 +1468,4 @@ export {
   isRuntimeRecordFresh,
 } from "./services/runtime-identity"
 export type { FlowDeckRuntimeIdentity } from "./services/runtime-identity"
+export type { IsolatedWorkstreamExecutor, IsolatedExecutionResult } from "./orchestration/execution/worktree-executor";

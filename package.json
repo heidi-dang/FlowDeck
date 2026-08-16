@@ -15,6 +15,16 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./host-contracts": {
+      "types": "./dist/host-contracts/index.d.ts",
+      "import": "./dist/host-contracts/index.js",
+      "default": "./dist/host-contracts/index.js"
+    },
+    "./execution": {
+      "types": "./dist/orchestration/execution/contracts.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     }
   },
   "bin": {
@@ -45,7 +55,7 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "bun build src/index.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && tsc --emitDeclarationOnly --project tsconfig.build.json && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm",
+    "build": "bun build src/index.ts --outdir dist --target node --format esm --external @opencode-ai/plugin --external @opencode-ai/sdk --external jsonc-parser && bun build src/host-contracts/index.ts --outdir dist/host-contracts --target node --format esm && tsc --emitDeclarationOnly --project tsconfig.build.json && bun build src/better-harness/index.ts --outdir dist/better-harness --target node --format esm",
     "build:fdx": "cargo install --path crates/fdx --quiet",
     "check:fdx": "fdx --version",
     "postinstall": "node postinstall.mjs",

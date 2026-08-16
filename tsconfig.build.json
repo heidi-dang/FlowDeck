@@ -1,16 +1,16 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": "src",
-    "outDir": "dist"
+    "outDir": "dist",
+    "rootDir": "src"
   },
-  "include": [
-    "src/**/*"
-  ],
+  "include": ["src/**/*"],
   "exclude": [
     "node_modules",
     "dist",
     "tests",
+    "src/**/__tests__/**",
+    "src/**/*.test.ts",
     "src/doctor",
     "src/orchestration/persistence/adapters/dev2-compatibility-check.ts"
   ]
