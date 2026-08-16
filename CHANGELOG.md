@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.0.4] - 2026-08-16
+
+### Changed
+- Raise productive autonomous-session limits to ≥100 (writes, delegations, pipeline calls, scheduler budget)
+- Add heidi.autonomy_limits Doctor check reporting configured quotas
+
 ## [2.0.3] - 2026-08-16
 
 ### Fixed
