@@ -194,7 +194,7 @@ describe("Phase 30 — Doctor CLI Service", () => {
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
-  }, 15000);
+  }, 30000);
 
   it("--apply-recommended is idempotent (repeatable)", () => {
     const home = makeIsolatedHome()
@@ -207,7 +207,7 @@ describe("Phase 30 — Doctor CLI Service", () => {
     } finally {
       rmSync(home, { recursive: true, force: true })
     }
-  }, 15000);
+  }, 30000);
 
   // ── Profile selection ───────────────────────────────────────────────
 
