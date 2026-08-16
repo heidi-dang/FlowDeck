@@ -2,8 +2,10 @@ import { existsSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { execFileSync } from "node:child_process"
 import type { CheckResult } from "../types"
+import { resolveFlowDeckPackageDir } from "../environment"
 
 export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
+  const pkgDir = resolveFlowDeckPackageDir(directory)
   const checks: CheckResult[] = []
 
   const platformArchDir = `${process.platform}-${process.arch}`
@@ -53,7 +55,7 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
 
   // FDX TypeScript fallback check
   const fdxTsFallbackPath = join(directory, "src", "tools", "fdx-shared.ts")
-  const hasTsFallback = existsSync(fdxTsFallbackPath) || existsSync(join(directory, "dist", "index.js"))
+  const hasTsFallback = existsSync(fdxTsFallbackPath) || existsSync(join(pkgDir, "dist", "index.js"))
 
   if (fdxRuns) {
     checks.push({
