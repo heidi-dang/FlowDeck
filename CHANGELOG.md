@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.5] - 2026-08-16
+
+### Fixed
+- Heidi reasoning-only session recovery and provider replay safety
+- Windows CI stability and SQLite database connection disposal
+- OpenCode history and system hooks compatibility
+- Cross-platform temporary-path handling
+
 ## [2.0.4] - 2026-08-16
 
 ### Changed
