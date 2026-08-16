@@ -1469,3 +1469,7 @@ export {
 } from "./services/runtime-identity"
 export type { FlowDeckRuntimeIdentity } from "./services/runtime-identity"
 export type { IsolatedWorkstreamExecutor, IsolatedExecutionResult } from "./orchestration/execution/worktree-executor";
+
+export type { ExecutionWorkstream } from "./orchestration/execution/contracts";
+export type { WorkstreamBudgetHandle } from "./services/adaptive-execution-control";
+export type { AssignmentContextResult } from "./services/context-scoping";

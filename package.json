@@ -22,7 +22,7 @@
       "default": "./dist/host-contracts/index.js"
     },
     "./execution": {
-      "types": "./dist/orchestration/execution/contracts.d.ts",
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     }
