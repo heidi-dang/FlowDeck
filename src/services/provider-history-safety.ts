@@ -3,7 +3,6 @@ import { Message, Part } from "@opencode-ai/sdk"
 export type HistorySafetyIssue =
   | "EMPTY_ASSISTANT"
   | "REASONING_ONLY_ASSISTANT"
-  | "ORPHAN_TOOL_RESULT"
   | "UNRESOLVED_TOOL_CALL"
   | "DUPLICATE_TOOL_CALL_ID"
   | "EMPTY_REPLAY_CONTENT"
@@ -23,7 +22,14 @@ export function validateHistorySafety(messages: { info: Message; parts: Part[] }
     emptyTurns: 0,
   }
 
+  const seenCallIds = new Set<string>()
+
   for (const msg of messages) {
+    if (msg.parts.length === 0) {
+       diagnostics.issues.push("EMPTY_REPLAY_CONTENT")
+       diagnostics.safe = false
+    }
+
     if (msg.info.role === "assistant") {
       let hasVisibleText = false
       let hasReasoning = false
@@ -32,15 +38,31 @@ export function validateHistorySafety(messages: { info: Message; parts: Part[] }
       for (const part of msg.parts) {
         if (part.type === "text" && part.text?.trim()) hasVisibleText = true
         if (part.type === "reasoning") hasReasoning = true
-        if (part.type === "tool") hasToolCall = true
+        if (part.type === "tool") {
+          hasToolCall = true
+          const callID = (part as any).callID
+          if (callID) {
+            if (seenCallIds.has(callID)) {
+              diagnostics.issues.push("DUPLICATE_TOOL_CALL_ID")
+              diagnostics.safe = false
+            } else {
+              seenCallIds.add(callID)
+            }
+          }
+          const state = (part as any).state?.status ?? (part as any).state
+          if (state === "pending" || state === "running") {
+            diagnostics.issues.push("UNRESOLVED_TOOL_CALL")
+            diagnostics.safe = false
+          }
+        }
       }
 
       if (!hasVisibleText && !hasToolCall && hasReasoning) {
-        diagnostics.issues.push("REASONING_ONLY_ASSISTANT")
+        if (!diagnostics.issues.includes("REASONING_ONLY_ASSISTANT")) diagnostics.issues.push("REASONING_ONLY_ASSISTANT")
         diagnostics.reasoningOnlyTurns++
         diagnostics.safe = false
       } else if (!hasVisibleText && !hasToolCall && !hasReasoning) {
-        diagnostics.issues.push("EMPTY_ASSISTANT")
+        if (!diagnostics.issues.includes("EMPTY_ASSISTANT")) diagnostics.issues.push("EMPTY_ASSISTANT")
         diagnostics.emptyTurns++
         diagnostics.safe = false
       }
@@ -98,17 +120,27 @@ export function detectNoVisibleOutputCompletion(msg: { info: Message; parts: Par
     return { isMalformed: false }
   }
 
+  if ((msg.info as any).error) {
+    return { isMalformed: false }
+  }
+
   let textPartCount = 0
   let toolPartCount = 0
   let reasoningTokenCount = 0
+  let finishReason = (msg.info as any).finishReason ?? (msg.info as any).finish_reason
 
   for (const part of msg.parts) {
     if (part.type === "text" && part.text?.trim()) textPartCount++
     if (part.type === "tool") toolPartCount++
     if (part.type === "reasoning") reasoningTokenCount += part.text?.length ?? 1
+    if (part.type === "step-finish" && (part as any).reason) finishReason = (part as any).reason
   }
 
-  const isMalformed = textPartCount === 0 && toolPartCount === 0 && reasoningTokenCount > 0
+  if (!finishReason) {
+    finishReason = "stop"
+  }
+
+  const isMalformed = textPartCount === 0 && toolPartCount === 0 && reasoningTokenCount > 0 && finishReason === "stop"
 
   if (isMalformed) {
     return {
@@ -119,7 +151,9 @@ export function detectNoVisibleOutputCompletion(msg: { info: Message; parts: Par
         reasoningTokenCount,
         textPartCount,
         toolPartCount,
-        finishReason: "stop"
+        finishReason,
+        provider: (msg.info as any).providerID ?? (msg.info as any).provider,
+        model: (msg.info as any).modelID ?? (msg.info as any).model,
       }
     }
   }

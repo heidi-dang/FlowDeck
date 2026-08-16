@@ -70,3 +70,58 @@ describe("detectNoVisibleOutputCompletion", () => {
     expect(res.isMalformed).toBe(false)
   })
 })
+
+  it("detects EMPTY_ASSISTANT", () => {
+    const messages = [
+      {
+        info: { id: "2", role: "assistant", sessionID: "s1" } as Message,
+        parts: [{ type: "text", text: "" }] as Part[]
+      }
+    ]
+    const diag = validateHistorySafety(messages)
+    expect(diag.safe).toBe(false)
+    expect(diag.issues).toContain("EMPTY_ASSISTANT")
+  })
+
+  it("detects EMPTY_REPLAY_CONTENT", () => {
+    const messages = [
+      {
+        info: { id: "2", role: "assistant", sessionID: "s1" } as Message,
+        parts: [] as Part[]
+      }
+    ]
+    const diag = validateHistorySafety(messages)
+    expect(diag.safe).toBe(false)
+    expect(diag.issues).toContain("EMPTY_REPLAY_CONTENT")
+    // Also gets EMPTY_ASSISTANT because it has no visible text
+    expect(diag.issues).toContain("EMPTY_ASSISTANT")
+  })
+
+  it("detects DUPLICATE_TOOL_CALL_ID", () => {
+    const messages = [
+      {
+        info: { id: "2", role: "assistant", sessionID: "s1" } as Message,
+        parts: [
+          { type: "tool", callID: "dup-123", state: "completed" },
+          { type: "tool", callID: "dup-123", state: "completed" }
+        ] as any
+      }
+    ]
+    const diag = validateHistorySafety(messages)
+    expect(diag.safe).toBe(false)
+    expect(diag.issues).toContain("DUPLICATE_TOOL_CALL_ID")
+  })
+
+  it("detects UNRESOLVED_TOOL_CALL", () => {
+    const messages = [
+      {
+        info: { id: "2", role: "assistant", sessionID: "s1" } as Message,
+        parts: [
+          { type: "tool", callID: "t-1", state: "pending" }
+        ] as any
+      }
+    ]
+    const diag = validateHistorySafety(messages)
+    expect(diag.safe).toBe(false)
+    expect(diag.issues).toContain("UNRESOLVED_TOOL_CALL")
+  })

@@ -102,7 +102,7 @@ import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
 import { TokenBudgetRuntime } from "./services/token-budget-runtime"
 import { getArtifactStore } from "./services/artifact-store"
 import { buildAssignmentContext, externalizeToolOutput, compactConversationContext } from "./services/context-scoping"
-import { validateHistorySafety, sanitizeReasoningOnlyHistory } from "./services/provider-history-safety"
+import { validateHistorySafety, sanitizeReasoningOnlyHistory, detectNoVisibleOutputCompletion } from "./services/provider-history-safety"
 import { initializeDatabase } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
@@ -123,6 +123,7 @@ const sessionRetries = new Map<string, number>()
 const sessionDelegations = new Map<string, number>()
 const sessionBlocks = new Map<string, number>()
 const sessionRecoverableBlocks = new Map<string, RecoverableFlowDeckBlockError>()
+const sessionReasoningRecoveryRegistry = new Map<string, Set<string>>()
 const _sessionAutoContinuations = new Map<string, Map<string, number>>()
 const sessionWarnings = new Map<string, number>()
 const sessionStartTimes = new Map<string, number>()
@@ -613,11 +614,21 @@ const plugin: Plugin = async ({ directory, client }) => {
     },
 
     "experimental.chat.messages.transform": async (input, output) => {
-      // 1. Sanitize reasoning-only turns to prevent provider replay HTTP 400 INVALID_ARGUMENT
+      const sessionID = output.messages[0]?.info?.sessionID ?? (input as any)?.sessionID ?? ""
+      const sampleMsg = output.messages.find(m => m.info?.sessionID) ?? output.messages[0]
+      const realSessionID = sampleMsg?.info?.sessionID || sessionID || "default-session"
+      const realParentID = (sampleMsg?.info as any)?.parentID
+
+      // 1. Validate history before sanitation
+      const rawDiag = validateHistorySafety(output.messages)
+      if (!rawDiag.safe) {
+        await client.app.log({ body: { service: "flowdeck", level: "warn", message: `[provider-history] Raw history contains safety issues: ${rawDiag.issues.join(", ")}`, extra: { sessionID: realSessionID } } }).catch(() => {})
+      }
+
+      // 2. Sanitize reasoning-only turns to prevent provider replay HTTP 400 INVALID_ARGUMENT
       output.messages = sanitizeReasoningOnlyHistory(output.messages)
 
-      // 2. Compact intermediate conversation turns when token footprint exceeds threshold
-      // We need to map OpenCode Message[] into our ConversationTurn format
+      // 3. Compact intermediate conversation turns when token footprint exceeds threshold
       const turnMappedMessages = output.messages.map(m => {
         let content = ""
         for (const p of m.parts) {
@@ -626,7 +637,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         return {
           role: m.info.role,
           content: content.trim() || "[hidden or structured content]",
-          originalMessage: m // Keep reference to put it back
+          originalMessage: m
         }
       })
       
@@ -634,34 +645,48 @@ const plugin: Plugin = async ({ directory, client }) => {
       const compactResult = compactConversationContext({
         messages: turnMappedMessages,
         thresholdTokens: tokenConfig.compactThresholdTokens,
-        sessionID: "unknown",
+        sessionID: realSessionID,
       })
       
       if (compactResult.compacted) {
-        // We need to map back to { info: Message, parts: Part[] }
         const newMessages: typeof output.messages = []
-        for (const m of compactResult.messages) {
+        for (let i = 0; i < compactResult.messages.length; i++) {
+          const m = compactResult.messages[i]
           if (m.originalMessage) {
             newMessages.push(m.originalMessage)
           } else {
-            // It's a synthetic compaction summary turn
             const role = m.role === "user" || m.role === "assistant" ? m.role : "user"
-            const msgId = `compact-${Date.now()}`
+            const msgId = `msg_compact_${realSessionID}_${i}`
             newMessages.push({
               info: {
                 id: msgId,
-                sessionID: "unknown",
+                sessionID: realSessionID,
                 role: role,
                 time: { created: Date.now() },
-                mode: "chat",
-                parentID: "unknown",
+                mode: (sampleMsg?.info as any)?.mode ?? "chat",
+                parentID: realParentID,
                 tools: []
-              } as unknown as any,
-              parts: [{ type: "text", text: m.content, id: `p-${msgId}`, sessionID: "unknown", messageID: msgId }]
+              } as any,
+              parts: [{ type: "text", text: m.content, id: `p-${msgId}`, sessionID: realSessionID, messageID: msgId }] as any
             })
           }
         }
         output.messages = newMessages
+      }
+
+      // 4. Validate history after sanitation & compaction
+      const finalDiag = validateHistorySafety(output.messages)
+      if (!finalDiag.safe) {
+        await client.app.log({ body: { service: "flowdeck", level: "warn", message: `[provider-history] Sanitized history contains safety issues: ${finalDiag.issues.join(", ")}`, extra: { sessionID: realSessionID } } }).catch(() => {})
+        // Record diagnostic
+        appendAuditEvent(directory, {
+          kind: "guard.warn",
+          session_id: realSessionID,
+          agent: "system",
+          decision: "warn",
+          reason: "Unsafe history detected for provider replay",
+          details: { issues: finalDiag.issues },
+        })
       }
     },
 
@@ -1133,7 +1158,7 @@ const plugin: Plugin = async ({ directory, client }) => {
     event: async ({ event }: { event: any }) => {
       const type: string = event?.type ?? ""
       const info = event?.properties?.info ?? event?.properties?.session ?? event?.info
-      const eventSessionID = info?.id ?? event?.properties?.sessionID ?? event?.properties?.info?.id ?? event?.sessionID ?? ""
+      const eventSessionID = info?.sessionID ?? event?.properties?.sessionID ?? event?.properties?.info?.sessionID ?? info?.id ?? event?.sessionID ?? ""
       const parentID = info?.parentID ?? event?.properties?.parentID ?? undefined
       const sessionAgent = info?.agent ?? event?.properties?.agent ?? undefined
 
@@ -1236,6 +1261,73 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
 
       const sessionID = eventSessionID
+
+      // ── Reasoning-only completion detection & auto-continuation ─────────
+      if ((type === "message.updated" || type === "session.idle") && eventSessionID) {
+        const msgInfo = info as any
+        if (msgInfo?.id && msgInfo.role === "assistant") {
+          let parts = event?.properties?.parts ?? event?.parts
+          if (!parts && (client as any)?.session?.messages) {
+             try {
+               const hist = await (client as any).session.messages({ path: { id: eventSessionID } })
+               const msgs = Array.isArray(hist) ? hist : (hist?.data ?? hist?.messages ?? [])
+               const latest = msgs.find((m: any) => m?.info?.id === msgInfo.id)
+               if (latest?.parts) parts = latest.parts
+             } catch {}
+          }
+
+          if (parts) {
+            const { isMalformed, diagnostics } = detectNoVisibleOutputCompletion({ info: msgInfo, parts })
+            if (isMalformed && diagnostics) {
+              const sig = `${diagnostics.messageID ?? "latest"}:${diagnostics.provider ?? "unknown"}:${diagnostics.model ?? "unknown"}:NO_VISIBLE_ASSISTANT_OUTPUT`
+              let circuitBreaker = sessionReasoningRecoveryRegistry.get(eventSessionID)
+              if (!circuitBreaker) {
+                circuitBreaker = new Set<string>()
+                sessionReasoningRecoveryRegistry.set(eventSessionID, circuitBreaker)
+              }
+              if (circuitBreaker.has(sig)) {
+                appendAuditEvent(directory, {
+                  kind: "recovery.action",
+                  session_id: eventSessionID,
+                  agent: "system",
+                  decision: "circuit_break",
+                  reason: "Repeated reasoning-only completion signature detected; auto-continuation suppressed",
+                  details: diagnostics as unknown as Record<string, unknown>,
+                })
+                appLog(`[heidi] Reasoning-only circuit breaker fired for session ${eventSessionID}`, "warn", eventSessionID)
+              } else {
+                circuitBreaker.add(sig)
+                appendAuditEvent(directory, {
+                  kind: "recovery.action",
+                  session_id: eventSessionID,
+                  agent: "system",
+                  decision: "continue",
+                  reason: "Reasoning-only completion detected; triggering controlled auto-continuation",
+                  details: diagnostics as unknown as Record<string, unknown>,
+                })
+                appLog(`[heidi] Triggering reasoning-only auto-continuation for session ${eventSessionID}`, "warn", eventSessionID)
+                
+                const sessionApi = (client as any)?.session
+                if (sessionApi?.prompt || sessionApi?.promptAsync) {
+                  const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
+                  setTimeout(() => {
+                    promptFn({
+                      path: { id: eventSessionID },
+                      body: {
+                        parts: [{
+                          type: "text",
+                          text: "Continue the current task from the last verified execution state and provide a visible progress or completion response."
+                        }]
+                      }
+                    }).catch((err: Error) => appLog(`[heidi] Reasoning continuation failed: ${err.message}`, "error", eventSessionID))
+                  }, 50)
+                }
+              }
+            }
+          }
+        }
+      }
+
       if (type === "session.created" || type === "session.started") {
         await sessionStartHook({ directory }, appLog)
         appendAuditEvent(directory, {
@@ -1432,6 +1524,7 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionStartTimes.delete(sessionID)
   sessionFilesChanged.delete(sessionID)
   sessionCallerAgents.delete(sessionID)
+  sessionReasoningRecoveryRegistry.delete(sessionID)
   sessionRegistry.delete(sessionID)
   // ── Child session correlation cleanup ──────────────────────────
   // Remove the sessionID entry from sessionTaskCalls (used as a direct key
