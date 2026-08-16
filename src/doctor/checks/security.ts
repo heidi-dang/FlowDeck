@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "fs"
 import { join, resolve } from "path"
 import { pathToFileURL } from "url"
 import type { CheckResult } from "../types"
-import { classifyDoctorEnvironment, isRepoLikeEnvironment } from "../environment"
+import { classifyDoctorEnvironment, isRepoLikeEnvironment, resolveFlowDeckPackageDir } from "../environment"
 
 /**
  * Behavioural secret-redaction probe.
@@ -15,14 +15,15 @@ import { classifyDoctorEnvironment, isRepoLikeEnvironment } from "../environment
  * not redacted, the check fails.
  */
 async function probeSecretRedaction(directory: string): Promise<{ ok: boolean; detail: string }> {
+  const pkgDir = resolveFlowDeckPackageDir(directory)
   // Synthetic token: constructed at runtime so no real token-like literal appears in source.
   const probeInput = "leaked " + "npm_" + "a".repeat(40) + " token"
   const candidates: Array<{ name: string; url: string }> = []
   try {
-    candidates.push({ name: "dist/index.js", url: pathToFileURL(resolve(directory, "dist", "index.js")).href })
+    candidates.push({ name: "dist/index.js", url: pathToFileURL(resolve(pkgDir, "dist", "index.js")).href })
   } catch { /* ignore */ }
   try {
-    candidates.push({ name: "src/lib/secret-redaction.ts", url: pathToFileURL(resolve(directory, "src", "lib", "secret-redaction.ts")).href })
+    candidates.push({ name: "src/lib/secret-redaction.ts", url: pathToFileURL(resolve(pkgDir, "src", "lib", "secret-redaction.ts")).href })
   } catch { /* ignore */ }
 
   for (const candidate of candidates) {

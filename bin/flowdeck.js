@@ -444,7 +444,7 @@ Options:
   }
 
   try {
-    const rawReport = await runNewDoctor(PKG_ROOT, {
+    const rawReport = await runNewDoctor(process.cwd(), {
       strict: isStrict,
       verbose: isVerbose,
       applyRecommended: applyFix,

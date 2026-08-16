@@ -2,13 +2,15 @@ import { existsSync, readFileSync, readdirSync } from "fs"
 import { join, resolve } from "path"
 import { homedir } from "os"
 import type { CheckResult } from "../types"
+import { resolveFlowDeckPackageDir } from "../environment"
 import { getExecutingRuntimeIdentity, readRuntimeSelfReport, isRuntimeRecordFresh } from "../../services/runtime-identity"
 
 export async function runPluginChecks(directory: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
 
   // Plugin identity (package.json)
-  const pkgPath = join(directory, "package.json")
+  const pkgDir = resolveFlowDeckPackageDir(directory)
+  const pkgPath = join(pkgDir, "package.json")
   if (existsSync(pkgPath)) {
     try {
       const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
@@ -65,7 +67,7 @@ export async function runPluginChecks(directory: string): Promise<CheckResult[]>
   }
 
   // Dist bundle
-  const distPath = join(directory, "dist", "index.js")
+  const distPath = join(pkgDir, "dist", "index.js")
   checks.push({
     id: "plugin.bundle",
     title: "Plugin Bundle",

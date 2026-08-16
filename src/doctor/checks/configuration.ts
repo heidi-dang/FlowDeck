@@ -15,7 +15,7 @@ export async function runConfigurationChecks(directory: string): Promise<CheckRe
   for (const file of requiredFiles) {
     const fullPath = join(directory, file)
     const exists = existsSync(fullPath)
-    const isRepoFile = file === "tsconfig.json" || file === "uninstall.sh"
+    const isRepoFile = file === "tsconfig.json" || file === "install.sh" || file === "uninstall.sh"
     if (!repoOnly && isRepoFile) {
       checks.push({
         id: `config.${file}`,

@@ -6,17 +6,10 @@
  * penalised for missing repository-only artefacts (tsconfig.json,
  * uninstall.sh, .gitignore), and a source checkout must still be validated
  * against them.
- *
- * Environments:
- *   source-checkout — git repository with a source tree (development)
- *   local-repo      — repository layout without .git (local copy/link)
- *   npm             — registry install under node_modules
- *   packed          — npm tarball layout (dist/, bin/, install.sh, no repo markers)
- *   unknown         — cannot be classified
  */
 
-import { existsSync } from "fs"
-import { join } from "path"
+import { existsSync, readFileSync } from "fs"
+import { join, resolve } from "path"
 
 export type DoctorEnvironment =
   | "source-checkout"
@@ -26,34 +19,49 @@ export type DoctorEnvironment =
   | "unknown"
 
 /**
+ * Resolve the authoritative FlowDeck package directory for a given directory or target.
+ */
+export function resolveFlowDeckPackageDir(directory: string): string {
+  // 1. If directory is itself the FlowDeck package (has package.json with name @heidi-dang/flowdeck)
+  const directPkg = join(directory, "package.json")
+  if (existsSync(directPkg)) {
+    try {
+      const parsed = JSON.parse(readFileSync(directPkg, "utf-8"))
+      if (parsed.name === "@heidi-dang/flowdeck") {
+        return directory
+      }
+    } catch { /* ignore */ }
+  }
+
+  // 2. Check if installed in node_modules under directory
+  const installedPkg = join(directory, "node_modules", "@heidi-dang", "flowdeck")
+  if (existsSync(join(installedPkg, "package.json"))) {
+    return installedPkg
+  }
+
+  // 3. Fallback to executing module location or directory
+  return directory
+}
+
+/**
  * Classify the environment of a FlowDeck installation directory.
- *
- * Order matters: git-based checkouts take precedence, then node_modules
- * installs (which are always registry installs), then tarball-layout
- * detection by the absence of repository-only markers.
  */
 export function classifyDoctorEnvironment(directory: string): DoctorEnvironment {
-  const hasGit = existsSync(join(directory, ".git"))
-  const hasDist = existsSync(join(directory, "dist", "index.js"))
-  const hasSrc = existsSync(join(directory, "src"))
-  const hasTsconfig = existsSync(join(directory, "tsconfig.json"))
-  const hasUninstall = existsSync(join(directory, "uninstall.sh"))
-  const inNodeModules = directory.includes("node_modules")
+  const pkgDir = resolveFlowDeckPackageDir(directory)
+  const hasGit = existsSync(join(pkgDir, ".git"))
+  const hasDist = existsSync(join(pkgDir, "dist", "index.js"))
+  const hasSrc = existsSync(join(pkgDir, "src"))
+  const hasTsconfig = existsSync(join(pkgDir, "tsconfig.json"))
+  const hasUninstall = existsSync(join(pkgDir, "uninstall.sh"))
+  const inNodeModules = pkgDir.includes("node_modules")
 
   if (hasGit && (hasSrc || hasDist)) return "source-checkout"
   if (inNodeModules && !hasGit) return "npm"
-  // Packed tarballs ship dist/bin/install.sh but never tsconfig.json or uninstall.sh
   if (!hasGit && hasDist && !hasTsconfig && !hasUninstall) return "packed"
   if (!hasGit && hasSrc && hasTsconfig) return "local-repo"
   return "unknown"
 }
 
-/**
- * Whether an environment owns repository-only artefacts.
- *
- * "unknown" is treated as repo-like so the Doctor fails closed: it never
- * silently skips checks for a layout it cannot classify.
- */
 export function isRepoLikeEnvironment(env: DoctorEnvironment): boolean {
-  return env === "source-checkout" || env === "local-repo" || env === "unknown"
+  return env === "source-checkout" || env === "local-repo"
 }

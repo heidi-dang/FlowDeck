@@ -14,6 +14,7 @@
 import { resolve, dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { execFileSync } from "node:child_process"
+import { existsSync } from "node:fs"
 import { resolveDoctorExitCode as canonicalResolveDoctorExitCode } from "../src/doctor/exit-code.mjs"
 
 // Resolve bun binary path for reliable subprocess detection
@@ -94,7 +95,9 @@ function hasBun() {
 
 function runViaBun(directory, options = {}) {
   // Use bun to import and execute the TypeScript doctor module inline
-  const doctorPath = join(PKG_ROOT, "src/doctor/doctor.ts")
+  const srcPath = join(PKG_ROOT, "src/doctor/doctor.ts")
+  const distPath = join(PKG_ROOT, "dist/index.js")
+  const doctorPath = existsSync(srcPath) ? srcPath : distPath
   const opts = {
     directory: directory || PKG_ROOT,
     options: {
@@ -110,30 +113,28 @@ function runViaBun(directory, options = {}) {
   const script = [
     `import { runDoctor } from ${JSON.stringify(doctorPath)};`,
     `const r = await runDoctor(${JSON.stringify(opts.directory)}, ${JSON.stringify(opts.options)});`,
-    `process.stdout.write(JSON.stringify(r));`,
+    `process.stdout.write("__FLOWDECK_DOCTOR_JSON_START__" + JSON.stringify(r) + "__FLOWDECK_DOCTOR_JSON_END__");`,
   ].join("\n")
 
   try {
     const output = execFileSync(bunBin(), ["-e", script], {
-      cwd: PKG_ROOT,
+      cwd: directory || PKG_ROOT,
       encoding: "utf-8",
       timeout: 60000,
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
     })
-    return JSON.parse(output.trim())
-  } catch (e) {
-    const stderr = e.stderr || ""
-    const stdout = e.stdout || ""
-    // Try to parse JSON from stdout even on error
-    try {
-      return JSON.parse(stdout.trim())
-    } catch {
-      if (stderr) {
-        throw new Error(stderr.trim().split("\n").pop() || e.message)
-      }
-      throw e
+    const match = output.match(/__FLOWDECK_DOCTOR_JSON_START__(.*)__FLOWDECK_DOCTOR_JSON_END__/s);
+    if (match) return JSON.parse(match[1]);
+    return JSON.parse(output.trim())  } catch (e) {
+    const stderr = String(e.stderr || "");
+    const stdout = String(e.stdout || "");
+    const match = stdout.match(/__FLOWDECK_DOCTOR_JSON_START__(.*)__FLOWDECK_DOCTOR_JSON_END__/s);
+    if (match) {
+      try { return JSON.parse(match[1]); } catch {}
     }
+    const errLines = stderr.trim().split("\n").filter(l => l.trim() && !l.includes("Bun v"));
+    throw new Error(errLines.join("\n") || e.message);
   }
 }
 

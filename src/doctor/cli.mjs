@@ -131,7 +131,7 @@ function runViaBunInline(options, entryPath) {
   // Ensure bun binary path is available to subprocesses
   const execEnv = { ...process.env, FLOWDECK_BUN_BIN: bunBin }
   const opts = {
-    directory: PKG_ROOT,
+    directory: options?.directory || process.cwd(),
     options: {
       json: false,
       strict: !!options.strict,
@@ -147,7 +147,8 @@ function runViaBunInline(options, entryPath) {
   const script = [
     `import * as doctorMod from ${JSON.stringify(doctorPath)};`,
     `const runFn = doctorMod.runDoctor || doctorMod.runDoctorChecks;`,
-    `const r = await runFn(${JSON.stringify(PKG_ROOT)}, ${JSON.stringify(opts.options)});`,
+    `const targetDir = options?.directory || process.cwd();
+    const r = await runFn(targetDir, opts.options);`,
     `process.stdout.write("__FLOWDECK_DOCTOR_JSON_START__" + JSON.stringify(r) + "__FLOWDECK_DOCTOR_JSON_END__");`,
   ].join("\n")
 
@@ -204,7 +205,8 @@ async function runDoctorEngine(options) {
       const mod = await import(distUrl)
       const runFn = mod.runDoctor || mod.runDoctorChecks
       if (typeof runFn === "function") {
-        return await runFn(PKG_ROOT, options)
+        const targetDir = options?.directory || process.cwd();
+        return await runFn(targetDir, options)
       }
     } catch {
       // Fall through to bun inline if ESM import fails

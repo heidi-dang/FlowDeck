@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { existsSync, mkdirSync, rmSync, writeFileSync, utimesSync } from "fs"
 import { dirname, join } from "path"
-import { homedir, tmpdir } from "os"
+import { tmpdir } from "os"
 import type { ToolContext } from "@opencode-ai/plugin"
 import { fdxValidateTool } from "@/tools/fdx-validate"
 import { topicTaskPath, topicAffectPath, topicPlanPath } from "@/tools/planning-state-lib"
