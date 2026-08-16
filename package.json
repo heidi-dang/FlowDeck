@@ -74,6 +74,7 @@
     "doctor": "node -e \"import('./dist/index.js').catch(() => { console.log('Build required first: bun run build'); process.exit(1); })\"",
     "test:persistence": "bun src/orchestration/persistence/__tests__/run-tests.mjs && bun src/orchestration/persistence/__tests__/phase1-2-tests.mjs && bun src/orchestration/persistence/__tests__/phase1-3-tests.mjs && bun src/orchestration/persistence/__tests__/phase1-5-retry.mjs",
     "test:persistence:node": "node src/orchestration/persistence/__tests__/run-tests.mjs",
+    "test:portable-core": "node --experimental-strip-types tests/portable-core-node.mjs",
     "check:schema-generated": "node scripts/check-schema-generated.mjs",
     "generate:schema": "node scripts/generate-schema.mjs",
     "typecheck:dev2-compat": "echo \"Dev 2 compatibility check requires types from dev2/orchestration-contract-domain (SHA ffff758). Run with: tsc -p tsconfig.dev2-compat.json\" && tsc -p tsconfig.dev2-compat.json --noEmit 2>&1 | head -5",
