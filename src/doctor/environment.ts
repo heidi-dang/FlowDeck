@@ -63,5 +63,5 @@ export function classifyDoctorEnvironment(directory: string): DoctorEnvironment 
 }
 
 export function isRepoLikeEnvironment(env: DoctorEnvironment): boolean {
-  return env === "source-checkout" || env === "local-repo"
+  return env === "source-checkout" || env === "local-repo" || env === "unknown"
 }
