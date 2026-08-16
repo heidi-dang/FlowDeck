@@ -13,9 +13,10 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
-import { existsSync, readFileSync, readdirSync } from "fs"
+import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync } from "fs"
 import { basename, dirname, join } from "path"
 import { fileURLToPath } from "url"
+import { homedir, tmpdir } from "os"
 
 import {
   buildSelectionDiagnostics,
@@ -102,7 +103,16 @@ import { normalizeTaskInvocation } from "./services/task-invocation-adapter"
 import { TokenBudgetRuntime } from "./services/token-budget-runtime"
 import { getArtifactStore } from "./services/artifact-store"
 import { buildAssignmentContext, externalizeToolOutput, compactConversationContext } from "./services/context-scoping"
-import { validateHistorySafety, sanitizeReasoningOnlyHistory, detectNoVisibleOutputCompletion } from "./services/provider-history-safety"
+import { validateHistorySafety, sanitizeReasoningOnlyHistory, detectNoVisibleOutputCompletion, assertProviderReplayShape } from "./services/provider-history-safety"
+import {
+  REPLAY_CONTINUATION_PROMPT,
+  MAX_AUTO_CONTINUATIONS_PER_SESSION,
+  classifyProviderError,
+  buildContinuationSignature,
+  decideStage1Continuation,
+  decideStage2Continuation,
+  type SessionRecoveryState,
+} from "./services/reasoning-recovery"
 import { initializeDatabase, closeAllConnections } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
@@ -125,7 +135,8 @@ const sessionBlocks = new Map<string, number>()
 const sessionRecoverableBlocks = new Map<string, RecoverableFlowDeckBlockError>()
 const sessionReasoningRecoveryRegistry = new Map<string, Set<string>>()
 const sessionAutoContinuationTimers = new Map<string, ReturnType<typeof setTimeout>>()
-const _sessionAutoContinuations = new Map<string, Map<string, number>>()
+const sessionRecoveryState = new Map<string, SessionRecoveryState>()
+const sessionContinuationCount = new Map<string, number>()
 const sessionWarnings = new Map<string, number>()
 const sessionStartTimes = new Map<string, number>()
 const sessionFilesChanged = new Map<string, Set<string>>()
@@ -281,6 +292,43 @@ function loadCommands(): Record<string, { description?: string; template: string
 
 const specialistAgentSet = new Set(getAllAgentIds().filter(id => isSpecialistAgent(id)))
 
+/**
+ * Deterministic writable orchestration database selection.
+ *
+ * The project-root location (<directory>/.flowdeck/flowdeck.db) is preferred.
+ * When that directory cannot be created/opened for writing — e.g. the global
+ * instance boots with directory="/" where no write is permitted — fall back to
+ * the established writable FlowDeck state location under the user home, then to
+ * the system temp directory. The chosen path is always observable via the log;
+ * real database errors are never hidden.
+ */
+function resolveOrchestrationDbPath(
+  directory: string,
+  log: (msg: string, level?: "debug" | "info" | "warn" | "error") => Promise<void>,
+): string {
+  const candidates = [
+    join(directory, ".flowdeck", "flowdeck.db"),
+    join(homedir(), ".flowdeck", "flowdeck.db"),
+    join(tmpdir(), "flowdeck", "flowdeck.db"),
+  ]
+  for (const candidate of candidates) {
+    const dir = dirname(candidate)
+    try {
+      mkdirSync(dir, { recursive: true })
+      const probe = join(dir, `.flowdeck-probe-${process.pid}`)
+      writeFileSync(probe, "writable")
+      rmSync(probe, { force: true })
+    } catch {
+      void log(`[orchestration] database directory not writable: ${dir}`, "warn")
+      continue
+    }
+    return candidate
+  }
+  // All candidates unwritable: return the project path and let initializeDatabase
+  // raise the real underlying error — do not hide it.
+  return candidates[0]
+}
+
 const plugin: Plugin = async ({ directory, client }) => {
   // ─── Structured logging ──────────────────────────────────────────────
   let logSequence = 0
@@ -298,6 +346,22 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
 
   setActiveProjectDir(directory)
+  /** Bounded reasoning-only auto-continuation: exactly one prompt per scheduled stage, 50ms debounce. */
+  const scheduleReasoningContinuation = (targetSessionID: string): void => {
+    const sessionApi = (client as any)?.session
+    if (!sessionApi?.prompt && !sessionApi?.promptAsync) return
+    const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
+    const timer = setTimeout(() => {
+      sessionAutoContinuationTimers.delete(targetSessionID)
+      promptFn({
+        path: { id: targetSessionID },
+        body: {
+          parts: [{ type: "text", text: REPLAY_CONTINUATION_PROMPT }],
+        },
+      }).catch((err: Error) => appLog(`[heidi] Reasoning continuation prompt rejected: ${err.message}`, "error", targetSessionID))
+    }, 50)
+    sessionAutoContinuationTimers.set(targetSessionID, timer)
+  }
   recordRuntimeSelfReport(getExecutingRuntimeIdentity(import.meta.url), directory)
   let fdxWorkspaceIndex: FdxWorkspaceIndex | undefined
   let fdxDaemon: FdxDaemon | undefined
@@ -435,7 +499,7 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   // ─── Production Orchestration Runtime Initialization ───────────────
   try {
-    const dbPath = join(directory, ".flowdeck", "flowdeck.db")
+    const dbPath = resolveOrchestrationDbPath(directory, appLog)
     const { db } = initializeDatabase({ path: dbPath })
     activeOrchestrationRuntime = createProductionOrchestrationRuntime(db, { repositoryPath: directory, worktreeRoot: join(directory, ".flowdeck", "worktrees"), routingMode: () => flowdeckConfig.routing?.enabled ? (flowdeckConfig.routing.mode ?? "shadow") : "off", budgetState: () => tokenBudgetRuntime.getRunSnapshot(), fdxHealth: () => fdxWorkspaceIndex ? { available: true, ...fdxWorkspaceIndex.health(), daemon: Boolean(fdxDaemon) } : { available: false, daemon: false } })
     tokenBudgetRuntime.setMetrics(activeOrchestrationRuntime.metrics)
@@ -626,11 +690,16 @@ const plugin: Plugin = async ({ directory, client }) => {
         await client.app.log({ body: { service: "flowdeck", level: "warn", message: `[provider-history] Raw history contains safety issues: ${rawDiag.issues.join(", ")}`, extra: { sessionID: realSessionID } } }).catch(() => {})
       }
 
-      // 2. Sanitize reasoning-only turns to prevent provider replay HTTP 400 INVALID_ARGUMENT
-      output.messages = sanitizeReasoningOnlyHistory(output.messages)
+      // 2. Sanitize reasoning-only turns to prevent provider replay HTTP 400 INVALID_ARGUMENT.
+      //    IMPORTANT: opencode passes the SAME messages array reference into this
+      //    handler and into its provider serialization (toModelMessagesEffect(C)).
+      //    Reassigning output.messages only changes the wrapper property and is
+      //    silently ignored by the provider path. We therefore build the sanitized
+      //    array and then MUTATE the shared array in place (clear + refill).
+      const sanitized = sanitizeReasoningOnlyHistory(output.messages)
 
       // 3. Compact intermediate conversation turns when token footprint exceeds threshold
-      const turnMappedMessages = output.messages.map(m => {
+      const turnMappedMessages = sanitized.map(m => {
         let content = ""
         for (const p of m.parts) {
           if (p.type === "text" && p.text) content += p.text + "\n"
@@ -649,6 +718,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         sessionID: realSessionID,
       })
       
+      let finalMessages: typeof output.messages = sanitized
       if (compactResult.compacted) {
         const newMessages: typeof output.messages = []
         for (let i = 0; i < compactResult.messages.length; i++) {
@@ -672,20 +742,30 @@ const plugin: Plugin = async ({ directory, client }) => {
             })
           }
         }
-        output.messages = newMessages
+        finalMessages = newMessages
       }
 
-      // 4. Validate history after sanitation & compaction
-      const finalDiag = validateHistorySafety(output.messages)
+      // 4. Mutate the SHARED array in place so opencode's provider serialization
+      //    (toModelMessagesEffect, reading the same reference) sees the sanitized
+      //    history. Do not reassign output.messages.
+      output.messages.length = 0
+      for (const m of finalMessages) output.messages.push(m)
+
+      // 4. Assert the provider-replay shape actually handed to the provider.
+      //    This is the closest safe FlowDeck boundary to the provider request:
+      //    after sanitation the history must contain no reasoning parts, no
+      //    empty/error assistant turns, no empty content, no unresolved or
+      //    duplicate tool calls.
+      const finalDiag = assertProviderReplayShape(output.messages)
       if (!finalDiag.safe) {
-        await client.app.log({ body: { service: "flowdeck", level: "warn", message: `[provider-history] Sanitized history contains safety issues: ${finalDiag.issues.join(", ")}`, extra: { sessionID: realSessionID } } }).catch(() => {})
+        await client.app.log({ body: { service: "flowdeck", level: "warn", message: `[provider-history] Sanitized history still unsafe for provider replay: ${finalDiag.issues.join(", ")}`, extra: { sessionID: realSessionID } } }).catch(() => {})
         // Record diagnostic
         appendAuditEvent(directory, {
           kind: "guard.warn",
           session_id: realSessionID,
           agent: "system",
           decision: "warn",
-          reason: "Unsafe history detected for provider replay",
+          reason: "Unsafe provider replay shape after sanitation",
           details: { issues: finalDiag.issues },
         })
       }
@@ -1263,7 +1343,12 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       const sessionID = eventSessionID
 
-      // ── Reasoning-only completion detection & auto-continuation ─────────
+      // ── Reasoning-only completion detection, bounded auto-continuation ───
+      // Exactly-once semantics per completion signature: duplicate message.updated /
+      // session.idle deliveries of the SAME completion are circuit-broken; a
+      // failed stage-1 continuation may promote to one bounded stage-2 recovery;
+      // after that recovery is exhausted the session gets a structured, visible
+      // failure record instead of silently idling.
       if ((type === "message.updated" || type === "session.idle") && eventSessionID) {
         const msgInfo = info as any
         if (msgInfo?.id && msgInfo.role === "assistant") {
@@ -1277,16 +1362,113 @@ const plugin: Plugin = async ({ directory, client }) => {
              } catch {}
           }
 
-          if (parts) {
-            const { isMalformed, diagnostics } = detectNoVisibleOutputCompletion({ info: msgInfo, parts })
-            if (isMalformed && diagnostics) {
-              const sig = `${diagnostics.messageID ?? "latest"}:${diagnostics.provider ?? "unknown"}:${diagnostics.model ?? "unknown"}:NO_VISIBLE_ASSISTANT_OUTPUT`
+          // A session that produced visible output or tool execution after
+          // recovery is healthy again — clear the recovery state.
+          if (parts && sessionRecoveryState.has(eventSessionID) && !msgInfo.error) {
+            const hasOutput = parts.some((p: any) => (p.type === "text" && p.text?.trim()) || p.type === "tool")
+            if (hasOutput) sessionRecoveryState.delete(eventSessionID)
+          }
+
+          // ── Failed continuation → bounded stage-2 recovery ───────────────
+          if (msgInfo.error && type === "message.updated") {
+            const st = sessionRecoveryState.get(eventSessionID)
+            const errText = msgInfo.error instanceof Error ? msgInfo.error.message : String(msgInfo.error ?? "")
+            if (st) {
+              const errorClass = classifyProviderError(msgInfo.error)
               let circuitBreaker = sessionReasoningRecoveryRegistry.get(eventSessionID)
               if (!circuitBreaker) {
                 circuitBreaker = new Set<string>()
                 sessionReasoningRecoveryRegistry.set(eventSessionID, circuitBreaker)
               }
-              if (circuitBreaker.has(sig)) {
+              const sig2 = buildContinuationSignature({
+                sessionID: eventSessionID,
+                messageID: st.malformedMessageId,
+                provider: st.provider ?? "unknown",
+                model: st.model ?? "unknown",
+                stage: 2,
+              })
+              const count = sessionContinuationCount.get(eventSessionID) ?? 0
+              const decision = decideStage2Continuation({
+                sessionID: eventSessionID,
+                state: st,
+                errorClass,
+                signature: sig2,
+                breaker: circuitBreaker,
+                continuationCount: count,
+              })
+              if (decision.action === "schedule" && decision.stage) {
+                sessionRecoveryState.set(eventSessionID, { ...st, stage: decision.stage })
+                sessionContinuationCount.set(eventSessionID, count + 1)
+                appendAuditEvent(directory, {
+                  kind: "recovery.action",
+                  session_id: eventSessionID,
+                  agent: "system",
+                  decision: "recover_stage2",
+                  reason: "Stage-1 continuation failed with provider replay error; scheduling bounded stage-2 recovery",
+                  details: { messageID: msgInfo.id, errorClass, error: errText.slice(0, 500) },
+                })
+                appLog(`[heidi] Stage-1 reasoning continuation failed (${errorClass}); scheduling bounded stage-2 recovery for session ${eventSessionID}`, "warn", eventSessionID)
+                scheduleReasoningContinuation(eventSessionID)
+              } else if (decision.action === "circuit_break") {
+                appendAuditEvent(directory, {
+                  kind: "recovery.action",
+                  session_id: eventSessionID,
+                  agent: "system",
+                  decision: "circuit_break",
+                  reason: "Duplicate stage-2 recovery event suppressed",
+                  details: { messageID: msgInfo.id },
+                })
+              } else if (decision.action === "cap_reached") {
+                appendAuditEvent(directory, {
+                  kind: "recovery.action",
+                  session_id: eventSessionID,
+                  agent: "system",
+                  decision: "cap_reached",
+                  reason: "Automatic continuation budget exhausted; no further recovery",
+                  details: { messageID: msgInfo.id, max: MAX_AUTO_CONTINUATIONS_PER_SESSION },
+                })
+              } else if (errorClass === "cancelled") {
+                sessionRecoveryState.delete(eventSessionID)
+                appendAuditEvent(directory, {
+                  kind: "recovery.action",
+                  session_id: eventSessionID,
+                  agent: "system",
+                  decision: "cancelled",
+                  reason: "Continuation cancelled; recovery stopped",
+                  details: { messageID: msgInfo.id },
+                })
+                appLog(`[heidi] Reasoning continuation cancelled for session ${eventSessionID}; no further recovery`, "info", eventSessionID)
+              } else if (st.stage === 2) {
+                sessionRecoveryState.delete(eventSessionID)
+                appendAuditEvent(directory, {
+                  kind: "recovery.action",
+                  session_id: eventSessionID,
+                  agent: "system",
+                  decision: "exhausted",
+                  reason: "Bounded stage-2 recovery failed; no further auto-continuation",
+                  details: { messageID: msgInfo.id, errorClass, error: errText.slice(0, 500) },
+                })
+                appLog(`[heidi] Reasoning recovery exhausted for session ${eventSessionID}: ${errText.slice(0, 300)} — no further auto-continuation; session remains usable`, "warn", eventSessionID)
+              } else {
+                sessionRecoveryState.delete(eventSessionID)
+                appLog(`[heidi] Stage-1 reasoning continuation failed with non-replay error (${errorClass}); recovery stopped for session ${eventSessionID}`, "info", eventSessionID)
+              }
+            }
+          } else if (parts) {
+            const { isMalformed, diagnostics } = detectNoVisibleOutputCompletion({ info: msgInfo, parts })
+            if (isMalformed && diagnostics) {
+              const provider = diagnostics.provider ?? "unknown"
+              const model = diagnostics.model ?? "unknown"
+              const messageId = diagnostics.messageID ?? "latest"
+              const sig = buildContinuationSignature({ sessionID: eventSessionID, messageID: messageId, provider, model, stage: 1 })
+              let circuitBreaker = sessionReasoningRecoveryRegistry.get(eventSessionID)
+              if (!circuitBreaker) {
+                circuitBreaker = new Set<string>()
+                sessionReasoningRecoveryRegistry.set(eventSessionID, circuitBreaker)
+              }
+              const count = sessionContinuationCount.get(eventSessionID) ?? 0
+              const decision = decideStage1Continuation({ sessionID: eventSessionID, signature: sig, breaker: circuitBreaker, continuationCount: count })
+              if (decision.action === "circuit_break") {
                 appendAuditEvent(directory, {
                   kind: "recovery.action",
                   session_id: eventSessionID,
@@ -1296,8 +1478,25 @@ const plugin: Plugin = async ({ directory, client }) => {
                   details: diagnostics as unknown as Record<string, unknown>,
                 })
                 appLog(`[heidi] Reasoning-only circuit breaker fired for session ${eventSessionID}`, "warn", eventSessionID)
-              } else {
-                circuitBreaker.add(sig)
+              } else if (decision.action === "cap_reached") {
+                appendAuditEvent(directory, {
+                  kind: "recovery.action",
+                  session_id: eventSessionID,
+                  agent: "system",
+                  decision: "cap_reached",
+                  reason: "Automatic continuation budget exhausted for session",
+                  details: { ...(diagnostics as unknown as Record<string, unknown>), max: MAX_AUTO_CONTINUATIONS_PER_SESSION },
+                })
+                appLog(`[heidi] Automatic continuation budget exhausted for session ${eventSessionID} (max ${MAX_AUTO_CONTINUATIONS_PER_SESSION})`, "warn", eventSessionID)
+              } else if (decision.action === "schedule" && decision.stage) {
+                sessionRecoveryState.set(eventSessionID, {
+                  malformedMessageId: messageId,
+                  stage: decision.stage,
+                  provider,
+                  model,
+                  scheduledAt: Date.now(),
+                })
+                sessionContinuationCount.set(eventSessionID, count + 1)
                 appendAuditEvent(directory, {
                   kind: "recovery.action",
                   session_id: eventSessionID,
@@ -1307,24 +1506,7 @@ const plugin: Plugin = async ({ directory, client }) => {
                   details: diagnostics as unknown as Record<string, unknown>,
                 })
                 appLog(`[heidi] Triggering reasoning-only auto-continuation for session ${eventSessionID}`, "warn", eventSessionID)
-                
-                const sessionApi = (client as any)?.session
-                if (sessionApi?.prompt || sessionApi?.promptAsync) {
-                  const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
-                  const timer = setTimeout(() => {
-                    sessionAutoContinuationTimers.delete(eventSessionID)
-                    promptFn({
-                      path: { id: eventSessionID },
-                      body: {
-                        parts: [{
-                          type: "text",
-                          text: "Continue the current task from the last verified execution state and provide a visible progress or completion response."
-                        }]
-                      }
-                    }).catch((err: Error) => appLog(`[heidi] Reasoning continuation failed: ${err.message}`, "error", eventSessionID))
-                  }, 50)
-                  sessionAutoContinuationTimers.set(eventSessionID, timer)
-                }
+                scheduleReasoningContinuation(eventSessionID)
               }
             }
           }
@@ -1530,6 +1712,8 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionFilesChanged.delete(sessionID)
   sessionCallerAgents.delete(sessionID)
   sessionReasoningRecoveryRegistry.delete(sessionID)
+  sessionRecoveryState.delete(sessionID)
+  sessionContinuationCount.delete(sessionID)
   const timer = sessionAutoContinuationTimers.get(sessionID)
   if (timer) clearTimeout(timer)
   sessionAutoContinuationTimers.delete(sessionID)

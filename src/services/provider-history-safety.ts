@@ -6,6 +6,8 @@ export type HistorySafetyIssue =
   | "UNRESOLVED_TOOL_CALL"
   | "DUPLICATE_TOOL_CALL_ID"
   | "EMPTY_REPLAY_CONTENT"
+  | "REASONING_PART_IN_REPLAY"
+  | "ERROR_MESSAGE_IN_REPLAY"
 
 export interface ProviderHistoryDiagnostics {
   safe: boolean
@@ -13,6 +15,12 @@ export interface ProviderHistoryDiagnostics {
   reasoningOnlyTurns: number
   emptyTurns: number
 }
+
+/**
+ * Neutral recovery marker used to replace provider-incompatible assistant turns.
+ * This is a fixed constant — it never contains hidden reasoning content.
+ */
+export const REPLAY_PLACEHOLDER = "[Previous assistant turn completed without visible output.]"
 
 export function validateHistorySafety(messages: { info: Message; parts: Part[] }[]): ProviderHistoryDiagnostics {
   const diagnostics: ProviderHistoryDiagnostics = {
@@ -25,9 +33,17 @@ export function validateHistorySafety(messages: { info: Message; parts: Part[] }
   const seenCallIds = new Set<string>()
 
   for (const msg of messages) {
+    if (!msg || !msg.info) continue
     if (msg.parts.length === 0) {
        diagnostics.issues.push("EMPTY_REPLAY_CONTENT")
        diagnostics.safe = false
+    }
+
+    if ((msg.info as any).error) {
+      if (!diagnostics.issues.includes("ERROR_MESSAGE_IN_REPLAY")) {
+        diagnostics.issues.push("ERROR_MESSAGE_IN_REPLAY")
+        diagnostics.safe = false
+      }
     }
 
     if (msg.info.role === "assistant") {
@@ -37,7 +53,15 @@ export function validateHistorySafety(messages: { info: Message; parts: Part[] }
 
       for (const part of msg.parts) {
         if (part.type === "text" && part.text?.trim()) hasVisibleText = true
-        if (part.type === "reasoning") hasReasoning = true
+        if (part.type === "reasoning") {
+          hasReasoning = true
+          // Reasoning parts are output-only for reasoning-capable providers
+          // (e.g. Gemini) and are rejected when replayed in input history.
+          if (!diagnostics.issues.includes("REASONING_PART_IN_REPLAY")) {
+            diagnostics.issues.push("REASONING_PART_IN_REPLAY")
+            diagnostics.safe = false
+          }
+        }
         if (part.type === "tool") {
           hasToolCall = true
           const callID = (part as any).callID
@@ -72,32 +96,117 @@ export function validateHistorySafety(messages: { info: Message; parts: Part[] }
   return diagnostics
 }
 
+/**
+ * Transform model-visible replay history into a provider-safe shape.
+ *
+ * The replayed history is the `output.messages` copy handed to the provider by
+ * the `experimental.chat.messages.transform` hook. It is NOT the persisted
+ * user-facing transcript — assistant reasoning content is stripped from the
+ * replayable model history only, and reasoning text is never copied into
+ * visible placeholders.
+ *
+ * Invariants after sanitation (enforced here by construction and asserted by
+ * `assertProviderReplayShape` / validateHistorySafety):
+ *   - no `reasoning` part survives in any replayed assistant message
+ *   - no assistant turn replays with empty content (no visible text, no tool)
+ *   - no message with zero parts is replayed
+ *   - no message carrying a provider error is replayed
+ *   - no unresolved (pending/running) tool call is replayed
+ *   - no duplicate tool-call identity is replayed
+ */
 export function sanitizeReasoningOnlyHistory(messages: { info: Message; parts: Part[] }[]): { info: Message; parts: Part[] }[] {
-  return messages.map(msg => {
-    if (msg.info.role !== "assistant") return msg
+  return sanitizeReplayHistory(messages)
+}
 
-    let hasVisibleText = false
-    let hasReasoning = false
-    let hasToolCall = false
+export function sanitizeReplayHistory(messages: { info: Message; parts: Part[] }[]): { info: Message; parts: Part[] }[] {
+  const seenCallIds = new Set<string>()
+  const out: { info: Message; parts: Part[] }[] = []
+  for (const msg of messages) {
+    const replay = sanitizeReplayMessage(msg, seenCallIds)
+    if (replay) out.push(replay)
+  }
+  return out
+}
 
-    for (const part of msg.parts) {
-      if (part.type === "text" && part.text?.trim()) hasVisibleText = true
-      if (part.type === "reasoning") hasReasoning = true
-      if (part.type === "tool") hasToolCall = true
-    }
+function sanitizeReplayMessage(
+  msg: { info: Message; parts: Part[] },
+  seenCallIds: Set<string>,
+): { info: Message; parts: Part[] } | null {
+  if (!msg || !msg.info) return null
 
-    if (!hasVisibleText && !hasToolCall && hasReasoning) {
-      return {
-        info: msg.info,
-        parts: [
-          ...msg.parts,
-          { type: "text", text: "[Previous assistant turn completed without visible output.]" } as Part
-        ]
-      }
-    }
-
+  if (msg.info.role !== "assistant") {
+    // User/system turns: drop if there is nothing to replay, or the turn itself
+    // carried a provider error (failed turns must not be replayed).
+    if (msg.parts.length === 0) return null
+    if ((msg.info as any).error) return null
     return msg
-  })
+  }
+
+  // A failed assistant message is not a valid replay turn (its request errored
+  // out; the provider rejects error-bearing history entries).
+  if ((msg.info as any).error) return null
+
+  // Nothing at all to replay.
+  if (msg.parts.length === 0) return null
+
+  // 1. Reasoning parts are incompatible with input-history replay for
+  //    reasoning-capable providers (Gemini rejects reasoningContent in input).
+  //    They are removed from the replayable model history. Reasoning text is
+  //    NEVER copied into visible placeholder content.
+  const partsNoReasoning = msg.parts.filter(part => part.type !== "reasoning")
+
+  let hasVisibleText = false
+  let hasToolCall = false
+  let hasPendingTool = false
+  const cleaned: Part[] = []
+
+  for (const part of partsNoReasoning) {
+    if (part.type === "text") {
+      if (part.text?.trim()) {
+        hasVisibleText = true
+        cleaned.push(part)
+      }
+      // Empty text parts are dropped: empty content blocks can be rejected.
+    } else if (part.type === "tool") {
+      const p = part as any
+      hasToolCall = true
+      const state = typeof p.state === "string" ? p.state : p.state?.status
+      if (state === "pending" || state === "running") hasPendingTool = true
+      if (p.callID) {
+        if (seenCallIds.has(p.callID)) continue // duplicate tool identity: keep first only
+        seenCallIds.add(p.callID)
+      }
+      cleaned.push(part)
+    } else {
+      // Control/non-content parts (step-start, step-finish, snapshot, file, ...)
+      // are skipped by provider normalization and replay harmlessly. Keep them.
+      cleaned.push(part)
+    }
+  }
+
+  // 2. A turn whose only content is an unresolved tool call cannot be replayed
+  //    as tool state. Replace it with a neutral recovery marker.
+  if (hasPendingTool) {
+    return { info: msg.info, parts: [{ type: "text", text: REPLAY_PLACEHOLDER } as Part] }
+  }
+
+  // 3. A reasoning-only or fully empty assistant turn (no visible text, no tool
+  //    call) must not replay as an empty/reasoning-only assistant message.
+  if (!hasVisibleText && !hasToolCall) {
+    return { info: msg.info, parts: [{ type: "text", text: REPLAY_PLACEHOLDER } as Part] }
+  }
+
+  // 4. Normal assistant turn: text and/or completed tool calls. Provider-safe.
+  return { info: msg.info, parts: cleaned }
+}
+
+/**
+ * Assert the actual replayable history shape handed to the provider after
+ * FlowDeck sanitation. This is the closest safe FlowDeck boundary to the
+ * provider request; it must report safe:true once sanitation has run.
+ */
+export function assertProviderReplayShape(messages: { info: Message; parts: Part[] }[]): ProviderHistoryDiagnostics {
+  return validateHistorySafety(messages)
 }
 
 export interface MalformedCompletionDiagnostics {

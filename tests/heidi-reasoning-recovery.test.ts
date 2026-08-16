@@ -153,3 +153,76 @@ describe("Heidi Reasoning Recovery Runtime Integration", () => {
     expect(prompts.length).toBe(1) // Still 1
   })
 })
+
+describe("Heidi Reasoning Recovery — bounded stage-2 on provider 400", () => {
+  let tmpDir2: string
+  let pluginInstance2: any
+  beforeEach(() => {
+    tmpDir2 = mkdtempSync(join(tmpdir(), "fd-test-reasoning2-"))
+    writeFileSync(join(tmpDir2, ".flowdeck.json"), JSON.stringify({ governance: { mode: "strict" } }))
+  })
+  afterEach(async () => {
+    if (pluginInstance2?.dispose) { try { await pluginInstance2.dispose() } catch {} }
+    rmSync(tmpDir2, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  })
+
+  it("promotes a failed stage-1 continuation (400 INVALID_ARGUMENT) to exactly one bounded stage-2 recovery and stops", async () => {
+    let prompts: any[] = []
+    const mockClient = {
+      app: { log: async () => {} },
+      session: {
+        promptAsync: async (args: any) => { prompts.push(args) },
+      },
+    }
+    pluginInstance2 = (await (flowDeckPlugin as any).server({ directory: tmpDir2, client: mockClient as any })) as any
+    const sessionID = "ses_reasoning_stage2"
+    await pluginInstance2["event"]({ event: { type: "session.created", properties: { info: { id: sessionID, agent: "heidi" } } } })
+
+    const msgParts = composeReasoningOnly([
+      { type: "reasoning", text: "thinking..." },
+      { type: "step-finish", reason: "stop" },
+    ])
+    const msgInfo = { id: "msg_malformed_state2", role: "assistant", sessionID, providerID: "heidi", modelID: "heidi-antigravity" }
+
+    // 1. Reasoning-only completion -> stage-1 continuation (fires once even on duplicate event delivery)
+    await pluginInstance2["event"]({ event: { type: "message.updated", properties: { info: msgInfo, parts: msgParts } } })
+    await pluginInstance2["event"]({ event: { type: "session.idle", properties: { info: msgInfo, parts: msgParts } } })
+    await new Promise(r => setTimeout(r, 120))
+    expect(prompts.length).toBe(1)
+
+    // 2. Stage-1 continuation fails with 400 INVALID_ARGUMENT (message carries error)
+    const failedInfo = { ...msgInfo, id: "msg_failed_state2", error: new Error("AI_APICallError: [antigravity/gemini-3.6-flash-high] [400]: {\"status\": \"INVALID_ARGUMENT\"}") }
+    await pluginInstance2["event"]({ event: { type: "message.updated", properties: { info: failedInfo } } })
+    await new Promise(r => setTimeout(r, 120))
+    expect(prompts.length).toBe(2)
+
+    // 3. Stage-2 also fails with 400 -> recovery exhausted, no further continuation
+    const failedInfo2 = { ...msgInfo, id: "msg_failed2_state2", error: new Error("AI_APICallError: [antigravity/gemini-3.6-flash-high] [400]: {\"status\": \"INVALID_ARGUMENT\"}") }
+    await pluginInstance2["event"]({ event: { type: "message.updated", properties: { info: failedInfo2 } } })
+    await new Promise(r => setTimeout(r, 120))
+    expect(prompts.length).toBe(2)
+  })
+
+  it("does NOT retry when a continuation fails with a non-replay error (no stage-2 promotion)", async () => {
+    let prompts: any[] = []
+    const mockClient = {
+      app: { log: async () => {} },
+      session: { promptAsync: async (args: any) => { prompts.push(args) } },
+    }
+    pluginInstance2 = (await (flowDeckPlugin as any).server({ directory: tmpDir2, client: mockClient as any })) as any
+    const sessionID = "ses_reasoning_no_stage2"
+    await pluginInstance2["event"]({ event: { type: "session.created", properties: { info: { id: sessionID, agent: "heidi" } } } })
+    const msgInfo = { id: "msg_a", role: "assistant", sessionID, providerID: "heidi", modelID: "heidi-antigravity" }
+    await pluginInstance2["event"]({ event: { type: "message.updated", properties: { info: msgInfo, parts: composeReasoningOnly([{ type: "reasoning", text: "t" }, { type: "step-finish", reason: "stop" }]) } } })
+    await new Promise(r => setTimeout(r, 100))
+    expect(prompts.length).toBe(1)
+    const failedInfo = { ...msgInfo, id: "msg_b", error: new Error("Rate limit exceeded") }
+    await pluginInstance2["event"]({ event: { type: "message.updated", properties: { info: failedInfo } } })
+    await new Promise(r => setTimeout(r, 100))
+    expect(prompts.length).toBe(1)
+  })
+})
+
+function composeReasoningOnly(parts: any[]): any[] {
+  return [{ type: "step-start" }, ...parts]
+}
