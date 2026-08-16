@@ -76,6 +76,7 @@ function strictClose(db: Database, role: string): Error | null {
     db.close(true);
     return null;
   } catch (error) {
+    try { db.close(false); } catch {} 
     return normalizeError(error, `sqlite-strict-close-${role}`);
   }
 }
