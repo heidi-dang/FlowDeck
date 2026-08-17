@@ -1,6 +1,42 @@
 import { describe, it, expect } from "bun:test";
-import { updateWatchdogState, getWatchdogState, clearWatchdogState, clearAllWatchdogStates } from "../src/services/heidi-watchdog";
+import { updateWatchdogState, getWatchdogState, clearWatchdogState } from "../src/services/heidi-watchdog";
 import flowDeckPlugin from "../src/index";
+import type { PluginInput } from "@opencode-ai/plugin";
+import type { Project } from "@opencode-ai/sdk";
+
+function createMockPluginInput(): PluginInput {
+  return {
+    directory: process.cwd(),
+    client: { app: { log: async () => {} } } as any, // Deeply nested methods can use test doubles
+    project: {
+      id: "test-project",
+      name: "test-project",
+      time: {
+        created: Date.now(),
+        updated: Date.now(),
+      },
+      directory: process.cwd(),
+      worktree: "main",
+    } as Project,
+    worktree: "main",
+    serverUrl: new URL("http://localhost:8000"),
+    experimental_workspace: {
+      register: (_type: string, _adapter: any) => {}
+    },
+    $: Object.assign(
+      async () => ({ stdout: Buffer.from(""), stderr: Buffer.from(""), exitCode: 0 } as any),
+      {
+        braces: () => [],
+        escape: (s: string) => s,
+        env: function(this: any) { return this },
+        cwd: function(this: any) { return this },
+        nothrow: function(this: any) { return this },
+        throws: function(this: any) { return this }
+      }
+    ) as any
+  };
+}
+
 
 describe("Heidi Watchdog", () => {
   it("creates and updates watchdog state", () => {
@@ -23,8 +59,9 @@ describe("Heidi Watchdog", () => {
   });
 
   it("clears watchdog state on plugin dispose", async () => {
-    const mockClient = { app: { log: async () => {} } };
-    const pluginInstance = await flowDeckPlugin.server({ directory: process.cwd(), client: mockClient as any });
+    
+    const mockInput = createMockPluginInput();
+    const pluginInstance = await flowDeckPlugin.server(mockInput);
     
     updateWatchdogState("session-disposed", { isPendingTool: true });
     expect(getWatchdogState("session-disposed")).toBeDefined();
