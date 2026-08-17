@@ -113,6 +113,7 @@ import {
   decideStage2Continuation,
   type SessionRecoveryState,
 } from "./services/reasoning-recovery"
+import { updateWatchdogState, clearWatchdogState, getAllWatchdogStates } from "./services/heidi-watchdog"
 import { initializeDatabase, closeAllConnections } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
@@ -139,6 +140,7 @@ const sessionRecoveryState = new Map<string, SessionRecoveryState>()
 const sessionContinuationCount = new Map<string, number>()
 const sessionWarnings = new Map<string, number>()
 const sessionStartTimes = new Map<string, number>()
+const sessionActiveTools = new Map<string, number>()
 const sessionFilesChanged = new Map<string, Set<string>>()
 interface RuntimeSessionMetadata {
   sessionID: string
@@ -346,11 +348,13 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
 
   setActiveProjectDir(directory)
+  let handleEvent: (args: { event: any }) => Promise<void> = async () => {}
   /** Bounded reasoning-only auto-continuation: exactly one prompt per scheduled stage, 50ms debounce. */
   const scheduleReasoningContinuation = (targetSessionID: string): void => {
     const sessionApi = (client as any)?.session
     if (!sessionApi?.prompt && !sessionApi?.promptAsync) return
     const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
+    updateWatchdogState(targetSessionID, { isPendingContinuation: true })
     const timer = setTimeout(() => {
       sessionAutoContinuationTimers.delete(targetSessionID)
       promptFn({
@@ -358,7 +362,13 @@ const plugin: Plugin = async ({ directory, client }) => {
         body: {
           parts: [{ type: "text", text: REPLAY_CONTINUATION_PROMPT }],
         },
-      }).catch((err: Error) => appLog(`[heidi] Reasoning continuation prompt rejected: ${err.message}`, "error", targetSessionID))
+      }).then(() => updateWatchdogState(targetSessionID, { isPendingContinuation: false }))
+        .catch((err: Error) => {
+          appLog(`[heidi] Reasoning continuation prompt rejected: ${err.message}`, "error", targetSessionID)
+          updateWatchdogState(targetSessionID, { isPendingContinuation: false })
+          client.app.log({ body: { service: "flowdeck", level: "error", message: `Reasoning continuation rejected: ${err.message}`, extra: { sessionID: targetSessionID } } }).catch(()=>{})
+          handleEvent({ event: { type: "session.error", properties: { sessionID: targetSessionID, error: err.message, info: { id: targetSessionID, role: "assistant", error: err.message } } } })
+        })
     }, 50)
     sessionAutoContinuationTimers.set(targetSessionID, timer)
   }
@@ -429,6 +439,33 @@ const plugin: Plugin = async ({ directory, client }) => {
   let betterHarnessSseManager: SseManager | null = null
   let _betterHarnessCleanup: (() => void) | null = null
   let schedulerTimer: ReturnType<typeof setInterval> | undefined
+
+  let _watchdogTimer: ReturnType<typeof setInterval> | undefined
+
+  _watchdogTimer = setInterval(() => {
+    const now = Date.now()
+    const WATCHDOG_TIMEOUT_MS = 60000 // 60 seconds
+    const states = getAllWatchdogStates()
+    for (const state of states) {
+      if (!state.hasUnresolvedTask || state.recoveryExhausted) continue
+      if (state.isPendingProvider || state.isPendingTool || state.isPendingChild || state.isPendingContinuation || state.isPendingUser) continue
+      if (now - state.lastProgressAt > WATCHDOG_TIMEOUT_MS) {
+        appLog(`[watchdog] Stalled session detected: ${state.sessionID}. No activity for ${WATCHDOG_TIMEOUT_MS}ms. Attempting semantic recovery.`, "warn", state.sessionID).catch(()=>{})
+        if (state.recoveryCount < MAX_AUTO_CONTINUATIONS_PER_SESSION) {
+           updateWatchdogState(state.sessionID, { recoveryCount: state.recoveryCount + 1 })
+           const sessionApi = (client as any)?.session
+           if (sessionApi?.prompt || sessionApi?.promptAsync) {
+             const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
+             promptFn({ path: { id: state.sessionID }, body: { parts: [{ type: "text", text: "The session appears stalled without completing the task. Please continue your work or explain what you are waiting for." }] } }).catch(() => {})
+           }
+        } else {
+           appLog(`[watchdog] Stalled session ${state.sessionID} exhausted watchdog recovery budget.`, "error", state.sessionID).catch(()=>{})
+           updateWatchdogState(state.sessionID, { recoveryExhausted: true })
+        }
+      }
+    }
+  }, 10000)
+
 
   const projectRegistry = new ProjectRegistry()
   const bhConfig: BetterHarnessConfig | undefined = flowdeckConfig.betterHarness
@@ -827,8 +864,9 @@ const plugin: Plugin = async ({ directory, client }) => {
     },
 
     "tool.execute.before": async (toolInput: any, toolOutput: any) => {
+      let isToolTracked = false;
+      const sessionID = toolInput.sessionID ?? "";
       const toolName = toolInput.tool ?? toolInput.name ?? "unknown"
-      const sessionID = toolInput.sessionID ?? ""
       const callID = toolInput.callID ?? ""
       const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
       const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
@@ -844,7 +882,12 @@ const plugin: Plugin = async ({ directory, client }) => {
             decision: "block",
             reason: "TASK_CALLER_UNRESOLVED: Unable to resolve calling agent identity for Task execution",
           })
-          throw new Error("TASK_CALLER_UNRESOLVED: Unable to resolve calling agent identity for Task execution")
+          if (isToolTracked && sessionID) {
+          const c = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1);
+          sessionActiveTools.set(sessionID, c);
+          updateWatchdogState(sessionID, { isPendingTool: c > 0 });
+        }
+        throw new Error("TASK_CALLER_UNRESOLVED: Unable to resolve calling agent identity for Task execution")
         }
       }
 
@@ -853,6 +896,10 @@ const plugin: Plugin = async ({ directory, client }) => {
       // ── 0. Tool call budget tracking ─────────────────────────────────
       if (sessionID) {
         const callCount = (sessionToolCalls.get(sessionID) ?? 0) + 1
+        const activeCount = (sessionActiveTools.get(sessionID) ?? 0) + 1
+        sessionActiveTools.set(sessionID, activeCount)
+        updateWatchdogState(sessionID, { isPendingTool: activeCount > 0 })
+        isToolTracked = true;
         sessionToolCalls.set(sessionID, callCount)
         if (callCount > maxToolCalls) {
           const msg = `Tool call budget exceeded: ${callCount} > ${maxToolCalls} for session ${sessionID}`
@@ -864,7 +911,12 @@ const plugin: Plugin = async ({ directory, client }) => {
             message: msg,
           })
           if (govMode === "strict") {
-            throw new Error(msg)
+            if (isToolTracked && sessionID) {
+          const c = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1);
+          sessionActiveTools.set(sessionID, c);
+          updateWatchdogState(sessionID, { isPendingTool: c > 0 });
+        }
+        throw new Error(msg)
           }
           appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
         }
@@ -889,6 +941,11 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       if (governanceResult.action === "block") {
         if (sessionID) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
+        if (isToolTracked && sessionID) {
+          const c = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1);
+          sessionActiveTools.set(sessionID, c);
+          updateWatchdogState(sessionID, { isPendingTool: c > 0 });
+        }
         throw new Error(governanceResult.reason ?? `Tool ${toolName} blocked by governance policy`)
       }
       if (governanceResult.action === "warn") {
@@ -958,7 +1015,12 @@ const plugin: Plugin = async ({ directory, client }) => {
               message: depthResult.reason ?? "Delegation not allowed",
             })
             if (sessionID && !isTerminal) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
-            throw new Error(`${errorCode}: ${depthResult.reason ?? "Delegation blocked"}`)
+            if (isToolTracked && sessionID) {
+          const c = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1);
+          sessionActiveTools.set(sessionID, c);
+          updateWatchdogState(sessionID, { isPendingTool: c > 0 });
+        }
+        throw new Error(`${errorCode}: ${depthResult.reason ?? "Delegation blocked"}`)
           }
 
           // Calculate next delegation count & validate budget BEFORE registering call or emitting delegation.started
@@ -987,7 +1049,12 @@ const plugin: Plugin = async ({ directory, client }) => {
               message: msg,
             })
             if (govMode === "strict") {
-              throw new Error(`DELEGATION_BUDGET_EXCEEDED: ${msg}`)
+              if (isToolTracked && sessionID) {
+          const c = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1);
+          sessionActiveTools.set(sessionID, c);
+          updateWatchdogState(sessionID, { isPendingTool: c > 0 });
+        }
+        throw new Error(`DELEGATION_BUDGET_EXCEEDED: ${msg}`)
             }
             appLog(`[ADVISORY] ${msg}`, "warn", sessionID)
           }
@@ -1048,7 +1115,12 @@ const plugin: Plugin = async ({ directory, client }) => {
             decision: "block",
             reason: decision.reasons.join("; "),
           })
-          throw new Error(`Supervisor blocked: ${decision.reasons.join("; ")}`)
+          if (isToolTracked && sessionID) {
+          const c = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1);
+          sessionActiveTools.set(sessionID, c);
+          updateWatchdogState(sessionID, { isPendingTool: c > 0 });
+        }
+        throw new Error(`Supervisor blocked: ${decision.reasons.join("; ")}`)
         }
         appendAuditEvent(directory, {
           kind: "supervisor.approve",
@@ -1074,6 +1146,11 @@ const plugin: Plugin = async ({ directory, client }) => {
         sessionID,
       )
       if (loop.action === "block") {
+        if (isToolTracked && sessionID) {
+          const c = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1);
+          sessionActiveTools.set(sessionID, c);
+          updateWatchdogState(sessionID, { isPendingTool: c > 0 });
+        }
         throw new RecoverableFlowDeckBlockError({
           subsystem: "loop_detector",
           code: "LOOP_GUARD_REPEATED_ACTION",
@@ -1094,6 +1171,11 @@ const plugin: Plugin = async ({ directory, client }) => {
         if (isRecoverableBlockError(err) && sessionID) {
           sessionRecoverableBlocks.set(sessionID, err)
         }
+        if (isToolTracked && sessionID) {
+          const c = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1);
+          sessionActiveTools.set(sessionID, c);
+          updateWatchdogState(sessionID, { isPendingTool: c > 0 });
+        }
         throw err
       }
     },
@@ -1105,6 +1187,11 @@ const plugin: Plugin = async ({ directory, client }) => {
       const agent = sessionCallerAgents.get(sessionID) ?? toolInput.agent ?? "unknown"
       const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
       appLog(`[tool] done tool=${toolName} session=${sessionID}`)
+      if (sessionID) {
+        const activeCount = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1)
+        sessionActiveTools.set(sessionID, activeCount)
+        updateWatchdogState(sessionID, { isPendingTool: activeCount > 0 })
+      }
 
       // ── Tool Output Externalisation ───────────────────────────────────
       // If the tool output is oversized, archive in ArtifactStore and return reference marker
@@ -1236,7 +1323,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
     },
 
-    event: async ({ event }: { event: any }) => {
+    event: handleEvent = async ({ event }: { event: any }) => {
       const type: string = event?.type ?? ""
       const info = event?.properties?.info ?? event?.properties?.session ?? event?.info
       const eventSessionID = info?.sessionID ?? event?.properties?.sessionID ?? event?.properties?.info?.sessionID ?? info?.id ?? event?.sessionID ?? ""
@@ -1255,6 +1342,7 @@ const plugin: Plugin = async ({ directory, client }) => {
             depth: calculatedDepth,
           }
           sessionRegistry.set(eventSessionID, meta)
+          updateWatchdogState(eventSessionID, { hasUnresolvedTask: true })
         } else {
           if (parentID && !meta.parentID) {
             meta.parentID = parentID
@@ -1342,6 +1430,9 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
 
       const sessionID = eventSessionID
+      if (type === "session.started" || type === "message.updated" || type === "chat.message") {
+        updateWatchdogState(sessionID, { lastProgressAt: Date.now() })
+      }
 
       // ── Reasoning-only completion detection, bounded auto-continuation ───
       // Exactly-once semantics per completion signature: duplicate message.updated /
@@ -1536,6 +1627,7 @@ const plugin: Plugin = async ({ directory, client }) => {
               decision: "complete",
               reason: "Session completed",
             })
+            updateWatchdogState(sessionID, { hasUnresolvedTask: false })
 
             if (sessionID) {
               const toolCalls = sessionToolCalls.get(sessionID) ?? 0
@@ -1586,6 +1678,7 @@ const plugin: Plugin = async ({ directory, client }) => {
             }
           } else if (type === "session.error") {
             const errorMessage = event?.properties?.error ?? event?.error ?? "Session errored"
+            updateWatchdogState(sessionID, { hasUnresolvedTask: false })
 
             // ── Child session failure → delegation.failed ──────────────
             // When OpenCode's Task execution fails, tool.execute.after is NOT called.
@@ -1694,6 +1787,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         fdxDaemon = undefined
       }
       configureFdxNextRuntime()
+      if (_watchdogTimer) clearInterval(_watchdogTimer)
       if (schedulerTimer) clearInterval(schedulerTimer)
       // Close SQLite connections so Windows file locks are released
       try { closeAllConnections() } catch { /* best-effort */ }
@@ -1710,6 +1804,8 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionWarnings.delete(sessionID)
   sessionStartTimes.delete(sessionID)
   sessionFilesChanged.delete(sessionID)
+  sessionActiveTools.delete(sessionID)
+  clearWatchdogState(sessionID)
   sessionCallerAgents.delete(sessionID)
   sessionReasoningRecoveryRegistry.delete(sessionID)
   sessionRecoveryState.delete(sessionID)

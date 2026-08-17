@@ -249,7 +249,9 @@ export function detectNoVisibleOutputCompletion(msg: { info: Message; parts: Par
     finishReason = "stop"
   }
 
-  const isMalformed = textPartCount === 0 && toolPartCount === 0 && reasoningTokenCount > 0 && finishReason === "stop"
+  const isEmptyNoOutput = textPartCount === 0 && toolPartCount === 0;
+  const isStopOrLength = finishReason === "stop" || finishReason === "length" || finishReason === "max_tokens";
+  const isMalformed = isEmptyNoOutput && isStopOrLength;
 
   if (isMalformed) {
     return {

@@ -112,7 +112,7 @@ jobs:
           fi
           grep -q "package/crates/fdx/Cargo.toml" /tmp/tarball-files.txt || { echo "FAIL: Cargo.toml missing"; exit 1; }
           grep -q "package/crates/fdx/src/" /tmp/tarball-files.txt || { echo "FAIL: crates/fdx/src missing"; exit 1; }
-          tar xzf "$PACKAGE" -O package/package.json | node -e "process.stdin.on('data',d=>{const p=JSON.parse(d);console.assert(p.name==='@heidi-dang/flowdeck','Wrong: '+p.name);console.log('PASS: '+p.name+' v'+p.version)})"
+          tar xzf "$PACKAGE" -O package/package.json | node -e "const d=require('fs').readFileSync(0,'utf-8');const p=JSON.parse(d);console.assert(p.name==='@heidi-dang/flowdeck','Wrong: '+p.name);console.log('PASS: '+p.name+' v'+p.version)"
           echo "PASS: tarball contents verified clean"
           rm -f "$PACKAGE" /tmp/tarball-files.txt
 
