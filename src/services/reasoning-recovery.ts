@@ -18,7 +18,8 @@
 export const REPLAY_CONTINUATION_PROMPT =
   "Continue the current task from the last verified execution state and provide a visible progress or completion response."
 
-export const MAX_AUTO_CONTINUATIONS_PER_SESSION = 3
+export const MAX_AUTO_CONTINUATIONS_PER_INCIDENT = 3
+export const MAX_AUTO_CONTINUATIONS_PER_SESSION = 50
 
 export type RecoveryStage = 1 | 2
 
@@ -81,9 +82,10 @@ export function decideStage1Continuation(args: {
   sessionID: string
   signature: string
   breaker: Set<string>
-  continuationCount: number
+  incidentCount: number
+  sessionCount: number
 }): ContinuationDecision {
-  if (args.continuationCount >= MAX_AUTO_CONTINUATIONS_PER_SESSION) {
+  if (args.incidentCount >= MAX_AUTO_CONTINUATIONS_PER_INCIDENT || args.sessionCount >= MAX_AUTO_CONTINUATIONS_PER_SESSION) {
     return { action: "cap_reached" }
   }
   if (args.breaker.has(args.signature)) {
@@ -104,12 +106,13 @@ export function decideStage2Continuation(args: {
   errorClass: ProviderErrorClass
   signature: string
   breaker: Set<string>
-  continuationCount: number
+  incidentCount: number
+  sessionCount: number
 }): ContinuationDecision {
   if (args.errorClass === "cancelled") return { action: "none" }
   if (args.errorClass !== "replay") return { action: "none" }
   if (!args.state || args.state.stage !== 1) return { action: "none" }
-  if (args.continuationCount >= MAX_AUTO_CONTINUATIONS_PER_SESSION) {
+  if (args.incidentCount >= MAX_AUTO_CONTINUATIONS_PER_INCIDENT || args.sessionCount >= MAX_AUTO_CONTINUATIONS_PER_SESSION) {
     return { action: "cap_reached" }
   }
   if (args.breaker.has(args.signature)) {

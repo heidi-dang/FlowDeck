@@ -106,6 +106,7 @@ import { buildAssignmentContext, externalizeToolOutput, compactConversationConte
 import { validateHistorySafety, sanitizeReasoningOnlyHistory, detectNoVisibleOutputCompletion, assertProviderReplayShape } from "./services/provider-history-safety"
 import {
   REPLAY_CONTINUATION_PROMPT,
+  MAX_AUTO_CONTINUATIONS_PER_INCIDENT,
   MAX_AUTO_CONTINUATIONS_PER_SESSION,
   classifyProviderError,
   buildContinuationSignature,
@@ -113,7 +114,7 @@ import {
   decideStage2Continuation,
   type SessionRecoveryState,
 } from "./services/reasoning-recovery"
-import { updateWatchdogState, clearWatchdogState, getAllWatchdogStates, clearAllWatchdogStates } from "./services/heidi-watchdog"
+import { updateWatchdogState, getWatchdogState, clearWatchdogState, getAllWatchdogStates, clearAllWatchdogStates } from "./services/heidi-watchdog"
 import { initializeDatabase, closeAllConnections } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
@@ -470,7 +471,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       if (state.isPendingProvider || state.isPendingTool || state.isPendingChild || state.isPendingContinuation || state.isPendingUser) continue
       if (now - state.lastProgressAt > WATCHDOG_TIMEOUT_MS) {
         appLog(`[watchdog] Stalled session detected: ${state.sessionID}. No activity for ${WATCHDOG_TIMEOUT_MS}ms. Attempting semantic recovery.`, "warn", state.sessionID).catch(()=>{})
-        if (state.recoveryCount < MAX_AUTO_CONTINUATIONS_PER_SESSION) {
+        if (state.recoveryCount < MAX_AUTO_CONTINUATIONS_PER_INCIDENT) {
            updateWatchdogState(state.sessionID, { recoveryCount: state.recoveryCount + 1 })
            const sessionApi = (client as any)?.session
            if (sessionApi?.prompt || sessionApi?.promptAsync) {
@@ -487,7 +488,8 @@ const plugin: Plugin = async ({ directory, client }) => {
            }
         } else {
            appLog(`[watchdog] Stalled session ${state.sessionID} exhausted watchdog recovery budget.`, "error", state.sessionID).catch(()=>{})
-           updateWatchdogState(state.sessionID, { recoveryExhausted: true })
+           updateWatchdogState(state.sessionID, { recoveryExhausted: true, hasUnresolvedTask: true, isPendingContinuation: false })
+           handleEvent({ event: { type: "session.error", properties: { sessionID: state.sessionID, error: "Automatic recovery was exhausted after an empty assistant completion. The task remains unfinished and can be resumed with a follow-up.", info: { id: state.sessionID, role: "system" } } } }).catch(()=>{})
         }
       }
     }
@@ -774,14 +776,14 @@ const plugin: Plugin = async ({ directory, client }) => {
           originalMessage: m
         }
       })
-      
+
       const tokenConfig = tokenBudgetRuntime.getConfig()
       const compactResult = compactConversationContext({
         messages: turnMappedMessages,
         thresholdTokens: tokenConfig.compactThresholdTokens,
         sessionID: realSessionID,
       })
-      
+
       let finalMessages: typeof output.messages = sanitized
       if (compactResult.compacted) {
         const newMessages: typeof output.messages = []
@@ -840,14 +842,14 @@ const plugin: Plugin = async ({ directory, client }) => {
       const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
       const agent = sessionMeta?.agent ?? "unknown"
       const runtimeCfg = resolveRuntimeAgentConfig(flowdeckConfig, effectiveDefaultAgent)
-      
+
       const combinedSystem = output.system.join("\n")
       const markedSystem = applyIdentityMarker(
         combinedSystem,
         agent,
         runtimeCfg.expectedAgent ?? "heidi"
       )
-      
+
       output.system = [markedSystem]
     },
 
@@ -1457,8 +1459,16 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
 
       const sessionID = eventSessionID
-      if (type === "session.started" || type === "message.updated" || type === "chat.message") {
-        updateWatchdogState(sessionID, { lastProgressAt: Date.now() })
+            if (type === "session.started" || type === "message.updated" || type === "chat.message") {
+        const msgRole = info?.role ?? event?.properties?.info?.role ?? event?.info?.role;
+        const isUserMsg = (type === "message.updated" && msgRole === "user") || type === "chat.message";
+        const stateUpdates: any = { lastProgressAt: Date.now() };
+        if (isUserMsg) {
+          stateUpdates.recoveryExhausted = false;
+          stateUpdates.recoveryCount = 0;
+          sessionRecoveryState.delete(sessionID);
+        }
+        updateWatchdogState(sessionID, stateUpdates)
       }
 
       // ── Reasoning-only completion detection, bounded auto-continuation ───
@@ -1484,7 +1494,10 @@ const plugin: Plugin = async ({ directory, client }) => {
           // recovery is healthy again — clear the recovery state.
           if (parts && sessionRecoveryState.has(eventSessionID) && !msgInfo.error) {
             const hasOutput = parts.some((p: any) => (p.type === "text" && p.text?.trim()) || p.type === "tool")
-            if (hasOutput) sessionRecoveryState.delete(eventSessionID)
+                        if (hasOutput) {
+              sessionRecoveryState.delete(eventSessionID)
+              updateWatchdogState(eventSessionID, { recoveryCount: 0, recoveryExhausted: false })
+            }
           }
 
           // ── Failed continuation → bounded stage-2 recovery ───────────────
@@ -1506,17 +1519,21 @@ const plugin: Plugin = async ({ directory, client }) => {
                 stage: 2,
               })
               const count = sessionContinuationCount.get(eventSessionID) ?? 0
+              const wState = getWatchdogState(eventSessionID);
+              const incidentCount = wState?.recoveryCount ?? 0;
               const decision = decideStage2Continuation({
                 sessionID: eventSessionID,
                 state: st,
                 errorClass,
                 signature: sig2,
                 breaker: circuitBreaker,
-                continuationCount: count,
+                incidentCount,
+                sessionCount: count,
               })
               if (decision.action === "schedule" && decision.stage) {
                 sessionRecoveryState.set(eventSessionID, { ...st, stage: decision.stage })
                 sessionContinuationCount.set(eventSessionID, count + 1)
+                updateWatchdogState(eventSessionID, { recoveryCount: incidentCount + 1 })
                 appendAuditEvent(directory, {
                   kind: "recovery.action",
                   session_id: eventSessionID,
@@ -1545,6 +1562,8 @@ const plugin: Plugin = async ({ directory, client }) => {
                   reason: "Automatic continuation budget exhausted; no further recovery",
                   details: { messageID: msgInfo.id, max: MAX_AUTO_CONTINUATIONS_PER_SESSION },
                 })
+                updateWatchdogState(eventSessionID, { recoveryExhausted: true, hasUnresolvedTask: true, isPendingContinuation: false })
+                handleEvent({ event: { type: "session.error", properties: { sessionID: eventSessionID, error: "Automatic recovery was exhausted after an empty assistant completion. The task remains unfinished and can be resumed with a follow-up.", info: { id: eventSessionID, role: "system" } } } }).catch(()=>{})
               } else if (errorClass === "cancelled") {
                 sessionRecoveryState.delete(eventSessionID)
                 appendAuditEvent(directory, {
@@ -1585,7 +1604,9 @@ const plugin: Plugin = async ({ directory, client }) => {
                 sessionReasoningRecoveryRegistry.set(eventSessionID, circuitBreaker)
               }
               const count = sessionContinuationCount.get(eventSessionID) ?? 0
-              const decision = decideStage1Continuation({ sessionID: eventSessionID, signature: sig, breaker: circuitBreaker, continuationCount: count })
+              const wState = getWatchdogState(eventSessionID);
+              const incidentCount = wState?.recoveryCount ?? 0;
+              const decision = decideStage1Continuation({ sessionID: eventSessionID, signature: sig, breaker: circuitBreaker, incidentCount, sessionCount: count });
               if (decision.action === "circuit_break") {
                 appendAuditEvent(directory, {
                   kind: "recovery.action",
@@ -1605,6 +1626,8 @@ const plugin: Plugin = async ({ directory, client }) => {
                   reason: "Automatic continuation budget exhausted for session",
                   details: { ...(diagnostics as unknown as Record<string, unknown>), max: MAX_AUTO_CONTINUATIONS_PER_SESSION },
                 })
+                updateWatchdogState(eventSessionID, { recoveryExhausted: true, hasUnresolvedTask: true, isPendingContinuation: false })
+                handleEvent({ event: { type: "session.error", properties: { sessionID: eventSessionID, error: "Automatic recovery was exhausted after an empty assistant completion. The task remains unfinished and can be resumed with a follow-up.", info: { id: eventSessionID, role: "system" } } } }).catch(()=>{})
                 appLog(`[heidi] Automatic continuation budget exhausted for session ${eventSessionID} (max ${MAX_AUTO_CONTINUATIONS_PER_SESSION})`, "warn", eventSessionID)
               } else if (decision.action === "schedule" && decision.stage) {
                 sessionRecoveryState.set(eventSessionID, {
@@ -1615,6 +1638,7 @@ const plugin: Plugin = async ({ directory, client }) => {
                   scheduledAt: Date.now(),
                 })
                 sessionContinuationCount.set(eventSessionID, count + 1)
+                updateWatchdogState(eventSessionID, { recoveryCount: incidentCount + 1 })
                 appendAuditEvent(directory, {
                   kind: "recovery.action",
                   session_id: eventSessionID,
@@ -1705,7 +1729,10 @@ const plugin: Plugin = async ({ directory, client }) => {
             }
           } else if (type === "session.error") {
             const errorMessage = event?.properties?.error ?? event?.error ?? "Session errored"
-            updateWatchdogState(sessionID, { hasUnresolvedTask: false })
+            const wState = getWatchdogState(sessionID)
+            if (!(wState && wState.recoveryExhausted)) {
+              updateWatchdogState(sessionID, { hasUnresolvedTask: false })
+            }
 
             // ── Child session failure → delegation.failed ──────────────
             // When OpenCode's Task execution fails, tool.execute.after is NOT called.
@@ -1789,7 +1816,10 @@ const plugin: Plugin = async ({ directory, client }) => {
           }
         } finally {
           if (sessionID) {
-            cleanupSessionState(sessionID, loopDetector)
+            const wState = getWatchdogState(sessionID);
+            if (!(type === "session.error" && wState?.recoveryExhausted)) {
+              cleanupSessionState(sessionID, loopDetector)
+            }
           }
         }
       } else if (type === "session.idle") {
@@ -1800,7 +1830,7 @@ const plugin: Plugin = async ({ directory, client }) => {
 
     dispose: async () => {
       isDisposed = true
-      
+
       sessionTaskCalls.clear()
       childSessionToTask.clear()
       pendingChildSlots.clear()

@@ -59,10 +59,10 @@ describe("Heidi Watchdog", () => {
   });
 
   it("clears watchdog state on plugin dispose", async () => {
-    
+
     const mockInput = createMockPluginInput();
     const pluginInstance = await flowDeckPlugin.server(mockInput);
-    
+
     updateWatchdogState("session-disposed", { isPendingTool: true });
     expect(getWatchdogState("session-disposed")).toBeDefined();
 
@@ -109,3 +109,99 @@ describe("Heidi Watchdog", () => {
     }
   }, 20_000);
 });
+
+  it("Independent incident refresh: empty A -> recovery -> valid output -> later empty B -> fresh recovery permitted", async () => {
+    const mockInput = createMockPluginInput() as any;
+    let prompts = 0;
+    mockInput.client = {
+      app: { log: async () => {} },
+      session: {
+        create: async () => ({ data: { id: "s1" } }),
+        prompt: () => { prompts++; console.log("Prompt called! prompts=", prompts); return Promise.resolve(); },
+      },
+    };
+    const pluginInstance = await flowDeckPlugin.server(mockInput);
+    const handleEvent = (pluginInstance as any).event;
+
+    // Incident A
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s1", info: { id: "msg_A", role: "assistant" }, parts: [{ type: "reasoning", text: "hmm" }] } } });
+    await new Promise((r) => setTimeout(r, 60)); // timer
+    expect(prompts).toBe(1);
+
+    // Valid output closes incident A
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s1", info: { id: "msg_A_recover", role: "assistant" }, parts: [{ type: "text", text: "done" }] } } });
+    const wStateA = getWatchdogState("s1");
+    expect(wStateA?.recoveryCount).toBe(0);
+
+    // Incident B
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s1", info: { id: "msg_B", role: "assistant" }, parts: [{ type: "reasoning", text: "hmm2" }] } } });
+    await new Promise((r) => setTimeout(r, 60)); // timer
+    expect(prompts).toBe(2);
+
+    if (pluginInstance.dispose) await pluginInstance.dispose();
+  });
+
+  it("Long-session incident refresh (50+ progress events)", async () => {
+    const mockInput = createMockPluginInput() as any;
+    let prompts = 0;
+    mockInput.client = { app: { log: async () => {} }, session: { prompt: () => { prompts++; console.log("Prompt called! prompts=", prompts); return Promise.resolve(); } } };
+    const pluginInstance = await flowDeckPlugin.server(mockInput);
+    const handleEvent = (pluginInstance as any).event;
+
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: "msg_A", role: "assistant" }, parts: [{ type: "reasoning", text: "hmm" }] } } });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(prompts).toBe(1);
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: "msg_A_recover", role: "assistant" }, parts: [{ type: "text", text: "done" }] } } });
+
+    for (let i = 0; i < 55; i++) {
+      await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: `msg_prog_${i}`, role: "assistant" }, parts: [{ type: "text", text: "prog" }] } } });
+    }
+
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: "msg_B", role: "assistant" }, parts: [{ type: "reasoning", text: "hmm2" }] } } });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(prompts).toBe(2);
+
+    if (pluginInstance.dispose) await pluginInstance.dispose();
+  });
+
+  it("Same-incident bounded recovery: empty -> recover -> malformed -> recover -> malformed -> cap", async () => {
+    const mockInput = createMockPluginInput() as any;
+    let prompts = 0;
+    mockInput.client = { app: { log: async () => {} }, session: { prompt: () => { prompts++; console.log("Prompt called! prompts=", prompts); return Promise.resolve(); } } };
+    const pluginInstance = await flowDeckPlugin.server(mockInput);
+    const handleEvent = (pluginInstance as any).event;
+
+    // Trigger repeatedly
+    for (let i = 0; i < 5; i++) {
+      await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s3", info: { id: `msg_malformed_${i}`, role: "assistant" }, parts: [{ type: "reasoning", text: "hmm" }] } } });
+      await new Promise((r) => setTimeout(r, 60));
+    }
+
+    expect(prompts).toBe(3); // capped at 3
+    const wState = getWatchdogState("s3");
+    expect(wState?.recoveryExhausted).toBe(true);
+    expect(wState?.hasUnresolvedTask).toBe(true);
+
+    if (pluginInstance.dispose) await pluginInstance.dispose();
+  });
+
+  it("Manual follow-up resets exhausted incident", async () => {
+    const mockInput = createMockPluginInput() as any;
+    mockInput.client = { app: { log: async () => {} }, session: { prompt: () => { return Promise.resolve(); } } };
+    const pluginInstance = await flowDeckPlugin.server(mockInput);
+    const handleEvent = (pluginInstance as any).event;
+
+    // Exhaust
+    for (let i = 0; i < 4; i++) {
+      await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s4", info: { id: `msg_malformed_${i}`, role: "assistant" }, parts: [{ type: "reasoning", text: "hmm" }] } } });
+      await new Promise((r) => setTimeout(r, 60));
+    }
+    expect(getWatchdogState("s4")?.recoveryExhausted).toBe(true);
+
+    // User message
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s4", info: { id: "user_msg", role: "user" }, parts: [{ type: "text", text: "hello" }] } } });
+
+    expect(getWatchdogState("s4")?.recoveryExhausted).toBe(false);
+
+    if (pluginInstance.dispose) await pluginInstance.dispose();
+  });

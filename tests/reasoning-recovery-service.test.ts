@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import {
   REPLAY_CONTINUATION_PROMPT,
-  MAX_AUTO_CONTINUATIONS_PER_SESSION,
+  MAX_AUTO_CONTINUATIONS_PER_INCIDENT, MAX_AUTO_CONTINUATIONS_PER_SESSION,
   classifyProviderError,
   buildContinuationSignature,
   decideStage1Continuation,
@@ -48,13 +48,13 @@ describe("decideStage1Continuation (exactly-once per completion)", () => {
   it("schedules the first detection and circuit-breaks the identical duplicate", () => {
     const breaker = new Set<string>()
     const sig = "msg_1:p:m:NO_VISIBLE_ASSISTANT_OUTPUT:stage1"
-    expect(decideStage1Continuation({ sessionID: "ses_1", signature: sig, breaker, continuationCount: 0 }).action).toBe("schedule")
-    expect(decideStage1Continuation({ sessionID: "ses_1", signature: sig, breaker, continuationCount: 0 }).action).toBe("circuit_break")
+    expect(decideStage1Continuation({ sessionID: "ses_1", signature: sig, breaker, incidentCount: 0, sessionCount: 0 }).action).toBe("schedule")
+    expect(decideStage1Continuation({ sessionID: "ses_1", signature: sig, breaker, incidentCount: 0, sessionCount: 0 }).action).toBe("circuit_break")
   })
   it("refuses to schedule beyond the per-session cap", () => {
     const breaker = new Set<string>()
-    expect(decideStage1Continuation({ sessionID: "ses_1", signature: "s-a", breaker, continuationCount: 2 }).action).toBe("schedule")
-    expect(decideStage1Continuation({ sessionID: "ses_1", signature: "s-b", breaker, continuationCount: MAX_AUTO_CONTINUATIONS_PER_SESSION }).action).toBe("cap_reached")
+    expect(decideStage1Continuation({ sessionID: "ses_1", signature: "s-a", breaker, incidentCount: 2, sessionCount: 2 }).action).toBe("schedule")
+    expect(decideStage1Continuation({ sessionID: "ses_1", signature: "s-b", breaker, incidentCount: MAX_AUTO_CONTINUATIONS_PER_INCIDENT, sessionCount: MAX_AUTO_CONTINUATIONS_PER_SESSION }).action).toBe("cap_reached")
   })
 })
 
@@ -62,28 +62,28 @@ describe("decideStage2Continuation (bounded stage-2 recovery)", () => {
   it("promotes a failed stage-1 replay error to exactly one stage-2 recovery", () => {
     const breaker = new Set<string>()
     const state: SessionRecoveryState = { malformedMessageId: "msg_1", stage: 1, provider: "p", model: "m", scheduledAt: 0 }
-    const d1 = decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "replay", signature: "sig2", breaker, continuationCount: 1 })
+    const d1 = decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "replay", signature: "sig2", breaker, incidentCount: 1, sessionCount: 1 })
     expect(d1.action).toBe("schedule")
     expect(d1.stage).toBe(2)
     // Duplicate error delivery for the same stage-2 signature is circuit-broken
-    const d2 = decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "replay", signature: "sig2", breaker, continuationCount: 1 })
+    const d2 = decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "replay", signature: "sig2", breaker, incidentCount: 1, sessionCount: 1 })
     expect(d2.action).toBe("circuit_break")
   })
   it("never schedules stage 2 from a stage-2 failure (no recursive retry)", () => {
     const breaker = new Set<string>()
     const state: SessionRecoveryState = { malformedMessageId: "msg_1", stage: 2, provider: "p", model: "m", scheduledAt: 0 }
-    expect(decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "replay", signature: "sig2b", breaker, continuationCount: 2 }).action).toBe("none")
+    expect(decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "replay", signature: "sig2b", breaker, incidentCount: 2, sessionCount: 2 }).action).toBe("none")
   })
   it("never schedules stage 2 for non-replay or cancelled errors", () => {
     const breaker = new Set<string>()
     const state: SessionRecoveryState = { malformedMessageId: "msg_1", stage: 1, provider: "p", model: "m", scheduledAt: 0 }
-    expect(decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "other", signature: "s", breaker, continuationCount: 1 }).action).toBe("none")
-    expect(decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "cancelled", signature: "s", breaker, continuationCount: 1 }).action).toBe("none")
+    expect(decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "other", signature: "s", breaker, incidentCount: 1, sessionCount: 1 }).action).toBe("none")
+    expect(decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "cancelled", signature: "s", breaker, incidentCount: 1, sessionCount: 1 }).action).toBe("none")
   })
   it("refuses stage 2 when the per-session cap is exhausted", () => {
     const breaker = new Set<string>()
     const state: SessionRecoveryState = { malformedMessageId: "msg_1", stage: 1, provider: "p", model: "m", scheduledAt: 0 }
-    expect(decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "replay", signature: "s", breaker, continuationCount: MAX_AUTO_CONTINUATIONS_PER_SESSION }).action).toBe("cap_reached")
+    expect(decideStage2Continuation({ sessionID: "ses_1", state, errorClass: "replay", signature: "s", breaker, incidentCount: MAX_AUTO_CONTINUATIONS_PER_INCIDENT, sessionCount: MAX_AUTO_CONTINUATIONS_PER_SESSION }).action).toBe("cap_reached")
   })
 })
 
