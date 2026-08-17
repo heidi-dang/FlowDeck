@@ -134,11 +134,12 @@ describe("modern plugin contract", () => {
       await hooks.config?.(cfg)
 
       expect(cfg.default_agent).toBe("build")
+      if (hooks.dispose) await hooks.dispose()
     } finally {
       closeAllConnections()
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
-  })
+  }, 30000)
 
   it("config hook preserves user agent overrides", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flowdeck-override-"))

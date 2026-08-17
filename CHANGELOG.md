@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.7] - 2026-08-17
+### Fixed & Hardened
+- **Incident-Scoped Heidi Liveness Recovery**: Scoped reasoning-recovery budgets to distinct failure incidents (max 3 auto-continuations per incident) rather than a single global session counter, allowing long sessions to recover from later independent malformed turns.
+- **Progress-Based Incident Closure**: Successful visible assistant progress or valid tool execution promptly clears the recovery counter and marks the incident resolved.
+- **Session Emergency Ceiling**: Added a bounded session-wide emergency budget (50 continuations) protecting against infinite loops across massive sessions.
+- **Visible, Recoverable Recovery Exhaustion**: Preserved `hasUnresolvedTask = true` upon recovery exhaustion, preventing silent task drops and enabling resumption with a manual follow-up prompt.
+- **Synchronous Prompt & History Safety**: Hardened against synchronous `session.prompt` returns while preserving provider-safe replay history formatting.
+
 ## [2.0.6] - 2026-08-17
 ### Fixed & Hardened
 - **Semantic Heidi Liveness Watchdog**: Added robust semantic idle session detection and recovery.

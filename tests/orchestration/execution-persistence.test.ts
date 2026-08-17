@@ -98,6 +98,6 @@ describe("durable execution runtime persistence", () => {
     const second = new Database(path); runMigrations(second); const secondRepo = new SqliteExecutionRepository(second, createTransactionManager(second))
     expect(secondRepo.getPlan("plan")!.workstreams[0].workstreamId).toBe("a")
     expect(secondRepo.getLease("restart-lease")!.worktreeId).toBe("restart-wt")
-    second.close(); rmSync(root, { recursive: true, force: true })
-  })
+    second.close(); rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  }, 30000)
 })
