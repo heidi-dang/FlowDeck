@@ -332,6 +332,7 @@ function resolveOrchestrationDbPath(
 }
 
 const plugin: Plugin = async ({ directory, client }) => {
+  let isDisposed = false
   // ─── Structured logging ──────────────────────────────────────────────
   let logSequence = 0
   type LogLevel = "debug" | "info" | "warn" | "error"
@@ -356,6 +357,7 @@ const plugin: Plugin = async ({ directory, client }) => {
     const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
     updateWatchdogState(targetSessionID, { isPendingContinuation: true })
     const timer = setTimeout(() => {
+      if (isDisposed) return
       sessionAutoContinuationTimers.delete(targetSessionID)
       promptFn({
         path: { id: targetSessionID },
@@ -364,6 +366,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         },
       }).then(() => updateWatchdogState(targetSessionID, { isPendingContinuation: false }))
         .catch((err: Error) => {
+          if (isDisposed) return
           appLog(`[heidi] Reasoning continuation prompt rejected: ${err.message}`, "error", targetSessionID)
           updateWatchdogState(targetSessionID, { isPendingContinuation: false })
           client.app.log({ body: { service: "flowdeck", level: "error", message: `Reasoning continuation rejected: ${err.message}`, extra: { sessionID: targetSessionID } } }).catch(()=>{})
@@ -443,6 +446,7 @@ const plugin: Plugin = async ({ directory, client }) => {
   let _watchdogTimer: ReturnType<typeof setInterval> | undefined
 
   _watchdogTimer = setInterval(() => {
+    if (isDisposed) return
     const now = Date.now()
     const WATCHDOG_TIMEOUT_MS = 60000 // 60 seconds
     const states = getAllWatchdogStates()
@@ -557,7 +561,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         await sessionApi.prompt({ path: { id: sessionId }, body: { parts: [{ type: "text", text: job.prompt }] } })
       })
       const interval = Math.max(5_000, flowdeckConfig.heidi?.scheduler?.pollIntervalMs ?? 30_000)
-      schedulerTimer = setInterval(() => { void worker.runOnce().catch(error => { void appLog(`[scheduler] worker failure: ${error instanceof Error ? error.message : String(error)}`, "warn") }) }, interval)
+      schedulerTimer = setInterval(() => { if (isDisposed) return; void worker.runOnce().catch(error => { void appLog(`[scheduler] worker failure: ${error instanceof Error ? error.message : String(error)}`, "warn") }) }, interval)
     }
   } catch (err) {
     appLog(`[orchestration] Production orchestration runtime initialization skipped: ${err instanceof Error ? err.message : String(err)}`, "warn")
@@ -1772,6 +1776,25 @@ const plugin: Plugin = async ({ directory, client }) => {
     },
 
     dispose: async () => {
+      isDisposed = true
+      
+      sessionTaskCalls.clear()
+      childSessionToTask.clear()
+      pendingChildSlots.clear()
+      sessionRegistry.clear()
+      sessionCallerAgents.clear()
+      sessionReasoningRecoveryRegistry.clear()
+      sessionRecoveryState.clear()
+      sessionContinuationCount.clear()
+      sessionActiveTools.clear()
+      sessionToolCalls.clear()
+      sessionRetries.clear()
+      sessionDelegations.clear()
+      sessionBlocks.clear()
+      sessionRecoverableBlocks.clear()
+      sessionWarnings.clear()
+      sessionStartTimes.clear()
+      sessionFilesChanged.clear()
       // Stop the outbox worker and run the better-harness cleanup (best-effort teardown)
       if (activeOrchestrationRuntime) {
         try {

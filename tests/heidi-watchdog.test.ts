@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
-import { updateWatchdogState, getWatchdogState, clearWatchdogState } from "../src/services/heidi-watchdog";
+import { updateWatchdogState, getWatchdogState, clearWatchdogState, clearAllWatchdogStates } from "../src/services/heidi-watchdog";
+import flowDeckPlugin from "../src/index";
 
 describe("Heidi Watchdog", () => {
   it("creates and updates watchdog state", () => {
@@ -19,5 +20,19 @@ describe("Heidi Watchdog", () => {
     expect(state!.hasUnresolvedTask).toBe(true);
     expect(state!.recoveryExhausted).toBe(true);
     clearWatchdogState("session-2");
+  });
+
+  it("clears watchdog state on plugin dispose", async () => {
+    const mockClient = { app: { log: async () => {} } };
+    const pluginInstance = await flowDeckPlugin.server({ directory: process.cwd(), client: mockClient as any });
+    
+    updateWatchdogState("session-disposed", { isPendingTool: true });
+    expect(getWatchdogState("session-disposed")).toBeDefined();
+
+    if (pluginInstance.dispose) {
+      await pluginInstance.dispose();
+    }
+
+    expect(getWatchdogState("session-disposed")).toBeUndefined();
   });
 });
