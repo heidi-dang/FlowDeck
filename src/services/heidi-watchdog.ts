@@ -48,3 +48,7 @@ export function clearWatchdogState(sessionID: string) {
 export function getAllWatchdogStates(): WatchdogState[] {
   return Array.from(sessionWatchdogs.values())
 }
+
+export function clearAllWatchdogStates() {
+  sessionWatchdogs.clear()
+}

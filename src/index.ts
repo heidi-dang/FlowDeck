@@ -113,7 +113,7 @@ import {
   decideStage2Continuation,
   type SessionRecoveryState,
 } from "./services/reasoning-recovery"
-import { updateWatchdogState, clearWatchdogState, getAllWatchdogStates } from "./services/heidi-watchdog"
+import { updateWatchdogState, clearWatchdogState, getAllWatchdogStates, clearAllWatchdogStates } from "./services/heidi-watchdog"
 import { initializeDatabase, closeAllConnections } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
@@ -1788,6 +1788,11 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
       configureFdxNextRuntime()
       if (_watchdogTimer) clearInterval(_watchdogTimer)
+      for (const timer of sessionAutoContinuationTimers.values()) {
+        clearTimeout(timer)
+      }
+      sessionAutoContinuationTimers.clear()
+      clearAllWatchdogStates()
       if (schedulerTimer) clearInterval(schedulerTimer)
       // Close SQLite connections so Windows file locks are released
       try { closeAllConnections() } catch { /* best-effort */ }
