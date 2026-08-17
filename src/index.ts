@@ -356,22 +356,37 @@ const plugin: Plugin = async ({ directory, client }) => {
     if (!sessionApi?.prompt && !sessionApi?.promptAsync) return
     const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
     updateWatchdogState(targetSessionID, { isPendingContinuation: true })
+    const handleContinuationFailure = (err: Error, sessionId: string) => {
+      if (isDisposed) return
+      appLog(`[heidi] Reasoning continuation prompt rejected: ${err.message}`, "error", sessionId)
+      updateWatchdogState(sessionId, { isPendingContinuation: false })
+      client.app.log({ body: { service: "flowdeck", level: "error", message: `Reasoning continuation rejected: ${err.message}`, extra: { sessionID: sessionId } } }).catch(()=>{})
+      handleEvent({ event: { type: "session.error", properties: { sessionID: sessionId, error: err.message, info: { id: sessionId, role: "assistant", error: err.message } } } })
+    }
     const timer = setTimeout(() => {
       if (isDisposed) return
       sessionAutoContinuationTimers.delete(targetSessionID)
-      promptFn({
-        path: { id: targetSessionID },
-        body: {
-          parts: [{ type: "text", text: REPLAY_CONTINUATION_PROMPT }],
-        },
-      }).then(() => updateWatchdogState(targetSessionID, { isPendingContinuation: false }))
-        .catch((err: Error) => {
-          if (isDisposed) return
-          appLog(`[heidi] Reasoning continuation prompt rejected: ${err.message}`, "error", targetSessionID)
-          updateWatchdogState(targetSessionID, { isPendingContinuation: false })
-          client.app.log({ body: { service: "flowdeck", level: "error", message: `Reasoning continuation rejected: ${err.message}`, extra: { sessionID: targetSessionID } } }).catch(()=>{})
-          handleEvent({ event: { type: "session.error", properties: { sessionID: targetSessionID, error: err.message, info: { id: targetSessionID, role: "assistant", error: err.message } } } })
+      let result: unknown
+      try {
+        result = promptFn({
+          path: { id: targetSessionID },
+          body: {
+            parts: [{ type: "text", text: REPLAY_CONTINUATION_PROMPT }],
+          },
         })
+      } catch (err) {
+        // Synchronous session API failure: treat as a rejected continuation.
+        handleContinuationFailure(err as Error, targetSessionID)
+        return
+      }
+      if (result && typeof (result as Promise<unknown>).then === "function") {
+        ;(result as Promise<unknown>)
+          .then(() => updateWatchdogState(targetSessionID, { isPendingContinuation: false }))
+          .catch((err: Error) => handleContinuationFailure(err, targetSessionID))
+      } else {
+        // Session API returned synchronously (no promise): continuation was submitted.
+        updateWatchdogState(targetSessionID, { isPendingContinuation: false })
+      }
     }, 50)
     sessionAutoContinuationTimers.set(targetSessionID, timer)
   }
@@ -460,7 +475,15 @@ const plugin: Plugin = async ({ directory, client }) => {
            const sessionApi = (client as any)?.session
            if (sessionApi?.prompt || sessionApi?.promptAsync) {
              const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
-             promptFn({ path: { id: state.sessionID }, body: { parts: [{ type: "text", text: "The session appears stalled without completing the task. Please continue your work or explain what you are waiting for." }] } }).catch(() => {})
+             let recovered: unknown
+             try {
+               recovered = promptFn({ path: { id: state.sessionID }, body: { parts: [{ type: "text", text: "The session appears stalled without completing the task. Please continue your work or explain what you are waiting for." }] } })
+             } catch {
+               // A sync session API failure must never escape the watchdog timer.
+             }
+             if (recovered && typeof (recovered as Promise<unknown>).then === "function") {
+               ;(recovered as Promise<unknown>).catch(() => {})
+             }
            }
         } else {
            appLog(`[watchdog] Stalled session ${state.sessionID} exhausted watchdog recovery budget.`, "error", state.sessionID).catch(()=>{})
