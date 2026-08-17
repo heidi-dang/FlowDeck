@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.6] - 2026-08-17
+### Fixed & Hardened
+- **Semantic Heidi Liveness Watchdog**: Added robust semantic idle session detection and recovery.
+- **Provider Replay Sanitation**: In-place sanitization for reasoning-only and empty-output turns.
+- **Async Resource Lifecycles**: Strict watchdog/continuation timer cleanup and state map isolation across plugin dispose to prevent cross-platform file locking (`EBUSY`) and async leaks.
+- **CI Reliability**: Fixed `SyntaxError` streaming bug in CI packed-tarball validation.
+
 ## [2.0.5] - 2026-08-16
 
 ### Fixed
