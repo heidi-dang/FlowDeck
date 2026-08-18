@@ -39,6 +39,14 @@ export type AuditEventKind =
   | "delegation.completed"
   | "delegation.failed"
   | "delegation.blocked"
+  | "loop_guard.blocked"
+  | "self_audit.event"
+  | "convergence.guard"
+  | "watchdog.action"
+  | "lease.acquired"
+  | "lease.conflict"
+  | "tool_fast_lane.rewrite"
+  | "empty_terminal.recovery"
 
 export interface AuditEvent {
   kind: AuditEventKind
