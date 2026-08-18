@@ -108,6 +108,7 @@ interface IncidentRecord {
 
 export class RuntimeSelfAudit {
   private events: AuditEvent[] = [];
+  private scoreListeners = new Set<(e: AuditEvent) => void>();
   private incidents: IncidentRecord[] = [];
   private options: Required<RuntimeSelfAuditOptions>;
 
@@ -170,6 +171,7 @@ export class RuntimeSelfAudit {
     };
     this.events.push(event);
     if (this.events.length > this.options.maxEvents) this.events = this.events.slice(-this.options.maxEvents);
+    for (const listener of this.scoreListeners) { try { listener(event) } catch { /* listeners must never break scoring */ } }
     return event;
   }
 
@@ -258,6 +260,14 @@ export class RuntimeSelfAudit {
       if (typeof score === "number" && score < 40) parts.push(dim + "=" + score);
     }
     return parts.length > 0 ? parts.join("; ") : "no critical factors";
+  }
+
+  /**
+   * Subscribe to every scored runtime event (UI-safe stream). Returns unsubscribe.
+   */
+  onScoreEvent(listener: (e: AuditEvent) => void): () => void {
+    this.scoreListeners.add(listener);
+    return () => this.scoreListeners.delete(listener);
   }
 
   recentEvents(sessionID?: string, limit = 20): AuditEvent[] {

@@ -19,6 +19,16 @@ export async function applyAutoFixes(
   checks: CheckResult[],
   options: DoctorOptions,
 ): Promise<AutoFixResult[]> {
+  if (options.dryRun) {
+    return checks
+      .filter((c) => c.autoFixAvailable && c.status !== "pass")
+      .map((c) => ({
+        id: "fix_" + c.id,
+        description: "Dry run auto-fix for " + c.id,
+        applied: false,
+      }))
+  }
+
   const results: AutoFixResult[] = []
 
   for (const check of checks) {

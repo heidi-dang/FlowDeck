@@ -22,6 +22,7 @@ import { verifyFinding } from "../verification/finding-verifier";
 import { saveFindingIndex } from "../persistence/finding-store";
 import { HarnessRunProgressSchema } from "../contracts/progress";
 import type { RouterContext } from "../runtime/router-context";
+import { getScoreboardFor, renderScoreBadgeHtml, renderSessionHealthHtml, renderExplanationHtml } from "../../services/runtime-score-stream";
 
 const ProjectKeySchema = z.string().min(1).max(256).regex(/^[a-zA-Z0-9_\-.@/]+$/);
 const PATH_TRAVERSAL_RE = /\.\.|\//;
@@ -37,8 +38,9 @@ interface RouteMatch {
 }
 
 function matchRoute(pattern: string, urlPath: string): RouteMatch | null {
+  const cleanPath = urlPath.split("?")[0];
   const patternParts = pattern.split("/").filter(Boolean);
-  const urlParts = urlPath.split("/").filter(Boolean);
+  const urlParts = cleanPath.split("/").filter(Boolean);
   if (patternParts.length !== urlParts.length) return null;
   const params: Record<string, string> = {};
   for (let i = 0; i < patternParts.length; i++) {
@@ -50,6 +52,18 @@ function matchRoute(pattern: string, urlPath: string): RouteMatch | null {
     }
   }
   return { params };
+}
+
+function parseQuery(urlPath: string): Record<string, string> {
+  const idx = urlPath.indexOf("?");
+  if (idx < 0) return {};
+  const qs = urlPath.slice(idx + 1);
+  const res: Record<string, string> = {};
+  for (const pair of qs.split("&")) {
+    const [k, v] = pair.split("=");
+    if (k) res[decodeURIComponent(k)] = decodeURIComponent(v ?? "");
+  }
+  return res;
 }
 
 function validateProjectKey(key: string, resolveProjectPath: ((serverKey: string, projectKey: string) => string | null) | undefined, serverKey: string): { valid: true; path: string } | { valid: false; status: number; body: unknown } {
@@ -402,6 +416,89 @@ export async function routeRequestContext(
         const session = loadRepairSession(check.path, sessionId);
         if (!session) return { status: 404, body: { error: "Repair session not found" } };
         return ok(session);
+      }
+    }
+
+    // --- Runtime Scores List ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runtime-scores", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const query = parseQuery(urlPath);
+        const scoreboard = getScoreboardFor(check.path);
+        const limit = query.limit ? parseInt(query.limit, 10) : 100;
+        const scores = scoreboard.list(query.sessionId || undefined, limit);
+        const sessionHealth = scoreboard.sessionHealth(query.sessionId || undefined);
+        return ok({ scores, sessionHealth });
+      }
+    }
+
+    // --- Session Health ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/session-health", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const query = parseQuery(urlPath);
+        const scoreboard = getScoreboardFor(check.path);
+        const health = scoreboard.sessionHealth(query.sessionId || undefined);
+        return ok(health);
+      }
+    }
+
+    // --- Score Explanation ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runtime-scores/explanation", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const query = parseQuery(urlPath);
+        const scoreboard = getScoreboardFor(check.path);
+        const eventId = query.eventId ?? "";
+        const explanation = scoreboard.explanation(eventId);
+        if (!explanation) return { status: 404, body: { error: "Score event not found: " + eventId } };
+        return ok(explanation);
+      }
+    }
+
+    // --- Specific Score Event ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runtime-scores/by-id/:eventId", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey, eventId } = m.params;
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const scoreboard = getScoreboardFor(check.path);
+        const score = scoreboard.get(eventId);
+        if (!score) return { status: 404, body: { error: "Score event not found: " + eventId } };
+        return ok(score);
+      }
+    }
+
+    // --- FlowDeck WebUI Scoreboard Dashboard ---
+    {
+      const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/ui/runtime-scores", urlPath);
+      if (m && method === "GET") {
+        const { serverKey, projectKey } = m.params;
+        const check = validateProjectKey(projectKey, ctx.resolveProjectPath, serverKey);
+        if (!check.valid) return { status: check.status, body: check.body };
+        const query = parseQuery(urlPath);
+        const scoreboard = getScoreboardFor(check.path);
+        const scores = scoreboard.list(query.sessionId || undefined, 50);
+        const health = scoreboard.sessionHealth(query.sessionId || undefined);
+        const healthHtml = renderSessionHealthHtml(health);
+        const rowsHtml = scores.map(s => {
+          const badge = renderScoreBadgeHtml(s.score);
+          const exp = scoreboard.explanation(s.eventId);
+          const expHtml = exp ? renderExplanationHtml(exp) : "";
+          return "<div class=\"fd-action-row\" data-event-id=\"" + s.eventId + "\"><span class=\"fd-action-label\">" + s.actionClass + " " + s.label + "</span> " + badge + expHtml + "</div>";
+        }).join("\n");
+        const fullHtml = "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>FlowDeck Runtime Integrity</title></head><body><main class=\"flowdeck-webui\">" + healthHtml + "<div class=\"fd-actions\">" + rowsHtml + "</div></main></body></html>";
+        return ok({ html: fullHtml, scoresCount: scores.length, currentHealth: health.currentHealth, sessionIntegrity: health.sessionIntegrity });
       }
     }
 

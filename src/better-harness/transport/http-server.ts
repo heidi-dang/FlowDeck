@@ -47,6 +47,14 @@ export class HarnessHttpServer {
       return Promise.resolve(0);
     }
 
+    // Fast rejection for invalid IPv4 octets to avoid DNS resolver timeout
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(this.config.bindHost)) {
+      const octets = this.config.bindHost.split(".").map(Number);
+      if (octets.some((o) => o < 0 || o > 255 || Number.isNaN(o))) {
+        return Promise.reject(new Error("Invalid IPv4 address: " + this.config.bindHost));
+      }
+    }
+
     const corsConfig: CorsConfig = {
       ...DEFAULT_CORS_CONFIG,
       ...this.config.cors,
@@ -164,16 +172,25 @@ export class HarnessHttpServer {
       const timeoutMs = this.config.timeoutMs ?? 30_000;
       this.server.timeout = timeoutMs;
 
-      this.server.listen(this.config.port, this.config.bindHost, () => {
-        const addr = this.server?.address();
-        if (addr && typeof addr === "object") {
-          resolve(addr.port);
-        } else {
-          resolve(this.config.port);
-        }
+      this.server.on("error", (err) => {
+        try {
+          this.server?.close();
+        } catch {}
+        reject(err);
       });
 
-      this.server.on("error", reject);
+      try {
+        this.server.listen({ port: this.config.port, host: this.config.bindHost }, () => {
+          const addr = this.server?.address();
+          if (addr && typeof addr === "object") {
+            resolve(addr.port);
+          } else {
+            resolve(this.config.port);
+          }
+        });
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 

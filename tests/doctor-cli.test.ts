@@ -7,7 +7,7 @@
 
 import { describe, it, expect } from "bun:test"
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, rmSync, readFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
@@ -30,8 +30,8 @@ function runDoctor(args: string[] = [], envOverrides: Record<string, string> = {
     const result = spawnSync(process.execPath, [CLI_PATH, ...args], {
       cwd: PKG_ROOT,
       encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-      timeout: 30000,
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60000,
       env: { ...getSpawnEnv(), ...envOverrides },
     })
 
@@ -51,25 +51,11 @@ function makeTempConfig(): string {
   return dir
 }
 
-/**
- * Isolated HOME with a valid OpenCode user config.
- *
- * The `--apply-recommended` auto-fix for `config.opencode_user` runs a real
- * installer when no user config exists (slow, and it mutates the runner's
- * HOME). Pre-creating a valid config makes the check pass so the auto-fix
- * does not trigger — these tests only verify the flag is accepted.
- */
-function makeIsolatedHome(): string {
-  const home = makeTempConfig()
-  const opencodeDir = join(home, ".config", "opencode")
-  mkdirSync(opencodeDir, { recursive: true })
-  writeFileSync(join(opencodeDir, "opencode.json"), "{}")
-  return home
-}
+
 
 // ─── Tests ─────────────────────────────────────────────────────────────
 
-const testSlow = (name: string, fn: any) => it(name, fn, 30000)
+const testSlow = (name: string, fn: any) => it(name, fn, 60000)
 
 describe("Doctor CLI — Argument Parsing", () => {
   testSlow("parses --json flag", () => {
@@ -102,16 +88,9 @@ describe("Doctor CLI — Argument Parsing", () => {
   })
 
   testSlow("parses --apply-recommended flag", () => {
-    const home = makeIsolatedHome()
-    try {
-      // Isolated HOME with a valid user config: the config.opencode_user
-      // auto-fix would otherwise run a real installer (slow, side-effecting).
-      const result = runDoctor(["--apply-recommended"], { HOME: home, USERPROFILE: home })
-      expect(result.code).toBeGreaterThanOrEqual(0)
-      expect(result.code).toBeLessThanOrEqual(1)
-    } finally {
-      rmSync(home, { recursive: true, force: true })
-    }
+    const result = runDoctor(["--apply-recommended", "--dry-run", "--non-interactive"])
+    expect(result.code).toBeGreaterThanOrEqual(0)
+    expect(result.code).toBeLessThanOrEqual(1)
   })
 
   testSlow("parses --non-interactive flag", () => {

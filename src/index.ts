@@ -160,6 +160,7 @@ import { getCallTimer, releaseCallTimer } from "./services/real-time-instrument"
 import { executeShellCommand } from "./services/shell-executor"
 import { buildScoreAnnotation } from "./services/visible-score-surface"
 import { stripScoreAnnotations, assertNoScoreLeak } from "./services/score-leak-guard"
+import { getScoreboardFor, clearScoreboardFor } from "./services/runtime-score-stream"
 import {
   HeidiActiveCoordinator,
   registerParallelCoordinator,
@@ -501,6 +502,10 @@ const plugin: Plugin = async ({ directory, client }) => {
     index: fdxWorkspaceIndex,
     daemonSocketPath: fdxDaemonSocketPath,
   })
+
+  // ── UI-safe runtime score stream (FlowDeck WebUI badges + session health) ──
+  const runtimeScoreboard = getScoreboardFor(directory)
+  const detachScoreStream = runtimeScoreboard.attach()
 
   // ── Round-2: FlowDeck-owned shell tool — executes recognized safe read-only
   // commands through the native fast lane with ZERO bash subprocess spawns.
@@ -934,6 +939,18 @@ const plugin: Plugin = async ({ directory, client }) => {
               provenance: turn.provenance,
             },
           })
+          // UI-safe Routing score (user -> route decision).
+          try {
+            runtimeSelfAudit.scoreEvent({
+              category: "routing",
+              operation: "route:" + (turn.decision?.executionClass ?? "unknown"),
+              sessionID,
+              dimensionScores: { routing: turn.decision ? 96 : 60, execution: turn.decision ? 95 : 55 },
+              evidenceIds: ["routing:" + (turn.decision?.reasonCode ?? "none")],
+              latencyBreakdown: [],
+              violations: [],
+            })
+          } catch { /* score stream is best-effort */ }
         } else if (fhProvenance.startsWith("internal")) {
           // Internal recovery/continuation prompt: keep route + task state.
           handleInternalContinuation(sessionID)
@@ -1588,6 +1605,21 @@ const plugin: Plugin = async ({ directory, client }) => {
               available: [],
             })
             loopIncidentTracker.attachRedirect(sessionID, fingerprint, redirect)
+            // UI-safe Loop Guard score: a correct prevention block can score high;
+            // a repeated block flood lowers recovery/efficiency.
+            try {
+              const blockCount = sessionBlocks.get(sessionID) ?? 0
+              const flooded = blockCount >= 3 || incident.blockedCount >= 3
+              runtimeSelfAudit.scoreEvent({
+                category: "governance",
+                operation: "loop_guard.blocked",
+                sessionID,
+                dimensionScores: { execution: 97, integrity: 95, recovery: flooded ? 55 : 90, efficiency: flooded ? 55 : 92 },
+                evidenceIds: ["loop-incident:" + incident.incidentId],
+                latencyBreakdown: [],
+                violations: flooded ? [{ code: "LOOP_GUARD_FLOOD", severity: "severe", detail: "repeated recoverable loop blocks" }] : [],
+              })
+            } catch { /* score stream is best-effort */ }
             appendAuditEvent(directory, {
               kind: "loop_guard.blocked",
               session_id: sessionID,
@@ -2511,6 +2543,18 @@ const plugin: Plugin = async ({ directory, client }) => {
                   reason: "EVIDENCE_GATE:Unsupported resolution claim rejected - " + gate.reason,
                 })
               }
+              // ── UI-safe Completion score: evidence-gated completion claim ──
+              try {
+                runtimeSelfAudit.scoreEvent({
+                  category: "verification",
+                  operation: "completion",
+                  sessionID,
+                  dimensionScores: { completion: gate.resolutionAllowed ? 97 : 30, integrity: gate.resolutionAllowed ? 95 : 35 },
+                  evidenceIds: ["evidence-gate:" + (gate.resolutionAllowed ? "pass" : "fail")],
+                  latencyBreakdown: [],
+                  violations: gate.resolutionAllowed ? [] : [{ code: "UNSUPPORTED_RESOLUTION", severity: "severe", detail: "completion claim rejected by evidence gate" }],
+                })
+              } catch { /* score stream is best-effort */ }
               void scorecard
 
               await appLog(`[scorecard] Session ${sessionID}: ${JSON.stringify(scorecard)}`)
@@ -2700,6 +2744,8 @@ const plugin: Plugin = async ({ directory, client }) => {
       clearAllWatchdogStates()
       if (schedulerTimer) clearInterval(schedulerTimer)
       // Close SQLite connections so Windows file locks are released
+      if (typeof (detachScoreStream as (() => void) | undefined) === "function") { try { (detachScoreStream as () => void)() } catch {} }
+      try { clearScoreboardFor(directory) } catch {}
       // Stop the resident FDX engine (releases the native daemon process and its
       // cwd lock — required for clean Windows temp-dir teardown). Bounded so the
       // teardown can never block on a stalled child process.
