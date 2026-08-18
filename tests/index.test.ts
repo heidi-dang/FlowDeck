@@ -57,6 +57,24 @@ interface TestHooks {
   dispose?: () => Promise<void>
 }
 
+
+/** Retry-safe recursive delete. On Windows a short-lived OS handle (AV scan, watcher,
+ * slow-open) can briefly hold a temp dir; teardown must not fail the suite, so a
+ * stuck dir degrades to a visible warning instead of throwing. */
+async function removeDirWithRetry(dir: string, attempts = 40, delayMs = 250): Promise<void> {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+      return
+    } catch (err) {
+      if (i === attempts - 1) {
+        console.warn(`[test] could not remove ${dir} after ${attempts} attempts: ${(err as Error).message}`)
+        return
+      }
+      await new Promise((r) => setTimeout(r, delayMs))
+    }
+  }
+}
 describe("plugin entry", () => {
   let dir: string
   let instances: TestHooks[]
@@ -76,8 +94,8 @@ describe("plugin entry", () => {
     }
     closeAllConnections()
     await new Promise((resolve) => setTimeout(resolve, 500))
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
-    try { rmSync(planningDir(dir), { recursive: true, force: true }) } catch {}
+    await removeDirWithRetry(dir)
+    try { await removeDirWithRetry(planningDir(dir)) } catch {}
   })
 
   async function loadPlugin(client: any): Promise<TestHooks> {
