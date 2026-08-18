@@ -81,4 +81,41 @@ describe("RUNTIME SELF-AUDIT / INTEGRITY SCORE", () => {
     expect(elapsed).toBeLessThan(2000)
     expect(audit.recentEvents(undefined, 500).length).toBe(500)
   })
+  it("session integrity is strictly session-scoped; globalIntegrity sees all sessions", () => {
+    const audit = new RuntimeSelfAudit()
+    // Session A gets a severe incident.
+    audit.scoreEvent({
+      category: "task_delegation",
+      operation: "delegate",
+      sessionID: "A",
+      dimensionScores: { execution: 100, governance: 100 },
+      evidenceIds: [],
+      latencyBreakdown: [],
+      violations: [{ code: "FALSE_DELEGATION_BLOCK", severity: "severe", detail: "blocked" }],
+    })
+    // Session B has only healthy events.
+    audit.scoreEvent({ category: "fdx_search", operation: "read", sessionID: "B", dimensionScores: { execution: 100, governance: 100 }, evidenceIds: [], latencyBreakdown: [] })
+
+    // A's incident drops A...
+    const integA = audit.sessionIntegrity("A")
+    expect(integA.severeCount).toBe(1)
+    expect(integA.incidents).toBe(1)
+    expect(integA.score).toBeLessThan(100)
+
+    // ...but leaves session B untouched at 100.
+    const integB = audit.sessionIntegrity("B")
+    expect(integB.severeCount).toBe(0)
+    expect(integB.incidents).toBe(0)
+    expect(integB.score).toBe(100)
+
+    // Global integrity aggregates all incidents and reports both sessions.
+    const global = audit.globalIntegrity()
+    expect(global.severeCount).toBe(1)
+    expect(global.incidents).toBe(1)
+    expect(global.score).toBeLessThan(100)
+    // sessions = the sessions that actually hold incidents on the ledger.
+    // A holds the severe incident; B (healthy only) does not.
+    expect(global.sessions).toContain("A")
+    expect(global.sessions).not.toContain("B")
+  })
 })

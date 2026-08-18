@@ -101,6 +101,7 @@ interface IncidentRecord {
   id: string;
   severity: "severe" | "fatal";
   code: string;
+  sessionID: string;
   at: number;
 }
 
@@ -143,11 +144,11 @@ export class RuntimeSelfAudit {
       if (v.severity === "fatal") {
         score = Math.min(score, CRITICAL_CAP_SCORES.RUNTIME_CRASH ?? 5);
         confidence = Math.min(confidence, 0.5);
-        this.incidents.push({ id: "inc_" + Date.now() + "_" + this.incidents.length, severity: "fatal", code: v.code, at: Date.now() });
+        this.incidents.push({ id: "inc_" + Date.now() + "_" + this.incidents.length, severity: "fatal", code: v.code, sessionID: input.sessionID, at: Date.now() });
       } else if (v.severity === "severe") {
         const cap = CRITICAL_CAP_SCORES[v.code] ?? 30;
         score = Math.min(score, cap);
-        this.incidents.push({ id: "inc_" + Date.now() + "_" + this.incidents.length, severity: "severe", code: v.code, at: Date.now() });
+        this.incidents.push({ id: "inc_" + Date.now() + "_" + this.incidents.length, severity: "severe", code: v.code, sessionID: input.sessionID, at: Date.now() });
       }
     }
 
@@ -187,7 +188,11 @@ export class RuntimeSelfAudit {
    * while severe/fatal incidents remain on the ledger.
    */
   sessionIntegrity(sessionID?: string): { score: number; incidents: number; severeCount: number; fatalCount: number } {
-    const relevant = this.incidents.filter(() => !sessionID || true);
+    // Strictly session-scoped: an incident recorded in session A must never
+    // degrade session B. When no session is given, aggregate the full ledger.
+    const relevant = sessionID
+      ? this.incidents.filter(i => i.sessionID === sessionID)
+      : this.incidents;
     const severeCount = relevant.filter(i => i.severity === "severe").length;
     const fatalCount = relevant.filter(i => i.severity === "fatal").length;
     let base = 100;
@@ -198,6 +203,26 @@ export class RuntimeSelfAudit {
       incidents: relevant.length,
       severeCount,
       fatalCount,
+    };
+  }
+
+  /**
+   * Global integrity: aggregates incidents across ALL sessions intentionally,
+   * and reports the distinct sessions that hold incidents on the ledger.
+   */
+  globalIntegrity(): { score: number; incidents: number; severeCount: number; fatalCount: number; sessions: string[] } {
+    const severeCount = this.incidents.filter(i => i.severity === "severe").length;
+    const fatalCount = this.incidents.filter(i => i.severity === "fatal").length;
+    let base = 100;
+    base -= severeCount * 15;
+    base -= fatalCount * 40;
+    const sessions = [...new Set(this.incidents.map(i => i.sessionID))];
+    return {
+      score: Math.max(0, Math.min(100, base)),
+      incidents: this.incidents.length,
+      severeCount,
+      fatalCount,
+      sessions,
     };
   }
 
