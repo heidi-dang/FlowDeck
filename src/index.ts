@@ -380,6 +380,7 @@ const plugin: Plugin = async ({ directory, client }) => {
   }
   /** Bounded reasoning-only auto-continuation: exactly one prompt per scheduled stage via recovery coordinator. */
   const scheduleReasoningContinuation = (targetSessionID: string): void => {
+    sessionIsCancelled.delete(targetSessionID)
     recoveryCoordinator.requestContinuation({
       sessionID: targetSessionID,
       source: "reasoning_recovery",
@@ -1751,6 +1752,11 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
 
       if (type === "session.created" || type === "session.started") {
+        if (sessionID) {
+          sessionIsCancelled.delete(sessionID)
+          sessionLastManualUserAt.delete(sessionID)
+          sessionStartTimes.set(sessionID, Date.now())
+        }
         await sessionStartHook({ directory }, appLog)
         appendAuditEvent(directory, {
           kind: "session.started",
@@ -1759,9 +1765,6 @@ const plugin: Plugin = async ({ directory, client }) => {
           decision: "start",
           reason: "Session started",
         })
-        if (sessionID) {
-          sessionStartTimes.set(sessionID, Date.now())
-        }
       } else if (type === "session.completed" || type === "session.error") {
         try {
           await sessionEventsHook({ directory }, type === "session.completed" ? "completed" : "error", sessionID)
