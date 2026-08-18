@@ -24,6 +24,7 @@ import {
   touchRouteActivity,
   clearRouteDecision,
 } from "./heidi-route-state"
+import { renderParallelPacket } from "./heidi-parallel-context"
 import { getRepositoryContext, renderHotContextSummary, invalidateRepositoryContext } from "./repository-hot-context"
 import { getCachedConfig } from "./config-cache"
 import type { GovernanceMode } from "./governance-fast-path"
@@ -157,6 +158,13 @@ export function renderTurnContext(sessionID: string, directory: string): string 
   }
   const sections = buildTaskSpecificPromptSections(route.decision.executionClass, route.decision.specialists)
   if (sections.trim()) parts.push(sections)
+  // Active-parallel coordinator packet (compact <200 tokens; empty when none).
+  try {
+    const packet = renderParallelPacket(sessionID)
+    if (packet.trim()) parts.push(packet)
+  } catch {
+    // parallel packet is best-effort — never break prompt build
+  }
   return parts.join("\n\n")
 }
 

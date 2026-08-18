@@ -329,10 +329,13 @@ export function buildTaskSpecificPromptSections(
       '',
       '## Parallel Specialist Execution',
       '',
-      '- Launch the selected specialists CONCURRENTLY via separate task calls.',
-      '- Each child owns a disjoint file/dependency area — do not make them overlap.',
-      '- Integrate their results yourself; resolve any merge conflicts sequentially.',
-      '- Verify the combined change as a whole after integration.',
+      '- Launch ALL independent specialists CONCURRENTLY as separate task calls; each child owns a disjoint file area.',
+      '- Do NOT idle while children run: keep doing coordinator-owned work (integration architecture, central file inspection, caller/callee analysis, acceptance criteria, combined test planning) that does not conflict with running children.',
+      "- Never independently re-implement a running child's assigned scope.",
+      '- Between coordinator work units, consume runtime child-status deltas cheaply (no Continue / check-subagents prompts).',
+      '- When ANY child becomes READY (completed with a valid result), review and integrate it at the next safe boundary — do NOT wait for all siblings first.',
+      '- Reserve shared integration surfaces (e.g. src/index.ts, cross-workstream tests) for Heidi.',
+      '- Enter the all-child wait barrier ONLY during FINAL_CONVERGENCE, then run combined verification.',
     ].join('\n'))
   }
 
