@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.0.8] - 2026-08-18
+### Fixed & Hardened
+- **Continuation-Prompt Flood Guard**: Introduced a centralized `RecoveryCoordinator` ensuring strictly single-flight auto-continuations and eliminating runaway recovery loops.
+- **Internal Prompt Provenance**: Disambiguated internal FlowDeck-generated recovery prompts from genuine manual user messages, preventing internal continuation prompts from clearing failure incident counters.
+- **Watchdog & Reasoning Recovery Deduplication**: Unified scheduling for semantic watchdog and reasoning-only recovery, preventing overlapping recovery prompts.
+- **Pending-Tool State Safety**: Ensured assistant turns with pending/running tool executions are not prematurely flagged as empty/malformed completions.
+- **Provider Replay Sanitation Hardening**: Prevented duplicate internal continuation prompt accumulation in model history.
+
 ## [2.0.7] - 2026-08-17
 ### Fixed & Hardened
 - **Incident-Scoped Heidi Liveness Recovery**: Scoped reasoning-recovery budgets to distinct failure incidents (max 3 auto-continuations per incident) rather than a single global session counter, allowing long sessions to recover from later independent malformed turns.
