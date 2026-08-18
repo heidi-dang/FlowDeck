@@ -15,7 +15,7 @@ pub struct ImportRef {
 }
 
 /// A dependency entry for impact analysis.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ImpactDep {
     pub path: Option<String>,
     pub resolved: bool,
@@ -26,7 +26,7 @@ pub struct ImpactDep {
 }
 
 /// Impact analysis result for a single target file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct ImpactResult {
     pub target: String,
     pub depth: usize,

@@ -5,4 +5,5 @@ pub mod paths;
 pub mod pr_monitor;
 pub mod reader;
 pub mod runner;
+pub mod serve;
 pub mod tee;

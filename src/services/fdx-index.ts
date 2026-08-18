@@ -114,29 +114,99 @@ export class FdxWorkspaceIndex {
     return value ? this.clone(value) : null
   }
 
+  /** Legacy API: re-scan then query. Kept for existing callers/tests. */
   symbols(workspace: string, query: string, paths?: readonly string[]): Array<{ path: string; symbol: string }> {
     const index = this.refresh(workspace)
-    const needle = query.trim().toLowerCase()
-    return this.selectFiles(index, paths).flatMap(file => file.symbols.filter(symbol => !needle || symbol.toLowerCase().includes(needle)).map(symbol => ({ path: file.path, symbol }))).slice(0, 500)
+    return this.symbolsFromSnapshot(index, query, paths)
   }
 
+  /** Legacy API: re-scan then query. Kept for existing callers/tests. */
   outline(workspace: string, paths?: readonly string[]): Array<{ path: string; symbols: string[] }> {
     const index = this.refresh(workspace)
-    return this.selectFiles(index, paths).map(file => ({ path: file.path, symbols: [...file.symbols] }))
+    return this.outlineFromSnapshot(index, paths)
   }
 
+  /** Legacy API: re-scan then query. Kept for existing callers/tests. */
   impact(workspace: string, paths: readonly string[]): FdxImpactSnapshot {
     const index = this.refresh(workspace)
-    const changedPaths = this.relativePaths(index.workspace, paths)
-    const changed = new Set(changedPaths)
-    const affectedPaths = index.files
-      .filter(file => changed.has(file.path) || file.dependencies.some(dependency => {
-        const normalized = dependency.replaceAll("\\", "/").replace(/^\.\//, "")
-        return changedPaths.some(path => normalized === path || normalized.endsWith(`/${path}`) || path.endsWith(`/${normalized}`) || path.split("/").at(-1) === normalized)
-      }))
-      .map(file => file.path)
-      .sort()
-    return { changedPaths, affectedPaths }
+    return this.impactFromSnapshot(index, paths)
+  }
+
+  /**
+   * Explicit cold-init: call refresh() only if this workspace has no snapshot
+   * yet. A no-op when already initialized, so it is safe to call before warm
+   * queries without triggering a workspace walk.
+   */
+  ensureInitialized(workspace: string): FdxWorkspaceSnapshot {
+    const identity = workspaceIdentity(workspace)
+    const existing = this.state.get(identity.id)
+    if (existing) return this.clone(existing)
+    return this.refresh(workspace)
+  }
+
+  /** Warm query: reads the RESIDENT snapshot. Never walks the workspace. */
+  querySymbols(workspace: string, query: string, paths?: readonly string[]): Array<{ path: string; symbol: string }> {
+    return this.symbolsFromSnapshot(this.ensureInitialized(workspace), query, paths)
+  }
+
+  /** Warm outline query: no workspace walk when initialized. */
+  queryOutline(workspace: string, paths?: readonly string[]): Array<{ path: string; symbols: string[] }> {
+    return this.outlineFromSnapshot(this.ensureInitialized(workspace), paths)
+  }
+
+  /** Warm impact query: no workspace walk when initialized. */
+  queryImpact(workspace: string, paths: readonly string[]): FdxImpactSnapshot {
+    return this.impactFromSnapshot(this.ensureInitialized(workspace), paths)
+  }
+
+  /**
+   * Incremental refresh: re-stat/re-read ONLY the given changed paths into the
+   * resident snapshot, never walking the whole workspace. Changed files that
+   * still exist are re-indexed; missing ones stay dropped.
+   */
+  refreshChanged(workspace: string, changedPaths: readonly string[]): FdxWorkspaceSnapshot {
+    const identity = workspaceIdentity(workspace)
+    const current = this.state.get(identity.id)
+    if (!current) return this.refresh(workspace)
+    if (!changedPaths.length) return this.clone(current)
+
+    const workspaceRoot = identity.path
+    const keep = new Map<string, FdxIndexedFile>()
+
+    for (const file of current.files) {
+      let changed = false
+      for (const raw of changedPaths) {
+        const norm = raw.replaceAll("\\", "/").replace(/^\.\//, "")
+        if (file.path === norm || file.path.startsWith(norm + "/")) { changed = true; break }
+      }
+      if (!changed) keep.set(file.path, file)
+    }
+
+    for (const raw of changedPaths) {
+      const candidate = resolve(workspaceRoot, raw)
+      if (!isInside(workspaceRoot, candidate)) throw new Error("FDX_WORKSPACE_ESCAPE")
+      const rel = relative(workspaceRoot, candidate).replaceAll(sep, "/").replace(/\/$/, "")
+      let st: ReturnType<typeof statSync> | null = null
+      try { st = lstatSync(candidate) } catch { /* missing */ }
+      if (!st || !st.isFile()) continue
+      const info = statSync(candidate)
+      if (info.size > this.maxFileBytes) continue
+      const source = readFileSync(candidate, "utf8")
+      keep.set(rel, {
+        path: rel,
+        size: info.size,
+        mtimeMs: info.mtimeMs,
+        hash: createHash("sha256").update(source).digest("hex"),
+        symbols: sourceSymbols(source, this.maxSymbolsPerFile),
+        dependencies: sourceDependencies(source),
+      })
+    }
+
+    const files = [...keep.values()].sort((a, b) => a.path.localeCompare(b.path))
+    const index: FdxWorkspaceSnapshot = { workspaceId: identity.id, workspace: workspaceRoot, updatedAt: new Date().toISOString(), files }
+    this.state.set(identity.id, index)
+    this.persist()
+    return this.clone(index)
   }
 
   invalidate(workspace: string, changedPaths?: readonly string[]): void {
@@ -152,6 +222,28 @@ export class FdxWorkspaceIndex {
 
   health(): { workspaces: number; files: number } {
     return { workspaces: this.state.size, files: [...this.state.values()].reduce((sum, item) => sum + item.files.length, 0) }
+  }
+
+  private symbolsFromSnapshot(index: FdxWorkspaceSnapshot, query: string, paths?: readonly string[]): Array<{ path: string; symbol: string }> {
+    const needle = query.trim().toLowerCase()
+    return this.selectFiles(index, paths).flatMap(file => file.symbols.filter(symbol => !needle || symbol.toLowerCase().includes(needle)).map(symbol => ({ path: file.path, symbol }))).slice(0, 500)
+  }
+
+  private outlineFromSnapshot(index: FdxWorkspaceSnapshot, paths?: readonly string[]): Array<{ path: string; symbols: string[] }> {
+    return this.selectFiles(index, paths).map(file => ({ path: file.path, symbols: [...file.symbols] }))
+  }
+
+  private impactFromSnapshot(index: FdxWorkspaceSnapshot, paths: readonly string[]): FdxImpactSnapshot {
+    const changedPaths = this.relativePaths(index.workspace, paths)
+    const changed = new Set(changedPaths)
+    const affectedPaths = index.files
+      .filter(file => changed.has(file.path) || file.dependencies.some(dependency => {
+        const normalized = dependency.replaceAll("\\", "/").replace(/^\.\//, "")
+        return changedPaths.some(path => normalized === path || normalized.endsWith(`/${path}`) || path.endsWith(`/${normalized}`) || path.split("/").at(-1) === normalized)
+      }))
+      .map(file => file.path)
+      .sort()
+    return { changedPaths, affectedPaths }
   }
 
   private discover(root: string): string[] {

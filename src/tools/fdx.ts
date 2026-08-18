@@ -154,9 +154,11 @@ export const fdxReadTool: ToolDefinition = tool({
   async execute(args): Promise<string> {
     const turbo = getActiveFdxTurbo()
     // Resident fast path (Requirement Q): deterministic cached read is exact
-    // for plain reads without symbol/mode/deps semantics.
+    // for plain reads without symbol/mode/deps semantics. Routed through the
+    // turbo engine's native-daemon-first ordering; falls through on "fallback".
     if (turbo && !args.no_cache && !args.symbol && !args.mode && !args.with_deps && args.format !== "json") {
-      return turbo.read(String(args.file), { offset: args.offset, limit: args.limit }).text
+      const tr = await turbo.readAsync(String(args.file), { offset: args.offset, limit: args.limit })
+      if (tr.source !== "fallback") return tr.text
     }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
@@ -238,6 +240,11 @@ export const fdxGrepTool: ToolDefinition = tool({
     no_cache: tool.schema.boolean().optional(),
   },
   async execute(args): Promise<string> {
+    const turbo = getActiveFdxTurbo()
+    if (turbo && !args.no_cache) {
+      const tg = await turbo.grep(String(args.pattern), args.path, { context: args.context, maxMatches: args.max_matches })
+      if (tg.source !== "fallback") return tg.text
+    }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       return nativeSearchFallback(args.pattern, args.path)

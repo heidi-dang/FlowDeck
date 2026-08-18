@@ -367,6 +367,13 @@ fn main() {
         return;
     }
 
+    // Resident daemon mode: `fdx serve` runs the persistent JSON-lines IPC loop
+    // over stdin/stdout (one long-lived process serving many requests).
+    if args.iter().any(|a| a == "serve") {
+        fdx::serve::run();
+        return;
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
