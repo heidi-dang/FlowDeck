@@ -78,6 +78,7 @@ export type AuditCategory =
   | "verification"
   | "watchdog"
   | "concurrency"
+  | "parallel_coordination"
 
 const CRITICAL_CAP_SCORES: Record<string, number> = {
   WRONG_TASK_CORRELATION: 20,

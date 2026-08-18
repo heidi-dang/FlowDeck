@@ -27,11 +27,12 @@ export type PromptProvenanceKind =
   | "manual_user"
   | "internal_reasoning_recovery"
   | "internal_watchdog_recovery"
+  | "internal_parallel_child_ready"
   | "unknown_user_event"
 
 export interface InternalPromptRecord {
   sessionID: string
-  kind: "internal_reasoning_recovery" | "internal_watchdog_recovery"
+  kind: "internal_reasoning_recovery" | "internal_watchdog_recovery" | "internal_parallel_child_ready"
   generation: number
   promptText: string
   createdAt: number
@@ -617,7 +618,38 @@ class RecoveryCoordinator {
    * INVARIANT: only "manual_user" (positively verified) may reset recovery state.
    * INVARIANT: "unknown_user_event" leaves recovery state unchanged.
    */
-  public classifyMessage(sessionID: string, messageID?: string, text?: string): PromptProvenanceKind {
+  /**
+   * Register a coordinator-generated wake-up (parallel_child_ready) as an
+   * INTERNAL prompt so classifyMessage() never treats it as a manual user turn.
+   * Additive provenance: it cannot reset route/task/recovery state.
+   */
+  public registerParallelChildReadyPrompt(sessionID: string, messageID: string | undefined, promptText: string): void {
+    if (!sessionID || !promptText) return
+    let pending = this.pendingPrompts.get(sessionID)
+    if (!pending) {
+      pending = []
+      this.pendingPrompts.set(sessionID, pending)
+    }
+    const record: InternalPromptRecord = {
+      sessionID,
+      kind: "internal_parallel_child_ready",
+      generation: 0,
+      promptText,
+      createdAt: Date.now(),
+      messageID,
+    }
+    pending.push(record)
+    if (messageID) {
+      let byId = this.promptsByMessageId.get(sessionID)
+      if (!byId) {
+        byId = new Map()
+        this.promptsByMessageId.set(sessionID, byId)
+      }
+      byId.set(messageID, record)
+    }
+  }
+
+    public classifyMessage(sessionID: string, messageID?: string, text?: string): PromptProvenanceKind {
     if (!sessionID) return "manual_user"
 
     // A. Check ID-keyed map first — permanent, not consumed

@@ -160,6 +160,13 @@ import { getCallTimer, releaseCallTimer } from "./services/real-time-instrument"
 import { executeShellCommand } from "./services/shell-executor"
 import { buildScoreAnnotation } from "./services/visible-score-surface"
 import { stripScoreAnnotations, assertNoScoreLeak } from "./services/score-leak-guard"
+import {
+  HeidiActiveCoordinator,
+  registerParallelCoordinator,
+  getParallelCoordinator,
+  clearParallelCoordinator,
+  clearAllParallelCoordinators,
+} from "./services/heidi-active-coordinator"
 import { FdxTurboEngine } from "./services/fdx-turbo-engine"
 import { fdxFileCache } from "./services/fdx-file-cache"
 
@@ -215,6 +222,7 @@ const pendingChildSlots = new Map<string, ChildTaskCorrelation[]>()
 // ─── Production-hardening per-session runtime state ──────────────────────
 const sessionLoopIncidents = new Map<string, Set<string>>()
 const sessionLeaseHolders = new Map<string, string>()
+const sessionParallelWakeActive = new Set<string>()
 
 function enqueuePendingSlot(
   parentSessionID: string,
@@ -428,7 +436,34 @@ const plugin: Plugin = async ({ directory, client }) => {
       getSessionState: buildSessionStateCheck(targetSessionID),
     })
   }
-  recordRuntimeSelfReport(getExecutingRuntimeIdentity(import.meta.url), directory)
+  /**
+   * Bounded single-flight root wake-up for a READY parallel child result.
+   * Provenance = internal_parallel_child_ready: never a user message, never
+   * reclassifies routing, never resets phase/recovery/convergence. Issues a
+   * compact, non-"Continue" directive only when the root is genuinely idle and
+   * no wake-up is already in flight.
+   */
+  const maybeWakeRootForParallelReady = async (targetSessionID: string): Promise<void> => {
+    try {
+      const w = getWatchdogState(targetSessionID)
+      if (!w) return
+      if (w.isPendingProvider || w.isPendingTool || w.isPendingChild || w.isPendingContinuation || w.isPendingUser) return
+      if (sessionParallelWakeActive.has(targetSessionID)) return
+      const pc = getParallelCoordinator(targetSessionID)
+      if (!pc || pc.getReadyResults().length === 0) return
+      const sessionApi = (client as any)?.session
+      const promptFn = sessionApi?.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi?.prompt ? sessionApi.prompt.bind(sessionApi) : undefined
+      if (!promptFn) return
+      sessionParallelWakeActive.add(targetSessionID)
+      const directive = "A delegated specialist completed with a reviewable result. Integrate it now; independent siblings keep running in parallel."
+      const res = await promptFn({ path: { id: targetSessionID }, query: {}, body: { agent: "heidi", parts: [{ type: "text", text: directive }], system: directive } })
+      const msgId = res?.data?.id ?? res?.id
+      recoveryCoordinator.registerParallelChildReadyPrompt(targetSessionID, msgId, directive)
+    } catch { /* wake-up is best-effort; never floods */ } finally {
+      sessionParallelWakeActive.delete(targetSessionID)
+    }
+  }
+    recordRuntimeSelfReport(getExecutingRuntimeIdentity(import.meta.url), directory)
   let fdxWorkspaceIndex: FdxWorkspaceIndex | undefined
   let fdxDaemon: FdxDaemon | undefined
   let fdxDaemonSocketPath: string | undefined
@@ -853,6 +888,35 @@ const plugin: Plugin = async ({ directory, client }) => {
               appLog("[task-phase] new manual task detected; loop/convergence/watchdog/recovery state reset, session ancestry preserved", "info", sessionID)
             }
             void boundary
+          }
+          // ── Active Parallel Coordinator (PARALLEL_SPECIALISTS) ─────────
+          // Register a per-session coordinator over the intended fan-out so the
+          // Fast Harness packet reflects child status and Heidi gets directed
+          // toward READY-result integration and coordinator-owned work.
+          if (turn.decision?.executionClass === "PARALLEL_SPECIALISTS") {
+            const suggested: string[] =
+              (turn as any).suggestedAgents ?? turn.decision?.suggestedAgents ?? (turn.decision?.specialists ?? [] as unknown as string[])
+            if (suggested && suggested.length > 0) {
+              try {
+                const children = suggested.map((sp, i) => ({
+                  workstreamId: "par_" + i + "_" + sp,
+                  specialist: String(sp),
+                  goal: "workstream " + sp,
+                  access: "write" as const,
+                }))
+                clearParallelCoordinator(sessionID)
+                registerParallelCoordinator(
+                  sessionID,
+                  new HeidiActiveCoordinator({
+                    parentSessionId: sessionID,
+                    runId: "par_" + (turn.taskId ?? "task"),
+                    goal: fhTaskText.slice(0, 240),
+                    coordinatorOwnership: { integrationScopes: ["src/index.ts", "tests/"], readScopes: ["src/"] },
+                    children,
+                  }),
+                )
+              } catch { /* coordinator is best-effort on the live surface */ }
+            }
           }
           appendAuditEvent(directory, {
             kind: "routing.decision",
@@ -1750,6 +1814,42 @@ const plugin: Plugin = async ({ directory, client }) => {
           }
         } catch { /* audit must never break the runtime */ }
 
+        // ── Active Parallel Coordinator: feed child lifecycle events ────
+        try {
+          const pc = sessionID ? getParallelCoordinator(sessionID) : undefined
+          const targetAgent = (taskCall?.targetAgent ?? sessionTaskCalls.get(taskKey)?.targetAgent ?? "task")
+          if (pc) {
+            const desired = pc.getDesired()
+            const matched = desired.find((c) => c.specialist === targetAgent)
+            const childId = matched?.workstreamId ?? "par_" + targetAgent
+            pc.recordChildLifecycleEvent({
+              childId,
+              kind: hasError ? "child.failed" : "child.completed",
+              snapshot: {
+                childId,
+                parentSessionId: sessionID,
+                specialist: targetAgent,
+                state: hasError ? "failed" : ("completed" as any),
+                createdAt: taskCall?.startedAt ?? Date.now(),
+                finishedAt: Date.now(),
+                lastActivityAt: Date.now(),
+                summary: hasError ? undefined : String(toolOutput?.output ?? toolOutput?.result ?? "").slice(0, 200),
+              },
+            })
+            maybeWakeRootForParallelReady(sessionID)
+            // Parallel-coordination self-audit evidence (never in provider context).
+            runtimeSelfAudit.scoreEvent({
+              category: "parallel_coordination",
+              operation: "child." + (hasError ? "failed" : "completed"),
+              sessionID,
+              dimensionScores: { execution: hasError ? 55 : 95, convergence: pc.shouldEnterFinalConvergence() ? 90 : 98 },
+              evidenceIds: ["coordinator:" + childId],
+              latencyBreakdown: [],
+              violations: hasError ? [{ code: "PARALLEL_CHILD_FAILED", severity: "severe", detail: "child " + childId + " failed" }] : [],
+            })
+          }
+        } catch { /* coordinator integration is best-effort */ }
+
         if (taskCall) {
           try { new HeidiDelegationRuntime(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db).transition(taskKey, hasError ? "failed" : "completed", { summary: hasError ? undefined : String(toolOutput?.output ?? toolOutput?.result ?? "Delegated task completed").slice(0, 1000), error: hasError ? String(toolInput.error ?? toolOutput?.error ?? "No result returned") : undefined, toolCalls: sessionToolCalls.get(sessionID) ?? 0 }) } catch { /* projection is secondary */ }
           const durationMs = Date.now() - taskCall.startedAt
@@ -2560,6 +2660,8 @@ const plugin: Plugin = async ({ directory, client }) => {
       sessionLastManualUserAt.clear()
       sessionIsCancelled.clear()
       sessionLoopIncidents.clear()
+      clearAllParallelCoordinators()
+      sessionParallelWakeActive.clear()
       // Release any held repo leases and clear lease holders.
       for (const [sess, owned] of sessionLeaseHolders.entries()) {
         if (owned === sess) { try { repoLeaseCoordinator.releaseMutatingLease(repoId, sess) } catch { /* best-effort */ } }
