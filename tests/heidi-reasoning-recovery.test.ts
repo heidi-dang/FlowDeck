@@ -76,7 +76,7 @@ describe("Heidi Reasoning Recovery Runtime Integration", () => {
 
   afterEach(async () => {
     if (pluginInstance?.dispose) {
-      try { await pluginInstance.dispose() } catch {}
+      try { await Promise.race([Promise.resolve(pluginInstance.dispose()), new Promise((r) => setTimeout(r, 3000))]) } catch {}
     }
     // Windows can briefly hold the plugin's sqlite/tmp files after dispose;
     // teardown is best-effort — the recovery assertions above are the subject.
@@ -164,7 +164,7 @@ describe("Heidi Reasoning Recovery — bounded stage-2 on provider 400", () => {
     writeFileSync(join(tmpDir2, ".flowdeck.json"), JSON.stringify({ governance: { mode: "strict" } }))
   })
   afterEach(async () => {
-    if (pluginInstance2?.dispose) { try { await pluginInstance2.dispose() } catch {} }
+    if (pluginInstance2?.dispose) { try { await Promise.race([Promise.resolve(pluginInstance2.dispose()), new Promise((r) => setTimeout(r, 3000))]) } catch {} }
     await new Promise((res) => setTimeout(res, 150))
     try { rmSync(tmpDir2, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
   })

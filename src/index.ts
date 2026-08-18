@@ -2599,8 +2599,12 @@ const plugin: Plugin = async ({ directory, client }) => {
       if (schedulerTimer) clearInterval(schedulerTimer)
       // Close SQLite connections so Windows file locks are released
       // Stop the resident FDX engine (releases the native daemon process and its
-      // cwd lock — required for clean Windows temp-dir teardown).
-      await (turboEngine as { stop?: () => Promise<void> }).stop?.().catch(() => {})
+      // cwd lock — required for clean Windows temp-dir teardown). Bounded so the
+      // teardown can never block on a stalled child process.
+      await Promise.race([
+        (turboEngine as { stop?: () => Promise<void> }).stop?.().catch(() => {}),
+        new Promise((res) => setTimeout(res, 1500)),
+      ])
       try { closeAllConnections() } catch { /* best-effort */ }
     },
   }
