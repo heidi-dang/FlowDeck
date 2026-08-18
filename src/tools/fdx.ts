@@ -31,6 +31,7 @@ import {
 } from "./fdx-shared"
 import { FdxWorkspaceIndex } from "../services/fdx-index"
 import { fdxDaemonRequest } from "../services/fdx-daemon"
+import type { FdxTurboEngine } from "../services/fdx-turbo-engine"
 import type { OrchestrationMetrics } from "../orchestration/metrics"
 
 interface FdxNextRuntime {
@@ -41,6 +42,7 @@ interface FdxNextRuntime {
 }
 
 let activeFdxNextRuntime: FdxNextRuntime | undefined
+let activeFdxTurbo: FdxTurboEngine | undefined
 
 /**
  * Connect the optional persistent FDX index to the existing tool surface.
@@ -49,6 +51,18 @@ let activeFdxNextRuntime: FdxNextRuntime | undefined
  */
 export function configureFdxNextRuntime(runtime?: FdxNextRuntime): void {
   activeFdxNextRuntime = runtime
+}
+
+/**
+ * Connect the resident FDX Turbo runtime (Requirements O/P/Q): hot file cache,
+ * resident index + multiplexed native. Used as the preferred fast path.
+ */
+export function configureFdxTurbo(turbo?: FdxTurboEngine): void {
+  activeFdxTurbo = turbo
+}
+
+export function getActiveFdxTurbo(): FdxTurboEngine | undefined {
+  return activeFdxTurbo
 }
 
 function indexedOutline(runtime: FdxNextRuntime, paths: readonly string[], format?: "text" | "json"): string {
@@ -138,6 +152,12 @@ export const fdxReadTool: ToolDefinition = tool({
     no_cache: tool.schema.boolean().optional(),
   },
   async execute(args): Promise<string> {
+    const turbo = getActiveFdxTurbo()
+    // Resident fast path (Requirement Q): deterministic cached read is exact
+    // for plain reads without symbol/mode/deps semantics.
+    if (turbo && !args.no_cache && !args.symbol && !args.mode && !args.with_deps && args.format !== "json") {
+      return turbo.read(String(args.file), { offset: args.offset, limit: args.limit }).text
+    }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       return nativeReadFallback(args.file, args.limit, args.offset)
@@ -174,6 +194,12 @@ export const fdxSearchTool: ToolDefinition = tool({
     no_cache: tool.schema.boolean().optional(),
   },
   async execute(args): Promise<string> {
+    const turbo = getActiveFdxTurbo()
+    if (turbo && !args.no_cache) {
+      const tr = await turbo.search(String(args.query), args.path, !!args.no_cache)
+      if (tr.source !== "fallback") return tr.text
+      // persistent-index path below takes over when native FDX is unavailable
+    }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       if (activeFdxNextRuntime && !args.no_cache) {
@@ -273,6 +299,11 @@ export const fdxImpactTool: ToolDefinition = tool({
     root: tool.schema.string().optional(),
   },
   async execute(args): Promise<string> {
+    const turbo = getActiveFdxTurbo()
+    if (turbo) {
+      const ti = await turbo.impact(args.files)
+      if (ti.source !== "fallback") return ti.text
+    }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       if (activeFdxNextRuntime) {
@@ -312,6 +343,11 @@ export const fdxOutlineTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     const searchPaths = args.paths && args.paths.length > 0 ? args.paths : ["."]
+    const turbo = getActiveFdxTurbo()
+    if (turbo && !args.no_cache) {
+      const to = await turbo.outline(searchPaths, !!args.no_cache)
+      if (to.source !== "fallback") return to.text
+    }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       if (activeFdxNextRuntime && !args.no_cache) {
