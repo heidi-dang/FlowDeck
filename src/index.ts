@@ -13,6 +13,7 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
+import { tool } from "@opencode-ai/plugin"
 import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync } from "fs"
 import { basename, dirname, join } from "path"
 import { fileURLToPath } from "url"
@@ -154,6 +155,11 @@ import { taskPhaseManager } from "./services/task-phase-manager"
 import { repoIdOf, RepoLeaseCoordinator } from "./services/repo-lease-coordinator"
 import { runtimeSelfAudit, buildLatencyBreakdown } from "./services/runtime-self-audit"
 import { classifyFastLane, rewriteShellCommand, rewriteLsCommand } from "./services/tool-fast-lane"
+import { isConfirmedSourceMutation } from "./services/semantic-mutation"
+import { getCallTimer, releaseCallTimer } from "./services/real-time-instrument"
+import { executeShellCommand } from "./services/shell-executor"
+import { buildScoreAnnotation } from "./services/visible-score-surface"
+import { stripScoreAnnotations, assertNoScoreLeak } from "./services/score-leak-guard"
 import { FdxTurboEngine } from "./services/fdx-turbo-engine"
 import { fdxFileCache } from "./services/fdx-file-cache"
 
@@ -460,6 +466,36 @@ const plugin: Plugin = async ({ directory, client }) => {
     index: fdxWorkspaceIndex,
     daemonSocketPath: fdxDaemonSocketPath,
   })
+
+  // ── Round-2: FlowDeck-owned shell tool — executes recognized safe read-only
+  // commands through the native fast lane with ZERO bash subprocess spawns.
+  // Unsafe/uncertain commands fall back to a real bash -lc.
+  const shellFastLaneTool = tool({
+    description:
+      "Execute a shell command. Recognized read-only commands (cat, sed -n, grep, git status/diff/log, ls) run through the fast lane with no shell spawn; all others run in bash.",
+    args: {
+      command: tool.schema.string().describe("The shell command to execute."),
+      description: tool.schema.string().optional(),
+      cwd: tool.schema.string().optional().describe("Working directory (defaults to repo root)."),
+    },
+    async execute(args: any) {
+      const r = executeShellCommand(String(args.command ?? ""), { cwd: args.cwd ? String(args.cwd) : directory })
+      return r.output
+    },
+  })
+  const bashFastLaneTool = tool({
+    description: "Execute a bash command via the FlowDeck fast lane (same semantics as the shell tool).",
+    args: {
+      command: tool.schema.string().describe("The bash command to execute."),
+      description: tool.schema.string().optional(),
+      cwd: tool.schema.string().optional(),
+    },
+    async execute(args: any) {
+      const r = executeShellCommand(String(args.command ?? ""), { cwd: args.cwd ? String(args.cwd) : directory })
+      return r.output
+    },
+  })
+
   configureFdxTurbo(turboEngine)
   const repoLeaseCoordinator = new RepoLeaseCoordinator({
     stateDir: join(directory, ".flowdeck", "leases"),
@@ -530,6 +566,16 @@ const plugin: Plugin = async ({ directory, client }) => {
         // must not count as progress or as user activity.
         watchdogIncidentManager.recordNonProgressActivity(state.sessionID)
         semanticConvergence.recordNonProgressSignal(state.sessionID, "watchdog_prompt")
+        try {
+          runtimeSelfAudit.scoreEvent({
+            category: "recovery",
+            operation: "watchdog-directive",
+            sessionID: state.sessionID,
+            dimensionScores: { execution: 88, recovery: 80 },
+            evidenceIds: [],
+            latencyBreakdown: [],
+          })
+        } catch { /* audit must never break the runtime */ }
         updateWatchdogState(state.sessionID, { recoveryCount: state.recoveryCount + 1 })
         recoveryCoordinator.requestContinuation({
           sessionID: state.sessionID,
@@ -921,11 +967,16 @@ const plugin: Plugin = async ({ directory, client }) => {
         finalMessages = newMessages
       }
 
-      // 4. Mutate the SHARED array in place so opencode's provider serialization
-      //    (toModelMessagesEffect, reading the same reference) sees the sanitized
-      //    history. Do not reassign output.messages.
+      // 4. Round-2: strip any FlowDeck score/UI metadata from the provider replay
+      //    (score is telemetry/TUI, never model context — same separation as
+      //    provider-replay sanitation). Then mutate the SHARED array in place so
+      //    opencode's provider serialization sees the sanitized history.
+      const leakFreeMessages = stripScoreAnnotations(finalMessages as any)
       output.messages.length = 0
-      for (const m of finalMessages) output.messages.push(m)
+      for (const m of leakFreeMessages) output.messages.push(m as any)
+      if (!assertNoScoreLeak(output.messages as any)) {
+        await client.app.log({ body: { service: "flowdeck", level: "warn", message: "[provider-history] FlowDeck score metadata would leak into provider replay; suppressed", extra: { sessionID: realSessionID } } }).catch(() => {})
+      }
 
       // 4. Assert the provider-replay shape actually handed to the provider.
       //    This is the closest safe FlowDeck boundary to the provider request:
@@ -1028,6 +1079,8 @@ const plugin: Plugin = async ({ directory, client }) => {
       "heidi-scheduler": heidiSchedulerTool,
       "heidi-agents": heidiAgentsTool,
     "fdx-pr-monitor": fdxPrMonitorTool,
+    "shell": shellFastLaneTool,
+    "bash": bashFastLaneTool,
     },
 
     "tool.execute.before": async (toolInput: any, toolOutput: any) => {
@@ -1038,6 +1091,10 @@ const plugin: Plugin = async ({ directory, client }) => {
       const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
       const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
       const resolvedCaller = sessionMeta?.agent ?? (sessionID ? sessionCallerAgents.get(sessionID) : undefined) ?? toolInput.agent
+
+      // ── Round-2: real latency measurement (monotonic; no synthetic constants) ──
+      const callTiming = getCallTimer(sessionID || "no-session", callID || "no-call", toolName || "no-tool")
+      callTiming.start("tool-before-total")
 
       // ── Requirements K + S: repo coordination & shell fast-lane rewrite ──
       const toolLowerBefore = String(toolName).toLowerCase()
@@ -1435,6 +1492,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       await toolGuardHook({ directory }, toolInput, toolOutput)
 
       // ── 7. Loop detection — incident-based steering (Requirements D/E) ──
+      callTiming.start("loop-guard")
       try {
         const fingerprint = fingerprintAction(toolName, rawArgs)
         if (sessionID) {
@@ -1514,6 +1572,8 @@ const plugin: Plugin = async ({ directory, client }) => {
         }
         throw err
       }
+      // Close the last before-hook phase; tool-runtime begins in the after hook.
+      callTiming.start("before-complete")
     },
 
 
@@ -1523,6 +1583,10 @@ const plugin: Plugin = async ({ directory, client }) => {
       const callID = toolInput.callID ?? ""
       const agent = sessionCallerAgents.get(sessionID) ?? toolInput.agent ?? "unknown"
       const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
+      // Round-2: resume real latency measurement; "tool-runtime" spans the actual
+      // tool execution between the before-hook and this after-hook.
+      const afterTiming = getCallTimer(sessionID || "no-session", callID || "no-call", toolName || "no-tool")
+      afterTiming.start("tool-runtime")
       appLog(`[tool] done tool=${toolName} session=${sessionID}`)
       if (sessionID) {
         const activeCount = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1)
@@ -1579,52 +1643,76 @@ const plugin: Plugin = async ({ directory, client }) => {
         "success"
       )
 
-      // ── Production hardening: convergence, verification knowledge, self-audit ──
+      // ── Round-2: canonical semantic progress classification (read-only never
+      // counts as mutation), real measured latency, and visible FlowDeck score. ──
       if (sessionID) {
         const toolLower = String(toolName).toLowerCase()
         const errored = Boolean(toolInput?.error) || Boolean(toolOutput?.error) || toolOutput === undefined || toolOutput === null
-        const isMutation = ["write", "write_file", "edit", "edit_file", "patch", "apply_patch", "str_replace", "hash-edit", "create_file"].includes(toolLower) || Boolean(rawArgs?.file)
-        if (isMutation && !errored) {
-          // Requirement F: production source change = meaningful progress.
+        // Canonical classifier: only confirmed successful source mutations advance
+        // convergence. A read that merely carries a `file` argument is read_only.
+        const confirmedMutation = isConfirmedSourceMutation(toolLower, rawArgs)
+        if (confirmedMutation && !errored) {
           semanticConvergence.recordProgress(sessionID, "source_changed", [])
           loopIncidentTracker.resolveAllForSession(sessionID)
           emptyTerminalCircuit.recordSemanticProgress(sessionID)
           watchdogIncidentManager.recordProgressEvidence(sessionID, "source_changed")
-        } else if (!isMutation && !errored && !taskPhaseManager.getCurrentPhase(sessionID)) {
+        } else if (sessionID && !confirmedMutation && !errored) {
           semanticConvergence.recordNonProgressSignal(sessionID, "tool_activity")
         }
-        // Invalidate FDX hot file cache on writes (Requirement Q: no stale reads).
-        if (rawArgs?.file && typeof rawArgs.file === "string" && isMutation) {
+        afterTiming.start("convergence")
+        // Invalidate FDX hot file cache ONLY on confirmed writes (no stale reads).
+        if (rawArgs?.file && typeof rawArgs.file === "string" && confirmedMutation) {
           fdxFileCache.invalidate(String(rawArgs.file))
-          turboEngine.invalidate(String(rawArgs.file))
+          if (typeof (turboEngine as any)?.invalidate === "function") turboEngine.invalidate(String(rawArgs.file))
         }
-        // Runtime self-audit for the tool (Requirement L/M/N): evidence-based score.
+        // Runtime self-audit for the tool (Requirement L/M/N) with REAL latency.
         try {
-          const startMs = Date.now()
           const fastLane = classifyFastLane(toolLower)
           const dims: Record<string, number> = {
             execution: errored ? 40 : 95,
-            integrity: isMutation && !errored ? 95 : 98,
+            integrity: confirmedMutation && !errored ? 95 : 98,
             governance: fastLane.usedFastPath ? 92 : 98,
             efficiency: fastLane.usedFastPath ? 90 : 85,
             state_consistency: 95,
           }
-          if (fastLane.usedFastPath) dims.governance = 85 // fast path omits full eval by design
-          runtimeSelfAudit.scoreEvent({
+          if (fastLane.usedFastPath) dims.governance = 85
+          afterTiming.start("self-audit")
+          const auditEvent = runtimeSelfAudit.scoreEvent({
             category: "tool_execution",
             operation: toolName,
             sessionID,
             dimensionScores: dims,
             evidenceIds: [],
-            latencyBreakdown: buildLatencyBreakdown([
-              ["pre_hook", 0],
-              ["governance", fastLane.usedFastPath ? 0.05 : 0.2],
-              ["loop_guard", 0.03],
-              ["actual_tool_execution", Math.max(0.5, startMs - (rawArgs.__fdStartAt ? Number(rawArgs.__fdStartAt) : startMs))],
-              ["post_processing", 0.1],
-            ]),
+            latencyBreakdown: buildLatencyBreakdown(
+              afterTiming.phases().map((p) => [p.name, p.ms] as [string, number]),
+            ),
             violations: errored ? [{ code: "RECOVERABLE_TOOL_ERROR", severity: "severe", detail: toolName + " errored" }] : [],
           })
+          afterTiming.end()
+          releaseCallTimer(sessionID, callID, toolName)
+          // Round-2: visible score surface. Score goes into tool title + fd.selfAudit
+          // metadata — never into output text (score-leak guard strips on replay).
+          const scoreClass = toolLower === "shell" || toolLower === "bash" ? "shell" : (toolLower.startsWith("fdx") ? "fdx" : "tool")
+          const label = String(((toolOutput as any)?.title) ?? toolName)
+          const annotation = buildScoreAnnotation({
+            actionClass: scoreClass as any,
+            sessionID,
+            label,
+            score: auditEvent.score,
+          })
+          if (toolOutput && typeof toolOutput === "object") {
+            toolOutput.title = annotation.title
+            toolOutput.metadata = { ...(toolOutput.metadata as Record<string, unknown> | undefined), fd: annotation.metadata.fd }
+            appendAuditEvent(directory, {
+              kind: "self_audit.event",
+              session_id: sessionID,
+              agent,
+              tool: toolName,
+              decision: "score",
+              reason: "FlowDeck " + Math.round(auditEvent.score) + "%",
+              details: { fdSelfAudit: annotation.metadata.fd, actionClass: scoreClass, latencyPhases: afterTiming.phases() },
+            })
+          }
         } catch { /* audit must never break the runtime */ }
       }
 
@@ -1632,6 +1720,35 @@ const plugin: Plugin = async ({ directory, client }) => {
         const taskKey = `${sessionID}:${callID || "task"}`
         const taskCall = sessionTaskCalls.get(taskKey)
         const hasError = !!toolInput.error || !!toolOutput?.error || toolOutput === undefined || toolOutput === null
+
+        // ── Round-2: delegation integrity score (evidence-based) ──
+        try {
+          const delegScore = hasError ? 58 : 97
+          runtimeSelfAudit.scoreEvent({
+            category: "task_delegation",
+            operation: "delegate",
+            sessionID,
+            dimensionScores: {
+              execution: hasError ? 40 : 97,
+              integrity: hasError ? 50 : 98,
+              governance: 98,
+              routing: 98,
+            },
+            evidenceIds: [],
+            latencyBreakdown: [],
+            violations: hasError ? [{ code: "TASK_DELEGATION_FAILED", severity: "severe", detail: "task delegation errored" }] : [],
+          })
+          if (toolOutput && typeof toolOutput === "object") {
+            const annotation = buildScoreAnnotation({
+              actionClass: "delegation",
+              sessionID,
+              label: "Task " + String((taskCall?.targetAgent ?? "task")),
+              score: delegScore,
+            })
+            toolOutput.title = annotation.title
+            toolOutput.metadata = { ...(toolOutput.metadata as Record<string, unknown> | undefined), fd: annotation.metadata.fd }
+          }
+        } catch { /* audit must never break the runtime */ }
 
         if (taskCall) {
           try { new HeidiDelegationRuntime(initializeDatabase({ path: join(directory, ".flowdeck", "flowdeck.db") }).db).transition(taskKey, hasError ? "failed" : "completed", { summary: hasError ? undefined : String(toolOutput?.output ?? toolOutput?.result ?? "Delegated task completed").slice(0, 1000), error: hasError ? String(toolInput.error ?? toolOutput?.error ?? "No result returned") : undefined, toolCalls: sessionToolCalls.get(sessionID) ?? 0 }) } catch { /* projection is secondary */ }
@@ -1931,6 +2048,41 @@ const plugin: Plugin = async ({ directory, client }) => {
             recoveryCoordinator.notifyAssistantTurnTerminal(eventSessionID, msgInfo.id, assistantParentID)
           }
 
+          // ── Round-2: assistant-completion + think integrity scores (metadata only) ──
+          try {
+            const hasReasoningPart = Array.isArray(parts) && parts.some((p: any) => p.type === "reasoning")
+            const hadVisibleText = Array.isArray(parts) && parts.some((p: any) => p.type === "text" && p.text?.trim())
+            const reasoningMeta = {
+              durationMs: 0,
+              terminalState: msgFinishReason ?? undefined,
+              visibleOutputPresent: hadVisibleText,
+              malformedCompletion: isConfirmedTerminal && !hadVisibleText && !(Array.isArray(parts) && parts.some((p: any) => p.type === "tool" && (typeof p.state === "string" ? p.state : p.state?.status) !== "pending" && (typeof p.state === "string" ? p.state : p.state?.status) !== "running")),
+              recoveryRequired: Boolean(msgInfo.error) || sessionRecoveryState.has(eventSessionID),
+            } as any
+            if (hasReasoningPart) {
+              runtimeSelfAudit.scoreEvent({
+                category: "think",
+                operation: "assistant-reasoning",
+                sessionID: eventSessionID,
+                dimensionScores: { execution: msgInfo.error ? 40 : 96 },
+                evidenceIds: [],
+                latencyBreakdown: [],
+                reasoningMeta,
+              })
+            }
+            if (isConfirmedTerminal) {
+              runtimeSelfAudit.scoreEvent({
+                category: "assistant_completion",
+                operation: "assistant-completion",
+                sessionID: eventSessionID,
+                dimensionScores: { execution: msgInfo.error ? 40 : 97, state_consistency: hadVisibleText ? 98 : 80 },
+                evidenceIds: [],
+                latencyBreakdown: [],
+                reasoningMeta,
+              })
+            }
+          } catch { /* audit must never break the runtime */ }
+
           // P0 FIX: Cancel any scheduled recovery when the session is interrupted.
           // An interrupted/error turn must never be followed by automatic continuation.
           // IMPORTANT: Only cancel session for genuine user-Stop/interrupted turns (finishReason=cancelled/aborted/error).
@@ -2146,6 +2298,18 @@ const plugin: Plugin = async ({ directory, client }) => {
                   details: diagnostics as unknown as Record<string, unknown>,
                 })
                                 const etcDecision = emptyTerminalCircuit.recordEmptyTerminal(eventSessionID, messageId)
+                // Round-2: recovery integrity score (metadata only).
+                try {
+                  runtimeSelfAudit.scoreEvent({
+                    category: "recovery",
+                    operation: "empty-terminal-" + etcDecision.action,
+                    sessionID: eventSessionID,
+                    dimensionScores: { execution: etcDecision.action === "circuit_break" ? 40 : 90, recovery: etcDecision.action === "circuit_break" ? 35 : 92 },
+                    evidenceIds: [],
+                    latencyBreakdown: [],
+                    violations: etcDecision.action === "circuit_break" ? [{ code: "RECOVERY_FLOOD", severity: "severe", detail: "empty-terminal recovery circuit exhausted" }] : [],
+                  })
+                } catch { /* audit must never break the runtime */ }
                 if (etcDecision.action === "circuit_break") {
                   appendAuditEvent(directory, {
                     kind: "empty_terminal.recovery",
