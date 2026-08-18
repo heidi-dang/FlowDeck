@@ -31,6 +31,12 @@ function makeTmpDir() {
   return dir
 }
 
+function safeCleanupDir(dir: string) {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  } catch {}
+}
+
 async function makePlugin(dir: string) {
   const prompts: any[] = []
   const mockClient = {
@@ -130,7 +136,7 @@ describe("Required 2 — transient message.updated during active turn", () => {
     expect(prompts.length).toBe(0)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 
   it("fires 0 continuations when transient update has pending tool", async () => {
@@ -162,7 +168,7 @@ describe("Required 2 — transient message.updated during active turn", () => {
     expect(prompts.length).toBe(0)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -198,7 +204,7 @@ describe("Required 3 — confirmed terminal empty turn triggers bounded recovery
     expect(prompts[0].body.parts[0].text).toContain("Continue the current task")
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 
   it("triggers exactly 1 recovery via session.idle signal", async () => {
@@ -226,7 +232,7 @@ describe("Required 3 — confirmed terminal empty turn triggers bounded recovery
     expect(prompts.length).toBe(1)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -301,7 +307,7 @@ describe("Required 4 — internal provenance multi-event lifecycle", () => {
     expect(wState?.recoveryCount).toBeGreaterThanOrEqual(1)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -379,7 +385,7 @@ describe("Required 7 — true single-flight continuation", () => {
     expect(prompts.length).toBeLessThanOrEqual(1)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -430,7 +436,7 @@ describe("Required 9 — cancellation/interrupted → no automatic continuation"
     expect(prompts.length).toBeLessThanOrEqual(1) // at most 1 (for the new turn after interrupt)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 
   it("fires 0 continuations after session.error (session stop)", async () => {
@@ -469,7 +475,7 @@ describe("Required 9 — cancellation/interrupted → no automatic continuation"
     expect(prompts.length).toBe(0)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -552,7 +558,7 @@ describe("Required 13 — screenshot regression: tool→Continue→Interrupted�
     expect(prompts.length).toBe(0) // NO continuation after Interrupted
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 
   it("fires 0 automatic Continue prompts during 10+ sequential tool transitions", async () => {
@@ -593,7 +599,7 @@ describe("Required 13 — screenshot regression: tool→Continue→Interrupted�
     expect(prompts.length).toBe(0) // ZERO spurious Continue prompts during healthy execution
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -667,6 +673,6 @@ describe("Required 10 — incident not reset on transient tool completion mid-tu
     expect(prompts.length).toBe(1) // still just the original 1
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })

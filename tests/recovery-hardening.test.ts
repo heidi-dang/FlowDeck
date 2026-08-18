@@ -26,6 +26,12 @@ function makeTmpDir() {
   return dir
 }
 
+function safeCleanupDir(dir: string) {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  } catch {}
+}
+
 async function makePlugin(dir: string) {
   const prompts: any[] = []
   const generatedIds: string[] = []
@@ -93,7 +99,7 @@ describe("R1 — timer preflight: provider becomes pending before timer fires", 
     expect(recoveryCoordinator.getActiveGeneration(sessionID)?.state).toBe("CANCELLED")
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -129,7 +135,7 @@ describe("R2 — timer preflight: tool becomes pending before timer fires", () =
     expect(recoveryCoordinator.getActiveGeneration(sessionID)?.state).toBe("CANCELLED")
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -173,7 +179,7 @@ describe("R3 — timer preflight: session cancelled before timer fires", () => {
     expect(getWatchdogState(sessionID)?.isPendingContinuation).toBe(false)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -243,7 +249,7 @@ describe("R4 — timer preflight: manual user message supersedes scheduled recov
     expect(prompts[0].body.parts[0].text).toContain("Continue the current task")
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -290,7 +296,7 @@ describe("R5 — table-driven preflight suppression routes all cleanly release s
       expect(recoveryCoordinator.getActiveGeneration(sessionID)?.state).toBe("CANCELLED")
 
       if (instance.dispose) await instance.dispose()
-      rmSync(dir, { recursive: true, force: true })
+      safeCleanupDir(dir)
     })
   }
 })
@@ -353,7 +359,7 @@ describe("R6 — empty-text provenance is UNKNOWN, not internal", () => {
     expect(wStateAfter?.recoveryCount).toBe(recoveryCountBefore)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -439,7 +445,7 @@ describe("R7 — ID provenance persists across chat.message + message.updated", 
     expect(wStateAfter?.recoveryCount).toBe(recoveryCountBefore)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -483,7 +489,7 @@ describe("R8 — assistant response correlation: exact parentID, fallback, and r
     expect(exactTel.details.internalPromptId).toBe(internalPromptId)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 
   it("emits recovery_correlation_rejected and does NOT complete generation when parentID is mismatched", async () => {
@@ -521,7 +527,7 @@ describe("R8 — assistant response correlation: exact parentID, fallback, and r
     expect(rejTel.details.assistantParentID).toBe("wrong-user-prompt-id")
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 
   it("emits recovery_correlation_ordered_fallback when assistant parentID is absent", async () => {
@@ -556,7 +562,7 @@ describe("R8 — assistant response correlation: exact parentID, fallback, and r
     expect(fbTel).toBeDefined()
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -592,7 +598,7 @@ describe("R9 — duplicate terminal events complete generation exactly once", ()
     expect(getWatchdogState(sessionID)?.isPendingContinuation).toBe(false)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -645,7 +651,7 @@ describe("R10 — sync prompt in SUBMITTED_UNCORRELATED state cancels cleanly", 
     expect(recoveryCoordinator.getActiveGeneration(sessionID)?.state).toBe("CANCELLED")
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -678,7 +684,7 @@ describe("R11 — orphan generation timeout releases single-flight", () => {
     expect(recoveryCoordinator.getActiveGeneration(sessionID)?.state).toBe("FAILED")
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -713,7 +719,7 @@ describe("R12 — original screenshot regression: 0 Continue prompts during heal
     expect(prompts.length).toBe(0)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
 
@@ -765,6 +771,6 @@ describe("R13 — genuine malformed terminal turn produces exactly 1 recovery", 
     expect(prompts.length).toBe(1)
 
     if (instance.dispose) await instance.dispose()
-    rmSync(dir, { recursive: true, force: true })
+    safeCleanupDir(dir)
   })
 })
