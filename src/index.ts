@@ -115,7 +115,7 @@ import {
   type SessionRecoveryState,
 } from "./services/reasoning-recovery"
 import { updateWatchdogState, getWatchdogState, clearWatchdogState, getAllWatchdogStates, clearAllWatchdogStates } from "./services/heidi-watchdog"
-import { recoveryCoordinator } from "./services/recovery-coordinator"
+import { recoveryCoordinator, type RecoveryContinuationRequest } from "./services/recovery-coordinator"
 import { initializeDatabase, closeAllConnections } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
@@ -144,6 +144,10 @@ const sessionWarnings = new Map<string, number>()
 const sessionStartTimes = new Map<string, number>()
 const sessionActiveTools = new Map<string, number>()
 const sessionFilesChanged = new Map<string, Set<string>>()
+/** Timestamp of last MANUAL user message per session, for preflight hasNewerUserMessage check. */
+const sessionLastManualUserAt = new Map<string, number>()
+/** Whether the session is in a cancelled/interrupted state. */
+const sessionIsCancelled = new Map<string, boolean>()
 interface RuntimeSessionMetadata {
   sessionID: string
   parentID?: string
@@ -352,6 +356,28 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   setActiveProjectDir(directory)
   let handleEvent: (args: { event: any }) => Promise<void> = async () => {}
+  /** Build the preflight state check closure for a given session. */
+  const buildSessionStateCheck = (targetSessionID: string): RecoveryContinuationRequest["getSessionState"] => {
+    return () => {
+      const wState = getWatchdogState(targetSessionID)
+      if (!wState) return null
+      return {
+        isPendingProvider: wState.isPendingProvider,
+        isPendingTool: wState.isPendingTool,
+        isPendingChild: wState.isPendingChild,
+        isCancelled: sessionIsCancelled.get(targetSessionID) ?? false,
+        // hasNewerUserMessage: true if a manual user message arrived AFTER this recovery was scheduled.
+        // We track this by checking if sessionLastManualUserAt was updated after the recovery was created.
+        // The coordinator itself tracks the creation time; we expose last-manual-user timestamp.
+        // The preflight check in the coordinator compares generation.createdAt vs this value.
+        hasNewerUserMessage: (() => {
+          const lastManualAt = sessionLastManualUserAt.get(targetSessionID) ?? 0
+          const gen = recoveryCoordinator.getActiveGeneration(targetSessionID)
+          return gen ? lastManualAt > gen.createdAt : false
+        })(),
+      }
+    }
+  }
   /** Bounded reasoning-only auto-continuation: exactly one prompt per scheduled stage via recovery coordinator. */
   const scheduleReasoningContinuation = (targetSessionID: string): void => {
     recoveryCoordinator.requestContinuation({
@@ -361,6 +387,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       client,
       appLog,
       handleEvent,
+      getSessionState: buildSessionStateCheck(targetSessionID),
     })
   }
   recordRuntimeSelfReport(getExecutingRuntimeIdentity(import.meta.url), directory)
@@ -451,6 +478,7 @@ const plugin: Plugin = async ({ directory, client }) => {
              client,
              appLog,
              handleEvent,
+             getSessionState: buildSessionStateCheck(state.sessionID),
            })
         } else {
            appLog(`[watchdog] Stalled session ${state.sessionID} exhausted watchdog recovery budget.`, "error", state.sessionID).catch(()=>{})
@@ -1435,10 +1463,17 @@ const plugin: Plugin = async ({ directory, client }) => {
           const msgId = info?.id ?? event?.properties?.info?.id;
           const provenance = recoveryCoordinator.classifyMessage(sessionID, msgId, msgText);
           if (provenance === "manual_user") {
+            // Positive manual user turn: reset recovery state and record timestamp for preflight.
             stateUpdates.recoveryExhausted = false;
             stateUpdates.recoveryCount = 0;
             sessionRecoveryState.delete(sessionID);
+            sessionLastManualUserAt.set(sessionID, Date.now());
+            // If a recovery is currently scheduled (SCHEDULED state), cancel it so the
+            // timer preflight will suppress it. The user's turn supersedes recovery.
+            recoveryCoordinator.markGenerationCancelledByUserMessage(sessionID);
           }
+          // "unknown_user_event" (missing/empty text): leave all recovery state unchanged.
+          // "internal_*": internal recovery prompt — do not reset recovery state.
         }
         updateWatchdogState(sessionID, stateUpdates)
       }
@@ -1479,16 +1514,30 @@ const plugin: Plugin = async ({ directory, client }) => {
             type === "session.idle"      // session.idle is a strong terminal boundary
           )
 
+          // Extract parentID from the assistant message for causal correlation.
+          // OpenCode may expose parentID linking the assistant turn to its user prompt.
+          const assistantParentID: string | undefined =
+            msgInfo.parentID ?? msgInfo.parent_id ?? undefined
+
           // Notify coordinator that a recovery turn has reached terminal state.
-          // This clears isPendingContinuation only when a real terminal signal arrives.
+          // This clears isPendingContinuation only when the terminal assistant turn is
+          // causally correlated to the specific recovery generation.
           if (isConfirmedTerminal && !msgInfo.error) {
-            recoveryCoordinator.notifyAssistantTurnTerminal(eventSessionID, msgInfo.id)
+            recoveryCoordinator.notifyAssistantTurnTerminal(eventSessionID, msgInfo.id, assistantParentID)
           }
 
           // P0 FIX: Cancel any scheduled recovery when the session is interrupted.
           // An interrupted/error turn must never be followed by automatic continuation.
-          if (msgInfo.error || msgFinishReason === "error" || msgFinishReason === "cancelled" || msgFinishReason === "aborted") {
+          // IMPORTANT: Only cancel session for genuine user-Stop/interrupted turns (finishReason=cancelled/aborted/error).
+          // For provider API errors on assistant messages, use notifyAssistantTurnProviderError
+          // which clears isPendingContinuation without cancelling the session, allowing stage-2 recovery.
+          if (!msgInfo.error && (msgFinishReason === "error" || msgFinishReason === "cancelled" || msgFinishReason === "aborted")) {
+            sessionIsCancelled.set(eventSessionID, true)
             recoveryCoordinator.cancelSession(eventSessionID)
+          } else if (msgInfo.error) {
+            // Provider/API error on assistant turn: mark generation failed (clears isPendingContinuation)
+            // without cancelling the session. Stage-2 recovery can still be triggered by the caller.
+            recoveryCoordinator.notifyAssistantTurnProviderError(eventSessionID)
           }
 
           // A session that produced visible output or completed tool execution after
@@ -1775,6 +1824,8 @@ const plugin: Plugin = async ({ directory, client }) => {
             }
           } else if (type === "session.error") {
             const errorMessage = event?.properties?.error ?? event?.error ?? "Session errored"
+            // Mark the session as cancelled so preflight can detect it
+            sessionIsCancelled.set(sessionID, true)
             const wState = getWatchdogState(sessionID)
             if (!(wState && wState.recoveryExhausted)) {
               updateWatchdogState(sessionID, { hasUnresolvedTask: false })
@@ -1894,6 +1945,8 @@ const plugin: Plugin = async ({ directory, client }) => {
       sessionWarnings.clear()
       sessionStartTimes.clear()
       sessionFilesChanged.clear()
+      sessionLastManualUserAt.clear()
+      sessionIsCancelled.clear()
       // Stop the outbox worker and run the better-harness cleanup (best-effort teardown)
       if (activeOrchestrationRuntime) {
         try {
@@ -1933,6 +1986,8 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionStartTimes.delete(sessionID)
   sessionFilesChanged.delete(sessionID)
   sessionActiveTools.delete(sessionID)
+  sessionLastManualUserAt.delete(sessionID)
+  sessionIsCancelled.delete(sessionID)
   clearWatchdogState(sessionID)
   sessionCallerAgents.delete(sessionID)
   sessionReasoningRecoveryRegistry.delete(sessionID)
