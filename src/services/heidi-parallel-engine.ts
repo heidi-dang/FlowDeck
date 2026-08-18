@@ -33,6 +33,11 @@ export interface DelegationNode {
   summary?: string
   error?: string
   result?: ChildResult
+  integrationStatus?: IntegrationStatus
+  resultReadyAt?: number
+  reviewStartedAt?: number
+  integrationStartedAt?: number
+  integratedAt?: number
 }
 
 export interface DelegationRun {
@@ -44,6 +49,36 @@ export interface DelegationRun {
   startedAt?: string
   finishedAt?: string
   nodes: DelegationNode[]
+}
+
+export type IntegrationStatus =
+  | "pending"
+  | "ready"
+  | "reviewing"
+  | "integrating"
+  | "focused_verification"
+  | "integrated"
+  | "rejected"
+
+export interface ParallelIntegrationState {
+  nodeId: string
+  status: IntegrationStatus
+  resultReadyAt?: number
+  reviewStartedAt?: number
+  integrationStartedAt?: number
+  integratedAt?: number
+}
+
+export interface ChildSnapshotView {
+  nodeId: string
+  workstreamId: string
+  specialist: string
+  status: DelegationNodeStatus
+  integrationStatus: IntegrationStatus
+  access: DelegationNodeAccess
+  fileScopes: string[]
+  startedAt?: number
+  completedAt?: number
 }
 
 export interface ChildResult {
@@ -517,4 +552,77 @@ export class HeidiParallelEngine {
       orphanedNodes,
     }
   }
+  // ── Active-Parallel integration lifecycle (kept OUT of execution status) ──
+  // execution status = completed does NOT mean the root has consumed the result.
+  private integrationRegistry = new Map<string, ParallelIntegrationState>()
+
+  setIntegrationStatus(
+    nodeId: string,
+    status: IntegrationStatus,
+    opts?: { resultReadyAt?: number; reviewStartedAt?: number; integrationStartedAt?: number }
+  ): ParallelIntegrationState {
+    const now = Date.now()
+    const prev = this.integrationRegistry.get(nodeId) ?? { nodeId, status: "pending" }
+    const next: ParallelIntegrationState = {
+      nodeId,
+      status,
+      resultReadyAt: prev.resultReadyAt ?? opts?.resultReadyAt ?? (status === "ready" ? now : prev.resultReadyAt),
+      reviewStartedAt: prev.reviewStartedAt ?? opts?.reviewStartedAt ?? (status === "reviewing" ? now : prev.reviewStartedAt),
+      integrationStartedAt: prev.integrationStartedAt ?? opts?.integrationStartedAt ?? (status === "integrating" ? now : prev.integrationStartedAt),
+      integratedAt: status === "integrated" ? now : prev.integratedAt,
+    }
+    this.integrationRegistry.set(nodeId, next)
+    return next
+  }
+
+  getIntegrationStatus(nodeId: string): ParallelIntegrationState | undefined {
+    return this.integrationRegistry.get(nodeId)
+  }
+
+  /**
+   * Deterministic READY queue ordering:
+   * 1. blocking/critical-path (dependent count), 2. explicit priority,
+   * 3. dependency-unblocking, 4. completion timestamp, 5. stable id tie-break.
+   */
+  readyResults(runId: string): DelegationNode[] {
+    const run = this.getRun(runId)
+    if (!run) return []
+    const completed = run.nodes.filter((n) => n.status === "completed")
+    const ready = completed.filter((n) => {
+      const integration = this.integrationRegistry.get(n.id)
+      const st = integration?.status ?? (n.integrationStatus ?? "ready")
+      return st === "pending" || st === "ready"
+    })
+    const dependentCounts = new Map<string, number>()
+    for (const n of run.nodes) dependentCounts.set(n.id, 0)
+    for (const n of run.nodes) for (const d of n.dependencies) dependentCounts.set(d, (dependentCounts.get(d) ?? 0) + 1)
+    return ready.sort((a, b) => {
+      const aDeps = dependentCounts.get(a.id) ?? 0
+      const bDeps = dependentCounts.get(b.id) ?? 0
+      if (bDeps !== aDeps) return bDeps - aDeps
+      if (b.priority !== a.priority) return b.priority - a.priority
+      const at = a.completedAt ?? a.createdAt
+      const bt = b.completedAt ?? b.createdAt
+      if (at !== bt) return at - bt
+      return a.id.localeCompare(b.id)
+    })
+  }
+
+  /** Minimal child-view for the coordinator: no transcripts, no hidden reasoning. */
+  childrenSnapshot(runId: string): ChildSnapshotView[] {
+    const run = this.getRun(runId)
+    if (!run) return []
+    return run.nodes.map((n) => ({
+      nodeId: n.id,
+      workstreamId: n.id,
+      specialist: n.specialist,
+      status: n.status,
+      integrationStatus: this.integrationRegistry.get(n.id)?.status ?? n.integrationStatus ?? "pending",
+      access: n.access,
+      fileScopes: n.fileScopes ?? [],
+      startedAt: n.startedAt,
+      completedAt: n.completedAt,
+    }))
+  }
+
 }
