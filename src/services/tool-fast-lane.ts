@@ -87,6 +87,18 @@ export function classifyFastLane(toolName: string): FastLaneDecision {
   return { category: "uncertain", usedFastPath: false };
 }
 
+/**
+ * Accept a path token for the fast lane on any platform (POSIX and Windows
+ * drive/backslash paths) while rejecting shell metacharacters. The token is
+ * already bracketed by whitespace in the calling regex.
+ */
+function isSafePathToken(p: string): boolean {
+  if (!p || p.length > 4096) return false
+  if (/[|&;<>'"`]/.test(p)) return false
+  if (/[\s]/.test(p)) return false
+  return true
+}
+
 export function rewriteShellCommand(command: string): FastRewrite | null {
   const trimmed = (command ?? "").trim();
   if (!trimmed) return null;
@@ -94,17 +106,17 @@ export function rewriteShellCommand(command: string): FastRewrite | null {
   let m = /^cat\s+([^@|&;<>]+)$/.exec(trimmed);
   if (m) {
     const file = m[1].trim();
-    if (/^[\w./~-]+$/.test(file)) {
+    if (isSafePathToken(file)) {
       return { from: "shell", to: "fdx-read " + file, semanticsPreserved: true, adapter: "file-read", command: trimmed, file };
     }
   }
 
-  m = /^sed\s+-n\s+'?([0-9]+),([0-9]+)\s*p'?\s+([\w./~-]+)$/.exec(trimmed);
+  m = /^sed\s+-n\s+'?([0-9]+),([0-9]+)\s*p'?\s+(\S+)$/.exec(trimmed);
   if (m) {
     const start = parseInt(m[1], 10);
     const end = parseInt(m[2], 10);
     const file = m[3];
-    if (start > 0 && end >= start) {
+    if (start > 0 && end >= start && isSafePathToken(file)) {
       return {
         from: "shell",
         to: "fdx-read " + file + " offset=" + start + " limit=" + (end - start + 1),
@@ -118,11 +130,11 @@ export function rewriteShellCommand(command: string): FastRewrite | null {
     }
   }
 
-  m = /^grep\s+-n\s+([^|&;<>]+?)\s+([\w./~-]+)$/.exec(trimmed);
+  m = /^grep\s+-n\s+([^|&;<>]+?)\s+(\S+)$/.exec(trimmed);
   if (m) {
     const pattern = m[1].trim().replace(/^['"]|['"]$/g, "");
     const file = m[2];
-    if (pattern && /^[\w./~-]+$/.test(file)) {
+    if (pattern && isSafePathToken(file)) {
       return { from: "shell", to: "fdx-grep pattern=" + pattern + " path=" + file, semanticsPreserved: true, adapter: "file-grep", command: trimmed, file, pattern };
     }
   }
@@ -147,10 +159,10 @@ export function rewriteShellCommand(command: string): FastRewrite | null {
 
 export function rewriteLsCommand(command: string): FastRewrite | null {
   const trimmed = (command ?? "").trim();
-  if (/^ls\s+(-1\s+)?([\w./~-]+)$/.test(trimmed)) {
+  if (/^ls\s+(-1\s+)?(\S+)$/.test(trimmed)) {
     const parts = trimmed.split(/\s+/);
     const target = parts[parts.length - 1];
-    if (/^[\w./~-]+$/.test(target)) {
+    if (isSafePathToken(target)) {
       return { from: "shell", to: "fdx-ls " + target, semanticsPreserved: true, adapter: "dir-list", command: trimmed, dir: target };
     }
   }
@@ -175,14 +187,14 @@ export function executeFastRewrite(rewritten: FastRewrite, cwd?: string): string
       return readFileSync(rewritten.file ?? "", "utf8");
     case "file-read-range": {
       const text = readFileSync(rewritten.file ?? "", "utf8");
-      const lines = text.split("\n");
+      const lines = text.split(/\r?\n/);
       const start = (rewritten.offset ?? 1) - 1;
       const end = start + (rewritten.limit ?? 0);
       return lines.slice(start, end).join("\n");
     }
     case "file-grep": {
       const text = readFileSync(rewritten.file ?? "", "utf8");
-      const lines = text.split("\n");
+      const lines = text.split(/\r?\n/);
       const pattern = rewritten.pattern ?? "";
       const out: string[] = [];
       for (let i = 0; i < lines.length; i++) {

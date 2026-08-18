@@ -197,7 +197,9 @@ export const fdxSearchTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     const turbo = getActiveFdxTurbo()
-    if (turbo && !args.no_cache) {
+    if (turbo && !args.no_cache && args.format !== "json") {
+      // NOTE: JSON-format requests never route through the turbo TEXT fast path;
+      // the format-aware persistent-index/daemon/native paths below render JSON.
       const tr = await turbo.search(String(args.query), args.path, !!args.no_cache)
       if (tr.source !== "fallback") return tr.text
       // persistent-index path below takes over when native FDX is unavailable
@@ -307,7 +309,7 @@ export const fdxImpactTool: ToolDefinition = tool({
   },
   async execute(args): Promise<string> {
     const turbo = getActiveFdxTurbo()
-    if (turbo) {
+    if (turbo && args.format !== "json") {
       const ti = await turbo.impact(args.files)
       if (ti.source !== "fallback") return ti.text
     }
@@ -351,7 +353,7 @@ export const fdxOutlineTool: ToolDefinition = tool({
   async execute(args): Promise<string> {
     const searchPaths = args.paths && args.paths.length > 0 ? args.paths : ["."]
     const turbo = getActiveFdxTurbo()
-    if (turbo && !args.no_cache) {
+    if (turbo && !args.no_cache && args.format !== "json") {
       const to = await turbo.outline(searchPaths, !!args.no_cache)
       if (to.source !== "fallback") return to.text
     }

@@ -2598,6 +2598,9 @@ const plugin: Plugin = async ({ directory, client }) => {
       clearAllWatchdogStates()
       if (schedulerTimer) clearInterval(schedulerTimer)
       // Close SQLite connections so Windows file locks are released
+      // Stop the resident FDX engine (releases the native daemon process and its
+      // cwd lock — required for clean Windows temp-dir teardown).
+      await (turboEngine as { stop?: () => Promise<void> }).stop?.().catch(() => {})
       try { closeAllConnections() } catch { /* best-effort */ }
     },
   }
