@@ -27,6 +27,10 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/"_authToken"\s*:\s*"[^"]+"/g, '"_authToken": "[REDACTED_AUTH_TOKEN]"'],
   // API keys (common env var values in logs)
   [/(?:API[_-]?KEY|api_key|apikey)\s*[:=]\s*['"]?[a-zA-Z0-9_\-./+]{16,}/gi, "$1: [REDACTED_API_KEY]"],
+  // OpenAI-style sk- keys (sk-live / sk-test / sk-proj …)
+  [/\bsk-[A-Za-z0-9_-]{4,}/g, "[REDACTED_API_KEY]"],
+  // AWS-style access keys
+  [/\bAKIA[0-9A-Z]{16}\b/g, "[REDACTED_AWS_KEY]"],
   // Provider credentials (anthropic, openai, vertex)
   [/(ANTHROPIC_API_KEY|OPENAI_API_KEY|VERTEX_API_KEY)\s*=\s*\S+/g, "$1=[REDACTED_PROVIDER_KEY]"],
 ]

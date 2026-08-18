@@ -9,7 +9,7 @@ import {
   recordRecoveryAudit,
   executeVerifiedPostWrite,
 } from "@/services/governance-wiring"
-import { auditLogPath } from "@/services/audit-log"
+import { auditLogPath, flushAuditBuffer } from "@/services/audit-log"
 import { verificationLogPath } from "@/services/verification-layer"
 
 const TMP = join(tmpdir(), "phase5-test-" + Date.now())
@@ -161,6 +161,7 @@ describe("Phase 5 — Complete Governance Wiring", () => {
       })
 
       const path = auditLogPath(TMP)
+      flushAuditBuffer()
       expect(existsSync(path)).toBe(true)
 
       const lines = readFileSync(path, "utf-8").trim().split("\n")
@@ -203,6 +204,7 @@ describe("Phase 5 — Complete Governance Wiring", () => {
       expect(existsSync(vPath)).toBe(true)
 
       const aPath = auditLogPath(TMP)
+      flushAuditBuffer()
       expect(existsSync(aPath)).toBe(true)
 
       const aLines = readFileSync(aPath, "utf-8").trim().split("\n")

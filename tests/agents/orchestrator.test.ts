@@ -83,7 +83,7 @@ describe("orchestrator prompt: pre-flight", () => {
   it("checks the global plan directory rather than in-repo state", () => {
     // Scope to the orchestrator's own instructions — the appended agent
     // directory carries each agent's own description verbatim.
-    const body = prompt.split("## Routing → Runtime Handoff")[0] ?? ""
+    const body = prompt
     expect(body).toContain("~/.fd-plan/<project-slug>/")
     expect(body).not.toContain(".planning/")
     expect(body).not.toContain(".codebase/")

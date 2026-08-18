@@ -8,10 +8,16 @@
  *  - recovery recreating runtime objects.
  *
  * Storage format: one JSON line per record at
- *   `<persistDir>/<runId>.jsonl`
+ *   <persistDir>/<runId>.jsonl
  *
  * Records are append-only. Reads rebuild authoritative counters and are
  * idempotent with respect to duplicated events (dedup keys).
+ *
+ * Hot-path index (Fast Harness v1):
+ *  - startup/recovery -> read durable JSONL ONCE and rebuild in-memory state
+ *  - normal runtime -> update in-memory index incrementally, append durable event
+ *  - hot queries (read/rebuild) never reread or reparse the full JSONL file
+ *  - JSONL remains the restart/durability source; state is never memory-only
  */
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "fs"
@@ -89,21 +95,51 @@ export interface RebuiltUsage {
     maxOutput: number
     claimed: number
   }>
+  /** Cumulative reclaimed tokens from adaptive_reclaim events. */
+  reclaimed?: number
+  /** Cumulative redistributed tokens from adaptive_redistribution events. */
+  redistributed?: number
+  /** Reservation IDs whose usage was committed (released from active reservations). */
+  committedIds?: string[]
 }
 
 export interface TokenUsageStore {
   /** Append one record for the run. Resolves the full path for diagnostics. */
   append(runId: string, entry: UsageStoreEntry): string
-  /** Read raw entries for the run. Missing file → empty array. */
+  /** Read raw entries for the run. Missing file -> empty array. Hot-path safe (indexed). */
   read(runId: string): UsageStoreEntry[]
-  /** Rebuild authoritative usage state from durable entries. */
+  /** Rebuild authoritative usage state from durable entries. Hot-path safe (indexed). */
   rebuild(runId: string): RebuiltUsage
   /** Path of the log for a run. */
   pathFor(runId: string): string
 }
 
+/** Per-run in-memory hot index maintained incrementally. */
+interface RunHotIndex {
+  entries: UsageStoreEntry[]
+  rebuilt: RebuiltUsage | null
+  reclaimed: number
+  redistributed: number
+  committedIds: Set<string>
+  dedupeKeys: Set<string>
+  loaded: boolean
+}
+
+function makeRunIndex(): RunHotIndex {
+  return {
+    entries: [],
+    rebuilt: null,
+    reclaimed: 0,
+    redistributed: 0,
+    committedIds: new Set<string>(),
+    dedupeKeys: new Set<string>(),
+    loaded: false,
+  }
+}
+
 export class FileTokenUsageStore implements TokenUsageStore {
   private readonly dir: string
+  private readonly index = new Map<string, RunHotIndex>()
 
   constructor(persistDir: string) {
     this.dir = persistDir
@@ -114,10 +150,60 @@ export class FileTokenUsageStore implements TokenUsageStore {
     return join(this.dir, `${safeRunId}.jsonl`)
   }
 
+  /** Read the durable JSONL once (startup/recovery) and populate the in-memory index. */
+  private ensureLoaded(runId: string): RunHotIndex {
+    let idx = this.index.get(runId)
+    if (!idx) {
+      idx = makeRunIndex()
+      this.index.set(runId, idx)
+    }
+    if (idx.loaded) return idx
+    const p = this.pathFor(runId)
+    try {
+      if (existsSync(p)) {
+        const parsed = readFileSync(p, "utf-8")
+          .split("\n")
+          .filter(l => l.trim().length > 0)
+          .map(l => {
+            try { return JSON.parse(l) as UsageStoreEntry } catch { return null }
+          })
+          .filter((e): e is UsageStoreEntry => e !== null)
+        idx.entries = parsed
+        for (const e of parsed) this.applyIncremental(idx, e)
+      }
+    } catch {
+      // Durable-recovery failure: continue empty; accounting cannot crash the runtime.
+    }
+    idx.loaded = true
+    return idx
+  }
+
+  /** Incrementally fold one entry into the hot index (no disk read). */
+  private applyIncremental(idx: RunHotIndex, entry: UsageStoreEntry): void {
+    if (entry.kind === "usage") {
+      const key = String(entry.messageId ?? entry.requestId ?? entry.reservationId ?? "")
+      if (key) idx.dedupeKeys.add(key)
+      const rid = String(entry.reservationId ?? "")
+      if (rid) idx.committedIds.add(rid)
+    } else if (entry.kind === "adaptive_reclaim") {
+      const amount = Number((entry as { reclaimed?: unknown }).reclaimed ?? 0)
+      if (Number.isFinite(amount)) idx.reclaimed += amount
+    } else if (entry.kind === "adaptive_redistribution") {
+      const amount = Number((entry as { amount?: unknown }).amount ?? 0)
+      if (Number.isFinite(amount)) idx.redistributed += amount
+    }
+    // Any new durable event invalidates the cached rebuild summary.
+    idx.rebuilt = null
+  }
+
   append(runId: string, entry: UsageStoreEntry): string {
     const p = this.pathFor(runId)
+    const idx = this.ensureLoaded(runId)
+    // In-memory index is authoritative for this process; update first.
+    idx.entries.push(entry)
+    this.applyIncremental(idx, entry)
     if (!existsSync(this.dir)) {
-      mkdirSync(this.dir, { recursive: true })
+      try { mkdirSync(this.dir, { recursive: true }) } catch { /* durability best-effort */ }
     }
     const line = JSON.stringify(entry) + "\n"
     try {
@@ -131,27 +217,29 @@ export class FileTokenUsageStore implements TokenUsageStore {
   }
 
   read(runId: string): UsageStoreEntry[] {
-    const p = this.pathFor(runId)
-    if (!existsSync(p)) return []
-    try {
-      return readFileSync(p, "utf-8")
-        .split("\n")
-        .filter(l => l.trim().length > 0)
-        .map(l => {
-          try {
-            return JSON.parse(l) as UsageStoreEntry
-          } catch {
-            return null
-          }
-        })
-        .filter((e): e is UsageStoreEntry => e !== null)
-    } catch {
-      return []
-    }
+    const idx = this.ensureLoaded(runId)
+    // Return a shallow copy so callers cannot mutate the hot index.
+    return idx.entries.slice()
   }
 
   rebuild(runId: string): RebuiltUsage {
-    return rebuildFromEntries(this.read(runId), runId)
+    const idx = this.ensureLoaded(runId)
+    if (!idx.rebuilt) {
+      // rebuildFromEntries already folds reclaim/redistribution/committed
+      // from the durable entries; idx counters are observational only.
+      idx.rebuilt = rebuildFromEntries(idx.entries, runId)
+    }
+    return idx.rebuilt
+  }
+
+  /** Number of runs currently held in the hot index (test/observability aid). */
+  get indexedRunCount(): number {
+    return this.index.size
+  }
+
+  /** Drop the hot index (test aid; next query reloads from JSONL). */
+  clearIndex(): void {
+    this.index.clear()
   }
 }
 
@@ -194,14 +282,14 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
   let consumed = 0
   let reserved = 0
   let releasedUnused = 0
+  let reclaimed = 0
+  let redistributed = 0
   let warningFired = false
   let terminal: { reason: string; at: number } | null = null
 
   // Last committed usage per dedup key — later records win.
   const byKey = new Map<string, TokenUsageRecord>()
-  // reservationId → claimed and its LATEST durable status. Later records
-  // override earlier ones, so a reservation that was cancelled or released
-  // after being reserved nets to zero on rebuild.
+  // reservationId -> claimed and its LATEST durable status.
   const reservationClaims = new Map<string, number>()
   const reservationStatus = new Map<string, string>()
   const reservationEntries = new Map<string, RebuiltUsage["reservations"][number]>()
@@ -246,6 +334,17 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
     }
     if (e.kind === "warning") {
       warningFired = true
+      continue
+    }
+    if (e.kind === "adaptive_reclaim") {
+      const amount = Number((e as { reclaimed?: unknown }).reclaimed ?? 0)
+      if (Number.isFinite(amount)) reclaimed += amount
+      continue
+    }
+    if (e.kind === "adaptive_redistribution") {
+      const amount = Number((e as { amount?: unknown }).amount ?? 0)
+      if (Number.isFinite(amount)) redistributed += amount
+      continue
     }
   }
 
@@ -275,6 +374,9 @@ export function rebuildFromEntries(entries: UsageStoreEntry[], runId: string): R
     warningFired,
     records: [...byKey.values()],
     reservations: [...reservationEntries.entries()].filter(([rid]) => reservationStatus.get(rid) === "reserved").map(([, value]) => value),
+    reclaimed,
+    redistributed,
+    committedIds: [...committedReservations],
   }
 }
 
