@@ -1462,9 +1462,40 @@ const plugin: Plugin = async ({ directory, client }) => {
              } catch {}
           }
 
+          // ── Terminal-state detection: does this message have positive terminal evidence? ──
+          // P0 FIX: A message.updated with no finishReason is a transient snapshot of an
+          // in-progress turn. Only treat a turn as terminal when we have positive evidence.
+          const msgFinishReason: string | undefined = (() => {
+            let fr: string | undefined = msgInfo.finishReason ?? msgInfo.finish_reason
+            if (!fr && parts) {
+              for (const p of parts) {
+                if (p.type === "step-finish" && (p as any).reason) { fr = (p as any).reason; break }
+              }
+            }
+            return fr
+          })()
+          const isConfirmedTerminal = Boolean(
+            msgFinishReason ||           // explicit finish signal in the message
+            type === "session.idle"      // session.idle is a strong terminal boundary
+          )
+
+          // Notify coordinator that a recovery turn has reached terminal state.
+          // This clears isPendingContinuation only when a real terminal signal arrives.
+          if (isConfirmedTerminal && !msgInfo.error) {
+            recoveryCoordinator.notifyAssistantTurnTerminal(eventSessionID, msgInfo.id)
+          }
+
+          // P0 FIX: Cancel any scheduled recovery when the session is interrupted.
+          // An interrupted/error turn must never be followed by automatic continuation.
+          if (msgInfo.error || msgFinishReason === "error" || msgFinishReason === "cancelled" || msgFinishReason === "aborted") {
+            recoveryCoordinator.cancelSession(eventSessionID)
+          }
+
           // A session that produced visible output or completed tool execution after
           // recovery is healthy again — clear the recovery state.
-          if (parts && sessionRecoveryState.has(eventSessionID) && !msgInfo.error) {
+          // P0 FIX: Only reset the incident when the turn is also confirmed terminal.
+          // Do NOT reset on a transient tool-completion in the middle of an active turn.
+          if (parts && isConfirmedTerminal && sessionRecoveryState.has(eventSessionID) && !msgInfo.error) {
             const hasOutput = parts.some((p: any) => {
               if (p.type === "text" && p.text?.trim()) return true
               if (p.type === "tool") {
@@ -1571,8 +1602,16 @@ const plugin: Plugin = async ({ directory, client }) => {
               }
             }
           } else if (parts) {
-            const { isMalformed, diagnostics } = detectNoVisibleOutputCompletion({ info: msgInfo, parts })
+            // P0 FIX: Only attempt malformed detection when the turn is confirmed terminal.
+            // A transient message.updated with no finishReason is in-progress — never recover from it.
+            if (!isConfirmedTerminal) {
+              // Turn is still in progress — cannot classify as malformed. Skip.
+            } else {
+            const { isMalformed, diagnostics } = detectNoVisibleOutputCompletion({ info: msgInfo, parts }, { confirmedTerminal: isConfirmedTerminal })
             if (isMalformed && diagnostics) {
+              // P0 FIX: Full pending-state guard. If ANY of these are true, the session
+              // is still actively executing. Do NOT inject a recovery prompt.
+              const wStateCheck = getWatchdogState(eventSessionID)
               const hasActiveOrPendingTool = parts.some((p: any) => {
                 if (p.type === "tool") {
                   const state = typeof p.state === "string" ? p.state : p.state?.status
@@ -1582,8 +1621,23 @@ const plugin: Plugin = async ({ directory, client }) => {
               })
               if (hasActiveOrPendingTool) {
                 // The assistant is currently executing tools; do not treat as an empty reasoning stop.
-                return
-              }
+              } else if (wStateCheck?.isPendingContinuation) {
+                // A continuation is already running — suppress duplicate
+                appendAuditEvent(directory, {
+                  kind: "recovery.action",
+                  session_id: eventSessionID,
+                  agent: "system",
+                  decision: "circuit_break",
+                  reason: "Continuation already pending; malformed detection suppressed",
+                  details: diagnostics as unknown as Record<string, unknown>,
+                })
+              } else if (wStateCheck?.isPendingProvider) {
+                // Provider request still active — not terminal
+                appLog(`[heidi] Malformed detection suppressed: provider still active for session ${eventSessionID}`, "debug", eventSessionID)
+              } else if (wStateCheck?.isPendingChild) {
+                // Child task still running — not terminal
+                appLog(`[heidi] Malformed detection suppressed: child task still pending for session ${eventSessionID}`, "debug", eventSessionID)
+              } else {
               const provider = diagnostics.provider ?? "unknown"
               const model = diagnostics.model ?? "unknown"
               const messageId = diagnostics.messageID ?? "latest"
@@ -1640,7 +1694,9 @@ const plugin: Plugin = async ({ directory, client }) => {
                 appLog(`[heidi] Triggering reasoning-only auto-continuation for session ${eventSessionID}`, "warn", eventSessionID)
                 scheduleReasoningContinuation(eventSessionID)
               }
+              }
             }
+            } // end isConfirmedTerminal block
           }
         }
       }

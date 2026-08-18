@@ -123,18 +123,18 @@ describe("Heidi Watchdog", () => {
     const pluginInstance = await flowDeckPlugin.server(mockInput);
     const handleEvent = (pluginInstance as any).event;
 
-    // Incident A
-    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s1", info: { id: "msg_A", role: "assistant" }, parts: [{ type: "reasoning", text: "hmm" }] } } });
+    // Incident A — confirmed terminal reasoning-only (has step-finish)
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s1", info: { id: "msg_A", role: "assistant", providerID: "test", modelID: "test" }, parts: [{ type: "reasoning", text: "hmm" }, { type: "step-finish", reason: "stop" }] } } });
     await new Promise((r) => setTimeout(r, 60)); // timer
     expect(prompts).toBe(1);
 
-    // Valid output closes incident A
-    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s1", info: { id: "msg_A_recover", role: "assistant" }, parts: [{ type: "text", text: "done" }] } } });
+    // Valid output closes incident A — also confirmed terminal (step-finish present)
+    await handleEvent({ event: { type: "session.idle", properties: { sessionID: "s1", info: { id: "msg_A_recover", role: "assistant", providerID: "test", modelID: "test" }, parts: [{ type: "text", text: "done" }, { type: "step-finish", reason: "stop" }] } } });
     const wStateA = getWatchdogState("s1");
     expect(wStateA?.recoveryCount).toBe(0);
 
-    // Incident B
-    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s1", info: { id: "msg_B", role: "assistant" }, parts: [{ type: "reasoning", text: "hmm2" }] } } });
+    // Incident B — confirmed terminal reasoning-only
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s1", info: { id: "msg_B", role: "assistant", providerID: "test", modelID: "test" }, parts: [{ type: "reasoning", text: "hmm2" }, { type: "step-finish", reason: "stop" }] } } });
     await new Promise((r) => setTimeout(r, 60)); // timer
     expect(prompts).toBe(2);
 
@@ -148,16 +148,16 @@ describe("Heidi Watchdog", () => {
     const pluginInstance = await flowDeckPlugin.server(mockInput);
     const handleEvent = (pluginInstance as any).event;
 
-    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: "msg_A", role: "assistant" }, parts: [{ type: "reasoning", text: "hmm" }] } } });
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: "msg_A", role: "assistant", providerID: "test", modelID: "test" }, parts: [{ type: "reasoning", text: "hmm" }, { type: "step-finish", reason: "stop" }] } } });
     await new Promise((r) => setTimeout(r, 60));
     expect(prompts).toBe(1);
-    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: "msg_A_recover", role: "assistant" }, parts: [{ type: "text", text: "done" }] } } });
+    await handleEvent({ event: { type: "session.idle", properties: { sessionID: "s2", info: { id: "msg_A_recover", role: "assistant", providerID: "test", modelID: "test" }, parts: [{ type: "text", text: "done" }, { type: "step-finish", reason: "stop" }] } } });
 
     for (let i = 0; i < 55; i++) {
-      await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: `msg_prog_${i}`, role: "assistant" }, parts: [{ type: "text", text: "prog" }] } } });
+      await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: `msg_prog_${i}`, role: "assistant", providerID: "test", modelID: "test" }, parts: [{ type: "text", text: "prog" }, { type: "step-finish", reason: "stop" }] } } });
     }
 
-    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: "msg_B", role: "assistant" }, parts: [{ type: "reasoning", text: "hmm2" }] } } });
+    await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s2", info: { id: "msg_B", role: "assistant", providerID: "test", modelID: "test" }, parts: [{ type: "reasoning", text: "hmm2" }, { type: "step-finish", reason: "stop" }] } } });
     await new Promise((r) => setTimeout(r, 60));
     expect(prompts).toBe(2);
 
@@ -171,9 +171,9 @@ describe("Heidi Watchdog", () => {
     const pluginInstance = await flowDeckPlugin.server(mockInput);
     const handleEvent = (pluginInstance as any).event;
 
-    // Trigger repeatedly
+    // Trigger repeatedly with confirmed terminal reasoning-only parts
     for (let i = 0; i < 5; i++) {
-      await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s3", info: { id: `msg_malformed_${i}`, role: "assistant" }, parts: [{ type: "reasoning", text: "hmm" }] } } });
+      await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s3", info: { id: `msg_malformed_${i}`, role: "assistant", providerID: "test", modelID: "test" }, parts: [{ type: "reasoning", text: "hmm" }, { type: "step-finish", reason: "stop" }] } } });
       await new Promise((r) => setTimeout(r, 60));
     }
 
@@ -191,9 +191,9 @@ describe("Heidi Watchdog", () => {
     const pluginInstance = await flowDeckPlugin.server(mockInput);
     const handleEvent = (pluginInstance as any).event;
 
-    // Exhaust
+    // Exhaust with confirmed terminal reasoning-only parts
     for (let i = 0; i < 4; i++) {
-      await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s4", info: { id: `msg_malformed_${i}`, role: "assistant" }, parts: [{ type: "reasoning", text: "hmm" }] } } });
+      await handleEvent({ event: { type: "message.updated", properties: { sessionID: "s4", info: { id: `msg_malformed_${i}`, role: "assistant", providerID: "test", modelID: "test" }, parts: [{ type: "reasoning", text: "hmm" }, { type: "step-finish", reason: "stop" }] } } });
       await new Promise((r) => setTimeout(r, 60));
     }
     expect(getWatchdogState("s4")?.recoveryExhausted).toBe(true);

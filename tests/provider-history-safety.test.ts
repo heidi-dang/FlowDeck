@@ -44,10 +44,15 @@ describe("provider-history-safety", () => {
 import { detectNoVisibleOutputCompletion } from "../src/services/provider-history-safety"
 
 describe("detectNoVisibleOutputCompletion", () => {
-  it("flags malformed completion when visible text and tools are 0 but reasoning > 0", () => {
+  it("flags malformed completion when visible text and tools are 0 but reasoning > 0 (with explicit step-finish)", () => {
     const msg = {
       info: { id: "2", role: "assistant", sessionID: "s1" } as Message,
-      parts: [{ type: "reasoning", text: "thinking hard" }] as Part[]
+      // P0 FIX: A reasoning-only completion must have step-finish to be terminal.
+      // Without step-finish the turn is still in progress and must NOT be flagged.
+      parts: [
+        { type: "reasoning", text: "thinking hard" },
+        { type: "step-finish", reason: "stop" }
+      ] as Part[]
     }
 
     const res = detectNoVisibleOutputCompletion(msg)
@@ -55,6 +60,17 @@ describe("detectNoVisibleOutputCompletion", () => {
     expect(res.diagnostics?.reasoningTokenCount).toBeGreaterThan(0)
     expect(res.diagnostics?.textPartCount).toBe(0)
     expect(res.diagnostics?.toolPartCount).toBe(0)
+  })
+
+  it("does NOT flag reasoning-only turn without step-finish (in-progress turn)", () => {
+    const msg = {
+      info: { id: "2b", role: "assistant", sessionID: "s1" } as Message,
+      // No step-finish → transient in-progress snapshot → NOT malformed
+      parts: [{ type: "reasoning", text: "thinking hard" }] as Part[]
+    }
+
+    const res = detectNoVisibleOutputCompletion(msg)
+    expect(res.isMalformed).toBe(false)
   })
 
   it("does not flag normal assistant turn with visible text", () => {

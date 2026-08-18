@@ -65,14 +65,14 @@ describe("Recovery Coordinator & Internal Prompt Provenance (P0 Flood Guard)", (
     const pluginInstance = await flowDeckPlugin.server(mockInput);
     handleEvent = (pluginInstance as any).event;
 
-    // Trigger reasoning recovery continuation
+    // Trigger reasoning recovery continuation — with confirmed terminal step-finish
     await handleEvent({
       event: {
         type: "message.updated",
         properties: {
           sessionID: "s-internal",
           info: { id: "msg_mal_1", role: "assistant", providerID: "p", modelID: "m" },
-          parts: [{ type: "reasoning", text: "thinking..." }],
+          parts: [{ type: "reasoning", text: "thinking..." }, { type: "step-finish", reason: "stop" }],
         },
       },
     });

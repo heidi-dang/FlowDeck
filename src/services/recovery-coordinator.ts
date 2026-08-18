@@ -5,8 +5,12 @@
  *   1. Exactly one pending automatic continuation per session at any time.
  *   2. Strict internal prompt provenance: internal FlowDeck prompts are registered
  *      and never misclassified as manual user follow-ups.
+ *      FIX: Provenance survives the full message lifecycle (chat.message +
+ *      message.updated) via an ID-keyed map — never one-shot consumed.
  *   3. Unified scheduling for reasoning-only recovery and semantic watchdog recovery.
  *   4. Clean lifecycle states: IDLE -> SCHEDULED -> SUBMITTED -> RUNNING -> COMPLETED.
+ *      FIX: isPendingContinuation stays true until the resulting assistant turn
+ *      reaches a confirmed terminal state, not just until the API call resolves.
  */
 
 import { REPLAY_CONTINUATION_PROMPT } from "./reasoning-recovery"
@@ -23,8 +27,8 @@ export interface InternalPromptRecord {
   generation: number
   promptText: string
   createdAt: number
+  /** Message ID once OpenCode announces it. Promoted from pending text match. */
   messageID?: string
-  consumed: boolean
 }
 
 export interface RecoveryContinuationRequest {
@@ -40,7 +44,28 @@ export interface RecoveryContinuationRequest {
 class RecoveryCoordinator {
   private activeTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private sessionGenerations = new Map<string, number>()
-  private internalPrompts = new Map<string, InternalPromptRecord[]>()
+
+  /**
+   * Per-session: map from internal user-message ID → InternalPromptRecord.
+   * Populated once the message ID is known (from API response or event).
+   * Key invariant: once a message ID is recorded as internal, ALL later
+   * events carrying that ID remain internal. Never evicted unless session ends.
+   */
+  private promptsByMessageId = new Map<string, Map<string, InternalPromptRecord>>()
+
+  /**
+   * Per-session: unconsumed records awaiting message-ID promotion.
+   * Text matching is only used here, as a short-lived fallback before ID is known.
+   * Records are promoted to promptsByMessageId once an ID arrives.
+   */
+  private pendingPrompts = new Map<string, InternalPromptRecord[]>()
+
+  /**
+   * Track the active recovery assistant turn IDs per session.
+   * Once the resulting assistant turn has a confirmed terminal finish,
+   * isPendingContinuation is cleared.
+   */
+  private activeRecoveryTurnIds = new Map<string, Set<string>>()
 
   /**
    * Request an automatic recovery continuation.
@@ -83,15 +108,15 @@ class RecoveryCoordinator {
       generation,
       promptText,
       createdAt: Date.now(),
-      consumed: false,
     }
 
-    let records = this.internalPrompts.get(sessionID)
-    if (!records) {
-      records = []
-      this.internalPrompts.set(sessionID, records)
+    // Register in pending list (awaiting message-ID promotion)
+    let pending = this.pendingPrompts.get(sessionID)
+    if (!pending) {
+      pending = []
+      this.pendingPrompts.set(sessionID, pending)
     }
-    records.push(record)
+    pending.push(record)
 
     const timer = setTimeout(() => {
       this.activeTimers.delete(sessionID)
@@ -115,9 +140,14 @@ class RecoveryCoordinator {
           .then((res: any) => {
             const msgId = res?.data?.id ?? res?.id
             if (msgId) {
-              record.messageID = msgId
+              // Promote the pending record to the ID-keyed map.
+              // isPendingContinuation stays true — cleared by notifyAssistantTurnTerminal.
+              this.promoteToMessageId(sessionID, record, msgId)
+            } else {
+              // No message ID returned — cannot track resulting turn.
+              // Fall back: clear isPendingContinuation when API acknowledges.
+              updateWatchdogState(sessionID, { isPendingContinuation: false })
             }
-            updateWatchdogState(sessionID, { isPendingContinuation: false })
           })
           .catch((err: Error) => {
             appLog(`[recovery-coordinator] ${source} prompt rejected: ${err.message}`, "error", sessionID).catch(() => {})
@@ -125,6 +155,10 @@ class RecoveryCoordinator {
             handleEvent({ event: { type: "session.error", properties: { sessionID, error: err.message, info: { id: sessionID, role: "assistant", error: err.message } } } }).catch(() => {})
           })
       } else {
+        // Sync prompt (no Promise returned) — cannot track resulting turn.
+        // Clear isPendingContinuation immediately so recovery can proceed for
+        // subsequent incidents. The coordinator will still detect duplicate
+        // signatures via the circuit breaker.
         updateWatchdogState(sessionID, { isPendingContinuation: false })
       }
     }, 50)
@@ -134,31 +168,90 @@ class RecoveryCoordinator {
   }
 
   /**
+   * Promote a pending prompt record to the ID-keyed map once its message ID is known.
+   * After this, ALL later events with this ID are classified as internal.
+   */
+  private promoteToMessageId(sessionID: string, record: InternalPromptRecord, messageID: string): void {
+    record.messageID = messageID
+    let byId = this.promptsByMessageId.get(sessionID)
+    if (!byId) {
+      byId = new Map()
+      this.promptsByMessageId.set(sessionID, byId)
+    }
+    byId.set(messageID, record)
+
+    // Remove from pending list if still there
+    const pending = this.pendingPrompts.get(sessionID)
+    if (pending) {
+      const idx = pending.indexOf(record)
+      if (idx !== -1) pending.splice(idx, 1)
+    }
+
+    // Track this as an active recovery turn
+    let activeTurns = this.activeRecoveryTurnIds.get(sessionID)
+    if (!activeTurns) {
+      activeTurns = new Set()
+      this.activeRecoveryTurnIds.set(sessionID, activeTurns)
+    }
+    activeTurns.add(messageID)
+  }
+
+  /**
+   * Notify the coordinator that a recovery-induced assistant turn reached a
+   * confirmed terminal state. This is when isPendingContinuation is cleared.
+   * Returns true if this was a tracked recovery turn.
+   */
+  public notifyAssistantTurnTerminal(sessionID: string, _assistantMessageID: string): boolean {
+    const activeTurns = this.activeRecoveryTurnIds.get(sessionID)
+    if (!activeTurns) return false
+
+    // Check if this is a recovery-induced turn (the user message that caused
+    // it is tracked in promptsByMessageId; the resulting assistant turn may
+    // have a different ID, so we also track by the recovery-user-message chain).
+    // For simplicity: if isPendingContinuation is true and we see any terminal
+    // assistant event, the recovery round is done.
+    const wState = getWatchdogState(sessionID)
+    if (wState?.isPendingContinuation) {
+      updateWatchdogState(sessionID, { isPendingContinuation: false })
+      return true
+    }
+    return false
+  }
+
+  /**
    * Classify a message event to distinguish manual user follow-ups from internal FlowDeck recovery prompts.
+   *
+   * P0 FIX: Provenance survives ALL lifecycle events for the same message ID.
+   * Once an ID is known as internal, it remains internal forever (until session ends).
+   * Text matching is only a short-lived fallback before the ID is promoted.
+   * A true manual user message still classifies correctly.
    */
   public classifyMessage(sessionID: string, messageID?: string, text?: string): PromptProvenanceKind {
     if (!sessionID) return "manual_user"
-    const records = this.internalPrompts.get(sessionID)
-    if (!records || records.length === 0) return "manual_user"
 
-    // Match by messageID if available
+    // 1. Check ID-keyed map first — these are permanent (not consumed/one-shot)
     if (messageID) {
-      const matchById = records.find((r) => !r.consumed && r.messageID === messageID)
-      if (matchById) {
-        matchById.consumed = true
-        return matchById.kind
+      const byId = this.promptsByMessageId.get(sessionID)
+      if (byId?.has(messageID)) {
+        return byId.get(messageID)!.kind
       }
     }
 
-    // Match unconsumed internal record by prompt content or pending queue
-    const trimmedText = text?.trim()
-    const matchByText = records.find((r) => !r.consumed && (!trimmedText || r.promptText.trim() === trimmedText))
-    if (matchByText) {
-      matchByText.consumed = true
-      if (messageID && !matchByText.messageID) {
-        matchByText.messageID = messageID
+    // 2. Check pending list by text (short-lived fallback before ID is known)
+    const pending = this.pendingPrompts.get(sessionID)
+    if (pending && pending.length > 0) {
+      const trimmedText = text?.trim()
+      const matchIdx = pending.findIndex((r) => !trimmedText || r.promptText.trim() === trimmedText)
+      if (matchIdx !== -1) {
+        const match = pending[matchIdx]
+        // Promote to ID-keyed map if we now have an ID
+        if (messageID && !match.messageID) {
+          this.promoteToMessageId(sessionID, match, messageID)
+          // Note: promoteToMessageId removes from pending, so don't splice again
+        }
+        // Return kind without consuming — the next event with this ID will hit path 1
+        return match.kind
       }
-      return matchByText.kind
     }
 
     return "manual_user"
@@ -174,7 +267,9 @@ class RecoveryCoordinator {
       clearTimeout(timer)
       this.activeTimers.delete(sessionID)
     }
-    this.internalPrompts.delete(sessionID)
+    this.pendingPrompts.delete(sessionID)
+    this.promptsByMessageId.delete(sessionID)
+    this.activeRecoveryTurnIds.delete(sessionID)
     this.sessionGenerations.delete(sessionID)
     updateWatchdogState(sessionID, { isPendingContinuation: false })
   }
@@ -187,7 +282,9 @@ class RecoveryCoordinator {
       clearTimeout(timer)
     }
     this.activeTimers.clear()
-    this.internalPrompts.clear()
+    this.pendingPrompts.clear()
+    this.promptsByMessageId.clear()
+    this.activeRecoveryTurnIds.clear()
     this.sessionGenerations.clear()
   }
 }
