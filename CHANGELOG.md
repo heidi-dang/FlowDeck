@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.0.9] - 2026-08-18
+### Fixed & Hardened
+- **Confirmed-Terminal Assistant Recovery**: Replaced unsafe missing-`finishReason` fallback (was defaulting to `stop`) with strict terminal evidence validation. Transient `message.updated` events during active turns no longer trigger recovery prompts.
+- **Preflight Debounce Revalidation**: Added preflight state validation immediately before recovery prompt submission, suppressing automatic prompts if provider, tool, child, cancellation, or manual user input becomes active during the debounce window.
+- **Causal Recovery Generation Correlation**: Correlated recovery user prompts with specific assistant responses via message ID / parent ID, rejecting unrelated terminal assistant events from retiring active recovery generations.
+- **Provenance Lifecycle Persistence**: Fixed internal prompt provenance to survive multi-event lifecycles (`chat.message` + `message.updated`) without one-shot consumption, and eliminated wildcard matching on empty-text events.
+- **Single-Flight Continuation Lifecycle**: Closed `isPendingContinuation` state leaks on cancelled or superseded recovery generations, ensuring manual user takeovers cleanly release continuation state and allow future recovery.
+- **Bounded Orphan Generation Timeout**: Added a 2-minute safety timeout releasing single-flight locks if no assistant response arrives for an internal recovery prompt.
+
 ## [2.0.8] - 2026-08-18
 ### Fixed & Hardened
 - **Continuation-Prompt Flood Guard**: Introduced a centralized `RecoveryCoordinator` ensuring strictly single-flight auto-continuations and eliminating runaway recovery loops.
