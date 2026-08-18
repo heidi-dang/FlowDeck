@@ -78,7 +78,10 @@ describe("Heidi Reasoning Recovery Runtime Integration", () => {
     if (pluginInstance?.dispose) {
       try { await pluginInstance.dispose() } catch {}
     }
-    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    // Windows can briefly hold the plugin's sqlite/tmp files after dispose;
+    // teardown is best-effort — the recovery assertions above are the subject.
+    await new Promise((res) => setTimeout(res, 150))
+    try { rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
   })
 
   it("triggers bounded continuation exactly once per signature on reasoning-only stops", async () => {
@@ -162,7 +165,8 @@ describe("Heidi Reasoning Recovery — bounded stage-2 on provider 400", () => {
   })
   afterEach(async () => {
     if (pluginInstance2?.dispose) { try { await pluginInstance2.dispose() } catch {} }
-    rmSync(tmpDir2, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    await new Promise((res) => setTimeout(res, 150))
+    try { rmSync(tmpDir2, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
   })
 
   it("promotes a failed stage-1 continuation (400 INVALID_ARGUMENT) to exactly one bounded stage-2 recovery and stops", async () => {

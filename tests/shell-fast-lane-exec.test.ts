@@ -86,7 +86,9 @@ describe("shell fast-lane EXECUTION (zero bash spawn)", () => {
     expect(r2.output).toContain("YQo="); // base64 of "a\n"
 
     const c2 = bashSpawnCount;
-    const r3 = executeShellCommand("FOO=1 cat " + tmpFile + " && rm -f " + join(tmpDir, "nope.txt"), { cwd: tmpDir });
+    // Git Bash on Windows needs forward slashes; keep the test portable.
+    const bashPath = tmpFile.replace(/\\/g, "/");
+    const r3 = executeShellCommand("FOO=1 cat " + bashPath + " && rm -f " + join(tmpDir, "nope.txt").replace(/\\/g, "/"), { cwd: tmpDir });
     expect(r3.bashSpawned).toBe(true);
     expect(bashSpawnCount).toBe(c2 + 1);
     expect(r3.output).toContain("line-a");

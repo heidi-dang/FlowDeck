@@ -48,7 +48,12 @@ describe("v2 hardening boundaries", () => {
   it("keeps WAL recovery and integrity checks explicit", () => {
     const root = mkdtempSync(join(tmpdir(), "flowdeck-wal-"))
     const db = new Database(join(root, "runtime.db"))
-    try { runMigrations(db); expect(db.query("PRAGMA journal_mode = WAL").get()).toBeDefined(); expect((db.query("PRAGMA integrity_check").get() as { integrity_check: string }).integrity_check).toBe("ok") } finally { db.close(); rmSync(root, { recursive: true, force: true }) }
+    try { runMigrations(db); expect(db.query("PRAGMA journal_mode = WAL").get()).toBeDefined(); expect((db.query("PRAGMA integrity_check").get() as { integrity_check: string }).integrity_check).toBe("ok") } finally {
+      try { db.close() } catch {}
+      // Windows may briefly hold -wal/-shm after close; best-effort retry teardown.
+      for (const f of ["runtime.db-wal", "runtime.db-shm"]) { try { rmSync(join(root, f), { force: true }) } catch {} }
+      try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
+    }
   })
 
   it("allows only one durable integration acknowledgement during a twenty-way race", async () => {
