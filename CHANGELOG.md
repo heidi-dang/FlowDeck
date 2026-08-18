@@ -1,5 +1,30 @@
 # Changelog
 
+## [2.1.0] - 2026-08-18
+### Added — Heidi Fast Harness v1
+- **Route-First Task Execution**: Deterministic per-user-task classification (FAST_DIRECT, SPECIALIST, PARALLEL_SPECIALISTS, STANDARD, DEEP) before repository discovery; manual user turns only — internal continuation/recovery prompts never reclassify or reset route state.
+- **FAST_DIRECT Path**: Trivial local tasks follow classify → inspect → edit → focused verify → done, without planning overhead or delegation.
+- **Immediate Specialist Delegation**: Debug, security, UI/frontend, backend, DevOps, review, architecture tasks delegate to the right specialist on turn 1.
+- **Frontend/Backend Parallel Specialist Routing**: Independent frontend + backend workstreams resolve to frontend-coder + backend-coder and run concurrently (new BACKEND domain).
+- **Live Per-Turn Lazy Context**: The permanent Heidi core prompt stays static and small; only task-specific sections are injected per turn (measured 82.3% FAST_DIRECT prompt reduction: 2,933 → 518 tokens).
+- **Concurrent Repository Reads**: ReadBatchService executes independent reads in parallel (measured 3.82× speedup on 4 independent reads) with compact structured result packets.
+- **Compact External Task State**: Per-task state (<200-token provider packets) externalized from conversation history.
+- **Repository Hot-Context Cache**: Stable repo facts (root, HEAD, branch, languages, package manager, commands, FDX availability) cached with invalidation on HEAD/config/manifest change.
+- **Config Cache**: Cached FlowDeck config resolution on the hot path (governance mode, etc.).
+- **Governance Read Fast Path**: Whitelisted read-only tools authorize in ~0.0001 ms p50; writes, shell, deletions, and delegation always take the full policy path.
+- **In-Memory Token-Accounting Hot Index**: FileTokenUsageStore keeps an in-memory index (no full JSONL reread on hot queries); JSONL remains the restart/durability source.
+- **Buffered Non-Critical Audit Persistence**: Informational audit events buffer (bounded queue, size/periodic/dispose flush); critical events (blocks, policy violations, destructive-op guards, recovery exhaustion, security mismatches, delegation lifecycle) remain synchronous.
+- **Deterministic Tool-Call Repair**: Mechanical argument normalization (aliases, path separators, scalar-array shapes) before another model inference; never infers semantic intent.
+
+### Reliability
+- Session-log writable fallback retained (root /.opencode EACCES fix from v2.0.9).
+- v2.0.9 recovery hardening retained: confirmed-terminal detection, single-flight continuations, causal generation correlation, provenance lifecycle persistence, orphan timeout.
+- Healthy workload auto-Continue count remains 0.
+
+### Verification
+- OpenCode plugin-contract and offline integration verification pass (26 offline checks); Fast Harness live path verified through the real OpenCode hook surfaces.
+- Full test suite: 3,793 pass / 0 fail; coverage 85.00% lines (80.90% funcs).
+- Hermes comparison not available in this release (no Hermes harness in the environment).
 ## [2.0.9] - 2026-08-18
 ### Fixed & Hardened
 - **Confirmed-Terminal Assistant Recovery**: Replaced unsafe missing-`finishReason` fallback (was defaulting to `stop`) with strict terminal evidence validation. Transient `message.updated` events during active turns no longer trigger recovery prompts.
