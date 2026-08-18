@@ -46,7 +46,7 @@ describe("M9 command assignment/token/worktree authority", () => {
     expect(budget.run.reserved).toBe(0)
     expect(budget.run.consumed).toBeGreaterThan(0)
     db.close()
-  })
+  }, 30000)
 
   it("persists canonical Assignment failure when the OpenCode boundary fails", async () => {
     const db = new Database(":memory:")

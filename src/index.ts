@@ -115,6 +115,7 @@ import {
   type SessionRecoveryState,
 } from "./services/reasoning-recovery"
 import { updateWatchdogState, getWatchdogState, clearWatchdogState, getAllWatchdogStates, clearAllWatchdogStates } from "./services/heidi-watchdog"
+import { recoveryCoordinator } from "./services/recovery-coordinator"
 import { initializeDatabase, closeAllConnections } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
 import { runShadowAssessment } from "./orchestration/routing/shadow"
@@ -351,45 +352,16 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   setActiveProjectDir(directory)
   let handleEvent: (args: { event: any }) => Promise<void> = async () => {}
-  /** Bounded reasoning-only auto-continuation: exactly one prompt per scheduled stage, 50ms debounce. */
+  /** Bounded reasoning-only auto-continuation: exactly one prompt per scheduled stage via recovery coordinator. */
   const scheduleReasoningContinuation = (targetSessionID: string): void => {
-    const sessionApi = (client as any)?.session
-    if (!sessionApi?.prompt && !sessionApi?.promptAsync) return
-    const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
-    updateWatchdogState(targetSessionID, { isPendingContinuation: true })
-    const handleContinuationFailure = (err: Error, sessionId: string) => {
-      if (isDisposed) return
-      appLog(`[heidi] Reasoning continuation prompt rejected: ${err.message}`, "error", sessionId)
-      updateWatchdogState(sessionId, { isPendingContinuation: false })
-      client.app.log({ body: { service: "flowdeck", level: "error", message: `Reasoning continuation rejected: ${err.message}`, extra: { sessionID: sessionId } } }).catch(()=>{})
-      handleEvent({ event: { type: "session.error", properties: { sessionID: sessionId, error: err.message, info: { id: sessionId, role: "assistant", error: err.message } } } })
-    }
-    const timer = setTimeout(() => {
-      if (isDisposed) return
-      sessionAutoContinuationTimers.delete(targetSessionID)
-      let result: unknown
-      try {
-        result = promptFn({
-          path: { id: targetSessionID },
-          body: {
-            parts: [{ type: "text", text: REPLAY_CONTINUATION_PROMPT }],
-          },
-        })
-      } catch (err) {
-        // Synchronous session API failure: treat as a rejected continuation.
-        handleContinuationFailure(err as Error, targetSessionID)
-        return
-      }
-      if (result && typeof (result as Promise<unknown>).then === "function") {
-        ;(result as Promise<unknown>)
-          .then(() => updateWatchdogState(targetSessionID, { isPendingContinuation: false }))
-          .catch((err: Error) => handleContinuationFailure(err, targetSessionID))
-      } else {
-        // Session API returned synchronously (no promise): continuation was submitted.
-        updateWatchdogState(targetSessionID, { isPendingContinuation: false })
-      }
-    }, 50)
-    sessionAutoContinuationTimers.set(targetSessionID, timer)
+    recoveryCoordinator.requestContinuation({
+      sessionID: targetSessionID,
+      source: "reasoning_recovery",
+      promptText: REPLAY_CONTINUATION_PROMPT,
+      client,
+      appLog,
+      handleEvent,
+    })
   }
   recordRuntimeSelfReport(getExecutingRuntimeIdentity(import.meta.url), directory)
   let fdxWorkspaceIndex: FdxWorkspaceIndex | undefined
@@ -473,19 +445,13 @@ const plugin: Plugin = async ({ directory, client }) => {
         appLog(`[watchdog] Stalled session detected: ${state.sessionID}. No activity for ${WATCHDOG_TIMEOUT_MS}ms. Attempting semantic recovery.`, "warn", state.sessionID).catch(()=>{})
         if (state.recoveryCount < MAX_AUTO_CONTINUATIONS_PER_INCIDENT) {
            updateWatchdogState(state.sessionID, { recoveryCount: state.recoveryCount + 1 })
-           const sessionApi = (client as any)?.session
-           if (sessionApi?.prompt || sessionApi?.promptAsync) {
-             const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
-             let recovered: unknown
-             try {
-               recovered = promptFn({ path: { id: state.sessionID }, body: { parts: [{ type: "text", text: "The session appears stalled without completing the task. Please continue your work or explain what you are waiting for." }] } })
-             } catch {
-               // A sync session API failure must never escape the watchdog timer.
-             }
-             if (recovered && typeof (recovered as Promise<unknown>).then === "function") {
-               ;(recovered as Promise<unknown>).catch(() => {})
-             }
-           }
+           recoveryCoordinator.requestContinuation({
+             sessionID: state.sessionID,
+             source: "semantic_watchdog",
+             client,
+             appLog,
+             handleEvent,
+           })
         } else {
            appLog(`[watchdog] Stalled session ${state.sessionID} exhausted watchdog recovery budget.`, "error", state.sessionID).catch(()=>{})
            updateWatchdogState(state.sessionID, { recoveryExhausted: true, hasUnresolvedTask: true, isPendingContinuation: false })
@@ -1459,14 +1425,20 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
 
       const sessionID = eventSessionID
-            if (type === "session.started" || type === "message.updated" || type === "chat.message") {
+      if (type === "session.started" || type === "message.updated" || type === "chat.message") {
         const msgRole = info?.role ?? event?.properties?.info?.role ?? event?.info?.role;
-        const isUserMsg = (type === "message.updated" && msgRole === "user") || type === "chat.message";
+        const rawIsUser = (type === "message.updated" && msgRole === "user") || type === "chat.message";
         const stateUpdates: any = { lastProgressAt: Date.now() };
-        if (isUserMsg) {
-          stateUpdates.recoveryExhausted = false;
-          stateUpdates.recoveryCount = 0;
-          sessionRecoveryState.delete(sessionID);
+        if (rawIsUser && sessionID) {
+          const parts = event?.properties?.parts ?? event?.parts ?? info?.parts;
+          const msgText = Array.isArray(parts) ? parts.map((p: any) => p.text ?? "").join(" ") : (info?.content ?? event?.properties?.content ?? "");
+          const msgId = info?.id ?? event?.properties?.info?.id;
+          const provenance = recoveryCoordinator.classifyMessage(sessionID, msgId, msgText);
+          if (provenance === "manual_user") {
+            stateUpdates.recoveryExhausted = false;
+            stateUpdates.recoveryCount = 0;
+            sessionRecoveryState.delete(sessionID);
+          }
         }
         updateWatchdogState(sessionID, stateUpdates)
       }
@@ -1490,11 +1462,18 @@ const plugin: Plugin = async ({ directory, client }) => {
              } catch {}
           }
 
-          // A session that produced visible output or tool execution after
+          // A session that produced visible output or completed tool execution after
           // recovery is healthy again — clear the recovery state.
           if (parts && sessionRecoveryState.has(eventSessionID) && !msgInfo.error) {
-            const hasOutput = parts.some((p: any) => (p.type === "text" && p.text?.trim()) || p.type === "tool")
-                        if (hasOutput) {
+            const hasOutput = parts.some((p: any) => {
+              if (p.type === "text" && p.text?.trim()) return true
+              if (p.type === "tool") {
+                const state = typeof p.state === "string" ? p.state : p.state?.status
+                return state === "completed" || !state
+              }
+              return false
+            })
+            if (hasOutput) {
               sessionRecoveryState.delete(eventSessionID)
               updateWatchdogState(eventSessionID, { recoveryCount: 0, recoveryExhausted: false })
             }
@@ -1594,6 +1573,17 @@ const plugin: Plugin = async ({ directory, client }) => {
           } else if (parts) {
             const { isMalformed, diagnostics } = detectNoVisibleOutputCompletion({ info: msgInfo, parts })
             if (isMalformed && diagnostics) {
+              const hasActiveOrPendingTool = parts.some((p: any) => {
+                if (p.type === "tool") {
+                  const state = typeof p.state === "string" ? p.state : p.state?.status
+                  return state === "pending" || state === "running"
+                }
+                return false
+              })
+              if (hasActiveOrPendingTool) {
+                // The assistant is currently executing tools; do not treat as an empty reasoning stop.
+                return
+              }
               const provider = diagnostics.provider ?? "unknown"
               const model = diagnostics.model ?? "unknown"
               const messageId = diagnostics.messageID ?? "latest"
@@ -1864,6 +1854,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
       configureFdxNextRuntime()
       if (_watchdogTimer) clearInterval(_watchdogTimer)
+      recoveryCoordinator.dispose()
       for (const timer of sessionAutoContinuationTimers.values()) {
         clearTimeout(timer)
       }
@@ -1891,6 +1882,7 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   sessionReasoningRecoveryRegistry.delete(sessionID)
   sessionRecoveryState.delete(sessionID)
   sessionContinuationCount.delete(sessionID)
+  recoveryCoordinator.cancelSession(sessionID)
   const timer = sessionAutoContinuationTimers.get(sessionID)
   if (timer) clearTimeout(timer)
   sessionAutoContinuationTimers.delete(sessionID)

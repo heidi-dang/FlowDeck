@@ -169,8 +169,10 @@ function sanitizeReplayMessage(
       // Empty text parts are dropped: empty content blocks can be rejected.
     } else if (part.type === "tool") {
       const p = part as any
-      hasToolCall = true
       const state = typeof p.state === "string" ? p.state : p.state?.status
+      if (state === "completed" || !state) {
+        hasToolCall = true
+      }
       if (state === "pending" || state === "running") hasPendingTool = true
       if (p.callID) {
         if (seenCallIds.has(p.callID)) continue // duplicate tool identity: keep first only
@@ -240,7 +242,12 @@ export function detectNoVisibleOutputCompletion(msg: { info: Message; parts: Par
 
   for (const part of msg.parts) {
     if (part.type === "text" && part.text?.trim()) textPartCount++
-    if (part.type === "tool") toolPartCount++
+    if (part.type === "tool") {
+      const state = typeof (part as any).state === "string" ? (part as any).state : (part as any).state?.status
+      if (state === "completed" || !state) {
+        toolPartCount++
+      }
+    }
     if (part.type === "reasoning") reasoningTokenCount += part.text?.length ?? 1
     if (part.type === "step-finish" && (part as any).reason) finishReason = (part as any).reason
   }

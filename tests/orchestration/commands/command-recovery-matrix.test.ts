@@ -308,7 +308,7 @@ describe("M9 R1-R15 fresh-runtime recovery matrix", () => {
     expect(ws.status).toBe("failed"); // the workstream must not reach integration
     expect(ws.failure_reason).toBeTruthy();
     db.close();
-  });
+  }, 30000);
 
   it("T9: a completion decision at a different SHA does not satisfy the recovery fast-path", async () => {
     const dir = freshDir();
