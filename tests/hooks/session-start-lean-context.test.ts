@@ -19,6 +19,7 @@ import { tmpdir } from "os"
 import { closeAllConnections } from "@/orchestration/persistence"
 
 import { sessionStartHook } from "@/hooks/session-start"
+import { flushAuditBuffer } from "@/services/audit-log"
 import { invalidateRuleCache, getRuleCacheSize } from "@/services/lazy-rule-loader"
 
 function makeTempDir(): string {
@@ -359,6 +360,7 @@ describe("session-start — lean context: integration with .flowdeck/lessons.md 
     expect(result.flowdeck_registry_drift).toContain("missing commands: fd-ghost-cmd")
 
     const auditPath = join(dir, ".codebase", "AUDIT.jsonl")
+    flushAuditBuffer()
     expect(existsSync(auditPath)).toBe(true)
     const lines = readFileSync(auditPath, "utf-8").trim().split("\n")
     const driftEvent = lines

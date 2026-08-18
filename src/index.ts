@@ -89,10 +89,23 @@ import {
   executeVerifiedPostWrite,
   generateScorecard,
   validateDelegationDepth,
-  resolveGovernanceMode,
 } from "./services/governance-wiring"
 import { runSupervisorReview, shouldProceed, resolveSupervisorConfig } from "./services/supervisor-binding"
-import { appendAuditEvent } from "./services/audit-log"
+import { appendAuditEvent, flushAuditBuffer } from "./services/audit-log"
+import { governanceFastPath } from "./services/governance-fast-path"
+import { repairToolCall } from "./services/tool-call-repair"
+import {
+  handleUserMessage,
+  handleInternalContinuation,
+  renderTurnContext,
+  completeTask,
+  recordModelTurn,
+  resolveGovernanceModeCached,
+  markLeanContext,
+} from "./services/heidi-fast-harness-runtime"
+import { getRouteDecision } from "./services/heidi-route-state"
+import { getTracker } from "./services/heidi-performance"
+
 import { isSpecialistAgent, getAllAgentIds } from "./services/canonical-registry"
 import {
   resolveRuntimeAgentConfig,
@@ -716,6 +729,44 @@ const plugin: Plugin = async ({ directory, client }) => {
         throw new Error(result.reason ?? "Agent identity enforcement blocked this request")
       }
 
+      // ── Fast Harness v1: per-turn route classification ──────────────
+      // Genuine MANUAL user tasks are classified once, BEFORE expensive
+      // repository discovery, and the route decision is stored keyed by
+      // session/current user turn (see heidi-route-state). Internal
+      // continuation / recovery prompts NEVER reclassify and NEVER reset
+      // the route decision (no Continue flood, no reclassification of
+      // resume prompts). Resuming an unresolved task preserves its state.
+      const fhTaskText = typeof output.message?.content === "string" ? output.message.content : ""
+      const fhMsgId = output.message?.id ?? ""
+      if (sessionID && fhTaskText.trim()) {
+        const fhProvenance = recoveryCoordinator.classifyMessage(sessionID, fhMsgId, fhTaskText)
+        if (fhProvenance === "manual_user") {
+          const fhRouteStart = Date.now()
+          const turn = await handleUserMessage(sessionID, fhTaskText, directory)
+          const fhRouteMs = Date.now() - fhRouteStart
+          appendAuditEvent(directory, {
+            kind: "routing.decision",
+            session_id: sessionID,
+            agent: agent || "heidi",
+            decision: turn.decision?.executionClass ?? "unknown",
+            reason: turn.decision?.reasonCode ?? "NO_ROUTE",
+            details: {
+              routingMs: Math.round(fhRouteMs * 100) / 100,
+              confidence: turn.decision?.confidence ?? 0,
+              specialists: turn.decision?.specialists ?? [],
+              suggestedAgents: turn.decision?.suggestedAgents ?? [],
+              resumed: turn.resumed,
+              taskId: turn.taskId,
+              provenance: turn.provenance,
+            },
+          })
+        } else if (fhProvenance.startsWith("internal")) {
+          // Internal recovery/continuation prompt: keep route + task state.
+          handleInternalContinuation(sessionID)
+        }
+        // "unknown_user_event" (missing/empty text): leave route state unchanged.
+      }
+
       // ── Hierarchical token-budget pre-dispatch gate ──────────────────
       // Reserve budget before the model request is sent. When the run or
       // child budget cannot cover the estimated request, abort the call.
@@ -845,7 +896,35 @@ const plugin: Plugin = async ({ directory, client }) => {
         runtimeCfg.expectedAgent ?? "heidi"
       )
 
-      output.system = [markedSystem]
+      // ── Fast Harness v1: per-turn task-specific lazy context ────────
+      // The permanent Heidi core prompt stays static and small (never
+      // rebuilt per message). Only the sections relevant to THIS turn's
+      // execution class are injected:
+      //  - FAST_DIRECT: nothing extra — lean core + compact task-state
+      //    packet + repo summary only; no specialist directory, no fd-*
+      //    lifecycle, no planner/mapper preflight, no approval workflow,
+      //    no stage-agent matrix, no unrelated domain workflows
+      //  - SPECIALIST / PARALLEL_SPECIALISTS: minimal delegation contract +
+      //    selected specialist info + handoff rules
+      //  - STANDARD: scoped planning instructions only
+      //  - DEEP: full workflow/gates
+      const fhTurnContext = renderTurnContext(sessionID, directory)
+      {
+        // Provider-safe lean-context metadata (class + core token estimate).
+        const route = sessionID ? getRouteDecision(sessionID) : null
+        if (route) {
+          const leanMeta = markLeanContext(sessionID)
+          if (leanMeta) {
+            const tracker = getTracker(route.taskId)
+            tracker?.startSpan("routing", { leanContextMetadata: leanMeta })
+          }
+        }
+      }
+      if (fhTurnContext) {
+        output.system = [markedSystem + "\n\n" + fhTurnContext]
+      } else {
+        output.system = [markedSystem]
+      }
     },
 
     tool: {
@@ -896,8 +975,37 @@ const plugin: Plugin = async ({ directory, client }) => {
       const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
       const resolvedCaller = sessionMeta?.agent ?? (sessionID ? sessionCallerAgents.get(sessionID) : undefined) ?? toolInput.agent
 
+      // ── Fast Harness v1: deterministic tool-call repair ───────────────
+      // Mechanical repair only (known aliases, path separators, scalar-array
+      // shapes). Never invents missing files, target agents, destructive
+      // intent, or semantic meaning. Emits tool_call_repaired with the rule
+      // IDs and tool name only, BEFORE paying for another model inference.
+      if (rawArgs && typeof rawArgs === "object") {
+        try {
+          const repair = repairToolCall(toolName, rawArgs as Record<string, unknown>)
+          if (repair.repaired) {
+            if (toolOutput?.args) toolOutput.args = repair.args
+            if (toolInput?.args) toolInput.args = repair.args
+            // Overwrite the local reference so the rest of this hook and the
+            // tool call use the repaired shape.
+            if (typeof toolOutput?.args === "object") Object.assign(rawArgs, repair.args)
+            appendAuditEvent(directory, {
+              kind: "lifecycle.transition",
+              session_id: sessionID,
+              agent: (resolvedCaller as string) || "heidi",
+              tool: toolName,
+              decision: "tool_call_repaired",
+              reason: "rule:" + repair.repairs.join(","),
+              level: "info",
+            })
+          }
+        } catch {
+          // Repair must never break the runtime.
+        }
+      }
+
       if (toolName === "task" && (!resolvedCaller || resolvedCaller === "unknown")) {
-        const govMode = resolveGovernanceMode(directory)
+        const govMode = resolveGovernanceModeCached(directory)
         if (govMode === "strict") {
           appendAuditEvent(directory, {
             kind: "delegation.blocked",
@@ -927,7 +1035,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         sessionToolCalls.set(sessionID, callCount)
         if (callCount > maxToolCalls) {
           const msg = `Tool call budget exceeded: ${callCount} > ${maxToolCalls} for session ${sessionID}`
-          const govMode = resolveGovernanceMode(directory)
+          const govMode = resolveGovernanceModeCached(directory)
           recordRecoveryAudit({
             directory, sessionID, agent,
             errorKey: "tool_call_budget_exceeded",
@@ -954,14 +1062,46 @@ const plugin: Plugin = async ({ directory, client }) => {
         agent,
       )
 
-      // ── 2. Governance tool check ────────────────────────────────
-      const governanceResult = evaluateGovernanceToolCheck({
-        directory,
-        sessionID,
-        agent,
-        tool: toolName,
-        args: rawArgs,
-      })
+      // ── 2. Governance tool check (Fast Harness fast path) ────────
+      // Deterministic known-safe read-only tools (FDX reads/searches, safe
+      // git inspection) authorize via the fast path (<2ms p50, no full
+      // multi-rule evaluation). Writes, shell mutation, destructive ops,
+      // secrets, release actions, deployments, delegation, and other
+      // high-risk operations ALWAYS take the full policy path.
+      const governancePathStart = Date.now()
+      const fastGovMode = resolveGovernanceModeCached(directory)
+      const fastPath = governanceFastPath(
+        toolName,
+        fastGovMode,
+        typeof rawArgs?.file_path === "string" ? rawArgs.file_path : typeof rawArgs?.path === "string" ? rawArgs.path : undefined,
+      )
+      let governanceResult: { action: "allow" | "warn" | "block"; reason?: string }
+      if (fastPath.allowed && fastPath.usedFastPath) {
+        // Read-only fast path authorized. Full policy evaluation is skipped
+        // ONLY for tools that are both in the read whitelist and operating on
+        // a non-root path. All other tools evaluate below.
+        governanceResult = { action: "allow" }
+      } else {
+        governanceResult = evaluateGovernanceToolCheck({
+          directory,
+          sessionID,
+          agent,
+          tool: toolName,
+          args: rawArgs,
+        })
+      }
+      const governancePathMs = Date.now() - governancePathStart
+      {
+        const route = sessionID ? getRouteDecision(sessionID) : null
+        const tracker = route ? getTracker(route.taskId) : undefined
+        if (tracker) {
+          const spanKey = tracker.startSpan(
+            fastPath.usedFastPath ? "governance.read_fast_path" : fastPath.allowed && !fastPath.usedFastPath && fastGovMode !== "off" ? "governance.write_full" : "governance.check",
+            { tool: toolName, latencyMs: Math.round(governancePathMs * 100) / 100 },
+          )
+          tracker.endSpan(spanKey)
+        }
+      }
 
       if (governanceResult.action === "block") {
         if (sessionID) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
@@ -1051,7 +1191,7 @@ const plugin: Plugin = async ({ directory, client }) => {
           const nextDelCount = (sessionDelegations.get(sessionID) ?? 0) + 1
           if (nextDelCount > maxDelegations) {
             const msg = `Delegation budget exceeded: ${nextDelCount} > ${maxDelegations} for session ${sessionID}`
-            const govMode = resolveGovernanceMode(directory)
+            const govMode = resolveGovernanceModeCached(directory)
             appendAuditEvent(directory, {
               kind: "delegation.blocked",
               session_id: sessionID,
@@ -1331,7 +1471,7 @@ const plugin: Plugin = async ({ directory, client }) => {
           sessionRetries.set(sessionID, retryCount)
           if (retryCount > maxRetries) {
             const msg = `Retry budget exceeded: ${retryCount} > ${maxRetries} for session ${sessionID}`
-            const govMode = resolveGovernanceMode(directory)
+            const govMode = resolveGovernanceModeCached(directory)
             recordRecoveryAudit({
               directory, sessionID, agent,
               errorKey: "retry_budget_exceeded",
@@ -1435,6 +1575,16 @@ const plugin: Plugin = async ({ directory, client }) => {
               depth: eventMeta?.depth ?? 0,
             }
             await tokenBudgetRuntime.reconcileUsage(budgetCtx, msgInfo)
+            // ── Fast Harness: model-turn telemetry (structural tokens only) ──
+            try {
+              const inTok = msgInfo.tokens?.input ?? 0
+              const outTok = msgInfo.tokens?.output ?? 0
+              if (Number.isFinite(Number(inTok)) && Number.isFinite(Number(outTok))) {
+                recordModelTurn(eventSessionID, Number(inTok), Number(outTok), undefined)
+              }
+            } catch {
+              // telemetry must never break the runtime
+            }
           } catch (err) {
             appLog(`[token-budget] reconcile failed: ${err instanceof Error ? err.message : String(err)}`, "warn", eventSessionID)
           }
@@ -1450,6 +1600,22 @@ const plugin: Plugin = async ({ directory, client }) => {
           await tokenBudgetRuntime.onSessionEnd(budgetCtx, type === "session.error" ? "session_error" : "session_completed")
         } catch (err) {
           appLog(`[token-budget] session-end release failed: ${err instanceof Error ? err.message : String(err)}`, "warn", eventSessionID)
+        }
+      }
+
+      // ── Fast Harness: session lifecycle closure ──────────────────────
+      // Complete the per-user-task state, emit the final (safe) tracker
+      // summary, and flush any buffered non-critical audit events on a
+      // session boundary. Critical events were already flushed synchronously.
+      if (type === "session.completed" || type === "session.error") {
+        try {
+          const summary = completeTask(eventSessionID)
+          if (summary != null) {
+            await appLog("[heidi-fast-harness] task complete: " + summary, "info", eventSessionID)
+          }
+          flushAuditBuffer()
+        } catch {
+          // Lifecycle closure is best-effort; never break the runtime.
         }
       }
 
