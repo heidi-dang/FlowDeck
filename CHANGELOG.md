@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.2.0] - 2026-08-18
+### Added — Heidi Active Parallel Coordination & Runtime Integrity
+- **Heidi Active Parallel Coordination**: Root Heidi remains productive with non-conflicting coordinator work while all specialist children execute concurrently.
+- **Incremental Integration of READY Results**: Results from completed children are reviewed and integrated immediately (before the last child finishes) with no global wait-all barrier.
+- **Event-Driven + Adaptive Child Reconciliation**: Coordinator tracks child lifecycle events and reconciles state adaptively; healthy parallel workload polls 0 model turns (pollModelTurns === 0).
+- **Fan-out Reconciliation & Root-Depth Provenance Fixes**: Correct effective depth (root 0, child 1), fan-out reconciliation, and provenance preservation for the root coordinator during delegation.
+- **Scoped Ownership & Duplicate-Work Protections**: Running coordinator work is non-conflicting with children; ownership conflicts and duplication events both remain 0.
+- **Runtime Self-Audit / Runtime Integrity Scoring**: FlowDeck surfaces live runtime integrity scores on live actions and via the WebUI.
+- **Visible Per-Action FlowDeck XX% WebUI Surface**: Per-action runtime scores rendered in the WebUI dashboard with Current Health and Session Integrity.
+- **Evidence-Gated Completion Scoring**: Completion is gated on current, SHA-matched verification evidence.
+- **Score Isolation from Provider/Model Context**: Runtime scores are kept isolated from provider/model context.
+- **Resident FDX Execution / Warm Index Improvements**: FDX native daemon + warm index improvements.
+- **Deterministic Shell Fast Lane**: Deterministic fast-lane execution for safe shell commands.
+- **Long-Session Recovery / Convergence Protections**: Confirmed-terminal recovery, single-flight continuations, provenance lifecycle persistence, and convergence guard.
+- **Explicit Real-Runtime Acceptance & CI-Safe Live-Test Separation**: npm test:live-acceptance isolates live OpenCode/WebUI probes from the deterministic CI test matrix; normal CI and coverage exclude live probes while retaining the offline coordinator/mutation regressions.
+- **Cross-Platform Ubuntu / Windows / macOS Validation**: All three OS test matrices green.
+
+### Verification
+- Full test suite: 3,953 pass / 0 fail; coverage 83.75% lines (>= 80% threshold).
+- FDX native parity PASS; Rust gates PASS; Packaging/CLI and installer gates PASS; Pipeline completion PASS.
+- Production Gates and Orchestration Validation green on the exact release SHA.
+
 ## [2.1.0] - 2026-08-18
 ### Added — Heidi Fast Harness v1
 - **Route-First Task Execution**: Deterministic per-user-task classification (FAST_DIRECT, SPECIALIST, PARALLEL_SPECIALISTS, STANDARD, DEEP) before repository discovery; manual user turns only — internal continuation/recovery prompts never reclassify or reset route state.
