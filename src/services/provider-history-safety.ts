@@ -125,7 +125,39 @@ export function sanitizeReplayHistory(messages: { info: Message; parts: Part[] }
     const replay = sanitizeReplayMessage(msg, seenCallIds)
     if (replay) out.push(replay)
   }
-  return out
+  return mergeAdjacentUserTurns(out)
+}
+
+/**
+ * B-Isolation: merge consecutive user turns that become adjacent after a
+ * malformed assistant turn is dropped. Keeps user/assistant alternation valid
+ * for every provider without EVER synthesizing visible assistant text.
+ */
+function mergeAdjacentUserTurns(messages: { info: Message; parts: Part[] }[]): { info: Message; parts: Part[] }[] {
+  const result: { info: Message; parts: Part[] }[] = []
+  for (const msg of messages) {
+    const last = result[result.length - 1]
+    if (
+      last &&
+      msg.info.role === "user" &&
+      last.info.role === "user"
+    ) {
+      const mergedText =
+        last.parts
+          .filter(p => p.type === "text" && p.text?.trim())
+          .map(p => (p as { text?: string }).text ?? "")
+          .join("\n") +
+        "\n" +
+        msg.parts
+          .filter(p => p.type === "text" && p.text?.trim())
+          .map(p => (p as { text?: string }).text ?? "")
+          .join("\n")
+      last.parts = [{ type: "text", text: mergedText} as Part]
+      continue
+    }
+    result.push(msg)
+  }
+  return result
 }
 
 function sanitizeReplayMessage(
@@ -134,9 +166,9 @@ function sanitizeReplayMessage(
 ): { info: Message; parts: Part[] } | null {
   if (!msg || !msg.info) return null
 
+  // User/system turns: drop if there is nothing to replay, or the turn itself
+  // carried a provider error (failed turns must not be replayed).
   if (msg.info.role !== "assistant") {
-    // User/system turns: drop if there is nothing to replay, or the turn itself
-    // carried a provider error (failed turns must not be replayed).
     if (msg.parts.length === 0) return null
     if ((msg.info as any).error) return null
     return msg
@@ -149,15 +181,14 @@ function sanitizeReplayMessage(
   // Nothing at all to replay.
   if (msg.parts.length === 0) return null
 
-  // 1. Reasoning parts are incompatible with input-history replay for
-  //    reasoning-capable providers (Gemini rejects reasoningContent in input).
-  //    They are removed from the replayable model history. Reasoning text is
-  //    NEVER copied into visible placeholder content.
+  // B-Isolation: reasoning parts are incompatible with input-history replay for
+  // reasoning-capable providers (Gemini rejects reasoningContent in input).
+  // They are removed from the EPHEMERAL replayable model history only. The
+  // canonical persisted transcript keeps reasoning untouched.
   const partsNoReasoning = msg.parts.filter(part => part.type !== "reasoning")
 
   let hasVisibleText = false
-  let hasToolCall = false
-  let hasPendingTool = false
+  let hasCompletedTool = false
   const cleaned: Part[] = []
 
   for (const part of partsNoReasoning) {
@@ -171,12 +202,18 @@ function sanitizeReplayMessage(
       const p = part as any
       const state = typeof p.state === "string" ? p.state : p.state?.status
       if (state === "completed" || !state) {
-        hasToolCall = true
+        hasCompletedTool = true
       }
-      if (state === "pending" || state === "running") hasPendingTool = true
-      if (p.callID) {
-        if (seenCallIds.has(p.callID)) continue // duplicate tool identity: keep first only
-        seenCallIds.add(p.callID)
+      if (state === "pending" || state === "running") {
+        // B-Isolation: structurally REMOVE unresolved tool calls from the
+        // ephemeral replay view instead of synthesizing fake user-visible
+        // assistant content. Never generate the placeholder marker.
+        continue
+      }
+      const callID = p.callID
+      if (callID) {
+        if (seenCallIds.has(callID)) continue // duplicate tool identity: keep first only
+        seenCallIds.add(callID)
       }
       cleaned.push(part)
     } else {
@@ -186,19 +223,15 @@ function sanitizeReplayMessage(
     }
   }
 
-  // 2. A turn whose only content is an unresolved tool call cannot be replayed
-  //    as tool state. Replace it with a neutral recovery marker.
-  if (hasPendingTool) {
-    return { info: msg.info, parts: [{ type: "text", text: REPLAY_PLACEHOLDER } as Part] }
+  // B-Isolation: a turn with no visible text and no completed tool call cannot
+  // be replayed as meaningful content. DROP the malformed assistant turn —
+  // never synthesize visible text, never emit the placeholder marker. The
+  // caller merges any adjacent user turns.
+  if (!hasVisibleText && !hasCompletedTool) {
+    return null
   }
 
-  // 3. A reasoning-only or fully empty assistant turn (no visible text, no tool
-  //    call) must not replay as an empty/reasoning-only assistant message.
-  if (!hasVisibleText && !hasToolCall) {
-    return { info: msg.info, parts: [{ type: "text", text: REPLAY_PLACEHOLDER } as Part] }
-  }
-
-  // 4. Normal assistant turn: text and/or completed tool calls. Provider-safe.
+  // Normal assistant turn: text and/or completed tool calls. Provider-safe.
   return { info: msg.info, parts: cleaned }
 }
 

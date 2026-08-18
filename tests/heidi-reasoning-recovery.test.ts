@@ -38,20 +38,19 @@ describe("Heidi Reasoning Recovery & Replay Safety", () => {
     expect(initialDiag.safe).toBe(false)
     expect(initialDiag.issues).toContain("REASONING_ONLY_ASSISTANT")
 
-    // Sanitize for replay
+    // Sanitize for replay — Requirement B: malformed reasoning-only assistant
+    // turns are DROPPED (never synthesize visible placeholder text). The marker
+    // "[Previous assistant turn completed without visible output.]" must never
+    // appear in the persistent/visible transcript.
     const sanitized = sanitizeReasoningOnlyHistory(messages)
 
-    // Verify sanitized structure
+    // The reasoning-only turn (msg_3) is dropped for provider replay.
     const targetTurn = sanitized.find(m => m.info.id === "msg_3")
-    expect(targetTurn).toBeDefined()
-    
-    // Must contain safe visible placeholder
-    const textPart = targetTurn?.parts.find(p => p.type === "text")
-    expect(textPart).toBeDefined()
-    expect((textPart as any)?.text).toBe("[Previous assistant turn completed without visible output.]")
+    expect(targetTurn).toBeUndefined()
 
-    // Hidden reasoning text must NOT be exposed or duplicated into text part
-    expect((textPart as any)?.text).not.toContain("Internal thought process...")
+    // No visible placeholder marker may ever appear in replayed history.
+    const serialized = JSON.stringify(sanitized)
+    expect(serialized).not.toContain("without visible output")
 
     // Validate history after sanitation -> must be safe
     const finalDiag = validateHistorySafety(sanitized)

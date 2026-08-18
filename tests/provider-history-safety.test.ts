@@ -21,7 +21,7 @@ describe("provider-history-safety", () => {
     expect(diag.reasoningOnlyTurns).toBe(1)
   })
 
-  it("sanitizes reasoning-only assistant turns by inserting provider-safe placeholder", () => {
+  it("B-Isolation: drops reasoning-only assistant turns instead of inserting a visible placeholder", () => {
     const messages = [
       {
         info: { id: "1", role: "user", sessionID: "s1" } as Message,
@@ -33,9 +33,16 @@ describe("provider-history-safety", () => {
       }
     ]
 
+    // The malformed reasoning-only assistant turn is DROPPED for provider
+    // replay. Never synthesize visible text; never leak the placeholder marker
+    // into UI, persisted transcript, or provider replay.
     const sanitized = sanitizeReasoningOnlyHistory(messages)
-    expect(sanitized[1].parts.some(p => p.type === "text" && p.text?.includes("without visible output"))).toBe(true)
-    
+    expect(sanitized).toHaveLength(1)
+    expect(sanitized[0].info.id).toBe("1")
+
+    const serialized = JSON.stringify(sanitized)
+    expect(serialized).not.toContain("without visible output")
+
     const diagAfter = validateHistorySafety(sanitized)
     expect(diagAfter.safe).toBe(true)
   })
@@ -155,16 +162,13 @@ describe("live reasoning-only replay fixture (msg_00a992f730001LM7JU6uwPGo0wZ st
     ] as Part[]
   }
 
-  it("sanitizes to a single provider-safe placeholder text part (no reasoning part survives)", () => {
+  it("B-Isolation: drops reasoning-only terminal turn (no placeholder, no reasoning survives)", () => {
     const sanitized = sanitizeReasoningOnlyHistory([liveFixture])
-    expect(sanitized).toHaveLength(1)
-    const turn = sanitized[0]
-    expect(turn.parts.filter(p => p.type === "reasoning")).toHaveLength(0)
-    expect(turn.parts.filter(p => p.type === "text" && p.text?.trim())).toHaveLength(1)
-    const text = turn.parts.find(p => p.type === "text") as any
-    expect(text.text).toBe("[Previous assistant turn completed without visible output.]")
-    // Hidden reasoning must NEVER be exposed into visible placeholder content
-    expect(text.text).not.toContain("SHAPE-ONLY")
+    // Reasoning-only turn is dropped entirely for provider replay.
+    expect(sanitized).toHaveLength(0)
+    const serialized = JSON.stringify(sanitized)
+    expect(serialized).not.toContain("without visible output")
+    expect(serialized).not.toContain("SHAPE-ONLY")
   })
 
   it("provider-replay serialization after sanitation contains no reasoning content and no empty assistant content", () => {
@@ -215,14 +219,15 @@ describe("sanitizeReplayHistory provider-safe invariants", () => {
     expect(validateHistorySafety(sanitized).safe).toBe(true)
   })
 
-  it("replaces unresolved pending tool turns with the neutral placeholder", () => {
+  it("B-Isolation: structurally removes unresolved pending tool turns (no placeholder text)", () => {
     const messages = [
       { info: { id: "2", role: "assistant", sessionID: "s1" } as Message, parts: [{ type: "tool", tool: "bash", callID: "t-9", state: { status: "pending" } }] as any[] },
     ]
+    // Unresolved tool call is removed structurally; the turn has no remaining
+    // content so it is dropped — never synthesized into fake visible text.
     const sanitized = sanitizeReasoningOnlyHistory(messages)
-    expect(sanitized[0].parts).toHaveLength(1)
-    expect((sanitized[0].parts[0] as any).type).toBe("text")
-    expect((sanitized[0].parts[0] as any).text).toBe("[Previous assistant turn completed without visible output.]")
+    expect(sanitized).toHaveLength(0)
+    expect(JSON.stringify(sanitized)).not.toContain("without visible output")
   })
 
   it("deduplicates duplicate tool-call identity", () => {
