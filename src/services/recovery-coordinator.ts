@@ -11,8 +11,10 @@
  *   3. Unified scheduling for reasoning-only recovery and semantic watchdog recovery.
  *   4. Full recovery generation lifecycle with preflight revalidation at submission time.
  *      The 50ms timer MUST revalidate live session state before sending the prompt.
+ *      Every pre-submit cancellation or suppression releases isPendingContinuation.
  *   5. Recovery completion is correlated to the specific assistant response created
  *      by the recovery generation via the internal user-prompt message ID.
+ *      Telemetry is emitted for exact match, ordered fallback, and rejection.
  */
 
 import { REPLAY_CONTINUATION_PROMPT } from "./reasoning-recovery"
@@ -59,6 +61,7 @@ export interface RecoveryGeneration {
   submittedAt?: number
   cancelledAt?: number
   completedAt?: number
+  handleEvent?: (args: { event: any }) => Promise<void>
 }
 
 export interface RecoveryContinuationRequest {
@@ -82,12 +85,28 @@ export interface RecoveryContinuationRequest {
 /** Bounded orphan-generation timeout (ms). */
 const ORPHAN_GENERATION_TIMEOUT_MS = 120_000 // 2 minutes
 
+export type RecoveryTelemetryEvent = {
+  sessionID: string
+  eventName: string
+  details: Record<string, unknown>
+}
+
 class RecoveryCoordinator {
   private activeTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private orphanTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private sessionGenerations = new Map<string, number>()
   /** Per-session: current recovery generation record. */
   private activeGenerations = new Map<string, RecoveryGeneration>()
+  private telemetryListeners = new Set<(event: RecoveryTelemetryEvent) => void>()
+
+  /**
+   * Register a listener for recovery telemetry events.
+   * Returns an unsubscribe callback.
+   */
+  public onTelemetry(listener: (event: RecoveryTelemetryEvent) => void): () => void {
+    this.telemetryListeners.add(listener)
+    return () => this.telemetryListeners.delete(listener)
+  }
 
   /**
    * Per-session: map from internal user-message ID → InternalPromptRecord.
@@ -154,6 +173,7 @@ class RecoveryCoordinator {
       source,
       state: "SCHEDULED",
       createdAt: Date.now(),
+      handleEvent,
     }
     this.activeGenerations.set(sessionID, genRecord)
 
@@ -170,13 +190,14 @@ class RecoveryCoordinator {
 
       // ── PREFLIGHT REVALIDATION ──────────────────────────────────────────────
       // The 50ms debounce does NOT guarantee stable state. Re-read live state
-      // immediately before sending the prompt. If anything changed, suppress.
+      // immediately before sending the prompt. If anything changed, suppress and
+      // completely release pending continuation state.
       const currentGen = this.activeGenerations.get(sessionID)
       if (!currentGen || currentGen.generation !== generation || currentGen.state === "CANCELLED") {
         // Generation was superseded or cancelled while timer was pending
         appLog(`[recovery-coordinator] preflight: generation ${generation} superseded/cancelled for ${sessionID}`, "debug", sessionID).catch(() => {})
         this._emitTelemetry(handleEvent, sessionID, "recovery_preflight_suppressed", { reason: "generation_superseded", generation })
-        this._clearPendingIfThisGeneration(sessionID, generation, record)
+        this._abortGeneration(sessionID, generation, record, currentGen)
         return
       }
 
@@ -185,7 +206,7 @@ class RecoveryCoordinator {
         // Session was cleaned up while timer was pending
         appLog(`[recovery-coordinator] preflight: session ${sessionID} no longer exists`, "debug", sessionID).catch(() => {})
         this._emitTelemetry(handleEvent, sessionID, "recovery_preflight_suppressed", { reason: "session_gone", generation })
-        this._clearPendingIfThisGeneration(sessionID, generation, record)
+        this._abortGeneration(sessionID, generation, record, genRecord)
         return
       }
       if (liveState.isPendingProvider) {
@@ -297,16 +318,47 @@ class RecoveryCoordinator {
     return true
   }
 
-  /** Abort a generation during preflight — suppress submission and clear state. */
+  /**
+   * Centralized helper to abort a generation during preflight or cancellation.
+   * Consistently suppresses submission, clears timers, removes pending records,
+   * and guarantees isPendingContinuation = false.
+   */
   private _abortGeneration(
     sessionID: string,
     generation: number,
-    record: InternalPromptRecord,
-    genRecord: RecoveryGeneration,
+    record?: InternalPromptRecord,
+    genRecord?: RecoveryGeneration,
   ): void {
-    genRecord.state = "CANCELLED"
-    genRecord.cancelledAt = Date.now()
-    this._clearPendingIfThisGeneration(sessionID, generation, record)
+    const targetGen = genRecord ?? this.activeGenerations.get(sessionID)
+    if (targetGen && targetGen.generation === generation) {
+      if (targetGen.state !== "TERMINAL" && targetGen.state !== "FAILED") {
+        targetGen.state = "CANCELLED"
+        targetGen.cancelledAt = Date.now()
+      }
+    }
+    // Clear active debounce timer if present
+    const timer = this.activeTimers.get(sessionID)
+    if (timer) {
+      clearTimeout(timer)
+      this.activeTimers.delete(sessionID)
+    }
+    // Clear orphan timer if present
+    const orphanTimer = this.orphanTimers.get(sessionID)
+    if (orphanTimer) {
+      clearTimeout(orphanTimer)
+      this.orphanTimers.delete(sessionID)
+    }
+    // Clear pending prompt records for this generation
+    if (record) {
+      this._clearPendingIfThisGeneration(sessionID, generation, record)
+    } else {
+      const pending = this.pendingPrompts.get(sessionID)
+      if (pending) {
+        const remaining = pending.filter((r) => r.generation !== generation)
+        if (remaining.length === 0) this.pendingPrompts.delete(sessionID)
+        else this.pendingPrompts.set(sessionID, remaining)
+      }
+    }
     updateWatchdogState(sessionID, { isPendingContinuation: false })
   }
 
@@ -355,12 +407,20 @@ class RecoveryCoordinator {
 
   /** Emit a diagnostic telemetry event (non-throwing). */
   private _emitTelemetry(
-    handleEvent: (args: { event: any }) => Promise<void>,
+    handleEvent: ((args: { event: any }) => Promise<void>) | undefined,
     sessionID: string,
     eventName: string,
     details: Record<string, unknown>,
   ): void {
-    handleEvent({ event: { type: "flowdeck.telemetry", properties: { sessionID, eventName, details } } }).catch(() => {})
+    const ev: RecoveryTelemetryEvent = { sessionID, eventName, details }
+    for (const listener of this.telemetryListeners) {
+      try {
+        listener(ev)
+      } catch {}
+    }
+    if (handleEvent) {
+      handleEvent({ event: { type: "flowdeck.telemetry", properties: ev } }).catch(() => {})
+    }
   }
 
   /**
@@ -389,11 +449,18 @@ class RecoveryCoordinator {
    * Returns true if this was a tracked recovery turn that completes the active generation.
    *
    * Correlation logic:
-   * - If the active generation has a known internalPromptMessageId, we check whether
-   *   the terminal assistant message's parentID matches (or we fall back to ordered
-   *   correlation since OpenCode does not always expose parentID on assistant messages).
-   * - SUBMITTED_UNCORRELATED state (sync prompt): accepts the next terminal assistant
-   *   turn as completion, but only while still in that state.
+   * - If the active generation has a known internalPromptMessageId:
+   *   1. If assistantParentID matches internalPromptMessageId -> exact causal match!
+   *      Emits `recovery_correlation_exact`.
+   *   2. If assistantParentID is present but DOES NOT match internalPromptMessageId -> rejected!
+   *      Emits `recovery_correlation_rejected`. Generation remains RUNNING.
+   *   3. If assistantParentID is absent (OpenCode SDK does not populate it) and generation is RUNNING ->
+   *      Ordered correlation fallback.
+   *      Emits `recovery_correlation_ordered_fallback`.
+   *   4. If assistantResponseMessageId matches assistantMessageID -> exact match!
+   * - SUBMITTED_UNCORRELATED state (sync prompt or no-ID async):
+   *   Accepts next terminal assistant turn under ordered fallback.
+   *   Emits `recovery_correlation_ordered_fallback`.
    * - A terminal event with an unrelated assistant ID that is NOT the expected response
    *   does NOT complete the generation — recovery remains pending.
    *
@@ -416,37 +483,62 @@ class RecoveryCoordinator {
     const internalPromptId = genRecord.internalPromptMessageId
 
     if (internalPromptId) {
-      // Check causal correlation: does this assistant turn's parentID match
-      // the internal prompt message ID?
-      const causalMatch = assistantParentID && assistantParentID === internalPromptId
-      // If we have an assistantResponseMessageId already recorded, use exact match
-      const exactMatch = genRecord.assistantResponseMessageId &&
-        genRecord.assistantResponseMessageId === assistantMessageID
-
-      if (causalMatch || exactMatch) {
-        // Confirmed: this assistant turn is the direct response to our recovery prompt
+      // 1. Exact causal match: assistant's parentID equals our internal prompt message ID
+      if (assistantParentID && assistantParentID === internalPromptId) {
+        this._emitTelemetry(genRecord.handleEvent, sessionID, "recovery_correlation_exact", {
+          generation: genRecord.generation,
+          internalPromptId,
+          assistantMessageID,
+          assistantParentID,
+        })
         return this._completeGeneration(sessionID, genRecord, assistantMessageID)
       }
 
-      // No parentID info from OpenCode. Use ordered-correlation fallback:
-      // The first terminal assistant message after our internal prompt was submitted
-      // is the recovery response — accept it as long as no intervening user message
-      // has already reset the session.
-      if (!assistantParentID && genRecord.state === "RUNNING") {
+      // 2. Previously recorded exact assistant response match
+      if (genRecord.assistantResponseMessageId && genRecord.assistantResponseMessageId === assistantMessageID) {
+        this._emitTelemetry(genRecord.handleEvent, sessionID, "recovery_correlation_exact", {
+          generation: genRecord.generation,
+          internalPromptId,
+          assistantMessageID,
+        })
         return this._completeGeneration(sessionID, genRecord, assistantMessageID)
       }
 
-      // There IS a parentID but it doesn't match our prompt — this is an unrelated
-      // assistant turn; do NOT complete the recovery generation.
+      // 3. Mismatched parentID: parentID is present on assistant message but does NOT match our prompt
       if (assistantParentID && assistantParentID !== internalPromptId) {
+        this._emitTelemetry(genRecord.handleEvent, sessionID, "recovery_correlation_rejected", {
+          generation: genRecord.generation,
+          internalPromptId,
+          assistantMessageID,
+          assistantParentID,
+          reason: "mismatched_parent_id",
+        })
         return false
+      }
+
+      // 4. Ordered correlation fallback: OpenCode does not populate assistant.parentID.
+      // Validated constraints:
+      // - generation is currently in RUNNING state
+      // - assistant arrived after recovery submission (submittedAt <= Date.now())
+      if (!assistantParentID && genRecord.state === "RUNNING") {
+        this._emitTelemetry(genRecord.handleEvent, sessionID, "recovery_correlation_ordered_fallback", {
+          generation: genRecord.generation,
+          internalPromptId,
+          assistantMessageID,
+        })
+        return this._completeGeneration(sessionID, genRecord, assistantMessageID)
       }
 
       return false
     }
 
     if (genRecord.state === "SUBMITTED_UNCORRELATED") {
-      // Sync prompt or no-ID async — accept next terminal assistant turn.
+      // Sync prompt or no-ID async — accept next terminal assistant turn under ordered fallback.
+      this._emitTelemetry(genRecord.handleEvent, sessionID, "recovery_correlation_ordered_fallback", {
+        generation: genRecord.generation,
+        assistantMessageID,
+        reason: "sync_uncorrelated",
+      })
       return this._completeGeneration(sessionID, genRecord, assistantMessageID)
     }
 
@@ -565,22 +657,16 @@ class RecoveryCoordinator {
   }
 
   /**
-   * Mark the current generation as cancelled (e.g. when a user sends a message
-   * that supersedes the recovery prompt before the timer fires or before the
-   * assistant responds). This allows the timer callback's preflight to suppress
-   * the submission.
+   * Mark the current generation as cancelled when a verified manual user message
+   * arrives before the prompt is submitted or while pending.
+   *
+   * Immediately clears active timers, removes pending prompt records, and
+   * guarantees isPendingContinuation = false so no stale ownership blocks future work.
    */
   public markGenerationCancelledByUserMessage(sessionID: string): void {
     const genRecord = this.activeGenerations.get(sessionID)
-    if (genRecord && genRecord.state === "SCHEDULED") {
-      genRecord.state = "CANCELLED"
-      genRecord.cancelledAt = Date.now()
-    }
-    // Also cancel the orphan timer if any
-    const orphanTimer = this.orphanTimers.get(sessionID)
-    if (orphanTimer) {
-      clearTimeout(orphanTimer)
-      this.orphanTimers.delete(sessionID)
+    if (genRecord && (genRecord.state === "SCHEDULED" || genRecord.state === "SUBMITTED_UNCORRELATED")) {
+      this._abortGeneration(sessionID, genRecord.generation, undefined, genRecord)
     }
   }
 
@@ -627,6 +713,7 @@ class RecoveryCoordinator {
     this.promptsByMessageId.clear()
     this.activeGenerations.clear()
     this.sessionGenerations.clear()
+    this.telemetryListeners.clear()
   }
 }
 
