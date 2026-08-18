@@ -168,3 +168,29 @@ Deterministic, rule-based repair of mechanical tool call anomalies:
 3. **No CoT Telemetry Leaks:** Performance spans and traces never persist reasoning tokens, human chat secrets, or API keys.
 4. **Single-Level Delegation Invariant:** Specialists cannot spawn child subagents. Heidi remains the sole top-level coordinator.
 5. **Phase 9 DSH Seam Preservation:** Fast Harness v1 delegates tasks cleanly through existing task tools and OpenCode hooks, avoiding competing subagent supervisor lifecycles.
+
+
+---
+
+## 6. Closure Status (post-commit 083ade9)
+
+Live wiring complete on feat/heidi-fast-harness-v1:
+- Per-turn routing in chat.message (manual user turns only; internal continuation/recovery prompts never reclassify, never reset route state).
+- Per-turn lazy prompt sections in experimental.chat.system.transform (permanent core stays static; FAST_DIRECT measured 518 tokens vs 2,933 baseline = 82.3% reduction).
+- BACKEND domain added; frontend+backend resolves to frontend-coder + backend-coder in parallel.
+- ReadBatchService consumed by the live path (manifest prefetch with concurrent reads; 3.82x measured speedup on 4 independent reads).
+- GovernanceFastPath wired into tool.execute.before for whitelisted read-only tools (p50 0.0001ms measured); writes/shell/delegation stay on the full policy path.
+- FileTokenUsageStore in-memory hot index: JSONL read once at startup/recovery, incremental updates at runtime, idempotent dedup, reclaim/redistribution totals preserved.
+- Bounded buffered audit persistence: critical events (blocks, policy violations, destructive-op blocks, recovery exhaustion, security mismatches, delegation lifecycle) flush synchronously; informational events buffer with size/periodic/dispose flush.
+- Deterministic tool-call repair emits tool_call_repaired (rule IDs + tool only) before another model inference.
+- Performance telemetry spans in live hooks (p50 0.0017ms).
+
+Measured acceptance numbers (this machine, bun 1.3.14):
+- Prompt reduction: 82.3% (target >=60%, preferred 70-80%+).
+- Read-heavy speedup: 3.82x (target >=2x).
+- Read-only governance p50: 0.0001ms (target <5ms, preferred <2ms).
+- Performance tracing p50: 0.0017ms (target <1ms).
+- Routing p50: ~0.001ms (negligible vs provider inference).
+- Task-state packet: 401 chars (~100 tokens) after 100 accumulated facts/files.
+
+Honest exclusions: Hermes same-model comparison is NOT AVAILABLE (no Hermes harness in this environment; reporting one would be fabrication). Real OpenCode GUI session proof is limited to the offline contract-verification scripts and the plugin-hook contract tests that exercise the exact OpenCode hook shapes.
