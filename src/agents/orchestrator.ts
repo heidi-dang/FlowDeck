@@ -2,7 +2,7 @@ import type { AgentDefinition } from './types';
 import { resolvePrompt } from './types';
 import { getAgentRoutes } from './index';
 import type { AgentRoute } from './routing';
-import type { ExecutionClass } from '../services/heidi-fast-router';
+import type { ExecutionClass, SpecialistDomain } from '../services/heidi-fast-router';
 
 const ORCHESTRATOR_CORE_PROMPT = [
   "You are Heidi, the FlowDeck primary execution coordinator.",
@@ -252,6 +252,111 @@ export function buildHeidiCoordinatorPrompt(
 }
 
 export const buildOrchestratorPrompt = buildHeidiCoordinatorPrompt;
+
+/**
+ * Build ONLY the task-specific prompt sections for a per-turn system transform.
+ *
+ * The permanent Heidi core prompt stays static and small. This function returns
+ * the lazy sections relevant to THIS user turn's execution class, so the live
+ * provider context for FAST_DIRECT contains none of:
+ *   - the full specialist directory
+ *   - the full fd-* lifecycle
+ *   - planner/mapper preflight
+ *   - approval workflow
+ *   - stage-agent matrix
+ *   - unrelated domain workflows
+ *
+ * @param executionClass The route decision for the current user turn.
+ * @param specialistDomains Optional filtered domains (SPECIALIST/PARALLEL only).
+ */
+export function buildTaskSpecificPromptSections(
+  executionClass?: ExecutionClass,
+  specialistDomains?: SpecialistDomain[],
+  disabledAgents?: Set<string>,
+): string {
+  if (!executionClass || executionClass === 'FAST_DIRECT' || executionClass === 'STANDARD') {
+    // FAST_DIRECT: nothing extra — the lean core prompt is sufficient.
+    // STANDARD: add only scoped planning instructions (no full lifecycle).
+    if (executionClass === 'STANDARD') {
+      return [
+        '',
+        '## Scoped Planning (this turn)',
+        '',
+        'This task is a multi-file feature or refactor. Before editing:',
+        '1. Map the affected files with concurrent read tools (fdx-batch / parallel fdx reads).',
+        '2. Produce a SHORT numbered plan (3-6 steps) in this turn — do not invoke a full workflow.',
+        '3. Execute, then run focused verification (affected tests + typecheck).',
+        '4. Keep planning artifacts under ~/.fd-plan/<project-slug>/ only if the task spans >3 files.',
+      ].join('\n')
+    }
+    return ''
+  }
+
+  const parts: string[] = []
+
+  // Delegation contract — needed for SPECIALIST and PARALLEL_SPECIALISTS
+  parts.push(LAZY_HANDOFF)
+  parts.push(LAZY_WRITES)
+  parts.push(LAZY_TOOLS)
+  parts.push(LAZY_OBS)
+
+  // Targeted specialist directory: only the selected/eligible specialists.
+  const routes = getAgentRoutes();
+  const agents = buildAgentDirectoryFromRoutes(
+    specialistDomains ? routes.filter(({ name }) => {
+      // keep only routes whose canonical id appears in the specialist domain map
+      const domain = Object.entries({
+        SECURITY: 'security-auditor',
+        DEBUG: 'debug-specialist',
+        UI: 'frontend-coder',
+        BACKEND: 'backend-coder',
+        DEVOPS: 'devops',
+        RELEASE: 'researcher',
+        REVIEW: 'reviewer',
+        ARCHITECTURE: 'architect',
+      } as Record<string, string>).find(([, agentId]) => agentId === name)?.[0]
+      return domain ? specialistDomains.includes(domain as SpecialistDomain) : false
+    }) : routes,
+    disabledAgents,
+  );
+  parts.push('\n<Delegation>\n\n## Delegation Contract (this turn)\n\n' + agents);
+  parts.push('\n## Self-Delegation Prohibition\n\nHeidi CANNOT delegate to itself. The runtime enforces this (SELF_DELEGATION_BLOCKED).');
+  parts.push('\n## Routing Guidelines\n- Delegate to the selected specialist on TURN 1 with: goal, repo root, verified facts, relevant paths, constraints, acceptance criteria.\n- Reference paths and line numbers instead of pasting full files.\n- You remain responsible for child supervision, result integration, focused verification, and final completion.\n- Log the routing decision before handing off.\n\n</Delegation>');
+
+  // PARALLEL_SPECIALISTS: parallel handoff rules
+  if (executionClass === 'PARALLEL_SPECIALISTS') {
+    parts.push([
+      '',
+      '## Parallel Specialist Execution',
+      '',
+      '- Launch the selected specialists CONCURRENTLY via separate task calls.',
+      '- Each child owns a disjoint file/dependency area — do not make them overlap.',
+      '- Integrate their results yourself; resolve any merge conflicts sequentially.',
+      '- Verify the combined change as a whole after integration.',
+    ].join('\n'))
+  }
+
+  // DEEP: full workflow/gates
+  if (executionClass === 'DEEP') {
+    parts.push(LAZY_STAGES)
+    parts.push(LAZY_PREFLIGHT)
+    parts.push(LAZY_APPROVAL)
+    parts.push(LAZY_CONTEXT_PACKET)
+    parts.push(LAZY_CHECKPOINT)
+    parts.push(LAZY_FAILURE)
+  }
+
+  return parts.join('\n')
+}
+
+/**
+ * Approximate token count of the always-on core prompt (used by benchmarks and
+ * live-context assertions). Tokens ~= chars / 4.
+ */
+export function estimateCorePromptTokens(): number {
+  return Math.round(ORCHESTRATOR_CORE_PROMPT.length / 4)
+}
+
 
 export function createCoordinatorAgent(
   name: 'heidi' | 'orchestrator',
