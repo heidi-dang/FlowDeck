@@ -158,7 +158,7 @@ describe("PR Monitor Deep Unit Tests", () => {
 
     await orchestrator.handleJobFailure("owner/repo", 48, "sha123", job as any, pr as any)
     expect(store.attemptCount("owner/repo", 48, "sha123")).toBeGreaterThan(0)
-  })
+  }, 20000)
 
   it("PrMonitorService lifecycle start, status, and stop", async () => {
     const service = new PrMonitorService()

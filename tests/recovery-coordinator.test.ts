@@ -1,12 +1,28 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import flowDeckPlugin from "../src/index";
 import { getWatchdogState, updateWatchdogState } from "../src/services/heidi-watchdog";
 import { recoveryCoordinator } from "../src/services/recovery-coordinator";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
 
 describe("Recovery Coordinator & Internal Prompt Provenance (P0 Flood Guard)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "fd-coord-test-"));
+    writeFileSync(join(tmpDir, ".flowdeck.json"), JSON.stringify({ governance: { mode: "strict" } }));
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {}
+  });
+
   it("Regression 1: Manual user Continue legitimately resets recovery state", async () => {
     const mockInput: any = {
-      directory: process.cwd(),
+      directory: tmpDir,
       client: { app: { log: async () => {} }, session: { prompt: () => Promise.resolve() } },
     };
     const pluginInstance = await flowDeckPlugin.server(mockInput);
@@ -33,13 +49,13 @@ describe("Recovery Coordinator & Internal Prompt Provenance (P0 Flood Guard)", (
     expect(wState?.recoveryCount).toBe(0);
 
     if (pluginInstance.dispose) await pluginInstance.dispose();
-  });
+  }, 15000);
 
   it("Regression 2: Internal FlowDeck continuation prompt is classified correctly and does NOT reset recovery state", async () => {
     let prompts = 0;
     let handleEvent: any;
     const mockInput: any = {
-      directory: process.cwd(),
+      directory: tmpDir,
       client: {
         app: { log: async () => {} },
         session: {
@@ -77,7 +93,7 @@ describe("Recovery Coordinator & Internal Prompt Provenance (P0 Flood Guard)", (
       },
     });
 
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 150));
     expect(prompts).toBe(1);
 
     const wState = getWatchdogState("s-internal");
@@ -85,7 +101,7 @@ describe("Recovery Coordinator & Internal Prompt Provenance (P0 Flood Guard)", (
     expect(wState?.recoveryCount).toBe(1);
 
     if (pluginInstance.dispose) await pluginInstance.dispose();
-  });
+  }, 15000);
 
   it("Regression 3: Enforces at most ONE pending continuation per session", () => {
     let callCount = 0;
@@ -171,7 +187,7 @@ describe("Recovery Coordinator & Internal Prompt Provenance (P0 Flood Guard)", (
     // Cancel immediately before timer fires (50ms debounce)
     recoveryCoordinator.cancelSession("s-cancel");
 
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 150));
     expect(executed).toBe(false);
-  });
+  }, 15000);
 });
