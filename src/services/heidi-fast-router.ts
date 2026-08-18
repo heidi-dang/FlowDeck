@@ -12,7 +12,7 @@
  *   DEEP                — architecture migration, breaking redesign; full gates
  *
  * Domain subcategories (used within SPECIALIST/PARALLEL_SPECIALISTS):
- *   SECURITY | UI | RELEASE | DEBUG | DEVOPS
+ *   SECURITY | UI | BACKEND | DEVOPS | RELEASE | DEBUG | REVIEW | ARCHITECTURE
  *
  * Never consumes a full model reasoning turn for classification.
  */
@@ -28,6 +28,7 @@ export type SpecialistDomain =
   | "DEBUG"
   | "SECURITY"
   | "UI"
+  | "BACKEND"
   | "DEVOPS"
   | "RELEASE"
   | "REVIEW"
@@ -46,6 +47,8 @@ export interface RouterDecision {
   confidence: number
   /** Whether the decision was forced by an explicit user signal */
   forcedByExplicitSignal: boolean
+  /** Absolutely minimal deterministic reason code used for telemetry (no chain-of-thought). */
+  reasonCode: string
 }
 
 // ─── Keyword patterns ────────────────────────────────────────────────────────
@@ -117,6 +120,22 @@ const UI_PATTERNS: RegExp[] = [
   /responsive design/i,
   /user interface/i,
   /app screen/i,
+  /\b(react|vue|svelte|angular|next|nuxt)\b.{0,40}\b(ui|frontend|interface|component|screen)\b/i,
+  /^\s*(build|create|implement|add|fix|update)\s+(the\s+)?(react|vue|svelte)\s+(ui|frontend)/i,
+]
+
+const BACKEND_PATTERNS: RegExp[] = [
+  /\bbackend\b/i,
+  /server.side/i,
+  /api (endpoint|route|implementation|server)/i,
+  /rest (api|endpoint|service)/i,
+  /graphql (resolver|schema|api)/i,
+  /database (schema|model|migration|query|repository|store)/i,
+  /business logic/i,
+  /service layer/i,
+  /microservice/i,
+  /(implement|build|add) (the )?(api|endpoint|route|service|handler|middleware|controller)/i,
+  /(fix|update) (the )?(api|endpoint|route|service|handler|middleware|controller)/i,
 ]
 
 const DEVOPS_PATTERNS: RegExp[] = [
@@ -142,12 +161,32 @@ const RELEASE_PATTERNS: RegExp[] = [
   /prepare (a |the )?release/i,
   /cut (a )?release/i,
   /release (candidate|process|checklist)/i,
+  /chore: (bump|release)/i,
+]
+
+const REVIEW_PATTERNS: RegExp[] = [
+  /review (the |this |my |our )?(code|changes|pr|pull request|diff|implementation)/i,
+  /code review/i,
+  /review request/i,
+  /review (and |then )?(approve|comment|merge)/i,
+  /look over (my |the |this )?(code|changes|diff)/i,
+]
+
+const ARCHITECTURE_PATTERNS: RegExp[] = [
+  /architecture (investigation|exploration|review|design|analysis)/i,
+  /how (does|do) (the |our |these )?.* fit together/i,
+  /system design/i,
+  /design (the |our )?architecture/i,
+  /architectural (analysis|assessment|design)/i,
+  /component (diagram|boundaries|contract)/i,
+  /technical (design|architecture) (document|doc|proposal)/i,
 ]
 
 const PARALLEL_SIGNALS: RegExp[] = [
-  /frontend.{0,30}(and|&|plus|\+).{0,30}backend/i,
-  /backend.{0,30}(and|&|plus|\+).{0,30}frontend/i,
+  /frontend.{0,40}(and|&|plus|\+).{0,40}backend/i,
+  /backend.{0,40}(and|&|plus|\+).{0,40}frontend/i,
   /api.{0,30}(and|&|plus|\+).{0,30}(ui|client|frontend)/i,
+  /(ui|client|frontend).{0,30}(and|&|plus|\+).{0,30}(api|backend|server)/i,
   /simultaneously/i,
   /in parallel/i,
   /at the same time/i,
@@ -185,9 +224,12 @@ function matchesAny(input: string, patterns: RegExp[]): boolean {
 function classifySpecialistDomain(input: string): SpecialistDomain | null {
   if (matchesAny(input, SECURITY_PATTERNS)) return "SECURITY"
   if (matchesAny(input, DEBUG_PATTERNS)) return "DEBUG"
+  if (matchesAny(input, UI_PATTERNS)) return "UI"
+  if (matchesAny(input, BACKEND_PATTERNS)) return "BACKEND"
   if (matchesAny(input, DEVOPS_PATTERNS)) return "DEVOPS"
   if (matchesAny(input, RELEASE_PATTERNS)) return "RELEASE"
-  if (matchesAny(input, UI_PATTERNS)) return "UI"
+  if (matchesAny(input, REVIEW_PATTERNS)) return "REVIEW"
+  if (matchesAny(input, ARCHITECTURE_PATTERNS)) return "ARCHITECTURE"
   return null
 }
 
@@ -195,6 +237,7 @@ const SPECIALIST_AGENT_MAP: Record<SpecialistDomain, string> = {
   SECURITY: "security-auditor",
   DEBUG: "debug-specialist",
   UI: "frontend-coder",
+  BACKEND: "backend-coder",
   DEVOPS: "devops",
   RELEASE: "researcher",
   REVIEW: "reviewer",
@@ -226,6 +269,7 @@ export function classifyTask(
       return {
         executionClass: "FAST_DIRECT",
         reason: "Trivial local task matched fast-direct pattern with minimal file surface.",
+        reasonCode: "FAST_DIRECT_PATTERN",
         confidence: 0.9,
         forcedByExplicitSignal: false,
       }
@@ -237,28 +281,52 @@ export function classifyTask(
     return {
       executionClass: "DEEP",
       reason: "Task matched architecture-level migration or breaking change pattern.",
+      reasonCode: "DEEP_PATTERN",
       confidence: 0.85,
       forcedByExplicitSignal: false,
     }
   }
 
   // ── PARALLEL_SPECIALISTS: disjoint independent domains ───────────────────
+  // Detect frontend + backend (or api + ui) pairs explicitly. The backend
+  // workstream maps to backend-coder (NOT reviewer). UI maps to frontend-coder.
   const isParallel = matchesAny(text, PARALLEL_SIGNALS)
   if (isParallel) {
     const domains: SpecialistDomain[] = []
-    if (matchesAny(lc, UI_PATTERNS)) domains.push("UI")
-    if (!domains.includes("UI")) {
-      // Assume backend domain if frontend mentioned with something else
-      if (lc.includes("backend") || lc.includes("api") || lc.includes("server")) domains.push("REVIEW")
+    const hasUI = matchesAny(text, UI_PATTERNS) || /\bfrontend\b/i.test(text)
+    const hasBackend = matchesAny(text, BACKEND_PATTERNS) || /\bbackend\b/i.test(text) || /\bapi\b/i.test(text) && (lc.includes("build") || lc.includes("implement") || lc.includes("create") || lc.includes("add"))
+    if (hasUI) domains.push("UI")
+    if (hasBackend && !domains.includes("BACKEND")) domains.push("BACKEND")
+    if (domains.length >= 2) {
+      return {
+        executionClass: "PARALLEL_SPECIALISTS",
+        specialists: domains,
+        suggestedAgents: domains.map(d => SPECIALIST_AGENT_MAP[d]),
+        reason: "Task contains disjoint independent domain signals (frontend + backend) with separate ownership — parallel specialist execution.",
+        reasonCode: "PARALLEL_UI_BACKEND",
+        confidence: 0.82,
+        forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? true,
+      }
     }
-    if (domains.length < 2) domains.push("REVIEW")
+    // Parallel-signal text with only ONE detected domain → treat as specialist for that domain
+    if (domains.length === 1) {
+      return {
+        executionClass: "SPECIALIST",
+        specialists: domains,
+        suggestedAgents: domains.map(d => SPECIALIST_AGENT_MAP[d]),
+        reason: "Task mentions parallel execution but only one clear domain — route to the single matching specialist.",
+        reasonCode: "PARALLEL_SIGNAL_SINGLE_DOMAIN",
+        confidence: 0.75,
+        forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? true,
+      }
+    }
+    // Parallel signal with no detected domain → treat as STANDARD multi-workstream
     return {
-      executionClass: "PARALLEL_SPECIALISTS",
-      specialists: domains,
-      suggestedAgents: domains.map(d => SPECIALIST_AGENT_MAP[d]),
-      reason: "Task contains parallel domain signals (e.g. frontend + backend) with disjoint ownership.",
-      confidence: 0.8,
-      forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? false,
+      executionClass: "STANDARD",
+      reason: "Task signals parallel work but no disjoint specialist domains were detected — scoped planning with independent workstreams.",
+      reasonCode: "PARALLEL_SIGNAL_NO_DOMAIN",
+      confidence: 0.65,
+      forcedByExplicitSignal: false,
     }
   }
 
@@ -269,7 +337,8 @@ export function classifyTask(
       executionClass: "SPECIALIST",
       specialists: [domain],
       suggestedAgents: [SPECIALIST_AGENT_MAP[domain]],
-      reason: `Task matched specialist domain '${domain}' — route to dedicated specialist on turn 1.`,
+      reason: "Task matched specialist domain '" + domain + "' — route to dedicated specialist on turn 1.",
+      reasonCode: "SPECIALIST_" + domain,
       confidence: 0.88,
       forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? false,
     }
@@ -281,6 +350,7 @@ export function classifyTask(
     return {
       executionClass: "STANDARD",
       reason: "Multi-file feature or refactor task — requires scoped planning and execution.",
+      reasonCode: "STANDARD_MULTIFILE",
       confidence: 0.75,
       forcedByExplicitSignal: false,
     }
@@ -292,6 +362,7 @@ export function classifyTask(
     return {
       executionClass: "FAST_DIRECT",
       reason: "Short prompt with no complex signals — default to FAST_DIRECT.",
+      reasonCode: "FAST_DIRECT_SHORT",
       confidence: 0.65,
       forcedByExplicitSignal: false,
     }
@@ -301,6 +372,7 @@ export function classifyTask(
   return {
     executionClass: "STANDARD",
     reason: "No strong classification signal — falling back to STANDARD execution.",
+    reasonCode: "STANDARD_FALLBACK",
     confidence: 0.6,
     forcedByExplicitSignal: false,
   }
@@ -322,4 +394,17 @@ export function getRequiredSpecialistDomains(decision: RouterDecision): Speciali
   if (decision.executionClass === "FAST_DIRECT") return []
   if (decision.specialists && decision.specialists.length > 0) return decision.specialists
   return null  // full directory
+}
+
+/** Stable hash for deduplication / session-turn identity. Non-cryptographic. */
+export function stableHash(input: string): string {
+  let h1 = 0xDEADBEEF ^ 0
+  let h2 = 0x41C6CE57 ^ 0
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i)
+    h1 = Math.imul(h1 ^ ch, 2654435761)
+    h2 = Math.imul(h2 ^ ch, 1597334677)
+  }
+  const r = (h1 ^ Math.imul(h2, 5)) >>> 0
+  return "h" + (r % 0x7fffffff).toString(36)
 }
