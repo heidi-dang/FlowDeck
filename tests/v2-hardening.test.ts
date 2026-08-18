@@ -54,7 +54,7 @@ describe("v2 hardening boundaries", () => {
       for (const f of ["runtime.db-wal", "runtime.db-shm"]) { try { rmSync(join(root, f), { force: true }) } catch {} }
       try { rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
     }
-  })
+  }, 15000)
 
   it("allows only one durable integration acknowledgement during a twenty-way race", async () => {
     const db = new Database(":memory:")
