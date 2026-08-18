@@ -90,8 +90,10 @@ function streamInstall(workdir: string, extraEnv: Record<string, string> = {}): 
 
 // ─── Tests ──────────────────────────────────────────────────────────────
 
+const isWindows = process.platform === "win32"
+
 describe("streamed installer (curl | bash)", () => {
-  it("completes a plain streamed install without unbound-variable failure", () => {
+  it.skipIf(isWindows)("completes a plain streamed install without unbound-variable failure", () => {
     const workdir = join(tmpdir(), `fd-stream-work-${Date.now()}`)
     mkdirSync(workdir, { recursive: true })
     const stubBin = makeStubDir()
@@ -109,7 +111,7 @@ describe("streamed installer (curl | bash)", () => {
     rmSync(stubBin, { recursive: true, force: true })
   })
 
-  it("reaches the pre-install doctor gate without crashing", () => {
+  it.skipIf(isWindows)("reaches the pre-install doctor gate without crashing", () => {
     const workdir = join(tmpdir(), `fd-stream-work2-${Date.now()}`)
     mkdirSync(workdir, { recursive: true })
     const stubBin = makeStubDir()

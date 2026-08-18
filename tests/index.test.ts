@@ -226,8 +226,10 @@ describe("plugin entry: sessionEventsHook wiring (bug 3a)", () => {
     }
     closeAllConnections()
     await new Promise((resolve) => setTimeout(resolve, 500))
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
-    rmSync(planningDir(dir), { recursive: true, force: true })
+    try {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      rmSync(planningDir(dir), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    } catch {}
   })
 
   it("writes a flowdeck.log entry on session.idle events", async () => {
