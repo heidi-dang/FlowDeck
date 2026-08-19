@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.2.4] - 2026-08-20
+### Fixed — Subagent Loop Elimination, Circuit Breaker Hardening & Guard Precision
+- **Auto-Forward Native Read Tools to `fdx-read`**: Updated `tryFdxRedirect` in `src/hooks/tool-guard.ts` to silently rewrite native `read` / `read_file` args into `fdx-read` compatible requests rather than throwing advisory rejection errors, preventing subagent retry loops.
+- **Tool Error Circuit Breaker**: Added per-session tool error tracking (`recordToolError`, `clearToolErrorCounts`) in `src/services/orchestrator-guard-strategy-circuit.ts` with a 3-strike hard limit to suppress repeated tool failure churn.
+- **Shell Classifier Compound & Path Precision**: Treated leading `cd` segments as transparent in `classifySegment` (unblocking read-only compound inspection like `cd /dir && git status`) and removed broad `~` path-traversal blocking in `hasPathTraversal` (unblocking non-sensitive cache inspections like `ls ~/.cache/`).
+- **Disposable Fixture Cleanup Exemption**: Scoped `rm -rf` pattern checks in `tool-guard.ts` to allow recursive directory removal within temporary directories (`/tmp/`, `/var/folders/`, `$TMPDIR`).
+- **Token Optimization & Opt-In `sequentialThinking`**: Set `sequentialThinking` MCP server to opt-in (`FLOWDECK_ENABLE_SEQUENTIAL_THINKING=true`), eliminating ~1,500 tokens of schema overhead per turn.
+- **FDX Tool Priority Prompt Hardening**: Injected hard rules in `src/agents/debug.ts` and `src/agents/security-auditor.ts` instructing specialist subagents to immediately switch to `fdx-read` / `fdx-grep`.
+- **Subagent Turn Budget Controls**: Added `maxChildTurns` (default 60) and child turn count tracking in `src/services/heidi-task-state.ts`.
+
+### Verification
+- Full unit and integration test suite: 4,099 pass / 0 fail.
+- All pre-push checks and benchmarks pass.
+
 ## [2.2.3] - 2026-08-19
 ### Fixed — Recovery-Loop Suppression & Orchestrator Guard Read-Only Discovery
 - **Orchestrator Guard & Command Classifier Read-Only Discovery**: Added `isVersionOrHelpQuery()` classifying `--version`, `-v`, `-V`, `--help`, `-h`, and `help` queries as read-only inspection. Classified `command -v`, `whereis`, and read-only `git branch` query flags (`--show-current`, `--list`, `-a`, `-r`) as permitted inspection commands in `orchestrator-guard-hook`. Destructive branch mutation flags (`-d`, `-D`, `-m`, `-C`, etc.) remain fully protected. Fixed compound pipeline classification to attribute category and reason to the exact blocking segment.
