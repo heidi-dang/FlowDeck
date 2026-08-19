@@ -8,8 +8,10 @@
 
 const IS_ENABLED = () => process.env.FLOWDECK_TOOL_GUARD_ENABLED !== "off"
 
-import { existsSync, readFileSync } from "fs"
-import { join } from "path"
+import { existsSync, readFileSync, realpathSync } from "fs"
+import { join, resolve, normalize } from "path"
+import { tmpdir } from "os"
+import { tokenize } from "../services/shell-command-classifier"
 import { codebaseDir } from "../tools/codebase-state"
 import { resolveActiveTopic, topicPlanPath, readPlanningState } from "../tools/planning-state-lib"
 import { isUiHeavyTask } from "../lib/task-routing"
@@ -97,6 +99,84 @@ export type BlockReason = string | null
  * Check if a tool operation should be blocked.
  * Returns error message if blocked, null if allowed.
  */
+/** Helper to check if a single target path is safely within an approved temporary root. */
+function isSafeTemporaryTarget(rawTarget: string, workingDir: string): boolean {
+  if (!rawTarget || rawTarget === "/" || rawTarget === "~" || rawTarget === ".") return false
+
+  // Reject shell expansions, substitutions, or control characters in target
+  const unsafeChars = ["$", "*", "?", "(", ")", "{", "}", "<", ">", "|", ";", "&"]
+  if (unsafeChars.some(ch => rawTarget.includes(ch)) && !rawTarget.startsWith("$TMPDIR")) return false
+
+  let expanded = rawTarget
+  if (expanded.startsWith("$TMPDIR")) {
+    const tmpEnv = process.env.TMPDIR || tmpdir()
+    expanded = expanded.replace("$TMPDIR", tmpEnv)
+  }
+
+  const resolved = resolve(workingDir, expanded)
+  const normalized = normalize(resolved)
+
+  // Approved temporary roots
+  const allowedRoots = [
+    resolve(tmpdir()),
+    resolve("/tmp"),
+    resolve("/var/folders"),
+    resolve("/private/var/folders"),
+    process.env.TMPDIR ? resolve(process.env.TMPDIR) : null,
+  ].filter(Boolean) as string[]
+
+  for (const root of allowedRoots) {
+    let normRoot = normalize(root)
+    try {
+      if (existsSync(normRoot)) normRoot = normalize(realpathSync(normRoot))
+    } catch {}
+
+    let checkTarget = normalized
+    try {
+      if (existsSync(normalized)) checkTarget = normalize(realpathSync(normalized))
+    } catch {}
+
+    // Target must be strictly inside the temp root, never the root itself
+    if (
+      normalized.startsWith(normalize(root) + "/") ||
+      normalized.startsWith(normalize(root) + "\\") ||
+      checkTarget.startsWith(normRoot + "/") ||
+      checkTarget.startsWith(normRoot + "\\")
+    ) {
+      return true
+    }
+  }
+
+  return false
+}
+
+/** Check whether an rm invocation is exclusively deleting temporary disposable fixtures. */
+export function isSafeTemporaryRm(command: string, workingDir = process.cwd()): boolean {
+  // Reject pipeline or redirect operators
+  if (/[|&;><`$]/.test(command) && !command.includes("$TMPDIR")) return false
+
+  const tokens = tokenize(command)
+  if (tokens.length === 0) return false
+
+  const head = tokens[0].toLowerCase()
+  if (head !== "rm") return false
+
+  const targets: string[] = []
+  for (let i = 1; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t.startsWith("-")) continue
+    targets.push(t)
+  }
+
+  if (targets.length === 0) return false
+
+  for (const target of targets) {
+    if (!isSafeTemporaryTarget(target, workingDir)) return false
+  }
+
+  return true
+}
+
 export function isBlocked(tool: string, args: any): BlockReason {
   const filePath = getFilePath(args)
 
@@ -105,29 +185,8 @@ export function isBlocked(tool: string, args: any): BlockReason {
     if (!cmd) return null
     for (const p of BLOCKED_PATTERNS.bash) {
       if (cmd.includes(p)) {
-        // Allow rm -rf when ALL targets are scoped to safe temporary directories
-        // (/tmp/, /var/folders/, /private/var/folders/) — enables tester/debug-specialist
-        // agents to set up and tear down disposable test fixtures without requiring
-        // human-in-the-loop approval for each fixture teardown.
         if (p === "rm -rf") {
-          const rmRfPattern = /rms+-rf?s+([^s;|&]+)/g
-          let m: RegExpExecArray | null
-          let allSafeTargets = true
-          let foundAny = false
-          while ((m = rmRfPattern.exec(cmd)) !== null) {
-            foundAny = true
-            const target = m[1]
-            const safe =
-              target === "/tmp" ||
-              target.startsWith("/tmp/") ||
-              target === "/var/folders" ||
-              target.startsWith("/var/folders/") ||
-              target.startsWith("/private/var/folders/") ||
-              target === "$TMPDIR" ||
-              target.startsWith("$TMPDIR/")
-            if (!safe) { allSafeTargets = false; break }
-          }
-          if (foundAny && allSafeTargets) continue  // scoped to temp dir — allow
+          if (isSafeTemporaryRm(cmd)) continue // Safely scoped to temp directory
         }
         return `FLOWDECK: Command containing "${p}" is blocked.`
       }
@@ -526,12 +585,93 @@ const NATIVE_READ_TOOLS = new Set(["read_file", "read", "grep", "glob", "find"])
  *
  * Disable for tests with FLOWDECK_DISABLE_FDX_REDIRECT=true.
  */
+export interface FdxExecutionRoute {
+  targetTool: string
+  executed: boolean
+  output?: string
+  fallbackUsed?: boolean
+  error?: string
+}
+
+/**
+ * Authoritative FDX Execution Router.
+ * When FLOWDECK_ENFORCE_FDX_REDIRECT=true and FDX is available, genuinely executes
+ * native read / read_file requests through the fdxReadTool path rather than only
+ * tagging dummy metadata.
+ */
+export async function executeFdxRedirect(
+  toolName: string,
+  args: Record<string, unknown>,
+  context?: { directory?: string; sessionID?: string; agent?: string }
+): Promise<FdxExecutionRoute | null> {
+  if (!NATIVE_READ_TOOLS.has(toolName)) return null
+  if (!isFdxAvailable()) return null
+  if (process.env.FLOWDECK_DISABLE_FDX_REDIRECT === "true") return null
+  if (process.env.FLOWDECK_ENFORCE_FDX_REDIRECT !== "true") return null
+
+  if (toolName === "read" || toolName === "read_file") {
+    const rawPath =
+      (args.filePath as string | undefined) ??
+      (args.file_path as string | undefined) ??
+      (args.path as string | undefined) ??
+      (args.file as string | undefined)
+
+    if (!rawPath) return null
+
+    const resolvedFile = rawPath
+    const mode = (args.mode as "auto" | "raw" | "prototype" | "deep" | undefined) ?? "auto"
+    const limit = typeof args.limit === "number" ? args.limit : undefined
+    const offset = typeof args.offset === "number" ? args.offset : undefined
+    const symbol = typeof args.symbol === "string" ? args.symbol : undefined
+
+    try {
+      const { fdxReadTool } = await import("../tools/fdx")
+      const toolCtx = context ? ({ directory: context.directory, sessionID: context.sessionID } as any) : undefined
+      const rawResult = await (fdxReadTool as any).execute(
+        {
+          file: resolvedFile,
+          mode,
+          limit,
+          offset,
+          symbol,
+        },
+        toolCtx
+      )
+      const output = typeof rawResult === "string" ? rawResult : rawResult?.output ?? String(rawResult)
+      return {
+        targetTool: "fdx-read",
+        executed: true,
+        output,
+      }
+    } catch (err: any) {
+      // Apply exactly one bounded documented fallback to native read on genuine FDX failure
+      try {
+        const { nativeReadFallback } = await import("../tools/fdx-shared")
+        const fallbackResult = nativeReadFallback(resolvedFile, limit, offset, context?.directory)
+        return {
+          targetTool: "fdx-read",
+          executed: true,
+          fallbackUsed: true,
+          output: fallbackResult,
+        }
+      } catch (fallbackErr: any) {
+        return {
+          targetTool: "fdx-read",
+          executed: false,
+          error: fallbackErr.message || err.message,
+        }
+      }
+    }
+  }
+
+  return null
+}
+
 export function tryFdxRedirect(toolName: string, outputArgs: Record<string, unknown>): boolean {
   if (!NATIVE_READ_TOOLS.has(toolName)) return false
   if (!isFdxAvailable()) return false
   if (process.env.FLOWDECK_DISABLE_FDX_REDIRECT === "true") return false
   if (process.env.FLOWDECK_ENFORCE_FDX_REDIRECT !== "true") return false
-  // Rewrite native read → fdx-read compatible args
   if (toolName === "read" || toolName === "read_file") {
     const filePath =
       (outputArgs.filePath as string | undefined) ??
@@ -539,11 +679,10 @@ export function tryFdxRedirect(toolName: string, outputArgs: Record<string, unkn
       (outputArgs.path as string | undefined) ??
       (outputArgs.file as string | undefined)
     if (filePath) {
-      // Preserve offset/limit for ranged reads
       const mode = outputArgs.mode ?? "auto"
       outputArgs._fdxRedirect = true
       outputArgs.mode = mode
-      // fdx-read accepts filePath directly; leave other keys intact
+      outputArgs.file = filePath
     }
     return true
   }

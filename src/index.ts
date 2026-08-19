@@ -1827,25 +1827,39 @@ const plugin: Plugin = async ({ directory, client }) => {
         }
       }
 
-      if (sessionID && toolName && rawArgs.file && !toolInput.error && !toolOutput?.error) {
+      // Authoritative predicate for confirmed successful write execution.
+      // A failed write/edit (thrown error, structured error property, or null output) must NEVER
+      // increment write counts, mark files changed, trigger verification, or emit success audit events.
+      const isToolExecutionError =
+        Boolean(toolInput?.error) ||
+        Boolean(toolOutput?.error) ||
+        (toolOutput && typeof toolOutput === "object" && Boolean((toolOutput as any).error)) ||
+        (shellFd?.status === "failed")
+
+      const isSuccessfulWrite =
+        !isToolExecutionError &&
+        Boolean(sessionID && toolName && (rawArgs.file || rawArgs.filePath || rawArgs.path || rawArgs.file_path))
+
+      if (isSuccessfulWrite) {
+        const modifiedFile = String(rawArgs.file ?? rawArgs.filePath ?? rawArgs.path ?? rawArgs.file_path)
         if (!sessionFilesChanged.has(sessionID)) {
           sessionFilesChanged.set(sessionID, new Set())
         }
-        sessionFilesChanged.get(sessionID)!.add(String(rawArgs.file))
+        sessionFilesChanged.get(sessionID)!.add(modifiedFile)
+
+        executePostWriteHook(directory, sessionID, agent, toolName, rawArgs)
+
+        executeVerifiedPostWrite(directory, {
+          sessionID,
+          agent,
+          tool: toolName,
+          filePath: modifiedFile,
+        })
       }
-
-      executePostWriteHook(directory, sessionID, agent, toolName, rawArgs)
-
-      executeVerifiedPostWrite(directory, {
-        sessionID,
-        agent,
-        tool: toolName,
-        filePath: rawArgs.file as string | undefined,
-      })
 
       // Non-zero shell or tool execution error is recorded as an error so Loop Guard
       // treats repeated failed attempts as a loop across ALL tools, preventing infinite loops.
-      const isToolError = Boolean(toolInput?.error) || Boolean(toolOutput?.error) || (shellFd?.status === "failed")
+      const isToolError = isToolExecutionError
       const loopRecordStatus: "success" | "error" | "blocked" = isToolError ? "error" : "success"
       loopDetector.recordAfter(
         toolName,
