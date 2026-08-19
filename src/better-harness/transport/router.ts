@@ -22,7 +22,7 @@ import { verifyFinding } from "../verification/finding-verifier";
 import { saveFindingIndex } from "../persistence/finding-store";
 import { HarnessRunProgressSchema } from "../contracts/progress";
 import type { RouterContext } from "../runtime/router-context";
-import { getScoreboardFor, renderScoreBadgeHtml, renderSessionHealthHtml, renderExplanationHtml } from "../../services/runtime-score-stream";
+import { getScoreboardFor, renderScoreBadgeHtml, renderSessionHealthHtml, renderExplanationHtml, renderActionLabelHtml } from "../../services/runtime-score-stream";
 
 const ProjectKeySchema = z.string().min(1).max(256).regex(/^[a-zA-Z0-9_\-.@/]+$/);
 const PATH_TRAVERSAL_RE = /\.\.|\//;
@@ -495,7 +495,8 @@ export async function routeRequestContext(
           const badge = renderScoreBadgeHtml(s.score);
           const exp = scoreboard.explanation(s.eventId);
           const expHtml = exp ? renderExplanationHtml(exp) : "";
-          return "<div class=\"fd-action-row\" data-event-id=\"" + s.eventId + "\"><span class=\"fd-action-label\">" + s.actionClass + " " + s.label + "</span> " + badge + expHtml + "</div>";
+          const labelHtml = renderActionLabelHtml(s);
+          return "<div class=\"fd-action-row\" data-event-id=\"" + s.eventId + "\">" + labelHtml + " " + badge + expHtml + "</div>";
         }).join("\n");
         const fullHtml = "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>FlowDeck Runtime Integrity</title></head><body><main class=\"flowdeck-webui\">" + healthHtml + "<div class=\"fd-actions\">" + rowsHtml + "</div></main></body></html>";
         return ok({ html: fullHtml, scoresCount: scores.length, currentHealth: health.currentHealth, sessionIntegrity: health.sessionIntegrity });

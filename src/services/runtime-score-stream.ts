@@ -39,6 +39,14 @@ export interface RuntimeIntegrityScore {
   actionClass: string;
   label: string;
   sessionId: string;
+  /** Stable operation lifecycle status (started/completed/failed/cancelled). */
+  status?: "started" | "completed" | "failed" | "cancelled";
+  /** Process exit code captured on a failed operation. */
+  exitCode?: number;
+  /** Short, safe (redacted) stderr summary. */
+  stderrSummary?: string;
+  /** The originating OpenCode tool call ID. */
+  toolCallId?: string;
   score: number;
   confidence: number;
   evidenceCount: number;
@@ -109,6 +117,10 @@ export function auditToUiScore(audit: AuditEvent, health: { currentHealth: numbe
     actionClass: actionClassForCategory(audit.category),
     label: audit.operation,
     sessionId: audit.sessionID,
+    status: audit.status,
+    exitCode: audit.exitCode,
+    stderrSummary: audit.stderrSummary,
+    toolCallId: audit.toolCallId,
     score: Math.max(0, Math.min(100, Math.round(score))),
     confidence: Math.max(0, Math.min(1, confidence)),
     evidenceCount: audit.evidenceIds.length + audit.incidentIds.length,
@@ -172,7 +184,17 @@ export class RuntimeScoreboard {
         const lines = readFileSync(this.ledgerPath, "utf8").split("\n").filter((l) => l.trim());
         const keep = lines.slice(-this.maxEntries);
         for (const line of keep) {
-          try { const o = JSON.parse(line); if (o && typeof o.eventId === "string") { this.scores.set(o.eventId, o); this.order.push(o.eventId) } } catch {}
+          try {
+            const o = JSON.parse(line);
+            if (o && typeof o.eventId === "string") {
+              // One row per operation: later events with the same eventId update
+              // the same row in place (terminal replaces provisional), never a
+              // second/duplicate order entry.
+              this.scores.set(o.eventId, o);
+              this.order = this.order.filter((id) => id !== o.eventId);
+              this.order.push(o.eventId);
+            }
+          } catch {}
         }
       }
     } catch { /* best-effort */ }
@@ -273,6 +295,34 @@ export function renderSessionHealthHtml(health: SessionHealth): string {
   const ch = "<strong aria-label=\"FlowDeck current health: " + health.currentHealth + " percent\">" + health.currentHealth + "%</strong>";
   const si = "<strong aria-label=\"FlowDeck session integrity: " + health.sessionIntegrity + " percent\">" + health.sessionIntegrity + "%</strong>";
   return "<section class=\"fd-health\" aria-label=\"FlowDeck session health\"><h2>FlowDeck</h2><p>Current Health " + ch + "</p><p>Session Integrity " + si + "</p></section>";
+}
+
+function escapeHtml(s: string): string {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+}
+
+/**
+ * WebUI action-row label for a RuntimeIntegrityScore. Shows the terminal status
+ * as visible text (not color-only) with an accessible exit code and an
+ * expandable, escaped stderr summary for failed operations.
+ */
+export function renderActionLabelHtml(s: RuntimeIntegrityScore): string {
+  const cls = escapeHtml(s.actionClass || "Tool")
+  const label = escapeHtml(s.label || "")
+  let text = cls + " " + label
+  if (s.status === "failed") {
+    text += " \u2014 Failed" + (typeof s.exitCode === "number" ? " \u00b7 exit " + s.exitCode : "")
+  }
+  const aria = "aria-label=\"" + text + ". " + accessibleScoreLabel(s.score) + "\""
+  const detail =
+    s.status === "failed" && s.stderrSummary
+      ? "<details class=\"fd-error-detail\" tabindex=\"0\"><summary>stderr</summary><pre>" + escapeHtml(s.stderrSummary) + "</pre></details>"
+      : ""
+  return "<span class=\"fd-action-label\" " + aria + ">" + text + "</span>" + detail
 }
 
 export function renderExplanationHtml(ex: ScoreExplanation): string {

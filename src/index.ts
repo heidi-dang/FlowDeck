@@ -153,7 +153,7 @@ import { watchdogIncidentManager } from "./services/watchdog-incident"
 import { evaluateEvidenceGate, type VerificationEvidence } from "./services/evidence-gate"
 import { taskPhaseManager } from "./services/task-phase-manager"
 import { repoIdOf, RepoLeaseCoordinator } from "./services/repo-lease-coordinator"
-import { runtimeSelfAudit, buildLatencyBreakdown } from "./services/runtime-self-audit"
+import { runtimeSelfAudit, buildLatencyBreakdown, type AuditViolation } from "./services/runtime-self-audit"
 import { classifyFastLane, rewriteShellCommand, rewriteLsCommand } from "./services/tool-fast-lane"
 import { isConfirmedSourceMutation } from "./services/semantic-mutation"
 import { getCallTimer, releaseCallTimer } from "./services/real-time-instrument"
@@ -165,6 +165,7 @@ import {
   ShellFailureTracker,
   type ShellFailureInfo,
 } from "./services/shell-failure"
+import { deriveOperationId, summarizeStderr, OperationLifecycle } from "./services/operation-lifecycle"
 import { buildScoreAnnotation } from "./services/visible-score-surface"
 import { stripScoreAnnotations, assertNoScoreLeak } from "./services/score-leak-guard"
 import { getScoreboardFor, clearScoreboardFor } from "./services/runtime-score-stream"
@@ -234,6 +235,10 @@ const sessionParallelWakeActive = new Set<string>()
 // Bounded, per-session dedup of shell tool failures (exactly one recovery
 // incident per failure fingerprint; never a repeat flood).
 const shellFailureTracker = new ShellFailureTracker()
+// One stable operation identity per tool execution, reused across
+// operation.started -> operation.completed / operation.failed so the WebUI
+// updates the original action row in place (never a second/duplicate row).
+const operationLifecycle = new OperationLifecycle()
 
 function enqueuePendingSlot(
   parentSessionID: string,
@@ -1735,6 +1740,38 @@ const plugin: Plugin = async ({ directory, client }) => {
         }
         throw err
       }
+      // ── Operation lifecycle: emit operation.started (stable identity) ──
+      // Only for FlowDeck-owned shell/bash, whose after-hook always pairs, so a
+      // started row can never be left permanently stuck and never duplicates the
+      // terminal row. The opId is reused by the terminal event in the after-hook.
+      try {
+        const tlNow = String(toolName).toLowerCase()
+        if (tlNow === "shell" || tlNow === "bash") {
+          const opId = deriveOperationId(sessionID || "no-session", callID, String(rawArgs.command ?? ""))
+          const label = String(rawArgs.command ?? toolName).slice(0, 140)
+          operationLifecycle.begin({ sessionId: sessionID || "no-session", toolCallId: callID, actionClass: "Shell", label })
+          runtimeSelfAudit.scoreEvent({
+            category: "shell",
+            operation: label,
+            id: opId,
+            status: "started",
+            toolCallId: callID,
+            sessionID: sessionID || "no-session",
+            dimensionScores: { execution: 98, integrity: 98 },
+            evidenceIds: [],
+            latencyBreakdown: [],
+          })
+          appendAuditEvent(directory, {
+            kind: "lifecycle.transition",
+            session_id: sessionID,
+            agent,
+            tool: toolName,
+            decision: "started",
+            reason: "OPERATION_STARTED " + opId,
+            details: { opId, callID, command: String(rawArgs.command ?? "").slice(0, 140) },
+          })
+        }
+      } catch { /* lifecycle must never break the runtime */ }
       // Close the last before-hook phase; tool-runtime begins in the after hook.
       callTiming.start("before-complete")
     },
@@ -1880,18 +1917,43 @@ const plugin: Plugin = async ({ directory, client }) => {
             state_consistency: 95,
           }
           if (fastLane.usedFastPath) dims.governance = 85
+          if (shellFd?.status === "failed") dims.execution = 35
           afterTiming.start("self-audit")
+          // ── Operation identity: reuse the started opId for the terminal event, so
+          // the WebUI updates the original action row in place (one row per action). ──
+          const isShellOp = toolLower === "shell" || toolLower === "bash"
+          const shellCmd = String(rawArgs?.command ?? "")
+          const lifecycleOpId = isShellOp ? deriveOperationId(sessionID || "no-session", callID, shellCmd) : undefined
+          const lifecycleStatus: "started" | "completed" | "failed" | "cancelled" | undefined = isShellOp ? (errored ? "failed" : "completed") : undefined
+          const violations: AuditViolation[] = []
+          if (shellFd?.status === "failed") {
+            violations.push({ code: "NONZERO_EXIT", severity: "severe", detail: "Shell command failed with exit code " + shellFd.exitCode })
+          } else if (errored) {
+            violations.push({ code: "RECOVERABLE_TOOL_ERROR", severity: "severe", detail: toolName + " errored" })
+          }
           const auditEvent = runtimeSelfAudit.scoreEvent({
             category: "tool_execution",
-            operation: toolName,
+            operation: isShellOp ? (shellCmd || toolName) : toolName,
             sessionID,
+            id: lifecycleOpId,
+            status: lifecycleStatus,
+            exitCode: shellFd?.exitCode,
+            stderrSummary: shellFd ? summarizeStderr(shellFd.stderr) : undefined,
+            toolCallId: callID,
             dimensionScores: dims,
             evidenceIds: [],
             latencyBreakdown: buildLatencyBreakdown(
               afterTiming.phases().map((p) => [p.name, p.ms] as [string, number]),
             ),
-            violations: errored ? [{ code: "RECOVERABLE_TOOL_ERROR", severity: "severe", detail: toolName + " errored" }] : [],
+            violations,
           })
+          if (lifecycleOpId) {
+            if (errored) {
+              operationLifecycle.fail(lifecycleOpId, { exitCode: shellFd?.exitCode ?? 1, score: auditEvent.score, stderrSummary: shellFd ? summarizeStderr(shellFd.stderr) : undefined })
+            } else {
+              operationLifecycle.complete(lifecycleOpId, { exitCode: 0, score: auditEvent.score })
+            }
+          }
           afterTiming.end()
           releaseCallTimer(sessionID, callID, toolName)
           // Round-2: visible score surface. Score goes into tool title + fd.selfAudit
@@ -2821,6 +2883,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       sessionLeaseHolders.clear()
       loopIncidentTracker.clearAll()
       shellFailureTracker.clearAll()
+      operationLifecycle.clearAll()
       semanticConvergence.clearAll()
       emptyTerminalCircuit.clearAll()
       watchdogIncidentManager.clearAll()
@@ -2883,6 +2946,7 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   watchdogIncidentManager.clearSession(sessionID)
   loopIncidentTracker.clearSession(sessionID)
   shellFailureTracker.clearSession(sessionID)
+  operationLifecycle.clearSession(sessionID)
   sessionLoopIncidents.delete(sessionID)
   semanticConvergence.clearSession(sessionID)
   emptyTerminalCircuit.clearSession(sessionID)

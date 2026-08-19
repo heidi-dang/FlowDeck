@@ -44,6 +44,14 @@ export interface AuditEvent {
   sessionID: string;
   category: string;
   operation: string;
+  /** Stable operation-lifecycle status (started/completed/failed/cancelled). */
+  status?: "started" | "completed" | "failed" | "cancelled";
+  /** Process exit code captured on a failed operation. */
+  exitCode?: number;
+  /** Short, safe (redacted) stderr summary. */
+  stderrSummary?: string;
+  /** The originating OpenCode tool call ID. */
+  toolCallId?: string;
   score: number;
   confidence: number;
   dimensions: Partial<Record<AuditDimension, number>>;
@@ -123,6 +131,12 @@ export class RuntimeSelfAudit {
     category: AuditCategory;
     operation: string;
     sessionID: string;
+    /** Optional stable operation ID. Reuses a prior started event's ID on terminal. */
+    id?: string;
+    status?: "started" | "completed" | "failed" | "cancelled";
+    exitCode?: number;
+    stderrSummary?: string;
+    toolCallId?: string;
     dimensionScores: Partial<Record<AuditDimension, number>>;
     evidenceIds: string[];
     latencyBreakdown: LatencyPhase[];
@@ -155,10 +169,14 @@ export class RuntimeSelfAudit {
     }
 
     const event: AuditEvent = {
-      id: "audit_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
+      id: input.id ?? "audit_" + Date.now() + "_" + Math.random().toString(36).slice(2, 8),
       sessionID: input.sessionID,
       category: input.category,
       operation: input.operation,
+      status: input.status,
+      exitCode: input.exitCode,
+      stderrSummary: input.stderrSummary,
+      toolCallId: input.toolCallId,
       score: Math.max(0, Math.min(100, score)),
       confidence,
       dimensions: dims,
