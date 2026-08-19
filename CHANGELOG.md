@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.2.3] - 2026-08-19
+### Fixed — Recovery-Loop Suppression & Orchestrator Guard Read-Only Discovery
+- **Orchestrator Guard & Command Classifier Read-Only Discovery**: Added `isVersionOrHelpQuery()` classifying `--version`, `-v`, `-V`, `--help`, `-h`, and `help` queries as read-only inspection. Classified `command -v`, `whereis`, and read-only `git branch` query flags (`--show-current`, `--list`, `-a`, `-r`) as permitted inspection commands in `orchestrator-guard-hook`. Destructive branch mutation flags (`-d`, `-D`, `-m`, `-C`, etc.) remain fully protected. Fixed compound pipeline classification to attribute category and reason to the exact blocking segment.
+- **Precise LoopDetector & FDX Fingerprint Normalization**: Updated `normalizeAction()` to extract `args.file` (in addition to `filePath`/`path`), `mode`, `symbol`, line ranges, and search query/dir. Distinct reads produce distinct semantic fingerprints instead of collapsing into identical working-directory keys.
+- **Errored Tool-Turn Completion Safety**: Updated `detectNoVisibleOutputCompletion()` in `provider-history-safety` so any tool execution part (completed, pending, running, or error) counts as active tool execution. Tool turns returning errors are handled via normal tool failure lifecycle and are never misclassified as empty/reasoning-only completions.
+- **Authoritative Recovery Admission Gate (`canInjectRecoveryContinuation`)**: Implemented single-flight recovery gating in `RecoveryCoordinator` enforcing strict `(sessionID, incidentID, generation) -> max 1` outstanding continuation. Automatically suppresses duplicate prompts with concrete telemetry (`ALREADY_IN_FLIGHT`, `DUPLICATE_GENERATION`, `TERMINAL_SESSION`, `EXHAUSTED`, `NO_SESSION`, `NO_API`).
+- **Task Phase Boundary Reset**: Clearing stale `LoopDetector` session state on manual new task phase boundary in `index.ts`.
+- **Preserved Protections**: Preserves inactive-session watchdog protection (`isWatchdogEligible`), bounded legitimate Loop Guard recovery, shell non-zero failure recovery, provider replay sanitation, and Active Parallel Coordination.
+
+### Verification
+- Full test suite: 4,003 pass / 0 fail; weighted line coverage 83.68% (>= 80% threshold).
+- FDX native parity PASS; Rust gates PASS; Packaging/CLI and installer gates PASS; Pipeline completion PASS.
+- Production Gates and Orchestration Validation green on candidate SHA `94129fe37ece4ab41752f1dbd130454bb303d501`.
+
+## [2.2.2] - 2026-08-19
 ## [2.2.2] - 2026-08-19
 ### Fixed — Inactive-Session Watchdog & Incident Single-Flight
 - **Authoritative Watchdog Eligibility Predicate (`isWatchdogEligible`)**: Fixed `updateWatchdogState` defaulting `hasUnresolvedTask` to `true` upon session observation. `isWatchdogEligible(state)` now strictly requires an active, non-terminal session with genuine unresolved executable work, rejecting idle, completed, cancelled, failed-final, and superseded sessions.
