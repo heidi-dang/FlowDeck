@@ -122,10 +122,42 @@ function isSafeTemporaryTarget(rawTarget: string, workingDir: string): boolean {
   const resolved = resolve(workingDir, expanded)
   const normalized = normalize(resolved)
 
-  // Approved temporary roots
+  // When explicitly prefixed with $TMPDIR, bound strictly to the current process TMPDIR root
+  if (rawTarget.startsWith("$TMPDIR/")) {
+    const tmpEnv = process.env.TMPDIR ? normalize(resolve(process.env.TMPDIR)) : normalize(resolve(tmpdir()))
+    let realTmpEnv = tmpEnv
+    try {
+      if (existsSync(tmpEnv)) realTmpEnv = normalize(realpathSync(tmpEnv))
+    } catch {}
+
+    let checkTarget = normalized
+    try {
+      if (existsSync(normalized)) checkTarget = normalize(realpathSync(normalized))
+    } catch {}
+
+    const insideRaw = (normalized.startsWith(tmpEnv + "/") || normalized.startsWith(tmpEnv + "\\")) && normalized !== tmpEnv
+    const insideReal = (checkTarget.startsWith(realTmpEnv + "/") || checkTarget.startsWith(realTmpEnv + "\\")) && checkTarget !== realTmpEnv
+
+    if (!insideRaw && !insideReal) return false
+
+    if (existsSync(normalized)) {
+      try {
+        const real = normalize(realpathSync(normalized))
+        if (!(real.startsWith(realTmpEnv + "/") || real.startsWith(realTmpEnv + "\\")) || real === realTmpEnv) {
+          return false
+        }
+      } catch {
+        return false
+      }
+    }
+    return true
+  }
+
+  // General temporary roots for literal /tmp, /var/folders, etc.
   const allowedRoots = [
     resolve(tmpdir()),
     resolve("/tmp"),
+    resolve("/private/tmp"),
     resolve("/var/folders"),
     resolve("/private/var/folders"),
     process.env.TMPDIR ? resolve(process.env.TMPDIR) : null,
@@ -144,15 +176,13 @@ function isSafeTemporaryTarget(rawTarget: string, workingDir: string): boolean {
       if (existsSync(normalized)) checkTarget = normalize(realpathSync(normalized))
     } catch {}
 
-    const targetBase = process.env.TMPDIR && rawTarget.startsWith("$TMPDIR/") ? normalize(resolve(process.env.TMPDIR)) : normRoot
-
     const isInsideRaw =
-      (normalized.startsWith(targetBase + "/") || normalized.startsWith(targetBase + "\\")) &&
-      normalized !== targetBase
+      (normalized.startsWith(normalize(root) + "/") || normalized.startsWith(normalize(root) + "\\")) &&
+      normalized !== normalize(root)
 
     const isInsideReal =
-      (checkTarget.startsWith(targetBase + "/") || checkTarget.startsWith(targetBase + "\\")) &&
-      checkTarget !== targetBase
+      (checkTarget.startsWith(normRoot + "/") || checkTarget.startsWith(normRoot + "\\")) &&
+      checkTarget !== normRoot
 
     if (isInsideRaw || isInsideReal) {
       // Must not escape via symlink if target exists
@@ -160,8 +190,8 @@ function isSafeTemporaryTarget(rawTarget: string, workingDir: string): boolean {
         try {
           const real = normalize(realpathSync(normalized))
           if (
-            !(real.startsWith(targetBase + "/") || real.startsWith(targetBase + "\\")) ||
-            real === targetBase
+            !(real.startsWith(normRoot + "/") || real.startsWith(normRoot + "\\")) ||
+            real === normRoot
           ) {
             return false
           }
