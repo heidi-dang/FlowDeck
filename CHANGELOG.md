@@ -1,5 +1,20 @@
 # Changelog
 
+## [2.2.1] - 2026-08-19
+### Fixed — Shell Failure Propagation & Operation Lifecycle
+- **Non-Zero Shell Exit Status & Exit Code Preservation**: Fixed `shell-executor.ts` `runBash()` swallowing non-zero process exits; exact exit codes and redacted `stderr` metadata are now preserved in `ShellExecutionResult`.
+- **Stable Operation Lifecycle Identity (`operation.started → operation.failed / completed`)**: Introduced deterministic `deriveOperationId` and `OperationLifecycle` store. The same event ID is preserved from `started` through `failed`/`completed`.
+- **In-Place WebUI Action Row Updates & Reload De-duplication**: The FlowDeck WebUI dashboard updates the original action row in place (rendering visible text `Failed · exit N`, accessible labels, and expandable `stderr` summary). De-duplication in `RuntimeScoreboard` guarantees 1 row per operation across page refresh and ledger reload.
+- **Negative Runtime Integrity Scoring for Tool Failures**: `NONZERO_EXIT` severe violations apply an immediate integrity cap (30%) on the failed operation while keeping score events strictly out-of-band (never leaking into model/provider replay context).
+- **Bounded & Deduplicated Recovery**: `ShellFailureTracker` registers exactly one recovery incident per semantic failure fingerprint (`tool + command + repoGeneration + exitCode`); repeated unchanged commands are suppressed by Loop Guard without nag floods.
+- **Autonomous Strategy Recovery**: Heidi observes non-zero tool failures, receives bounded operational facts, autonomously changes strategy, and completes tasks without silent `Thinking` stalls.
+- **Real-Runtime OpenCode 1.18.18 & Multi-Worker Verification**: Verified live in OpenCode 1.18.18 with model `heidi/heidi-antigravity` across focused recovery and full 4-specialist capability audits.
+
+### Verification
+- Full test suite: 4,052 pass / 0 fail (323 test files); line coverage 83.65% (>= 80% threshold).
+- FDX native parity PASS; Rust gates PASS; Packaging/CLI and installer gates PASS; Pipeline completion PASS.
+- Production Gates and Orchestration Validation green on the exact release SHA.
+
 ## [2.2.0] - 2026-08-18
 ### Added — Heidi Active Parallel Coordination & Runtime Integrity
 - **Heidi Active Parallel Coordination**: Root Heidi remains productive with non-conflicting coordinator work while all specialist children execute concurrently.
