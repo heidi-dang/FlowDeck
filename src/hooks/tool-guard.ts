@@ -129,7 +129,9 @@ function isSafeTemporaryTarget(rawTarget: string, workingDir: string): boolean {
     resolve("/var/folders"),
     resolve("/private/var/folders"),
     process.env.TMPDIR ? resolve(process.env.TMPDIR) : null,
-  ].filter(Boolean) as string[]
+  ]
+    .filter(Boolean)
+    .map(r => normalize(r!)) as string[]
 
   for (const root of allowedRoots) {
     let normRoot = normalize(root)
@@ -179,11 +181,11 @@ export function isSafeTemporaryRm(command: string, workingDir = process.cwd()): 
   // Reject pipeline or redirect operators or subshell/chaining characters
   if (/[|&;><`\n\r]/.test(command)) return false
 
-  // If '$' is present, verify every occurrence is strictly "$TMPDIR/"
+  // If '$' is present, verify every occurrence is strictly "$TMPDIR" followed immediately by "/" or end-of-string
   if (command.includes("$")) {
-    const dollarMatches = command.match(/\$[^/\s]+/g) ?? []
+    const dollarMatches = command.match(/\$[^\s"']+/g) ?? []
     for (const dm of dollarMatches) {
-      if (dm !== "$TMPDIR") return false
+      if (!dm.startsWith("$TMPDIR/") && dm !== "$TMPDIR") return false
     }
   }
 

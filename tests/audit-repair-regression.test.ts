@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { classifyShellCommand } from "../src/services/shell-command-classifier"
 import { OrchestratorGuard } from "../src/hooks/orchestrator-guard-hook"
 import { isSafeTemporaryRm, executeFdxRedirect } from "../src/hooks/tool-guard"
+import { checkFdxAvailability } from "../src/tools/fdx-shared"
 import { tmpdir } from "os"
 import { join } from "path"
 import { writeFileSync, unlinkSync } from "fs"
@@ -147,10 +148,14 @@ describe("Audit Repair Regression Suite — Security & Policy Invariants", () =>
       delete process.env.FLOWDECK_DISABLE_FDX_REDIRECT
 
       const route = await executeFdxRedirect("read", { file: testFile, mode: "auto" }, { directory: process.cwd() })
-      expect(route).not.toBeNull()
-      expect(route?.targetTool).toBe("fdx-read")
-      expect(route?.executed).toBe(true)
-      expect(route?.output).toBeDefined()
+      if (!checkFdxAvailability()) {
+        expect(route).toBeNull()
+      } else {
+        expect(route).not.toBeNull()
+        expect(route?.targetTool).toBe("fdx-read")
+        expect(route?.executed).toBe(true)
+        expect(route?.output).toBeDefined()
+      }
     })
 
     it("returns null when FDX redirect is disabled", async () => {
