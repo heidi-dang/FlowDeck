@@ -953,6 +953,7 @@ const plugin: Plugin = async ({ directory, client }) => {
             const prevPhase = taskPhaseManager.getCurrentPhase(sessionID)
             const boundary = taskPhaseManager.beginNewTaskPhase(sessionID, turn.taskId, [fhTaskText.slice(0, 120)])
             if (prevPhase && prevPhase.phase > 0) {
+              loopDetector.clearSession(sessionID)
               loopIncidentTracker.clearSession(sessionID)
               sessionLoopIncidents.delete(sessionID)
               semanticConvergence.clearSession(sessionID)
@@ -2361,7 +2362,7 @@ const plugin: Plugin = async ({ directory, client }) => {
               durationMs: 0,
               terminalState: msgFinishReason ?? undefined,
               visibleOutputPresent: hadVisibleText,
-              malformedCompletion: isConfirmedTerminal && !hadVisibleText && !(Array.isArray(parts) && parts.some((p: any) => p.type === "tool" && (typeof p.state === "string" ? p.state : p.state?.status) !== "pending" && (typeof p.state === "string" ? p.state : p.state?.status) !== "running")),
+              malformedCompletion: isConfirmedTerminal && !hadVisibleText && !(Array.isArray(parts) && parts.some((p: any) => p.type === "tool")),
               recoveryRequired: Boolean(msgInfo.error) || sessionRecoveryState.has(eventSessionID),
             } as any
             if (hasReasoningPart) {

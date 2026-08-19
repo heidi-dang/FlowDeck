@@ -286,10 +286,9 @@ export function detectNoVisibleOutputCompletion(
   for (const part of msg.parts) {
     if (part.type === "text" && part.text?.trim()) textPartCount++
     if (part.type === "tool") {
-      const state = typeof (part as any).state === "string" ? (part as any).state : (part as any).state?.status
-      if (state === "completed" || !state) {
-        toolPartCount++
-      }
+      // Any tool call part (completed, running, pending, or errored) is real tool activity
+      // and means this assistant turn was NOT an empty/reasoning-only completion.
+      toolPartCount++
     }
     if (part.type === "reasoning") reasoningTokenCount += part.text?.length ?? 1
     if (part.type === "step-finish" && (part as any).reason) finishReason = (part as any).reason

@@ -130,11 +130,15 @@ export function normalizeAction(toolName: string, args: Record<string, unknown>)
   }
 
   if (tool === "read" || tool === "read_file" || tool === "view" || tool === "fdx-read") {
-    const filePath = typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : ""
+    const filePath = typeof args.filePath === "string" ? args.filePath : typeof args.path === "string" ? args.path : typeof args.file === "string" ? args.file : ""
+    const mode = typeof args.mode === "string" ? args.mode : ""
+    const symbol = typeof args.symbol === "string" ? args.symbol : ""
+    const range = args.start_line !== undefined || args.end_line !== undefined ? `:${args.start_line ?? 1}-${args.end_line ?? ""}` : ""
+    const extra = (mode || symbol || range) ? `:${mode}:${symbol}${range}` : ""
     try {
-      return `read:${resolve(filePath || "")}`
+      return `read:${resolve(filePath || "")}${extra}`
     } catch {
-      return `read:${filePath}`
+      return `read:${filePath}${extra}`
     }
   }
 
@@ -148,8 +152,8 @@ export function normalizeAction(toolName: string, args: Record<string, unknown>)
   }
 
   if (tool === "grep" || tool === "glob" || tool === "search" || tool === "fdx-grep" || tool === "fdx-search") {
-    const pattern = typeof args.pattern === "string" ? args.pattern : ""
-    const path = typeof args.path === "string" ? args.path : ""
+    const pattern = typeof args.pattern === "string" ? args.pattern : typeof args.query === "string" ? args.query : ""
+    const path = typeof args.path === "string" ? args.path : typeof args.dir === "string" ? args.dir : ""
     return `${tool}:${pattern}:${resolve(path || ".")}`
   }
 

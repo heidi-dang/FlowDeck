@@ -48,11 +48,14 @@ export type RecoveryGenerationState =
   | "TERMINAL"
   | "CANCELLED"
   | "FAILED"
+  | "EXHAUSTED"
 
 export interface RecoveryGeneration {
   sessionID: string
+  incidentID?: string
   generation: number
-  source: "reasoning_recovery" | "semantic_watchdog"
+  directiveOrdinal?: number
+  source: "reasoning_recovery" | "semantic_watchdog" | "orchestrator_guard" | string
   state: RecoveryGenerationState
   /** The internal user-prompt message ID returned by the prompt API. */
   internalPromptMessageId?: string
@@ -63,6 +66,30 @@ export interface RecoveryGeneration {
   cancelledAt?: number
   completedAt?: number
   handleEvent?: (args: { event: any }) => Promise<void>
+}
+
+export type RecoverySuppressionReason =
+  | "ALREADY_IN_FLIGHT"
+  | "DUPLICATE_GENERATION"
+  | "SUPERSEDED"
+  | "TERMINAL_SESSION"
+  | "PROGRESS_ALREADY_OBSERVED"
+  | "RECOVERY_OWNER_CONFLICT"
+  | "EXHAUSTED"
+  | "NO_SESSION"
+  | "NO_API"
+
+export interface CanInjectRecoveryContinuationOptions {
+  sessionID: string
+  incidentID?: string
+  generation?: number
+  source: string
+  client?: any
+}
+
+export interface AdmissionDecision {
+  allowed: boolean
+  suppressionReason?: RecoverySuppressionReason
 }
 
 export interface RecoveryContinuationRequest {
@@ -130,23 +157,72 @@ class RecoveryCoordinator {
    * If a continuation is already scheduled, submitted, or running for this session,
    * the duplicate request is safely rejected/suppressed.
    */
-  public requestContinuation(req: RecoveryContinuationRequest): boolean {
-    const { sessionID, source, client, appLog, handleEvent } = req
-    if (!sessionID) return false
-
-    // Check if continuation is already pending or timer is active
-    if (this.activeTimers.has(sessionID)) {
-      return false
+  /**
+   * Authoritative recovery admission gate.
+   */
+  public canInjectRecoveryContinuation(opts: CanInjectRecoveryContinuationOptions): AdmissionDecision {
+    const { sessionID, generation, client } = opts
+    if (!sessionID) {
+      return { allowed: false, suppressionReason: "NO_SESSION" }
     }
+
+    if (this.activeTimers.has(sessionID)) {
+      return { allowed: false, suppressionReason: "ALREADY_IN_FLIGHT" }
+    }
+
     const wState = getWatchdogState(sessionID)
     if (wState?.isPendingContinuation) {
+      return { allowed: false, suppressionReason: "ALREADY_IN_FLIGHT" }
+    }
+
+    if (wState?.recoveryExhausted) {
+      return { allowed: false, suppressionReason: "EXHAUSTED" }
+    }
+
+    if (wState?.isTerminalTask) {
+      return { allowed: false, suppressionReason: "TERMINAL_SESSION" }
+    }
+
+    const activeGen = this.activeGenerations.get(sessionID)
+    if (activeGen && (activeGen.state === "SCHEDULED" || activeGen.state === "SUBMITTED" || activeGen.state === "SUBMITTED_UNCORRELATED" || activeGen.state === "RUNNING")) {
+      return { allowed: false, suppressionReason: "ALREADY_IN_FLIGHT" }
+    }
+
+    if (generation !== undefined && activeGen && activeGen.generation === generation && activeGen.state !== "CANCELLED" && activeGen.state !== "FAILED") {
+      return { allowed: false, suppressionReason: "DUPLICATE_GENERATION" }
+    }
+
+    if (client) {
+      const sessionApi = client?.session
+      if (!sessionApi?.prompt && !sessionApi?.promptAsync) {
+        return { allowed: false, suppressionReason: "NO_API" }
+      }
+    }
+
+    return { allowed: true }
+  }
+
+  /**
+   * Request an automatic recovery continuation.
+   * If a continuation is already scheduled, submitted, or running for this session,
+   * the duplicate request is safely rejected/suppressed.
+   */
+  public requestContinuation(req: RecoveryContinuationRequest): boolean {
+    const { sessionID, source, client, appLog, handleEvent } = req
+    const admission = this.canInjectRecoveryContinuation({
+      sessionID,
+      source,
+      client,
+    })
+    if (!admission.allowed) {
+      this._emitTelemetry(handleEvent, sessionID, "recovery_continuation_suppressed", {
+        reason: admission.suppressionReason,
+        source,
+      })
       return false
     }
 
     const sessionApi = client?.session
-    if (!sessionApi?.prompt && !sessionApi?.promptAsync) {
-      return false
-    }
     const promptFn = sessionApi.promptAsync ? sessionApi.promptAsync.bind(sessionApi) : sessionApi.prompt.bind(sessionApi)
 
     const promptText = req.promptText ?? (source === "reasoning_recovery" ? REPLAY_CONTINUATION_PROMPT : WATCHDOG_RECOVERY_PROMPT)

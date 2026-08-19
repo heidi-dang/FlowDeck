@@ -676,6 +676,17 @@ export class OrchestratorGuard {
             recoverable: true,
           })
         }
+        if (cls.category === "mutating") {
+          throw new RecoverableFlowDeckBlockError({
+            subsystem: "orchestrator_guard",
+            code: "ORCHESTRATOR_GUARD_MUTATING_SHELL",
+            tool: toolName,
+            sessionID: sessionId,
+            agent: effectiveAgent,
+            reason: this.shellBlockMessage(toolName, cls.reason, cls.category),
+            recoverable: true,
+          })
+        }
         if (cls.category === "unknown") {
           throw new RecoverableFlowDeckBlockError({
             subsystem: "orchestrator_guard",

@@ -95,7 +95,7 @@ const ALWAYS_MUTATING: ReadonlySet<string> = new Set([
 /** Commands that are read-only when used without mutating flags. */
 const ALWAYS_READ_ONLY: ReadonlySet<string> = new Set([
   "ls", "pwd", "echo", "printf", "true", "false", ":",
-  "which", "type", "hash", "compgen", "complete",
+  "which", "whereis", "type", "command", "hash", "compgen", "complete",
   "head", "tail", "cat", "less", "more", "view", "tac", "rev",
   "wc", "file", "stat", "du", "df", "tree",
   "date", "uptime", "uname", "whoami", "id", "groups", "hostname", "hostnamectl",
@@ -116,6 +116,27 @@ const ALWAYS_READ_ONLY: ReadonlySet<string> = new Set([
   "getent", "ldapsearch",
   "seq", "yes",
 ])
+
+const VERSION_OR_HELP_FLAGS: ReadonlySet<string> = new Set([
+  "--version",
+  "-v",
+  "-V",
+  "version",
+  "--help",
+  "-h",
+  "help",
+  "-help",
+  "-version",
+])
+
+function isVersionOrHelpQuery(tokens: ReadonlyArray<string>): boolean {
+  if (tokens.length === 0) return false
+  const rest = tokens.slice(1)
+  if (rest.length > 0 && rest.every((t) => VERSION_OR_HELP_FLAGS.has(t.toLowerCase()))) {
+    return true
+  }
+  return false
+}
 
 /**
  * Compound command names whose first segment is mutating regardless of suffix.
@@ -139,7 +160,7 @@ const GIT_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "ls-files", "ls-tree", "ls-remote",
   "rev-parse", "rev-list", "describe",
   "reflog", "shortlog",
-  "grep",
+  "grep", "branch",
 ])
 
 /** Default sensitive-path patterns. Substring match (case-insensitive). */
@@ -324,6 +345,33 @@ function classifyGitInvocation(tokens: ReadonlyArray<string>): ShellCategory {
     }
     return "mutating"
   }
+  // For git branch: inspect if it's listing/showing current branch, mutate if creating/deleting/renaming
+  if (sub === "branch") {
+    // If no extra positional arguments (or only flags like -a, -r, -v, --show-current, --list, --sort, --contains, --merged, --no-merged) -> read-only inspection.
+    // If positional non-flag args exist (other than pattern for --list) or mutating flags (-d, -D, -m, -M, -c, -C, --set-upstream-to, --unset-upstream) -> mutating.
+    let positionalCount = 0
+    let hasListFlag = false
+    for (let j = i + 1; j < tokens.length; j++) {
+      const arg = tokens[j]
+      if (arg === "-d" || arg === "-D" || arg === "-m" || arg === "-M" || arg === "-c" || arg === "-C" || arg === "--set-upstream-to" || arg === "--unset-upstream" || arg === "--edit-description") {
+        return "mutating"
+      }
+      if (arg === "--list" || arg === "-l") {
+        hasListFlag = true
+      }
+      if (!arg.startsWith("-")) {
+        positionalCount++
+      }
+    }
+    // "git branch" or "git branch --show-current" or "git branch -a" -> 0 positionals -> read
+    // "git branch --list 'feat/*'" -> 1 positional with --list -> read
+    // "git branch newbranch" -> 1 positional without --list -> creating branch -> mutating
+    if (positionalCount > 0 && !hasListFlag) {
+      return "mutating"
+    }
+    return "read"
+  }
+
   // Walk remaining args for mutating flags.
   for (let j = i + 1; j < tokens.length; j++) {
     const arg = tokens[j]
@@ -412,6 +460,10 @@ function classifySegment(segment: string): { category: ShellCategory; reason: st
       return { category: "mutating", reason: "git command mutates repository state (commit/push/merge/rebase/reset/checkout/branch/tag write)", head }
     }
     return { category: "risky", reason: "git command performs network I/O (fetch/pull/push/clone/archive)", head }
+  }
+  // Version check / help queries on any tool/compiler/binary are read-only inspection
+  if (isVersionOrHelpQuery(tokens)) {
+    return { category: "read", reason: `\`${head}\` version/help inspection (read-only)`, head }
   }
   if (ALWAYS_MUTATING.has(head)) {
     return { category: "mutating", reason: `\`${head}\` is in the mutating-command set (filesystem/process/network)`, head }
@@ -503,16 +555,25 @@ export function classifyShellCommand(
   let worst: ShellCategory = "read"
   const reasons: string[] = []
   let head: string | null = null
+  let blockingReason: string | null = null
+  let blockingHead: string | null = null
+
   for (const seg of segments) {
     const r = classifySegment(seg)
-    head = r.head
+    if (head === null) head = r.head
     reasons.push(r.reason)
     if (r.category === "mutating") {
       worst = "mutating"
+      blockingReason = r.reason
+      blockingHead = r.head
     } else if (r.category === "risky" && worst !== "mutating") {
       worst = "risky"
+      blockingReason = r.reason
+      blockingHead = r.head
     } else if (r.category === "unknown" && worst === "read") {
       worst = "unknown"
+      blockingReason = r.reason
+      blockingHead = r.head
     }
   }
   const sensitiveMatches = findSensitiveMatches(trimmed, tokenize(trimmed), opts?.extraSensitivePatterns)
@@ -543,24 +604,24 @@ export function classifyShellCommand(
   if (worst === "mutating") {
     return {
       category: "mutating",
-      reason: reasons.find(r => r.includes("mutating")) ?? reasons[0] ?? "command mutates state",
+      reason: blockingReason ?? reasons.find(r => r.includes("mutating")) ?? reasons[0] ?? "command mutates state",
       sensitiveMatches,
-      head,
+      head: blockingHead ?? head,
     }
   }
   if (worst === "risky") {
     return {
       category: "risky",
-      reason: reasons.find(r => r.includes("risky") || r.includes("network") || r.includes("traversal") || r.includes("indirection")) ?? reasons[0] ?? "command is operationally risky",
+      reason: blockingReason ?? reasons.find(r => r.includes("risky") || r.includes("network") || r.includes("traversal") || r.includes("indirection")) ?? reasons[0] ?? "command is operationally risky",
       sensitiveMatches,
-      head,
+      head: blockingHead ?? head,
     }
   }
   return {
     category: "unknown",
-    reason: reasons[0] ?? "command could not be classified",
+    reason: blockingReason ?? reasons.find(r => r.includes("not in the read-only allowlist")) ?? reasons[0] ?? "command could not be classified",
     sensitiveMatches,
-    head,
+    head: blockingHead ?? head,
   }
 }
 
