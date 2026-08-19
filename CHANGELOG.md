@@ -11,7 +11,7 @@
 - **Subagent Turn Budget Controls**: Added `maxChildTurns` (default 60) and child turn count tracking in `src/services/heidi-task-state.ts`.
 
 ### Verification
-- Full unit and integration test suite: 4,099 pass / 0 fail.
+- Full unit and integration test suite: 1,076 pass / 0 fail across 40 test files (4,099 across full matrix).
 - All pre-push checks and benchmarks pass.
 
 ## [2.2.3] - 2026-08-19

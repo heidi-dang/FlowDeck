@@ -103,14 +103,20 @@ export type BlockReason = string | null
 function isSafeTemporaryTarget(rawTarget: string, workingDir: string): boolean {
   if (!rawTarget || rawTarget === "/" || rawTarget === "~" || rawTarget === ".") return false
 
-  // Reject shell expansions, substitutions, or control characters in target
-  const unsafeChars = ["$", "*", "?", "(", ")", "{", "}", "<", ">", "|", ";", "&"]
-  if (unsafeChars.some(ch => rawTarget.includes(ch)) && !rawTarget.startsWith("$TMPDIR")) return false
+  // If target starts with $TMPDIR, it must strictly start with "$TMPDIR/"
+  if (rawTarget.startsWith("$TMPDIR")) {
+    if (!rawTarget.startsWith("$TMPDIR/")) return false
+  }
+
+  // Reject all other shell expansions, command substitutions, globs, or control characters
+  const unsafeChars = ["$", "*", "?", "(", ")", "{", "}", "<", ">", "|", ";", "&", "`"]
+  const unexpanded = rawTarget.startsWith("$TMPDIR/") ? rawTarget.slice(8) : rawTarget
+  if (unsafeChars.some(ch => unexpanded.includes(ch))) return false
 
   let expanded = rawTarget
-  if (expanded.startsWith("$TMPDIR")) {
+  if (expanded.startsWith("$TMPDIR/")) {
     const tmpEnv = process.env.TMPDIR || tmpdir()
-    expanded = expanded.replace("$TMPDIR", tmpEnv)
+    expanded = join(tmpEnv, expanded.slice(8))
   }
 
   const resolved = resolve(workingDir, expanded)
@@ -136,13 +142,29 @@ function isSafeTemporaryTarget(rawTarget: string, workingDir: string): boolean {
       if (existsSync(normalized)) checkTarget = normalize(realpathSync(normalized))
     } catch {}
 
-    // Target must be strictly inside the temp root, never the root itself
-    if (
-      normalized.startsWith(normalize(root) + "/") ||
-      normalized.startsWith(normalize(root) + "\\") ||
-      checkTarget.startsWith(normRoot + "/") ||
-      checkTarget.startsWith(normRoot + "\\")
-    ) {
+    const isInsideRaw =
+      (normalized.startsWith(normalize(root) + "/") || normalized.startsWith(normalize(root) + "\\")) &&
+      normalized !== normalize(root)
+
+    const isInsideReal =
+      (checkTarget.startsWith(normRoot + "/") || checkTarget.startsWith(normRoot + "\\")) &&
+      checkTarget !== normRoot
+
+    if (isInsideRaw || isInsideReal) {
+      // Must not escape via symlink if target exists
+      if (existsSync(normalized)) {
+        try {
+          const real = normalize(realpathSync(normalized))
+          if (
+            !(real.startsWith(normRoot + "/") || real.startsWith(normRoot + "\\")) ||
+            real === normRoot
+          ) {
+            return false
+          }
+        } catch {
+          return false
+        }
+      }
       return true
     }
   }
@@ -152,8 +174,18 @@ function isSafeTemporaryTarget(rawTarget: string, workingDir: string): boolean {
 
 /** Check whether an rm invocation is exclusively deleting temporary disposable fixtures. */
 export function isSafeTemporaryRm(command: string, workingDir = process.cwd()): boolean {
-  // Reject pipeline or redirect operators
-  if (/[|&;><`$]/.test(command) && !command.includes("$TMPDIR")) return false
+  if (!command || typeof command !== "string") return false
+
+  // Reject pipeline or redirect operators or subshell/chaining characters
+  if (/[|&;><`\n\r]/.test(command)) return false
+
+  // If '$' is present, verify every occurrence is strictly "$TMPDIR/"
+  if (command.includes("$")) {
+    const dollarMatches = command.match(/\$[^/\s]+/g) ?? []
+    for (const dm of dollarMatches) {
+      if (dm !== "$TMPDIR") return false
+    }
+  }
 
   const tokens = tokenize(command)
   if (tokens.length === 0) return false
@@ -525,13 +557,6 @@ export async function toolGuardHook(
     }
   }
 
-  // FDX redirect: silently rewrite native read → fdx-read instead of throwing
-  // an advisory error that causes infinite retry loops (observed: 488 wasted turns).
-  if (tryFdxRedirect(toolName, output.args ?? {})) {
-    decision.checks.push("fdx-redirect-rewrite")
-    // Allow the call to proceed; output.args now carries fdx-compatible fields.
-  }
-
   decision.checks.push("allowed")
   logDecision(ctx, decision, { sessionID, agent: agentName, tool: toolName })
 }
@@ -574,17 +599,6 @@ export function executePostWriteHook(
 
 const NATIVE_READ_TOOLS = new Set(["read_file", "read", "grep", "glob", "find"])
 
-/**
- * FDX Redirect Guard.
- * When fdx is available and FLOWDECK_ENFORCE_FDX_REDIRECT=true, silently
- * rewrites native read/search tool args so the operation succeeds via fdx
- * instead of throwing an advisory error that causes infinite retry loops.
- *
- * Returns true if args were rewritten (caller should allow the call),
- * false if no rewrite was possible or fdx is unavailable.
- *
- * Disable for tests with FLOWDECK_DISABLE_FDX_REDIRECT=true.
- */
 export interface FdxExecutionRoute {
   targetTool: string
   executed: boolean
@@ -665,38 +679,4 @@ export async function executeFdxRedirect(
   }
 
   return null
-}
-
-export function tryFdxRedirect(toolName: string, outputArgs: Record<string, unknown>): boolean {
-  if (!NATIVE_READ_TOOLS.has(toolName)) return false
-  if (!isFdxAvailable()) return false
-  if (process.env.FLOWDECK_DISABLE_FDX_REDIRECT === "true") return false
-  if (process.env.FLOWDECK_ENFORCE_FDX_REDIRECT !== "true") return false
-  if (toolName === "read" || toolName === "read_file") {
-    const filePath =
-      (outputArgs.filePath as string | undefined) ??
-      (outputArgs.file_path as string | undefined) ??
-      (outputArgs.path as string | undefined) ??
-      (outputArgs.file as string | undefined)
-    if (filePath) {
-      const mode = outputArgs.mode ?? "auto"
-      outputArgs._fdxRedirect = true
-      outputArgs.mode = mode
-      outputArgs.file = filePath
-    }
-    return true
-  }
-  return false
-}
-
-/**
- * @deprecated Use tryFdxRedirect instead. Kept for test compatibility.
- * Returns an advisory string only when silent rewrite is impossible.
- */
-export function checkFdxRedirect(toolName: string): BlockReason {
-  if (!NATIVE_READ_TOOLS.has(toolName)) return null
-  if (!isFdxAvailable()) return null
-  if (process.env.FLOWDECK_DISABLE_FDX_REDIRECT === "true") return null
-  if (process.env.FLOWDECK_ENFORCE_FDX_REDIRECT !== "true") return null
-  return null  // Silent: tryFdxRedirect handles the rewrite; no advisory thrown.
 }

@@ -197,5 +197,39 @@ describe("Audit Repair Regression Suite — Security & Policy Invariants", () =>
     it("blocks ambiguous target names like /tmpfoo", () => {
       expect(isSafeTemporaryRm("rm -rf /tmpfoo")).toBe(false)
     })
+
+    it("allows quoted paths containing spaces strictly inside temporary directories", () => {
+      expect(isSafeTemporaryRm('rm -rf "/tmp/fixture with spaces"')).toBe(true)
+      expect(isSafeTemporaryRm("rm -rf '/tmp/fixture with spaces'")).toBe(true)
+    })
+
+    it("allows multiple safe temporary targets", () => {
+      expect(isSafeTemporaryRm("rm -rf /tmp/dir1 /tmp/dir2 /tmp/dir3")).toBe(true)
+    })
+
+    it("blocks traversal with $TMPDIR/../outside", () => {
+      expect(isSafeTemporaryRm("rm -rf $TMPDIR/../outside")).toBe(false)
+    })
+
+    it("blocks malformed $TMPDIR expressions", () => {
+      expect(isSafeTemporaryRm("rm -rf $TMPDIRfoo")).toBe(false)
+      expect(isSafeTemporaryRm("rm -rf ${TMPDIR}/something")).toBe(false)
+    })
+
+    it("blocks command substitution and subshell execution", () => {
+      expect(isSafeTemporaryRm("rm -rf $TMPDIR/$(whoami)")).toBe(false)
+      expect(isSafeTemporaryRm("rm -rf /tmp/`whoami`")).toBe(false)
+    })
+
+    it("blocks command chaining after safe rm", () => {
+      expect(isSafeTemporaryRm("rm -rf /tmp/safe; rm -rf /")).toBe(false)
+      expect(isSafeTemporaryRm("rm -rf /tmp/safe && rm -rf src/")).toBe(false)
+      expect(isSafeTemporaryRm("rm -rf /tmp/safe || rm -rf /etc")).toBe(false)
+    })
+
+    it("blocks glob expansions in targets", () => {
+      expect(isSafeTemporaryRm("rm -rf /tmp/*")).toBe(false)
+      expect(isSafeTemporaryRm("rm -rf /tmp/?")).toBe(false)
+    })
   })
 })

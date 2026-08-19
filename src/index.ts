@@ -34,7 +34,9 @@ import { guardRailsHook } from "./hooks/guard-rails"
 import { OrchestratorGuard } from "./hooks/orchestrator-guard-hook"
 import { sessionStartHook } from "./hooks/session-start"
 import { sessionEventsHook } from "./hooks/session-events"
-import { executePostWriteHook, clearWriteCounter, toolGuardHook } from "./hooks/tool-guard"
+import { executePostWriteHook, clearWriteCounter, toolGuardHook, executeFdxRedirect } from "./hooks/tool-guard"
+import { nativeReadFallback } from "./tools/fdx-shared"
+import { recordToolError, checkToolErrorCircuit, clearToolErrorCounts } from "./services/orchestrator-guard-strategy-circuit"
 import { buildFlowDeckMcpsWithMeta } from "./mcp/index"
 import { captureLessonTool, reviewLessonsTool } from "./tools/capture-lesson"
 import { codegraphTool } from "./tools/codegraph-tool"
@@ -328,6 +330,8 @@ function cleanupPendingSlots(sessionID: string): void {
   }
 }
 
+const activeLoopDetectors = new Set<LoopDetector>()
+
 const __dir = dirname(fileURLToPath(import.meta.url))
 const flowdeckPackageVersion = JSON.parse(
   readFileSync(join(__dir, "..", "package.json"), "utf-8"),
@@ -511,7 +515,8 @@ const plugin: Plugin = async ({ directory, client }) => {
 
   let flowdeckConfig: FlowDeckConfig = loadFlowDeckConfig(directory)
   const orchestratorGuard = new OrchestratorGuard({ routes: getAgentRoutes() })
-  const loopDetector = new LoopDetector(flowdeckConfig.governance?.loopDetection, appLog)
+  const loopDetector = new LoopDetector({ maxRepeats: 3, ...flowdeckConfig.governance?.loopDetection }, appLog)
+  activeLoopDetectors.add(loopDetector)
   const turboEngine = new FdxTurboEngine({
     workspace: directory,
     index: fdxWorkspaceIndex,
@@ -574,6 +579,51 @@ const plugin: Plugin = async ({ directory, client }) => {
         return { output: describeShellFailure(info), metadata: { fdShell: info as unknown as Record<string, unknown> } }
       }
       return r.output
+    },
+  })
+
+  // ── FlowDeck-owned native read tool: token-optimized and routed to FDX when active ──
+  const readNativeTool = tool({
+    description: "Read a file from the workspace. Token-optimized and routed to FDX when available.",
+    args: {
+      filePath: tool.schema.string().optional().describe("Path to the file to read."),
+      file_path: tool.schema.string().optional(),
+      path: tool.schema.string().optional(),
+      file: tool.schema.string().optional(),
+      mode: tool.schema.enum(["auto", "raw", "prototype", "deep"]).optional(),
+      limit: tool.schema.number().optional(),
+      offset: tool.schema.number().optional(),
+      symbol: tool.schema.string().optional(),
+      with_deps: tool.schema.boolean().optional(),
+      format: tool.schema.enum(["text", "json"]).optional(),
+      no_cache: tool.schema.boolean().optional(),
+    },
+    async execute(args: any, context: any) {
+      const filePath =
+        (args?.filePath as string | undefined) ??
+        (args?.file_path as string | undefined) ??
+        (args?.path as string | undefined) ??
+        (args?.file as string | undefined)
+      if (!filePath || typeof filePath !== "string" || !filePath.trim()) {
+        throw new Error("File path is required for read tool")
+      }
+      const targetPath = filePath.trim()
+      const fdxRoute = await executeFdxRedirect(
+        "read",
+        { ...args, file: targetPath },
+        {
+          directory,
+          sessionID: context?.sessionID,
+          agent: context?.agent,
+        }
+      )
+      if (fdxRoute?.executed && fdxRoute.output !== undefined) {
+        return fdxRoute.output
+      }
+      if (fdxRoute && !fdxRoute.executed && fdxRoute.error) {
+        throw new Error(fdxRoute.error)
+      }
+      return nativeReadFallback(targetPath, args?.limit, args?.offset, directory)
     },
   })
 
@@ -1234,6 +1284,8 @@ const plugin: Plugin = async ({ directory, client }) => {
     "fdx-pr-monitor": fdxPrMonitorTool,
     "shell": shellFastLaneTool,
     "bash": bashFastLaneTool,
+    "read": readNativeTool,
+    "read_file": readNativeTool,
     },
 
     "tool.execute.before": async (toolInput: any, toolOutput: any) => {
@@ -1647,6 +1699,33 @@ const plugin: Plugin = async ({ directory, client }) => {
       // ── 6. Tool guard ───────────────────────────────────────────────
       await toolGuardHook({ directory }, toolInput, toolOutput)
 
+      // ── 6.5. Generic Tool Error Circuit Breaker (3-strike limit on identical failures) ──
+      if (sessionID) {
+        const inputKey = JSON.stringify(rawArgs || {})
+        const circuit = checkToolErrorCircuit(sessionID, toolName, inputKey)
+        if (circuit.blocked) {
+          if (isToolTracked) {
+            const c = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1)
+            sessionActiveTools.set(sessionID, c)
+            updateWatchdogState(sessionID, { isPendingTool: c > 0 })
+          }
+          throw new RecoverableFlowDeckBlockError({
+            subsystem: "governance",
+            code: "TOOL_ERROR_CIRCUIT_OPEN",
+            tool: toolName,
+            sessionID,
+            agent: (resolvedCaller as string) || "heidi",
+            reason: `FLOWDECK: Circuit breaker open for repeated tool error on "${toolName}". Identical tool invocation failed ${circuit.maxCount} times. Re-attempting unchanged arguments is suppressed. Choose a different tool, arguments, or strategy.`,
+            recoverable: true,
+            suggestedActions: [
+              "Inspect preceding error output and adjust input arguments",
+              "Use an alternative tool or delegate to a specialist agent",
+              "Check workspace state before retrying",
+            ],
+          })
+        }
+      }
+
       // ── 7. Loop detection — incident-based steering (Requirements D/E) ──
       callTiming.start("loop-guard")
       try {
@@ -1743,6 +1822,7 @@ const plugin: Plugin = async ({ directory, client }) => {
         }
         throw err
       }
+
       // ── Operation lifecycle: emit operation.started (stable identity) ──
       // Only for FlowDeck-owned shell/bash, whose after-hook always pairs, so a
       // started row can never be left permanently stuck and never duplicates the
@@ -1828,8 +1908,8 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
 
       // Authoritative predicate for confirmed successful write execution.
-      // A failed write/edit (thrown error, structured error property, or null output) must NEVER
-      // increment write counts, mark files changed, trigger verification, or emit success audit events.
+      // A failed write/edit (thrown error, structured error property, or null output) or a read-only tool
+      // must NEVER increment write counts, mark files changed, trigger verification, or emit success audit events.
       const isToolExecutionError =
         Boolean(toolInput?.error) ||
         Boolean(toolOutput?.error) ||
@@ -1838,23 +1918,41 @@ const plugin: Plugin = async ({ directory, client }) => {
 
       const isSuccessfulWrite =
         !isToolExecutionError &&
-        Boolean(sessionID && toolName && (rawArgs.file || rawArgs.filePath || rawArgs.path || rawArgs.file_path))
+        Boolean(sessionID) &&
+        isConfirmedSourceMutation(toolName, rawArgs)
 
       if (isSuccessfulWrite) {
-        const modifiedFile = String(rawArgs.file ?? rawArgs.filePath ?? rawArgs.path ?? rawArgs.file_path)
-        if (!sessionFilesChanged.has(sessionID)) {
-          sessionFilesChanged.set(sessionID, new Set())
+        const modifiedFile = String(rawArgs.file ?? rawArgs.filePath ?? rawArgs.path ?? rawArgs.file_path ?? "")
+        if (modifiedFile) {
+          if (!sessionFilesChanged.has(sessionID)) {
+            sessionFilesChanged.set(sessionID, new Set())
+          }
+          sessionFilesChanged.get(sessionID)!.add(modifiedFile)
         }
-        sessionFilesChanged.get(sessionID)!.add(modifiedFile)
 
         executePostWriteHook(directory, sessionID, agent, toolName, rawArgs)
 
-        executeVerifiedPostWrite(directory, {
-          sessionID,
-          agent,
-          tool: toolName,
-          filePath: modifiedFile,
-        })
+        if (modifiedFile) {
+          executeVerifiedPostWrite(directory, {
+            sessionID,
+            agent,
+            tool: toolName,
+            filePath: modifiedFile,
+          })
+        }
+      }
+
+      // Record error in 3-strike circuit breaker
+      if (sessionID && isToolExecutionError) {
+        const inputKey = JSON.stringify(rawArgs || {})
+        const errorContent =
+          (toolInput?.error as any)?.message ??
+          (toolOutput?.error as any)?.message ??
+          toolInput?.error ??
+          toolOutput?.error ??
+          (shellFd?.status === "failed" ? describeShellFailure(shellFd) : "error")
+        const errorKey = String(errorContent).slice(0, 300)
+        recordToolError(sessionID, toolName, inputKey, errorKey)
       }
 
       // Non-zero shell or tool execution error is recorded as an error so Loop Guard
@@ -1887,6 +1985,7 @@ const plugin: Plugin = async ({ directory, client }) => {
           loopIncidentTracker.resolveAllForSession(sessionID)
           emptyTerminalCircuit.recordSemanticProgress(sessionID)
           watchdogIncidentManager.recordProgressEvidence(sessionID, "source_changed")
+          clearToolErrorCounts(sessionID)
         } else if (sessionID && !confirmedMutation && !errored) {
           semanticConvergence.recordNonProgressSignal(sessionID, "tool_activity")
         }
@@ -2939,6 +3038,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       // Close SQLite connections so Windows file locks are released
       if (typeof (detachScoreStream as (() => void) | undefined) === "function") { try { (detachScoreStream as () => void)() } catch {} }
       try { clearScoreboardFor(directory) } catch {}
+      activeLoopDetectors.delete(loopDetector)
       // Stop the resident FDX engine (releases the native daemon process and its
       // cwd lock — required for clean Windows temp-dir teardown). Bounded so the
       // teardown can never block on a stalled child process.
@@ -2953,6 +3053,12 @@ const plugin: Plugin = async ({ directory, client }) => {
 
 export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void {
   if (!sessionID) return
+  if (ld) {
+    ld.clearSession(sessionID)
+  }
+  for (const activeLd of activeLoopDetectors) {
+    activeLd.clearSession(sessionID)
+  }
   sessionToolCalls.delete(sessionID)
   sessionRetries.delete(sessionID)
   sessionDelegations.delete(sessionID)
@@ -2968,6 +3074,7 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   loopIncidentTracker.clearSession(sessionID)
   shellFailureTracker.clearSession(sessionID)
   operationLifecycle.clearSession(sessionID)
+  clearToolErrorCounts(sessionID)
   sessionLoopIncidents.delete(sessionID)
   semanticConvergence.clearSession(sessionID)
   emptyTerminalCircuit.clearSession(sessionID)
