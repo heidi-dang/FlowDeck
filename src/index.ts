@@ -128,7 +128,7 @@ import {
   decideStage2Continuation,
   type SessionRecoveryState,
 } from "./services/reasoning-recovery"
-import { updateWatchdogState, getWatchdogState, clearWatchdogState, getAllWatchdogStates, clearAllWatchdogStates } from "./services/heidi-watchdog"
+import { updateWatchdogState, getWatchdogState, clearWatchdogState, getAllWatchdogStates, clearAllWatchdogStates, isWatchdogEligible } from "./services/heidi-watchdog"
 import { recoveryCoordinator, type RecoveryContinuationRequest } from "./services/recovery-coordinator"
 import { initializeDatabase, closeAllConnections } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
@@ -625,8 +625,7 @@ const plugin: Plugin = async ({ directory, client }) => {
     const WATCHDOG_TIMEOUT_MS = 60000 // 60 seconds
     const states = getAllWatchdogStates()
     for (const state of states) {
-      if (!state.hasUnresolvedTask || state.recoveryExhausted) continue
-      if (state.isPendingProvider || state.isPendingTool || state.isPendingChild || state.isPendingContinuation || state.isPendingUser) continue
+      if (!isWatchdogEligible(state)) continue
 
       if (now - state.lastProgressAt > WATCHDOG_TIMEOUT_MS) {
         const incident = watchdogIncidentManager.confirmStall(state.sessionID)
@@ -2287,11 +2286,15 @@ const plugin: Plugin = async ({ directory, client }) => {
           const msgId = info?.id ?? event?.properties?.info?.id;
           const provenance = recoveryCoordinator.classifyMessage(sessionID, msgId, msgText);
           if (provenance === "manual_user") {
-            // Positive manual user turn: reset recovery state and record timestamp for preflight.
+            // Positive manual user turn: reset recovery state, activate session, mark unresolved task.
             stateUpdates.recoveryExhausted = false;
             stateUpdates.recoveryCount = 0;
+            stateUpdates.hasUnresolvedTask = true;
+            stateUpdates.isActiveSession = true;
+            stateUpdates.isTerminalTask = false;
             sessionRecoveryState.delete(sessionID);
             sessionLastManualUserAt.set(sessionID, Date.now());
+            watchdogIncidentManager.markSuperseded(sessionID);
             // If a recovery is currently scheduled (SCHEDULED state), cancel it so the
             // timer preflight will suppress it. The user's turn supersedes recovery.
             recoveryCoordinator.markGenerationCancelledByUserMessage(sessionID);
@@ -2661,7 +2664,7 @@ const plugin: Plugin = async ({ directory, client }) => {
               decision: "complete",
               reason: "Session completed",
             })
-            updateWatchdogState(sessionID, { hasUnresolvedTask: false })
+            updateWatchdogState(sessionID, { hasUnresolvedTask: false, isActiveSession: false, isTerminalTask: true, isPendingContinuation: false })
 
             if (sessionID) {
               const toolCalls = sessionToolCalls.get(sessionID) ?? 0
@@ -2754,7 +2757,7 @@ const plugin: Plugin = async ({ directory, client }) => {
             sessionIsCancelled.set(sessionID, true)
             const wState = getWatchdogState(sessionID)
             if (!(wState && wState.recoveryExhausted)) {
-              updateWatchdogState(sessionID, { hasUnresolvedTask: false })
+              updateWatchdogState(sessionID, { hasUnresolvedTask: false, isActiveSession: false, isTerminalTask: true, isPendingContinuation: false })
             }
 
             // ── Child session failure → delegation.failed ──────────────

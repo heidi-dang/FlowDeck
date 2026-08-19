@@ -27,24 +27,27 @@ export interface WatchdogIncidentState {
   lastDirectiveAt: number
   recoveryDirectiveCount: number
   materiallyDifferentStrategyCount: number
-  status: "OPEN" | "STALLED_UNRECOVERED" | "RESOLVED"
+  status: "OPEN" | "STALLED_UNRECOVERED" | "RESOLVED" | "SUPERSEDED"
   lastProgressEvidenceAt: number
+  /** Is a watchdog recovery directive currently in flight for this incident? */
+  inFlight: boolean
 }
 
 export const WATCHDOG_MAX_DIRECTIVES = 2
-export const WATCHDOG_MAX_STRATEGIES = 1; // after directives, exactly one new strategy
+export const WATCHDOG_MAX_STRATEGIES = 1 // after directives, exactly one new strategy
 
 export class WatchdogIncidentManager {
   private incidents = new Map<string, WatchdogIncidentState>()
 
   /**
    * Called when a stall is confirmed. Returns true iff a recovery directive
-   * should still be injected (bounded); false once STALLED_UNRECOVERED.
+   * should still be injected (bounded and single-flight); false once STALLED_UNRECOVERED
+   * or when a directive is already in-flight.
    */
   confirmStall(sessionID: string): { injectDirective: boolean; materiallyDifferent?: boolean; state: WatchdogIncidentState } {
     const now = Date.now()
     let incident = this.incidents.get(sessionID)
-    if (!incident || incident.status === "RESOLVED") {
+    if (!incident || incident.status === "RESOLVED" || incident.status === "SUPERSEDED") {
       incident = {
         incidentId: "wd_" + sessionID.slice(0, 8) + "_" + now,
         sessionID,
@@ -54,6 +57,7 @@ export class WatchdogIncidentManager {
         materiallyDifferentStrategyCount: 0,
         status: "OPEN",
         lastProgressEvidenceAt: 0,
+        inFlight: true,
       }
       this.incidents.set(sessionID, incident)
       return { injectDirective: true, state: incident }
@@ -64,23 +68,51 @@ export class WatchdogIncidentManager {
       return { injectDirective: false, state: incident }
     }
 
+    // Single-flight check: if a directive is already in flight for this incident, suppress duplicate injection
+    if (incident.inFlight) {
+      return { injectDirective: false, state: incident }
+    }
+
     if (incident.recoveryDirectiveCount < WATCHDOG_MAX_DIRECTIVES) {
       incident.recoveryDirectiveCount++
       incident.lastDirectiveAt = now
+      incident.inFlight = true
       return { injectDirective: true, state: incident }
     }
 
-    // Directives exhausted: emit exactly one materially different strategy
-    // and then stop nagging.
+    // Directives exhausted: emit exactly one materially different strategy and then stop nagging.
     if (incident.materiallyDifferentStrategyCount < WATCHDOG_MAX_STRATEGIES) {
       incident.materiallyDifferentStrategyCount++
       incident.lastDirectiveAt = now
+      incident.inFlight = true
       return { injectDirective: true, materiallyDifferent: true, state: incident }
     }
 
     incident.status = "STALLED_UNRECOVERED"
     incident.lastDirectiveAt = now
+    incident.inFlight = false
     return { injectDirective: false, state: incident }
+  }
+
+  /**
+   * Called when an in-flight watchdog directive turn finishes or fails without progress.
+   */
+  clearInFlight(sessionID: string): void {
+    const incident = this.incidents.get(sessionID)
+    if (incident) {
+      incident.inFlight = false
+    }
+  }
+
+  /**
+   * Called when a user message or manual action supersedes the incident.
+   */
+  markSuperseded(sessionID: string): void {
+    const incident = this.incidents.get(sessionID)
+    if (incident) {
+      incident.status = "SUPERSEDED"
+      incident.inFlight = false
+    }
   }
 
   /**
@@ -92,6 +124,7 @@ export class WatchdogIncidentManager {
     if (!incident) return
     incident.lastProgressEvidenceAt = Date.now()
     incident.status = "RESOLVED"
+    incident.inFlight = false
     void evidence
   }
 
@@ -102,7 +135,6 @@ export class WatchdogIncidentManager {
   recordNonProgressActivity(sessionID: string): void {
     const incident = this.incidents.get(sessionID)
     if (!incident) return
-    // Only update timestamp; never reset counters, never resolve.
     void incident
   }
 

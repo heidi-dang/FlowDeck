@@ -92,6 +92,7 @@ describe("Heidi Watchdog", () => {
     // Seed a stalled session (no pending flags, last progress > 60s ago).
     updateWatchdogState("stalled-sync-prompt", {
       hasUnresolvedTask: true,
+      isActiveSession: true,
       lastProgressAt: Date.now() - 120_000,
     });
 

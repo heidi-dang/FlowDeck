@@ -7,12 +7,22 @@ describe("WATCHDOG INCIDENT LIFECYCLE", () => {
     const r1 = wd.confirmStall("s1")
     expect(r1.injectDirective).toBe(true)
     expect(r1.state.recoveryDirectiveCount).toBe(1)
+    expect(r1.state.inFlight).toBe(true)
+
+    // While inFlight=true, repeated confirmStall emits 0 directives
+    expect(wd.confirmStall("s1").injectDirective).toBe(false)
+
+    wd.clearInFlight("s1")
     const r2 = wd.confirmStall("s1")
     expect(r2.injectDirective).toBe(true)
     expect(r2.state.recoveryDirectiveCount).toBe(2)
+
+    wd.clearInFlight("s1")
     const r3 = wd.confirmStall("s1")
     expect(r3.injectDirective).toBe(true)
     expect(r3.materiallyDifferent).toBe(true)
+
+    wd.clearInFlight("s1")
     const r4 = wd.confirmStall("s1")
     expect(r4.injectDirective).toBe(false)
     expect(r4.state.status).toBe("STALLED_UNRECOVERED")
