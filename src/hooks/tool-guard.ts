@@ -144,13 +144,15 @@ function isSafeTemporaryTarget(rawTarget: string, workingDir: string): boolean {
       if (existsSync(normalized)) checkTarget = normalize(realpathSync(normalized))
     } catch {}
 
+    const targetBase = process.env.TMPDIR && rawTarget.startsWith("$TMPDIR/") ? normalize(resolve(process.env.TMPDIR)) : normRoot
+
     const isInsideRaw =
-      (normalized.startsWith(normalize(root) + "/") || normalized.startsWith(normalize(root) + "\\")) &&
-      normalized !== normalize(root)
+      (normalized.startsWith(targetBase + "/") || normalized.startsWith(targetBase + "\\")) &&
+      normalized !== targetBase
 
     const isInsideReal =
-      (checkTarget.startsWith(normRoot + "/") || checkTarget.startsWith(normRoot + "\\")) &&
-      checkTarget !== normRoot
+      (checkTarget.startsWith(targetBase + "/") || checkTarget.startsWith(targetBase + "\\")) &&
+      checkTarget !== targetBase
 
     if (isInsideRaw || isInsideReal) {
       // Must not escape via symlink if target exists
@@ -158,8 +160,8 @@ function isSafeTemporaryTarget(rawTarget: string, workingDir: string): boolean {
         try {
           const real = normalize(realpathSync(normalized))
           if (
-            !(real.startsWith(normRoot + "/") || real.startsWith(normRoot + "\\")) ||
-            real === normRoot
+            !(real.startsWith(targetBase + "/") || real.startsWith(targetBase + "\\")) ||
+            real === targetBase
           ) {
             return false
           }
