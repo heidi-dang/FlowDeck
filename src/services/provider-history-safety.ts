@@ -281,32 +281,34 @@ export function detectNoVisibleOutputCompletion(
   let textPartCount = 0
   let toolPartCount = 0
   let reasoningTokenCount = 0
-  let finishReason: string | undefined = (msg.info as any).finishReason ?? (msg.info as any).finish_reason
+  let finishReason: string | undefined =
+    (msg.info as any).finish ?? (msg.info as any).finishReason ?? (msg.info as any).finish_reason
 
   for (const part of msg.parts) {
     if (part.type === "text" && part.text?.trim()) textPartCount++
-    if (part.type === "tool") {
+    if (part.type === "tool" || (part as any).type === "tool-call") {
       // Any tool call part (completed, running, pending, or errored) is real tool activity
-      // and means this assistant turn was NOT an empty/reasoning-only completion.
+      // and means this assistant turn is a tool-execution turn, NOT an empty/reasoning-only completion.
       toolPartCount++
     }
     if (part.type === "reasoning") reasoningTokenCount += part.text?.length ?? 1
     if (part.type === "step-finish" && (part as any).reason) finishReason = (part as any).reason
   }
 
+  // If tool parts exist or finish indicates tool activity, it is NEVER an empty/reasoning completion
+  if (toolPartCount > 0 || finishReason === "tool-calls" || finishReason === "tool_calls") {
+    return { isMalformed: false }
+  }
+
   // P0 FIX: A missing finishReason is INSUFFICIENT EVIDENCE of terminal state.
   // Do NOT default to "stop" — the turn may still be in progress (transient
   // message.updated snapshot with no finish signal yet). Absent explicit
   // terminal evidence we must NOT classify the turn as a malformed completion.
-  //
-  // Exception: when the caller has CONFIRMED terminal context from an external
-  // event (session.idle), treat a missing finishReason as "stop" for the
-  // purpose of malformed detection — but only in that case.
   if (!finishReason) {
-    if (!opts?.confirmedTerminal) {
+    if (!opts?.confirmedTerminal || msg.parts.length === 0) {
       return { isMalformed: false }
     }
-    // Caller confirmed terminal from session.idle or equivalent — treat as stop
+    // Caller confirmed terminal from session.idle on populated message — treat as stop
     finishReason = "stop"
   }
 

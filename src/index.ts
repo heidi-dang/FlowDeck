@@ -1242,6 +1242,9 @@ const plugin: Plugin = async ({ directory, client }) => {
       const toolName = toolInput.tool ?? toolInput.name ?? "unknown"
       const callID = toolInput.callID ?? ""
       const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
+      if (directory) {
+        setActiveProjectDir(directory)
+      }
       const sessionMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
       const resolvedCaller = sessionMeta?.agent ?? (sessionID ? sessionCallerAgents.get(sessionID) : undefined) ?? toolInput.agent
 
@@ -1840,15 +1843,14 @@ const plugin: Plugin = async ({ directory, client }) => {
         filePath: rawArgs.file as string | undefined,
       })
 
-      // A non-zero shell execution is recorded as an error so the Loop Guard
-      // treats a repeated unchanged command as a repeat (same tool + same
-      // effective command + same repo generation + same failure class), never as
-      // fresh progress.
-      const loopRecordStatus: "success" | "error" | "blocked" = shellFd ? "error" : "success"
+      // Non-zero shell or tool execution error is recorded as an error so Loop Guard
+      // treats repeated failed attempts as a loop across ALL tools, preventing infinite loops.
+      const isToolError = Boolean(toolInput?.error) || Boolean(toolOutput?.error) || (shellFd?.status === "failed")
+      const loopRecordStatus: "success" | "error" | "blocked" = isToolError ? "error" : "success"
       loopDetector.recordAfter(
         toolName,
         rawArgs,
-        toolInput.output ?? toolOutput?.output ?? toolOutput?.result ?? "[unavailable]",
+        toolInput?.error ?? toolOutput?.error ?? toolInput.output ?? toolOutput?.output ?? toolOutput?.result ?? "[unavailable]",
         sessionID,
         loopRecordStatus
       )
@@ -2140,14 +2142,15 @@ const plugin: Plugin = async ({ directory, client }) => {
       // depth 1. A parent is treated as a SESSION parent only when the event is
       // a session lifecycle event (session.created/started) or the referenced
       // ID is a known session in the registry.
-      const isSessionLifecycleEvent = type === "session.created" || type === "session.started"
+      // A parent is treated as a SESSION parent ONLY on explicit session lifecycle events
+      // (session.created/session.started) where the parent is a registered session ID,
+      // and NEVER from message causality (message.updated / msg.parentID).
+      const isSessionLifecycleEvent = type === "session.created" || type === "session.started" || type.startsWith("session.created") || type.startsWith("session.started")
       const rawParentID = info?.parentID ?? event?.properties?.parentID ?? undefined
       const sessionParentID =
-        isSessionLifecycleEvent && rawParentID
+        isSessionLifecycleEvent && rawParentID && sessionRegistry.has(rawParentID) && rawParentID !== eventSessionID
           ? rawParentID
-          : rawParentID && sessionRegistry.has(rawParentID)
-            ? rawParentID
-            : undefined
+          : undefined
 
       if (eventSessionID) {
         const parentMetaOf = sessionParentID ? sessionRegistry.get(sessionParentID) : undefined
@@ -2170,8 +2173,6 @@ const plugin: Plugin = async ({ directory, client }) => {
           sessionRegistry.set(eventSessionID, meta)
           updateWatchdogState(eventSessionID, { hasUnresolvedTask: true })
         } else {
-          // Only update parent from authoritative session ancestry. A root
-          // Heidi session is never demoted by message-level causality.
           if (sessionAgent && !meta.agent) meta.agent = sessionAgent
           if (ancestry.parentSessionID && !meta.parentID) meta.parentID = ancestry.parentSessionID
           meta.depth = ancestry.depth
@@ -2329,7 +2330,7 @@ const plugin: Plugin = async ({ directory, client }) => {
           // P0 FIX: A message.updated with no finishReason is a transient snapshot of an
           // in-progress turn. Only treat a turn as terminal when we have positive evidence.
           const msgFinishReason: string | undefined = (() => {
-            let fr: string | undefined = msgInfo.finishReason ?? msgInfo.finish_reason
+            let fr: string | undefined = msgInfo.finish ?? msgInfo.finishReason ?? msgInfo.finish_reason
             if (!fr && parts) {
               for (const p of parts) {
                 if (p.type === "step-finish" && (p as any).reason) { fr = (p as any).reason; break }
@@ -2766,8 +2767,10 @@ const plugin: Plugin = async ({ directory, client }) => {
             // The real failure path is session.error on the child session.
             // Detect child sessions by exact childSessionToTask correlation.
             const childMeta = sessionID ? sessionRegistry.get(sessionID) : undefined
-            if (childMeta?.parentID) {
-              const parentSessionID = childMeta.parentID
+            const rawParentID = childMeta?.parentID ?? event?.properties?.info?.parentID ?? event?.properties?.parentID ?? event?.parentID ?? undefined
+            const rawChildAgent = childMeta?.agent ?? event?.properties?.info?.agent ?? event?.properties?.agent ?? undefined
+            if (rawParentID) {
+              const parentSessionID = rawParentID
               const now = Date.now()
               const correlation = childSessionToTask.get(sessionID)
 
@@ -2781,7 +2784,7 @@ const plugin: Plugin = async ({ directory, client }) => {
                 // No correlation available — try pending queue as last resort.
                 // This handles the edge case where session.error fires before
                 // session.created (unusual but defensive).
-                const pendingResult = dequeuePendingSlot(parentSessionID, childMeta.agent || undefined)
+                const pendingResult = dequeuePendingSlot(parentSessionID, rawChildAgent || undefined)
                 if (pendingResult.correlation) {
                   matchedTaskKey = pendingResult.correlation.taskKey
                   matchedTaskCall = sessionTaskCalls.get(matchedTaskKey)
@@ -2827,7 +2830,7 @@ const plugin: Plugin = async ({ directory, client }) => {
                   reason: `UNRESOLVED_CHILD_FAILURE: ${String(errorMessage)}`,
                   details: {
                     childSessionID: sessionID,
-                    targetAgent: childMeta.agent,
+                    targetAgent: childMeta?.agent ?? "unknown",
                   },
                 })
               }

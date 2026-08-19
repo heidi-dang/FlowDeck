@@ -16,6 +16,7 @@ Completion: no-actionable-browser-failures
 - Read only files directly relevant to the browser error or call site.
 
 **Tool selection — always prefer the cheaper option:**
+- Prefer FDX tools (\`fdx-read\`, \`fdx-search\`, \`fdx-grep\`, \`fdx-outline\`) for code intelligence and structural analysis. Fall back to native tools (\`read\`, \`grep\`, \`glob\`) only if fdx is unavailable or returns an error.
 - Use FDX tools (fdx-read, fdx-search, fdx-grep) to locate failing files and symbols.
 - Trace stack locations directly to source components and files.
 

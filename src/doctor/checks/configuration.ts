@@ -71,8 +71,8 @@ export async function runConfigurationChecks(directory: string): Promise<CheckRe
       // Check plugin array content
       if (isOk && parsed.data) {
         const plugins = Array.isArray(parsed.data.plugin) ? parsed.data.plugin : []
-        const hasCurrent = plugins.includes("@heidi-dang/flowdeck")
-        const hasLegacy = plugins.includes("@dv.nghiem/flowdeck")
+        const hasCurrent = plugins.some((p: string) => p === "@heidi-dang/flowdeck" || p.startsWith("@heidi-dang/flowdeck@"))
+        const hasLegacy = plugins.some((p: string) => p === "@dv.nghiem/flowdeck" || p.startsWith("@dv.nghiem/flowdeck@"))
 
         if (hasLegacy || !hasCurrent) {
           checks.push({

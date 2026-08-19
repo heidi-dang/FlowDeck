@@ -151,7 +151,11 @@ export const fdxReadTool: ToolDefinition = tool({
     format: tool.schema.enum(["text", "json"]).optional(),
     no_cache: tool.schema.boolean().optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    if (!args?.file || typeof args.file !== "string" || !args.file.trim()) {
+      throw new Error("[FDX] file parameter is required and cannot be empty.")
+    }
+    const cwd = context?.directory
     const turbo = getActiveFdxTurbo()
     // Resident fast path (Requirement Q): deterministic cached read is exact
     // for plain reads without symbol/mode/deps semantics. Routed through the
@@ -162,7 +166,7 @@ export const fdxReadTool: ToolDefinition = tool({
     }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeReadFallback(args.file, args.limit, args.offset)
+      return nativeReadFallback(args.file, args.limit, args.offset, cwd)
     }
     const cmd: string[] = ["read", args.file]
     if (args.mode) cmd.push("--mode", args.mode)
@@ -173,10 +177,10 @@ export const fdxReadTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     if (args.no_cache) cmd.push("--no-cache")
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeReadFallback(args.file, args.limit, args.offset)
+      return nativeReadFallback(args.file, args.limit, args.offset, cwd)
     }
   },
 })
@@ -196,6 +200,9 @@ export const fdxSearchTool: ToolDefinition = tool({
     no_cache: tool.schema.boolean().optional(),
   },
   async execute(args): Promise<string> {
+    if (!args?.query || typeof args.query !== "string" || !args.query.trim()) {
+      throw new Error("[FDX] query parameter is required and cannot be empty.")
+    }
     const turbo = getActiveFdxTurbo()
     if (turbo && !args.no_cache && args.format !== "json") {
       // NOTE: JSON-format requests never route through the turbo TEXT fast path;
@@ -242,6 +249,9 @@ export const fdxGrepTool: ToolDefinition = tool({
     no_cache: tool.schema.boolean().optional(),
   },
   async execute(args): Promise<string> {
+    if (!args?.pattern || typeof args.pattern !== "string" || !args.pattern.trim()) {
+      throw new Error("[FDX] pattern parameter is required and cannot be empty.")
+    }
     const turbo = getActiveFdxTurbo()
     if (turbo && !args.no_cache) {
       const tg = await turbo.grep(String(args.pattern), args.path, { context: args.context, maxMatches: args.max_matches })
@@ -434,7 +444,8 @@ export const fdxGitTool: ToolDefinition = tool({
     subcommand: tool.schema.string(),
     args: tool.schema.array(tool.schema.string()).optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     try {
       validateGitPolicy(args.subcommand, args.args ?? [])
     } catch (err: any) {
@@ -443,15 +454,15 @@ export const fdxGitTool: ToolDefinition = tool({
     }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeGitFallback([args.subcommand, ...(args.args ?? [])])
+      return nativeGitFallback([args.subcommand, ...(args.args ?? [])], cwd)
     }
     const cmd: string[] = ["git", args.subcommand]
     if (args.args && args.args.length > 0) cmd.push(...args.args)
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeGitFallback([args.subcommand, ...(args.args ?? [])])
+      return nativeGitFallback([args.subcommand, ...(args.args ?? [])], cwd)
     }
   },
 })
@@ -467,20 +478,21 @@ export const fdxLsTool: ToolDefinition = tool({
     all: tool.schema.boolean().optional(),
     format: tool.schema.enum(["text", "json"]).optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeLsFallback(args.path ?? ".")
+      return nativeLsFallback(args.path ?? ".", cwd)
     }
     const cmd: string[] = ["ls"]
     if (args.path) cmd.push(args.path)
     if (args.all) cmd.push("--all")
     if (args.format) cmd.push("--format", args.format)
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeLsFallback(args.path ?? ".")
+      return nativeLsFallback(args.path ?? ".", cwd)
     }
   },
 })

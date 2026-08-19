@@ -158,9 +158,9 @@ const MUTATING_PREFIXES: ReadonlyArray<string> = [
 const GIT_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "status", "log", "diff", "show", "blame", "annotate",
   "ls-files", "ls-tree", "ls-remote",
-  "rev-parse", "rev-list", "describe",
+  "rev-parse", "rev-list", "describe", "write-tree",
   "reflog", "shortlog",
-  "grep", "branch",
+  "grep", "branch", "remote", "config", "check-ref-format",
 ])
 
 /** Default sensitive-path patterns. Substring match (case-insensitive). */
@@ -298,19 +298,24 @@ const INDIRECTION_WRAPPERS: ReadonlySet<string> = new Set([
 
 /** Detect redirect operators anywhere in the command. Any redirect → mutating. */
 function hasRedirect(command: string): boolean {
-  if (/[0-9]?>>?/.test(command)) return true
-  if (/[<>]\(/.test(command)) return true
-  if (/[<>]\|/.test(command)) return true
-  if (/<>/.test(command)) return true
-  if (/&>/.test(command)) return true
-  if (/>>&/.test(command)) return true
+  // Strip safe /dev/null discards and file descriptor clones (2>/dev/null, 2>&1, >/dev/null)
+  const cleaned = command
+    .replace(/[0-2]?>\s*\/dev\/null/g, "")
+    .replace(/[0-2]?>&[0-2]/g, "")
+    .trim()
+  if (/[0-9]?>>?/.test(cleaned)) return true
+  if (/[<>]\(/.test(cleaned)) return true
+  if (/[<>]\|/.test(cleaned)) return true
+  if (/<>/.test(cleaned)) return true
+  if (/&>/.test(cleaned)) return true
+  if (/>>&/.test(cleaned)) return true
   // Bare input redirect `<` followed by an absolute path (e.g.
   // `cat < /etc/hostname`). Process substitution `<(...)` and bidirectional
   // `<>` already matched their dedicated branches above. We only treat
   // `<` as a redirect when it targets an absolute path; relative-path
   // `< file.txt` (used legitimately by stream filters like `tr a-z A-Z <
   // file.txt`) stays read-only.
-  if (/<\s*\//.test(command)) return true
+  if (/<\s*\//.test(cleaned)) return true
   return false
 }
 
@@ -345,6 +350,31 @@ function classifyGitInvocation(tokens: ReadonlyArray<string>): ShellCategory {
     }
     return "mutating"
   }
+  // For git remote: inspect (show, list, -v, get-url) vs mutate (add, rm, set-url, rename, prune)
+  if (sub === "remote") {
+    const mutatingRemoteSub = new Set(["add", "rm", "remove", "set-url", "set-head", "set-branches", "rename", "prune", "update"])
+    for (let j = i + 1; j < tokens.length; j++) {
+      const arg = tokens[j].toLowerCase()
+      if (mutatingRemoteSub.has(arg)) return "mutating"
+    }
+    return "read"
+  }
+
+  // For git config: inspect (--get, -l, --list, key queries) vs mutate (--set, --add, --unset, key value)
+  if (sub === "config") {
+    const mutatingConfigFlags = new Set(["--set", "--set-all", "--add", "--unset", "--unset-all", "--remove-section", "--rename-section"])
+    for (let j = i + 1; j < tokens.length; j++) {
+      const arg = tokens[j].toLowerCase()
+      if (mutatingConfigFlags.has(arg)) return "mutating"
+    }
+    const positionals = tokens.slice(i + 1).filter(t => !t.startsWith("-"))
+    const hasGetter = tokens.slice(i + 1).some(t => ["--get", "--get-all", "--get-regexp", "--list", "-l"].includes(t.toLowerCase()))
+    if (positionals.length >= 2 && !hasGetter) {
+      return "mutating"
+    }
+    return "read"
+  }
+
   // For git branch: inspect if it's listing/showing current branch, mutate if creating/deleting/renaming
   if (sub === "branch") {
     // If no extra positional arguments (or only flags like -a, -r, -v, --show-current, --list, --sort, --contains, --merged, --no-merged) -> read-only inspection.
@@ -425,10 +455,13 @@ function hasPathTraversal(tokens: ReadonlyArray<string>): boolean {
     if (t === "..") return true
     if (t.startsWith("../") || t.startsWith("./../")) return true
     if (t.includes("/..")) return true
-    if (t === "~" || t.startsWith("~/")) return true
   }
   return false
 }
+// Note: tilde expansion (~/) is NOT checked here; sensitive home-directory paths
+// (.ssh, .pem, .env, credentials) are already blocked by findSensitiveMatches.
+// Flagging all ~ tokens caused false positives: ls ~/.cache/ and similar
+// legitimate inspection commands were incorrectly classified as "risky".
 
 /** Classify a single command segment (already stripped of control operators). */
 function classifySegment(segment: string): { category: ShellCategory; reason: string; head: string | null } {
@@ -438,6 +471,13 @@ function classifySegment(segment: string): { category: ShellCategory; reason: st
     return { category: "unknown", reason: "empty command segment", head: null }
   }
   const head = tokens[0].toLowerCase()
+  // `cd` is a directory change used at the start of compound inspection commands
+  // (e.g. "cd /repo && git status"). The directory change itself is read-only
+  // for audit purposes — it doesn't mutate files. Treat it as transparent so
+  // the remaining segments in the compound can be classified normally.
+  if (head === "cd") {
+    return { category: "read", reason: "`cd` directory change (transparent for compound inspection commands)", head }
+  }
   if (INDIRECTION_WRAPPERS.has(head)) {
     if (tokens.includes("-c") || tokens.includes("--command")) {
       return { category: "unknown", reason: `\`${head}\` with -c hides the real command from inspection; route to a specialist`, head }

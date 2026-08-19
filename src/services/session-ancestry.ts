@@ -53,37 +53,37 @@ export class SessionAncestryRegistry {
     let depth = 0
     let isRootCoordinator = false
 
-    if (effectiveParentSessionID) {
-      const parentRecord = this.sessions.get(effectiveParentSessionID)
-      depth = explicitDepth !== undefined ? explicitDepth : parentRecord ? parentRecord.depth + 1 : 1
+    // A parent session ID is valid ONLY if it points to a distinct, registered session in this registry
+    const parentRecord = effectiveParentSessionID && effectiveParentSessionID !== sessionID
+      ? this.sessions.get(effectiveParentSessionID)
+      : undefined
+    const validParentSessionID = parentRecord ? effectiveParentSessionID : undefined
+
+    if (validParentSessionID && parentRecord) {
+      depth = explicitDepth !== undefined ? explicitDepth : parentRecord.depth + 1
       isRootCoordinator = false
     } else {
-      // No parent session: if it's a heidi/orchestrator agent or has no parent, it's root depth 0
-      if (isHeidiAgent(effectiveAgent) || !isSpecialistAgent(effectiveAgent)) {
-        depth = 0
-        isRootCoordinator = true
-      } else {
-        // If a specialist agent is launched with no parent registered, it is a subagent at depth 1
-        depth = explicitDepth !== undefined ? explicitDepth : 1
-        isRootCoordinator = false
-      }
+      // No valid registered parent session: root session is ALWAYS depth 0
+      depth = explicitDepth !== undefined ? explicitDepth : 0
+      isRootCoordinator = true
     }
 
-    // Never demote a root coordinator to depth > 0 due to subsequent events unless explicitly given a parentSessionID
+    // Never demote a root coordinator to depth > 0 due to subsequent events unless explicitly given a valid parentSessionID
     if (existing) {
-      // Preserve root coordinator if no valid parent session ID is introduced
-      const mergedParent = effectiveParentSessionID ?? existing.parentSessionID
+      const mergedParent = validParentSessionID ?? existing.parentSessionID
+      const mergedParentRecord = mergedParent ? this.sessions.get(mergedParent) : undefined
       const mergedAgent = (agent && agent !== "unknown" ? agent : existing.agent) ?? effectiveAgent
-      const mergedDepth = mergedParent
-        ? (explicitDepth !== undefined ? explicitDepth : (this.sessions.get(mergedParent)?.depth ?? 0) + 1)
-        : (isHeidiAgent(mergedAgent) ? 0 : (existing.depth))
+      const isRoot = !mergedParent || existing.isRootCoordinator
+      const mergedDepth = isRoot
+        ? 0
+        : (explicitDepth !== undefined ? explicitDepth : (mergedParentRecord ? mergedParentRecord.depth + 1 : existing.depth))
 
       const updated: SessionAncestryRecord = {
         sessionID,
-        parentSessionID: mergedParent,
+        parentSessionID: isRoot ? undefined : mergedParent,
         agent: mergedAgent,
         depth: mergedDepth,
-        isRootCoordinator: !mergedParent && isHeidiAgent(mergedAgent),
+        isRootCoordinator: isRoot,
         createdAt: existing.createdAt,
         updatedAt: now,
       }
@@ -93,7 +93,7 @@ export class SessionAncestryRegistry {
 
     const record: SessionAncestryRecord = {
       sessionID,
-      parentSessionID: effectiveParentSessionID,
+      parentSessionID: validParentSessionID,
       agent: effectiveAgent,
       depth,
       isRootCoordinator,

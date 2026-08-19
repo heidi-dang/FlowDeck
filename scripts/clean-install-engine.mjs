@@ -1055,8 +1055,8 @@ function verifyOpenCodeRuntime() {
 
   const opencodePath = findOpenCode()
   if (!opencodePath) {
-    warn("  opencode not found in PATH")
-    return { ok: false, reason: "opencode not found in PATH", skipped: false }
+    log("  ℹ opencode not found in PATH — skipping CLI agent list verification")
+    return { ok: true, skipped: true, reason: "opencode not found in PATH" }
   }
   log(`  OpenCode: ${opencodePath}`)
 
@@ -1352,7 +1352,7 @@ async function runCleanInstall(userOpts = {}) {
 
     // Stage 4: Remove
     stage(4, totalStages, "Remove existing FlowDeck installations")
-    if (opts.verifyOnly || opts.uninstallOnly) {
+    if (opts.verifyOnly) {
       log("  Skipping removal (verify-only mode)")
     } else {
       for (const scope of scopes) {

@@ -23,6 +23,11 @@ export type UIReasonCode =
   | "UNSUPPORTED_RESOLUTION"
   | "INCOMPLETE_FANOUT"
   | "COORDINATOR_IDLE"
+  | "COORDINATOR_IDLE_WHILE_CHILDREN_ACTIVE"
+  | "AWAIT_ALL_BEFORE_CONVERGENCE"
+  | "MISSED_READY_CHILD_RESULT"
+  | "REPEATED_GUARD_BLOCK"
+  | "STRATEGY_NOT_INVALIDATED"
   | "READY_NOT_REVIEWED"
   | "LOOP_GUARD_FLOOD"
   | "REPLAY_SAFE"
@@ -73,6 +78,11 @@ export const UI_SCORE_CAPS: Record<string, number> = {
   NON_CONVERGENCE: 35,
   INCOMPLETE_FANOUT: 45,
   LOOP_GUARD_FLOOD: 55,
+  COORDINATOR_IDLE_WHILE_CHILDREN_ACTIVE: 40,
+  AWAIT_ALL_BEFORE_CONVERGENCE: 45,
+  MISSED_READY_CHILD_RESULT: 45,
+  REPEATED_GUARD_BLOCK: 50,
+  STRATEGY_NOT_INVALIDATED: 50,
 }
 
 const REASON_DETAILS: Record<string, string> = {
@@ -86,6 +96,13 @@ const REASON_DETAILS: Record<string, string> = {
   WATCHDOG_NAG_LOOP: "watchdog nag loop",
   NON_CONVERGENCE: "task did not converge",
   INCOMPLETE_FANOUT: "intended parallel fan-out incomplete",
+  COORDINATOR_IDLE: "root coordinator idle while children active",
+  COORDINATOR_IDLE_WHILE_CHILDREN_ACTIVE: "coordinator idle while children active",
+  AWAIT_ALL_BEFORE_CONVERGENCE: "await-all barrier blocked incremental integration before convergence",
+  MISSED_READY_CHILD_RESULT: "missed ready child result left unintegrated",
+  REPEATED_GUARD_BLOCK: "repeated guard blocks encountered",
+  STRATEGY_NOT_INVALIDATED: "strategy not invalidated upon contract change",
+  READY_NOT_REVIEWED: "ready result was not reviewed",
   LOOP_GUARD_FLOOD: "repeated recoverable blocks",
   REPLAY_SAFE: "provider replay sanitation safe",
   COMPLETION_EVIDENCE_OK: "completion evidence gate passed",

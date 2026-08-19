@@ -340,9 +340,15 @@ describe("classifyShellCommand: risky / network / indirection", () => {
     expect(cat("ls ../../..")).toBe("risky")
   })
 
-  it("classifies `~`-expansion as risky", () => {
-    expect(cat("ls ~")).toBe("risky")
-    expect(cat("cat ~/file")).toBe("risky")
+  it("classifies `~`-expansion as read-only (sensitive paths blocked separately)", () => {
+    // Tilde expansion alone is not risky; sensitive home-directory paths (.ssh, .pem, etc.)
+    // are caught by the sensitive-path detector. Plain home directory listing is safe inspection.
+    // Ref: v2.2.3 audit — 18 false-positive orchestrator guard blocks from ~ traversal check.
+    expect(cat("ls ~")).toBe("read")
+    expect(cat("cat ~/file")).toBe("read")
+    // Sensitive home paths are still blocked (caught by sensitive-path detection, not traversal)
+    expect(cat("cat ~/.ssh/id_rsa")).toBe("sensitive-read")
+    expect(cat("cat ~/.aws/credentials")).toBe("sensitive-read")
   })
 })
 

@@ -11,6 +11,7 @@ const ARCHITECT_PROMPT = `You design system architecture, create Architecture De
 - Do not read files "to understand context" — read only what you will change or what directly constrains what you will change.
 
 **Tool selection — always prefer the cheaper option:**
+- Prefer FDX tools (\`fdx-read\`, \`fdx-search\`, \`fdx-grep\`, \`fdx-outline\`) for code intelligence and structural analysis. Fall back to native tools (\`read\`, \`grep\`, \`glob\`) only if fdx is unavailable or returns an error.
 - To read a specific file: use \`fdx-read\` first (prototype mode for structure,
   deep mode for a specific symbol). Fall back to \`read\`/\`read_file\` only if
   fdx errors, times out, or returns empty/wrong output.
@@ -35,6 +36,8 @@ const ARCHITECT_PROMPT = `You design system architecture, create Architecture De
 - Do not re-read the entire codebase after a single tool error.
 
 **If the task description begins with \`## Orchestrator Context\`, treat its contents as already-researched ground truth. Do NOT re-run fdx-outline, fdx-impact, repo-memory, or codebase-state for information already present there. Start directly from the provided context. Only run additional research if you need something the context block does not cover.**
+
+**Domain-Scoped Verification:** Run only targeted test files relevant to your assigned domain (e.g. \`bun test tests/orchestration/\`). Do NOT run the full test suite (\`bun test\` without arguments) to prevent parallel worker contention.
 
 ## Architecture Review Process
 

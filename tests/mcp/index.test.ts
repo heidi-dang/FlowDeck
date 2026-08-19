@@ -86,7 +86,10 @@ describe("createFlowDeckMcps", () => {
     expect(mcp.enabled).toBe(true)
   })
 
-  it("includes sequential-thinking with exact command array", () => {
+  it("includes sequential-thinking when FLOWDECK_ENABLE_SEQUENTIAL_THINKING=true", () => {
+    // sequentialThinking is opt-in: disabled by default to reduce token overhead.
+    // Ref: v2.2.3 audit — 0 calls across 830 model turns; ~1,500 token schema overhead/turn.
+    process.env.FLOWDECK_ENABLE_SEQUENTIAL_THINKING = "true"
     const mcps = createFlowDeckMcps()
     const mcp = expectLocal(mcps.sequentialThinking)
     expect(mcp.command).toEqual([
@@ -95,6 +98,13 @@ describe("createFlowDeckMcps", () => {
       "@modelcontextprotocol/server-sequential-thinking",
     ])
     expect(mcp.enabled).toBe(true)
+    delete process.env.FLOWDECK_ENABLE_SEQUENTIAL_THINKING
+  })
+
+  it("excludes sequential-thinking by default (opt-in only)", () => {
+    delete process.env.FLOWDECK_ENABLE_SEQUENTIAL_THINKING
+    const mcps = createFlowDeckMcps()
+    expect(mcps.sequentialThinking).toBeUndefined()
   })
 
   it("includes magic with exact command array", () => {
@@ -149,7 +159,8 @@ describe("createFlowDeckMcps", () => {
     const mcps = createFlowDeckMcps()
     expect(mcps.memory).toBeUndefined()
     expect(mcps.playwright).toBeUndefined()
-    expect(mcps.sequentialThinking).toBeDefined()
+    // sequentialThinking is opt-in; it is NOT present by default even when not disabled
+    expect(mcps.sequentialThinking).toBeUndefined()
   })
 
   it("disables all new MCPs when listed in FLOWDECK_DISABLE_MCP", () => {
@@ -224,7 +235,8 @@ describe("createFlowDeckMcps", () => {
     process.env.FLOWDECK_DISABLE_MCP = "memory"
     const mcps = createFlowDeckMcps()
     expect(mcps.memory).toBeUndefined()
-    expect(mcps.sequentialThinking).toBeDefined()
+    // sequentialThinking is opt-in by default; not present unless FLOWDECK_ENABLE_SEQUENTIAL_THINKING=true
+    expect(mcps.sequentialThinking).toBeUndefined()
     expect(mcps.magic).toBeDefined()
   })
 })
@@ -316,10 +328,12 @@ describe("buildFlowDeckMcpsWithMeta", () => {
     expect(codegraph?.unavailableReason).toMatch(/codegraph binary/)
   })
 
-  it("preserves camelCase runtime keys (sequentialThinking, tokenOptimizer)", () => {
+  it("preserves camelCase runtime keys (sequentialThinking when opted-in, tokenOptimizer)", () => {
+    process.env.FLOWDECK_ENABLE_SEQUENTIAL_THINKING = "true"
     const { mcps } = buildFlowDeckMcpsWithMeta()
     expect(mcps.sequentialThinking).toBeDefined()
     expect(mcps.tokenOptimizer).toBeDefined()
+    delete process.env.FLOWDECK_ENABLE_SEQUENTIAL_THINKING
   })
 })
 

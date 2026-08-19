@@ -18,6 +18,9 @@ export type ExecutionPhase =
 
 export type VerificationStatus = "pending" | "running" | "passed" | "failed"
 
+/** Default maximum model turns allowed per child specialist session. */
+export const DEFAULT_MAX_CHILD_TURNS = 60
+
 export interface HeidiTaskStateData {
   taskId: string
   goal: string
@@ -38,6 +41,18 @@ export interface HeidiTaskStateData {
   verificationState: VerificationStatus
   /** What the next action should be (compact directive). */
   nextAction?: string
+  /**
+   * Per-child turn budget: maps child sessionID → turn count.
+   * Coordinator checks this on each child heartbeat/completion.
+   * When count >= maxChildTurns, coordinator cancels the child and records
+   * the partial result to prevent runaway token spend.
+   */
+  childTurnCounts: Record<string, number>
+  /**
+   * Maximum model turns allowed per child delegation.
+   * Defaults to DEFAULT_MAX_CHILD_TURNS. Set lower for focused tasks.
+   */
+  maxChildTurns: number
   createdAt: number
   updatedAt: number
 }
@@ -46,7 +61,7 @@ export interface HeidiTaskStateData {
 export class HeidiTaskState {
   private data: HeidiTaskStateData
 
-  constructor(taskId: string, goal: string, executionClass: string) {
+  constructor(taskId: string, goal: string, executionClass: string, maxChildTurns?: number) {
     const now = Date.now()
     this.data = {
       taskId,
@@ -60,6 +75,8 @@ export class HeidiTaskState {
       failedHypotheses: [],
       blockers: [],
       verificationState: "pending",
+      childTurnCounts: {},
+      maxChildTurns: maxChildTurns ?? DEFAULT_MAX_CHILD_TURNS,
       createdAt: now,
       updatedAt: now,
     }
@@ -99,6 +116,27 @@ export class HeidiTaskState {
   removePendingChild(childId: string): void {
     this.data.pendingChildren = this.data.pendingChildren.filter(c => c !== childId)
     this.data.updatedAt = Date.now()
+  }
+
+  /**
+   * Record a model turn for a child session.
+   * Returns true when the child has exceeded maxChildTurns and should be cancelled.
+   */
+  incrementChildTurn(childSessionId: string): boolean {
+    const count = (this.data.childTurnCounts[childSessionId] ?? 0) + 1
+    this.data.childTurnCounts[childSessionId] = count
+    this.data.updatedAt = Date.now()
+    return count >= this.data.maxChildTurns
+  }
+
+  /** Returns the current turn count for a child, or 0 if unknown. */
+  getChildTurnCount(childSessionId: string): number {
+    return this.data.childTurnCounts[childSessionId] ?? 0
+  }
+
+  /** Check if a child has exceeded the per-child turn budget. */
+  isChildOverBudget(childSessionId: string): boolean {
+    return (this.data.childTurnCounts[childSessionId] ?? 0) >= this.data.maxChildTurns
   }
 
   addFailedHypothesis(hypothesis: string): void {
@@ -169,8 +207,8 @@ export class HeidiTaskState {
 // Process-level state registry
 const _registry = new Map<string, HeidiTaskState>()
 
-export function createTaskState(taskId: string, goal: string, executionClass: string): HeidiTaskState {
-  const state = new HeidiTaskState(taskId, goal, executionClass)
+export function createTaskState(taskId: string, goal: string, executionClass: string, maxChildTurns?: number): HeidiTaskState {
+  const state = new HeidiTaskState(taskId, goal, executionClass, maxChildTurns)
   _registry.set(taskId, state)
   return state
 }

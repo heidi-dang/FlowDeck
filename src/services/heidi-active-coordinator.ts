@@ -108,6 +108,9 @@ export interface ActiveCoordinatorMetrics {
   pollModelTurns: number
   childResultReadyToReviewMs: number
   childResultReadyToIntegrateMs: number
+  firstChildReadyAt: number
+  firstChildIntegratedAt: number
+  lastChildCompletedAt: number
   integrationOverlapMs: number
   awaitAllBarrierMs: number
   ownershipConflicts: number
@@ -150,6 +153,12 @@ export class HeidiActiveCoordinator {
   private fanoutStartAt = 0
   private lastReconcileAt = 0
   private readonly relaunchWindowMs: number
+  private firstChildReadyAt = 0
+  private firstChildIntegratedAt = 0
+  private lastChildCompletedAt = 0
+  private lastDirectiveKind?: CoordinatorDirectiveKind
+  private lastDirectiveTimestamp = 0
+  private barrierStartedAt = 0
 
   constructor(input: {
     parentSessionId: string
@@ -179,6 +188,9 @@ export class HeidiActiveCoordinator {
       pollModelTurns: 0,
       childResultReadyToReviewMs: 0,
       childResultReadyToIntegrateMs: 0,
+      firstChildReadyAt: 0,
+      firstChildIntegratedAt: 0,
+      lastChildCompletedAt: 0,
       integrationOverlapMs: 0,
       awaitAllBarrierMs: 0,
       ownershipConflicts: 0,
@@ -328,6 +340,10 @@ export class HeidiActiveCoordinator {
   /** A completed child with a valid result becomes READY and is enqueued. */
   markResultReady(nodeId: string, completedAt?: number): void {
     const now = completedAt ?? Date.now()
+    if (this.metrics.firstChildReadyAt === 0) {
+      this.metrics.firstChildReadyAt = now
+    }
+    this.metrics.lastChildCompletedAt = Math.max(this.metrics.lastChildCompletedAt, now)
     const existing = this.integration.get(nodeId) ?? { nodeId, status: "pending" }
     if (existing.status === "ready" || existing.status === "integrated" || existing.status === "reviewing") return
     this.integration.set(nodeId, { ...existing, status: "ready", resultReadyAt: existing.resultReadyAt ?? now })
@@ -437,9 +453,13 @@ export class HeidiActiveCoordinator {
     this.integration.set(nodeId, { ...st, status: "focused_verification" })
   }
 
-  markIntegrated(nodeId: string): void {
+  markIntegrated(nodeId: string, integratedAt?: number): void {
     const st = this.integration.get(nodeId) ?? { nodeId, status: "focused_verification" }
-    this.integration.set(nodeId, { ...st, status: "integrated", integratedAt: Date.now() })
+    const now = integratedAt ?? st.resultReadyAt ?? Date.now()
+    if (this.metrics.firstChildIntegratedAt === 0) {
+      this.metrics.firstChildIntegratedAt = now
+    }
+    this.integration.set(nodeId, { ...st, status: "integrated", integratedAt: now })
     const idx = this.readyQueue.indexOf(nodeId)
     if (idx >= 0) this.readyQueue.splice(idx, 1)
     this.checkConvergence()
@@ -521,6 +541,21 @@ export class HeidiActiveCoordinator {
   }
   pollModelTurns(): number {
     return this.metrics.pollModelTurns
+  }
+
+  recordCoordinatorWork(ms: number): void {
+    this.metrics.coordinatorUsefulWorkMs += ms
+    this.updateWorkRatio()
+  }
+
+  recordCoordinatorIdle(ms: number): void {
+    this.metrics.coordinatorIdleWhileChildrenActiveMs += ms
+    this.updateWorkRatio()
+  }
+
+  private updateWorkRatio(): void {
+    const total = this.metrics.coordinatorUsefulWorkMs + this.metrics.coordinatorIdleWhileChildrenActiveMs
+    this.metrics.coordinatorUsefulWorkRatio = total > 0 ? this.metrics.coordinatorUsefulWorkMs / total : 0
   }
 
   metricsSnapshot(): ActiveCoordinatorMetrics {

@@ -274,7 +274,7 @@ describe("packed-install doctor", () => {
       : (typeof (process as any).versions?.bun === "string" ? (process as any).execPath : "bun")
 
     const nodePath = [join(dir, "node_modules"), join(PKG_ROOT, "node_modules")].join(process.platform === "win32" ? ";" : ":")
-    const result = spawnSync("bun", [join(dir, "src", "doctor", "cli.mjs"), "--json"], {
+    const result = spawnSync(bunBin, [join(dir, "src", "doctor", "cli.mjs"), "--json"], {
       cwd: dir,
       encoding: "utf-8",
       env: { ...process.env, FLOWDECK_BUN_BIN: bunBin, NODE_PATH: nodePath },

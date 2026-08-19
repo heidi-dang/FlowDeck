@@ -206,15 +206,32 @@ export function buildFlowDeckMcpsWithMeta(): {
   // npx-backed local MCPs. The disable-key in FLOWDECK_DISABLE_MCP is the
   // kebab-case form; the runtime MCP key (consumed by tests + downstream code)
   // is camelCase to match the historical API.
-  const npxGated: Array<{ name: McpName; key: string; disableKey: string; command: string[] }> = [
+  // sequentialThinking is opt-in: it duplicates native CoT reasoning and adds
+  // ~1,500 token schema overhead every turn without providing unique capability
+  // (observed: 0 calls across 830 total model turns in v2.2.3 audit).
+  // Enable with: FLOWDECK_ENABLE_SEQUENTIAL_THINKING=true
+  const sequentialThinkingEnabled = process.env.FLOWDECK_ENABLE_SEQUENTIAL_THINKING === "true"
+
+  const npxGated: Array<{ name: McpName; key: string; disableKey: string; command: string[]; optIn?: boolean }> = [
     { name: "memory", key: "memory", disableKey: "memory", command: ["npx", "-y", "@modelcontextprotocol/server-memory"] },
-    { name: "sequentialThinking", key: "sequentialThinking", disableKey: "sequential-thinking", command: ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"] },
+    { name: "sequentialThinking", key: "sequentialThinking", disableKey: "sequential-thinking", command: ["npx", "-y", "@modelcontextprotocol/server-sequential-thinking"], optIn: !sequentialThinkingEnabled },
     { name: "magic", key: "magic", disableKey: "magic", command: ["npx", "-y", "@magicuidesign/mcp@latest"] },
     { name: "playwright", key: "playwright", disableKey: "playwright", command: ["npx", "-y", "@playwright/mcp", "--browser", "chrome"] },
     { name: "tokenOptimizer", key: "tokenOptimizer", disableKey: "token-optimizer", command: ["npx", "-y", "token-optimizer-mcp"] },
   ]
 
   for (const mcp of npxGated) {
+    if (mcp.optIn) {
+      // Opt-in MCP: skip unless explicitly enabled
+      availability.push({
+        name: mcp.name,
+        enabled: false,
+        available: false,
+        unavailableReason: "opt-in only; enable with the corresponding FLOWDECK_ENABLE_* env var",
+        type: "local",
+      })
+      continue
+    }
     if (disabled.has(mcp.disableKey)) {
       availability.push({
         name: mcp.name,

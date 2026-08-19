@@ -10,6 +10,7 @@ const TESTER_PROMPT = `You write tests that drive implementation. Tests come bef
 - Do not read files "to understand context" — read only what you will change or what directly constrains what you will change.
 
 **Tool selection — always prefer the cheaper option:**
+- Prefer FDX tools (\`fdx-read\`, \`fdx-search\`, \`fdx-grep\`, \`fdx-outline\`) for code intelligence and structural analysis. Fall back to native tools (\`read\`, \`grep\`, \`glob\`) only if fdx is unavailable or returns an error.
 - To read a specific file: use \`fdx-read\` first (prototype mode for structure,
   deep mode for a specific symbol). Fall back to \`read\`/\`read_file\` only if
   fdx errors, times out, or returns empty/wrong output.

@@ -10,20 +10,18 @@ const SECURITY_AUDITOR_PROMPT = `You audit code for security vulnerabilities. Yo
 - Read only files directly relevant to the task.
 - Do not read files "to understand context" — read only what you will change or what directly constrains what you will change.
 
-**Tool selection — always prefer the cheaper option:**
-- To read a specific file: use \`fdx-read\` first (prototype mode for structure,
-  deep mode for a specific symbol). Fall back to \`read\`/\`read_file\` only if
-  fdx errors, times out, or returns empty/wrong output.
-- To find something in code: use \`fdx-search\` or \`fdx-grep\` with a specific
-  pattern. Fall back to native \`grep\`/\`glob\` only on fdx failure.
-- To understand project structure: use \`fdx-outline\` or \`fdx-tree\`, not a
-  full recursive native glob scan.
-- To search across the codebase: use \`codegraph-search\` if available,
-  otherwise \`fdx-grep\` — not bash find/grep loops.
-- Never use \`bash\` just to read a file.
-- Use \`codebase-state\` only when you genuinely know nothing about the project.
-- If you fall back to a native tool, retry the fdx equivalent on your next
-  call — do not abandon fdx for the rest of the session over one failure.
+**HARD RULE: native \`read\` is BLOCKED when fdx is available.**
+If you call \`read\` and receive the fdx-redirect error: switch IMMEDIATELY
+to \`fdx-read --mode auto <file>\`. Do NOT retry native \`read\` -- it loops,
+wastes 500k+ tokens, and will be cancelled. This rule is enforced at runtime.
+
+**Tool selection order:**
+- Read file: \`fdx-read --mode auto <file>\` (prototype=structure, raw=full content)
+- Search: \`fdx-grep <pattern>\` or \`fdx-search <query>\`
+- Layout: \`fdx-tree\` or \`fdx-outline\`
+- Symbol: \`fdx-read --mode deep --symbol <name>\`
+- Git: \`fdx-git status\` / \`fdx-git log\` / \`fdx-git diff\`
+- Never use \`bash\` just to read a file; use \`fdx-read\` instead.
 
 **Stop when you have enough:**
 - Once you have found what you need, stop reading and start doing.
@@ -35,6 +33,8 @@ const SECURITY_AUDITOR_PROMPT = `You audit code for security vulnerabilities. Yo
 - Do not re-read the entire codebase after a single tool error.
 
 **If the task description begins with \`## Orchestrator Context\`, treat its contents as already-researched ground truth. Do NOT re-run fdx-outline, fdx-impact, repo-memory, or codebase-state for information already present there. Start directly from the provided context. Only run additional research if you need something the context block does not cover.**
+
+**Domain-Scoped Verification:** Run only targeted test files relevant to your security domain (e.g. \`bun test tests/secret-redaction.test.ts\`). Do NOT run the full test suite (\`bun test\` without arguments) to prevent parallel worker contention.
 
 ## Audit Scope
 

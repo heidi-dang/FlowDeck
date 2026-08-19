@@ -112,6 +112,7 @@ export const GIT_READONLY_SUBCOMMANDS = new Set([
   "status", "log", "diff", "show", "blame",
   "ls-files", "ls-tree", "rev-parse", "rev-list",
   "describe", "shortlog", "branch", "tag", "stash",
+  "remote", "config", "check-ref-format", "write-tree",
 ])
 
 export function validateGitPolicy(subcommand: string, args: string[] = []): void {
@@ -171,6 +172,29 @@ export function validateGitPolicy(subcommand: string, args: string[] = []): void
     const stashSub = args[0] ? args[0].trim() : ""
     if (stashSub !== "list" && stashSub !== "show") {
       throw new Error(`[FDX Git Policy] Stash operation "${stashSub || "default (push)"}" is prohibited. Only "stash list" and "stash show" are allowed under read-only policy.`)
+    }
+  }
+
+  if (sub === "remote") {
+    const mutatingRemoteSub = new Set(["add", "rm", "remove", "set-url", "set-head", "set-branches", "rename", "prune", "update"])
+    for (const arg of args) {
+      if (mutatingRemoteSub.has(arg.toLowerCase())) {
+        throw new Error(`[FDX Git Policy] Mutating remote operation "${arg}" is prohibited under read-only policy.`)
+      }
+    }
+  }
+
+  if (sub === "config") {
+    const mutatingConfigFlags = new Set(["--set", "--set-all", "--add", "--unset", "--unset-all", "--remove-section", "--rename-section"])
+    for (const arg of args) {
+      if (mutatingConfigFlags.has(arg.toLowerCase())) {
+        throw new Error(`[FDX Git Policy] Mutating config flag "${arg}" is prohibited under read-only policy.`)
+      }
+    }
+    const positionals = args.filter(a => !a.startsWith("-"))
+    const hasGetter = args.some(a => ["--get", "--get-all", "--get-regexp", "--list", "-l"].includes(a.toLowerCase()))
+    if (positionals.length >= 2 && !hasGetter) {
+      throw new Error(`[FDX Git Policy] Mutating config assignment attempt "${positionals.join(" ")}" is prohibited under read-only policy.`)
     }
   }
 }
@@ -272,12 +296,13 @@ function fdxBin(): string {
 const FDX_TIMEOUT_MS = 30_000
 const FDX_MAX_BUFFER = 50 * 1024 * 1024
 
-export function runFdx(args: string[]): string {
+export function runFdx(args: string[], cwd?: string): string {
   const bin = fdxBin()
   validateExecutable(bin)
   validateArgs(args)
   try {
     return execFileSync(bin, args, {
+      cwd: cwd || activeProjectDir || process.cwd(),
       encoding: "utf-8",
       timeout: FDX_TIMEOUT_MS,
       maxBuffer: FDX_MAX_BUFFER,
@@ -298,10 +323,11 @@ export function runFdx(args: string[]): string {
 
 // ─── Native TS Fallbacks ──────────────────────────────────────────────────
 
-export function nativeReadFallback(file: string, limit?: number, offset?: number): string {
+export function nativeReadFallback(file: string, limit?: number, offset?: number, cwd?: string): string {
   try {
-    if (!existsSync(file)) return `[FDX Fallback] Error: File not found "${file}"`
-    const content = readFileSync(file, "utf-8")
+    const resolvedPath = resolve(cwd || activeProjectDir || process.cwd(), file)
+    if (!existsSync(resolvedPath)) return `[FDX Fallback] Error: File not found "${file}"`
+    const content = readFileSync(resolvedPath, "utf-8")
     const lines = content.split("\n")
     const start = offset && offset > 0 ? offset - 1 : 0
     const end = limit && limit > 0 ? start + limit : lines.length
@@ -343,9 +369,9 @@ function loadGitignorePatterns(root: string): (path: string) => boolean {
 /** Directories always excluded from search fallbacks. */
 const ALWAYS_EXCLUDED = ["node_modules", ".git", "dist", "target", ".next", ".cache"]
 
-export function nativeSearchFallback(query: string, searchPath: string = "."): string {
+export function nativeSearchFallback(query: string, searchPath: string = ".", cwd?: string): string {
   try {
-    const root = resolve(searchPath)
+    const root = resolve(cwd || activeProjectDir || process.cwd(), searchPath)
     const isIgnored = loadGitignorePatterns(root)
     const results: string[] = []
 
@@ -386,20 +412,20 @@ export function nativeSearchFallback(query: string, searchPath: string = "."): s
   }
 }
 
-export function nativeGitFallback(args: string[]): string {
+export function nativeGitFallback(args: string[], cwd?: string): string {
   const subcommand = args[0]
   try {
     validateGitPolicy(subcommand, args.slice(1))
     validateArgs(args)
-    return execFileSync("git", args, { encoding: "utf-8", timeout: 15000, shell: false })
+    return execFileSync("git", args, { encoding: "utf-8", timeout: 15000, shell: false, cwd: cwd || activeProjectDir || process.cwd() })
   } catch (err: any) {
     return `[FDX Git Fallback Output]\n${err.stdout || err.stderr || err.message}`
   }
 }
 
-export function nativeLsFallback(targetPath: string = "."): string {
+export function nativeLsFallback(targetPath: string = ".", cwd?: string): string {
   try {
-    const p = resolve(targetPath)
+    const p = resolve(cwd || activeProjectDir || process.cwd(), targetPath)
     if (!existsSync(p)) return `[FDX Fallback] Path not found: ${targetPath}`
     const items = readdirSync(p)
     return `[FDX Native Fallback: ${targetPath}]\n` + items.join("\n")

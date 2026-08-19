@@ -593,10 +593,10 @@ export async function runDoctorChecks(directory) {
       writeFileSync(join(dirAdv, ".flowdeck.json"), '{"governance":{"validator":{"mode":"advisory"}}}');
       writeFileSync(join(dirStrict, ".flowdeck.json"), '{"governance":{"validator":{"mode":"strict"}}}');
 
-      // Use a controlled dangerous tool to test all three modes
-      const modeOff = distMod.evaluateGovernanceToolCheck({ directory: dirOff, agent: "heidi", tool: "bash" })
-      const modeAdv = distMod.evaluateGovernanceToolCheck({ directory: dirAdv, agent: "heidi", tool: "bash" })
-      const modeStrict = distMod.evaluateGovernanceToolCheck({ directory: dirStrict, agent: "heidi", tool: "bash" })
+      // Use a controlled restricted agent+tool pair (planner cannot execute bash) to test all three modes
+      const modeOff = distMod.evaluateGovernanceToolCheck({ directory: dirOff, agent: "planner", tool: "bash" })
+      const modeAdv = distMod.evaluateGovernanceToolCheck({ directory: dirAdv, agent: "planner", tool: "bash" })
+      const modeStrict = distMod.evaluateGovernanceToolCheck({ directory: dirStrict, agent: "planner", tool: "bash" })
 
       try { rmSync(testDir, { recursive: true, force: true }) } catch {}
 

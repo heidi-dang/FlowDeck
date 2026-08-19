@@ -123,11 +123,17 @@ describe("Phase 32 — FDX Argument Validation & Git Read-Only Policy", () => {
       const prohibited = [
         "reset", "clean", "checkout", "switch", "restore",
         "commit", "merge", "rebase", "push", "pull", "fetch",
-        "remote", "config",
       ]
       for (const cmd of prohibited) {
         expect(() => validateGitPolicy(cmd)).toThrow(/not permitted under read-only policy/)
       }
+    })
+
+    it("rejects mutating operations for remote and config", () => {
+      expect(() => validateGitPolicy("remote", ["add", "origin", "url"])).toThrow(/prohibited/i)
+      expect(() => validateGitPolicy("remote", ["set-url", "origin", "url"])).toThrow(/prohibited/i)
+      expect(() => validateGitPolicy("config", ["--set", "key", "val"])).toThrow(/prohibited/i)
+      expect(() => validateGitPolicy("config", ["key", "val"])).toThrow(/prohibited/i)
     })
 
     it("rejects mutating options for branch, tag, and stash", () => {
