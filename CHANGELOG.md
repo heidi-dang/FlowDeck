@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.2.2] - 2026-08-19
+### Fixed — Inactive-Session Watchdog & Incident Single-Flight
+- **Authoritative Watchdog Eligibility Predicate (`isWatchdogEligible`)**: Fixed `updateWatchdogState` defaulting `hasUnresolvedTask` to `true` upon session observation. `isWatchdogEligible(state)` now strictly requires an active, non-terminal session with genuine unresolved executable work, rejecting idle, completed, cancelled, failed-final, and superseded sessions.
+- **Terminal Lifecycle Cleanup**: `session.completed` and `session.error` events deterministically set `hasUnresolvedTask: false`, `isActiveSession: false`, `isTerminalTask: true`, and `isPendingContinuation: false`, preventing completed sessions from ever becoming watchdog-eligible.
+- **Watchdog Incident Single-Flight & Deduplication**: Added `inFlight: boolean` state to `WatchdogIncidentState`. Repeated timer ticks while a directive is in flight suppress duplicate prompts, eliminating nag-loop flooding.
+- **Bounded Legitimate Active Stall Recovery**: Legitimate active stalls continue to receive single-flight bounded recovery (1 first directive, <=1 alternate directive, transitioning to `STALLED_UNRECOVERED` without infinite prompts).
+- **v2.2.1 Shell Failure & Runtime Integrity Preserved**: Exact exit codes, in-place WebUI updates, and Runtime Integrity scoring remain fully operational.
+
+### Verification
+- Full test suite: 389 pass / 0 fail (48 test files); weighted line coverage 90.0% (>= 80% threshold).
+- FDX native parity PASS; Rust gates PASS; Packaging/CLI and installer gates PASS; Pipeline completion PASS.
+- Production Gates and Orchestration Validation green on the exact release SHA.
+
 ## [2.2.1] - 2026-08-19
 ### Fixed — Shell Failure Propagation & Operation Lifecycle
 - **Non-Zero Shell Exit Status & Exit Code Preservation**: Fixed `shell-executor.ts` `runBash()` swallowing non-zero process exits; exact exit codes and redacted `stderr` metadata are now preserved in `ShellExecutionResult`.
