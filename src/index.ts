@@ -158,6 +158,13 @@ import { classifyFastLane, rewriteShellCommand, rewriteLsCommand } from "./servi
 import { isConfirmedSourceMutation } from "./services/semantic-mutation"
 import { getCallTimer, releaseCallTimer } from "./services/real-time-instrument"
 import { executeShellCommand } from "./services/shell-executor"
+import {
+  normalizeShellFailure,
+  describeShellFailure,
+  describeShellFailureTitle,
+  ShellFailureTracker,
+  type ShellFailureInfo,
+} from "./services/shell-failure"
 import { buildScoreAnnotation } from "./services/visible-score-surface"
 import { stripScoreAnnotations, assertNoScoreLeak } from "./services/score-leak-guard"
 import { getScoreboardFor, clearScoreboardFor } from "./services/runtime-score-stream"
@@ -224,6 +231,9 @@ const pendingChildSlots = new Map<string, ChildTaskCorrelation[]>()
 const sessionLoopIncidents = new Map<string, Set<string>>()
 const sessionLeaseHolders = new Map<string, string>()
 const sessionParallelWakeActive = new Set<string>()
+// Bounded, per-session dedup of shell tool failures (exactly one recovery
+// incident per failure fingerprint; never a repeat flood).
+const shellFailureTracker = new ShellFailureTracker()
 
 function enqueuePendingSlot(
   parentSessionID: string,
@@ -518,8 +528,23 @@ const plugin: Plugin = async ({ directory, client }) => {
       description: tool.schema.string().optional(),
       cwd: tool.schema.string().optional().describe("Working directory (defaults to repo root)."),
     },
-    async execute(args: any) {
-      const r = executeShellCommand(String(args.command ?? ""), { cwd: args.cwd ? String(args.cwd) : directory })
+    async execute(args: any, context: any) {
+      const command = String(args.command ?? "")
+      const r = executeShellCommand(command, { cwd: args.cwd ? String(args.cwd) : directory })
+      // A non-zero process exit must never be normalized to a successful tool
+      // completion. Surface the failure with the exact exit code and redacted
+      // stderr so the after-hook, the coordinator, and the visible operation
+      // state all converge on the same failed event.
+      if (r.status === "failed") {
+        const info = normalizeShellFailure(r, {
+          command,
+          sessionID: context?.sessionID ?? "",
+          callID: context?.messageID ?? "",
+          toolName: "shell",
+          repoGeneration: repoIdOf(directory),
+        })
+        return { output: describeShellFailure(info), metadata: { fdShell: info as unknown as Record<string, unknown> } }
+      }
       return r.output
     },
   })
@@ -530,8 +555,19 @@ const plugin: Plugin = async ({ directory, client }) => {
       description: tool.schema.string().optional(),
       cwd: tool.schema.string().optional(),
     },
-    async execute(args: any) {
-      const r = executeShellCommand(String(args.command ?? ""), { cwd: args.cwd ? String(args.cwd) : directory })
+    async execute(args: any, context: any) {
+      const command = String(args.command ?? "")
+      const r = executeShellCommand(command, { cwd: args.cwd ? String(args.cwd) : directory })
+      if (r.status === "failed") {
+        const info = normalizeShellFailure(r, {
+          command,
+          sessionID: context?.sessionID ?? "",
+          callID: context?.messageID ?? "",
+          toolName: "bash",
+          repoGeneration: repoIdOf(directory),
+        })
+        return { output: describeShellFailure(info), metadata: { fdShell: info as unknown as Record<string, unknown> } }
+      }
       return r.output
     },
   })
@@ -726,6 +762,37 @@ const plugin: Plugin = async ({ directory, client }) => {
     appLog(`[orchestration] Production orchestration runtime initialization skipped: ${err instanceof Error ? err.message : String(err)}`, "warn")
   }
 
+  /**
+   * Bounded, deduplicated recovery for a failed tool execution.
+   * RecoveryCoordinator owns the first correction: a single continuation is
+   * requested once per failure fingerprint per session. Repeats are not new
+   * incidents (tracked), and preflight revalidation suppresses the prompt if
+   * the session is already producing, pending a tool, or has newer user input.
+   * The directive carries only safe operational facts — no hidden reasoning.
+   */
+  const requestToolFailureRecovery = (
+    sessionID: string,
+    info: ShellFailureInfo,
+    decision: { incidentCreated: boolean; repeatCount: number },
+  ): void => {
+    if (!sessionID || !decision.incidentCreated) return
+    const wState = getWatchdogState(sessionID)
+    if (wState?.isPendingProvider || wState?.isPendingTool || wState?.isPendingChild || wState?.isPendingContinuation) return
+    const directive = [
+      info.toolName + " command failed with exit code " + info.exitCode + ".",
+      "Do not repeat the same command unchanged.",
+      "Inspect the reported error and choose a valid alternative.",
+    ].join(" ")
+    recoveryCoordinator.requestContinuation({
+      sessionID,
+      source: "semantic_watchdog",
+      promptText: directive,
+      client,
+      appLog,
+      handleEvent,
+      getSessionState: buildSessionStateCheck(sessionID),
+    })
+  }
   return {
     config: async (cfg: Record<string, unknown>) => {
       if (!(cfg as { default_agent?: string }).default_agent) {
@@ -1679,6 +1746,11 @@ const plugin: Plugin = async ({ directory, client }) => {
       const callID = toolInput.callID ?? ""
       const agent = sessionCallerAgents.get(sessionID) ?? toolInput.agent ?? "unknown"
       const rawArgs = toolOutput?.args ?? toolInput?.args ?? {}
+      // Detect a FlowDeck-owned shell/bash execution that exited non-zero. The
+      // tool execute() returns { fdShell } metadata; the after-hook is the single
+      // place where it is correlated to the session and turned into a failed
+      // operation (score, loop-guard record, recovery incident, visible state).
+      const shellFd: ShellFailureInfo | undefined = (toolOutput as any)?.metadata?.fdShell
       // Round-2: resume real latency measurement; "tool-runtime" spans the actual
       // tool execution between the before-hook and this after-hook.
       const afterTiming = getCallTimer(sessionID || "no-session", callID || "no-call", toolName || "no-tool")
@@ -1731,19 +1803,29 @@ const plugin: Plugin = async ({ directory, client }) => {
         filePath: rawArgs.file as string | undefined,
       })
 
+      // A non-zero shell execution is recorded as an error so the Loop Guard
+      // treats a repeated unchanged command as a repeat (same tool + same
+      // effective command + same repo generation + same failure class), never as
+      // fresh progress.
+      const loopRecordStatus: "success" | "error" | "blocked" = shellFd ? "error" : "success"
       loopDetector.recordAfter(
         toolName,
         rawArgs,
         toolInput.output ?? toolOutput?.output ?? toolOutput?.result ?? "[unavailable]",
         sessionID,
-        "success"
+        loopRecordStatus
       )
 
       // ── Round-2: canonical semantic progress classification (read-only never
       // counts as mutation), real measured latency, and visible FlowDeck score. ──
       if (sessionID) {
         const toolLower = String(toolName).toLowerCase()
-        const errored = Boolean(toolInput?.error) || Boolean(toolOutput?.error) || toolOutput === undefined || toolOutput === null
+        const errored = Boolean(toolInput?.error) || Boolean(toolOutput?.error) || toolOutput === undefined || toolOutput === null || (shellFd?.status === "failed")
+        // A zero semantic-progress guard: a failed command, its failure event,
+        // and its recovery never count as progress (handled by this branch).
+        if (shellFd?.status === "failed") {
+          semanticConvergence.recordNonProgressSignal(sessionID, "tool_failed")
+        }
         // Canonical classifier: only confirmed successful source mutations advance
         // convergence. A read that merely carries a `file` argument is read_only.
         const confirmedMutation = isConfirmedSourceMutation(toolLower, rawArgs)
@@ -1754,6 +1836,32 @@ const plugin: Plugin = async ({ directory, client }) => {
           watchdogIncidentManager.recordProgressEvidence(sessionID, "source_changed")
         } else if (sessionID && !confirmedMutation && !errored) {
           semanticConvergence.recordNonProgressSignal(sessionID, "tool_activity")
+        }
+        // ── Shell tool failure propagation ────────────────────────────────
+        // A non-zero shell execution becomes a visible failed operation with a
+        // bounded, once-per-fingerprint recovery incident. Never counted as
+        // semantic progress. Never a flood (tracker dedups by fingerprint).
+        if (shellFd?.status === "failed") {
+          try {
+            // Authoritative tool-call correlated here (the after-hook's callID,
+            // not the ambient message ID captured at execution time).
+            shellFd.callID = callID || shellFd.callID
+            const decision = shellFailureTracker.record(shellFd)
+            requestToolFailureRecovery(sessionID, shellFd, decision)
+            if (toolOutput && typeof toolOutput === "object") {
+              toolOutput.metadata = { ...(toolOutput as any).metadata, fdShell: { ...shellFd } }
+              ;(toolOutput as any).title = describeShellFailureTitle(shellFd)
+            }
+            appendAuditEvent(directory, {
+              kind: "lifecycle.transition",
+              session_id: sessionID,
+              agent,
+              tool: toolName,
+              decision: "failed",
+              reason: "SHELL_NONZERO_EXIT exit=" + shellFd.exitCode + (decision.incidentCreated ? " incident=" + decision.fingerprint : " repeat=" + decision.repeatCount),
+              details: { exitCode: shellFd.exitCode, fingerprint: decision.fingerprint, incidentCreated: decision.incidentCreated, callID, failedTool: true },
+            })
+          } catch { /* failure propagation must never break the runtime */ }
         }
         afterTiming.start("convergence")
         // Invalidate FDX hot file cache ONLY on confirmed writes (no stale reads).
@@ -2712,6 +2820,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
       sessionLeaseHolders.clear()
       loopIncidentTracker.clearAll()
+      shellFailureTracker.clearAll()
       semanticConvergence.clearAll()
       emptyTerminalCircuit.clearAll()
       watchdogIncidentManager.clearAll()
@@ -2773,6 +2882,7 @@ export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void 
   clearWatchdogState(sessionID)
   watchdogIncidentManager.clearSession(sessionID)
   loopIncidentTracker.clearSession(sessionID)
+  shellFailureTracker.clearSession(sessionID)
   sessionLoopIncidents.delete(sessionID)
   semanticConvergence.clearSession(sessionID)
   emptyTerminalCircuit.clearSession(sessionID)

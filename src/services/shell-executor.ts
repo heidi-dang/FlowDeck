@@ -15,10 +15,24 @@ export interface ShellToolDeps {
   cwd: string;
 }
 
+export type ShellExecutionStatus = "ok" | "failed";
+
+/**
+ * Result of a shell command. A non-zero process exit is NEVER normalized to
+ * a successful completion: such a run reports status "failed" with the exact
+ * exitCode and a copy of stderr. Distinguish "the process launched" from
+ * "the command succeeded" (process spawn success != command execution success).
+ */
 export interface ShellExecutionResult {
   output: string;
   bashSpawned: boolean;
   adapter?: FastRewriteAdapter | null;
+  /** "ok" when the command completed with exit code 0; "failed" when it exited non-zero. */
+  status: ShellExecutionStatus;
+  /** Exact process exit code. 0 when successful; the precise code when failed. */
+  exitCode: number;
+  /** stderr captured from the process (empty for fast-lane semantic rewrites). */
+  stderr: string;
 }
 
 /**
@@ -37,7 +51,7 @@ export function executeShellCommand(
   if (rewrite) {
     try {
       const output = executeFastRewrite(rewrite, deps.cwd);
-      return { output, bashSpawned: false, adapter: rewrite.adapter };
+      return { output, bashSpawned: false, adapter: rewrite.adapter, status: "ok", exitCode: 0, stderr: "" };
     } catch {
       // Rewrite matched but execution failed (e.g. missing file / not a git
       // repo). Fall back to a real bash shell so the caller still gets a result.
@@ -54,12 +68,24 @@ function runBash(command: string, deps: ShellToolDeps): ShellExecutionResult {
       encoding: "utf8",
       timeout: 120_000,
     });
-    return { output, bashSpawned: true, adapter: null };
+    return { output, bashSpawned: true, adapter: null, status: "ok", exitCode: 0, stderr: "" };
   } catch (err: any) {
     const oe = err?.stdout ? err.stdout.toString() : "";
     const se = err?.stderr ? err.stderr.toString() : "";
     const combined = oe + (oe && se ? "\n" : "") + se;
-    return { output: combined || (err?.message ?? String(err)), bashSpawned: true, adapter: null };
+    const exitCode = typeof err?.status === "number" && err.status > 0
+      ? err.status
+      : typeof err?.code === "number" && err.code !== "ENOENT" && err.code > 0
+        ? err.code
+        : 1;
+    return {
+      output: combined || (err?.message ?? String(err)),
+      bashSpawned: true,
+      adapter: null,
+      status: "failed",
+      exitCode,
+      stderr: se,
+    };
   }
 }
 
