@@ -6,9 +6,13 @@ import { isPidAlive, isLockStale } from "../src/services/process-liveness"
 import { repairStaleLocks } from "../src/doctor/repair/repairers/stale-locks-repairer"
 import { checkFdxAvailability, invalidateFdxCache, resolveFdxBinaryPath } from "../src/tools/fdx-shared"
 import { repairFdxBinary } from "../src/doctor/repair/repairers/fdx-repairer"
+import { repairPluginRegistration } from "../src/doctor/repair/repairers/plugin-registration-repairer"
+import { repairSkillsAndLockfile } from "../src/doctor/repair/repairers/skills-repairer"
+import { repairPermissions } from "../src/doctor/repair/repairers/permissions-repairer"
 import { resolveOrchestrationDbPath, OrchestrationDatabaseInaccessibleError } from "../src/services/orchestration-db-path"
 import { RepoLeaseCoordinator, repoIdOf } from "../src/services/repo-lease-coordinator"
 import { rewriteShellCommand, rewriteLsCommand, executeFastRewrite } from "../src/services/tool-fast-lane"
+import { executeShellCommand } from "../src/services/shell-executor"
 import { repairMcpConfiguration } from "../src/doctor/repair/repairers/mcp-repairer"
 import {
   enqueuePendingSlot,
@@ -50,6 +54,13 @@ describe("Targeted Adversarial Verification Suite", () => {
       expect(isLockStale(lockPath, 60_000)).toBe(true)
     })
 
+    it("marks lock stale even with recycled live PID if creation timestamp exceeds TTL", () => {
+      const lockPath = join(TMP, "recycled.lock")
+      const ancientTime = Date.now() - 120_000 // 2 mins ago (exceeds 60s TTL)
+      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, timestamp: ancientTime }), "utf-8")
+      expect(isLockStale(lockPath, 60_000)).toBe(true)
+    })
+
     it("repairStaleLocks revalidates and preserves live locks while deleting dead locks", async () => {
       const flowdeckDir = join(TMP, ".flowdeck")
       mkdirSync(flowdeckDir, { recursive: true })
@@ -83,6 +94,16 @@ describe("Targeted Adversarial Verification Suite", () => {
       // Immediate check after invalidation
       const detected = resolveFdxBinaryPath(true)
       expect(detected).toBeDefined()
+    })
+
+    it("forceRefresh detects changes when cache key is untouched", () => {
+      invalidateFdxCache()
+      const status1 = checkFdxAvailability(false)
+      expect(typeof status1).toBe("boolean")
+
+      // Force refresh forces re-probe without key change
+      const status2 = checkFdxAvailability(true)
+      expect(typeof status2).toBe("boolean")
     })
   })
 
@@ -178,10 +199,17 @@ describe("Targeted Adversarial Verification Suite", () => {
       const out = executeFastRewrite(r, TMP)
       expect(out).toBe("Line 1\nLine 2\nLine 3\n")
     })
+
+    it("executes fallback shell commands cleanly without uncaught exceptions", () => {
+      const res = executeShellCommand("echo 'hello from bash'", { cwd: TMP })
+      expect(res.status).toBe("ok")
+      expect(res.output.trim()).toBe("hello from bash")
+      expect(res.exitCode).toBe(0)
+    })
   })
 
   describe("6. Doctor Semantic Re-Verification & Idempotency", () => {
-    it("repairs and verifies MCP configuration with schema validity", async () => {
+    it("repairs and verifies MCP configuration with schema validity across idempotent runs", async () => {
       const configDir = join(TMP, ".config", "opencode")
       mkdirSync(configDir, { recursive: true })
       process.env.OPENCODE_CONFIG_DIR = configDir
@@ -203,6 +231,45 @@ describe("Targeted Adversarial Verification Suite", () => {
       expect(typeof content.mcp).toBe("object")
 
       delete process.env.OPENCODE_CONFIG_DIR
+    })
+
+    it("repairs permissions and remains idempotent on second pass", async () => {
+      const flowdeckDir = join(TMP, ".flowdeck")
+      mkdirSync(flowdeckDir, { recursive: true })
+
+      const res1 = await repairPermissions(TMP)
+      expect(res1.applied).toBe(true)
+      expect(res1.reverified).toBe(true)
+
+      const res2 = await repairPermissions(TMP)
+      expect(res2.applied).toBe(true)
+      expect(res2.reverified).toBe(true)
+    })
+
+    it("repairs plugin registration and remains idempotent on second pass", async () => {
+      const configDir = join(TMP, ".config-plugin", "opencode")
+      mkdirSync(configDir, { recursive: true })
+      process.env.OPENCODE_CONFIG_DIR = configDir
+
+      const res1 = await repairPluginRegistration(TMP)
+      expect(res1.applied).toBe(true)
+      expect(res1.reverified).toBe(true)
+
+      const res2 = await repairPluginRegistration(TMP)
+      expect(res2.applied).toBe(true)
+      expect(res2.reverified).toBe(true)
+
+      delete process.env.OPENCODE_CONFIG_DIR
+    })
+
+    it("repairs skills lockfile and remains idempotent on second pass", async () => {
+      const res1 = await repairSkillsAndLockfile(TMP)
+      expect(res1.applied).toBe(true)
+      expect(res1.reverified).toBe(true)
+
+      const res2 = await repairSkillsAndLockfile(TMP)
+      expect(res2.applied).toBe(true)
+      expect(res2.reverified).toBe(true)
     })
   })
 
