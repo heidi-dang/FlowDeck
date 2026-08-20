@@ -1,103 +1,67 @@
 import { resolve, normalize } from "path"
-import { homedir } from "os"
+import { tmpdir } from "os"
+import { DEFAULT_SENSITIVE_PATTERNS } from "./sensitive-path"
+import type { AuthorizationDecision, RiskLevel, RiskCategory } from "./approval-service"
 
-/**
- * Shell Command Classifier
- *
- * Pure function that classifies a shell command string into one of:
- *   - "read"            inspection-only (ls, pwd, find, head, tail, cat, git status, ...)
- *   - "mutating"        state-changing (rm, mv, git commit, redirects, eval, source, ...)
- *   - "sensitive-read"  read-only but touches a sensitive path (.env, ~/.ssh, /etc/passwd, ...)
- *   - "risky"           operationally dangerous (ssh, scp, network install, traversal, ...)
- *   - "unknown"         cannot be confidently classified; caller must route to specialist
- *
- * The orchestrator guard uses this classifier to admit read-only shell inspection
- * for the primary session (the orchestrator is a coordinator, but it IS allowed
- * to inspect) while still blocking mutating / dangerous / sensitive operations.
- *
- * Design choices:
- *   - Pure function. No I/O. No state. Safe to call from hooks.
- *   - Conservative default: anything that cannot be classified as read-only is
- *     denied. The orchestrator gains INSPECTION-GRADE shell access, not full.
- *   - Pipeline-aware: `;`, `&&`, `||`, `|` are decomposed; a single mutating
- *     segment demotes the whole command.
- *   - Sensitive-path detection runs AFTER read-only classification; read-only
- *     commands that touch sensitive paths become "sensitive-read" (still
- *     blocked) so the diagnostic message can explain the real reason.
- *   - No regex for shell parsing. The classifier uses tokenization + small
- *     lookup tables. Robustness over completeness: a brand-new exotic command
- *     falls through to "unknown" and is routed, not silently allowed.
- */
+export type ShellCategory = "read" | "mutating" | "sensitive-read" | "risky" | "approval-required" | "unknown"
 
-export type ShellCategory = "read" | "mutating" | "sensitive-read" | "risky" | "unknown"
+export interface AuthorizationEvaluation {
+  decision: AuthorizationDecision
+  riskLevel: RiskLevel
+  riskCategory: RiskCategory
+  reason: string
+  sensitiveMatches: string[]
+  head: string | null
+  scope: string
+  target: string
+  normalizedAction: string
+  reversible: boolean
+  isExternal: boolean
+  requiresHumanApproval: boolean
+}
 
 export interface Classification {
   category: ShellCategory
-  /** Human-readable explanation of why this category was chosen. */
   reason: string
-  /** Sensitive paths / patterns matched in the command (empty if none). */
   sensitiveMatches: string[]
-  /** The head command (first token) that drove the classification, if any. */
   head: string | null
+  authorization?: AuthorizationEvaluation
 }
 
 export interface ClassifierOptions {
-  /** Working directory; used to detect path traversal / outside-workspace access. */
   workingDir?: string
-  /** Extra sensitive-path globs/patterns to match in addition to defaults. */
   extraSensitivePatterns?: ReadonlyArray<string>
 }
 
-/** Commands that are always mutating regardless of arguments. */
-const SYSTEM_RISKY_COMMANDS: ReadonlySet<string> = new Set(["ssh", "scp", "rsync", "sudo", "su", "systemctl", "service", "reboot", "shutdown", "halt", "poweroff", "kill", "killall", "pkill", "nc", "netcat", "socat"])
-
-const ALWAYS_MUTATING: ReadonlySet<string> = new Set([
-  // filesystem mutation
-  "rm", "rmdir", "mv", "cp", "mkdir", "touch", "ln", "install", "mktemp",
-  "chmod", "chown", "chgrp", "umask",
-  "truncate", "dd", "shred",
-  // shell mutation
-  "eval", "exec", "source", ".", "export", "unset", "alias", "unalias",
-  "shopt", "ulimit",
-  // process / system
-  "kill", "killall", "pkill", "renice", "nice",
+const PRIVILEGED_SYSTEM_COMMANDS: ReadonlySet<string> = new Set([
+  "sudo", "su", "doas",
   "systemctl", "service", "init", "shutdown", "reboot", "halt", "poweroff",
   "useradd", "userdel", "usermod", "groupadd", "groupdel", "groupmod", "passwd", "chsh",
   "mount", "umount", "fsck", "mkfs", "fdisk", "parted",
   "iptables", "ip6tables", "nft", "firewall-cmd", "ufw",
   "crontab", "at", "batch",
-  // package management — network + filesystem
-  "apt", "apt-get", "aptitude", "yum", "dnf", "rpm", "pacman", "yay", "paru",
-  "apk", "zypper", "emerge", "xbps-install",
-  "pip", "pip3", "pipx", "easy_install", "conda",
-  "npm", "pnpm", "yarn", "bun", "bunx", "npx",
-  "cargo", "rustup", "rustc",
-  "gem", "bundle", "bundler",
-  "composer", "php",
-  "go", "gofmt",
-  "brew", "mas",
-  "snap", "flatpak",
-  "docker", "podman", "nerdctl", "ctr", "crictl",
-  "kubectl", "helm", "k9s", "kubeadm",
-  "terraform", "tofu", "pulumi", "ansible", "ansible-playbook", "vagrant",
-  "make", "gmake", "cmake", "ninja", "meson", "autoconf", "automake",
-  "nix", "nix-env", "nix-shell", "guix",
-  // network fetch / sync (can be exfil, can be install)
-  "curl", "wget", "fetch", "httpie", "http",
-  "rsync", "scp", "sftp", "ftp", "nc", "ncat", "netcat", "socat", "ssh",
-  // tee writes a copy to a file even when input is piped
-  "tee",
-  // git handled separately (some subcommands are read-only)
-  // archive extract = writes files
-  "tar", "unzip", "gunzip", "unxz", "unar", "7z", "7za",
-  "xz", "gzip", "bzip2", "zstd", "lz4",
-  // editor / interactive state changes
-  "vim", "vi", "nvim", "emacs", "nano", "ed", "sed", "awk", "perl", "ruby",
+  "insmod", "rmmod", "modprobe",
 ])
 
-/** Commands that are read-only when used without mutating flags. */
+const SYSTEM_PACKAGE_MANAGERS: ReadonlySet<string> = new Set([
+  "apt", "apt-get", "aptitude", "yum", "dnf", "rpm", "pacman", "yay", "paru",
+  "apk", "zypper", "emerge", "xbps-install", "snap", "flatpak",
+])
+
+const INFRA_DEPLOY_COMMANDS: ReadonlySet<string> = new Set([
+  "terraform", "tofu", "pulumi", "kubectl", "helm", "k9s", "kubeadm", "ansible", "ansible-playbook",
+])
+
+const PUBLISH_COMMANDS: ReadonlySet<string> = new Set([
+  "twine",
+])
+
+const REMOTE_NETWORK_TOOLS: ReadonlySet<string> = new Set([
+  "ssh", "scp", "sftp", "ftp", "rsync", "nc", "ncat", "netcat", "socat",
+])
+
 const ALWAYS_READ_ONLY: ReadonlySet<string> = new Set([
-  "ls", "pwd", "echo", "printf", "true", "false", ":",
+  "ls", "pwd", "cd", "pushd", "popd", "echo", "printf", "true", "false", ":",
   "which", "whereis", "type", "command", "hash", "compgen", "complete",
   "head", "tail", "cat", "less", "more", "view", "tac", "rev",
   "wc", "file", "stat", "du", "df", "tree",
@@ -117,19 +81,12 @@ const ALWAYS_READ_ONLY: ReadonlySet<string> = new Set([
   "ss", "netstat", "lsof", "lspci", "lsusb", "lsblk", "lsmod", "lsattr",
   "ip", "ifconfig", "route", "arp", "traceroute", "tracepath", "ping", "ping6", "mtr", "dig", "nslookup", "host", "drill",
   "getent", "ldapsearch",
-  "seq", "yes",
+  "seq", "yes", "sleep", "test", "[", "[["
 ])
 
 const VERSION_OR_HELP_FLAGS: ReadonlySet<string> = new Set([
-  "--version",
-  "-v",
-  "-V",
-  "version",
-  "--help",
-  "-h",
-  "help",
-  "-help",
-  "-version",
+  "--version", "-v", "-V", "version",
+  "--help", "-h", "help", "-help", "-version",
 ])
 
 function isVersionOrHelpQuery(tokens: ReadonlyArray<string>): boolean {
@@ -141,34 +98,6 @@ function isVersionOrHelpQuery(tokens: ReadonlyArray<string>): boolean {
   return false
 }
 
-/**
- * Compound command names whose first segment is mutating regardless of suffix.
- * `mkfs.ext4`, `mkfs.vfat`, etc. are filesystem formatters that all write to
- * the device block. Always treat any name starting with one of these as
- * mutating — the exact suffix is a kernel detail the orchestrator should
- * never reach.
- */
-const MUTATING_PREFIXES: ReadonlyArray<string> = [
-  "mkfs.",
-]
-
-/**
- * `git` subcommands that are clearly read-only.
- * Anything else (commit, push, pull, merge, rebase, reset, checkout, clone,
- * fetch, stash, tag (write), branch (write), cherry-pick, revert, am, apply)
- * is mutating.
- */
-const GIT_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
-  "status", "log", "diff", "show", "blame", "annotate",
-  "ls-files", "ls-tree", "ls-remote",
-  "rev-parse", "rev-list", "describe", "write-tree",
-  "reflog", "shortlog",
-  "grep", "branch", "remote", "config", "check-ref-format",
-])
-
-import { DEFAULT_SENSITIVE_PATTERNS } from "./sensitive-path"
-
-/** Strip a simple surrounding pair of single OR double quotes from a token. */
 function unquote(token: string): string {
   if (token.length >= 2) {
     const first = token[0]
@@ -180,10 +109,6 @@ function unquote(token: string): string {
   return token
 }
 
-/**
- * Tokenize a shell command line on whitespace while respecting single/double
- * quotes and escapes. Quotes are stripped from quoted literals.
- */
 export function tokenize(command: string): string[] {
   const tokens: string[] = []
   let buf = ""
@@ -225,20 +150,16 @@ export function tokenize(command: string): string[] {
   return tokens
 }
 
-/** Strip a leading `sudo` (with optional whitespace, env-var prefix pairs). */
-function stripSudoPrefix(command: string): string {
+function stripPrefix(command: string): { stripped: string; hasSudo: boolean } {
   let s = command.trim()
+  let hasSudo = false
   let changed = true
   while (changed) {
     changed = false
     s = s.trim()
-    if (s.startsWith("sudo ")) {
-      s = s.slice("sudo ".length)
-      changed = true
-      continue
-    }
-    if (s.startsWith("sudo\t")) {
-      s = s.slice("sudo\t".length)
+    if (s.startsWith("sudo ") || s.startsWith("sudo\t") || s.startsWith("doas ") || s.startsWith("su ")) {
+      hasSudo = true
+      s = s.replace(/^(sudo|doas|su)\s+/, "")
       changed = true
       continue
     }
@@ -248,570 +169,832 @@ function stripSudoPrefix(command: string): string {
       changed = true
     }
   }
-  return s
+  return { stripped: s, hasSudo }
 }
 
-/** Detect indirection wrappers like `bash -c`, `env sh -c`. */
-const INDIRECTION_WRAPPERS: ReadonlySet<string> = new Set([
-  "bash", "sh", "dash", "ksh", "zsh", "fish", "ash", "csh", "tcsh",
-  "nice", "stdbuf", "timeout", "time",
-  "script", "expect", "unbuffer",
-])
-
-/** Detect redirect operators anywhere in the command. Any redirect → mutating. */
-function hasRedirect(command: string): boolean {
-  // Strip safe /dev/null discards and file descriptor clones (2>/dev/null, 2>&1, >/dev/null)
-  const cleaned = command
-    .replace(/[0-2]?>\s*\/dev\/null/g, "")
-    .replace(/[0-2]?>&[0-2]/g, "")
-    .trim()
-  if (/[0-9]?>>?/.test(cleaned)) return true
-  if (/[<>]\(/.test(cleaned)) return true
-  if (/[<>]\|/.test(cleaned)) return true
-  if (/<>/.test(cleaned)) return true
-  if (/&>/.test(cleaned)) return true
-  if (/>>&/.test(cleaned)) return true
-  // Bare input redirect `<` followed by an absolute path (e.g.
-  // `cat < /etc/hostname`). Process substitution `<(...)` and bidirectional
-  // `<>` already matched their dedicated branches above. We only treat
-  // `<` as a redirect when it targets an absolute path; relative-path
-  // `< file.txt` (used legitimately by stream filters like `tr a-z A-Z <
-  // file.txt`) stays read-only.
-  if (/<\s*\//.test(cleaned)) return true
-  return false
-}
-
-/** Detect command substitution `$(...)` or backticks. Always mutating. */
-function hasCommandSubstitution(command: string): boolean {
-  if (command.includes("$(")) return true
-  if (/`[^`]*`/.test(command)) return true
-  return false
-}
-
-/**
- * Decide whether a `git <subcommand>` invocation is read-only given the full
- * token list.
- */
-function classifyGitInvocation(tokens: ReadonlyArray<string>): ShellCategory {
-  if (tokens.length < 2) return "mutating"
-  let i = 1
-  // Skip global short flags (clustered, no argument).
-  while (i < tokens.length && /^-[A-Za-z]+$/.test(tokens[i])) {
+export function extractCommandSubstitutions(command: string): string[] {
+  const substitutions: string[] = []
+  let i = 0
+  while (i < command.length) {
+    if (command[i] === "$" && command[i + 1] === "(") {
+      let depth = 1
+      let start = i + 2
+      let j = start
+      let quote: '"' | "'" | null = null
+      let escaped = false
+      while (j < command.length && depth > 0) {
+        const ch = command[j]
+        if (escaped) {
+          escaped = false
+          j++
+          continue
+        }
+        if (ch === "\\") {
+          escaped = true
+          j++
+          continue
+        }
+        if (quote) {
+          if (ch === quote) quote = null
+          j++
+          continue
+        }
+        if (ch === '"' || ch === "'") {
+          quote = ch
+          j++
+          continue
+        }
+        if (ch === "(") depth++
+        else if (ch === ")") depth--
+        j++
+      }
+      if (depth === 0) {
+        substitutions.push(command.slice(start, j - 1))
+        i = j
+        continue
+      }
+    }
+    if (command[i] === "`") {
+      let start = i + 1
+      let j = start
+      let escaped = false
+      while (j < command.length) {
+        const ch = command[j]
+        if (escaped) {
+          escaped = false
+          j++
+          continue
+        }
+        if (ch === "\\") {
+          escaped = true
+          j++
+          continue
+        }
+        if (ch === "`") break
+        j++
+      }
+      if (j < command.length && command[j] === "`") {
+        substitutions.push(command.slice(start, j))
+        i = j + 1
+        continue
+      }
+    }
     i++
   }
-  // Skip global long flags that take an argument.
-  while (i < tokens.length && (tokens[i] === "-C" || tokens[i] === "--git-dir" || tokens[i] === "--work-tree")) {
-    i += 2
-  }
-  if (i >= tokens.length) return "mutating"
-  const sub = tokens[i]
-  if (!GIT_READ_ONLY_SUBCOMMANDS.has(sub)) {
-    // Subcommand itself is mutating or risky.
-    if (sub === "fetch" || sub === "pull" || sub === "push" || sub === "clone" || sub === "archive") {
-      return "risky"
-    }
-    return "mutating"
-  }
-  // For git remote: inspect (show, list, -v, get-url) vs mutate (add, rm, set-url, rename, prune)
-  if (sub === "remote") {
-    const mutatingRemoteSub = new Set(["add", "rm", "remove", "set-url", "set-head", "set-branches", "rename", "prune", "update"])
-    for (let j = i + 1; j < tokens.length; j++) {
-      const arg = tokens[j].toLowerCase()
-      if (mutatingRemoteSub.has(arg)) return "mutating"
-    }
-    return "read"
-  }
-
-  // For git config: inspect (--get, -l, --list, key queries) vs mutate (--set, --add, --unset, key value)
-  if (sub === "config") {
-    const mutatingConfigFlags = new Set(["--set", "--set-all", "--add", "--unset", "--unset-all", "--remove-section", "--rename-section"])
-    for (let j = i + 1; j < tokens.length; j++) {
-      const arg = tokens[j].toLowerCase()
-      if (mutatingConfigFlags.has(arg)) return "mutating"
-    }
-    const positionals = tokens.slice(i + 1).filter(t => !t.startsWith("-"))
-    const hasGetter = tokens.slice(i + 1).some(t => ["--get", "--get-all", "--get-regexp", "--list", "-l"].includes(t.toLowerCase()))
-    if (positionals.length >= 2 && !hasGetter) {
-      return "mutating"
-    }
-    return "read"
-  }
-
-  // For git branch: inspect if it's listing/showing current branch, mutate if creating/deleting/renaming
-  if (sub === "branch") {
-    // If no extra positional arguments (or only flags like -a, -r, -v, --show-current, --list, --sort, --contains, --merged, --no-merged) -> read-only inspection.
-    // If positional non-flag args exist (other than pattern for --list) or mutating flags (-d, -D, -m, -M, -c, -C, --set-upstream-to, --unset-upstream) -> mutating.
-    let positionalCount = 0
-    let hasListFlag = false
-    for (let j = i + 1; j < tokens.length; j++) {
-      const arg = tokens[j]
-      if (arg === "-d" || arg === "-D" || arg === "-m" || arg === "-M" || arg === "-c" || arg === "-C" || arg === "--set-upstream-to" || arg === "--unset-upstream" || arg === "--edit-description") {
-        return "mutating"
-      }
-      if (arg === "--list" || arg === "-l") {
-        hasListFlag = true
-      }
-      if (!arg.startsWith("-")) {
-        positionalCount++
-      }
-    }
-    // "git branch" or "git branch --show-current" or "git branch -a" -> 0 positionals -> read
-    // "git branch --list 'feat/*'" -> 1 positional with --list -> read
-    // "git branch newbranch" -> 1 positional without --list -> creating branch -> mutating
-    if (positionalCount > 0 && !hasListFlag) {
-      return "mutating"
-    }
-    return "read"
-  }
-
-  // Walk remaining args for mutating flags.
-  for (let j = i + 1; j < tokens.length; j++) {
-    const arg = tokens[j]
-    if (!arg.startsWith("-")) continue
-    if (arg === "--set" || arg === "--unset" || arg === "--add" || arg === "--replace-all" || arg === "--rename-section" || arg === "--remove-section") {
-      return "mutating"
-    }
-    if (arg === "-d" || arg === "-D" || arg === "-m" || arg === "-M" || arg === "-c" || arg === "-C") {
-      return "mutating"
-    }
-    if (arg === "-f") return "mutating"
-  }
-  // Positionals after a read-only subcommand are refs / paths / patterns
-  // (e.g. `git show HEAD`, `git blame README.md`, `git diff --stat HEAD~1`,
-  // `git rev-parse HEAD`, `git rev-list HEAD`, `git grep pattern`). These
-  // are inspection arguments, not mutations. Mutating subcommands
-  // (commit/push/checkout/branch/tag/etc.) are rejected earlier because
-  // they're not in GIT_READ_ONLY_SUBCOMMANDS.
-  return "read"
+  return substitutions
 }
 
-/** Find sensitive-path patterns in the command string, tokens, and resolved paths against effective cwd. */
-function findSensitiveMatches(
-  command: string,
-  tokens: ReadonlyArray<string>,
-  extra: ReadonlyArray<string> | undefined,
-  effectiveCwd?: string
-): string[] {
-  const patterns = extra && extra.length > 0
-    ? [...DEFAULT_SENSITIVE_PATTERNS, ...extra]
-    : [...DEFAULT_SENSITIVE_PATTERNS]
-  const lowerCommand = command.toLowerCase()
-  const matches = new Set<string>()
+export function isPathInWorkspaceOrTemp(targetPath: string, workspaceRoot = process.cwd()): boolean {
+  if (!targetPath || targetPath.trim() === "") return true
+  const trimmed = targetPath.trim()
+  if (trimmed === "/" || trimmed === "~" || trimmed === "$HOME" || trimmed === "/etc" || trimmed === "/usr" || trimmed === "/var") {
+    return false
+  }
 
-  for (const p of patterns) {
-    if (lowerCommand.includes(p.toLowerCase())) {
-      matches.add(p)
+  const normalizedWorkspace = normalize(resolve(workspaceRoot))
+  const allowedRoots = [
+    normalizedWorkspace,
+    normalize(resolve(tmpdir())),
+    normalize(resolve("/tmp")),
+    normalize(resolve("/private/tmp")),
+    normalize(resolve("/var/folders")),
+    normalize(resolve("/private/var/folders")),
+    process.env.TMPDIR ? normalize(resolve(process.env.TMPDIR)) : null,
+  ].filter(Boolean) as string[]
+
+  let resolvedTarget = trimmed.startsWith("/") ? normalize(resolve(trimmed)) : normalize(resolve(workspaceRoot, trimmed))
+
+  for (const root of allowedRoots) {
+    if (resolvedTarget === root || resolvedTarget.startsWith(root + "/") || resolvedTarget.startsWith(root + "\\")) {
+      return true
     }
   }
 
-  const baseCwd = effectiveCwd || process.cwd()
-
-  for (const t of tokens) {
-    const lower = t.toLowerCase()
-    for (const p of patterns) {
-      if (lower.includes(p.toLowerCase())) matches.add(p)
-    }
-
-    // Resolve token against effective working directory to catch relative sensitive paths
-    try {
-      let resolved = t
-      if (t === "~" || t.startsWith("~/") || t.startsWith("~\\")) {
-        resolved = t === "~" ? homedir() : resolve(homedir(), t.slice(2))
-      } else if (!t.startsWith("-")) {
-        resolved = resolve(baseCwd, t)
-      }
-      const lowerResolved = normalize(resolved).normalize("NFC").toLowerCase()
-      for (const p of patterns) {
-        if (lowerResolved.includes(p.toLowerCase())) matches.add(p)
-      }
-    } catch {
-      // ignore resolution errors on flags/symbols
-    }
-  }
-
-  return [...matches]
-}
-
-/** Detect a `..` path-traversal or `~`-expansion. */
-function hasPathTraversal(tokens: ReadonlyArray<string>): boolean {
-  for (const t of tokens) {
-    if (t === "..") return true
-    if (t.startsWith("../") || t.startsWith("./../") || t.startsWith("..\\") || t.startsWith(".\\..\\")) return true
-    if (t.includes("/..") || t.includes("\\..")) return true
-  }
   return false
 }
 
-/** Classify a single command segment (already stripped of control operators). */
-function classifySegment(
-  segment: string,
-  _currentCwd?: string
-): { category: ShellCategory; reason: string; head: string | null; targetDir?: string | null } {
-  const stripped = stripSudoPrefix(segment)
-  const tokens = tokenize(stripped)
-  if (tokens.length === 0) {
-    return { category: "unknown", reason: "empty command segment", head: null }
-  }
-  const head = tokens[0].toLowerCase()
-  // `cd` changes working directory. Evaluated with effective cwd resolution in classifyShellCommand.
-  if (head === "cd") {
-    const rawTarget = tokens.length > 1 ? tokens[1] : "~"
-    return {
-      category: "read",
-      reason: "`cd` directory change",
-      head,
-      targetDir: rawTarget,
-    }
-  }
-  if (INDIRECTION_WRAPPERS.has(head)) {
-    if (tokens.includes("-c") || tokens.includes("--command")) {
-      return { category: "unknown", reason: `\`${head}\` with -c hides the real command from inspection; route to a specialist`, head }
-    }
-    return { category: "risky", reason: `\`${head}\` is an indirection wrapper; route to a specialist for safe execution`, head }
-  }
-  if (SYSTEM_RISKY_COMMANDS.has(head)) {
-    return { category: "risky", reason: `\`${head}\` is an operationally risky system/network command`, head }
-  }
-  if (head === "gh") {
-    const r = classifyGhCommand(tokens);
-    return { category: r.category, reason: r.reason, head };
-  }
-  if (head === "git") {
-    const cat = classifyGitInvocation(tokens)
-    if (cat === "read") {
-      return { category: "read", reason: "git read-only subcommand (status/log/diff/show/branch list, etc.)", head }
-    }
-    if (cat === "mutating") {
-      return { category: "mutating", reason: "git command mutates repository state (commit/push/merge/rebase/reset/checkout/branch/tag write)", head }
-    }
-    return { category: "risky", reason: "git command performs network I/O (fetch/pull/push/clone/archive)", head }
-  }
-  // Version check / help queries on any tool/compiler/binary are read-only inspection
-  if (isVersionOrHelpQuery(tokens)) {
-    return { category: "read", reason: `\`${head}\` version/help inspection (read-only)`, head }
-  }
-
-  // Node inspection commands (print expression, syntax check)
-  if (head === "node") {
-    if (tokens.length >= 2) {
-      if (tokens[1] === "-p" || tokens[1] === "--print" || tokens.includes("-p") || tokens.includes("--print")) {
-        return { category: "read", reason: "`node -p` print expression inspection (read-only)", head }
-      }
-      if (tokens[1] === "-c" || tokens[1] === "--check") {
-        return { category: "read", reason: "`node --check` syntax inspection (read-only)", head }
-      }
-    }
-  }
-
-  // Bun inspection and test commands
-  if (head === "bun") {
-    if (tokens.length >= 2) {
-      const sub = tokens[1].toLowerCase()
-      if (sub === "test") {
-        return { category: "read", reason: "`bun test` test execution (read-only verification)", head }
-      }
-      if (sub === "-p" || sub === "--print" || tokens.includes("-p") || tokens.includes("--print")) {
-        return { category: "read", reason: "`bun -p` print expression inspection (read-only)", head }
-      }
-      if (sub === "run") {
-        const script = (tokens[2] ?? "").toLowerCase()
-        if (["test", "typecheck", "lint", "check", "verify"].some(k => script === k || script.startsWith(k + ":"))) {
-          return { category: "read", reason: "`bun run` verification inspection (read-only)", head }
-        }
-      }
-    }
-  }
-
-  // Cargo inspection and test commands
-  if (head === "cargo") {
-    if (tokens.length >= 2) {
-      const sub = tokens[1].toLowerCase()
-      if (sub === "test") {
-        return { category: "read", reason: "`cargo test` test execution (read-only verification)", head }
-      }
-      if (sub === "check") {
-        return { category: "read", reason: "`cargo check` syntax/type verification (read-only)", head }
-      }
-      if (sub === "clippy") {
-        return { category: "read", reason: "`cargo clippy` lint inspection (read-only)", head }
-      }
-      if (sub === "fmt" && tokens.some(t => t === "--check")) {
-        return { category: "read", reason: "`cargo fmt --check` format inspection (read-only)", head }
-      }
-    }
-  }
-
-  // NPM / PNPM / Yarn test inspection commands
-  if (head === "npm" || head === "pnpm" || head === "yarn") {
-    if (tokens.length >= 2) {
-      const sub = tokens[1].toLowerCase()
-      if (sub === "test" || sub === "t" || sub === "tst") {
-        return { category: "read", reason: `\`${head} test\` test execution (read-only verification)`, head }
-      }
-      if (sub === "run" || sub === "run-script") {
-        const script = (tokens[2] ?? "").toLowerCase()
-        if (["test", "typecheck", "lint", "check", "verify"].some(k => script === k || script.startsWith(k + ":"))) {
-          return { category: "read", reason: `\`${head} run\` verification inspection (read-only)`, head }
-        }
-      }
-    }
-  }
-
-  // Deno verification and test commands
-  if (head === "deno") {
-    if (tokens.length >= 2) {
-      const sub = tokens[1].toLowerCase()
-      if (["test", "check", "lint"].includes(sub)) {
-        return { category: "read", reason: `\`deno ${sub}\` verification inspection (read-only)`, head }
-      }
-      if (sub === "fmt" && tokens.includes("--check")) {
-        return { category: "read", reason: "`deno fmt --check` format inspection (read-only)", head }
-      }
-    }
-  }
-
-  if (ALWAYS_MUTATING.has(head)) {
-    return { category: "mutating", reason: `\`${head}\` is in the mutating-command set (filesystem/process/network)`, head }
-  }
-  if (MUTATING_PREFIXES.some(p => head.startsWith(p))) {
-    const prefix = MUTATING_PREFIXES.find(p => head.startsWith(p))!
-    return { category: "mutating", reason: `\`${head}\` matches the \`${prefix}\` mutating prefix (filesystem formatter)`, head }
-  }
-  if (ALWAYS_READ_ONLY.has(head)) {
-    return { category: "read", reason: `\`${head}\` is a read-only inspection command`, head }
-  }
-  if (head === "command" || head === "type") {
-    return { category: "read", reason: `\`${head}\` reports command metadata (read-only)`, head }
-  }
-  return {
-    category: "unknown",
-    reason: `\`${head}\` is not in the read-only allowlist; route to a specialist`,
-    head,
-  }
-}
-
-/** Split a command on pipeline and control operators. */
-function splitSegments(command: string): string[] {
+export function splitTopLevelSegments(cmd: string): string[] {
   const segments: string[] = []
   let buf = ""
   let quote: '"' | "'" | null = null
+  let parenDepth = 0
   let escaped = false
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i]
-    if (escaped) { buf += ch; escaped = false; continue }
-    if (ch === "\\") { escaped = true; continue }
-    if (quote) {
-      if (ch === quote) { quote = null; buf += ch; continue }
+
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (escaped) {
       buf += ch
+      escaped = false
       continue
     }
-    if (ch === '"' || ch === "'") { quote = ch; buf += ch; continue }
-    if (ch === "|" || ch === ";" || ch === "&") {
-      if ((ch === "|" && command[i + 1] === "|") || (ch === "&" && command[i + 1] === "&")) {
-        i++
-      }
-      segments.push(buf)
-      buf = ""
+    if (ch === "\\") {
+      buf += ch
+      escaped = true
       continue
+    }
+    if (quote) {
+      buf += ch
+      if (ch === quote) quote = null
+      continue
+    }
+    if (ch === '"' || ch === "'") {
+      buf += ch
+      quote = ch
+      continue
+    }
+    if (ch === "(") { parenDepth++; buf += ch; continue }
+    if (ch === ")") { parenDepth = Math.max(0, parenDepth - 1); buf += ch; continue }
+
+    if (parenDepth === 0) {
+      if (ch === "|" && cmd[i + 1] === "|") {
+        segments.push(buf.trim())
+        buf = ""
+        i++
+        continue
+      }
+      if (ch === "&" && cmd[i + 1] === "&") {
+        segments.push(buf.trim())
+        buf = ""
+        i++
+        continue
+      }
+      if (ch === "|" || ch === ";" || ch === "\n") {
+        segments.push(buf.trim())
+        buf = ""
+        continue
+      }
     }
     buf += ch
   }
-  segments.push(buf)
-  return segments.map(s => s.trim()).filter(s => s.length > 0)
+  if (buf.trim().length > 0) {
+    segments.push(buf.trim())
+  }
+  return segments.filter((s) => s.length > 0)
 }
 
-/**
- * Classify a shell command. The orchestrator guard uses this to admit
- * read-only shell inspection while still blocking mutating / dangerous /
- * sensitive-path commands. The classification is conservative: any
- * non-read-only category blocks the call.
- */
-export function classifyShellCommand(
-  command: string | undefined | null,
-  opts?: ClassifierOptions,
-): Classification {
-  if (typeof command !== "string") {
-    return { category: "unknown", reason: "no command string provided", sensitiveMatches: [], head: null }
-  }
-  const trimmed = command.trim()
-  if (trimmed.length === 0) {
-    return { category: "unknown", reason: "empty command", sensitiveMatches: [], head: null }
-  }
-  if (hasCommandSubstitution(trimmed)) {
-    return {
-      category: "mutating",
-      reason: "command substitution `$(...)` or backticks can capture and modify state",
-      sensitiveMatches: [],
-      head: null,
+export function checkSensitiveMatches(cmd: string, extraPatterns?: ReadonlyArray<string>): string[] {
+  const matches: string[] = []
+  const patterns = extraPatterns ? [...DEFAULT_SENSITIVE_PATTERNS, ...extraPatterns] : DEFAULT_SENSITIVE_PATTERNS
+  for (const pat of patterns) {
+    if (cmd.includes(pat)) {
+      matches.push(pat)
     }
   }
-  if (hasRedirect(trimmed)) {
-    return {
-      category: "mutating",
-      reason: "redirect operator (`>`, `>>`, `<`, `&>`) writes or reads from a file descriptor",
-      sensitiveMatches: [],
-      head: null,
-    }
-  }
-  const segments = splitSegments(trimmed)
-  if (segments.length === 0) {
-    return { category: "unknown", reason: "command produced no segments", sensitiveMatches: [], head: null }
-  }
-  let worst: ShellCategory = "read"
-  const reasons: string[] = []
-  let head: string | null = null
-  let blockingReason: string | null = null
-  let blockingHead: string | null = null
-  const accumulatedSensitiveMatches = new Set<string>()
+  return matches
+}
 
-  let effectiveCwd = opts?.workingDir ? resolve(opts.workingDir) : process.cwd()
+function evaluateSingleSegment(segment: string, options?: ClassifierOptions): AuthorizationEvaluation {
+  const workingDir = options?.workingDir ?? process.cwd()
+  const trimmed = segment.trim()
+
+  if (trimmed.length === 0) {
+    return {
+      decision: "ALLOW",
+      riskLevel: "normal",
+      riskCategory: "read_inspection",
+      reason: "empty command segment",
+      sensitiveMatches: [],
+      head: null,
+      scope: "workspace",
+      target: workingDir,
+      normalizedAction: "",
+      reversible: true,
+      isExternal: false,
+      requiresHumanApproval: false,
+    }
+  }
+
+  // 1. Check sensitive file patterns (.env, ~/.ssh, *.pem, *.key, etc.)
+  const sensitiveMatches = checkSensitiveMatches(trimmed, options?.extraSensitivePatterns)
+  if (sensitiveMatches.length > 0) {
+    return {
+      decision: "APPROVAL_REQUIRED",
+      riskLevel: "high",
+      riskCategory: "sensitive_data",
+      reason: `Command accesses sensitive path(s): ${sensitiveMatches.join(", ")}`,
+      sensitiveMatches,
+      head: tokenize(trimmed)[0] || null,
+      scope: "sensitive data access",
+      target: sensitiveMatches.join(", "),
+      normalizedAction: trimmed,
+      reversible: false,
+      isExternal: false,
+      requiresHumanApproval: true,
+    }
+  }
+
+  // 1b. Global version or help check
+  const earlyTokens = tokenize(stripPrefix(trimmed).stripped)
+  if (isVersionOrHelpQuery(earlyTokens)) {
+    return {
+      decision: "ALLOW",
+      riskLevel: "normal",
+      riskCategory: "read_inspection",
+      reason: "Version or help query",
+      sensitiveMatches: [],
+      head: earlyTokens[0] || null,
+      scope: "workspace",
+      target: workingDir,
+      normalizedAction: trimmed,
+      reversible: true,
+      isExternal: false,
+      requiresHumanApproval: false,
+    }
+  }
+
+  const { stripped, hasSudo } = stripPrefix(trimmed)
+  if (hasSudo) {
+    return {
+      decision: "APPROVAL_REQUIRED",
+      riskLevel: "high",
+      riskCategory: "privileged_system",
+      reason: "Command uses privileged elevation (sudo/su/doas)",
+      sensitiveMatches: [],
+      head: "sudo",
+      scope: "system administration",
+      target: "system",
+      normalizedAction: trimmed,
+      reversible: false,
+      isExternal: false,
+      requiresHumanApproval: true,
+    }
+  }
+
+  const tokens = tokenize(stripped)
+  if (tokens.length === 0) {
+    return {
+      decision: "ALLOW",
+      riskLevel: "normal",
+      riskCategory: "read_inspection",
+      reason: "whitespace only",
+      sensitiveMatches: [],
+      head: null,
+      scope: "workspace",
+      target: workingDir,
+      normalizedAction: trimmed,
+      reversible: true,
+      isExternal: false,
+      requiresHumanApproval: false,
+    }
+  }
+
+  const head = tokens[0].toLowerCase()
+
+  // 2. Check Remote Network Tools (ssh, scp, rsync, nc)
+  if (REMOTE_NETWORK_TOOLS.has(head)) {
+    return {
+      decision: "APPROVAL_REQUIRED",
+      riskLevel: "high",
+      riskCategory: "infrastructure_deployment",
+      reason: `Remote network command '${head}' crosses machine boundary`,
+      sensitiveMatches: [],
+      head,
+      scope: "remote network",
+      target: tokens[1] || "remote host",
+      normalizedAction: trimmed,
+      reversible: false,
+      isExternal: true,
+      requiresHumanApproval: true,
+    }
+  }
+
+  // 3. Check System Package Managers
+  if (SYSTEM_PACKAGE_MANAGERS.has(head)) {
+    const isInspection = tokens.some((t) => ["search", "info", "list", "show", "query", "-Ss", "-Si", "-Q"].includes(t)) || isVersionOrHelpQuery(tokens)
+    if (!isInspection) {
+      return {
+        decision: "APPROVAL_REQUIRED",
+        riskLevel: "high",
+        riskCategory: "privileged_system",
+        reason: `System package manager '${head}' alters system packages`,
+        sensitiveMatches: [],
+        head,
+        scope: "system package management",
+        target: "operating system",
+        normalizedAction: trimmed,
+        reversible: false,
+        isExternal: false,
+        requiresHumanApproval: true,
+      }
+    }
+  }
+
+  // 4. Check Privileged System Commands
+  if (PRIVILEGED_SYSTEM_COMMANDS.has(head)) {
+    return {
+      decision: "APPROVAL_REQUIRED",
+      riskLevel: "high",
+      riskCategory: "privileged_system",
+      reason: `System administration command '${head}' modifies system state`,
+      sensitiveMatches: [],
+      head,
+      scope: "system state",
+      target: "operating system",
+      normalizedAction: trimmed,
+      reversible: false,
+      isExternal: false,
+      requiresHumanApproval: true,
+    }
+  }
+
+  // 5. Check Cloud / Infra Deployment
+  if (INFRA_DEPLOY_COMMANDS.has(head)) {
+    const isInspection = tokens.some((t) => ["plan", "validate", "version", "help", "get", "describe", "diff", "show", "status"].includes(t.toLowerCase())) || isVersionOrHelpQuery(tokens)
+    if (!isInspection) {
+      return {
+        decision: "APPROVAL_REQUIRED",
+        riskLevel: "critical",
+        riskCategory: "infrastructure_deployment",
+        reason: `Infrastructure tool '${head}' mutates cloud or container cluster resources`,
+        sensitiveMatches: [],
+        head,
+        scope: "cloud / cluster infrastructure",
+        target: "infrastructure",
+        normalizedAction: trimmed,
+        reversible: false,
+        isExternal: true,
+        requiresHumanApproval: true,
+      }
+    }
+  }
+
+  // 6. Check Package Publishing & Releases
+  if (PUBLISH_COMMANDS.has(head)) {
+    return {
+      decision: "APPROVAL_REQUIRED",
+      riskLevel: "critical",
+      riskCategory: "package_release",
+      reason: `Publishing tool '${head}' uploads packages to external registries`,
+      sensitiveMatches: [],
+      head,
+      scope: "package publication",
+      target: "external registry",
+      normalizedAction: trimmed,
+      reversible: false,
+      isExternal: true,
+      requiresHumanApproval: true,
+    }
+  }
+
+  // 7. Check Node / Test Inspection Queries vs Generic Node Execution
+  if (head === "node") {
+    const hasPrint = tokens.some((t) => t === "-p" || t === "--print" || t === "-e" && (t.includes("require") && t.includes("version")))
+    if (hasPrint || isVersionOrHelpQuery(tokens)) {
+      return {
+        decision: "ALLOW",
+        riskLevel: "normal",
+        riskCategory: "read_inspection",
+        reason: "Node read-only version/evaluation query",
+        sensitiveMatches: [],
+        head: "node",
+        scope: "workspace",
+        target: workingDir,
+        normalizedAction: trimmed,
+        reversible: true,
+        isExternal: false,
+        requiresHumanApproval: false,
+      }
+    }
+    if (tokens.some((t) => t === "-e" || t === "--eval")) {
+      return {
+        decision: "ALLOW",
+        riskLevel: "normal",
+        riskCategory: "workspace_development",
+        reason: "Node inline script execution",
+        sensitiveMatches: [],
+        head: "node",
+        scope: "workspace",
+        target: workingDir,
+        normalizedAction: trimmed,
+        reversible: true,
+        isExternal: false,
+        requiresHumanApproval: false,
+      }
+    }
+  }
+
+  // 8. Check bun / npm / pnpm / yarn / cargo / gh subcommands
+  if (["npm", "pnpm", "yarn", "bun", "cargo", "gh"].includes(head)) {
+    const sub = tokens[1]?.toLowerCase()
+
+    if (sub === "test" || sub === "check" || sub === "clippy" || sub === "fmt" || sub === "run" && tokens[2]?.toLowerCase() === "test") {
+      return {
+        decision: "ALLOW",
+        riskLevel: "normal",
+        riskCategory: "read_inspection",
+        reason: `Test / lint verification runner '${head} ${sub}'`,
+        sensitiveMatches: [],
+        head,
+        scope: "workspace",
+        target: workingDir,
+        normalizedAction: trimmed,
+        reversible: true,
+        isExternal: false,
+        requiresHumanApproval: false,
+      }
+    }
+
+    if (sub === "publish") {
+      return {
+        decision: "APPROVAL_REQUIRED",
+        riskLevel: "critical",
+        riskCategory: "package_release",
+        reason: `'${head} publish' releases package to public/remote registry`,
+        sensitiveMatches: [],
+        head,
+        scope: "package registry",
+        target: "remote package registry",
+        normalizedAction: trimmed,
+        reversible: false,
+        isExternal: true,
+        requiresHumanApproval: true,
+      }
+    }
+
+    if (head === "gh") {
+      if (sub === "release" || sub === "repo") {
+        const action = tokens[2]?.toLowerCase()
+        if (action === "create" || action === "delete" || action === "edit") {
+          return {
+            decision: "APPROVAL_REQUIRED",
+            riskLevel: "high",
+            riskCategory: "package_release",
+            reason: `'gh ${sub} ${action}' mutates GitHub releases or repository settings`,
+            sensitiveMatches: [],
+            head,
+            scope: "GitHub repository releases",
+            target: "GitHub",
+            normalizedAction: trimmed,
+            reversible: false,
+            isExternal: true,
+            requiresHumanApproval: true,
+          }
+        }
+      }
+
+      const hasMutatingApiFlag = tokens.some((t, idx) => (t === "-X" || t === "--method") && ["POST", "PUT", "DELETE", "PATCH"].includes(tokens[idx + 1]?.toUpperCase()))
+      const isGhMutatingSub = ["create", "edit", "close", "reopen", "delete", "comment", "merge"].includes(tokens[2]?.toLowerCase())
+
+      if (hasMutatingApiFlag || isGhMutatingSub) {
+        return {
+          decision: "ALLOW",
+          riskLevel: "normal",
+          riskCategory: "workspace_development",
+          reason: `GitHub CLI mutating action '${head} ${sub} ${tokens[2] || ""}'`,
+          sensitiveMatches: [],
+          head: "gh",
+          scope: "workspace",
+          target: workingDir,
+          normalizedAction: trimmed,
+          reversible: true,
+          isExternal: false,
+          requiresHumanApproval: false,
+        }
+      }
+
+      return {
+        decision: "ALLOW",
+        riskLevel: "normal",
+        riskCategory: "read_inspection",
+        reason: "GitHub CLI read inspection",
+        sensitiveMatches: [],
+        head: "gh",
+        scope: "workspace",
+        target: workingDir,
+        normalizedAction: trimmed,
+        reversible: true,
+        isExternal: false,
+        requiresHumanApproval: false,
+      }
+    }
+
+    return {
+      decision: "ALLOW",
+      riskLevel: "normal",
+      riskCategory: "workspace_development",
+      reason: `Autonomous package management command '${head} ${sub || ""}'`,
+      sensitiveMatches: [],
+      head,
+      scope: "workspace",
+      target: workingDir,
+      normalizedAction: trimmed,
+      reversible: true,
+      isExternal: false,
+      requiresHumanApproval: false,
+    }
+  }
+
+  // 9. Check Git Operations (External push vs Local dev)
+  if (head === "git") {
+    let subIdx = 1
+    while (subIdx < tokens.length && (/^-[A-Za-z]+$/.test(tokens[subIdx]) || tokens[subIdx] === "-C" || tokens[subIdx] === "--git-dir" || tokens[subIdx] === "--work-tree")) {
+      if (tokens[subIdx] === "-C" || tokens[subIdx] === "--git-dir" || tokens[subIdx] === "--work-tree") subIdx += 2
+      else subIdx += 1
+    }
+    const sub = tokens[subIdx]?.toLowerCase()
+
+    if (sub === "push") {
+      const isForce = tokens.some((t) => ["-f", "--force", "--force-with-lease", "--force-if-includes", "+"].some(f => t === f || t.startsWith("+")))
+      const isDelete = tokens.some((t) => t === "--delete" || t.startsWith(":"))
+      const riskLevel: RiskLevel = isForce ? "critical" : "high"
+      const reason = isForce
+        ? "git push with force rewrites remote history on external repository"
+        : isDelete
+        ? "git push deletes remote branch/ref on external repository"
+        : "git push publishes commits to remote repository"
+
+      return {
+        decision: "APPROVAL_REQUIRED",
+        riskLevel,
+        riskCategory: "external_git",
+        reason,
+        sensitiveMatches: [],
+        head: "git push",
+        scope: "remote Git repository",
+        target: tokens[subIdx + 1] || "origin",
+        normalizedAction: trimmed,
+        reversible: !isForce,
+        isExternal: true,
+        requiresHumanApproval: true,
+      }
+    }
+
+    if (sub === "branch" && tokens.some(t => t === "-r" || t === "--remotes") && tokens.some(t => t === "-d" || t === "-D" || t === "--delete")) {
+      return {
+        decision: "APPROVAL_REQUIRED",
+        riskLevel: "high",
+        riskCategory: "external_git",
+        reason: "git branch deleting remote-tracking branches",
+        sensitiveMatches: [],
+        head: "git branch",
+        scope: "remote Git refs",
+        target: "remote branches",
+        normalizedAction: trimmed,
+        reversible: false,
+        isExternal: true,
+        requiresHumanApproval: true,
+      }
+    }
+
+    const isGitRemoteRead = sub === "remote" && (tokens.length === 2 || ["-v", "--verbose", "show", "get-url"].includes(tokens[2]?.toLowerCase()))
+    const isGitBranchRead = sub === "branch" && (tokens.length === 2 || ["-a", "-r", "-v", "--list", "-l", "--show-current"].some(f => tokens.includes(f)) && !tokens.some(f => ["-d", "-D", "-m", "-M", "--delete"].includes(f)))
+    const isGitTagRead = sub === "tag" && (tokens.length === 2 || ["-l", "--list", "-n"].some(f => tokens.includes(f)) && !tokens.some(f => ["-d", "--delete", "-a"].includes(f)))
+    const isGitConfigRead = sub === "config" && tokens.some(f => ["--get", "--get-all", "--list", "-l", "--get-regexp"].includes(f))
+
+    const isGitRead = [
+      "status", "log", "diff", "show", "blame", "annotate",
+      "ls-files", "ls-tree", "ls-remote", "rev-parse", "rev-list",
+      "describe", "reflog", "shortlog", "check-ref-format", "version",
+    ].includes(sub) || isGitRemoteRead || isGitBranchRead || isGitTagRead || isGitConfigRead || isVersionOrHelpQuery(tokens)
+
+    if (isGitRead) {
+      return {
+        decision: "ALLOW",
+        riskLevel: "normal",
+        riskCategory: "read_inspection",
+        reason: `Git read-only inspection '${sub}'`,
+        sensitiveMatches: [],
+        head: "git",
+        scope: "workspace",
+        target: workingDir,
+        normalizedAction: trimmed,
+        reversible: true,
+        isExternal: false,
+        requiresHumanApproval: false,
+      }
+    }
+
+    return {
+      decision: "ALLOW",
+      riskLevel: "normal",
+      riskCategory: "workspace_development",
+      reason: `Local git operation '${sub || "git"}'`,
+      sensitiveMatches: [],
+      head: "git",
+      scope: "workspace",
+      target: workingDir,
+      normalizedAction: trimmed,
+      reversible: true,
+      isExternal: false,
+      requiresHumanApproval: false,
+    }
+  }
+
+  // 10. Check Catastrophic Deletion (rm -rf /...)
+  if (head === "rm") {
+    const isRecursive = tokens.some((t) => t.includes("r") || t.includes("R"))
+    const isForce = tokens.some((t) => t.includes("f"))
+    const targets = tokens.slice(1).filter((t) => !t.startsWith("-"))
+
+    for (const target of targets) {
+      const cleanTarget = target.trim().replace(/^['"]|['"]$/g, "")
+      if (cleanTarget === "/" || cleanTarget === "/*" || cleanTarget === "~" || cleanTarget === "$HOME" || cleanTarget === "/etc" || cleanTarget === "/var" || cleanTarget === "/usr" || cleanTarget === "/home") {
+        return {
+          decision: "APPROVAL_REQUIRED",
+          riskLevel: "critical",
+          riskCategory: "destructive_external",
+          reason: `Catastrophic filesystem deletion targeting root/system path: ${cleanTarget}`,
+          sensitiveMatches: [],
+          head: "rm",
+          scope: "filesystem deletion outside workspace",
+          target: cleanTarget,
+          normalizedAction: trimmed,
+          reversible: false,
+          isExternal: true,
+          requiresHumanApproval: true,
+        }
+      }
+      if (!isPathInWorkspaceOrTemp(cleanTarget, workingDir)) {
+        return {
+          decision: "APPROVAL_REQUIRED",
+          riskLevel: isRecursive && isForce ? "critical" : "high",
+          riskCategory: "destructive_external",
+          reason: `Filesystem deletion targeting path outside workspace: ${cleanTarget}`,
+          sensitiveMatches: [],
+          head: "rm",
+          scope: "filesystem deletion outside workspace",
+          target: cleanTarget,
+          normalizedAction: trimmed,
+          reversible: false,
+          isExternal: true,
+          requiresHumanApproval: true,
+        }
+      }
+    }
+    return {
+      decision: "ALLOW",
+      riskLevel: "normal",
+      riskCategory: "workspace_development",
+      reason: "Local workspace file deletion",
+      sensitiveMatches: [],
+      head: "rm",
+      scope: "workspace",
+      target: targets.join(", ") || workingDir,
+      normalizedAction: trimmed,
+      reversible: false,
+      isExternal: false,
+      requiresHumanApproval: false,
+    }
+  }
+
+  // 11. Read-only inspection commands
+  if (ALWAYS_READ_ONLY.has(head) || isVersionOrHelpQuery(tokens)) {
+    return {
+      decision: "ALLOW",
+      riskLevel: "normal",
+      riskCategory: "read_inspection",
+      reason: `Read-only inspection command '${head}'`,
+      sensitiveMatches: [],
+      head,
+      scope: "workspace",
+      target: workingDir,
+      normalizedAction: trimmed,
+      reversible: true,
+      isExternal: false,
+      requiresHumanApproval: false,
+    }
+  }
+
+  // 12. Default for standard workspace development commands
+  return {
+    decision: "ALLOW",
+    riskLevel: "normal",
+    riskCategory: "workspace_development",
+    reason: `Authorized autonomous workspace development command '${head}'`,
+    sensitiveMatches: [],
+    head,
+    scope: "workspace",
+    target: workingDir,
+    normalizedAction: trimmed,
+    reversible: true,
+    isExternal: false,
+    requiresHumanApproval: false,
+  }
+}
+
+export function evaluateShellAuthorization(command: string, options?: ClassifierOptions): AuthorizationEvaluation {
+  if (!command || typeof command !== "string" || command.trim().length === 0) {
+    return {
+      decision: "ALLOW",
+      riskLevel: "normal",
+      riskCategory: "read_inspection",
+      reason: "empty command",
+      sensitiveMatches: [],
+      head: null,
+      scope: "workspace",
+      target: options?.workingDir ?? process.cwd(),
+      normalizedAction: "",
+      reversible: true,
+      isExternal: false,
+      requiresHumanApproval: false,
+    }
+  }
+
+  const nestedSubs = extractCommandSubstitutions(command)
+  for (const nested of nestedSubs) {
+    const nestedEval = evaluateShellAuthorization(nested, options)
+    if (nestedEval.decision === "APPROVAL_REQUIRED" || nestedEval.decision === "DENY_INVALID") {
+      return {
+        ...nestedEval,
+        reason: `Nested command substitution '$(${nested})' requires approval: ${nestedEval.reason}`,
+        normalizedAction: command.trim(),
+      }
+    }
+  }
+
+  const segments = splitTopLevelSegments(command)
+  if (segments.length === 0) {
+    return evaluateSingleSegment(command, options)
+  }
+
+  let highestDecision: AuthorizationDecision = "ALLOW"
+  let highestRiskLevel: RiskLevel = "normal"
+  let winningEval: AuthorizationEvaluation | null = null
+
+  const riskRank: Record<RiskLevel, number> = {
+    normal: 0,
+    elevated: 1,
+    high: 2,
+    critical: 3,
+  }
+
+  const allSensitive: string[] = []
 
   for (const seg of segments) {
-    const r = classifySegment(seg, effectiveCwd)
-    if (head === null) head = r.head
-    reasons.push(r.reason)
-
-    if (r.category === "mutating") {
-      worst = "mutating"
-      blockingReason = r.reason
-      blockingHead = r.head
-    } else if (r.category === "risky" && worst !== "mutating") {
-      worst = "risky"
-      blockingReason = r.reason
-      blockingHead = r.head
-    } else if (r.category === "unknown" && worst === "read") {
-      worst = "unknown"
-      blockingReason = r.reason
-      blockingHead = r.head
+    const segEval = evaluateSingleSegment(seg, options)
+    if (segEval.sensitiveMatches.length > 0) {
+      allSensitive.push(...segEval.sensitiveMatches)
     }
 
-    const segTokens = tokenize(stripSudoPrefix(seg))
-    const segSensitive = findSensitiveMatches(seg, segTokens, opts?.extraSensitivePatterns, effectiveCwd)
-    for (const sm of segSensitive) accumulatedSensitiveMatches.add(sm)
+    if (segEval.decision === "DENY_INVALID") {
+      return segEval
+    }
 
-    // Handle cd navigation and update effectiveCwd for subsequent segments
-    if (r.head === "cd" && r.targetDir) {
-      let targetPath = r.targetDir
-      if (targetPath === "~" || targetPath.startsWith("~/") || targetPath.startsWith("~\\")) {
-        targetPath = targetPath === "~" ? homedir() : resolve(homedir(), targetPath.slice(2))
-      } else {
-        targetPath = resolve(effectiveCwd, targetPath)
+    if (segEval.decision === "APPROVAL_REQUIRED") {
+      highestDecision = "APPROVAL_REQUIRED"
+      if (!winningEval || riskRank[segEval.riskLevel] >= riskRank[highestRiskLevel]) {
+        highestRiskLevel = segEval.riskLevel
+        winningEval = segEval
       }
-      effectiveCwd = normalize(targetPath)
-      // Check if target directory itself matches sensitive patterns
-      const targetSensitive = findSensitiveMatches(effectiveCwd, [effectiveCwd], opts?.extraSensitivePatterns, effectiveCwd)
-      for (const sm of targetSensitive) accumulatedSensitiveMatches.add(sm)
+    } else if (highestDecision === "ALLOW") {
+      if (
+        !winningEval ||
+        riskRank[segEval.riskLevel] > riskRank[highestRiskLevel] ||
+        (segEval.riskCategory === "workspace_development" && winningEval.riskCategory === "read_inspection")
+      ) {
+        highestRiskLevel = segEval.riskLevel
+        winningEval = segEval
+      }
     }
   }
 
-  // Find sensitive matches across full command and effective context
-  const fullCmdTokens = tokenize(trimmed)
-  const fullCmdSensitive = findSensitiveMatches(trimmed, fullCmdTokens, opts?.extraSensitivePatterns, effectiveCwd)
-  for (const sm of fullCmdSensitive) accumulatedSensitiveMatches.add(sm)
+  if (winningEval && highestDecision === "APPROVAL_REQUIRED") {
+    return {
+      ...winningEval,
+      sensitiveMatches: [...new Set(allSensitive)],
+      normalizedAction: command.trim(),
+    }
+  }
 
-  const sensitiveMatches = [...accumulatedSensitiveMatches]
-  if (sensitiveMatches.length > 0 && worst === "read") {
-    return {
-      category: "sensitive-read",
-      reason: `command reads from a sensitive path (${sensitiveMatches.join(", ")}); route to a specialist`,
-      sensitiveMatches,
-      head,
-    }
-  }
-  if (worst === "read" && hasPathTraversal(tokenize(trimmed))) {
-    return {
-      category: "risky",
-      reason: "command uses `..` or `~` and may access paths outside the working directory",
-      sensitiveMatches,
-      head,
-    }
-  }
-  if (worst === "read") {
-    return {
-      category: "read",
-      reason: reasons[0] ?? "read-only command",
-      sensitiveMatches: [],
-      head,
-    }
-  }
-  if (worst === "mutating") {
-    return {
-      category: "mutating",
-      reason: blockingReason ?? reasons.find(r => r.includes("mutating")) ?? reasons[0] ?? "command mutates state",
-      sensitiveMatches,
-      head: blockingHead ?? head,
-    }
-  }
-  if (worst === "risky") {
-    return {
-      category: "risky",
-      reason: blockingReason ?? reasons.find(r => r.includes("risky") || r.includes("network") || r.includes("traversal") || r.includes("indirection")) ?? reasons[0] ?? "command is operationally risky",
-      sensitiveMatches,
-      head: blockingHead ?? head,
-    }
-  }
-  return {
-    category: "unknown",
-    reason: blockingReason ?? reasons.find(r => r.includes("not in the read-only allowlist")) ?? reasons[0] ?? "command could not be classified",
-    sensitiveMatches,
-    head: blockingHead ?? head,
-  }
+  return winningEval ?? evaluateSingleSegment(command, options)
 }
 
-/**
- * Decide whether a `gh <subcommand>` invocation is read-only given the tokens.
- */
-export function classifyGhCommand(tokens: ReadonlyArray<string>): { category: ShellCategory; reason: string } {
-  if (tokens.length <= 1) {
-    return { category: "read", reason: "bare `gh` command (read-only help/status)" }
-  }
-
-  const sub = tokens[1].toLowerCase()
-
-  if (sub === "api") {
-    const hasMutatingFlag = tokens.some((t, i) => {
-      const lower = t.toLowerCase()
-      if (lower === "-x" || lower === "--method") {
-        const next = (tokens[i + 1] ?? "").toUpperCase()
-        return next === "POST" || next === "DELETE" || next === "PUT" || next === "PATCH"
-      }
-      return (
-        lower.startsWith("-xpost") ||
-        lower.startsWith("-xdelete") ||
-        lower.startsWith("-xput") ||
-        lower.startsWith("-xpatch") ||
-        lower === "-f" ||
-        lower.startsWith("--field") ||
-        lower.startsWith("--raw-field") ||
-        lower.startsWith("--input")
-      )
-    })
-
-    if (hasMutatingFlag) {
-      return { category: "mutating", reason: "`gh api` with HTTP method or field mutation" }
+export function classifyShellCommand(command: string, options?: ClassifierOptions): Classification {
+  if (!command || typeof command !== "string" || command.trim().length === 0) {
+    return {
+      category: "unknown",
+      reason: "empty or invalid command",
+      sensitiveMatches: [],
+      head: null,
     }
-    return { category: "read", reason: "`gh api` GET request (read-only inspection)" }
   }
 
-  const readSubcommands = new Set([
-    "view", "list", "status", "browse", "search", "help", "version",
-  ])
+  const auth = evaluateShellAuthorization(command, options)
 
-  if (tokens.length >= 3 && readSubcommands.has(tokens[2].toLowerCase())) {
-    return { category: "read", reason: "`gh` read-only subcommand" }
+  let category: ShellCategory = "read"
+  if (auth.decision === "APPROVAL_REQUIRED") {
+    if (auth.riskCategory === "sensitive_data") {
+      category = "sensitive-read"
+    } else if (auth.riskCategory === "package_release") {
+      category = "mutating"
+    } else {
+      category = "risky"
+    }
+  } else if (auth.decision === "DENY_INVALID") {
+    category = "unknown"
+  } else {
+    if (auth.riskCategory === "workspace_development") {
+      category = "mutating"
+    } else {
+      category = "read"
+    }
   }
 
-  const mutatingSubcommands = new Set([
-    "create", "edit", "delete", "merge", "close", "reopen", "comment", "deploy", "publish",
-  ])
-
-  if (tokens.length >= 3 && mutatingSubcommands.has(tokens[2].toLowerCase())) {
-    return { category: "mutating", reason: "`gh` mutating subcommand" }
+  return {
+    category,
+    reason: auth.reason,
+    sensitiveMatches: auth.sensitiveMatches,
+    head: auth.head,
+    authorization: auth,
   }
-
-  if (readSubcommands.has(sub)) {
-    return { category: "read", reason: "`gh` read-only subcommand" }
-  }
-
-  return { category: "read", reason: "`gh` read-only inspection" }
 }

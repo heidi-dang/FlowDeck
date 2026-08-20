@@ -1,17 +1,12 @@
 /**
- * Orchestrator Guard Strategy Circuit
+ * Orchestrator Guard Strategy Circuit (FlowDeck v2.2.7)
  *
- * Implements an authoritative circuit breaker for repeated orchestrator_guard blocks.
- * Prevents identical blocked tool executions from churning the model (such as 13-attempt loops).
- *
- * Protocol:
- *   - Attempt 1: Deny execution + return exact reason + structured EXECUTABLE ALTERNATIVES.
- *   - Attempt 2 (unchanged blocked fingerprint): Deny immediately + mark strategy INVALIDATED (reason: REPEATED_GUARD_BLOCK) + require different route/tool.
- *   - Attempt 3+ (unchanged blocked fingerprint): Suppress model/tool churn cycle with terminal block error.
- *
- * Resets / resolves:
- *   - When repository generation changes (state mutation).
- *   - When a different evidence-producing action is taken.
+ * Implements an authoritative strategy tracker and circuit breaker for guard decisions:
+ *   - ALLOW: Records allowed progress and clears invalidated fingerprints on state mutation.
+ *   - APPROVAL_REQUIRED / WAITING_FOR_APPROVAL: Tracks pending approval state without churning
+ *     failure retry counters or tripping loop suppression.
+ *   - DENY_INVALID / INVALIDATED: Bounds identical unchanged retries (Attempt 1 recoverable ->
+ *     Attempt 2 terminal invalidation -> Attempt 3+ suppressed).
  */
 
 export interface BlockedStrategyIncident {
@@ -21,7 +16,7 @@ export interface BlockedStrategyIncident {
   lastBlockedAt: number
   repeatCount: number
   strategyGeneration: number
-  status: "active" | "invalidated" | "suppressed"
+  status: "active" | "approval_pending" | "approved" | "denied" | "invalidated" | "suppressed"
   reasonCode: string
   reasonText: string
   suggestedActions: string[]
@@ -29,7 +24,7 @@ export interface BlockedStrategyIncident {
 }
 
 export interface CircuitEvaluation {
-  action: "deny" | "deny_invalidated" | "suppressed"
+  action: "deny" | "deny_invalidated" | "suppressed" | "approval_required" | "approval_pending" | "denied"
   repeatCount: number
   incident: BlockedStrategyIncident
   message: string
@@ -70,21 +65,10 @@ function normalizeCommandString(cmd: string): string {
     .slice(0, 300)
 }
 
-/**
- * Per-session tool-error repetition counters. Bounds loops from repeated identical tool failures.
- *
- * 3-Attempt Circuit Protocol:
- * - Two identical failure executions are recorded.
- * - The third unchanged attempt is suppressed before execution (TOOL_ERROR_HARD_LIMIT = 2 previous failures).
- */
 const _toolErrorCounts = new Map<string, number>()
 export const TOOL_ERROR_HARD_LIMIT = 2
 const MAX_ERROR_COUNT_ENTRIES = 2000
 
-/**
- * Track a repeated tool error; return whether the hard limit has been hit.
- * Call for any tool throw or failure output to bound infinite retry loops.
- */
 export function recordToolError(
   sessionID: string,
   toolName: string,
@@ -104,7 +88,6 @@ export function recordToolError(
   return { blocked: count >= TOOL_ERROR_HARD_LIMIT, count }
 }
 
-/** Check whether identical tool + input has triggered the 3-strike circuit breaker. */
 export function checkToolErrorCircuit(
   sessionID: string,
   toolName: string,
@@ -126,20 +109,10 @@ export function clearToolErrorCounts(sessionID: string): void {
   }
 }
 
-class OrchestratorGuardStrategyCircuitRegistry {
-  private incidents = new Map<string, Map<string, BlockedStrategyIncident>>() // sessionID -> fingerprint -> incident
-  private sessionLastAllowedAction = new Map<string, number>()
-  private sessionRepoGeneration = new Map<string, string>()
-
-  recordAllowedProgress(sessionID: string, repoGen?: string): void {
-    if (!sessionID) return
-    this.sessionLastAllowedAction.set(sessionID, Date.now())
-    if (repoGen && this.sessionRepoGeneration.get(sessionID) !== repoGen) {
-      this.sessionRepoGeneration.set(sessionID, repoGen)
-      // Repo generation changed - clear blocked incidents for this session
-      this.incidents.delete(sessionID)
-    }
-  }
+export class OrchestratorGuardStrategyCircuitRegistry {
+  private incidents = new Map<string, BlockedStrategyIncident>()
+  private sessionGenerations = new Map<string, number>()
+  private lastRepoGenerations = new Map<string, string>()
 
   evaluateBlock(params: {
     sessionID: string
@@ -149,123 +122,124 @@ class OrchestratorGuardStrategyCircuitRegistry {
     reasonText: string
     suggestedActions?: string[]
     repoGeneration?: string
+    cwd?: string
+    isApprovalRequired?: boolean
   }): CircuitEvaluation {
-    const { sessionID, toolName, input, reasonCode, reasonText, suggestedActions = [], repoGeneration } = params
-    const fingerprint = normalizeGuardFingerprint(toolName, input)
-
-    let sessionMap = this.incidents.get(sessionID)
-    if (!sessionMap) {
-      sessionMap = new Map<string, BlockedStrategyIncident>()
-      this.incidents.set(sessionID, sessionMap)
-    }
-
-    let incident = sessionMap.get(fingerprint)
+    const { sessionID, toolName, input, reasonCode, reasonText, suggestedActions = [], repoGeneration, cwd, isApprovalRequired } = params
+    const fingerprint = normalizeGuardFingerprint(toolName, input, cwd)
+    const key = `${sessionID}:${fingerprint}`
     const now = Date.now()
 
-    if (!incident) {
-      incident = {
+    let currentGen = this.sessionGenerations.get(sessionID) ?? 1
+    const lastRepoGen = this.lastRepoGenerations.get(sessionID)
+
+    if (repoGeneration && lastRepoGen && repoGeneration !== lastRepoGen) {
+      currentGen++
+      this.sessionGenerations.set(sessionID, currentGen)
+      this.lastRepoGenerations.set(sessionID, repoGeneration)
+      this.incidents.delete(key)
+    } else if (repoGeneration && !lastRepoGen) {
+      this.lastRepoGenerations.set(sessionID, repoGeneration)
+    }
+
+    const existing = this.incidents.get(key)
+
+    if (!existing || existing.strategyGeneration !== currentGen) {
+      const incident: BlockedStrategyIncident = {
         fingerprint,
         sessionID,
         firstBlockedAt: now,
         lastBlockedAt: now,
         repeatCount: 1,
-        strategyGeneration: 1,
-        status: "active",
+        strategyGeneration: currentGen,
+        status: isApprovalRequired ? "approval_pending" : "active",
         reasonCode,
         reasonText,
-        suggestedActions: suggestedActions.length > 0 ? suggestedActions : [
-          "Route execution probe or test to a specialist (@tester, @debug-specialist)",
-          "Use read-only inspection tools (fdx-read, fdx-search, fdx-ls)",
-          "Check existing test results or documentation before re-attempting",
-        ],
+        suggestedActions,
         repoGeneration,
       }
-      sessionMap.set(fingerprint, incident)
+      this.incidents.set(key, incident)
 
-      const structuredMsg = buildCircuitErrorMessage(incident, "deny")
+      if (isApprovalRequired) {
+        return {
+          action: "approval_required",
+          repeatCount: 1,
+          incident,
+          message: `[FlowDeck Guard] Action requires explicit User Approval: ${reasonText}`,
+        }
+      }
+
       return {
         action: "deny",
         repeatCount: 1,
         incident,
-        message: structuredMsg,
+        message: `[FlowDeck Guard] Blocked execution attempt 1. Action is recoverable: replan with specialist routing or read-only tools.`,
       }
     }
 
-    // Incident already exists - increment repeat count
-    incident.repeatCount++
-    incident.lastBlockedAt = now
+    existing.lastBlockedAt = now
 
-    if (incident.repeatCount === 2) {
-      incident.status = "invalidated"
-      incident.strategyGeneration++
-      const structuredMsg = buildCircuitErrorMessage(incident, "deny_invalidated")
+    if (isApprovalRequired) {
+      existing.status = "approval_pending"
+      return {
+        action: "approval_pending",
+        repeatCount: existing.repeatCount,
+        incident: existing,
+        message: `[FlowDeck Guard] Action is currently WAITING_FOR_APPROVAL. Please grant approval in the FlowDeck UI before retrying.`,
+      }
+    }
+
+    existing.repeatCount++
+
+    if (existing.repeatCount === 2) {
+      existing.status = "invalidated"
       return {
         action: "deny_invalidated",
         repeatCount: 2,
-        incident,
-        message: structuredMsg,
+        incident: existing,
+        message: `[FlowDeck Guard - STRATEGY INVALIDATED] Heidi attempted the exact same blocked action (${toolName}) twice in generation ${currentGen} without state transition. Hard stop to prevent retry loop.`,
       }
     }
 
-    // repeatCount >= 3 -> Suppressed
-    incident.status = "suppressed"
-    const structuredMsg = buildCircuitErrorMessage(incident, "suppressed")
+    existing.status = "suppressed"
     return {
       action: "suppressed",
-      repeatCount: incident.repeatCount,
-      incident,
-      message: structuredMsg,
+      repeatCount: existing.repeatCount,
+      incident: existing,
+      message: `[FlowDeck Guard - LOOP SUPPRESSED] Repeated unchanged blocked action (${toolName}) suppressed (${existing.repeatCount} attempts).`,
     }
   }
 
-  getIncident(sessionID: string, fingerprint: string): BlockedStrategyIncident | undefined {
-    return this.incidents.get(sessionID)?.get(fingerprint)
+  recordAllowedProgress(sessionID: string, newRepoGeneration?: string): void {
+    const currentGen = (this.sessionGenerations.get(sessionID) ?? 1) + 1
+    this.sessionGenerations.set(sessionID, currentGen)
+    if (newRepoGeneration) {
+      this.lastRepoGenerations.set(sessionID, newRepoGeneration)
+    }
+
+    for (const [key, incident] of this.incidents.entries()) {
+      if (incident.sessionID === sessionID) {
+        this.incidents.delete(key)
+      }
+    }
   }
 
   clearSession(sessionID: string): void {
-    this.incidents.delete(sessionID)
-    this.sessionLastAllowedAction.delete(sessionID)
-    this.sessionRepoGeneration.delete(sessionID)
+    this.sessionGenerations.delete(sessionID)
+    this.lastRepoGenerations.delete(sessionID)
+    for (const [key, incident] of this.incidents.entries()) {
+      if (incident.sessionID === sessionID) {
+        this.incidents.delete(key)
+      }
+    }
   }
 
   clearAll(): void {
     this.incidents.clear()
-    this.sessionLastAllowedAction.clear()
-    this.sessionRepoGeneration.clear()
+    this.sessionGenerations.clear()
+    this.lastRepoGenerations.clear()
+    _toolErrorCounts.clear()
   }
-}
-
-function buildCircuitErrorMessage(incident: BlockedStrategyIncident, action: "deny" | "deny_invalidated" | "suppressed"): string {
-  const lines: string[] = []
-
-  if (action === "suppressed") {
-    lines.push(`[Orchestrator Guard Circuit Breaker: REPEATED_GUARD_BLOCK_SUPPRESSED]`)
-    lines.push(`The orchestrator has attempted this blocked operation ${incident.repeatCount} times without changing strategy.`)
-    lines.push(`To prevent token exhaustion loops, execution is halted on this path.`)
-    lines.push(`\nMandatory next step: Route this task to a specialist subagent or choose an allowed read-only inspection tool.`)
-    return lines.join("\n")
-  }
-
-  if (action === "deny_invalidated") {
-    lines.push(`[Orchestrator Guard Circuit Invalidation: REPEATED_GUARD_BLOCK]`)
-    lines.push(`Strategy Invalidated: This operation was blocked on previous attempt and repeated unchanged.`)
-    lines.push(`\nReason: ${incident.reasonText}`)
-    lines.push(`\nREQUIRED STRATEGY CHANGE:`)
-    incident.suggestedActions.forEach((act, i) => {
-      lines.push(`  ${i + 1}. ${act}`)
-    })
-    lines.push(`\nExecution is halted on this identical path. Do NOT repeat this command unchanged. Choose an alternative tool or delegate to a specialist agent.`)
-    return lines.join("\n")
-  }
-
-  lines.push(`[Orchestrator Guard Block: ${incident.reasonCode}]`)
-  lines.push(`Reason: ${incident.reasonText}`)
-  lines.push(`\nAVAILABLE NEXT ACTIONS:`)
-  incident.suggestedActions.forEach((act, i) => {
-    lines.push(`  ${i + 1}. ${act}`)
-  })
-  lines.push(`\nDo NOT repeat this identical command unchanged — identical retries are blocked.`)
-  return lines.join("\n")
 }
 
 export const orchestratorGuardStrategyCircuit = new OrchestratorGuardStrategyCircuitRegistry()

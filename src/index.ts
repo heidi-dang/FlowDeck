@@ -1214,18 +1214,20 @@ const plugin: Plugin = async ({ directory, client }) => {
           updateWatchdogState(sessionID, { isPendingTool: c > 0 })
         }
         releaseCallTimer(sessionID, callID, toolName)
+        const isAppr = isRecoverableBlockError(err) && (err.code === "APPROVAL_REQUIRED" || err.details?.status === "WAITING_FOR_APPROVAL")
         appendAuditEvent(directory, {
-          kind: "guard.block",
+          kind: isAppr ? "approval.required" : "guard.block",
           session_id: sessionID,
           agent,
           tool: toolName,
-          decision: "block",
+          decision: isAppr ? "approval_required" : "block",
           reason: err instanceof Error ? err.message : String(err),
           details: {
             callID,
             subsystem: isRecoverableBlockError(err) ? err.subsystem : "orchestrator_guard",
             code: isRecoverableBlockError(err) ? err.code : "ORCHESTRATOR_GUARD_BLOCK",
             recoverable: isRecoverableBlockError(err) ? err.recoverable : false,
+            approval: isRecoverableBlockError(err) ? err.details?.approval : undefined,
           },
         })
         throw err

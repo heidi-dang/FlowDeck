@@ -12,6 +12,7 @@ import { clearWatchdogState } from "./heidi-watchdog"
 import { watchdogIncidentManager } from "./watchdog-incident"
 import { loopIncidentTracker } from "./loop-incident"
 import { clearToolErrorCounts, orchestratorGuardStrategyCircuit } from "./orchestrator-guard-strategy-circuit"
+import { flowDeckApprovalRegistry } from "./approval-service"
 import { semanticConvergenceGuard as semanticConvergence } from "./semantic-convergence-guard"
 import { emptyTerminalCircuit } from "./empty-terminal-circuit"
 import { taskPhaseManager } from "./task-phase-manager"
@@ -189,6 +190,7 @@ export function cleanupSessionState(
   trackers?.shellFailureTracker?.clearSession(sessionID)
   trackers?.operationLifecycle?.clearSession(sessionID)
   orchestratorGuardStrategyCircuit.clearSession(sessionID)
+  flowDeckApprovalRegistry.clearSession(sessionID)
   clearToolErrorCounts(sessionID)
   sessionLoopIncidents.delete(sessionID)
   semanticConvergence.clearSession(sessionID)
