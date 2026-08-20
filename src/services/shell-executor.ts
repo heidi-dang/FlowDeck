@@ -13,6 +13,7 @@ const { rewriteShellCommand, rewriteLsCommand, executeFastRewrite } = fastLane;
 
 export interface ShellToolDeps {
   cwd: string;
+  timeoutMs?: number;
 }
 
 export type ShellExecutionStatus = "ok" | "failed";
@@ -39,7 +40,7 @@ export interface ShellExecutionResult {
  * Execute a shell command. If it is a safe, recognized rewrite (cat, sed -n,
  * grep, git status/diff/log, ls) it runs the semantic adapter in-process or
  * via execFileSync("git") — bashSpawned=false and bashSpawnCount is untouched.
- * Otherwise it runs `bash -lc <command>` with a 120s timeout, increments
+ * Otherwise it runs `bash -lc <command>` with a timeout (default 120s), increments
  * bashSpawnCount, and reports bashSpawned=true. Spawn errors are captured into
  * the returned output rather than thrown spuriously.
  */
@@ -62,22 +63,29 @@ export function executeShellCommand(
 
 function runBash(command: string, deps: ShellToolDeps): ShellExecutionResult {
   fastLane.addBashSpawnCount(1);
+  const cwd = deps?.cwd ?? process.cwd();
+  const timeout = typeof deps?.timeoutMs === "number" && deps.timeoutMs > 0 ? deps.timeoutMs : 120_000;
   try {
-    const output = execFileSync("bash", ["-lc", command], {
-      cwd: deps.cwd,
+    const output = execFileSync("bash", ["-lc", String(command ?? "")], {
+      cwd,
       encoding: "utf8",
-      timeout: 120_000,
+      timeout,
+      maxBuffer: 10 * 1024 * 1024,
+      killSignal: "SIGTERM",
     });
     return { output, bashSpawned: true, adapter: null, status: "ok", exitCode: 0, stderr: "" };
   } catch (err: any) {
     const oe = err?.stdout ? err.stdout.toString() : "";
     const se = err?.stderr ? err.stderr.toString() : "";
     const combined = oe + (oe && se ? "\n" : "") + se;
+    const isTimeout = err?.code === "ETIMEDOUT" || err?.signal === "SIGTERM" || err?.killed === true;
     const exitCode = typeof err?.status === "number" && err.status > 0
       ? err.status
       : typeof err?.code === "number" && err.code !== "ENOENT" && err.code > 0
         ? err.code
-        : 1;
+        : isTimeout
+          ? 128 + 15 // 143 (SIGTERM)
+          : 1;
     return {
       output: combined || (err?.message ?? String(err)),
       bashSpawned: true,

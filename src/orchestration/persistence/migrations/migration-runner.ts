@@ -59,6 +59,16 @@ export function runMigrations(db: Database): void {
     const start = Date.now()
     try {
       db.exec("BEGIN IMMEDIATE")
+      // Double check inside exclusive transaction to prevent concurrent startup races
+      const insideRow = db.query("SELECT checksum FROM schema_migrations WHERE version = ?").get(migration.version) as { checksum: string } | undefined
+      if (insideRow) {
+        db.exec("COMMIT")
+        if (insideRow.checksum !== migration.checksum) {
+          throw new MigrationChecksumError(migration.version, insideRow.checksum, migration.checksum)
+        }
+        continue
+      }
+
       db.exec(migration.sql)
       db.query(
         `INSERT INTO schema_migrations (version, name, applied_at, checksum, duration_ms)
@@ -66,7 +76,7 @@ export function runMigrations(db: Database): void {
       ).run(migration.version, migration.name, migration.checksum, Date.now() - start)
       db.exec("COMMIT")
     } catch (err) {
-      db.exec("ROLLBACK")
+      try { db.exec("ROLLBACK") } catch {}
       const message = err instanceof Error ? err.message : String(err)
       throw new MigrationError(
         `Migration v${migration.version} ("${migration.name}") failed: ${message}. ` +

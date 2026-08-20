@@ -14,10 +14,12 @@ export async function repairPluginRegistration(directory: string): Promise<AutoF
   const configFile = join(configDir, "opencode.json")
 
   try {
-    let cfg: any = { plugin: [] }
+    let cfg: { plugin?: string[]; default_agent?: string; [key: string]: unknown } = { plugin: [] }
+    let rawBefore = ""
     if (existsSync(configFile)) {
       try {
-        cfg = JSON.parse(readFileSync(configFile, "utf-8"))
+        rawBefore = readFileSync(configFile, "utf-8")
+        cfg = JSON.parse(rawBefore)
       } catch {
         cfg = { plugin: [] }
       }
@@ -37,8 +39,11 @@ export async function repairPluginRegistration(directory: string): Promise<AutoF
       cfg.default_agent = "heidi"
     }
 
-    mkdirSync(dirname(configFile), { recursive: true })
-    writeFileSync(configFile, JSON.stringify(cfg, null, 2), "utf-8")
+    const payload = JSON.stringify(cfg, null, 2)
+    if (payload !== rawBefore) {
+      mkdirSync(dirname(configFile), { recursive: true })
+      writeFileSync(configFile, payload, "utf-8")
+    }
 
     // Update runtime self report for directory
     recordRuntimeSelfReport(getExecutingRuntimeIdentity(), directory)
@@ -66,22 +71,36 @@ export async function repairPluginRegistration(directory: string): Promise<AutoF
               rmSync(fullPath, { recursive: true, force: true })
             }
           }
-        } catch { /* ignore */ }
+        } catch {
+          // Ignore unreadable cache directory
+        }
       }
+    }
+
+    // Post-repair verification: read back opencode.json and check plugin array
+    let reverified = false
+    try {
+      const readBack = JSON.parse(readFileSync(configFile, "utf-8"))
+      const plugins = Array.isArray(readBack.plugin) ? readBack.plugin : []
+      reverified = plugins.includes(PKG_NAME) && !plugins.includes("@dv.nghiem/flowdeck")
+    } catch {
+      reverified = false
     }
 
     return {
       id: "plugin.registration",
       description: "Repaired FlowDeck plugin registration and synchronized runtime identity",
-      applied: true,
-      reverified: true,
+      applied: reverified,
+      reverified,
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
     return {
       id: "plugin.registration",
       description: "Plugin registration repair failed",
       applied: false,
-      error: err.message,
+      reverified: false,
+      error: message,
     }
   }
 }

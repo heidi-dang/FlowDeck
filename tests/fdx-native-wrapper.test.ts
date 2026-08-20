@@ -11,7 +11,7 @@
 
 import { describe, it, expect } from "bun:test"
 import { existsSync } from "fs"
-import { join } from "path"
+import { join, resolve } from "path"
 import { tmpdir } from "os"
 import {
   resolveFdxBinaryPath,
@@ -20,7 +20,8 @@ import {
 } from "../src/tools/fdx"
 
 describe("FDX Native Wrapper & Tool Integration", () => {
-  const nativeBin = resolveFdxBinaryPath() || join(__dirname, "../crates/fdx/target/debug/fdx")
+  const resolved = resolveFdxBinaryPath()
+  const nativeBin = (resolved && resolved !== "fdx") ? resolved : join(__dirname, "../crates/fdx/target/debug/fdx")
 
   it("proves FDX_BINARY_PATH is used and PATH lookup is bypassed when explicit binary is set", () => {
     if (!existsSync(nativeBin)) return
@@ -95,7 +96,7 @@ describe("FDX Native Wrapper & Tool Integration", () => {
 
       const result = await fdxReadTool.execute(
         { file: "package.json", mode: "raw", limit: 10 },
-        { sessionID: "s1", messageID: "m1" } as any
+        { sessionID: "s1", messageID: "m1", directory: resolve(__dirname, "..") } as any
       )
       expect(typeof result).toBe("string")
       expect(result).not.toContain("[TypeScript Fallback]")

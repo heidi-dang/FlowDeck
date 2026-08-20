@@ -65,13 +65,20 @@ function normalizeCommandString(cmd: string): string {
     .slice(0, 300)
 }
 
-/** Per-session tool-error repetition counters. Bounds loops from repeated identical tool failures. */
+/**
+ * Per-session tool-error repetition counters. Bounds loops from repeated identical tool failures.
+ *
+ * 3-Attempt Circuit Protocol:
+ * - Two identical failure executions are recorded.
+ * - The third unchanged attempt is suppressed before execution (TOOL_ERROR_HARD_LIMIT = 2 previous failures).
+ */
 const _toolErrorCounts = new Map<string, number>()
-const TOOL_ERROR_HARD_LIMIT = 3
+export const TOOL_ERROR_HARD_LIMIT = 2
+const MAX_ERROR_COUNT_ENTRIES = 2000
 
 /**
  * Track a repeated tool error; return whether the hard limit has been hit.
- * Call for any non-orchestrator-guard tool throw to bound infinite retry loops.
+ * Call for any tool throw or failure output to bound infinite retry loops.
  */
 export function recordToolError(
   sessionID: string,
@@ -79,10 +86,33 @@ export function recordToolError(
   inputHash: string,
   errorHash: string,
 ): { blocked: boolean; count: number } {
-  const key = sessionID + ":" + toolName + ":" + inputHash.slice(0, 60) + ":" + errorHash.slice(0, 60)
+  if (_toolErrorCounts.size >= MAX_ERROR_COUNT_ENTRIES) {
+    let purged = 0
+    for (const k of _toolErrorCounts.keys()) {
+      _toolErrorCounts.delete(k)
+      if (++purged >= 500) break
+    }
+  }
+  const key = sessionID + ":" + toolName.toLowerCase() + ":" + inputHash.slice(0, 60) + ":" + errorHash.slice(0, 60)
   const count = (_toolErrorCounts.get(key) ?? 0) + 1
   _toolErrorCounts.set(key, count)
   return { blocked: count >= TOOL_ERROR_HARD_LIMIT, count }
+}
+
+/** Check whether identical tool + input has triggered the 3-strike circuit breaker. */
+export function checkToolErrorCircuit(
+  sessionID: string,
+  toolName: string,
+  inputHash: string,
+): { blocked: boolean; maxCount: number } {
+  const prefix = sessionID + ":" + toolName.toLowerCase() + ":" + inputHash.slice(0, 60) + ":"
+  let maxCount = 0
+  for (const [key, count] of _toolErrorCounts.entries()) {
+    if (key.startsWith(prefix)) {
+      if (count > maxCount) maxCount = count
+    }
+  }
+  return { blocked: maxCount >= TOOL_ERROR_HARD_LIMIT, maxCount }
 }
 
 export function clearToolErrorCounts(sessionID: string): void {

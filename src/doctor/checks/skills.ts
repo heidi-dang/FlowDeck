@@ -82,7 +82,7 @@ export async function runCuratedSkillChecks(directory: string): Promise<CheckRes
         }
       }
     } catch {
-      // ignore read error
+      invalidSkillCount++
     }
 
     if (invalidSkillCount === 0) {

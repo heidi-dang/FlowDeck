@@ -1050,12 +1050,16 @@ function findOpenCode() {
   }
 }
 
-function verifyOpenCodeRuntime() {
+function verifyOpenCodeRuntime(opts = {}) {
   log("\n  OpenCode runtime verification:")
 
   const opencodePath = findOpenCode()
   if (!opencodePath) {
-    log("  ℹ opencode not found in PATH — skipping CLI agent list verification")
+    if (opts.verifyRuntime && !opts.offline && !opts.staticOnly) {
+      warn("  ✗ opencode not found in PATH — required runtime verification failed")
+      return { ok: false, skipped: false, reason: "opencode not found in PATH for required runtime verification" }
+    }
+    log("  ℹ opencode not found in PATH — skipping CLI agent list verification (offline/static mode)")
     return { ok: true, skipped: true, reason: "opencode not found in PATH" }
   }
   log(`  OpenCode: ${opencodePath}`)
@@ -1426,7 +1430,7 @@ async function runCleanInstall(userOpts = {}) {
       runtimeResult = { ok: !opts.dryRun, skipped: !opts.verifyRuntime }
       log(`  ${runtimeResult.skipped ? "SKIPPED" : "DRY RUN"}`)
     } else {
-      runtimeResult = verifyOpenCodeRuntime()
+      runtimeResult = verifyOpenCodeRuntime(opts)
       if (!runtimeResult.ok && !runtimeResult.skipped) {
         transaction.fail("Runtime verification", runtimeResult.reason || "failed")
         throw new Error(`Runtime verification failed`)

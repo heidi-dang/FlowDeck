@@ -654,27 +654,9 @@ export class OrchestratorGuard {
           })
         }
 
-        // Check for explicit controlled failure probe (e.g. deliberate exit 17 test probe)
-        const isControlledProbe =
-          (args && typeof args === "object" && (
-            (args as any).expectedOutcome?.values?.includes(17) ||
-            (args as any).expectedExitCode === 17 ||
-            ((args as any).expectedExitCodes as number[] | undefined)?.includes(17) ||
-            String((args as any).description || "").toLowerCase().includes("exit 17") ||
-            String((args as any).description || "").toLowerCase().includes("exit-17") ||
-            String((args as any).description || "").toLowerCase().includes("failure probe")
-          )) ||
-          (cmd.includes("process.exit(17)") && (
-            String((args as any)?.description || "").toLowerCase().includes("probe") ||
-            String((args as any)?.description || "").toLowerCase().includes("audit") ||
-            String((args as any)?.description || "").toLowerCase().includes("failure")
-          ))
-
-        if (isControlledProbe) {
-          // Explicit controlled probe: allow execution so failure lifecycle is observed without guard loop
-          return
-        }
-
+        // Security invariant: Every command must first pass authoritative authorization
+        // and classification rules. Caller-supplied metadata (description, expectedExitCode,
+        // probe markers) CANNOT bypass or authorize mutating, risky, sensitive, or unknown commands.
         const cls = classifyShellCommand(cmd, { workingDir: process.cwd() })
         if (cls.category !== "read") {
           const rawCode =

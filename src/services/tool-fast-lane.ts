@@ -16,6 +16,7 @@
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { resolve } from "node:path";
 
 const READ_ONLY_TOOLS = new Set([
   "fdx-read", "fdx-grep", "fdx-search", "fdx-outline", "fdx-ls", "fdx-tree",
@@ -94,8 +95,8 @@ export function classifyFastLane(toolName: string): FastLaneDecision {
  */
 function isSafePathToken(p: string): boolean {
   if (!p || p.length > 4096) return false
-  if (/[|&;<>'"`]/.test(p)) return false
-  if (/[\s]/.test(p)) return false
+  if (p.includes("\0") || /[\r\n\t$|&;<>'"`\\]/.test(p)) return false
+  if (/\s/.test(p)) return false
   return true
 }
 
@@ -183,17 +184,21 @@ export function rewriteLsCommand(command: string): FastRewrite | null {
 export function executeFastRewrite(rewritten: FastRewrite, cwd?: string): string {
   const workdir = cwd ?? process.cwd();
   switch (rewritten.adapter) {
-    case "file-read":
-      return readFileSync(rewritten.file ?? "", "utf8");
+    case "file-read": {
+      const filePath = resolve(workdir, rewritten.file ?? "");
+      return readFileSync(filePath, "utf8");
+    }
     case "file-read-range": {
-      const text = readFileSync(rewritten.file ?? "", "utf8");
+      const filePath = resolve(workdir, rewritten.file ?? "");
+      const text = readFileSync(filePath, "utf8");
       const lines = text.split(/\r?\n/);
       const start = (rewritten.offset ?? 1) - 1;
       const end = start + (rewritten.limit ?? 0);
       return lines.slice(start, end).join("\n");
     }
     case "file-grep": {
-      const text = readFileSync(rewritten.file ?? "", "utf8");
+      const filePath = resolve(workdir, rewritten.file ?? "");
+      const text = readFileSync(filePath, "utf8");
       const lines = text.split(/\r?\n/);
       const pattern = rewritten.pattern ?? "";
       const out: string[] = [];
@@ -209,15 +214,17 @@ export function executeFastRewrite(rewritten: FastRewrite, cwd?: string): string
       const rest = (rewritten.rest ?? "").split(/\s+/).filter((s) => s.length > 0);
       args.push(...rest);
       try {
-        return execFileSync("git", args, { cwd: workdir, encoding: "utf8" });
+        return execFileSync("git", args, { cwd: workdir, encoding: "utf8", timeout: 30_000, maxBuffer: 10 * 1024 * 1024 });
       } catch (err: any) {
         const oe = err?.stdout ? err.stdout.toString() : "";
         const se = err?.stderr ? err.stderr.toString() : "";
         return (oe + (oe && se ? "\n" : "") + se) || (err?.message ?? String(err));
       }
     }
-    case "dir-list":
-      return readdirSync(rewritten.dir ?? rewritten.file ?? ".", "utf8").join("\n");
+    case "dir-list": {
+      const dirPath = resolve(workdir, rewritten.dir ?? rewritten.file ?? ".");
+      return readdirSync(dirPath, "utf8").join("\n");
+    }
   }
 }
 

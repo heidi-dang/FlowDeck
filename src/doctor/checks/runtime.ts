@@ -78,41 +78,179 @@ export async function runRuntimeChecks(_directory: string): Promise<CheckResult[
       autoFixAvailable: false,
     })
   } else {
-    checks.push({ id: "runtime.node", title: "Node.js", category: "runtime", severity: "high", status: "error", detected: "not found", expected: ">= 18.0.0", recommendation: "Install Node.js >= 18: https://nodejs.org", autoFixAvailable: false })
+    checks.push({
+      id: "runtime.node",
+      title: "Node.js",
+      category: "runtime",
+      severity: "high",
+      status: "error",
+      detected: "not found",
+      expected: ">= 18.0.0",
+      recommendation: "Install Node.js >= 18: https://nodejs.org",
+      autoFixAvailable: false,
+    })
   }
 
   // npm
   if (npmVer) {
-    checks.push({ id: "runtime.npm", title: "npm", category: "runtime", severity: "info", status: "pass", detected: npmVer, expected: "bundled with Node", recommendation: "OK", autoFixAvailable: false })
+    checks.push({
+      id: "runtime.npm",
+      title: "npm",
+      category: "runtime",
+      severity: "info",
+      status: "pass",
+      detected: npmVer,
+      expected: "bundled with Node",
+      recommendation: "OK",
+      autoFixAvailable: false,
+    })
+  } else {
+    checks.push({
+      id: "runtime.npm",
+      title: "npm",
+      category: "runtime",
+      severity: "low",
+      status: "warning",
+      detected: "not found",
+      expected: "bundled with Node",
+      recommendation: "Install npm alongside Node.js",
+      autoFixAvailable: false,
+    })
   }
 
   // Bun
   if (bunVer) {
-    checks.push({ id: "runtime.bun", title: "Bun", category: "runtime", severity: "medium", status: "pass", detected: bunVer, expected: "latest", recommendation: "OK", autoFixAvailable: false })
+    checks.push({
+      id: "runtime.bun",
+      title: "Bun",
+      category: "runtime",
+      severity: "medium",
+      status: "pass",
+      detected: bunVer,
+      expected: "latest",
+      recommendation: "OK",
+      autoFixAvailable: false,
+    })
   } else {
-    checks.push({ id: "runtime.bun", title: "Bun", category: "runtime", severity: "medium", status: "warning", detected: "not found", expected: ">= 1.0.0", recommendation: "Install Bun: curl -fsSL https://bun.sh/install | bash", autoFixAvailable: false })
+    checks.push({
+      id: "runtime.bun",
+      title: "Bun",
+      category: "runtime",
+      severity: "medium",
+      status: "warning",
+      detected: "not found",
+      expected: ">= 1.0.0",
+      recommendation: "Install Bun: curl -fsSL https://bun.sh/install | bash",
+      autoFixAvailable: false,
+    })
   }
 
   // Git
   if (gitVer) {
-    checks.push({ id: "runtime.git", title: "Git", category: "runtime", severity: "high", status: "pass", detected: gitVer, expected: ">= 2.0.0", recommendation: "OK", autoFixAvailable: false })
+    checks.push({
+      id: "runtime.git",
+      title: "Git",
+      category: "runtime",
+      severity: "high",
+      status: "pass",
+      detected: gitVer,
+      expected: ">= 2.0.0",
+      recommendation: "OK",
+      autoFixAvailable: false,
+    })
   } else {
-    checks.push({ id: "runtime.git", title: "Git", category: "runtime", severity: "high", status: "error", detected: "not found", expected: ">= 2.0.0", recommendation: "Install Git: sudo apt install git", autoFixAvailable: false })
+    checks.push({
+      id: "runtime.git",
+      title: "Git",
+      category: "runtime",
+      severity: "high",
+      status: "error",
+      detected: "not found",
+      expected: ">= 2.0.0",
+      recommendation: "Install Git: sudo apt install git",
+      autoFixAvailable: false,
+    })
   }
 
   // Rust
   if (rustcVer) {
-    checks.push({ id: "runtime.rust", title: "Rust", category: "runtime", severity: "low", status: rustcVer ? "pass" : "info", detected: rustcVer || "not found", expected: "latest (for FDX development)", recommendation: "Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh", autoFixAvailable: false })
+    checks.push({
+      id: "runtime.rust",
+      title: "Rust",
+      category: "runtime",
+      severity: "low",
+      status: "pass",
+      detected: rustcVer,
+      expected: "latest (for FDX development)",
+      recommendation: "OK",
+      autoFixAvailable: false,
+    })
+  } else {
+    checks.push({
+      id: "runtime.rust",
+      title: "Rust",
+      category: "runtime",
+      severity: "low",
+      status: "info",
+      detected: "not found",
+      expected: "latest (for FDX development)",
+      recommendation: "Install Rust for native FDX development: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+      autoFixAvailable: false,
+    })
   }
 
   // Python
   if (pyVer) {
-    checks.push({ id: "runtime.python", title: "Python", category: "runtime", severity: "low", status: "pass", detected: pyVer, expected: ">= 3.8", recommendation: "OK", autoFixAvailable: false })
+    checks.push({
+      id: "runtime.python",
+      title: "Python",
+      category: "runtime",
+      severity: "low",
+      status: "pass",
+      detected: pyVer,
+      expected: ">= 3.8",
+      recommendation: "OK",
+      autoFixAvailable: false,
+    })
+  } else {
+    checks.push({
+      id: "runtime.python",
+      title: "Python",
+      category: "runtime",
+      severity: "low",
+      status: "info",
+      detected: "not found",
+      expected: ">= 3.8",
+      recommendation: "Install Python 3 for advanced scripting: sudo apt install python3",
+      autoFixAvailable: false,
+    })
   }
 
   // Docker
   if (dockerVer) {
-    checks.push({ id: "runtime.docker", title: "Docker", category: "runtime", severity: "low", status: "pass", detected: dockerVer, expected: "latest", recommendation: "OK", autoFixAvailable: false })
+    checks.push({
+      id: "runtime.docker",
+      title: "Docker",
+      category: "runtime",
+      severity: "low",
+      status: "pass",
+      detected: dockerVer,
+      expected: "latest",
+      recommendation: "OK",
+      autoFixAvailable: false,
+    })
+  } else {
+    checks.push({
+      id: "runtime.docker",
+      title: "Docker",
+      category: "runtime",
+      severity: "low",
+      status: "info",
+      detected: "not found",
+      expected: "latest",
+      recommendation: "Install Docker for containerized workflows: https://docs.docker.com/get-docker/",
+      autoFixAvailable: false,
+    })
   }
 
   // WSL detection

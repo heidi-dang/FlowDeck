@@ -1,17 +1,20 @@
 /**
  * FlowDeck configuration schema.
  *
- * Single source of truth for all configuration keys.
+ * Single source of truth for all configuration keys and types.
  * Every key documented here must have a runtime consumer.
- * Keys without a runtime consumer must be removed.
  */
 
-import type { AgentModelConfig } from './agent-models';
 import type { TokenBudgetOverrides } from './token-budget-config';
-export type { AgentModelConfig } from './agent-models';
 export type { TokenBudgetOverrides } from './token-budget-config';
 
 export type GovernanceMode = "off" | "advisory" | "strict";
+
+export interface AgentModelConfig {
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
 
 export interface BetterHarnessConfig {
   enabled?: boolean;

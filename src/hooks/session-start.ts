@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "fs"
 import { dirname, join } from "path"
 import { fileURLToPath } from "url"
-import { execFileSync } from "node:child_process"
 import { statePath, parseState, findWorkspaceRoot, getWorkspaceConfig, planningDir, resolveActiveTopic } from "../tools/planning-state-lib"
 import { codebaseDir } from "../tools/codebase-state"
 import {
@@ -20,20 +19,18 @@ import { HeidiPersistentAgentStore } from "../services/heidi-persistent-agent"
 const MAX_LESSON_SECTIONS = 10
 const MAX_LESSON_CONTEXT_BYTES = 8 * 1024
 
-let fdxAvailable = false
-let fdxChecked = false
+import { checkFdxAvailability } from "../tools/fdx-shared"
 
-/** Check if the fdx binary is available. Cached after first call. */
-export function isFdxAvailable(): boolean {
-  if (fdxChecked) return fdxAvailable
-  fdxChecked = true
-  try {
-    execFileSync("fdx", ["--version"], { encoding: "utf-8", stdio: ["pipe", "pipe", "ignore"], timeout: 5_000 })
-    fdxAvailable = true
-  } catch {
-    fdxAvailable = false
-  }
-  return fdxAvailable
+let _fdxAvailableOverride: boolean | null = null
+
+export function setFdxAvailableOverrideForTest(val: boolean | null): void {
+  _fdxAvailableOverride = val
+}
+
+/** Check if the fdx binary is available. */
+export function isFdxAvailable(forceRefresh = false): boolean {
+  if (_fdxAvailableOverride !== null) return _fdxAvailableOverride
+  return checkFdxAvailability(forceRefresh)
 }
 
 /**

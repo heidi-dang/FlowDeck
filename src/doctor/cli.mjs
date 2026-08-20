@@ -226,23 +226,32 @@ async function runDoctorEngine(options) {
 
 const SECRET_KEY_PATTERNS = /api[_-]?key|token|secret|password|credential|auth/i
 
-function redactSecrets(obj) {
+function redactSecrets(obj, seen = new WeakSet(), depth = 0) {
+  if (depth > 50) return "[MAX_DEPTH]"
   if (typeof obj === "string") {
     return obj
   }
   if (Array.isArray(obj)) {
-    return obj.map(redactSecrets)
+    if (seen.has(obj)) return "[CIRCULAR]"
+    seen.add(obj)
+    return obj.map(item => redactSecrets(item, seen, depth + 1))
   }
   if (obj && typeof obj === "object") {
+    if (seen.has(obj)) return "[CIRCULAR]"
+    seen.add(obj)
     const redacted = {}
-    for (const [key, value] of Object.entries(obj)) {
-      if (typeof value === "string" && value.length > 0 && value.length < 500) {
-        if (SECRET_KEY_PATTERNS.test(key)) {
-          redacted[key] = "[REDACTED]"
-          continue
+    try {
+      for (const [key, value] of Object.entries(obj)) {
+        if (typeof value === "string" && value.length > 0 && value.length < 500) {
+          if (SECRET_KEY_PATTERNS.test(key)) {
+            redacted[key] = "[REDACTED]"
+            continue
+          }
         }
+        redacted[key] = redactSecrets(value, seen, depth + 1)
       }
-      redacted[key] = redactSecrets(value)
+    } catch {
+      return "[UNSERIALIZABLE]"
     }
     return redacted
   }

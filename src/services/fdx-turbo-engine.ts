@@ -25,6 +25,7 @@ import type { FdxWorkspaceIndex, FdxWorkspaceSnapshot } from "./fdx-index"
 import { FdxNativeDaemon, fdxNativeDaemonFactory, type FdxNativeDaemonOptions } from "./fdx-native-daemon"
 import {
   checkFdxAvailability,
+  shouldDisableFallback,
   nativeImpactFallback,
   nativeOutlineFallback,
   nativeReadFallback,
@@ -186,7 +187,7 @@ export class FdxTurboEngine {
           this.nativeSpawns++;
           return { source: "native", text: runFdx(cmd) };
         } catch {
-          if (process.env.FDX_DISABLE_FALLBACK === "1") throw new Error("FDX native read failed");
+          if (shouldDisableFallback()) throw new Error("FDX native read failed");
         }
       }
       return { source: "fallback", text: nativeReadFallback(file, opts.limit, opts.offset) };
@@ -229,7 +230,7 @@ export class FdxTurboEngine {
             this.nativeSpawns++;
             return { source: "native", text: runFdx(cmd) };
           } catch {
-            if (process.env.FDX_DISABLE_FALLBACK === "1") throw new Error("FDX native read failed");
+            if (shouldDisableFallback()) throw new Error("FDX native read failed");
           }
         }
         return { source: "fallback", text: nativeReadFallback(file, opts.limit, opts.offset) };
@@ -272,7 +273,7 @@ export class FdxTurboEngine {
             this.nativeSpawns++;
             return { source: "native", text: runFdx(cmd) };
           } catch {
-            if (process.env.FDX_DISABLE_FALLBACK === "1") throw new Error("FDX native search failed");
+            if (shouldDisableFallback()) throw new Error("FDX native search failed");
           }
         }
         return { source: "fallback", text: nativeSearchFallback(query, path ?? this.workspace) };
@@ -313,7 +314,7 @@ export class FdxTurboEngine {
           try {
             this.nativeSpawns++;
             return { source: "native", text: runFdx(cmd) };
-          } catch { if (process.env.FDX_DISABLE_FALLBACK === "1") throw new Error("FDX native outline failed") }
+          } catch { if (shouldDisableFallback()) throw new Error("FDX native outline failed") }
         }
         return { source: "fallback", text: nativeOutlineFallback(paths) };
       });
@@ -355,7 +356,7 @@ export class FdxTurboEngine {
           try {
             this.nativeSpawns++;
             return { source: "native", text: runFdx(cmd) };
-          } catch { if (process.env.FDX_DISABLE_FALLBACK === "1") throw new Error("FDX native impact failed") }
+          } catch { if (shouldDisableFallback()) throw new Error("FDX native impact failed") }
         }
         return { source: "fallback", text: await nativeImpactFallback(paths, this.workspace) };
       });
@@ -383,7 +384,7 @@ export class FdxTurboEngine {
             this.nativeSpawns++;
             return { source: "native", text: runFdx(cmd) };
           } catch {
-            if (process.env.FDX_DISABLE_FALLBACK === "1") throw new Error("FDX native grep failed");
+            if (shouldDisableFallback()) throw new Error("FDX native grep failed");
           }
         }
         return { source: "fallback", text: nativeSearchFallback(pattern, path ?? this.workspace) };

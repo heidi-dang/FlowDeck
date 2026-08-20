@@ -210,14 +210,14 @@ export function setActiveProjectDir(dir: string): void {
 let fdxCacheKey: string | null = null
 let fdxCacheValue: { available: boolean; binary: string | null } | null = null
 
-export function resolveFdxBinaryPath(): string | null {
+function probeFdxBinary(): string | null {
   const envPath = process.env.FDX_BINARY_PATH
   if (envPath) {
     const resolved = resolve(envPath)
     if (existsSync(resolved)) {
       try {
         const st = statSync(resolved)
-      if (st.isFile() && isCompatibleFdx(resolved)) return resolved
+        if (st.isFile() && isCompatibleFdx(resolved)) return resolved
       } catch {}
     }
     return null
@@ -235,8 +235,8 @@ export function resolveFdxBinaryPath(): string | null {
     } catch { /* continue probing */ }
   }
   try {
-    execFileSync("fdx", ["--help"], { stdio: "ignore", shell: false })
-    const output = execFileSync("fdx", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()
+    execFileSync("fdx", ["--help"], { stdio: "ignore", shell: false, timeout: 2_000 })
+    const output = execFileSync("fdx", ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000, maxBuffer: 1024 * 1024 }).trim()
     return /^fdx\s+0\.1\./.test(output) ? "fdx" : null
   } catch {
     return null
@@ -244,12 +244,21 @@ export function resolveFdxBinaryPath(): string | null {
 }
 
 function isCompatibleFdx(binary: string): boolean {
-  try { return /^fdx\s+0\.1\./.test(execFileSync(binary, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000 }).trim()) }
+  try { return /^fdx\s+0\.1\./.test(execFileSync(binary, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000, maxBuffer: 1024 * 1024 }).trim()) }
   catch { return false }
+}
+
+export function invalidateFdxCache(): void {
+  fdxCacheKey = null
+  fdxCacheValue = null
 }
 
 export function checkFdxAvailability(forceRefresh = false): boolean {
   return getFdxAvailabilityStatus(forceRefresh).available
+}
+
+export function resolveFdxBinaryPath(forceRefresh = false): string | null {
+  return getFdxAvailabilityStatus(forceRefresh).binary
 }
 
 export function getFdxAvailabilityStatus(forceRefresh = false): {
@@ -266,7 +275,7 @@ export function getFdxAvailabilityStatus(forceRefresh = false): {
     }
   }
 
-  const resolved = resolveFdxBinaryPath()
+  const resolved = probeFdxBinary()
   const available = resolved !== null
   fdxCacheKey = currentKey
   fdxCacheValue = { available, binary: resolved }
@@ -293,8 +302,8 @@ function fdxBin(): string {
   throw new Error("fdx native binary unavailable; TypeScript fallback is active. Install a supported FlowDeck package artifact or set FDX_BINARY_PATH")
 }
 
-const FDX_TIMEOUT_MS = 30_000
-const FDX_MAX_BUFFER = 50 * 1024 * 1024
+export const FDX_TIMEOUT_MS = 30_000
+export const FDX_MAX_BUFFER = 50 * 1024 * 1024
 
 export function runFdx(args: string[], cwd?: string): string {
   const bin = fdxBin()
@@ -317,13 +326,34 @@ export function runFdx(args: string[], cwd?: string): string {
         `or scope --path to a smaller file/directory.`
       )
     }
+    if (err?.code === "ETIMEDOUT" || err?.signal === "SIGTERM") {
+      throw new Error(
+        `fdx execution timed out after ${FDX_TIMEOUT_MS / 1000}s. ` +
+        `Narrow the query or reduce the target scope.`
+      )
+    }
+    const stderrText = typeof err?.stderr === "string" ? err.stderr.trim() : (err?.stderr ? String(err.stderr).trim() : "")
+    if (stderrText && !err.message.includes(stderrText)) {
+      err.message = `${err.message} (${stderrText})`
+    }
     throw err
   }
 }
 
 // ─── Native TS Fallbacks ──────────────────────────────────────────────────
 
+let _nativeReadFallbackListener: ((file: string, limit?: number, offset?: number, cwd?: string) => void) | null = null
+
+export function setNativeReadFallbackListenerForTest(
+  listener: ((file: string, limit?: number, offset?: number, cwd?: string) => void) | null
+): void {
+  _nativeReadFallbackListener = listener
+}
+
 export function nativeReadFallback(file: string, limit?: number, offset?: number, cwd?: string): string {
+  if (_nativeReadFallbackListener) {
+    _nativeReadFallbackListener(file, limit, offset, cwd)
+  }
   try {
     const resolvedPath = resolve(cwd || activeProjectDir || process.cwd(), file)
     if (!existsSync(resolvedPath)) return `[FDX Fallback] Error: File not found "${file}"`
@@ -417,7 +447,13 @@ export function nativeGitFallback(args: string[], cwd?: string): string {
   try {
     validateGitPolicy(subcommand, args.slice(1))
     validateArgs(args)
-    return execFileSync("git", args, { encoding: "utf-8", timeout: 15000, shell: false, cwd: cwd || activeProjectDir || process.cwd() })
+    return execFileSync("git", args, {
+      encoding: "utf-8",
+      timeout: 15000,
+      maxBuffer: FDX_MAX_BUFFER,
+      shell: false,
+      cwd: cwd || activeProjectDir || process.cwd(),
+    })
   } catch (err: any) {
     return `[FDX Git Fallback Output]\n${err.stdout || err.stderr || err.message}`
   }
@@ -438,10 +474,11 @@ export function nativeLsFallback(targetPath: string = ".", cwd?: string): string
  * Simple regex-based outline fallback for when the fdx binary is unavailable.
  * Scans for common function/class/interface/type declarations.
  */
-export function nativeOutlineFallback(paths: string[]): string {
+export function nativeOutlineFallback(paths: string[], cwd?: string): string {
+  const effectiveDir = cwd || activeProjectDir || process.cwd()
   const results: string[] = []
   for (const p of paths) {
-    const resolved = resolve(p)
+    const resolved = resolve(effectiveDir, p)
     if (!existsSync(resolved)) {
       results.push(`[FDX Fallback] Path not found: ${p}`)
       continue
@@ -526,16 +563,17 @@ function nativeOutlineFile(filePath: string): string {
 export async function nativeImpactFallback(
   files: string[],
   root: string = ".",
-  options: { maxConcurrency?: number } = {}
+  options: { maxConcurrency?: number; cwd?: string } = {}
 ): Promise<string> {
   const maxConcurrency = options.maxConcurrency ?? 16
+  const effectiveDir = options.cwd || activeProjectDir || process.cwd()
   const targetNames = new Set(files.map(f => {
     const base = f.split(/[/\\]/).pop() ?? f
     return base.replace(/\.(ts|tsx|js|jsx)$/, "")
   }))
 
   const results: Array<{ file: string; matches: string[] }> = []
-  const resolvedRoot = resolve(root)
+  const resolvedRoot = resolve(effectiveDir, root)
 
   try {
     const rootStat = await fsPromises.stat(resolvedRoot)
@@ -644,6 +682,7 @@ export async function nativeContextFallback(args: {
   stage?: string
   summary?: string
   artifact_id?: string
+  cwd?: string
 }): Promise<string> {
   if (args.action === "read_artifact") {
     if (!args.artifact_id) {
@@ -659,7 +698,8 @@ export async function nativeContextFallback(args: {
   }
 
   const topic = args.topic || "general"
-  const path = topicContextPath(activeProjectDir, topic)
+  const dir = args.cwd || activeProjectDir || process.cwd()
+  const path = topicContextPath(dir, topic)
   if (args.action === "append") {
     const line = `### ${args.agent || "Agent"} (${args.stage || "Stage"})\n${args.summary || ""}\n`
     await appendWithLock(path, line)
@@ -679,8 +719,10 @@ export async function nativeDecisionsFallback(args: {
   decision?: string
   rationale?: string
   made_by?: string
+  cwd?: string
 }): Promise<string> {
-  const path = topicDecisionsPath(activeProjectDir, args.topic)
+  const dir = args.cwd || activeProjectDir || process.cwd()
+  const path = topicDecisionsPath(dir, args.topic)
   if (args.action === "record") {
     const line = `- **${args.decision || "Decision"}**: ${args.rationale || ""} (By: ${args.made_by || "Unknown"})\n`
     await appendWithLock(path, line)

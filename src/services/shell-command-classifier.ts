@@ -1,3 +1,6 @@
+import { resolve, normalize } from "path"
+import { homedir } from "os"
+
 /**
  * Shell Command Classifier
  *
@@ -163,48 +166,7 @@ const GIT_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "grep", "branch", "remote", "config", "check-ref-format",
 ])
 
-/** Default sensitive-path patterns. Substring match (case-insensitive). */
-const DEFAULT_SENSITIVE_PATTERNS: ReadonlyArray<string> = [
-  ".env",
-  ".envrc",
-  ".npmrc",
-  ".pypirc",
-  ".netrc",
-  ".aws/credentials",
-  ".aws/config",
-  ".gcp/credentials",
-  ".config/gcloud",
-  ".kube/config",
-  ".docker/config.json",
-  ".ssh/",
-  ".gnupg/",
-  ".pki/",
-  "id_rsa",
-  "id_ed25519",
-  "id_ecdsa",
-  "id_dsa",
-  "authorized_keys",
-  "known_hosts",
-  ".pem",
-  ".key",
-  ".p12",
-  ".pfx",
-  ".secret",
-  ".keystore",
-  "credentials",
-  "credentials.json",
-  "service-account",
-  "service_account",
-  "secrets.",
-  "secrets/",
-  "/etc/passwd",
-  "/etc/shadow",
-  "/etc/sudoers",
-  "/etc/ssh/",
-  "/proc/",
-  "/sys/",
-  "/dev/",
-]
+import { DEFAULT_SENSITIVE_PATTERNS } from "./sensitive-path"
 
 /** Strip a simple surrounding pair of single OR double quotes from a token. */
 function unquote(token: string): string {
@@ -423,29 +385,50 @@ function classifyGitInvocation(tokens: ReadonlyArray<string>): ShellCategory {
   return "read"
 }
 
-/** Find sensitive-path patterns in the command string and tokens. */
+/** Find sensitive-path patterns in the command string, tokens, and resolved paths against effective cwd. */
 function findSensitiveMatches(
   command: string,
   tokens: ReadonlyArray<string>,
   extra: ReadonlyArray<string> | undefined,
+  effectiveCwd?: string
 ): string[] {
   const patterns = extra && extra.length > 0
     ? [...DEFAULT_SENSITIVE_PATTERNS, ...extra]
     : [...DEFAULT_SENSITIVE_PATTERNS]
   const lowerCommand = command.toLowerCase()
   const matches = new Set<string>()
+
   for (const p of patterns) {
     if (lowerCommand.includes(p.toLowerCase())) {
       matches.add(p)
     }
   }
+
+  const baseCwd = effectiveCwd || process.cwd()
+
   for (const t of tokens) {
-    if (!t.startsWith("/") && !t.includes("~")) continue
     const lower = t.toLowerCase()
     for (const p of patterns) {
       if (lower.includes(p.toLowerCase())) matches.add(p)
     }
+
+    // Resolve token against effective working directory to catch relative sensitive paths
+    try {
+      let resolved = t
+      if (t === "~" || t.startsWith("~/") || t.startsWith("~\\")) {
+        resolved = t === "~" ? homedir() : resolve(homedir(), t.slice(2))
+      } else if (!t.startsWith("-")) {
+        resolved = resolve(baseCwd, t)
+      }
+      const lowerResolved = normalize(resolved).normalize("NFC").toLowerCase()
+      for (const p of patterns) {
+        if (lowerResolved.includes(p.toLowerCase())) matches.add(p)
+      }
+    } catch {
+      // ignore resolution errors on flags/symbols
+    }
   }
+
   return [...matches]
 }
 
@@ -453,30 +436,32 @@ function findSensitiveMatches(
 function hasPathTraversal(tokens: ReadonlyArray<string>): boolean {
   for (const t of tokens) {
     if (t === "..") return true
-    if (t.startsWith("../") || t.startsWith("./../")) return true
-    if (t.includes("/..")) return true
+    if (t.startsWith("../") || t.startsWith("./../") || t.startsWith("..\\") || t.startsWith(".\\..\\")) return true
+    if (t.includes("/..") || t.includes("\\..")) return true
   }
   return false
 }
-// Note: tilde expansion (~/) is NOT checked here; sensitive home-directory paths
-// (.ssh, .pem, .env, credentials) are already blocked by findSensitiveMatches.
-// Flagging all ~ tokens caused false positives: ls ~/.cache/ and similar
-// legitimate inspection commands were incorrectly classified as "risky".
 
 /** Classify a single command segment (already stripped of control operators). */
-function classifySegment(segment: string): { category: ShellCategory; reason: string; head: string | null } {
+function classifySegment(
+  segment: string,
+  _currentCwd?: string
+): { category: ShellCategory; reason: string; head: string | null; targetDir?: string | null } {
   const stripped = stripSudoPrefix(segment)
   const tokens = tokenize(stripped)
   if (tokens.length === 0) {
     return { category: "unknown", reason: "empty command segment", head: null }
   }
   const head = tokens[0].toLowerCase()
-  // `cd` is a directory change used at the start of compound inspection commands
-  // (e.g. "cd /repo && git status"). The directory change itself is read-only
-  // for audit purposes — it doesn't mutate files. Treat it as transparent so
-  // the remaining segments in the compound can be classified normally.
+  // `cd` changes working directory. Evaluated with effective cwd resolution in classifyShellCommand.
   if (head === "cd") {
-    return { category: "read", reason: "`cd` directory change (transparent for compound inspection commands)", head }
+    const rawTarget = tokens.length > 1 ? tokens[1] : "~"
+    return {
+      category: "read",
+      reason: "`cd` directory change",
+      head,
+      targetDir: rawTarget,
+    }
   }
   if (INDIRECTION_WRAPPERS.has(head)) {
     if (tokens.includes("-c") || tokens.includes("--command")) {
@@ -597,11 +582,15 @@ export function classifyShellCommand(
   let head: string | null = null
   let blockingReason: string | null = null
   let blockingHead: string | null = null
+  const accumulatedSensitiveMatches = new Set<string>()
+
+  let effectiveCwd = opts?.workingDir ? resolve(opts.workingDir) : process.cwd()
 
   for (const seg of segments) {
-    const r = classifySegment(seg)
+    const r = classifySegment(seg, effectiveCwd)
     if (head === null) head = r.head
     reasons.push(r.reason)
+
     if (r.category === "mutating") {
       worst = "mutating"
       blockingReason = r.reason
@@ -615,9 +604,33 @@ export function classifyShellCommand(
       blockingReason = r.reason
       blockingHead = r.head
     }
+
+    const segTokens = tokenize(stripSudoPrefix(seg))
+    const segSensitive = findSensitiveMatches(seg, segTokens, opts?.extraSensitivePatterns, effectiveCwd)
+    for (const sm of segSensitive) accumulatedSensitiveMatches.add(sm)
+
+    // Handle cd navigation and update effectiveCwd for subsequent segments
+    if (r.head === "cd" && r.targetDir) {
+      let targetPath = r.targetDir
+      if (targetPath === "~" || targetPath.startsWith("~/") || targetPath.startsWith("~\\")) {
+        targetPath = targetPath === "~" ? homedir() : resolve(homedir(), targetPath.slice(2))
+      } else {
+        targetPath = resolve(effectiveCwd, targetPath)
+      }
+      effectiveCwd = normalize(targetPath)
+      // Check if target directory itself matches sensitive patterns
+      const targetSensitive = findSensitiveMatches(effectiveCwd, [effectiveCwd], opts?.extraSensitivePatterns, effectiveCwd)
+      for (const sm of targetSensitive) accumulatedSensitiveMatches.add(sm)
+    }
   }
-  const sensitiveMatches = findSensitiveMatches(trimmed, tokenize(trimmed), opts?.extraSensitivePatterns)
-  if (sensitiveMatches.length > 0 && worst === "read" && head !== "cut") {
+
+  // Find sensitive matches across full command and effective context
+  const fullCmdTokens = tokenize(trimmed)
+  const fullCmdSensitive = findSensitiveMatches(trimmed, fullCmdTokens, opts?.extraSensitivePatterns, effectiveCwd)
+  for (const sm of fullCmdSensitive) accumulatedSensitiveMatches.add(sm)
+
+  const sensitiveMatches = [...accumulatedSensitiveMatches]
+  if (sensitiveMatches.length > 0 && worst === "read") {
     return {
       category: "sensitive-read",
       reason: `command reads from a sensitive path (${sensitiveMatches.join(", ")}); route to a specialist`,

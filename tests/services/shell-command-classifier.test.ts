@@ -80,7 +80,7 @@ describe("classifyShellCommand: read-only commands", () => {
     ["dirname", "dirname /tmp/file.txt"],
     ["realpath", "realpath ./link"],
     ["tr", "tr a-z A-Z < file.txt"],
-    ["cut", "cut -d: -f1 /etc/passwd"],
+    ["cut", "cut -d: -f1 file.txt"],
     ["seq", "seq 1 10"],
     ["true", "true"],
     ["false", "false"],

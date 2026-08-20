@@ -116,6 +116,15 @@ export const DEFAULT_PARALLEL_CONFIG: ParallelExecutionConfig = {
   adaptive: true,
 }
 
+function safeParseJsonField<T>(raw: string | null | undefined, fallback: T, context: string): T {
+  if (!raw) return fallback
+  try {
+    return JSON.parse(raw)
+  } catch (cause) {
+    throw new Error(`PARALLEL_ENGINE_DATA_CORRUPTION: Failed to parse ${context}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause })
+  }
+}
+
 export class HeidiParallelEngine {
   constructor(
     private readonly db: Database,
@@ -287,9 +296,9 @@ export class HeidiParallelEngine {
       runId: r.run_id,
       specialist: r.specialist,
       goal: r.goal,
-      dependencies: JSON.parse(r.dependencies || "[]"),
+      dependencies: safeParseJsonField(r.dependencies, [], `dependencies for node ${r.id}`),
       access: r.access,
-      fileScopes: JSON.parse(r.file_scopes || "[]"),
+      fileScopes: safeParseJsonField(r.file_scopes, [], `file_scopes for node ${r.id}`),
       priority: r.priority,
       estimatedComplexity: r.estimated_complexity,
       status: r.status,
@@ -300,7 +309,7 @@ export class HeidiParallelEngine {
       completedAt: r.completed_at ?? undefined,
       summary: r.summary ?? undefined,
       error: r.error ?? undefined,
-      result: r.result_json ? JSON.parse(r.result_json) : undefined,
+      result: r.result_json ? safeParseJsonField(r.result_json, undefined, `result_json for node ${r.id}`) : undefined,
     }))
 
     return {
@@ -430,7 +439,6 @@ export class HeidiParallelEngine {
     try {
       const row = this.db.query("SELECT run_id, status FROM heidi_delegation_nodes WHERE id = ?").get(nodeId) as any
       if (!row) {
-        this.db.exec("ROLLBACK")
         throw new Error(`NODE_NOT_FOUND:${nodeId}`)
       }
       const runId = row.run_id
@@ -489,7 +497,7 @@ export class HeidiParallelEngine {
       // Check if any blocked nodes exist
       for (const n of allNodes) {
         if (n.status === "queued") {
-          const deps: string[] = JSON.parse(n.dependencies || "[]")
+          const deps: string[] = safeParseJsonField(n.dependencies, [], `dependencies for node ${n.id}`)
           const failedDep = allNodes.some(other => deps.includes(other.id) && ["failed", "cancelled", "blocked"].includes(other.status))
           if (failedDep) {
             this.db.query("UPDATE heidi_delegation_nodes SET status = 'blocked' WHERE run_id = ? AND id = ?").run(runId, n.id)

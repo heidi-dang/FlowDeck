@@ -1,6 +1,7 @@
 import { existsSync, writeFileSync, rmSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import type { CheckResult } from "../types"
+import { isLockStale } from "../../services/process-liveness"
 
 export async function runFilesystemChecks(directory: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
@@ -68,7 +69,7 @@ export async function runFilesystemChecks(directory: string): Promise<CheckResul
     join(flowdeckStateDir, "browser.lock"),
   ]
 
-  const foundStaleLocks = staleLockFiles.filter((f) => existsSync(f))
+  const foundStaleLocks = staleLockFiles.filter((f) => existsSync(f) && isLockStale(f))
   if (foundStaleLocks.length > 0) {
     checks.push({
       id: "filesystem.stale_locks",
@@ -76,7 +77,7 @@ export async function runFilesystemChecks(directory: string): Promise<CheckResul
       category: "process",
       severity: "medium",
       status: "warning",
-      detected: `Found ${foundStaleLocks.length} potentially stale lock file(s)`,
+      detected: `Found ${foundStaleLocks.length} genuinely stale lock file(s)`,
       expected: "No orphan lock files",
       recommendation: "Run `flowdeck doctor fix` to clean up stale process locks",
       autoFixAvailable: true,
