@@ -12,12 +12,15 @@ export async function repairFdxBinary(directory: string): Promise<AutoFixResult>
 
   try {
     mkdirSync(targetDir, { recursive: true })
-    let description: string
+    let description = "FDX binary is healthy and verified"
+
     if (existsSync(nativeBinaryPath) && statSync(nativeBinaryPath).isFile()) {
-      if (process.platform !== "win32") {
+      const st = statSync(nativeBinaryPath)
+      const needsChmod = process.platform !== "win32" && (st.mode & 0o111) === 0
+      if (needsChmod) {
         chmodSync(nativeBinaryPath, 0o755)
+        description = "Restored executable permission bit on native FDX binary"
       }
-      description = "Restored executable permission bit on native FDX binary"
     } else {
       // Create executable shim or fallback marker
       const shimContent = `#!/usr/bin/env sh\necho "FDX 0.1.0 (flowdeck-native-fallback)"\n`

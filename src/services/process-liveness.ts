@@ -3,6 +3,13 @@
  *
  * Deterministic process checking and lock staleness evaluation.
  * Safe across Linux, macOS, and Windows.
+ *
+ * Contract A (Live-Owner Precedence):
+ * - If a lock file records an owning PID and that process is currently ALIVE on the host,
+ *   the lock is authoritative and active (NOT stale), regardless of wall-clock age.
+ *   Doctor repair must NEVER delete a lock held by a live, executing FlowDeck process.
+ * - If the owning PID is dead (process no longer exists), the lock is STALE and safely reclaimable.
+ * - If no valid PID is recorded (legacy/empty lock), file age exceeding TTL determines staleness.
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs"
@@ -33,13 +40,10 @@ export function isPidAlive(pid: number): boolean {
 
 /**
  * Evaluate whether a lock file on disk is genuinely stale.
- * A lock is STALE if:
- * 1. It contains a PID and that PID is no longer alive.
- * 2. It contains a PID of an active process, but its timestamp/mtime exceeds the TTL.
- * 3. It has no PID, but its file mtime exceeds the TTL.
  *
- * A lock is LIVE (not stale) if:
- * - Its owning PID is alive AND its age is within the TTL.
+ * @param lockPath Path to the lock file
+ * @param ttlMs Fallback TTL for PID-less / unparseable lock files (default: 60,000ms)
+ * @returns true if the lock is proven stale and safe to unlink; false if actively owned or ambiguous
  */
 export function isLockStale(lockPath: string, ttlMs = 60_000): boolean {
   if (!existsSync(lockPath)) return false
@@ -63,16 +67,19 @@ export function isLockStale(lockPath: string, ttlMs = 60_000): boolean {
     }
 
     if (parsed && typeof parsed.pid === "number" && parsed.pid > 0) {
-      if (!isPidAlive(parsed.pid)) {
-        return true // Dead process -> definitely stale
+      // Contract A (Live-Owner Precedence):
+      // If the process is alive on the system, the lock is LIVE and MUST NOT be deleted.
+      if (isPidAlive(parsed.pid)) {
+        return false
       }
-      const lockTime = typeof parsed.timestamp === "number" && parsed.timestamp > 0 ? parsed.timestamp : st.mtimeMs
-      const age = Date.now() - lockTime
-      return age > ttlMs // Alive process holding lock beyond TTL
+      // Process is dead -> lock is definitely stale
+      return true
     }
 
+    // No PID recorded: fallback to mtime exceeding TTL
     return mtimeAge > ttlMs
   } catch {
+    // Ambiguous read/permission error: fail safe (do not delete)
     return false
   }
 }

@@ -27,14 +27,29 @@ export async function repairSkillsAndLockfile(directory: string): Promise<AutoFi
       }
     }
 
-    const lockData = {
-      version: "2.0.3",
-      updatedAt: new Date().toISOString(),
-      skills: skillEntries,
+    let existingMatches = false
+    if (existsSync(skillsLockPath)) {
+      try {
+        const existing = JSON.parse(readFileSync(skillsLockPath, "utf-8"))
+        if (existing && typeof existing.skills === "object") {
+          const exKeys = Object.keys(existing.skills).sort()
+          const newKeys = Object.keys(skillEntries).sort()
+          if (exKeys.length === newKeys.length && exKeys.every((k, i) => k === newKeys[i] && existing.skills[k]?.hash === skillEntries[k]?.hash)) {
+            existingMatches = true
+          }
+        }
+      } catch {}
     }
 
-    mkdirSync(skillsDir, { recursive: true })
-    writeFileSync(skillsLockPath, JSON.stringify(lockData, null, 2), "utf-8")
+    if (!existingMatches) {
+      const lockData = {
+        version: "2.0.3",
+        updatedAt: new Date().toISOString(),
+        skills: skillEntries,
+      }
+      mkdirSync(skillsDir, { recursive: true })
+      writeFileSync(skillsLockPath, JSON.stringify(lockData, null, 2), "utf-8")
+    }
 
     // Post-repair verification: skills-lock.json exists and is valid JSON
     let reverified = false
@@ -47,7 +62,9 @@ export async function repairSkillsAndLockfile(directory: string): Promise<AutoFi
 
     return {
       id: "skills.lockfile",
-      description: `Rebuilt skills-lock.json with ${Object.keys(skillEntries).length} skills`,
+      description: existingMatches
+        ? `Skills lockfile is healthy (${Object.keys(skillEntries).length} skills verified)`
+        : `Rebuilt skills-lock.json with ${Object.keys(skillEntries).length} skills`,
       applied: reverified,
       reverified,
     }

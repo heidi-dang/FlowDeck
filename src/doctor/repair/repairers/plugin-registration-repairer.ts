@@ -15,9 +15,11 @@ export async function repairPluginRegistration(directory: string): Promise<AutoF
 
   try {
     let cfg: { plugin?: string[]; default_agent?: string; [key: string]: unknown } = { plugin: [] }
+    let rawBefore = ""
     if (existsSync(configFile)) {
       try {
-        cfg = JSON.parse(readFileSync(configFile, "utf-8"))
+        rawBefore = readFileSync(configFile, "utf-8")
+        cfg = JSON.parse(rawBefore)
       } catch {
         cfg = { plugin: [] }
       }
@@ -37,8 +39,11 @@ export async function repairPluginRegistration(directory: string): Promise<AutoF
       cfg.default_agent = "heidi"
     }
 
-    mkdirSync(dirname(configFile), { recursive: true })
-    writeFileSync(configFile, JSON.stringify(cfg, null, 2), "utf-8")
+    const payload = JSON.stringify(cfg, null, 2)
+    if (payload !== rawBefore) {
+      mkdirSync(dirname(configFile), { recursive: true })
+      writeFileSync(configFile, payload, "utf-8")
+    }
 
     // Update runtime self report for directory
     recordRuntimeSelfReport(getExecutingRuntimeIdentity(), directory)
