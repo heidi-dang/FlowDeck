@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.2.5] - 2026-08-20
+
+### Runtime Hardening & Multi-Agent Stability
+- **Modularized FlowDeck Runtime Internals**: Separated core orchestration, verification, and persistence lifecycles with strict process safety boundaries.
+- **Configuration Dependency Cleanup**: Streamlined dependency resolutions and eliminated circular references across config and environment hooks.
+- **Heidi/OpenCode Execution Reliability**: Auto-forwarded native read/file operations to FDX adapters and hardened tool dispatch.
+- **Improved Error Propagation & Diagnostics**: Enforced structured error hierarchies with unambiguous error reporting across subsystems.
+- **Doctor Repair Re-verification & Idempotency**: Hardened automated self-repair mechanisms with atomic pre-mutation backups and idempotent passes.
+- **FDX Native/Fallback Discovery Hardening**: Hardened binary path detection, dynamic PATH observation, and cache invalidation mechanics.
+- **Subprocess & Shell Safety**: Secured temporary rm parsers, path traversal guards, and command-line sanitization against metacharacter exploitation.
+- **Stale-Lock Live-Owner Protection**: Enforced Contract A live-process inspection before reclaiming PID lockfiles across POSIX and Windows.
+- **Repository Lease Coordinator Safety**: Protected state integrity against partial writes and atomic rename failures.
+- **Orchestration Database Hardening**: Enforced split-brain protection, deterministic fallback candidate discovery, and safe multi-worker SQLite startup with PRAGMA integrity verification.
+
 ## [2.2.4] - 2026-08-20
 ### Fixed — Subagent Loop Elimination, Circuit Breaker Hardening & Guard Precision
 - **Auto-Forward Native Read Tools to `fdx-read`**: Updated `tryFdxRedirect` in `src/hooks/tool-guard.ts` to silently rewrite native `read` / `read_file` args into `fdx-read` compatible requests rather than throwing advisory rejection errors, preventing subagent retry loops.
