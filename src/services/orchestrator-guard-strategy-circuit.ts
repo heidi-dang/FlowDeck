@@ -65,7 +65,13 @@ function normalizeCommandString(cmd: string): string {
     .slice(0, 300)
 }
 
-/** Per-session tool-error repetition counters. Bounds loops from repeated identical tool failures. */
+/**
+ * Per-session tool-error repetition counters. Bounds loops from repeated identical tool failures.
+ *
+ * 3-Attempt Circuit Protocol:
+ * - Two identical failure executions are recorded.
+ * - The third unchanged attempt is suppressed before execution (TOOL_ERROR_HARD_LIMIT = 2 previous failures).
+ */
 const _toolErrorCounts = new Map<string, number>()
 export const TOOL_ERROR_HARD_LIMIT = 2
 const MAX_ERROR_COUNT_ENTRIES = 2000

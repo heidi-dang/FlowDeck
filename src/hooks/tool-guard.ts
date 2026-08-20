@@ -21,12 +21,19 @@ import { validateToolAccess } from "../services/agent-validator"
 import { appendAuditEvent } from "../services/audit-log"
 import { verifyAfterWrite } from "../services/verification-layer"
 import { isFdxAvailable } from "../hooks/session-start"
+import { checkSensitivePath } from "../services/sensitive-path"
+import { shouldDisableFallback } from "../tools/fdx-shared"
 
 const BLOCKED_PATTERNS = {
-  read: [".env", ".pem", ".key", ".secret"],
   write: ["node_modules"],
   bash: ["rm -rf"],
 }
+
+export const SENSITIVE_READ_TOOLS = new Set([
+  "read",
+  "read_file",
+  "fdx-read",
+])
 
 function getFilePath(args: any): string | undefined {
   return (
@@ -243,7 +250,7 @@ export function isSafeTemporaryRm(command: string, workingDir = process.cwd()): 
   return true
 }
 
-export function isBlocked(tool: string, args: any): BlockReason {
+export function isBlocked(tool: string, args: any, projectDir?: string): BlockReason {
   const filePath = getFilePath(args)
 
   if (tool === "bash") {
@@ -260,12 +267,11 @@ export function isBlocked(tool: string, args: any): BlockReason {
     return null
   }
 
-  if (tool === "read") {
+  if (SENSITIVE_READ_TOOLS.has(tool)) {
     if (!filePath) return null
-    for (const p of BLOCKED_PATTERNS.read) {
-      if (filePath.includes(p)) {
-        return `FLOWDECK: Access to "${p}" files is blocked.`
-      }
+    const matched = checkSensitivePath(filePath, projectDir)
+    if (matched) {
+      return `FLOWDECK: Access to "${matched}" files is blocked.`
     }
     return null
   }
@@ -525,14 +531,14 @@ export async function toolGuardHook(
     }
   }
 
-  // Check known dangerous tools including edit, patch, hash-edit, create, str_replace.
-  if (toolName !== "bash" && toolName !== "read" && !WRITE_TOOLS.has(toolName)) {
+  // Check known dangerous tools including edit, patch, hash-edit, create, str_replace, and all sensitive read surfaces.
+  if (toolName !== "bash" && !SENSITIVE_READ_TOOLS.has(toolName) && !WRITE_TOOLS.has(toolName)) {
     decision.checks.push("no-op")
     logDecision(ctx, decision, { sessionID, agent: agentName, tool: toolName })
     return
   }
 
-  const blockReason = isBlocked(toolName, args)
+  const blockReason = isBlocked(toolName, args, ctx.directory)
   if (blockReason) {
     decision.allowed = false
     decision.reason = blockReason
@@ -653,7 +659,6 @@ export async function executeFdxRedirect(
   context?: { directory?: string; sessionID?: string; agent?: string }
 ): Promise<FdxExecutionRoute | null> {
   if (!NATIVE_READ_TOOLS.has(toolName)) return null
-  if (!isFdxAvailable()) return null
   if (process.env.FLOWDECK_DISABLE_FDX_REDIRECT === "true") return null
   if (process.env.FLOWDECK_ENFORCE_FDX_REDIRECT !== "true") return null
 
@@ -671,6 +676,17 @@ export async function executeFdxRedirect(
     const limit = typeof args.limit === "number" ? args.limit : undefined
     const offset = typeof args.offset === "number" ? args.offset : undefined
     const symbol = typeof args.symbol === "string" ? args.symbol : undefined
+
+    if (!isFdxAvailable()) {
+      if (shouldDisableFallback()) {
+        return {
+          targetTool: "fdx-read",
+          executed: false,
+          error: `[FDX Fallback Disabled] Native binary unavailable under FLOWDECK_ENFORCE_FDX_REDIRECT=true.`,
+        }
+      }
+      return null
+    }
 
     try {
       const { fdxReadTool } = await import("../tools/fdx")
@@ -692,7 +708,15 @@ export async function executeFdxRedirect(
         output,
       }
     } catch (err: any) {
-      // Apply exactly one bounded documented fallback to native read on genuine FDX failure
+      if (shouldDisableFallback()) {
+        return {
+          targetTool: "fdx-read",
+          executed: false,
+          error: err?.message ?? String(err),
+        }
+      }
+
+      // Apply exactly one bounded fallback to native read when fallback is allowed
       try {
         const { nativeReadFallback } = await import("../tools/fdx-shared")
         const fallbackResult = nativeReadFallback(resolvedFile, limit, offset, context?.directory)

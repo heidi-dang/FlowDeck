@@ -323,7 +323,18 @@ export function runFdx(args: string[], cwd?: string): string {
 
 // ─── Native TS Fallbacks ──────────────────────────────────────────────────
 
+let _nativeReadFallbackListener: ((file: string, limit?: number, offset?: number, cwd?: string) => void) | null = null
+
+export function setNativeReadFallbackListenerForTest(
+  listener: ((file: string, limit?: number, offset?: number, cwd?: string) => void) | null
+): void {
+  _nativeReadFallbackListener = listener
+}
+
 export function nativeReadFallback(file: string, limit?: number, offset?: number, cwd?: string): string {
+  if (_nativeReadFallbackListener) {
+    _nativeReadFallbackListener(file, limit, offset, cwd)
+  }
   try {
     const resolvedPath = resolve(cwd || activeProjectDir || process.cwd(), file)
     if (!existsSync(resolvedPath)) return `[FDX Fallback] Error: File not found "${file}"`

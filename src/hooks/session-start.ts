@@ -21,8 +21,15 @@ const MAX_LESSON_CONTEXT_BYTES = 8 * 1024
 
 import { checkFdxAvailability } from "../tools/fdx-shared"
 
+let _fdxAvailableOverride: boolean | null = null
+
+export function setFdxAvailableOverrideForTest(val: boolean | null): void {
+  _fdxAvailableOverride = val
+}
+
 /** Check if the fdx binary is available. */
 export function isFdxAvailable(forceRefresh = false): boolean {
+  if (_fdxAvailableOverride !== null) return _fdxAvailableOverride
   return checkFdxAvailability(forceRefresh)
 }
 

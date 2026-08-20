@@ -166,48 +166,7 @@ const GIT_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
   "grep", "branch", "remote", "config", "check-ref-format",
 ])
 
-/** Default sensitive-path patterns. Substring match (case-insensitive). */
-const DEFAULT_SENSITIVE_PATTERNS: ReadonlyArray<string> = [
-  ".env",
-  ".envrc",
-  ".npmrc",
-  ".pypirc",
-  ".netrc",
-  ".aws/credentials",
-  ".aws/config",
-  ".gcp/credentials",
-  ".config/gcloud",
-  ".kube/config",
-  ".docker/config.json",
-  ".ssh/",
-  ".gnupg/",
-  ".pki/",
-  "id_rsa",
-  "id_ed25519",
-  "id_ecdsa",
-  "id_dsa",
-  "authorized_keys",
-  "known_hosts",
-  ".pem",
-  ".key",
-  ".p12",
-  ".pfx",
-  ".secret",
-  ".keystore",
-  "credentials",
-  "credentials.json",
-  "service-account",
-  "service_account",
-  "secrets.",
-  "secrets/",
-  "/etc/passwd",
-  "/etc/shadow",
-  "/etc/sudoers",
-  "/etc/ssh/",
-  "/proc/",
-  "/sys/",
-  "/dev/",
-]
+import { DEFAULT_SENSITIVE_PATTERNS } from "./sensitive-path"
 
 /** Strip a simple surrounding pair of single OR double quotes from a token. */
 function unquote(token: string): string {
