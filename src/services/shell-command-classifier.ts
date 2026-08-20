@@ -1,6 +1,6 @@
 import { resolve, normalize } from "path"
 import { tmpdir } from "os"
-import { DEFAULT_SENSITIVE_PATTERNS } from "./sensitive-path"
+import { DEFAULT_SENSITIVE_PATTERNS, stripBenignPseudoDeviceRedirects } from "./sensitive-path"
 import type { AuthorizationDecision, RiskLevel, RiskCategory } from "./approval-service"
 
 export type ShellCategory = "read" | "mutating" | "sensitive-read" | "risky" | "approval-required" | "unknown"
@@ -333,10 +333,13 @@ export function splitTopLevelSegments(cmd: string): string[] {
 }
 
 export function checkSensitiveMatches(cmd: string, extraPatterns?: ReadonlyArray<string>): string[] {
+  // Strip benign pseudo-device redirections (2>/dev/null etc.) before scanning.
+  // This prevents /dev/null from matching the /dev/ sensitive pattern.
+  const cmdToScan = stripBenignPseudoDeviceRedirects(cmd)
   const matches: string[] = []
   const patterns = extraPatterns ? [...DEFAULT_SENSITIVE_PATTERNS, ...extraPatterns] : DEFAULT_SENSITIVE_PATTERNS
   for (const pat of patterns) {
-    if (cmd.includes(pat)) {
+    if (cmdToScan.includes(pat)) {
       matches.push(pat)
     }
   }

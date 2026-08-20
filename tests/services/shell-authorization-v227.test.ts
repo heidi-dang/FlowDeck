@@ -152,4 +152,56 @@ describe("FlowDeck v2.2.7 Shell Authorization Engine", () => {
       expect(auth.decision).toBe("ALLOW")
     })
   })
+
+  describe("4. Pseudo-device redirect regression (fix: /dev/null false positive)", () => {
+    // These must ALL be ALLOW — 2>/dev/null is not a sensitive /dev/ access.
+    const benignCases = [
+      "ls src/ 2>/dev/null",
+      "cat package.json 2>/dev/null",
+      "find src -type f 2>/dev/null",
+      "echo x >/dev/null",
+      "echo x 1>/dev/null",
+      "echo x 2>/dev/null",
+      "echo x >/dev/null 2>&1",
+      "command >/dev/null 2>&1",
+      "ls src/ 2>/dev/null; echo '---'; ls src/services/ 2>/dev/null",
+    ]
+
+    for (const cmd of benignCases) {
+      it(`allows: ${cmd}`, () => {
+        const auth = evaluateShellAuthorization(cmd, { workingDir: workspace })
+        expect(auth.decision).toBe("ALLOW")
+        expect(auth.riskCategory).not.toBe("sensitive_data")
+      })
+    }
+
+    it("the exact compound command from the incident does not trigger sensitive_data", () => {
+      const cmd = [
+        'ls src/ 2>/dev/null; echo "---"; ls src/services/ 2>/dev/null; echo "---";',
+        'ls tests/audit/ 2>/dev/null; echo "---"; ls .codebase/ 2>/dev/null | head;',
+        'echo "---STATE---"; cat .codebase/STATE.md 2>/dev/null | head -50',
+      ].join(" ")
+      const auth = evaluateShellAuthorization(cmd, { workingDir: workspace })
+      expect(auth.decision).toBe("ALLOW")
+      expect(auth.sensitiveMatches).toHaveLength(0)
+    })
+
+    it("does NOT whitelist genuine /dev/ device access (e.g. /dev/sda)", () => {
+      const auth = evaluateShellAuthorization("dd if=/dev/sda of=/tmp/disk.img", { workingDir: workspace })
+      // /dev/sda is not a benign pseudo-device — still flagged as sensitive
+      expect(auth.decision).toBe("APPROVAL_REQUIRED")
+      expect(auth.riskCategory).toBe("sensitive_data")
+    })
+
+    it("does NOT whitelist reads of real /dev/ character devices via cat", () => {
+      const auth = evaluateShellAuthorization("cat /dev/sda1", { workingDir: workspace })
+      expect(auth.decision).toBe("APPROVAL_REQUIRED")
+    })
+
+    it("still requires approval for real sensitive paths alongside /dev/null redirect", () => {
+      const auth = evaluateShellAuthorization("cat .env 2>/dev/null", { workingDir: workspace })
+      expect(auth.decision).toBe("APPROVAL_REQUIRED")
+      expect(auth.riskCategory).toBe("sensitive_data")
+    })
+  })
 })
