@@ -3,10 +3,6 @@ import { dirname, join } from "path"
 import { fileURLToPath } from "url"
 import { statePath, parseState, findWorkspaceRoot, getWorkspaceConfig, planningDir, resolveActiveTopic } from "../tools/planning-state-lib"
 import { codebaseDir } from "../tools/codebase-state"
-import {
-  detectProjectLanguages,
-  getStartupRulePaths,
-} from "../services/lazy-rule-loader"
 import { getCodegraphReadiness } from "../services/codegraph-readiness"
 import { buildTokenBudget, estimateTokensFromBytes } from "../services/token-budget"
 import { readPlanCanonical } from "../services/planning-paths"
@@ -100,10 +96,10 @@ function buildLeanContext(projectRoot: string, log?: (msg: string) => void | Pro
   let languages: string[] = []
   let rulePaths: string[] = []
   try {
-    languages = detectProjectLanguages(projectRoot)
+    languages = []
     const rulesDir = resolveRulesDir()
     if (existsSync(rulesDir) && languages.length > 0) {
-      rulePaths = getStartupRulePaths(rulesDir, languages)
+      rulePaths = []
     }
     if (log) {
       log(

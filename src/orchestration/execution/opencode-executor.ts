@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process"
-import type { AssignmentContextResult } from "../../services/context-scoping"
 import type { ExecutionWorkstream } from "./contracts"
 import type { IsolatedExecutionResult, IsolatedWorkstreamExecutor } from "./worktree-executor"
 import type { WorktreeAllocation } from "./worktree-manager"
@@ -52,7 +51,7 @@ function responseProgress(value: unknown): StallObservation | undefined {
 export class OpenCodeWorkstreamExecutor implements IsolatedWorkstreamExecutor {
   constructor(private readonly client: unknown, private readonly verify: (allocation: WorktreeAllocation) => Promise<boolean> | boolean = OpenCodeWorkstreamExecutor.verifyGitState) {}
 
-  async execute(workstream: ExecutionWorkstream, allocation: WorktreeAllocation, budget?: WorkstreamBudgetHandle, context?: AssignmentContextResult): Promise<IsolatedExecutionResult> {
+  async execute(workstream: ExecutionWorkstream, allocation: WorktreeAllocation, budget?: WorkstreamBudgetHandle, context?: any): Promise<IsolatedExecutionResult> {
     const session = (this.client as OpenCodeClientShape | null)?.session
     if (!session?.create || !session.prompt) throw new Error("OPENCODE_WORKSTREAM_API_UNAVAILABLE")
     const created = await session.create({ body: { title: `FlowDeck workstream: ${workstream.workstreamId}`, agent: workstream.resolvedAgent, metadata: { flowdeckWorkstreamId: workstream.workstreamId, flowdeckPlanId: workstream.planId } }, query: { directory: allocation.workspace } })

@@ -6,11 +6,10 @@ import type { GitWorktreeManager, WorktreeAllocation } from "./worktree-manager"
 import type { WorkstreamBudgetHandle } from "../../services/adaptive-execution-control"
 import type { PerformanceOutcomeFacts, SqlitePerformanceRepository } from "../performance/sqlite-repository"
 import { buildWorkstreamContext } from "./context"
-import type { AssignmentContextResult } from "../../services/context-scoping"
 import { buildRuntimeProjection } from "../../services/runtime-projection"
 
 export interface IsolatedExecutionResult extends PerformanceOutcomeFacts {}
-export interface IsolatedWorkstreamExecutor { execute(workstream: ExecutionWorkstream, allocation: WorktreeAllocation, budget?: WorkstreamBudgetHandle, context?: AssignmentContextResult): Promise<"succeeded" | "failed" | IsolatedExecutionResult> }
+export interface IsolatedWorkstreamExecutor { execute(workstream: ExecutionWorkstream, allocation: WorktreeAllocation, budget?: WorkstreamBudgetHandle, context?: any): Promise<"succeeded" | "failed" | IsolatedExecutionResult> }
 export interface IntegrationCoordinator { integrate(workstream: ExecutionWorkstream, sourceSha: string, branch: string, workspace: string): void; currentSourceSha?: () => string; recoverAfterRestart?: () => number }
 export interface WorkstreamBudgetCoordinator {
   open(workstream: ExecutionWorkstream): WorkstreamBudgetHandle

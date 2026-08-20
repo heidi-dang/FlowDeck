@@ -8,41 +8,6 @@ export { HarnessEvidenceSchema, HarnessFindingSchema, HarnessDimensionScoreSchem
 export type { HarnessEvidence, HarnessFinding, HarnessDimensionScore, HarnessReport } from "./contracts/report";
 export { HarnessRunProgressSchema } from "./contracts/progress";
 export type { HarnessRunProgress } from "./contracts/progress";
-export {
-  SSE_CONTRACT_VERSION,
-  SSESupportedEventEnum,
-  SSEEnvelopeSchema,
-  SSEConnectedPayloadSchema,
-  SSEHeartbeatPayloadSchema,
-  SSERunQueuedPayloadSchema,
-  SSERunStartedPayloadSchema,
-  SSECollectorStartedPayloadSchema,
-  SSECollectorCompletedPayloadSchema,
-  SSEAnalysisStartedPayloadSchema,
-  SSEFindingCreatedPayloadSchema,
-  SSERunProgressPayloadSchema,
-  SSEReportCompletedPayloadSchema,
-  SSERunCancelledPayloadSchema,
-  SSERunFailedPayloadSchema,
-  getPayloadValidator,
-} from "./contracts/sse-events";
-export type {
-  SSESupportedEvent,
-  SSEEnvelope,
-  SSEConnectedPayload,
-  SSEHeartbeatPayload,
-  SSERunQueuedPayload,
-  SSERunStartedPayload,
-  SSECollectorStartedPayload,
-  SSECollectorCompletedPayload,
-  SSEAnalysisStartedPayload,
-  SSEFindingCreatedPayload,
-  SSERunProgressPayload,
-  SSEReportCompletedPayload,
-  SSERunCancelledPayload,
-  SSERunFailedPayload,
-} from "./contracts/sse-events";
-
 // Workspace
 export { captureWorkspaceSnapshot } from "./workspace/workspace-snapshot";
 export type { WorkspaceSnapshot } from "./workspace/workspace-snapshot";
@@ -110,16 +75,12 @@ export { cancelRun, isRunCancelled, clearCancellation } from "./runtime/run-canc
 export { registry } from "./runtime/runtime-registry";
 
 // Transport
-export { HarnessHttpServer } from "./transport/http-server";
-export type { HttpServerConfig } from "./transport/http-server";
 export { routeRequest } from "./transport/router";
 export type { RouteHandler, RouteResponse } from "./transport/router";
 export { createCorsHeaders, DEFAULT_CORS_CONFIG } from "./transport/cors";
 export type { CorsConfig } from "./transport/cors";
 export { createAuthCheck } from "./transport/authentication";
 export type { AuthConfig } from "./transport/authentication";
-export { SseManager } from "./transport/sse";
-export type { SseClient } from "./transport/sse";
 export { setRequestContext, getRequestContext, clearRequestContext } from "./transport/request-context";
 export type { RequestContext } from "./transport/request-context";
 

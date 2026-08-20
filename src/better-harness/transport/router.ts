@@ -398,7 +398,7 @@ export async function routeRequestContext(
     {
       const m = matchRoute("/api/v1/servers/:serverKey/projects/:projectKey/better-harness/runs/:runId/events", urlPath);
       if (m && method === "GET") {
-        if (!ctx.sseManager) {
+        const SSE_AVAILABLE = false; if (SSE_AVAILABLE) {
           return { status: 501, body: { error: "SSE not available" } };
         }
         return { status: 101, body: { sse: true } };
