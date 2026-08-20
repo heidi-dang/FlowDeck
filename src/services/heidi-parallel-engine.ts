@@ -497,7 +497,7 @@ export class HeidiParallelEngine {
       // Check if any blocked nodes exist
       for (const n of allNodes) {
         if (n.status === "queued") {
-          const deps: string[] = JSON.parse(n.dependencies || "[]")
+          const deps: string[] = safeParseJsonField(n.dependencies, [], `dependencies for node ${n.id}`)
           const failedDep = allNodes.some(other => deps.includes(other.id) && ["failed", "cancelled", "blocked"].includes(other.status))
           if (failedDep) {
             this.db.query("UPDATE heidi_delegation_nodes SET status = 'blocked' WHERE run_id = ? AND id = ?").run(runId, n.id)

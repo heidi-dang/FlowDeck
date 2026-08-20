@@ -110,4 +110,27 @@ describe("HeidiParallelEngine", () => {
     expect(nodeR1.status).toBe("queued")
     expect(nodeW1.status).toBe("blocked")
   })
+
+  it("handles transitionNode errors safely with proper rollback", () => {
+    expect(() => {
+      engine.transitionNode("NONEXISTENT_NODE", "running")
+    }).toThrow(/NODE_NOT_FOUND/)
+  })
+
+  it("detects corrupted DB columns and fails with descriptive diagnostics", () => {
+    const run = engine.createRun({
+      parentSessionId: "session_123",
+      goal: "Corruption test",
+      nodes: [
+        { id: "C1", specialist: "mapper", goal: "corrupt test", access: "read" },
+      ],
+    })
+
+    // Corrupt dependencies column in DB manually
+    db.query("UPDATE heidi_delegation_nodes SET dependencies = 'INVALID_JSON{' WHERE id = 'C1'").run()
+
+    expect(() => {
+      engine.getRun(run.runId)
+    }).toThrow(/PARALLEL_ENGINE_DATA_CORRUPTION/)
+  })
 })
