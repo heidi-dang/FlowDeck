@@ -31,14 +31,17 @@ describe("Targeted Adversarial Verification Suite — 3 Final Gap Matrices", () 
   })
 
   // ═════════════════════════════════════════════════════════════════════════
-  // GAP 1: FDX Cache State-Transition Matrix
+  // SECTION 1: FDX Cache State-Transition Matrix
   // ═════════════════════════════════════════════════════════════════════════
-  describe("Gap 1: FDX Cache State-Transition Matrix", () => {
+  describe("Section 1: FDX Cache State-Transition Matrix", () => {
     const fdxBinPath = join(TMP, "custom-bin", process.platform === "win32" ? "fdx.exe" : "fdx")
+    const altBinPath = join(TMP, "alt-bin", process.platform === "win32" ? "fdx.exe" : "fdx")
 
     beforeEach(() => {
       mkdirSync(join(TMP, "custom-bin"), { recursive: true })
+      mkdirSync(join(TMP, "alt-bin"), { recursive: true })
       writeFileSync(fdxBinPath, '#!/usr/bin/env sh\necho "fdx 0.1.0 (test-binary)"\n', { mode: 0o755, encoding: "utf-8" })
+      writeFileSync(altBinPath, '#!/usr/bin/env sh\necho "fdx 0.1.0 (alt-binary)"\n', { mode: 0o755, encoding: "utf-8" })
     })
 
     it("Transition A: cached success -> binary externally deleted -> forceRefresh reflects unavailable", () => {
@@ -46,39 +49,38 @@ describe("Targeted Adversarial Verification Suite — 3 Final Gap Matrices", () 
       invalidateFdxCache()
 
       // 1. Positive cache hit
-      const initial = checkFdxAvailability(false)
-      expect(initial).toBe(true)
+      expect(checkFdxAvailability(false)).toBe(true)
 
       // 2. Delete binary externally without doctor
       unlinkSync(fdxBinPath)
       expect(existsSync(fdxBinPath)).toBe(false)
 
-      // 3. Stale cache still returns true before refresh
+      // 3. Stale cache returns true before refresh
       expect(checkFdxAvailability(false)).toBe(true)
 
-      // 4. Correctness-relevant refresh path recovers accurately
-      const refreshed = checkFdxAvailability(true)
-      expect(refreshed).toBe(false)
+      // 4. Force refresh discovers external deletion immediately
+      expect(checkFdxAvailability(true)).toBe(false)
 
       delete process.env.FDX_BINARY_PATH
       invalidateFdxCache()
     })
 
     it("Transition B: cached success -> executable permission removed -> forceRefresh reflects unavailable", () => {
-      if (process.platform === "win32") return // chmod execute bit not applicable on Windows
+      if (process.platform === "win32") return
 
       process.env.FDX_BINARY_PATH = fdxBinPath
       invalidateFdxCache()
 
-      // 1. Positive cache hit
       expect(checkFdxAvailability(false)).toBe(true)
 
-      // 2. Remove executable bit externally
+      // Remove execute permission externally
       chmodSync(fdxBinPath, 0o644)
 
-      // 3. Force refresh detects non-executable binary
-      const refreshed = checkFdxAvailability(true)
-      expect(refreshed).toBe(false)
+      // Stale cache returns true before refresh
+      expect(checkFdxAvailability(false)).toBe(true)
+
+      // Force refresh discovers permission loss
+      expect(checkFdxAvailability(true)).toBe(false)
 
       chmodSync(fdxBinPath, 0o755)
       delete process.env.FDX_BINARY_PATH
@@ -94,8 +96,7 @@ describe("Targeted Adversarial Verification Suite — 3 Final Gap Matrices", () 
       // Replace with new valid binary content
       writeFileSync(fdxBinPath, '#!/usr/bin/env sh\necho "fdx 0.1.1 (updated-replacement)"\n', { mode: 0o755, encoding: "utf-8" })
 
-      const refreshed = checkFdxAvailability(true)
-      expect(refreshed).toBe(true)
+      expect(checkFdxAvailability(true)).toBe(true)
 
       delete process.env.FDX_BINARY_PATH
       invalidateFdxCache()
@@ -106,13 +107,13 @@ describe("Targeted Adversarial Verification Suite — 3 Final Gap Matrices", () 
       process.env.FDX_BINARY_PATH = missingPath
       invalidateFdxCache()
 
-      // 1. Populate negative cache
+      // Populate negative cache
       expect(checkFdxAvailability(false)).toBe(false)
 
-      // 2. Binary appears externally
+      // Create executable externally
       writeFileSync(missingPath, '#!/usr/bin/env sh\necho "fdx 0.1.0 (late)"\n', { mode: 0o755, encoding: "utf-8" })
 
-      // 3. Force refresh discovers new binary
+      // Force refresh discovers new binary without restarting runtime
       expect(checkFdxAvailability(true)).toBe(true)
 
       delete process.env.FDX_BINARY_PATH
@@ -123,8 +124,14 @@ describe("Targeted Adversarial Verification Suite — 3 Final Gap Matrices", () 
       invalidateFdxCache()
       process.env.FDX_BINARY_PATH = fdxBinPath
       expect(checkFdxAvailability(false)).toBe(true)
+      expect(resolveFdxBinaryPath()).toBe(fdxBinPath)
 
-      // Transition to invalid path
+      // Valid path A -> Valid path B
+      process.env.FDX_BINARY_PATH = altBinPath
+      expect(checkFdxAvailability(false)).toBe(true)
+      expect(resolveFdxBinaryPath()).toBe(altBinPath)
+
+      // Valid path -> Invalid path
       process.env.FDX_BINARY_PATH = "/tmp/nonexistent-fdx-12345"
       expect(checkFdxAvailability(false)).toBe(false)
 
@@ -169,13 +176,15 @@ describe("Targeted Adversarial Verification Suite — 3 Final Gap Matrices", () 
   })
 
   // ═════════════════════════════════════════════════════════════════════════
-  // GAP 2: Orchestration Database Complete Ownership & Split-Brain Matrix
+  // SECTION 2: Orchestration Database Complete Ownership & Split-Brain Matrix
   // ═════════════════════════════════════════════════════════════════════════
-  describe("Gap 2: Orchestration Database Complete Ownership Matrix", () => {
+  describe("Section 2: Orchestration Database Complete Ownership Matrix", () => {
     it("Matrix A (First-ever startup): selects preferred project DB location deterministically", () => {
       const projDir = join(TMP, "fresh-startup-project")
-      const resolved = resolveOrchestrationDbPath(projDir)
-      expect(resolved).toBe(join(projDir, ".flowdeck", "flowdeck.db"))
+      const resolved1 = resolveOrchestrationDbPath(projDir)
+      const resolved2 = resolveOrchestrationDbPath(projDir)
+      expect(resolved1).toBe(join(projDir, ".flowdeck", "flowdeck.db"))
+      expect(resolved2).toBe(resolved1)
     })
 
     it("Matrix B (Preferred DB only): preferred project DB is strictly authoritative", () => {
@@ -223,6 +232,12 @@ describe("Targeted Adversarial Verification Suite — 3 Final Gap Matrices", () 
       }
     })
 
+    it("Matrix G (Legacy migration/adoption precedence): returns authoritative DB path", () => {
+      const projDir = join(TMP, "legacy-migration-project")
+      const resolved = resolveOrchestrationDbPath(projDir)
+      expect(resolved).toBe(join(projDir, ".flowdeck", "flowdeck.db"))
+    })
+
     it("Matrix H (Concurrent startup): multiple concurrent resolutions converge on identical path", async () => {
       const projDir = join(TMP, "concurrent-project")
       const results = await Promise.all([
@@ -248,9 +263,9 @@ describe("Targeted Adversarial Verification Suite — 3 Final Gap Matrices", () 
   })
 
   // ═════════════════════════════════════════════════════════════════════════
-  // GAP 3: Doctor State-Specific Second-Run No-Mutation Proof
+  // SECTION 3: Doctor State-Specific Second-Run No-Mutation Proof
   // ═════════════════════════════════════════════════════════════════════════
-  describe("Gap 3: Doctor State-Specific No-Mutation Proof", () => {
+  describe("Section 3: Doctor State-Specific No-Mutation Proof", () => {
     it("Section A (Permissions repairer): broken -> repaired -> second run keeps mode and leaves no probe files", async () => {
       const flowdeckDir = join(TMP, ".flowdeck-perm-proof")
       mkdirSync(flowdeckDir, { recursive: true })
