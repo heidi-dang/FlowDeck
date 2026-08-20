@@ -24,10 +24,6 @@ export type AuditEventKind =
   | "guard.allow"
   | "guard.block"
   | "guard.warn"
-  | "approval.required"
-  | "approval.granted"
-  | "approval.denied"
-  | "approval.consumed"
   | "supervisor.decision"
   | "supervisor.block"
   | "supervisor.approve"
@@ -74,10 +70,6 @@ export function auditLogPath(dir: string): string {
 const CRITICAL_KINDS: ReadonlySet<string> = new Set([
   "guard.block",
   "guard.warn",
-  "approval.required",
-  "approval.granted",
-  "approval.denied",
-  "approval.consumed",
   "supervisor.block",
   "recovery.action",
   "session.agent_mismatch",

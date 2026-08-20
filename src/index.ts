@@ -1,9 +1,7 @@
 import type { Plugin } from "@opencode-ai/plugin"
 
-
-
-import { getAgentConfigs, } from "./agents/index"
-import { loadFlowDeckConfig, resolveAgentModels} from "./config/index"
+import { getAgentConfigs } from "./agents/index"
+import { loadFlowDeckConfig, resolveAgentModels } from "./config/index"
 
 import { invalidateFdxCache } from "./tools/fdx-shared"
 import { buildFlowDeckMcpsWithMeta } from "./mcp/index"
@@ -58,6 +56,8 @@ export function getOrchestrationRuntime(): any {
 
 const plugin: Plugin = async ({ directory, client: _client }) => {
   setActiveProjectDir(directory)
+  
+  let currentConfig: any = {};
 
   return {
     config: async (cfg: Record<string, unknown>) => {
@@ -66,6 +66,7 @@ const plugin: Plugin = async ({ directory, client: _client }) => {
       }
 
       const flowdeckConfig = loadFlowDeckConfig(directory)
+      currentConfig = flowdeckConfig;
       invalidateFdxCache()
       const resolvedAgents = getAgentConfigs(resolveAgentModels(flowdeckConfig))
 
@@ -84,6 +85,14 @@ const plugin: Plugin = async ({ directory, client: _client }) => {
       else cfg.mcp = { ...mcps }
     },
     
+    permission: async (ctx: any) => {
+      const isHeidiSession = ctx.agent?.name === "heidi" || ctx.agent?.name?.startsWith("heidi-");
+      if (isHeidiSession && currentConfig?.heidi?.globalAlwaysApprove === true) {
+        return { status: "allow" }
+      }
+      return undefined;
+    },
+
     tool: {
       "doctor": doctorTool,
       "codegraph": codegraphTool,
