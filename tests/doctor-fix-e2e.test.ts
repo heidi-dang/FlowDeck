@@ -49,8 +49,8 @@ describe("FlowDeck Doctor Fix — Repair Orchestration & Multi-Failure E2E", () 
 
   it("multi-failure auto-repair E2E: repairs 5+ simultaneous injected failures and passes post-check", async () => {
     const rootDir = process.cwd()
-    const customConfigDir = join(rootDir, ".config", "opencode")
-    const customStateDir = join(rootDir, ".flowdeck")
+    const customConfigDir = join(tmpdir(), "fdx-doc-e2e-cfg-" + Date.now())
+    const customStateDir = join(tmpdir(), "fdx-doc-e2e-state-" + Date.now())
     mkdirSync(customConfigDir, { recursive: true })
     mkdirSync(customStateDir, { recursive: true })
 
@@ -64,8 +64,8 @@ describe("FlowDeck Doctor Fix — Repair Orchestration & Multi-Failure E2E", () 
       writeFileSync(join(customConfigDir, "opencode.json"), JSON.stringify({ plugin: ["@dv.nghiem/flowdeck"] }), "utf-8")
 
       // 2. Inject Failure 2: Stale process lock files
-      writeFileSync(join(customStateDir, "fdx.lock"), JSON.stringify({ pid: 999 }), "utf-8")
-      writeFileSync(join(customStateDir, "orchestration.lock"), JSON.stringify({ pid: 998 }), "utf-8")
+      writeFileSync(join(customStateDir, "fdx.lock"), JSON.stringify({ pid: 999999999 }), "utf-8")
+      writeFileSync(join(customStateDir, "orchestration.lock"), JSON.stringify({ pid: 999999998 }), "utf-8")
 
       // Execute Doctor Repair Orchestrator
       const orchestrator = new DoctorRepairOrchestrator(rootDir)
@@ -91,6 +91,10 @@ describe("FlowDeck Doctor Fix — Repair Orchestration & Multi-Failure E2E", () 
     } finally {
       process.env.FLOWDECK_STATE_DIR = origStateDir
       process.env.OPENCODE_CONFIG_DIR = origConfigDir
+      try {
+        rmSync(customConfigDir, { recursive: true, force: true })
+        rmSync(customStateDir, { recursive: true, force: true })
+      } catch {}
     }
   })
 })

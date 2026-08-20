@@ -4,7 +4,7 @@ import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { spawn } from "node:child_process"
-import { checkFdxAvailability, invalidateFdxCache, resolveFdxBinaryPath, getFdxAvailabilityStatus, runFdx } from "../src/tools/fdx-shared"
+import { checkFdxAvailability, invalidateFdxCache, resolveFdxBinaryPath, runFdx } from "../src/tools/fdx-shared"
 import { repairFdxBinary } from "../src/doctor/repair/repairers/fdx-repairer"
 import { repairPermissions } from "../src/doctor/repair/repairers/permissions-repairer"
 import { repairStaleLocks } from "../src/doctor/repair/repairers/stale-locks-repairer"
@@ -143,18 +143,29 @@ describe("Targeted Adversarial Verification Suite — 3 Final Merge-Evidence Gap
       invalidateFdxCache()
     })
 
-    it("Transition F: PATH environment change dynamically changes binary discovery", () => {
+    it("Transition F: PATH environment change dynamically changes binary discovery", async () => {
       if (process.platform === "win32") return
-      invalidateFdxCache()
-      const originalPath = process.env.PATH
-      try {
-        process.env.PATH = join(TMP, "bin-a") + ":" + (originalPath ?? "")
-        const status = getFdxAvailabilityStatus(true)
-        expect(status.available).toBe(true)
-      } finally {
-        process.env.PATH = originalPath
-        invalidateFdxCache()
-      }
+      const runnerCode = `
+import { getFdxAvailabilityStatus, invalidateFdxCache } from "./src/tools/fdx-shared"
+invalidateFdxCache()
+const status = getFdxAvailabilityStatus(true)
+if (!status.available) throw new Error("Unavailable via PATH: " + JSON.stringify(status))
+`
+      const res = spawn("bun", ["-e", runnerCode], {
+        env: {
+          ...process.env,
+          PATH: join(TMP, "bin-a") + ":" + (process.env.PATH ?? ""),
+        },
+        stdio: "pipe",
+      })
+      await new Promise<void>((resolve, reject) => {
+        let errOut = ""
+        res.stderr?.on("data", (d: Buffer) => { errOut += d.toString() })
+        res.on("exit", (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`Transition F child process failed (exit ${code}): ${errOut}`))
+        })
+      })
     })
 
     it("Transition G: Doctor repair invalidates cache and makes repaired binary observable", async () => {
