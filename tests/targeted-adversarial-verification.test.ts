@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { existsSync, writeFileSync, mkdirSync, rmSync, readFileSync, chmodSync, readdirSync, statSync, unlinkSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { join } from "node:path"
-import { tmpdir, homedir } from "node:os"
+import { tmpdir } from "node:os"
 import { spawn } from "node:child_process"
 import { checkFdxAvailability, invalidateFdxCache, resolveFdxBinaryPath, getFdxAvailabilityStatus, runFdx } from "../src/tools/fdx-shared"
 import { repairFdxBinary } from "../src/doctor/repair/repairers/fdx-repairer"
@@ -11,7 +11,6 @@ import { repairStaleLocks } from "../src/doctor/repair/repairers/stale-locks-rep
 import {
   resolveOrchestrationDbPath,
   OrchestrationDatabaseInaccessibleError,
-  OrchestrationDatabaseAmbiguityError,
 } from "../src/services/orchestration-db-path"
 import { initializeDatabase, closeAllConnections } from "../src/orchestration/persistence/index"
 import { RepoLeaseCoordinator } from "../src/services/repo-lease-coordinator"
@@ -215,57 +214,150 @@ describe("Targeted Adversarial Verification Suite — 3 Final Merge-Evidence Gap
       expect(resolved).toBe(dbFile)
     })
 
-    it("Matrix C (Fallback DB only with real persisted marker state): preserves fallback state", () => {
-      const fallbackDbPath = join(TMP, "isolated-fallback", "flowdeck.db")
-      mkdirSync(join(TMP, "isolated-fallback"), { recursive: true })
+    const runIsolated = (testCode: string) => {
+      const baseIso = join(TMP, "isolated-env-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7))
+      const isoHome = join(baseIso, "home")
+      const isoTmp = join(baseIso, "tmp")
+      mkdirSync(isoHome, { recursive: true })
+      mkdirSync(isoTmp, { recursive: true })
 
-      // Create fallback DB with real schema and insert unique marker
-      const { db: initialDb } = initializeDatabase({ path: fallbackDbPath })
-      initialDb.query("CREATE TABLE IF NOT EXISTS flowdeck_fallback_marker (id TEXT PRIMARY KEY, val TEXT)").run()
-      initialDb.query("INSERT INTO flowdeck_fallback_marker (id, val) VALUES (?, ?)").run("marker_1", "flowdeck-test-fallback-state-unique-9876")
-      closeAllConnections()
+      const runnerCode = `
+import { mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readdirSync } from "node:fs"
+import { join } from "node:path"
+import { homedir, tmpdir } from "node:os"
+import { resolveOrchestrationDbPath, OrchestrationDatabaseAmbiguityError, OrchestrationDatabaseInaccessibleError } from "./src/services/orchestration-db-path"
+import { initializeDatabase, closeAllConnections } from "./src/orchestration/persistence/index"
 
-      // When preferred DB path is chosen for fresh project, verify state persistence
-      const { db: activeDb } = initializeDatabase({ path: fallbackDbPath })
-      const readBack = activeDb.query("SELECT val FROM flowdeck_fallback_marker WHERE id = ?").get("marker_1") as any
-      expect(readBack?.val).toBe("flowdeck-test-fallback-state-unique-9876")
-      closeAllConnections()
+const isoHome = homedir()
+const isoTmp = tmpdir()
+const baseIso = process.env.BASE_ISO!
+
+${testCode}
+`
+
+      try {
+        const res = spawn("bun", ["-e", runnerCode], {
+          env: {
+            ...process.env,
+            HOME: isoHome,
+            TMPDIR: isoTmp,
+            BASE_ISO: baseIso,
+          },
+          stdio: "pipe",
+        })
+        return new Promise<void>((resolve, reject) => {
+          let errOutput = ""
+          res.stderr?.on("data", (d: Buffer) => { errOutput += d.toString() })
+          res.on("exit", (code) => {
+            if (code === 0) resolve()
+            else reject(new Error(`Isolated test failed with exit ${code}: ${errOutput}`))
+          })
+        })
+      } finally {
+        try {
+          rmSync(baseIso, { recursive: true, force: true })
+        } catch {}
+      }
+    }
+
+    it("Matrix C (Fallback DB discovery and state preservation): discovers fallback and preserves state across restarts", async () => {
+      await runIsolated(`
+        const fallbackDbPath = join(isoHome, ".flowdeck", "flowdeck.db")
+        const markerVal = "FLOWDECK_FALLBACK_DISCOVERY_MARKER_V224_AUDIT"
+
+        // 1. Create real fallback database at supported fallback candidate location
+        mkdirSync(join(isoHome, ".flowdeck"), { recursive: true })
+        const { db: initialDb } = initializeDatabase({ path: fallbackDbPath })
+        initialDb.query("CREATE TABLE IF NOT EXISTS flowdeck_fallback_marker (id TEXT PRIMARY KEY, val TEXT)").run()
+        initialDb.query("INSERT INTO flowdeck_fallback_marker (id, val) VALUES (?, ?)").run("marker_1", markerVal)
+        closeAllConnections()
+
+        // 2. Setup project directory where preferred .flowdeck directory cannot be created (unwritable)
+        const projDir = join(baseIso, "unwritable-project")
+        mkdirSync(projDir, { recursive: true })
+        writeFileSync(join(projDir, ".flowdeck"), "blocking-file")
+
+        // 3. Normal production database resolution path (passing only project directory)
+        const resolvedPath1 = resolveOrchestrationDbPath(projDir)
+        if (resolvedPath1 !== fallbackDbPath) {
+          throw new Error("Expected production resolver to discover fallback path " + fallbackDbPath + " but got " + resolvedPath1)
+        }
+
+        // 4. Initialize via normal persistence API
+        const { db: activeDb1 } = initializeDatabase({ path: resolvedPath1 })
+        const readBack1 = activeDb1.query("SELECT val FROM flowdeck_fallback_marker WHERE id = ?").get("marker_1") as { val: string } | null
+        if (readBack1?.val !== markerVal) {
+          throw new Error("Marker mismatch after startup: " + JSON.stringify(readBack1))
+        }
+        closeAllConnections()
+
+        // 5. Subsequent startup: prove same state remains authoritative
+        const resolvedPath2 = resolveOrchestrationDbPath(projDir)
+        if (resolvedPath2 !== fallbackDbPath) {
+          throw new Error("Expected second resolution to discover fallback path " + fallbackDbPath + " but got " + resolvedPath2)
+        }
+        const { db: activeDb2 } = initializeDatabase({ path: resolvedPath2 })
+        const readBack2 = activeDb2.query("SELECT val FROM flowdeck_fallback_marker WHERE id = ?").get("marker_1") as { val: string } | null
+        if (readBack2?.val !== markerVal) {
+          throw new Error("Marker mismatch after second startup: " + JSON.stringify(readBack2))
+        }
+        closeAllConnections()
+
+        // 6. Prove no second divergent writable database was created
+        const prefDbExists = existsSync(join(projDir, ".flowdeck", "flowdeck.db"))
+        const homeDbExists = existsSync(join(isoHome, ".flowdeck", "flowdeck.db"))
+        const tmpDbExists = existsSync(join(isoTmp, "flowdeck", "flowdeck.db"))
+
+        if (prefDbExists || !homeDbExists || tmpDbExists) {
+          throw new Error("Candidate DB count check failed: pref=" + prefDbExists + " home=" + homeDbExists + " tmp=" + tmpDbExists)
+        }
+      `)
     })
 
-    it("Matrix D & E (Preferred + Fallback both exist with divergent state): preferred strictly wins and fallback is untouched", () => {
-      const projDir = join(TMP, "both-exist-state-proj")
-      const prefDbPath = join(projDir, ".flowdeck", "flowdeck.db")
-      const fallbackDbPath = join(TMP, "fallback-coexist", "flowdeck.db")
+    it("Matrix D & E (Preferred + Fallback both exist with divergent state): preferred strictly wins and fallback is untouched", async () => {
+      // By FlowDeck contract: an already-created project-local DB establishes authority,
+      // and any fallback DB is isolated and not automatically merged.
+      await runIsolated(`
+        const projDir = join(baseIso, "coexist-proj")
+        const prefDbPath = join(projDir, ".flowdeck", "flowdeck.db")
+        const fallbackDbPath = join(isoHome, ".flowdeck", "flowdeck.db")
 
-      mkdirSync(join(projDir, ".flowdeck"), { recursive: true })
-      mkdirSync(join(TMP, "fallback-coexist"), { recursive: true })
+        mkdirSync(join(projDir, ".flowdeck"), { recursive: true })
+        mkdirSync(join(isoHome, ".flowdeck"), { recursive: true })
 
-      // Initialize preferred DB with PROJECT_STATE marker
-      const { db: prefDb } = initializeDatabase({ path: prefDbPath })
-      prefDb.query("CREATE TABLE IF NOT EXISTS state_marker (id TEXT PRIMARY KEY, val TEXT)").run()
-      prefDb.query("INSERT INTO state_marker (id, val) VALUES (?, ?)").run("m", "PROJECT_STATE_AUTHORITATIVE")
+        // Initialize preferred DB with PROJECT_STATE_AUTHORITATIVE marker
+        const { db: prefDb } = initializeDatabase({ path: prefDbPath })
+        prefDb.query("CREATE TABLE IF NOT EXISTS state_marker (id TEXT PRIMARY KEY, val TEXT)").run()
+        prefDb.query("INSERT INTO state_marker (id, val) VALUES (?, ?)").run("m", "PROJECT_STATE_AUTHORITATIVE")
+        closeAllConnections()
 
-      // Initialize fallback DB with FALLBACK_STATE marker
-      const { db: fallDb } = initializeDatabase({ path: fallbackDbPath })
-      fallDb.query("CREATE TABLE IF NOT EXISTS state_marker (id TEXT PRIMARY KEY, val TEXT)").run()
-      fallDb.query("INSERT INTO state_marker (id, val) VALUES (?, ?)").run("m", "FALLBACK_STATE_ISOLATED")
+        // Initialize fallback DB with FALLBACK_STATE_ISOLATED marker
+        const { db: fallDb } = initializeDatabase({ path: fallbackDbPath })
+        fallDb.query("CREATE TABLE IF NOT EXISTS state_marker (id TEXT PRIMARY KEY, val TEXT)").run()
+        fallDb.query("INSERT INTO state_marker (id, val) VALUES (?, ?)").run("m", "FALLBACK_STATE_ISOLATED")
+        closeAllConnections()
 
-      closeAllConnections()
+        // Resolve DB for project: preferred project DB must strictly win by contract
+        const resolved = resolveOrchestrationDbPath(projDir)
+        if (resolved !== prefDbPath) {
+          throw new Error("Preferred project DB did not win: got " + resolved)
+        }
 
-      // Resolve DB for project: preferred project DB must strictly win
-      const resolved = resolveOrchestrationDbPath(projDir)
-      expect(resolved).toBe(prefDbPath)
+        const { db: activeDb } = initializeDatabase({ path: resolved })
+        const projectState = activeDb.query("SELECT val FROM state_marker WHERE id = ?").get("m") as { val: string } | null
+        if (projectState?.val !== "PROJECT_STATE_AUTHORITATIVE") {
+          throw new Error("Authoritative state mismatch: " + JSON.stringify(projectState))
+        }
+        closeAllConnections()
 
-      const { db: activeDb } = initializeDatabase({ path: resolved })
-      const projectState = activeDb.query("SELECT val FROM state_marker WHERE id = ?").get("m") as any
-      expect(projectState?.val).toBe("PROJECT_STATE_AUTHORITATIVE")
-      closeAllConnections()
-
-      // Verify fallback DB was not modified or corrupted
-      const { db: verifiedFallDb } = initializeDatabase({ path: fallbackDbPath })
-      const fallbackState = verifiedFallDb.query("SELECT val FROM state_marker WHERE id = ?").get("m") as any
-      expect(fallbackState?.val).toBe("FALLBACK_STATE_ISOLATED")
-      closeAllConnections()
+        // Verify fallback DB was not modified or merged
+        const { db: verifiedFallDb } = initializeDatabase({ path: fallbackDbPath })
+        const fallbackState = verifiedFallDb.query("SELECT val FROM state_marker WHERE id = ?").get("m") as { val: string } | null
+        if (fallbackState?.val !== "FALLBACK_STATE_ISOLATED") {
+          throw new Error("Fallback state modified: " + JSON.stringify(fallbackState))
+        }
+        closeAllConnections()
+      `)
     })
 
     it("Matrix F (Preferred inaccessible + fallback healthy): throws Inaccessible error and refuses silent fallback", () => {
@@ -282,20 +374,80 @@ describe("Targeted Adversarial Verification Suite — 3 Final Merge-Evidence Gap
       }
     })
 
-    it("Matrix G (Legacy migration/adoption precedence): resolves to authoritative DB path", () => {
-      const projDir = join(TMP, "legacy-migration-project")
-      const resolved = resolveOrchestrationDbPath(projDir)
-      expect(resolved).toBe(join(projDir, ".flowdeck", "flowdeck.db"))
+    it("Matrix G (Legacy database location unsupported): FlowDeck does not silently adopt unsupported legacy DB paths", async () => {
+      // FlowDeck has no distinct legacy SQLite location. Old/unsupported paths are ignored safely.
+      await runIsolated(`
+        const projDir = join(baseIso, "legacy-unsupported-proj")
+        mkdirSync(join(projDir, ".opencode"), { recursive: true })
+        const unsupportedLegacyPath = join(projDir, ".opencode", "flowdeck.db")
+
+        // Populate database at unsupported legacy path with distinct marker
+        const { db: legDb } = initializeDatabase({ path: unsupportedLegacyPath })
+        legDb.query("CREATE TABLE IF NOT EXISTS legacy_marker (id TEXT PRIMARY KEY, val TEXT)").run()
+        legDb.query("INSERT INTO legacy_marker (id, val) VALUES (?, ?)").run("leg_1", "FLOWDECK_LEGACY_UNSUPPORTED_MARKER_998877")
+        closeAllConnections()
+
+        // Resolve DB via normal production path: resolves strictly to supported preferred path
+        const resolved = resolveOrchestrationDbPath(projDir)
+        const expectedPref = join(projDir, ".flowdeck", "flowdeck.db")
+        if (resolved !== expectedPref) {
+          throw new Error("Expected resolve to return supported preferred path " + expectedPref + " but got " + resolved)
+        }
+
+        // Initialize production DB: fresh schema, unsupported legacy table is NOT adopted
+        const { db: activeDb } = initializeDatabase({ path: resolved })
+        const tables = activeDb.query("SELECT name FROM sqlite_master WHERE type = ? AND name = ?").all("table", "legacy_marker")
+        if (tables.length > 0) {
+          throw new Error("Unsupported legacy table was unexpectedly adopted into production DB")
+        }
+        closeAllConnections()
+
+        // Legacy database at unsupported location remains untouched
+        const { db: reopenedLegDb } = initializeDatabase({ path: unsupportedLegacyPath })
+        const legRow = reopenedLegDb.query("SELECT val FROM legacy_marker WHERE id = ?").get("leg_1") as { val: string } | null
+        if (legRow?.val !== "FLOWDECK_LEGACY_UNSUPPORTED_MARKER_998877") {
+          throw new Error("Legacy file corrupted")
+        }
+        closeAllConnections()
+
+        // Subsequent startup re-resolves to the same authoritative preferred path
+        const resolved2 = resolveOrchestrationDbPath(projDir)
+        if (resolved2 !== expectedPref) {
+          throw new Error("Second startup did not resolve to preferred path")
+        }
+      `)
     })
 
-    it("Matrix I (Multiple fallback candidates ambiguity): throws OrchestrationDatabaseAmbiguityError", () => {
-      const projDir = join(TMP, "ambiguity-project")
-      const homeDb = join(homedir(), ".flowdeck", "flowdeck.db")
-      const tmpDb = join(tmpdir(), "flowdeck", "flowdeck.db")
+    it("Matrix I (Multiple fallback candidates ambiguity): throws OrchestrationDatabaseAmbiguityError when multiple fallbacks exist", async () => {
+      await runIsolated(`
+        const homeDb = join(isoHome, ".flowdeck", "flowdeck.db")
+        const tmpDb = join(isoTmp, "flowdeck", "flowdeck.db")
 
-      if (existsSync(homeDb) && existsSync(tmpDb)) {
-        expect(() => resolveOrchestrationDbPath(projDir)).toThrow(OrchestrationDatabaseAmbiguityError)
-      }
+        mkdirSync(join(isoHome, ".flowdeck"), { recursive: true })
+        mkdirSync(join(isoTmp, "flowdeck"), { recursive: true })
+        writeFileSync(homeDb, "home db content", "utf-8")
+        writeFileSync(tmpDb, "tmp db content", "utf-8")
+
+        const projDir = join(baseIso, "ambiguity-proj")
+        mkdirSync(projDir, { recursive: true })
+        writeFileSync(join(projDir, ".flowdeck"), "unwritable")
+
+        let threw = false
+        try {
+          resolveOrchestrationDbPath(projDir)
+        } catch (err) {
+          threw = true
+          if (!(err instanceof OrchestrationDatabaseAmbiguityError)) {
+            throw new Error("Expected OrchestrationDatabaseAmbiguityError but got " + String(err))
+          }
+          if (err.paths.length !== 2) {
+            throw new Error("Expected 2 paths in ambiguity error, got " + JSON.stringify(err.paths))
+          }
+        }
+        if (!threw) {
+          throw new Error("Expected resolveOrchestrationDbPath to throw OrchestrationDatabaseAmbiguityError")
+        }
+      `)
     })
   })
 
