@@ -34,7 +34,7 @@ import { sessionStartHook } from "./hooks/session-start"
 import { sessionEventsHook } from "./hooks/session-events"
 import { executePostWriteHook, toolGuardHook } from "./hooks/tool-guard"
 import { invalidateFdxCache } from "./tools/fdx-shared"
-import { recordToolError, checkToolErrorCircuit, clearToolErrorCounts } from "./services/orchestrator-guard-strategy-circuit"
+import { recordToolError, checkToolErrorCircuit, clearToolErrorCounts, orchestratorGuardStrategyCircuit } from "./services/orchestrator-guard-strategy-circuit"
 import { buildFlowDeckMcpsWithMeta } from "./mcp/index"
 import { captureLessonTool, reviewLessonsTool } from "./tools/capture-lesson"
 import { codegraphTool } from "./tools/codegraph-tool"
@@ -758,6 +758,8 @@ const plugin: Plugin = async ({ directory, client }) => {
               sessionContinuationCount.delete(sessionID)
               sessionRecoveryState.delete(sessionID)
               sessionReasoningRecoveryRegistry.delete(sessionID)
+              orchestratorGuardStrategyCircuit.clearSession(sessionID)
+              clearToolErrorCounts(sessionID)
               appLog("[task-phase] new manual task detected; loop/convergence/watchdog/recovery state reset, session ancestry preserved", "info", sessionID)
             }
             void boundary
@@ -1194,12 +1196,40 @@ const plugin: Plugin = async ({ directory, client }) => {
       }
 
       // ── 1. Orchestrator guard ──────────────────────────────────────────
-      orchestratorGuard.check(
-        sessionID,
-        toolName,
-        rawArgs,
-        agent,
-      )
+      try {
+        orchestratorGuard.check(
+          sessionID,
+          toolName,
+          rawArgs,
+          agent,
+        )
+      } catch (err: any) {
+        if (sessionID) sessionBlocks.set(sessionID, (sessionBlocks.get(sessionID) ?? 0) + 1)
+        if (isRecoverableBlockError(err) && sessionID) {
+          sessionRecoverableBlocks.set(sessionID, err)
+        }
+        if (isToolTracked && sessionID) {
+          const c = Math.max(0, (sessionActiveTools.get(sessionID) ?? 0) - 1)
+          sessionActiveTools.set(sessionID, c)
+          updateWatchdogState(sessionID, { isPendingTool: c > 0 })
+        }
+        releaseCallTimer(sessionID, callID, toolName)
+        appendAuditEvent(directory, {
+          kind: "guard.block",
+          session_id: sessionID,
+          agent,
+          tool: toolName,
+          decision: "block",
+          reason: err instanceof Error ? err.message : String(err),
+          details: {
+            callID,
+            subsystem: isRecoverableBlockError(err) ? err.subsystem : "orchestrator_guard",
+            code: isRecoverableBlockError(err) ? err.code : "ORCHESTRATOR_GUARD_BLOCK",
+            recoverable: isRecoverableBlockError(err) ? err.recoverable : false,
+          },
+        })
+        throw err
+      }
 
       // ── 2. Governance tool check (Fast Harness fast path) ────────
       // Deterministic known-safe read-only tools (FDX reads/searches, safe

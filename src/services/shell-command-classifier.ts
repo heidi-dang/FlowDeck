@@ -490,6 +490,86 @@ function classifySegment(
   if (isVersionOrHelpQuery(tokens)) {
     return { category: "read", reason: `\`${head}\` version/help inspection (read-only)`, head }
   }
+
+  // Node inspection commands (print expression, syntax check)
+  if (head === "node") {
+    if (tokens.length >= 2) {
+      if (tokens[1] === "-p" || tokens[1] === "--print" || tokens.includes("-p") || tokens.includes("--print")) {
+        return { category: "read", reason: "`node -p` print expression inspection (read-only)", head }
+      }
+      if (tokens[1] === "-c" || tokens[1] === "--check") {
+        return { category: "read", reason: "`node --check` syntax inspection (read-only)", head }
+      }
+    }
+  }
+
+  // Bun inspection and test commands
+  if (head === "bun") {
+    if (tokens.length >= 2) {
+      const sub = tokens[1].toLowerCase()
+      if (sub === "test") {
+        return { category: "read", reason: "`bun test` test execution (read-only verification)", head }
+      }
+      if (sub === "-p" || sub === "--print" || tokens.includes("-p") || tokens.includes("--print")) {
+        return { category: "read", reason: "`bun -p` print expression inspection (read-only)", head }
+      }
+      if (sub === "run") {
+        const script = (tokens[2] ?? "").toLowerCase()
+        if (["test", "typecheck", "lint", "check", "verify"].some(k => script === k || script.startsWith(k + ":"))) {
+          return { category: "read", reason: "`bun run` verification inspection (read-only)", head }
+        }
+      }
+    }
+  }
+
+  // Cargo inspection and test commands
+  if (head === "cargo") {
+    if (tokens.length >= 2) {
+      const sub = tokens[1].toLowerCase()
+      if (sub === "test") {
+        return { category: "read", reason: "`cargo test` test execution (read-only verification)", head }
+      }
+      if (sub === "check") {
+        return { category: "read", reason: "`cargo check` syntax/type verification (read-only)", head }
+      }
+      if (sub === "clippy") {
+        return { category: "read", reason: "`cargo clippy` lint inspection (read-only)", head }
+      }
+      if (sub === "fmt" && tokens.some(t => t === "--check")) {
+        return { category: "read", reason: "`cargo fmt --check` format inspection (read-only)", head }
+      }
+    }
+  }
+
+  // NPM / PNPM / Yarn test inspection commands
+  if (head === "npm" || head === "pnpm" || head === "yarn") {
+    if (tokens.length >= 2) {
+      const sub = tokens[1].toLowerCase()
+      if (sub === "test" || sub === "t" || sub === "tst") {
+        return { category: "read", reason: `\`${head} test\` test execution (read-only verification)`, head }
+      }
+      if (sub === "run" || sub === "run-script") {
+        const script = (tokens[2] ?? "").toLowerCase()
+        if (["test", "typecheck", "lint", "check", "verify"].some(k => script === k || script.startsWith(k + ":"))) {
+          return { category: "read", reason: `\`${head} run\` verification inspection (read-only)`, head }
+        }
+      }
+    }
+  }
+
+  // Deno verification and test commands
+  if (head === "deno") {
+    if (tokens.length >= 2) {
+      const sub = tokens[1].toLowerCase()
+      if (["test", "check", "lint"].includes(sub)) {
+        return { category: "read", reason: `\`deno ${sub}\` verification inspection (read-only)`, head }
+      }
+      if (sub === "fmt" && tokens.includes("--check")) {
+        return { category: "read", reason: "`deno fmt --check` format inspection (read-only)", head }
+      }
+    }
+  }
+
   if (ALWAYS_MUTATING.has(head)) {
     return { category: "mutating", reason: `\`${head}\` is in the mutating-command set (filesystem/process/network)`, head }
   }
