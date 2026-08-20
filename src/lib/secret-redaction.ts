@@ -35,6 +35,8 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/((?:ANTHROPIC_API_KEY|OPENAI_API_KEY|VERTEX_API_KEY)\s*[:=]\s*['"]?)\S+['"]?/g, "$1[REDACTED_PROVIDER_KEY]"],
 ]
 
+export const SECRET_KEY_PATTERNS = /api[_-]?key|token|secret|password|credential|auth/i
+
 /**
  * Redact known secrets from a string.
  * Replaces each match with the corresponding typed placeholder.
@@ -59,4 +61,64 @@ export function containsSecrets(input: string): boolean {
     if (fresh.test(input)) return true
   }
   return false
+}
+
+/**
+ * Recursively redact secrets from arbitrary structured objects, arrays, or primitive values.
+ * Handles circular object graphs, deep nesting, Error objects with cause chains,
+ * and throwing getters without modifying the source objects.
+ */
+export function redactObjectSecrets<T>(
+  val: T,
+  seen: WeakSet<object> = new WeakSet(),
+  depth = 0,
+  maxDepth = 50
+): T {
+  if (depth > maxDepth) {
+    return "[MAX_DEPTH]" as unknown as T
+  }
+
+  if (typeof val === "string") {
+    return redactSecrets(val) as unknown as T
+  }
+
+  if (val === null || val === undefined || typeof val !== "object") {
+    return val
+  }
+
+  if (seen.has(val as object)) {
+    return "[CIRCULAR]" as unknown as T
+  }
+  seen.add(val as object)
+
+  if (Array.isArray(val)) {
+    return val.map((item) => redactObjectSecrets(item, seen, depth + 1, maxDepth)) as unknown as T
+  }
+
+  if (val instanceof Error) {
+    const errorCopy: Record<string, unknown> = {
+      name: val.name,
+      message: redactSecrets(val.message),
+      stack: val.stack ? redactSecrets(val.stack) : undefined,
+    }
+    if ((val as any).cause) {
+      errorCopy.cause = redactObjectSecrets((val as any).cause, seen, depth + 1, maxDepth)
+    }
+    return errorCopy as unknown as T
+  }
+
+  const result: Record<string, unknown> = {}
+  try {
+    for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+      if (typeof v === "string" && v.length > 0 && v.length < 500 && SECRET_KEY_PATTERNS.test(k)) {
+        result[k] = "[REDACTED]"
+      } else {
+        result[k] = redactObjectSecrets(v, seen, depth + 1, maxDepth)
+      }
+    }
+  } catch {
+    return "[UNSERIALIZABLE]" as unknown as T
+  }
+
+  return result as unknown as T
 }
