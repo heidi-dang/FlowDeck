@@ -373,13 +373,13 @@ export class OrchestratorGuard {
             reasonCode: rawCode,
             reasonText: auth.reason,
             suggestedActions: [
-              `Grant approval for '${auth.normalizedAction}' in the FlowDeck UI`,
+              "Wait for user approval in this chat, then resume",
               "Replan using an alternative local workspace operation that does not cross trust boundaries",
             ],
             isApprovalRequired: true,
           })
 
-          const cardText = flowDeckApprovalRegistry.formatApprovalCard(approvalReq)
+          const cardText = flowDeckApprovalRegistry.formatApprovalChatMessage(approvalReq)
 
           throw new RecoverableFlowDeckBlockError({
             subsystem: "orchestrator_guard",
@@ -392,8 +392,8 @@ export class OrchestratorGuard {
             terminal: false,
             requiresHuman: true,
             suggestedActions: [
-              `Authorize with approval ID: ${approvalReq.approval_id}`,
-              "Wait for user approval in UI or choose an alternative workspace-local tool",
+              "Reply Approve or Deny in this chat to resolve the pending approval",
+              "Replan using an alternative local workspace operation that does not cross trust boundaries",
             ],
             details: {
               approval: approvalReq,

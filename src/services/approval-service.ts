@@ -227,8 +227,40 @@ export class FlowDeckApprovalRegistry {
       `Reversible  : ${req.reversible ? "Yes" : "No"}`,
       `Status      : WAITING_FOR_APPROVAL`,
       "",
-      `To proceed, approve this action via FlowDeck Web UI / CLI or provide an authorized approval ID.`,
+      `Waiting for your approval in this chat.`,
+      `Reply **Approve** to proceed or **Deny** to cancel.`,
     ].join("\n")
+  }
+
+  /**
+   * Format a user-facing in-chat approval request message for the active conversation.
+   * Heidi surfaces this as a conversational turn — no external UI or CLI needed.
+   */
+  formatApprovalChatMessage(req: ApprovalRequest): string {
+    const riskBadge = req.risk_level.toUpperCase()
+    const lines: string[] = [
+      `⚠️ **Approval required — ${riskBadge} RISK**`,
+      ``,
+      `Heidi wants to execute:`,
+      `\`\`\``,
+      req.normalized_action,
+      `\`\`\``,
+      `**Reason:** ${req.reason}`,
+    ]
+    if (req.target && req.target !== req.normalized_action) {
+      lines.push(`**Target:** ${req.target}`)
+    }
+    if (req.scope) {
+      lines.push(`**Scope:** ${req.scope}`)
+    }
+    lines.push(`**Reversible:** ${req.reversible ? "Yes" : "No"}`)
+    lines.push(``)
+    lines.push(`Approve this exact action?`)
+    lines.push(``)
+    lines.push(`Reply **Approve** to allow or **Deny** to cancel.`)
+    lines.push(``)
+    lines.push(`_Waiting for your approval in this chat._`)
+    return lines.join("\n")
   }
 
   clearSession(sessionId: string): void {
