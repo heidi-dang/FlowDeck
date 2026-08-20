@@ -1,6 +1,8 @@
 import { existsSync, chmodSync, mkdirSync, writeFileSync, statSync } from "node:fs"
+import { execFileSync } from "node:child_process"
 import { join } from "node:path"
 import type { AutoFixResult } from "../../types"
+import { invalidateFdxCache } from "../../../tools/fdx-shared"
 
 export async function repairFdxBinary(directory: string): Promise<AutoFixResult> {
   const platformArchDir = `${process.platform}-${process.arch}`
@@ -23,9 +25,24 @@ export async function repairFdxBinary(directory: string): Promise<AutoFixResult>
       description = "Created native FDX binary shim with fallback support"
     }
 
-    // Post-repair verification: binary exists and is a file
-    const postStat = existsSync(nativeBinaryPath) ? statSync(nativeBinaryPath) : null
-    const reverified = Boolean(postStat && postStat.isFile())
+    // Invalidate in-memory FDX cache so FlowDeck immediately discovers the repaired binary
+    invalidateFdxCache()
+
+    // Post-repair semantic verification: binary exists, is executable, and runs probe
+    let reverified = false
+    try {
+      const postStat = existsSync(nativeBinaryPath) ? statSync(nativeBinaryPath) : null
+      if (postStat && postStat.isFile()) {
+        const probeOut = execFileSync(nativeBinaryPath, ["--version"], {
+          encoding: "utf-8",
+          timeout: 2000,
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim()
+        reverified = Boolean(probeOut && probeOut.length > 0)
+      }
+    } catch {
+      reverified = false
+    }
 
     return {
       id: "fdx.native_binary",

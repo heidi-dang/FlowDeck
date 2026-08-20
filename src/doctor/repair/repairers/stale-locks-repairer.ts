@@ -1,6 +1,7 @@
 import { existsSync, unlinkSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import type { AutoFixResult } from "../../types"
+import { isLockStale } from "../../../services/process-liveness"
 
 export async function repairStaleLocks(directory: string): Promise<AutoFixResult> {
   const flowdeckDir = process.env.FLOWDECK_STATE_DIR || join(directory, ".flowdeck")
@@ -20,18 +21,21 @@ export async function repairStaleLocks(directory: string): Promise<AutoFixResult
 
     for (const lockFile of staleLockFiles) {
       if (existsSync(lockFile)) {
-        try {
-          unlinkSync(lockFile)
-          cleaned++
-        } catch (err: unknown) {
-          unlinkError = err instanceof Error ? err.message : String(err)
+        // Re-validate staleness immediately before deletion to prevent races with live processes
+        if (isLockStale(lockFile)) {
+          try {
+            unlinkSync(lockFile)
+            cleaned++
+          } catch (err: unknown) {
+            unlinkError = err instanceof Error ? err.message : String(err)
+          }
         }
       }
     }
 
-    // Post-repair verification: ensure state dir exists and no lock files remain
-    const stillPresent = staleLockFiles.filter((f) => existsSync(f))
-    const reverified = stillPresent.length === 0 && existsSync(flowdeckDir)
+    // Post-repair verification: ensure state dir exists and no stale lock files remain
+    const remainingStale = staleLockFiles.filter((f) => existsSync(f) && isLockStale(f))
+    const reverified = remainingStale.length === 0 && existsSync(flowdeckDir)
 
     return {
       id: "filesystem.stale_locks",

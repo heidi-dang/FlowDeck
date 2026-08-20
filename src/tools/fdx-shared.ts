@@ -248,6 +248,11 @@ function isCompatibleFdx(binary: string): boolean {
   catch { return false }
 }
 
+export function invalidateFdxCache(): void {
+  fdxCacheKey = null
+  fdxCacheValue = null
+}
+
 export function checkFdxAvailability(forceRefresh = false): boolean {
   return getFdxAvailabilityStatus(forceRefresh).available
 }
