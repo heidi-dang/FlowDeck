@@ -151,7 +151,7 @@ export const fdxValidateTool: ToolDefinition = tool({
 
     // Step 2: affect entries are real
     const affectContent = readFileOrEmpty(affectPath)
-    const { entries, errors: parseErrors } = parseAffect(affectContent, context.directory)
+    const { entries, errors: parseErrors } = parseAffect(affectContent, dir)
     for (const e of parseErrors) errors.push(e)
 
     for (const entry of entries) {

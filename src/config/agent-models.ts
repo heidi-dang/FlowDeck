@@ -1,15 +1,9 @@
 import { existsSync, readFileSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
-import type { FlowDeckConfig } from "./schema"
+import type { FlowDeckConfig, AgentModelConfig } from "./schema"
 
-export type { FlowDeckConfig } from "./schema"
-
-export interface AgentModelConfig {
-  model?: string
-  temperature?: number
-  maxTokens?: number
-}
+export type { FlowDeckConfig, AgentModelConfig } from "./schema"
 
 export const DEFAULT_AUTONOMY_LIMITS = {
   maxWritesPerAgent: 100,

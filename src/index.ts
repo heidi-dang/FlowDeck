@@ -13,11 +13,9 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
-import { tool } from "@opencode-ai/plugin"
-import { existsSync, readFileSync, readdirSync, mkdirSync, writeFileSync, rmSync } from "fs"
+import { existsSync, readFileSync } from "fs"
 import { basename, dirname, join } from "path"
 import { fileURLToPath } from "url"
-import { homedir, tmpdir } from "os"
 
 import {
   buildSelectionDiagnostics,
@@ -34,8 +32,7 @@ import { guardRailsHook } from "./hooks/guard-rails"
 import { OrchestratorGuard } from "./hooks/orchestrator-guard-hook"
 import { sessionStartHook } from "./hooks/session-start"
 import { sessionEventsHook } from "./hooks/session-events"
-import { executePostWriteHook, clearWriteCounter, toolGuardHook, executeFdxRedirect } from "./hooks/tool-guard"
-import { nativeReadFallback } from "./tools/fdx-shared"
+import { executePostWriteHook, toolGuardHook } from "./hooks/tool-guard"
 import { recordToolError, checkToolErrorCircuit, clearToolErrorCounts } from "./services/orchestrator-guard-strategy-circuit"
 import { buildFlowDeckMcpsWithMeta } from "./mcp/index"
 import { captureLessonTool, reviewLessonsTool } from "./tools/capture-lesson"
@@ -128,9 +125,8 @@ import {
   buildContinuationSignature,
   decideStage1Continuation,
   decideStage2Continuation,
-  type SessionRecoveryState,
 } from "./services/reasoning-recovery"
-import { updateWatchdogState, getWatchdogState, clearWatchdogState, getAllWatchdogStates, clearAllWatchdogStates, isWatchdogEligible } from "./services/heidi-watchdog"
+import { updateWatchdogState, getWatchdogState, getAllWatchdogStates, clearAllWatchdogStates, isWatchdogEligible } from "./services/heidi-watchdog"
 import { recoveryCoordinator, type RecoveryContinuationRequest } from "./services/recovery-coordinator"
 import { initializeDatabase, closeAllConnections } from "./orchestration/persistence/index"
 import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
@@ -159,9 +155,7 @@ import { runtimeSelfAudit, buildLatencyBreakdown, type AuditViolation } from "./
 import { classifyFastLane, rewriteShellCommand, rewriteLsCommand } from "./services/tool-fast-lane"
 import { isConfirmedSourceMutation } from "./services/semantic-mutation"
 import { getCallTimer, releaseCallTimer } from "./services/real-time-instrument"
-import { executeShellCommand } from "./services/shell-executor"
 import {
-  normalizeShellFailure,
   describeShellFailure,
   describeShellFailureTitle,
   ShellFailureTracker,
@@ -181,156 +175,51 @@ import {
 import { FdxTurboEngine } from "./services/fdx-turbo-engine"
 import { fdxFileCache } from "./services/fdx-file-cache"
 
-// ─── Session budget tracking ──────────────────────────────────────────────
-const sessionToolCalls = new Map<string, number>()
-const sessionRetries = new Map<string, number>()
-const sessionDelegations = new Map<string, number>()
-const sessionBlocks = new Map<string, number>()
-const sessionRecoverableBlocks = new Map<string, RecoverableFlowDeckBlockError>()
-const sessionReasoningRecoveryRegistry = new Map<string, Set<string>>()
-const sessionAutoContinuationTimers = new Map<string, ReturnType<typeof setTimeout>>()
-const sessionRecoveryState = new Map<string, SessionRecoveryState>()
-const sessionContinuationCount = new Map<string, number>()
-const sessionWarnings = new Map<string, number>()
-const sessionStartTimes = new Map<string, number>()
-const sessionActiveTools = new Map<string, number>()
-const sessionFilesChanged = new Map<string, Set<string>>()
-/** Timestamp of last MANUAL user message per session, for preflight hasNewerUserMessage check. */
-const sessionLastManualUserAt = new Map<string, number>()
-/** Whether the session is in a cancelled/interrupted state. */
-const sessionIsCancelled = new Map<string, boolean>()
-interface RuntimeSessionMetadata {
-  sessionID: string
-  parentID?: string
-  agent?: string
-  depth: number
-}
+// ─── Session State & Lifecycle Registry ─────────────────────────────────
+import {
+  sessionToolCalls,
+  sessionRetries,
+  sessionDelegations,
+  sessionBlocks,
+  sessionRecoverableBlocks,
+  sessionReasoningRecoveryRegistry,
+  sessionAutoContinuationTimers,
+  sessionRecoveryState,
+  sessionContinuationCount,
+  sessionWarnings,
+  sessionStartTimes,
+  sessionActiveTools,
+  sessionFilesChanged,
+  sessionLastManualUserAt,
+  sessionIsCancelled,
+  sessionRegistry,
+  sessionCallerAgents,
+  sessionTaskCalls,
+  childSessionToTask,
+  pendingChildSlots,
+  sessionLoopIncidents,
+  sessionLeaseHolders,
+  sessionParallelWakeActive,
+  activeLoopDetectors,
+  enqueuePendingSlot,
+  dequeuePendingSlot,
+  cleanupSessionState as registryCleanupSessionState,
+  getSessionMetricsDiagnostics as registryGetSessionMetricsDiagnostics,
+} from "./services/session-state-registry"
+export { sessionTaskCalls, childSessionToTask } from "./services/session-state-registry"
 
-interface ChildTaskCorrelation {
-  parentSessionID: string
-  callID: string
-  taskKey: string
-  targetAgent: string
-}
+import { loadCommands as loadCommandTemplates } from "./services/command-loader"
+import { resolveOrchestrationDbPath } from "./services/orchestration-db-path"
+import {
+  createShellFastLaneTool,
+  createBashFastLaneTool,
+  createReadNativeTool,
+} from "./tools/native-tools"
 
-const sessionRegistry = new Map<string, RuntimeSessionMetadata>()
-const sessionCallerAgents = new Map<string, string>()
-export const sessionTaskCalls = new Map<
-  string,
-  { callerAgent: string; targetAgent: string; startedAt: number; resolvedFrom: string }
->()
-export const childSessionToTask = new Map<string, ChildTaskCorrelation>()
-/**
- * FIFO pending-slot queue per (parentSessionID, targetAgent).
- * Enqueued in tool.execute.before when a task call is registered.
- * Dequeued in the event handler when the child session is created.
- * Eliminates ambiguous correlation when multiple concurrent calls
- * target the same agent — the queue order (call insertion order)
- * is deterministic.
- */
-const pendingChildSlots = new Map<string, ChildTaskCorrelation[]>()
-
-// ─── Production-hardening per-session runtime state ──────────────────────
-const sessionLoopIncidents = new Map<string, Set<string>>()
-const sessionLeaseHolders = new Map<string, string>()
-const sessionParallelWakeActive = new Set<string>()
-// Bounded, per-session dedup of shell tool failures (exactly one recovery
-// incident per failure fingerprint; never a repeat flood).
+// Bounded, per-session dedup of shell tool failures
 const shellFailureTracker = new ShellFailureTracker()
-// One stable operation identity per tool execution, reused across
-// operation.started -> operation.completed / operation.failed so the WebUI
-// updates the original action row in place (never a second/duplicate row).
+// One stable operation identity per tool execution
 const operationLifecycle = new OperationLifecycle()
-
-function enqueuePendingSlot(
-  parentSessionID: string,
-  callID: string,
-  taskKey: string,
-  targetAgent: string,
-): void {
-  const key = `${parentSessionID}:${targetAgent}`
-  let queue = pendingChildSlots.get(key)
-  if (!queue) {
-    queue = []
-    pendingChildSlots.set(key, queue)
-  }
-  queue.push({ parentSessionID, callID, taskKey, targetAgent })
-}
-
-/**
- * Dequeue the next pending slot for the given parent and target agent.
- *
- * When the child session's agent is known and the pending queue has exactly
- * one call for that agent, the correlation is authoritative.
- *
- * When the queue has multiple calls to the SAME agent, returns ambiguous
- * (unresolved) rather than guessing via FIFO — attaching failure to a
- * potentially incorrect task is worse than no correlation.
- *
- * When the child session's agent is unknown/absent and there are multiple
- * queues with pending calls for different targets, also returns ambiguous
- * (unresolved) rather than attaching to an arbitrary task.
- */
-function dequeuePendingSlot(
-  parentSessionID: string,
-  effectiveTarget?: string,
-): { correlation: ChildTaskCorrelation | null; ambiguous: boolean } {
-  if (effectiveTarget && effectiveTarget !== "unknown") {
-    // Exact agent match
-    const key = `${parentSessionID}:${effectiveTarget}`
-    const queue = pendingChildSlots.get(key)
-    if (queue && queue.length > 0) {
-      // Multiple pending calls to the same target agent — cannot determine
-      // which specific task call created this child session. Return
-      // ambiguous so the caller can emit an unresolved-correlation
-      // diagnostic rather than attaching failure to a potentially
-      // incorrect task.
-      if (queue.length > 1) {
-        return { correlation: null, ambiguous: true }
-      }
-      const correlation = queue.shift()!
-      if (queue.length === 0) pendingChildSlots.delete(key)
-      return { correlation, ambiguous: false }
-    }
-    // No pending slot for this exact agent — nothing to correlate
-    return { correlation: null, ambiguous: false }
-  }
-
-  // Agent is unknown — scan all queues for this parent
-  let found: ChildTaskCorrelation | null = null
-  let count = 0
-  for (const [key, queue] of pendingChildSlots.entries()) {
-    if (key.startsWith(`${parentSessionID}:`) && queue.length > 0) {
-      count++
-      if (!found) found = queue[0]
-    }
-  }
-  if (count === 0) return { correlation: null, ambiguous: false }
-  if (count > 1) return { correlation: null, ambiguous: true }
-
-  // Exactly one pending slot for this parent — safe to use
-  const agentKey = `${parentSessionID}:${found!.targetAgent}`
-  const agentQueue = pendingChildSlots.get(agentKey)
-  const correlation = agentQueue?.shift() ?? null
-  if (agentQueue?.length === 0) pendingChildSlots.delete(agentKey)
-  return { correlation, ambiguous: false }
-}
-
-function cleanupPendingSlots(sessionID: string): void {
-  for (const [key, queue] of pendingChildSlots.entries()) {
-    if (key.startsWith(`${sessionID}:`)) {
-      // Shift entries owned by this session
-      const remaining = queue.filter(c => c.parentSessionID !== sessionID)
-      if (remaining.length === 0) {
-        pendingChildSlots.delete(key)
-      } else {
-        pendingChildSlots.set(key, remaining)
-      }
-    }
-  }
-}
-
-const activeLoopDetectors = new Set<LoopDetector>()
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 const flowdeckPackageVersion = JSON.parse(
@@ -347,60 +236,10 @@ function lazyLoadRulePaths(projectRoot: string): { paths: string[]; diagnostics:
 }
 
 function loadCommands(): Record<string, { description?: string; template: string }> {
-  const dir = join(__dir, "..", "src", "commands")
-  if (!existsSync(dir)) return {}
-  const out: Record<string, { description?: string; template: string }> = {}
-  try {
-    for (const file of readdirSync(dir)) {
-      if (!file.endsWith(".md")) continue
-      const raw = readFileSync(join(dir, file), "utf-8")
-      const fm = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/)
-      const template = fm ? fm[2].trim() : raw
-      const desc = fm?.[1].match(/^description:\s*(.+)$/m)?.[1].trim()
-      out[basename(file, ".md")] = desc ? { description: desc, template } : { template }
-    }
-  } catch { /* ignore read errors */ }
-  return out
+  return loadCommandTemplates(join(__dir, "..", "src", "commands"))
 }
 
 const specialistAgentSet = new Set(getAllAgentIds().filter(id => isSpecialistAgent(id)))
-
-/**
- * Deterministic writable orchestration database selection.
- *
- * The project-root location (<directory>/.flowdeck/flowdeck.db) is preferred.
- * When that directory cannot be created/opened for writing — e.g. the global
- * instance boots with directory="/" where no write is permitted — fall back to
- * the established writable FlowDeck state location under the user home, then to
- * the system temp directory. The chosen path is always observable via the log;
- * real database errors are never hidden.
- */
-function resolveOrchestrationDbPath(
-  directory: string,
-  log: (msg: string, level?: "debug" | "info" | "warn" | "error") => Promise<void>,
-): string {
-  const candidates = [
-    join(directory, ".flowdeck", "flowdeck.db"),
-    join(homedir(), ".flowdeck", "flowdeck.db"),
-    join(tmpdir(), "flowdeck", "flowdeck.db"),
-  ]
-  for (const candidate of candidates) {
-    const dir = dirname(candidate)
-    try {
-      mkdirSync(dir, { recursive: true })
-      const probe = join(dir, `.flowdeck-probe-${process.pid}`)
-      writeFileSync(probe, "writable")
-      rmSync(probe, { force: true })
-    } catch {
-      void log(`[orchestration] database directory not writable: ${dir}`, "warn")
-      continue
-    }
-    return candidate
-  }
-  // All candidates unwritable: return the project path and let initializeDatabase
-  // raise the real underlying error — do not hide it.
-  return candidates[0]
-}
 
 const plugin: Plugin = async ({ directory, client }) => {
   let isDisposed = false
@@ -527,105 +366,10 @@ const plugin: Plugin = async ({ directory, client }) => {
   const runtimeScoreboard = getScoreboardFor(directory)
   const detachScoreStream = runtimeScoreboard.attach()
 
-  // ── Round-2: FlowDeck-owned shell tool — executes recognized safe read-only
-  // commands through the native fast lane with ZERO bash subprocess spawns.
-  // Unsafe/uncertain commands fall back to a real bash -lc.
-  const shellFastLaneTool = tool({
-    description:
-      "Execute a shell command. Recognized read-only commands (cat, sed -n, grep, git status/diff/log, ls) run through the fast lane with no shell spawn; all others run in bash.",
-    args: {
-      command: tool.schema.string().describe("The shell command to execute."),
-      description: tool.schema.string().optional(),
-      cwd: tool.schema.string().optional().describe("Working directory (defaults to repo root)."),
-    },
-    async execute(args: any, context: any) {
-      const command = String(args.command ?? "")
-      const r = executeShellCommand(command, { cwd: args.cwd ? String(args.cwd) : directory })
-      // A non-zero process exit must never be normalized to a successful tool
-      // completion. Surface the failure with the exact exit code and redacted
-      // stderr so the after-hook, the coordinator, and the visible operation
-      // state all converge on the same failed event.
-      if (r.status === "failed") {
-        const info = normalizeShellFailure(r, {
-          command,
-          sessionID: context?.sessionID ?? "",
-          callID: context?.messageID ?? "",
-          toolName: "shell",
-          repoGeneration: repoIdOf(directory),
-        })
-        return { output: describeShellFailure(info), metadata: { fdShell: info as unknown as Record<string, unknown> } }
-      }
-      return r.output
-    },
-  })
-  const bashFastLaneTool = tool({
-    description: "Execute a bash command via the FlowDeck fast lane (same semantics as the shell tool).",
-    args: {
-      command: tool.schema.string().describe("The bash command to execute."),
-      description: tool.schema.string().optional(),
-      cwd: tool.schema.string().optional(),
-    },
-    async execute(args: any, context: any) {
-      const command = String(args.command ?? "")
-      const r = executeShellCommand(command, { cwd: args.cwd ? String(args.cwd) : directory })
-      if (r.status === "failed") {
-        const info = normalizeShellFailure(r, {
-          command,
-          sessionID: context?.sessionID ?? "",
-          callID: context?.messageID ?? "",
-          toolName: "bash",
-          repoGeneration: repoIdOf(directory),
-        })
-        return { output: describeShellFailure(info), metadata: { fdShell: info as unknown as Record<string, unknown> } }
-      }
-      return r.output
-    },
-  })
-
-  // ── FlowDeck-owned native read tool: token-optimized and routed to FDX when active ──
-  const readNativeTool = tool({
-    description: "Read a file from the workspace. Token-optimized and routed to FDX when available.",
-    args: {
-      filePath: tool.schema.string().optional().describe("Path to the file to read."),
-      file_path: tool.schema.string().optional(),
-      path: tool.schema.string().optional(),
-      file: tool.schema.string().optional(),
-      mode: tool.schema.enum(["auto", "raw", "prototype", "deep"]).optional(),
-      limit: tool.schema.number().optional(),
-      offset: tool.schema.number().optional(),
-      symbol: tool.schema.string().optional(),
-      with_deps: tool.schema.boolean().optional(),
-      format: tool.schema.enum(["text", "json"]).optional(),
-      no_cache: tool.schema.boolean().optional(),
-    },
-    async execute(args: any, context: any) {
-      const filePath =
-        (args?.filePath as string | undefined) ??
-        (args?.file_path as string | undefined) ??
-        (args?.path as string | undefined) ??
-        (args?.file as string | undefined)
-      if (!filePath || typeof filePath !== "string" || !filePath.trim()) {
-        throw new Error("File path is required for read tool")
-      }
-      const targetPath = filePath.trim()
-      const fdxRoute = await executeFdxRedirect(
-        "read",
-        { ...args, file: targetPath },
-        {
-          directory,
-          sessionID: context?.sessionID,
-          agent: context?.agent,
-        }
-      )
-      if (fdxRoute?.executed && fdxRoute.output !== undefined) {
-        return fdxRoute.output
-      }
-      if (fdxRoute && !fdxRoute.executed && fdxRoute.error) {
-        throw new Error(fdxRoute.error)
-      }
-      return nativeReadFallback(targetPath, args?.limit, args?.offset, directory)
-    },
-  })
+  // ── Round-2: FlowDeck-owned native/fast-lane tools ─────────────────────────
+  const shellFastLaneTool = createShellFastLaneTool({ directory })
+  const bashFastLaneTool = createBashFastLaneTool({ directory })
+  const readNativeTool = createReadNativeTool({ directory })
 
   configureFdxTurbo(turboEngine)
   const repoLeaseCoordinator = new RepoLeaseCoordinator({
@@ -3052,66 +2796,7 @@ const plugin: Plugin = async ({ directory, client }) => {
 }
 
 export function cleanupSessionState(sessionID: string, ld?: LoopDetector): void {
-  if (!sessionID) return
-  if (ld) {
-    ld.clearSession(sessionID)
-  }
-  for (const activeLd of activeLoopDetectors) {
-    activeLd.clearSession(sessionID)
-  }
-  sessionToolCalls.delete(sessionID)
-  sessionRetries.delete(sessionID)
-  sessionDelegations.delete(sessionID)
-  sessionBlocks.delete(sessionID)
-  sessionWarnings.delete(sessionID)
-  sessionStartTimes.delete(sessionID)
-  sessionFilesChanged.delete(sessionID)
-  sessionActiveTools.delete(sessionID)
-  sessionLastManualUserAt.delete(sessionID)
-  sessionIsCancelled.delete(sessionID)
-  clearWatchdogState(sessionID)
-  watchdogIncidentManager.clearSession(sessionID)
-  loopIncidentTracker.clearSession(sessionID)
-  shellFailureTracker.clearSession(sessionID)
-  operationLifecycle.clearSession(sessionID)
-  clearToolErrorCounts(sessionID)
-  sessionLoopIncidents.delete(sessionID)
-  semanticConvergence.clearSession(sessionID)
-  emptyTerminalCircuit.clearSession(sessionID)
-  taskPhaseManager.clearSession(sessionID)
-  sessionAncestry.deleteSession(sessionID)
-  sessionLeaseHolders.delete(sessionID)
-  sessionCallerAgents.delete(sessionID)
-  sessionReasoningRecoveryRegistry.delete(sessionID)
-  sessionRecoveryState.delete(sessionID)
-  sessionContinuationCount.delete(sessionID)
-  recoveryCoordinator.cancelSession(sessionID)
-  const timer = sessionAutoContinuationTimers.get(sessionID)
-  if (timer) clearTimeout(timer)
-  sessionAutoContinuationTimers.delete(sessionID)
-  sessionRegistry.delete(sessionID)
-  // ── Child session correlation cleanup ──────────────────────────
-  // Remove the sessionID entry from sessionTaskCalls (used as a direct key
-  // by some flows) and all taskKey entries prefixed by sessionID.
-  sessionTaskCalls.delete(sessionID)
-  for (const key of sessionTaskCalls.keys()) {
-    if (key.startsWith(`${sessionID}:`)) {
-      sessionTaskCalls.delete(key)
-    }
-  }
-  // Remove childSessionToTask entries owned by or pointing to this session
-  childSessionToTask.delete(sessionID)
-  for (const [childId, corr] of childSessionToTask.entries()) {
-    if (corr.parentSessionID === sessionID) {
-      childSessionToTask.delete(childId)
-    }
-  }
-  // Remove pending child slots queued by this session
-  cleanupPendingSlots(sessionID)
-  if (ld) {
-    try { ld.clearSession(sessionID) } catch {}
-  }
-  try { clearWriteCounter(sessionID) } catch {}
+  registryCleanupSessionState(sessionID, ld, { shellFailureTracker, operationLifecycle })
 }
 
 export function getSessionMetricsDiagnostics(sessionID: string): {
@@ -3123,15 +2808,7 @@ export function getSessionMetricsDiagnostics(sessionID: string): {
   startTime?: number
   filesChangedCount: number
 } {
-  return {
-    toolCalls: sessionToolCalls.get(sessionID) ?? 0,
-    retries: sessionRetries.get(sessionID) ?? 0,
-    delegations: sessionDelegations.get(sessionID) ?? 0,
-    blocks: sessionBlocks.get(sessionID) ?? 0,
-    warnings: sessionWarnings.get(sessionID) ?? 0,
-    startTime: sessionStartTimes.get(sessionID),
-    filesChangedCount: sessionFilesChanged.get(sessionID)?.size ?? 0,
-  }
+  return registryGetSessionMetricsDiagnostics(sessionID)
 }
 
 // ─── Production orchestration runtime accessor ───────────────────────

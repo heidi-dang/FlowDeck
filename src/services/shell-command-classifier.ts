@@ -415,12 +415,12 @@ function findSensitiveMatches(
     // Resolve token against effective working directory to catch relative sensitive paths
     try {
       let resolved = t
-      if (t === "~" || t.startsWith("~/")) {
+      if (t === "~" || t.startsWith("~/") || t.startsWith("~\\")) {
         resolved = t === "~" ? homedir() : resolve(homedir(), t.slice(2))
       } else if (!t.startsWith("-")) {
         resolved = resolve(baseCwd, t)
       }
-      const lowerResolved = normalize(resolved).toLowerCase()
+      const lowerResolved = normalize(resolved).normalize("NFC").toLowerCase()
       for (const p of patterns) {
         if (lowerResolved.includes(p.toLowerCase())) matches.add(p)
       }
@@ -436,8 +436,8 @@ function findSensitiveMatches(
 function hasPathTraversal(tokens: ReadonlyArray<string>): boolean {
   for (const t of tokens) {
     if (t === "..") return true
-    if (t.startsWith("../") || t.startsWith("./../")) return true
-    if (t.includes("/..")) return true
+    if (t.startsWith("../") || t.startsWith("./../") || t.startsWith("..\\") || t.startsWith(".\\..\\")) return true
+    if (t.includes("/..") || t.includes("\\..")) return true
   }
   return false
 }
@@ -612,7 +612,7 @@ export function classifyShellCommand(
     // Handle cd navigation and update effectiveCwd for subsequent segments
     if (r.head === "cd" && r.targetDir) {
       let targetPath = r.targetDir
-      if (targetPath === "~" || targetPath.startsWith("~/")) {
+      if (targetPath === "~" || targetPath.startsWith("~/") || targetPath.startsWith("~\\")) {
         targetPath = targetPath === "~" ? homedir() : resolve(homedir(), targetPath.slice(2))
       } else {
         targetPath = resolve(effectiveCwd, targetPath)

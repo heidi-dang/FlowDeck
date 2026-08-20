@@ -810,7 +810,7 @@ async function importRuntimeAgentConfig(directory) {
     const opencodeDir = process.env.OPENCODE_CONFIG_DIR ||
       (process.env.XDG_CONFIG_HOME
         ? join(process.env.XDG_CONFIG_HOME, "opencode")
-        : join(homedir, ".config", "opencode"))
+        : join(homedir(), ".config", "opencode"))
     const opencodePath = join(opencodeDir, "opencode.json")
     if (existsSync(opencodePath)) {
       const raw = readFileSync(opencodePath, "utf-8")

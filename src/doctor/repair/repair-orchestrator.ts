@@ -190,10 +190,10 @@ export class DoctorRepairOrchestrator {
     if (id.startsWith("filesystem.permissions")) {
       return repairPermissions(this.directory)
     }
-    if (id.startsWith("filesystem.stale_locks") || id.startsWith("filesystem.state_dir")) {
+    if (id.startsWith("filesystem.stale_locks") || id.startsWith("filesystem.state_dir") || id.startsWith("process.stale_locks")) {
       return repairStaleLocks(this.directory)
     }
-    if (id.startsWith("plugin.") || id.startsWith("repo.package")) {
+    if (id.startsWith("plugin.") || id.startsWith("repo.package") || id.startsWith("config.opencode_user")) {
       return repairPluginRegistration(this.directory)
     }
     if (id.startsWith("skills.")) {

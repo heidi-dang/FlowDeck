@@ -62,11 +62,13 @@ export function executeShellCommand(
 
 function runBash(command: string, deps: ShellToolDeps): ShellExecutionResult {
   fastLane.addBashSpawnCount(1);
+  const cwd = deps?.cwd ?? process.cwd();
   try {
-    const output = execFileSync("bash", ["-lc", command], {
-      cwd: deps.cwd,
+    const output = execFileSync("bash", ["-lc", String(command ?? "")], {
+      cwd,
       encoding: "utf8",
       timeout: 120_000,
+      maxBuffer: 10 * 1024 * 1024,
     });
     return { output, bashSpawned: true, adapter: null, status: "ok", exitCode: 0, stderr: "" };
   } catch (err: any) {
@@ -77,7 +79,9 @@ function runBash(command: string, deps: ShellToolDeps): ShellExecutionResult {
       ? err.status
       : typeof err?.code === "number" && err.code !== "ENOENT" && err.code > 0
         ? err.code
-        : 1;
+        : err?.signal
+          ? 128 + 15
+          : 1;
     return {
       output: combined || (err?.message ?? String(err)),
       bashSpawned: true,

@@ -36,18 +36,29 @@ export async function repairSkillsAndLockfile(directory: string): Promise<AutoFi
     mkdirSync(skillsDir, { recursive: true })
     writeFileSync(skillsLockPath, JSON.stringify(lockData, null, 2), "utf-8")
 
+    // Post-repair verification: skills-lock.json exists and is valid JSON
+    let reverified = false
+    try {
+      const readBack = JSON.parse(readFileSync(skillsLockPath, "utf-8"))
+      reverified = Boolean(readBack && typeof readBack.skills === "object")
+    } catch {
+      reverified = false
+    }
+
     return {
       id: "skills.lockfile",
       description: `Rebuilt skills-lock.json with ${Object.keys(skillEntries).length} skills`,
-      applied: true,
-      reverified: true,
+      applied: reverified,
+      reverified,
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
     return {
       id: "skills.lockfile",
       description: "Failed to repair skills lockfile",
       applied: false,
-      error: err.message,
+      reverified: false,
+      error: message,
     }
   }
 }

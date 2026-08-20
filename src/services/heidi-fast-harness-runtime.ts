@@ -110,13 +110,19 @@ export async function handleUserMessage(
   // CONCURRENT reads (ReadBatchService in the live path) for classes that
   // need discovery. Independent reads run in parallel; nothing blocking.
   if (decision.executionClass === "STANDARD" || decision.executionClass === "DEEP") {
-    try { getRepositoryContext(directory) } catch { /* discovery is opportunistic, never blocking */ }
+    try {
+      getRepositoryContext(directory)
+    } catch (err) {
+      console.debug?.("[FastHarness] opportunistic repository discovery error:", err)
+    }
     try {
       const packet = await prefetchRepositoryBatch(directory)
       if (packet.indexOf("unavailable") === -1) {
         state.addVerifiedFact(packet.slice(0, 120))
       }
-    } catch { /* prefetch is best-effort */ }
+    } catch (err) {
+      console.debug?.("[FastHarness] opportunistic prefetchRepositoryBatch error:", err)
+    }
   }
 
   return {
@@ -153,8 +159,9 @@ export function renderTurnContext(sessionID: string, directory: string): string 
   if (st) parts.push(st.renderContextPacket())
   try {
     parts.push(renderHotContextSummary(getRepositoryContext(directory)))
-  } catch {
+  } catch (err) {
     // Repository facts are best-effort — never break the prompt build.
+    console.debug?.("[FastHarness] renderHotContextSummary error:", err)
   }
   const sections = buildTaskSpecificPromptSections(route.decision.executionClass, route.decision.specialists)
   if (sections.trim()) parts.push(sections)
@@ -162,8 +169,9 @@ export function renderTurnContext(sessionID: string, directory: string): string 
   try {
     const packet = renderParallelPacket(sessionID)
     if (packet.trim()) parts.push(packet)
-  } catch {
+  } catch (err) {
     // parallel packet is best-effort — never break prompt build
+    console.debug?.("[FastHarness] renderParallelPacket error:", err)
   }
   return parts.join("\n\n")
 }
@@ -173,7 +181,8 @@ export function estimateTurnContextTokens(sessionID: string, directory: string):
   try {
     const ctx = renderTurnContext(sessionID, directory)
     return Math.round(ctx.length / 4)
-  } catch {
+  } catch (err) {
+    console.debug?.("[FastHarness] estimateTurnContextTokens error:", err)
     return 0
   }
 }
@@ -274,7 +283,8 @@ export async function prefetchRepositoryBatch(directory: string): Promise<string
       }
     }
     return "[ReadBatch] " + lines.join(" | ")
-  } catch {
+  } catch (err) {
+    console.debug?.("[FastHarness] prefetchRepositoryBatch error:", err)
     return "[ReadBatch] unavailable"
   }
 }

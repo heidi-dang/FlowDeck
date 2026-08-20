@@ -266,7 +266,7 @@ export async function runDoctorService(directory = PKG_ROOT, options = {}) {
     const rawReport = await runDoctor(directory, options)
     const report = normalizeReport(rawReport, _pkgName, _pkgVersion)
     const exitCode = resolveDoctorExitCode(report, !!options.strict)
-    const text = buildFallbackReport(report, !!options.verbose)
+    const text = await formatReport(report, !!options.verbose)
     const stdout = options.json
       ? JSON.stringify({ schemaVersion: 1, ...report }, null, 2) + "\n"
       : text

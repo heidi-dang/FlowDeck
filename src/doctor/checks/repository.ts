@@ -50,24 +50,50 @@ export async function runRepositoryChecks(directory: string): Promise<CheckResul
         recommendation: `Currently on: ${branch}`,
         autoFixAvailable: false,
       })
-    } catch { /* ignore */ }
+    } catch {
+      checks.push({
+        id: "repo.branch",
+        title: "Current Branch",
+        category: "repository",
+        severity: "info",
+        status: "info",
+        detected: "git branch resolution unavailable",
+        expected: "main or feature branch",
+        recommendation: "Git HEAD could not be resolved",
+        autoFixAvailable: false,
+      })
+    }
   }
 
   // Package manager
   if (hasPackageJson) {
-    const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
-    const pkgManager = pkg.packageManager || "npm"
-    checks.push({
-      id: "repo.package_manager",
-      title: "Package Manager",
-      category: "repository",
-      severity: "info",
-      status: "pass",
-      detected: pkgManager,
-      expected: "npm (with bun for development)",
-      recommendation: "OK",
-      autoFixAvailable: false,
-    })
+    try {
+      const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"))
+      const pkgManager = pkg.packageManager || "npm"
+      checks.push({
+        id: "repo.package_manager",
+        title: "Package Manager",
+        category: "repository",
+        severity: "info",
+        status: "pass",
+        detected: pkgManager,
+        expected: "npm (with bun for development)",
+        recommendation: "OK",
+        autoFixAvailable: false,
+      })
+    } catch {
+      checks.push({
+        id: "repo.package_manager",
+        title: "Package Manager",
+        category: "repository",
+        severity: "medium",
+        status: "warning",
+        detected: "package.json unparseable",
+        expected: "Valid JSON package manifest",
+        recommendation: "Fix syntax errors in package.json",
+        autoFixAvailable: false,
+      })
+    }
   }
 
   // Lockfiles

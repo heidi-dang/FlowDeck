@@ -71,12 +71,14 @@ export async function executeBatchReads(
     const chunkResults = await Promise.all(
       chunk.map(async (op): Promise<ReadResult> => {
         const opStart = Date.now()
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined
         try {
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutHandle = setTimeout(() => reject(new Error("ReadBatch timeout for " + op.tool)), timeoutMs)
+          })
           const raw = await Promise.race([
             executor(op.tool, op.args),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("ReadBatch timeout for " + op.tool)), timeoutMs)
-            ),
+            timeoutPromise,
           ])
           const serialized = typeof raw === "string" ? raw : JSON.stringify(raw)
           const truncated =
@@ -90,6 +92,10 @@ export async function executeBatchReads(
             label: op.label,
             error: err instanceof Error ? err.message : String(err),
             durationMs: Date.now() - opStart,
+          }
+        } finally {
+          if (timeoutHandle !== undefined) {
+            clearTimeout(timeoutHandle)
           }
         }
       })

@@ -14,6 +14,7 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { existsSync } from "node:fs"
 import { resolve } from "node:path"
+import { resolveFdxBinaryPath } from "../tools/fdx-shared"
 
 export interface FdxNativeDaemonOptions {
   /** Working directory the `fdx serve` process runs in (per-repo). */
@@ -187,7 +188,8 @@ export class FdxNativeDaemon {
       const resolved = resolve(this.binaryPath);
       return existsSync(resolved) ? resolved : this.binaryPath;
     }
-    return "fdx";
+    const detected = resolveFdxBinaryPath();
+    return detected || "fdx";
   }
 
   private spawn(): void {

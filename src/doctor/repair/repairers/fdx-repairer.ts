@@ -10,33 +10,37 @@ export async function repairFdxBinary(directory: string): Promise<AutoFixResult>
 
   try {
     mkdirSync(targetDir, { recursive: true })
+    let description: string
     if (existsSync(nativeBinaryPath) && statSync(nativeBinaryPath).isFile()) {
       if (process.platform !== "win32") {
         chmodSync(nativeBinaryPath, 0o755)
       }
-      return {
-        id: "fdx.native_binary",
-        description: "Restored executable permission bit on native FDX binary",
-        applied: true,
-        reverified: true,
-      }
+      description = "Restored executable permission bit on native FDX binary"
     } else {
       // Create executable shim or fallback marker
       const shimContent = `#!/usr/bin/env sh\necho "FDX 0.1.0 (flowdeck-native-fallback)"\n`
       writeFileSync(nativeBinaryPath, shimContent, { mode: 0o755, encoding: "utf-8" })
-      return {
-        id: "fdx.native_binary",
-        description: "Created native FDX binary shim with fallback support",
-        applied: true,
-        reverified: true,
-      }
+      description = "Created native FDX binary shim with fallback support"
     }
-  } catch (err: any) {
+
+    // Post-repair verification: binary exists and is a file
+    const postStat = existsSync(nativeBinaryPath) ? statSync(nativeBinaryPath) : null
+    const reverified = Boolean(postStat && postStat.isFile())
+
+    return {
+      id: "fdx.native_binary",
+      description,
+      applied: reverified,
+      reverified,
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
     return {
       id: "fdx.native_binary",
       description: "FDX binary repair failed",
       applied: false,
-      error: err.message,
+      reverified: false,
+      error: message,
     }
   }
 }

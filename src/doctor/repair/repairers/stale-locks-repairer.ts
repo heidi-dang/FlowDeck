@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from "node:fs"
+import { existsSync, unlinkSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
 import type { AutoFixResult } from "../../types"
 
@@ -11,21 +11,43 @@ export async function repairStaleLocks(directory: string): Promise<AutoFixResult
   ]
 
   let cleaned = 0
-  for (const lockFile of staleLockFiles) {
-    if (existsSync(lockFile)) {
-      try {
-        unlinkSync(lockFile)
-        cleaned++
-      } catch {
-        // ignore
+  let unlinkError: string | null = null
+
+  try {
+    if (!existsSync(flowdeckDir)) {
+      mkdirSync(flowdeckDir, { recursive: true })
+    }
+
+    for (const lockFile of staleLockFiles) {
+      if (existsSync(lockFile)) {
+        try {
+          unlinkSync(lockFile)
+          cleaned++
+        } catch (err: unknown) {
+          unlinkError = err instanceof Error ? err.message : String(err)
+        }
       }
     }
-  }
 
-  return {
-    id: "filesystem.stale_locks",
-    description: `Cleaned ${cleaned} stale lock file(s)`,
-    applied: true,
-    reverified: true,
+    // Post-repair verification: ensure state dir exists and no lock files remain
+    const stillPresent = staleLockFiles.filter((f) => existsSync(f))
+    const reverified = stillPresent.length === 0 && existsSync(flowdeckDir)
+
+    return {
+      id: "filesystem.stale_locks",
+      description: `Cleaned ${cleaned} stale lock file(s)`,
+      applied: reverified && !unlinkError,
+      reverified,
+      ...(unlinkError ? { error: `Failed to remove some lock files: ${unlinkError}` } : {}),
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
+    return {
+      id: "filesystem.stale_locks",
+      description: "Stale locks cleanup failed",
+      applied: false,
+      reverified: false,
+      error: message,
+    }
   }
 }

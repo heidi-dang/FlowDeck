@@ -7,6 +7,8 @@ import { slugifyTopic } from "./planning-state-lib"
 
 /** Timeout for each `git` call. */
 const GIT_TIMEOUT_MS = 30_000
+/** Max buffer for git subprocess execution (10MB). */
+const GIT_MAX_BUFFER = 10 * 1024 * 1024
 
 function gitError(err: unknown): string {
   if (err && typeof err === "object" && "stderr" in err) {
@@ -88,6 +90,7 @@ function isRegisteredWorktree(p: string, cwd: string): boolean {
       cwd,
       encoding: "utf-8",
       timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
     })
     return parsePorcelain(out).some((e) => normalizePath(e.path) === normalizePath(p))
   } catch {
@@ -142,6 +145,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
           execFileSync("git", ["worktree", "add", "--force", worktreePath, branch], {
             cwd: directory,
             timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
           })
         } else {
           // (a) Fresh dir: create branch + worktree, or attach if branch already exists.
@@ -149,7 +153,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
             execFileSync(
               "git",
               ["worktree", "add", "-b", branch, worktreePath, "HEAD"],
-              { cwd: directory, timeout: GIT_TIMEOUT_MS },
+              { cwd: directory, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER },
             )
           } catch (err) {
             const stderr = gitError(err)
@@ -157,6 +161,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
               execFileSync("git", ["worktree", "add", worktreePath, branch], {
                 cwd: directory,
                 timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
               })
             } else {
               return `Error: git worktree add failed: ${stderr}`
@@ -175,6 +180,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
           cwd: directory,
           encoding: "utf-8",
           timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
         })
         const all = parsePorcelain(out)
         const fdOnly = all.filter((e) => e.path.includes("fd-worktrees/"))
@@ -210,11 +216,13 @@ export const fdxWorktreeTool: ToolDefinition = tool({
           cwd: directory,
           encoding: "utf-8",
           timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
         })
         if (status.trim().length > 0) {
           execFileSync("git", ["stash", "push", "--include-untracked", "-m", `fd-worktree pre-merge auto-stash for ${branch}`], {
             cwd: directory,
             timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
           })
           stashed = true
         }
@@ -226,10 +234,11 @@ export const fdxWorktreeTool: ToolDefinition = tool({
         execFileSync("git", ["merge", "--no-ff", branch], {
           cwd: directory,
           timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
         })
         if (stashed) {
           try {
-            execFileSync("git", ["stash", "pop"], { cwd: directory, timeout: GIT_TIMEOUT_MS })
+            execFileSync("git", ["stash", "pop"], { cwd: directory, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER })
           } catch {
             // stash pop may conflict with merged files; user resolves manually
           }
@@ -247,7 +256,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
           if (files.length > 0) {
             // CRITICAL: leave the repo in a clean state.
             try {
-              execFileSync("git", ["merge", "--abort"], { cwd: directory, timeout: GIT_TIMEOUT_MS })
+              execFileSync("git", ["merge", "--abort"], { cwd: directory, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER })
             } catch {
               // Best-effort; if abort fails, the user will need to resolve manually.
             }
@@ -257,7 +266,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
           // diff --name-only failed; fall through to GIT error.
         }
         try {
-          execFileSync("git", ["merge", "--abort"], { cwd: directory, timeout: GIT_TIMEOUT_MS })
+          execFileSync("git", ["merge", "--abort"], { cwd: directory, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER })
         } catch {
           // Ignore.
         }
@@ -292,6 +301,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
         execFileSync("git", ["worktree", "remove", "--force", worktreePath], {
           cwd: directory,
           timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
         })
       } catch (err) {
         return `Error: git worktree remove failed: ${gitError(err)}`
@@ -300,6 +310,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
         execFileSync("git", ["branch", "-D", branch], {
           cwd: directory,
           timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
         })
         branchDeleted = true
       } catch {
@@ -315,6 +326,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
           cwd: directory,
           encoding: "utf-8",
           timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
         })
         const fdOnly = parsePorcelain(out).filter((e) => e.path.includes("fd-worktrees/"))
         const removed: string[] = []
@@ -331,6 +343,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
             execFileSync("git", ["worktree", "remove", "--force", entry.path], {
               cwd: directory,
               timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
             })
             removed.push(entry.path)
             if (entry.branch) {
@@ -338,6 +351,7 @@ export const fdxWorktreeTool: ToolDefinition = tool({
                 execFileSync("git", ["branch", "-D", entry.branch], {
                   cwd: directory,
                   timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
                 })
               } catch {
                 // Best-effort.

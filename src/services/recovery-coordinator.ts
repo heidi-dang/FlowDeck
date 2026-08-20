@@ -346,12 +346,13 @@ class RecoveryCoordinator {
           },
         })
       } catch (err) {
-        appLog(`[recovery-coordinator] ${source} prompt failed: ${err instanceof Error ? err.message : String(err)}`, "error", sessionID).catch(() => {})
+        const errorMsg = err instanceof Error ? err.message : String(err)
+        appLog(`[recovery-coordinator] ${source} prompt failed: ${errorMsg}`, "error", sessionID).catch(() => {})
         genRecord.state = "FAILED"
         genRecord.completedAt = Date.now()
         this._clearPendingIfThisGeneration(sessionID, generation, record)
         updateWatchdogState(sessionID, { isPendingContinuation: false })
-        handleEvent({ event: { type: "session.error", properties: { sessionID, error: (err as Error).message, info: { id: sessionID, role: "assistant", error: (err as Error).message } } } }).catch(() => {})
+        handleEvent({ event: { type: "session.error", properties: { sessionID, error: errorMsg, info: { id: sessionID, role: "assistant", error: errorMsg } } } }).catch(() => {})
         return
       }
 
@@ -375,13 +376,14 @@ class RecoveryCoordinator {
               this._startOrphanTimer(sessionID, generation, genRecord, appLog, handleEvent)
             }
           })
-          .catch((err: Error) => {
-            appLog(`[recovery-coordinator] ${source} prompt rejected: ${err.message}`, "error", sessionID).catch(() => {})
+          .catch((err: unknown) => {
+            const errorMsg = err instanceof Error ? err.message : String(err)
+            appLog(`[recovery-coordinator] ${source} prompt rejected: ${errorMsg}`, "error", sessionID).catch(() => {})
             genRecord.state = "FAILED"
             genRecord.completedAt = Date.now()
             this._clearPendingIfThisGeneration(sessionID, generation, record)
             updateWatchdogState(sessionID, { isPendingContinuation: false })
-            handleEvent({ event: { type: "session.error", properties: { sessionID, error: err.message, info: { id: sessionID, role: "assistant", error: err.message } } } }).catch(() => {})
+            handleEvent({ event: { type: "session.error", properties: { sessionID, error: errorMsg, info: { id: sessionID, role: "assistant", error: errorMsg } } } }).catch(() => {})
           })
       } else {
         // Sync prompt (no Promise returned) — cannot correlate resulting turn.
@@ -493,7 +495,9 @@ class RecoveryCoordinator {
     for (const listener of this.telemetryListeners) {
       try {
         listener(ev)
-      } catch {}
+      } catch (listenerErr) {
+        console.debug?.("[recovery-coordinator] Telemetry listener error:", listenerErr)
+      }
     }
     if (handleEvent) {
       handleEvent({ event: { type: "flowdeck.telemetry", properties: ev } }).catch(() => {})

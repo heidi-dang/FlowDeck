@@ -11,8 +11,8 @@
  */
 
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs"
+import { join, normalize, resolve } from "node:path"
 
 export interface RepoLease {
   owner: string;
@@ -62,7 +62,18 @@ export class RepoLeaseCoordinator {
 
   private writeLease(repoId: string, lease: RepoLease): void {
     mkdirSync(this.options.stateDir, { recursive: true });
-    writeFileSync(this.leaseFile(repoId), JSON.stringify(lease, null, 2), "utf8");
+    const targetFile = this.leaseFile(repoId);
+    const tmpFile = join(this.options.stateDir, `.tmp-lease-${repoId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    writeFileSync(tmpFile, JSON.stringify(lease, null, 2), "utf8");
+    try {
+      renameSync(tmpFile, targetFile);
+    } catch {
+      try {
+        writeFileSync(targetFile, JSON.stringify(lease, null, 2), "utf8");
+      } finally {
+        try { rmSync(tmpFile, { force: true }); } catch { /* ignore */ }
+      }
+    }
   }
 
   private isStale(lease: RepoLease): boolean {
@@ -150,5 +161,6 @@ export class RepoLeaseUnavailableError extends Error {
 }
 
 export function repoIdOf(directory: string): string {
-  return createHash("sha256").update(directory).digest("hex").slice(0, 16);
+  const normalized = normalize(resolve(directory)).normalize("NFC");
+  return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
 }

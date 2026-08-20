@@ -1,7 +1,7 @@
 export { loadFlowDeckConfig, resolveAgentModels, parseModelSpec, DEFAULT_CONFIG } from './agent-models';
-export type { FlowDeckConfig, AgentModelConfig } from './agent-models';
+export type { FlowDeckConfig, AgentModelConfig } from './schema';
 
-import type { FlowDeckConfig } from './agent-models';
+import type { FlowDeckConfig } from './schema';
 
 export interface ResolvedDesignFirstConfig {
   enabled: boolean;

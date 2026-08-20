@@ -12,6 +12,7 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 import { execFileSync } from "node:child_process"
 import {
+  FDX_MAX_BUFFER,
   checkFdxAvailability,
   shouldDisableFallback,
   runFdx,
@@ -133,6 +134,8 @@ export {
   checkFdxAvailability,
   getFdxAvailabilityStatus,
   shouldDisableFallback,
+  FDX_MAX_BUFFER,
+  FDX_TIMEOUT_MS,
 } from "./fdx-shared"
 
 // ── fdx-read ─────────────────────────────────────────────────────────────────
@@ -199,10 +202,11 @@ export const fdxSearchTool: ToolDefinition = tool({
     format: tool.schema.enum(["text", "json"]).optional(),
     no_cache: tool.schema.boolean().optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
     if (!args?.query || typeof args.query !== "string" || !args.query.trim()) {
       throw new Error("[FDX] query parameter is required and cannot be empty.")
     }
+    const cwd = context?.directory
     const turbo = getActiveFdxTurbo()
     if (turbo && !args.no_cache && args.format !== "json") {
       // NOTE: JSON-format requests never route through the turbo TEXT fast path;
@@ -218,7 +222,7 @@ export const fdxSearchTool: ToolDefinition = tool({
         if (daemonResult !== undefined) return daemonResult
         try { return indexedSearch(activeFdxNextRuntime, args.query, args.path, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
       }
-      return nativeSearchFallback(args.query, args.path)
+      return nativeSearchFallback(args.query, args.path, cwd)
     }
     const cmd: string[] = ["search", args.query]
     if (args.path) cmd.push("--path", args.path)
@@ -227,10 +231,10 @@ export const fdxSearchTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     if (args.no_cache) cmd.push("--no-cache")
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeSearchFallback(args.query, args.path)
+      return nativeSearchFallback(args.query, args.path, cwd)
     }
   },
 })
@@ -248,10 +252,11 @@ export const fdxGrepTool: ToolDefinition = tool({
     format: tool.schema.enum(["text", "json"]).optional(),
     no_cache: tool.schema.boolean().optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
     if (!args?.pattern || typeof args.pattern !== "string" || !args.pattern.trim()) {
       throw new Error("[FDX] pattern parameter is required and cannot be empty.")
     }
+    const cwd = context?.directory
     const turbo = getActiveFdxTurbo()
     if (turbo && !args.no_cache) {
       const tg = await turbo.grep(String(args.pattern), args.path, { context: args.context, maxMatches: args.max_matches })
@@ -259,7 +264,7 @@ export const fdxGrepTool: ToolDefinition = tool({
     }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeSearchFallback(args.pattern, args.path)
+      return nativeSearchFallback(args.pattern, args.path, cwd)
     }
     const cmd: string[] = ["grep", args.pattern]
     if (args.path) cmd.push("--path", args.path)
@@ -268,10 +273,10 @@ export const fdxGrepTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     if (args.no_cache) cmd.push("--no-cache")
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeSearchFallback(args.pattern, args.path)
+      return nativeSearchFallback(args.pattern, args.path, cwd)
     }
   },
 })
@@ -287,20 +292,21 @@ export const fdxBatchTool: ToolDefinition = tool({
     limit_per_file: tool.schema.number().optional(),
     format: tool.schema.enum(["text", "json"]).optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return args.files.map(f => nativeReadFallback(f, args.limit_per_file)).join("\n\n")
+      return args.files.map(f => nativeReadFallback(f, args.limit_per_file, undefined, cwd)).join("\n\n")
     }
     const cmd: string[] = ["batch", ...args.files]
     if (args.mode) cmd.push("--mode", args.mode)
     if (args.limit_per_file !== undefined) cmd.push("--limit-per-file", String(args.limit_per_file))
     if (args.format) cmd.push("--format", args.format)
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return args.files.map(f => nativeReadFallback(f, args.limit_per_file)).join("\n\n")
+      return args.files.map(f => nativeReadFallback(f, args.limit_per_file, undefined, cwd)).join("\n\n")
     }
   },
 })
@@ -317,7 +323,8 @@ export const fdxImpactTool: ToolDefinition = tool({
     format: tool.schema.enum(["text", "json"]).optional(),
     root: tool.schema.string().optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     const turbo = getActiveFdxTurbo()
     if (turbo && args.format !== "json") {
       const ti = await turbo.impact(args.files)
@@ -330,7 +337,7 @@ export const fdxImpactTool: ToolDefinition = tool({
         if (daemonResult !== undefined) return daemonResult
         try { return indexedImpact(activeFdxNextRuntime, args.files, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
       }
-      return await nativeImpactFallback(args.files, args.root)
+      return await nativeImpactFallback(args.files, args.root, { cwd })
     }
     const cmd: string[] = ["impact", ...args.files]
     if (args.depth !== undefined) cmd.push("--depth", String(args.depth))
@@ -338,10 +345,10 @@ export const fdxImpactTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     if (args.root) cmd.push("--root", args.root)
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return await nativeImpactFallback(args.files, args.root)
+      return await nativeImpactFallback(args.files, args.root, { cwd })
     }
   },
 })
@@ -360,7 +367,8 @@ export const fdxOutlineTool: ToolDefinition = tool({
     format: tool.schema.enum(["text", "json"]).optional(),
     no_cache: tool.schema.boolean().optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     const searchPaths = args.paths && args.paths.length > 0 ? args.paths : ["."]
     const turbo = getActiveFdxTurbo()
     if (turbo && !args.no_cache && args.format !== "json") {
@@ -374,7 +382,7 @@ export const fdxOutlineTool: ToolDefinition = tool({
         if (daemonResult !== undefined) return daemonResult
         try { return indexedOutline(activeFdxNextRuntime, searchPaths, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
       }
-      return nativeOutlineFallback(searchPaths)
+      return nativeOutlineFallback(searchPaths, cwd)
     }
     const cmd: string[] = ["outline", ...searchPaths]
     if (args.depth !== undefined) cmd.push("--depth", String(args.depth))
@@ -383,10 +391,10 @@ export const fdxOutlineTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     if (args.no_cache) cmd.push("--no-cache")
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeOutlineFallback(searchPaths)
+      return nativeOutlineFallback(searchPaths, cwd)
     }
   },
 })
@@ -405,14 +413,15 @@ export const fdxDiffTool: ToolDefinition = tool({
     no_cache: tool.schema.boolean().optional(),
     root: tool.schema.string().optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       const gArgs = ["diff"]
       if (args.staged) gArgs.push("--staged")
       if (args.commit) gArgs.push(args.commit)
       if (args.paths) gArgs.push(...args.paths)
-      return nativeGitFallback(gArgs)
+      return nativeGitFallback(gArgs, cwd)
     }
     const cmd: string[] = ["diff"]
     if (args.commit) cmd.push(args.commit)
@@ -422,14 +431,14 @@ export const fdxDiffTool: ToolDefinition = tool({
     if (args.root) cmd.push("--root", args.root)
     if (args.paths && args.paths.length > 0) cmd.push(...args.paths)
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
       const gArgs = ["diff"]
       if (args.staged) gArgs.push("--staged")
       if (args.commit) gArgs.push(args.commit)
       if (args.paths) gArgs.push(...args.paths)
-      return nativeGitFallback(gArgs)
+      return nativeGitFallback(gArgs, cwd)
     }
   },
 })
@@ -509,10 +518,11 @@ export const fdxTreeTool: ToolDefinition = tool({
     dirs_only: tool.schema.boolean().optional(),
     format: tool.schema.enum(["text", "json"]).optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeLsFallback(args.path ?? ".")
+      return nativeLsFallback(args.path ?? ".", cwd)
     }
     const cmd: string[] = ["tree"]
     if (args.path) cmd.push(args.path)
@@ -520,10 +530,10 @@ export const fdxTreeTool: ToolDefinition = tool({
     if (args.dirs_only) cmd.push("--dirs-only")
     if (args.format) cmd.push("--format", args.format)
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeLsFallback(args.path ?? ".")
+      return nativeLsFallback(args.path ?? ".", cwd)
     }
   },
 })
@@ -538,13 +548,20 @@ export const fdxTestTool: ToolDefinition = tool({
     runner: tool.schema.enum(["cargo", "pytest", "jest", "vitest", "go", "rspec", "rails"]),
     args: tool.schema.array(tool.schema.string()).optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       try {
         const safeRunner = validateExecutable(args.runner, TEST_RUNNER_ALLOWLIST)
         const safeArgs = validateArgs(args.args ?? [])
-        return execFileSync(safeRunner, safeArgs, { encoding: "utf-8", timeout: 30000 })
+        return execFileSync(safeRunner, safeArgs, {
+          encoding: "utf-8",
+          timeout: 30000,
+          maxBuffer: FDX_MAX_BUFFER,
+          shell: false,
+          cwd,
+        })
       } catch (err: any) {
         return `[FDX Test Fallback Output]\n${err.stdout || err.stderr || err.message}`
       }
@@ -552,13 +569,19 @@ export const fdxTestTool: ToolDefinition = tool({
     const cmd: string[] = ["test", args.runner]
     if (args.args && args.args.length > 0) cmd.push(...args.args)
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
       try {
         const safeRunner = validateExecutable(args.runner, TEST_RUNNER_ALLOWLIST)
         const safeArgs = validateArgs(args.args ?? [])
-        return execFileSync(safeRunner, safeArgs, { encoding: "utf-8", timeout: 30000 })
+        return execFileSync(safeRunner, safeArgs, {
+          encoding: "utf-8",
+          timeout: 30000,
+          maxBuffer: FDX_MAX_BUFFER,
+          shell: false,
+          cwd,
+        })
       } catch (err: any) {
         return `[FDX Test Fallback Output]\n${err.stdout || err.stderr || err.message}`
       }
@@ -576,13 +599,20 @@ export const fdxLintTool: ToolDefinition = tool({
     linter: tool.schema.enum(["ruff", "clippy", "tsc", "eslint", "biome", "golangci", "rubocop"]),
     args: tool.schema.array(tool.schema.string()).optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       try {
         const safeLinter = validateExecutable(args.linter, LINTER_ALLOWLIST)
         const safeArgs = validateArgs(args.args ?? [])
-        return execFileSync(safeLinter, safeArgs, { encoding: "utf-8", timeout: 30000 })
+        return execFileSync(safeLinter, safeArgs, {
+          encoding: "utf-8",
+          timeout: 30000,
+          maxBuffer: FDX_MAX_BUFFER,
+          shell: false,
+          cwd,
+        })
       } catch (err: any) {
         return `[FDX Lint Fallback Output]\n${err.stdout || err.stderr || err.message}`
       }
@@ -590,13 +620,19 @@ export const fdxLintTool: ToolDefinition = tool({
     const cmd: string[] = ["lint", args.linter]
     if (args.args && args.args.length > 0) cmd.push(...args.args)
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
       try {
         const safeLinter = validateExecutable(args.linter, LINTER_ALLOWLIST)
         const safeArgs = validateArgs(args.args ?? [])
-        return execFileSync(safeLinter, safeArgs, { encoding: "utf-8", timeout: 30000 })
+        return execFileSync(safeLinter, safeArgs, {
+          encoding: "utf-8",
+          timeout: 30000,
+          maxBuffer: FDX_MAX_BUFFER,
+          shell: false,
+          cwd,
+        })
       } catch (err: any) {
         return `[FDX Lint Fallback Output]\n${err.stdout || err.stderr || err.message}`
       }
@@ -619,14 +655,15 @@ export const fdxContextTool: ToolDefinition = tool({
     summary: tool.schema.string().optional(),
     artifact_id: tool.schema.string().optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     // read_artifact is handled natively regardless of fdx availability
     if (args.action === "read_artifact") {
-      return nativeContextFallback(args as any)
+      return nativeContextFallback({ ...(args as any), cwd })
     }
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeContextFallback(args as any)
+      return nativeContextFallback({ ...(args as any), cwd })
     }
     const topic = args.topic || "general"
     const cmd: string[] = ["context", "--topic", topic, "--action", args.action]
@@ -636,10 +673,10 @@ export const fdxContextTool: ToolDefinition = tool({
       if (args.summary) cmd.push("--summary", args.summary)
     }
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeContextFallback(args as any)
+      return nativeContextFallback({ ...(args as any), cwd })
     }
   },
 })
@@ -658,10 +695,11 @@ export const fdxDecisionsTool: ToolDefinition = tool({
     rationale: tool.schema.string().optional(),
     made_by: tool.schema.string().optional(),
   },
-  async execute(args): Promise<string> {
+  async execute(args, context?: any): Promise<string> {
+    const cwd = context?.directory
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeDecisionsFallback(args)
+      return nativeDecisionsFallback({ ...args, cwd })
     }
     const cmd: string[] = ["decisions", "--topic", args.topic, "--action", args.action]
     if (args.action === "record") {
@@ -670,10 +708,10 @@ export const fdxDecisionsTool: ToolDefinition = tool({
       if (args.made_by) cmd.push("--made-by", args.made_by)
     }
     try {
-      return runFdx(cmd)
+      return runFdx(cmd, cwd)
     } catch (err) {
       if (shouldDisableFallback()) throw err
-      return nativeDecisionsFallback(args)
+      return nativeDecisionsFallback({ ...args, cwd })
     }
   },
 })

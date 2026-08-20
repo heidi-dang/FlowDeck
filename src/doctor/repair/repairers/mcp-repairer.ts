@@ -12,16 +12,17 @@ export async function repairMcpConfiguration(_directory: string): Promise<AutoFi
   const configFile = join(configDir, "opencode.json")
 
   try {
-    let cfg: any = {}
+    let cfg: Record<string, unknown> = {}
     if (existsSync(configFile)) {
       try {
-        cfg = JSON.parse(readFileSync(configFile, "utf-8"))
+        const raw = readFileSync(configFile, "utf-8")
+        cfg = JSON.parse(raw)
       } catch {
         cfg = {}
       }
     }
 
-    if (!cfg.mcp || typeof cfg.mcp !== "object") {
+    if (!cfg.mcp || typeof cfg.mcp !== "object" || Array.isArray(cfg.mcp)) {
       cfg.mcp = {
         context7: {
           type: "remote",
@@ -34,18 +35,29 @@ export async function repairMcpConfiguration(_directory: string): Promise<AutoFi
     mkdirSync(dirname(configFile), { recursive: true })
     writeFileSync(configFile, JSON.stringify(cfg, null, 2), "utf-8")
 
+    // Post-repair verification: verify configFile exists and contains valid JSON with mcp object
+    let reverified = false
+    try {
+      const readBack = JSON.parse(readFileSync(configFile, "utf-8"))
+      reverified = Boolean(readBack && typeof readBack.mcp === "object" && !Array.isArray(readBack.mcp))
+    } catch {
+      reverified = false
+    }
+
     return {
       id: "mcp.config",
       description: "Normalized MCP server configuration schema in opencode.json",
-      applied: true,
-      reverified: true,
+      applied: reverified,
+      reverified,
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err)
     return {
       id: "mcp.config",
       description: "MCP configuration repair failed",
       applied: false,
-      error: err.message,
+      reverified: false,
+      error: message,
     }
   }
 }

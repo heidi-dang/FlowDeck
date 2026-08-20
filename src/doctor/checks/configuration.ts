@@ -154,8 +154,19 @@ export async function runConfigurationChecks(directory: string): Promise<CheckRe
           recommendation: isOk ? "OK" : `Fix syntax errors in ${name}`,
           autoFixAvailable: false,
         })
-      } catch {
-        // ignore
+      } catch (err: unknown) {
+        const errMsg = err instanceof Error ? err.message : String(err)
+        checks.push({
+          id: `config.flowdeck_project`,
+          title: `FlowDeck Project Config (${name})`,
+          category: "configuration",
+          severity: "medium",
+          status: "error",
+          detected: `parse error: ${errMsg}`,
+          expected: "Valid FlowDeck configuration",
+          recommendation: `Fix syntax errors in ${name}`,
+          autoFixAvailable: false,
+        })
       }
     }
   }
