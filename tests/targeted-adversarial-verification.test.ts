@@ -3,6 +3,7 @@ import { existsSync, writeFileSync, mkdirSync, rmSync, readFileSync, chmodSync, 
 import { createHash } from "node:crypto"
 import { join } from "node:path"
 import { tmpdir, homedir } from "node:os"
+import { spawn } from "node:child_process"
 import { checkFdxAvailability, invalidateFdxCache, resolveFdxBinaryPath, getFdxAvailabilityStatus, runFdx } from "../src/tools/fdx-shared"
 import { repairFdxBinary } from "../src/doctor/repair/repairers/fdx-repairer"
 import { repairPermissions } from "../src/doctor/repair/repairers/permissions-repairer"
@@ -299,59 +300,58 @@ describe("Targeted Adversarial Verification Suite — 3 Final Merge-Evidence Gap
   })
 
   // ═════════════════════════════════════════════════════════════════════════
-  // GAP 3: Concurrent Database Initialization, Schema & Integrity Proof
+  // GAP 3: Concurrent Multi-Process Database Initialization & Integrity Proof
   // ═════════════════════════════════════════════════════════════════════════
   describe("Gap 3: Concurrent Database Initialization & Multi-Worker Safety", () => {
-    it("runs concurrent database initialization/open flows, verifies PRAGMA integrity and shared state", async () => {
+    it("runs overlapping multi-process database initialization/open flows, verifies PRAGMA integrity and shared state", async () => {
       const projDir = join(TMP, "concurrent-db-init-proj")
+      mkdirSync(projDir, { recursive: true })
+      const targetDbPath = resolveOrchestrationDbPath(projDir)
 
-      // Concurrently resolve and initialize DB from 4 separate worker flows
-      const runtimes = await Promise.all([
-        Promise.resolve().then(() => {
-          const p = resolveOrchestrationDbPath(projDir)
-          return initializeDatabase({ path: p })
-        }),
-        Promise.resolve().then(() => {
-          const p = resolveOrchestrationDbPath(projDir)
-          return initializeDatabase({ path: p })
-        }),
-        Promise.resolve().then(() => {
-          const p = resolveOrchestrationDbPath(projDir)
-          return initializeDatabase({ path: p })
-        }),
-        Promise.resolve().then(() => {
-          const p = resolveOrchestrationDbPath(projDir)
-          return initializeDatabase({ path: p })
-        }),
+      // Spawn 3 separate overlapping child worker processes that concurrently initialize and write
+      const workerScript = `
+        import { initializeDatabase, closeAllConnections } from "./src/orchestration/persistence/index";
+        const dbPath = process.argv[1];
+        const workerId = process.argv[2];
+        const { db } = initializeDatabase({ path: dbPath });
+        db.query("CREATE TABLE IF NOT EXISTS multi_worker_test (id TEXT PRIMARY KEY, worker TEXT, ts INTEGER)").run();
+        db.query("INSERT INTO multi_worker_test (id, worker, ts) VALUES (?, ?, ?)").run("rec_" + workerId, workerId, Date.now());
+        closeAllConnections();
+      `
+
+      const runWorker = (workerId: string) => new Promise<void>((res, rej) => {
+        const c = spawn("bun", ["-e", workerScript, targetDbPath, workerId], { stdio: "ignore" })
+        c.on("exit", code => code === 0 ? res() : rej(new Error(`Worker ${workerId} failed with exit code ${code}`)))
+      })
+
+      // Run workers with real process-level concurrency
+      await Promise.all([
+        runWorker("proc_1"),
+        runWorker("proc_2"),
+        runWorker("proc_3"),
       ])
 
       const expectedDbPath = join(projDir, ".flowdeck", "flowdeck.db")
       expect(existsSync(expectedDbPath)).toBe(true)
 
-      // 1. All instances use the same physical DB
-      const db1 = runtimes[0].db
-      const db2 = runtimes[1].db
+      // Verify from main process: database opened, all worker records exist, PRAGMA checks pass
+      const { db } = initializeDatabase({ path: targetDbPath })
+      const rows = db.query("SELECT * FROM multi_worker_test ORDER BY worker").all() as any[]
+      expect(rows).toHaveLength(3)
+      expect(rows.map(r => r.worker)).toEqual(["proc_1", "proc_2", "proc_3"])
 
-      // 2. PRAGMA integrity checks pass
-      const integrity = db1.query("PRAGMA integrity_check").get() as any
+      const integrity = db.query("PRAGMA integrity_check").get() as any
       expect(integrity?.integrity_check).toBe("ok")
 
-      const fkCheck = db1.query("PRAGMA foreign_key_check").all()
+      const fkCheck = db.query("PRAGMA foreign_key_check").all()
       expect(fkCheck).toHaveLength(0)
-
-      // 3. Shared state compatibility: worker 1 writes, worker 2 reads immediately
-      db1.query("CREATE TABLE IF NOT EXISTS flowdeck_concurrent_test (id TEXT PRIMARY KEY, data TEXT)").run()
-      db1.query("INSERT INTO flowdeck_concurrent_test (id, data) VALUES (?, ?)").run("record_1", "shared_concurrent_payload_123")
-
-      const readBack = db2.query("SELECT data FROM flowdeck_concurrent_test WHERE id = ?").get("record_1") as any
-      expect(readBack?.data).toBe("shared_concurrent_payload_123")
 
       closeAllConnections()
 
-      // 4. Subsequent startup reopens the same database and sees the shared state
+      // Subsequent startup reopens the same database and sees the shared state
       const { db: reopenedDb } = initializeDatabase({ path: resolveOrchestrationDbPath(projDir) })
-      const reopenedState = reopenedDb.query("SELECT data FROM flowdeck_concurrent_test WHERE id = ?").get("record_1") as any
-      expect(reopenedState?.data).toBe("shared_concurrent_payload_123")
+      const reopenedRows = reopenedDb.query("SELECT COUNT(*) AS cnt FROM multi_worker_test").get() as any
+      expect(reopenedRows?.cnt).toBe(3)
 
       closeAllConnections()
     })

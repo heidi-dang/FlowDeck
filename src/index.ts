@@ -33,6 +33,7 @@ import { OrchestratorGuard } from "./hooks/orchestrator-guard-hook"
 import { sessionStartHook } from "./hooks/session-start"
 import { sessionEventsHook } from "./hooks/session-events"
 import { executePostWriteHook, toolGuardHook } from "./hooks/tool-guard"
+import { invalidateFdxCache } from "./tools/fdx-shared"
 import { recordToolError, checkToolErrorCircuit, clearToolErrorCounts } from "./services/orchestrator-guard-strategy-circuit"
 import { buildFlowDeckMcpsWithMeta } from "./mcp/index"
 import { captureLessonTool, reviewLessonsTool } from "./tools/capture-lesson"
@@ -599,6 +600,7 @@ const plugin: Plugin = async ({ directory, client }) => {
       effectiveDefaultAgent = (cfg as { default_agent?: string }).default_agent ?? "heidi"
 
       flowdeckConfig = loadFlowDeckConfig(directory)
+      invalidateFdxCache()
       const resolvedAgents = getAgentConfigs(resolveAgentModels(flowdeckConfig))
 
       if (!cfg.agent) {

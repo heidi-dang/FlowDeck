@@ -18,9 +18,33 @@ export function openConnection(config: DatabaseConfig): Database {
 
   const db = new Database(key, { create: true })
 
-  // Apply pragmas immediately
+  // Apply pragmas with busy retry
   for (const p of REQUIRED_PRAGMAS) {
-    db.run("PRAGMA " + p.name + " = " + p.value)
+    let applied = false
+    let attempts = 0
+    let lastErr: any = null
+    while (!applied && attempts < 10) {
+      attempts++
+      try {
+        db.run("PRAGMA " + p.name + " = " + p.value)
+        applied = true
+      } catch (err: any) {
+        lastErr = err
+        if (err?.code === "SQLITE_BUSY" || err?.message?.includes("locked") || err?.message?.includes("busy")) {
+          const delay = Math.min(200, 10 * attempts)
+          const start = Date.now()
+          while (Date.now() - start < delay) {
+            // busy wait
+          }
+          continue
+        }
+        throw err
+      }
+    }
+    if (!applied && lastErr) {
+      db.close()
+      throw lastErr
+    }
   }
 
   // bun:sqlite pragma read returns integers for boolean-valued pragmas
