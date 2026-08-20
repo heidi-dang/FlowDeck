@@ -53,9 +53,10 @@ describe("modern plugin contract", () => {
   it("server returns expected hooks when invoked", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flowdeck-contract-"))
     const client = createMockClient()
+    let hooks: any
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
 
       expect(typeof hooks.config).toBe("function")
       expect(typeof hooks.event).toBe("function")
@@ -64,6 +65,7 @@ describe("modern plugin contract", () => {
       expect(hooks.tool).toBeDefined()
       expect(typeof hooks.tool).toBe("object")
     } finally {
+      if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
@@ -72,15 +74,17 @@ describe("modern plugin contract", () => {
   it("does NOT expose legacy properties name/agent/mcp at hook level", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flowdeck-contract-"))
     const client = createMockClient()
+    let hooks: any
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
 
       // Legacy properties are injected via config hook, not returned directly
       expect((hooks as any).name).toBeUndefined()
       expect((hooks as any).agent).toBeUndefined()
       expect((hooks as any).mcp).toBeUndefined()
     } finally {
+      if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
@@ -89,14 +93,16 @@ describe("modern plugin contract", () => {
   it("config hook sets default_agent to heidi", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flowdeck-config-"))
     const client = createMockClient()
+    let hooks: any
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
       const cfg: Record<string, unknown> = {}
       await hooks.config?.(cfg)
 
       expect(cfg.default_agent).toBe("heidi")
     } finally {
+      if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
@@ -105,9 +111,10 @@ describe("modern plugin contract", () => {
   it("config hook registers heidi as primary, non-hidden agent", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flowdeck-heidi-"))
     const client = createMockClient()
+    let hooks: any
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
       const cfg: Record<string, unknown> = {}
       await hooks.config?.(cfg)
 
@@ -119,6 +126,7 @@ describe("modern plugin contract", () => {
       expect(agent.orchestrator).toBeDefined()
       expect(agent.orchestrator.mode).toBe("primary")
     } finally {
+      if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
@@ -127,15 +135,16 @@ describe("modern plugin contract", () => {
   it("config hook preserves user default_agent", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flowdeck-preserve-"))
     const client = createMockClient()
+    let hooks: any
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
       const cfg: Record<string, unknown> = { default_agent: "build" }
       await hooks.config?.(cfg)
 
       expect(cfg.default_agent).toBe("build")
-      if (hooks.dispose) await hooks.dispose()
     } finally {
+      if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }
@@ -144,9 +153,10 @@ describe("modern plugin contract", () => {
   it("config hook preserves user agent overrides", async () => {
     const dir = mkdtempSync(join(tmpdir(), "flowdeck-override-"))
     const client = createMockClient()
+    let hooks: any
 
     try {
-      const hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
+      hooks = await flowDeckPlugin.server({ directory: dir, client } as any, {})
       const cfg: Record<string, unknown> = {
         agent: {
           heidi: { temperature: 0.7 },
@@ -158,6 +168,7 @@ describe("modern plugin contract", () => {
       expect(agent.heidi.temperature).toBe(0.7)
       expect(agent.heidi.mode).toBe("primary")
     } finally {
+      if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
       rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
     }

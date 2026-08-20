@@ -95,7 +95,7 @@ export function classifyFastLane(toolName: string): FastLaneDecision {
  */
 function isSafePathToken(p: string): boolean {
   if (!p || p.length > 4096) return false
-  if (p.includes("\0") || /[\r\n\t$|&;<>'"`\\]/.test(p)) return false
+  if (p.includes("\0") || /[\r\n\t$|&;<>'"`]/.test(p)) return false
   if (/\s/.test(p)) return false
   return true
 }

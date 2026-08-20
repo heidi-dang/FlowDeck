@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import flowDeckPlugin from "../src/index.js"
 import { beforeEach, afterEach } from "vitest"
-
+import { closeAllConnections } from "../src/orchestration/persistence/index.js"
 
 import { tmpdir } from "os"
 import { join } from "path"
@@ -19,6 +19,7 @@ describe("OpenCode Hook Contract Registration", () => {
     if (pluginInstance?.dispose) {
       try { await pluginInstance.dispose() } catch {}
     }
+    closeAllConnections()
     rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
