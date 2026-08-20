@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.2.6] - 2026-08-20
+
+### Fixed — Heidi Orchestrator Guard Regression & UI Event Flood Elimination
+- **Developer Shell Inspection & Verification Classification**: Classified legitimate read-only inspection commands as permitted `read` category in `src/services/shell-command-classifier.ts`:
+  - `node -p` / `node --print` expressions and `node -c` / `node --check` syntax checks.
+  - `bun test`, `bun -p`, `bun --print`, and test/lint/typecheck verification scripts (`bun run test|typecheck|lint|check|verify`).
+  - `cargo test`, `cargo check`, `cargo clippy`, and `cargo fmt --check`.
+  - `npm test`, `pnpm test`, `yarn test`, and `deno test|check|lint|fmt --check`.
+- **Bounded Guard Retry Circuit & Terminal Invalidation**: Added `cwd` to `normalizeGuardFingerprint`. Enforced `ORCHESTRATOR_GUARD_STRATEGY_INVALIDATED` (`terminal: true`, `recoverable: false`) when an identical blocked command is re-attempted unchanged, eliminating infinite retry loops after attempt 1.
+- **Machine-Readable Heidi Replanning Feedback**: Updated `RecoverableFlowDeckBlockError` to provide clear next-step guidance (route to specialist agent, switch to FDX/native read tools, review test results) and explicitly forbid unchanged retries.
+- **Lifecycle & State Cleanup**: Wrapped `orchestratorGuard.check()` in `src/index.ts` to release call timers, decrement `sessionActiveTools`, and clear `watchdogState.isPendingTool` upon guard blocks. Registered `orchestratorGuardStrategyCircuit.clearSession(sessionID)` in `cleanupSessionState()` and manual task phase resets.
+- **Cross-Platform Fast-Lane Path Normalization**: Supported Windows path separators in `isSafePathToken` and hardened test lifecycle handle teardown against Windows `EBUSY` lock races.
+- **Security Invariant Preserved**: Genuinely mutating commands (`rm`, `git commit/push`, `npm install`, `cargo publish/build`) and reads from sensitive files (`.env`, `~/.ssh`, private keys) remain strictly guarded.
+
 ## [2.2.5] - 2026-08-20
 
 ### Runtime Hardening & Multi-Agent Stability
