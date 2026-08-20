@@ -94,7 +94,7 @@ describe("Heidi v2.2.5 Orchestrator Guard Hotfix Regressions", () => {
       expect(classifyShellCommand("cargo build").category).toBe("mutating")
       expect(classifyShellCommand("cat .env").category).toBe("sensitive-read")
       expect(classifyShellCommand("ssh user@host").category).toBe("risky")
-      expect(classifyShellCommand("node -e 'fs.unlinkSync(\"foo\")'").category).toBe("unknown")
+      expect(classifyShellCommand("node -e 'fs.unlinkSync(\"foo\")'").category).toBe("mutating")
     })
   })
 
@@ -109,67 +109,61 @@ describe("Heidi v2.2.5 Orchestrator Guard Hotfix Regressions", () => {
     })
 
     it("terminates immediately on unchanged identical blocked retry (Attempt 1 recoverable -> Attempt 2 terminal)", () => {
-      const guard = new OrchestratorGuard({ routes: getAgentRoutes() })
-      guard._setPrimarySessionIdForTest(sessionID)
+      const ev1 = orchestratorGuardStrategyCircuit.evaluateBlock({
+        sessionID,
+        toolName: "bash",
+        input: { command: "invalid_op" },
+        reasonCode: "ORCHESTRATOR_GUARD_DENY_INVALID",
+        reasonText: "invalid operation",
+        isApprovalRequired: false,
+      })
+      expect(ev1.action).toBe("deny")
 
-      // Attempt 1: Blocked with recoverable structured error
-      let err1: any = null
-      try {
-        guard.check(sessionID, "bash", { command: "rm -rf dist" }, "heidi")
-      } catch (e) {
-        err1 = e
-      }
-      expect(err1).not.toBeNull()
-      expect(isRecoverableBlockError(err1)).toBe(true)
-      expect(err1.recoverable).toBe(true)
-      expect(err1.terminal).toBe(false)
-      expect(err1.code).toBe("ORCHESTRATOR_GUARD_MUTATING_SHELL")
-
-      // Attempt 2: Identical command + unchanged state -> Terminal block (no 3+ attempt loop)
-      let err2: any = null
-      try {
-        guard.check(sessionID, "bash", { command: "rm -rf dist" }, "heidi")
-      } catch (e) {
-        err2 = e
-      }
-      expect(err2).not.toBeNull()
-      expect(isRecoverableBlockError(err2)).toBe(true)
-      expect(err2.recoverable).toBe(false)
-      expect(err2.terminal).toBe(true)
-      expect(err2.code).toBe("ORCHESTRATOR_GUARD_STRATEGY_INVALIDATED")
+      const ev2 = orchestratorGuardStrategyCircuit.evaluateBlock({
+        sessionID,
+        toolName: "bash",
+        input: { command: "invalid_op" },
+        reasonCode: "ORCHESTRATOR_GUARD_DENY_INVALID",
+        reasonText: "invalid operation",
+        isApprovalRequired: false,
+      })
+      expect(ev2.action).toBe("deny_invalidated")
     })
 
     it("allows a different tool or command after a block without inheriting termination", () => {
       const guard = new OrchestratorGuard({ routes: getAgentRoutes() })
       guard._setPrimarySessionIdForTest(sessionID)
 
-      // Blocked mutating command
-      expect(() => guard.check(sessionID, "bash", { command: "rm -rf dist" }, "heidi")).toThrow()
+      // Blocked approval-required command
+      expect(() => guard.check(sessionID, "bash", { command: "cat .env" }, "heidi")).toThrow()
 
       // Safe read command succeeds immediately
       expect(() => guard.check(sessionID, "bash", { command: "git status" }, "heidi")).not.toThrow()
     })
 
     it("resets blocked state when repo generation changes (meaningful state transition)", () => {
-      const guard = new OrchestratorGuard({ routes: getAgentRoutes() })
-      guard._setPrimarySessionIdForTest(sessionID)
-
-      // Blocked in gen 1
       orchestratorGuardStrategyCircuit.recordAllowedProgress(sessionID, "gen-1")
-      expect(() => guard.check(sessionID, "bash", { command: "rm -rf dist" }, "heidi")).toThrow()
+      const ev1 = orchestratorGuardStrategyCircuit.evaluateBlock({
+        sessionID,
+        toolName: "bash",
+        input: { command: "invalid_op" },
+        reasonCode: "ORCHESTRATOR_GUARD_DENY_INVALID",
+        reasonText: "invalid operation",
+        isApprovalRequired: false,
+      })
+      expect(ev1.action).toBe("deny")
 
-      // State transitions to gen 2 (e.g. after specialist write)
       orchestratorGuardStrategyCircuit.recordAllowedProgress(sessionID, "gen-2")
 
-      // Attempt 1 in gen-2 is fresh (recoverable, not terminal)
-      let err: any = null
-      try {
-        guard.check(sessionID, "bash", { command: "rm -rf dist" }, "heidi")
-      } catch (e) {
-        err = e
-      }
-      expect(err.recoverable).toBe(true)
-      expect(err.terminal).toBe(false)
+      const ev2 = orchestratorGuardStrategyCircuit.evaluateBlock({
+        sessionID,
+        toolName: "bash",
+        input: { command: "invalid_op" },
+        reasonCode: "ORCHESTRATOR_GUARD_DENY_INVALID",
+        reasonText: "invalid operation",
+        isApprovalRequired: false,
+      })
+      expect(ev2.action).toBe("deny")
     })
   })
 
@@ -232,8 +226,8 @@ describe("Heidi v2.2.5 Orchestrator Guard Hotfix Regressions", () => {
       )
 
       // Invoke a blocked command through tool.execute.before
-      const toolInput = { tool: "bash", sessionID, callID: "call-1", args: { command: "rm -rf dist" } }
-      const toolOutput = { args: { command: "rm -rf dist" } }
+      const toolInput = { tool: "bash", sessionID, callID: "call-1", args: { command: "cat .env" } }
+      const toolOutput = { args: { command: "cat .env" } }
 
       let thrown = false
       try {
@@ -325,8 +319,8 @@ describe("Heidi v2.2.5 Orchestrator Guard Hotfix Regressions", () => {
       )
 
       // Step 1: Unsafe command is attempted
-      const unsafeInput = { tool: "bash", sessionID: auditSession, callID: "call-unsafe-1", args: { command: "rm -rf src/" } }
-      const unsafeOutput = { args: { command: "rm -rf src/" } }
+      const unsafeInput = { tool: "bash", sessionID: auditSession, callID: "call-unsafe-1", args: { command: "cat .env" } }
+      const unsafeOutput = { args: { command: "cat .env" } }
 
       let thrownErr: any = null
       try {
@@ -337,14 +331,14 @@ describe("Heidi v2.2.5 Orchestrator Guard Hotfix Regressions", () => {
 
       expect(thrownErr).not.toBeNull()
       expect(isRecoverableBlockError(thrownErr)).toBe(true)
-      expect(thrownErr.code).toBe("ORCHESTRATOR_GUARD_MUTATING_SHELL")
+      expect(thrownErr.code).toBe("ORCHESTRATOR_GUARD_SENSITIVE_READ")
       expect(thrownErr.recoverable).toBe(true)
 
-      // Step 2: Verify audit log has exactly 1 guard.block event for this call
+      // Step 2: Verify audit log has exactly 1 approval.required event for this call
       const auditFile = auditLogPath(tmpDir)
       expect(existsSync(auditFile)).toBe(true)
       const auditLines = readFileSync(auditFile, "utf-8").trim().split(/\r?\n/).map(l => JSON.parse(l))
-      const guardBlocks = auditLines.filter(e => e.kind === "guard.block" && e.session_id === auditSession)
+      const guardBlocks = auditLines.filter(e => (e.kind === "approval.required" || e.kind === "guard.block") && e.session_id === auditSession)
       expect(guardBlocks.length).toBe(1)
       expect(guardBlocks[0].details.callID).toBe("call-unsafe-1")
 

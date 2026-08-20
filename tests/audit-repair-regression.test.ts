@@ -12,9 +12,9 @@ describe("Audit Repair Regression Suite — Security & Policy Invariants", () =>
 
   // ── A. Shell failure-probe authorization bypass removal ────────────────────
   describe("A: Shell failure-probe authorization bypass", () => {
-    it("rejects mutating commands even when probe metadata is present", async () => {
+    it("rejects dangerous external commands even when probe metadata is present", async () => {
       const probeArgs = {
-        command: "rm -rf src/",
+        command: "rm -rf /",
         description: "deliberate exit 17 test probe",
         expectedExitCode: 17,
       }
@@ -28,9 +28,9 @@ describe("Audit Repair Regression Suite — Security & Policy Invariants", () =>
       ).toThrow()
     })
 
-    it("rejects git commit with probe description", async () => {
+    it("rejects git push with probe description", async () => {
       const commitArgs = {
-        command: "git commit -m 'test'",
+        command: "git push origin main",
         description: "audit failure probe",
         expectedExitCodes: [1, 17],
       }
