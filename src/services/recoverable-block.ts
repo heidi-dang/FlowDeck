@@ -79,7 +79,12 @@ export class RecoverableFlowDeckBlockError extends Error {
       }
     }
 
-    lines.push("Heidi: Please choose a different valid tool or parameter to continue your task.")
+    const isTerminal = this.terminal || !this.recoverable
+    if (isTerminal) {
+      lines.push("Heidi: This strategy/operation has been invalidated and cannot be retried unchanged. Please switch to an alternative allowed tool, delegate to a specialist agent, or report the blocker.")
+    } else {
+      lines.push("Heidi: Do NOT repeat this identical command unchanged — identical retries are blocked. Please choose an alternative valid tool (e.g. FDX/native read) or delegate to a specialist agent to continue your task.")
+    }
     return lines.join("\n")
   }
 }

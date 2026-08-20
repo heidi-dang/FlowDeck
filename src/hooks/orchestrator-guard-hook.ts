@@ -672,13 +672,13 @@ export class OrchestratorGuard {
             reasonCode: rawCode,
             reasonText: cls.reason,
             suggestedActions: [
-              "Route execution probe or test to a specialist (@tester, @debug-specialist)",
+              "Route execution probe or test to a specialist (@tester, @debug-specialist, @coder)",
               "Use read-only inspection tools (fdx-read, fdx-search, fdx-ls)",
               "Check existing test results or documentation before re-attempting",
             ],
           })
 
-          const isTerminal = circuit.action === "suppressed"
+          const isTerminal = circuit.action === "suppressed" || circuit.action === "deny_invalidated"
           const finalCode = circuit.action === "deny_invalidated" ? "ORCHESTRATOR_GUARD_STRATEGY_INVALIDATED" : rawCode
 
           throw new RecoverableFlowDeckBlockError({
@@ -689,6 +689,7 @@ export class OrchestratorGuard {
             agent: effectiveAgent,
             reason: circuit.message + "\n\n" + this.shellBlockMessage(toolName, cls.reason, cls.category),
             recoverable: !isTerminal,
+            terminal: isTerminal,
             suggestedActions: circuit.incident.suggestedActions,
           })
         }

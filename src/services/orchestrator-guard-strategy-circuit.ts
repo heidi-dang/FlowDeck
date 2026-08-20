@@ -35,14 +35,18 @@ export interface CircuitEvaluation {
   message: string
 }
 
-export function normalizeGuardFingerprint(toolName: string, input: unknown): string {
+export function normalizeGuardFingerprint(toolName: string, input: unknown, cwd?: string): string {
   const tool = (toolName || "tool").toLowerCase().trim()
   let normalizedArgs = ""
+  let effectiveCwd = cwd ? cwd.trim().toLowerCase() : ""
 
   if (typeof input === "string") {
     normalizedArgs = normalizeCommandString(input)
   } else if (input && typeof input === "object") {
     const obj = input as Record<string, unknown>
+    if (typeof obj.cwd === "string" && !effectiveCwd) {
+      effectiveCwd = obj.cwd.trim().toLowerCase()
+    }
     if (typeof obj.command === "string") {
       normalizedArgs = normalizeCommandString(obj.command)
     } else if (typeof obj.file === "string" || typeof obj.file_path === "string" || typeof obj.filePath === "string") {
@@ -52,7 +56,8 @@ export function normalizeGuardFingerprint(toolName: string, input: unknown): str
     }
   }
 
-  return `${tool}:${normalizedArgs}`
+  const cwdPart = effectiveCwd ? `[cwd:${effectiveCwd}]` : ""
+  return `${tool}:${normalizedArgs}${cwdPart}`
 }
 
 function normalizeCommandString(cmd: string): string {
@@ -249,7 +254,7 @@ function buildCircuitErrorMessage(incident: BlockedStrategyIncident, action: "de
     incident.suggestedActions.forEach((act, i) => {
       lines.push(`  ${i + 1}. ${act}`)
     })
-    lines.push(`\nDo NOT repeat this identical command. You must choose one of the available alternatives.`)
+    lines.push(`\nExecution is halted on this identical path. Do NOT repeat this command unchanged. Choose an alternative tool or delegate to a specialist agent.`)
     return lines.join("\n")
   }
 
@@ -259,6 +264,7 @@ function buildCircuitErrorMessage(incident: BlockedStrategyIncident, action: "de
   incident.suggestedActions.forEach((act, i) => {
     lines.push(`  ${i + 1}. ${act}`)
   })
+  lines.push(`\nDo NOT repeat this identical command unchanged — identical retries are blocked.`)
   return lines.join("\n")
 }
 
