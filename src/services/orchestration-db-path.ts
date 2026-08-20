@@ -5,13 +5,15 @@
  * Preferred: <directory>/.flowdeck/flowdeck.db
  * Fallbacks: ~/.flowdeck/flowdeck.db -> <tmpdir>/flowdeck/flowdeck.db
  *
- * Split-brain protection:
- * - If the preferred database already exists on disk, we NEVER silently fall back
- *   to creating a secondary DB elsewhere. A secondary DB would split orchestration
- *   state, events, and task runs across multiple independent databases.
- * - If the preferred DB exists and is not writable, we raise an explicit error.
- * - Fallbacks are ONLY used when bootstrapping in an unwritable root (e.g. "/" or read-only volume)
- *   where NO database exists yet.
+ * Split-brain & ambiguity protection:
+ * - Authoritative Preference: If <directory>/.flowdeck/flowdeck.db exists, it is authoritative.
+ *   If it is inaccessible, throws OrchestrationDatabaseInaccessibleError rather than silently falling back.
+ * - Multiple Existing DBs Ambiguity: If preferred DB does not exist, but multiple candidate fallback
+ *   databases exist on disk, throws OrchestrationDatabaseAmbiguityError to prevent silent split-brain.
+ * - Single Fallback Adoption: If only one fallback database exists and preferred directory is unwritable,
+ *   adopts that fallback database deterministically.
+ * - First-ever Startup: If no database exists anywhere, chooses preferred project location if writable,
+ *   or first writable fallback candidate.
  */
 
 import { existsSync, mkdirSync, writeFileSync, rmSync, accessSync, constants } from "fs"
@@ -20,8 +22,15 @@ import { homedir, tmpdir } from "os"
 
 export class OrchestrationDatabaseInaccessibleError extends Error {
   constructor(public readonly path: string, public readonly reason: string) {
-    super(`ORCHESTRATION_DATABASE_INACCESSIBLE: Existing database at "${path}" cannot be accessed: ${reason}. Automatic fallback is blocked to prevent database split-brain.`)
+    super(`ORCHESTRATION_DATABASE_INACCESSIBLE: Authoritative database at "${path}" cannot be accessed: ${reason}. Automatic fallback is blocked to prevent database split-brain.`)
     this.name = "OrchestrationDatabaseInaccessibleError"
+  }
+}
+
+export class OrchestrationDatabaseAmbiguityError extends Error {
+  constructor(public readonly paths: string[]) {
+    super(`ORCHESTRATION_DATABASE_AMBIGUITY: Multiple independent databases found across fallback locations (${paths.join(", ")}), but no authoritative project database exists at the target directory. Startup aborted to prevent split-brain state corruption.`)
+    this.name = "OrchestrationDatabaseAmbiguityError"
   }
 }
 
@@ -31,8 +40,8 @@ export function resolveOrchestrationDbPath(
 ): string {
   const preferredPath = join(directory, ".flowdeck", "flowdeck.db")
 
-  // Split-brain guard: If the project database file already exists, verify its accessibility directly.
-  // Never silently fall back and create a phantom state database in ~/.flowdeck or tmpdir.
+  // Rule 1 (Authoritative Preference):
+  // If the project database exists, it is strictly authoritative.
   if (existsSync(preferredPath)) {
     try {
       accessSync(preferredPath, constants.R_OK | constants.W_OK)
@@ -46,11 +55,22 @@ export function resolveOrchestrationDbPath(
     }
   }
 
-  const candidates = [
-    preferredPath,
+  const fallbackCandidates = [
     join(homedir(), ".flowdeck", "flowdeck.db"),
     join(tmpdir(), "flowdeck", "flowdeck.db"),
   ]
+
+  // Rule 2 (Multiple Fallback Ambiguity Guard):
+  // If preferred does not exist, check if multiple fallback databases exist simultaneously.
+  const existingFallbacks = fallbackCandidates.filter((p) => existsSync(p))
+  if (existingFallbacks.length > 1) {
+    if (log) {
+      void log(`[orchestration] multiple fallback databases exist: ${existingFallbacks.join(", ")}`, "error")
+    }
+    throw new OrchestrationDatabaseAmbiguityError(existingFallbacks)
+  }
+
+  const candidates = [preferredPath, ...fallbackCandidates]
 
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i]
@@ -73,7 +93,5 @@ export function resolveOrchestrationDbPath(
     return candidate
   }
 
-  // All candidates unwritable: return the preferred path and let initializeDatabase
-  // raise the real underlying error.
   return candidates[0]
 }

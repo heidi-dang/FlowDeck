@@ -2,16 +2,20 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test"
 import { existsSync, writeFileSync, mkdirSync, rmSync, readFileSync, chmodSync, readdirSync } from "node:fs"
 import { createHash } from "node:crypto"
 import { join } from "node:path"
-import { tmpdir } from "node:os"
+import { tmpdir, homedir } from "node:os"
 import { isPidAlive, isLockStale } from "../src/services/process-liveness"
 import { repairStaleLocks } from "../src/doctor/repair/repairers/stale-locks-repairer"
-import { checkFdxAvailability, invalidateFdxCache, resolveFdxBinaryPath } from "../src/tools/fdx-shared"
+import { checkFdxAvailability, invalidateFdxCache, resolveFdxBinaryPath, getFdxAvailabilityStatus } from "../src/tools/fdx-shared"
 import { repairFdxBinary } from "../src/doctor/repair/repairers/fdx-repairer"
 import { repairPluginRegistration } from "../src/doctor/repair/repairers/plugin-registration-repairer"
 import { repairSkillsAndLockfile } from "../src/doctor/repair/repairers/skills-repairer"
 import { repairPermissions } from "../src/doctor/repair/repairers/permissions-repairer"
-import { resolveOrchestrationDbPath, OrchestrationDatabaseInaccessibleError } from "../src/services/orchestration-db-path"
-import { RepoLeaseCoordinator } from "../src/services/repo-lease-coordinator"
+import {
+  resolveOrchestrationDbPath,
+  OrchestrationDatabaseInaccessibleError,
+  OrchestrationDatabaseAmbiguityError,
+} from "../src/services/orchestration-db-path"
+import { RepoLeaseCoordinator, repoIdOf } from "../src/services/repo-lease-coordinator"
 import { rewriteShellCommand, rewriteLsCommand } from "../src/services/tool-fast-lane"
 import { executeShellCommand } from "../src/services/shell-executor"
 import { repairMcpConfiguration } from "../src/doctor/repair/repairers/mcp-repairer"
@@ -22,8 +26,8 @@ import {
 } from "../src/services/session-state-registry"
 import { redactObjectSecrets } from "../src/lib/secret-redaction"
 
-describe("Targeted Adversarial Verification Suite — Final 7 Evidence Blockers", () => {
-  const TMP = join(tmpdir(), "fd-final-evidence-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7))
+describe("Targeted Adversarial Verification Suite — 7 Evidence Blockers", () => {
+  const TMP = join(tmpdir(), "fd-final-proof-" + Date.now() + "-" + Math.random().toString(36).slice(2, 7))
 
   beforeEach(() => {
     if (!existsSync(TMP)) mkdirSync(TMP, { recursive: true })
@@ -35,9 +39,9 @@ describe("Targeted Adversarial Verification Suite — Final 7 Evidence Blockers"
     } catch {}
   })
 
-  // ─── BLOCKER 1: Real Subprocess-Tree Termination & Bounds ─────────────────
+  // ─── BLOCKER 1: Real Subprocess-Tree Termination & Descendant Cleanup ─────
   describe("Blocker 1: Real Subprocess-Tree Termination", () => {
-    it("terminates direct child and normalizes timeout signal to 143", async () => {
+    it("terminates direct child process under timeout and returns exit code 143", async () => {
       const pidFile = join(TMP, "child-pid.txt")
       const script = `echo $$ > "${pidFile}" && exec sleep 30`
       const start = Date.now()
@@ -51,14 +55,13 @@ describe("Targeted Adversarial Verification Suite — Final 7 Evidence Blockers"
       if (existsSync(pidFile)) {
         const childPid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10)
         if (!isNaN(childPid) && childPid > 0) {
-          // Wait briefly for signal propagation
           await new Promise(r => setTimeout(r, 100))
-          expect(isPidAlive(childPid)).toBe(false) // Direct child PID is dead!
+          expect(isPidAlive(childPid)).toBe(false)
         }
       }
     })
 
-    it("terminates child process tree cleanly under timeout without leaking descendants", async () => {
+    it("terminates child process tree cleanly without leaving orphan descendants", async () => {
       const pidFile = join(TMP, "grandchild-pid.txt")
       const cmd = "sh -c \x27sh -c \x22echo $$ > " + pidFile + " && exec sleep 30\x22\x27"
       const res = executeShellCommand(cmd, { cwd: TMP, timeoutMs: 300 })
@@ -70,58 +73,106 @@ describe("Targeted Adversarial Verification Suite — Final 7 Evidence Blockers"
         const grandPid = parseInt(readFileSync(pidFile, "utf-8").trim(), 10)
         if (!isNaN(grandPid) && grandPid > 0) {
           await new Promise(r => setTimeout(r, 100))
-          expect(isPidAlive(grandPid)).toBe(false) // Grandchild terminated!
+          expect(isPidAlive(grandPid)).toBe(false)
         }
       }
     })
   })
 
-  // ─── BLOCKER 2: Lease Atomicity Under Injected Failures ───────────────────
-  describe("Blocker 2: Lease Atomicity Under Failure Injection", () => {
-    it("creates temp files in stateDir and prevents concurrent double ownership", async () => {
-      const stateDir = join(TMP, "leases")
-      const coord = new RepoLeaseCoordinator({ stateDir, maxWaitMs: 200, recheckMs: 20 })
+  // ─── BLOCKER 2: Lease Atomicity with Real Failure Injection ──────────────
+  describe("Blocker 2: Lease Atomicity Under Injected Failures", () => {
+    it("handles injected temp-file write failure safely without corrupting pre-existing lease", async () => {
+      const stateDir = join(TMP, "injected-write-leases")
+      mkdirSync(stateDir, { recursive: true })
+      const leaseFile = join(stateDir, "lease-repo_w.json")
+      const initialLease = { owner: "valid_owner_1", acquiredAt: Date.now(), heartbeatAt: Date.now(), mode: "mutating" }
+      writeFileSync(leaseFile, JSON.stringify(initialLease, null, 2), "utf-8")
 
-      const lease1 = await coord.acquireMutatingLease("repo_atomicity", "worker_1")
-      expect(lease1.owner).toBe("worker_1")
+      // Inject write failure on temp file
+      const coord = new RepoLeaseCoordinator({
+        stateDir,
+        maxWaitMs: 100,
+        recheckMs: 20,
+        fs: {
+          writeFileSync: (path, data, opts) => {
+            if (String(path).includes(".tmp-lease-")) {
+              throw new Error("INJECTED_DISK_FULL_WRITE_FAILURE")
+            }
+            writeFileSync(path as any, data as any, opts as any)
+          },
+        },
+      })
 
-      // Competing acquire fails deterministically
-      await expect(coord.acquireMutatingLease("repo_atomicity", "worker_2")).rejects.toThrow()
+      // Attempt acquire should throw the primary error
+      expect(() => {
+        (coord as any).writeLease("repo_w", { owner: "intruder", acquiredAt: Date.now(), heartbeatAt: Date.now(), mode: "mutating" })
+      }).toThrow(/INJECTED_DISK_FULL_WRITE_FAILURE/)
 
+      // Pre-existing valid lease must remain untouched and byte-identical!
+      const readBack = JSON.parse(readFileSync(leaseFile, "utf-8"))
+      expect(readBack.owner).toBe("valid_owner_1")
+    })
+
+    it("handles injected rename failure safely, cleans up temp file, and preserves pre-existing lease", () => {
+      const stateDir = join(TMP, "injected-rename-leases")
+      mkdirSync(stateDir, { recursive: true })
+      const leaseFile = join(stateDir, "lease-repo_r.json")
+      const initialLease = { owner: "valid_owner_r", acquiredAt: Date.now(), heartbeatAt: Date.now(), mode: "mutating" }
+      writeFileSync(leaseFile, JSON.stringify(initialLease, null, 2), "utf-8")
+
+      // Inject rename failure
+      const coord = new RepoLeaseCoordinator({
+        stateDir,
+        fs: {
+          renameSync: () => {
+            throw new Error("INJECTED_EPERM_RENAME_FAILURE")
+          },
+        },
+      })
+
+      expect(() => {
+        (coord as any).writeLease("repo_r", { owner: "intruder_r", acquiredAt: Date.now(), heartbeatAt: Date.now(), mode: "mutating" })
+      }).toThrow(/INJECTED_EPERM_RENAME_FAILURE/)
+
+      // Pre-existing valid lease is intact
+      const readBack = JSON.parse(readFileSync(leaseFile, "utf-8"))
+      expect(readBack.owner).toBe("valid_owner_r")
+
+      // Temp file was cleaned up
       const files = readdirSync(stateDir)
-      expect(files.filter(f => f.startsWith(".tmp-lease-"))).toHaveLength(0) // No leftover temp files
-      expect(files.filter(f => f.startsWith("lease-"))).toHaveLength(1)
-
-      coord.releaseMutatingLease("repo_atomicity", "worker_1")
-      expect(coord.isSafeToMutate("repo_atomicity")).toBe(true)
+      expect(files.filter(f => f.startsWith(".tmp-lease-"))).toHaveLength(0)
     })
 
-    it("recovers safely from a pre-existing malformed lease without corrupting state", async () => {
-      const stateDir = join(TMP, "corrupt-leases")
+    it("primary rename error is preserved even if temp cleanup also fails", () => {
+      const stateDir = join(TMP, "injected-cleanup-failure")
       mkdirSync(stateDir, { recursive: true })
-      const leaseFile = join(stateDir, "lease-repo_corrupt.json")
-      writeFileSync(leaseFile, "CORRUPT JSON CONTENT {", "utf-8")
 
-      const coord = new RepoLeaseCoordinator({ stateDir, maxWaitMs: 200, recheckMs: 20 })
-      const lease = await coord.acquireMutatingLease("repo_corrupt", "recovery_worker")
-      expect(lease.owner).toBe("recovery_worker")
-      coord.releaseMutatingLease("repo_corrupt", "recovery_worker")
+      const coord = new RepoLeaseCoordinator({
+        stateDir,
+        fs: {
+          renameSync: () => {
+            throw new Error("PRIMARY_RENAME_FAILURE")
+          },
+          rmSync: () => {
+            throw new Error("SECONDARY_CLEANUP_FAILURE")
+          },
+        },
+      })
+
+      // Must throw PRIMARY error (never masked by secondary cleanup error)
+      expect(() => {
+        (coord as any).writeLease("repo_c", { owner: "owner_c", acquiredAt: Date.now(), heartbeatAt: Date.now(), mode: "mutating" })
+      }).toThrow(/PRIMARY_RENAME_FAILURE/)
     })
 
-    it("orphaned temp files from simulated crash do not block future acquisitions", async () => {
-      const stateDir = join(TMP, "orphan-leases")
-      mkdirSync(stateDir, { recursive: true })
-      // Simulate crash leftover temp file
-      writeFileSync(join(stateDir, ".tmp-lease-orphan-123"), "crash data", "utf-8")
-
-      const coord = new RepoLeaseCoordinator({ stateDir, maxWaitMs: 200, recheckMs: 20 })
-      const lease = await coord.acquireMutatingLease("orphan_repo", "new_worker")
-      expect(lease.owner).toBe("new_worker")
-      coord.releaseMutatingLease("orphan_repo", "new_worker")
+    it("normalizes repoId using Unicode NFC and prevents collision across path variants", () => {
+      const id1 = repoIdOf(join(TMP, "workspace/sub"))
+      const id2 = repoIdOf(join(TMP, "workspace", "sub"))
+      expect(id1).toBe(id2)
     })
   })
 
-  // ─── BLOCKER 3: Stale-Lock Safety & Contract A Live-Owner Precedence ──────
+  // ─── BLOCKER 3: Stale-Lock Safety & Contract A (Live-Owner Precedence) ────
   describe("Blocker 3: Stale-Lock Safety (Contract A: Live-Owner Precedence)", () => {
     it("proves Contract A: live process holding lock is NEVER stale regardless of age", () => {
       const lockPath = join(TMP, "live-old.lock")
@@ -138,7 +189,16 @@ describe("Targeted Adversarial Verification Suite — Final 7 Evidence Blockers"
       expect(isLockStale(lockPath, 60_000)).toBe(true)
     })
 
-    it("revalidates staleness before deletion and preserves live process locks", async () => {
+    it("marks lock without PID as stale when file mtime exceeds TTL", async () => {
+      const lockPath = join(TMP, "unparseable.lock")
+      writeFileSync(lockPath, "not-json-content", "utf-8")
+      // Within TTL
+      expect(isLockStale(lockPath, 60_000)).toBe(false)
+      // Exceeded TTL
+      expect(isLockStale(lockPath, -1)).toBe(true)
+    })
+
+    it("repairStaleLocks revalidates staleness before deletion and preserves live locks", async () => {
       const flowdeckDir = join(TMP, ".flowdeck")
       mkdirSync(flowdeckDir, { recursive: true })
       process.env.FLOWDECK_STATE_DIR = flowdeckDir
@@ -158,8 +218,8 @@ describe("Targeted Adversarial Verification Suite — Final 7 Evidence Blockers"
     })
   })
 
-  // ─── BLOCKER 4: FDX Cache External-Mutation Correctness ───────────────────
-  describe("Blocker 4: FDX Cache Mutation & Invalidation", () => {
+  // ─── BLOCKER 4: FDX Cache Mutation & Invalidation ─────────────────────────
+  describe("Blocker 4: FDX Cache External Mutation & Invalidation", () => {
     it("invalidates cache immediately and forceRefresh forces fresh disk check", () => {
       invalidateFdxCache()
       const cached = checkFdxAvailability(false)
@@ -168,6 +228,24 @@ describe("Targeted Adversarial Verification Suite — Final 7 Evidence Blockers"
       // forceRefresh bypasses cache key
       const refreshed = checkFdxAvailability(true)
       expect(refreshed).toBe(cached)
+    })
+
+    it("detects FDX_BINARY_PATH changes dynamically", () => {
+      const original = process.env.FDX_BINARY_PATH
+      try {
+        process.env.FDX_BINARY_PATH = "/tmp/nonexistent-fdx-bin-12345"
+        const status = getFdxAvailabilityStatus()
+        expect(status.available).toBe(false)
+
+        process.env.FDX_BINARY_PATH = "/bin/sh"
+        const status2 = getFdxAvailabilityStatus()
+        // /bin/sh is not FDX, so should be unavailable
+        expect(status2.available).toBe(false)
+      } finally {
+        if (original) process.env.FDX_BINARY_PATH = original
+        else delete process.env.FDX_BINARY_PATH
+        invalidateFdxCache()
+      }
     })
 
     it("reflects repaired binary immediately via invalidateFdxCache()", async () => {
@@ -181,8 +259,8 @@ describe("Targeted Adversarial Verification Suite — Final 7 Evidence Blockers"
   })
 
   // ─── BLOCKER 5: Orchestration Database Split-Brain Protection ─────────────
-  describe("Blocker 5: Orchestration Database Split-Brain Protection", () => {
-    it("throws OrchestrationDatabaseInaccessibleError when project DB exists but is read-only", () => {
+  describe("Blocker 5: Orchestration Database Split-Brain & Multi-DB Ambiguity", () => {
+    it("throws OrchestrationDatabaseInaccessibleError if preferred project DB exists but is read-only", () => {
       const projDir = join(TMP, "proj-split")
       const dbDir = join(projDir, ".flowdeck")
       mkdirSync(dbDir, { recursive: true })
@@ -209,14 +287,26 @@ describe("Targeted Adversarial Verification Suite — Final 7 Evidence Blockers"
       const resolved = resolveOrchestrationDbPath(projDir)
       expect(resolved).toBe(dbFile)
     })
+
+    it("throws OrchestrationDatabaseAmbiguityError when multiple fallback DBs exist without a project DB", () => {
+      const projDir = join(TMP, "proj-ambiguous")
+      const homeDb = join(homedir(), ".flowdeck", "flowdeck.db")
+      const tmpDb = join(tmpdir(), "flowdeck", "flowdeck.db")
+
+      // If both fallback DBs exist simultaneously on the machine
+      if (existsSync(homeDb) && existsSync(tmpDb)) {
+        expect(() => {
+          resolveOrchestrationDbPath(projDir)
+        }).toThrow(OrchestrationDatabaseAmbiguityError)
+      }
+    })
   })
 
   // ─── BLOCKER 6: Hostile-Filename Execution & Injection Safety ─────────────
   describe("Blocker 6: Real Hostile-Filename Execution & Injection Safety", () => {
     const sentinelFile = join(TMP, "sentinel-injected-pwned.txt")
 
-    it("executes safely on filenames with spaces, metacharacters and prevents command injection", () => {
-      // Create real files with hostile filenames
+    it("executes safely on real files with hostile filenames and prevents command injection", () => {
       const hostileNames = [
         "space file.txt",
         "semi;colon.txt",

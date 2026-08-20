@@ -22,11 +22,21 @@ export interface RepoLease {
   worktree?: string;
 }
 
+export interface RepoLeaseFsOps {
+  mkdirSync?: typeof mkdirSync;
+  writeFileSync?: typeof writeFileSync;
+  renameSync?: typeof renameSync;
+  rmSync?: typeof rmSync;
+  readFileSync?: typeof readFileSync;
+  existsSync?: typeof existsSync;
+}
+
 export interface RepoLeaseOptions {
   stateDir: string;
   leaseTtlMs?: number;
   recheckMs?: number;
   maxWaitMs?: number;
+  fs?: RepoLeaseFsOps;
 }
 
 const DEFAULT_LEASE_TTL_MS = 5 * 60_000; // 5 minutes without heartbeat = stale
@@ -34,7 +44,7 @@ const DEFAULT_RECHECK_MS = 500;
 const DEFAULT_MAX_WAIT_MS = 10_000;
 
 export class RepoLeaseCoordinator {
-  private options: Required<RepoLeaseOptions>;
+  private options: Required<Omit<RepoLeaseOptions, "fs">> & { fs: Required<RepoLeaseFsOps> };
   private waiters = new Map<string, Array<() => void>>();
 
   constructor(options: RepoLeaseOptions) {
@@ -43,6 +53,14 @@ export class RepoLeaseCoordinator {
       leaseTtlMs: options.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS,
       recheckMs: options.recheckMs ?? DEFAULT_RECHECK_MS,
       maxWaitMs: options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS,
+      fs: {
+        mkdirSync: options.fs?.mkdirSync ?? mkdirSync,
+        writeFileSync: options.fs?.writeFileSync ?? writeFileSync,
+        renameSync: options.fs?.renameSync ?? renameSync,
+        rmSync: options.fs?.rmSync ?? rmSync,
+        readFileSync: options.fs?.readFileSync ?? readFileSync,
+        existsSync: options.fs?.existsSync ?? existsSync,
+      },
     };
   }
 
@@ -52,27 +70,28 @@ export class RepoLeaseCoordinator {
 
   private readLease(repoId: string): RepoLease | null {
     const file = this.leaseFile(repoId);
-    if (!existsSync(file)) return null;
+    if (!this.options.fs.existsSync(file)) return null;
     try {
-      const parsed = JSON.parse(readFileSync(file, "utf8"));
+      const parsed = JSON.parse(this.options.fs.readFileSync(file, "utf8"));
       if (parsed && typeof parsed.owner === "string" && parsed.owner) return parsed as RepoLease;
     } catch { /* corrupted lease treated as stale -> reclaimable */ }
     return null;
   }
 
   private writeLease(repoId: string, lease: RepoLease): void {
-    mkdirSync(this.options.stateDir, { recursive: true });
+    this.options.fs.mkdirSync(this.options.stateDir, { recursive: true });
     const targetFile = this.leaseFile(repoId);
     const tmpFile = join(this.options.stateDir, `.tmp-lease-${repoId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-    writeFileSync(tmpFile, JSON.stringify(lease, null, 2), "utf8");
+    this.options.fs.writeFileSync(tmpFile, JSON.stringify(lease, null, 2), "utf8");
     try {
-      renameSync(tmpFile, targetFile);
-    } catch {
+      this.options.fs.renameSync(tmpFile, targetFile);
+    } catch (renameErr) {
       try {
-        writeFileSync(targetFile, JSON.stringify(lease, null, 2), "utf8");
-      } finally {
-        try { rmSync(tmpFile, { force: true }); } catch { /* ignore */ }
+        this.options.fs.rmSync(tmpFile, { force: true });
+      } catch {
+        /* best-effort cleanup of temp artifact */
       }
+      throw renameErr;
     }
   }
 
@@ -122,7 +141,7 @@ export class RepoLeaseCoordinator {
   releaseMutatingLease(repoId: string, owner: string): void {
     const existing = this.readLease(repoId);
     if (!existing || existing.owner !== owner) return;
-    try { rmSync(this.leaseFile(repoId), { force: true }); } catch { /* ignore */ }
+    try { this.options.fs.rmSync(this.leaseFile(repoId), { force: true }); } catch { /* ignore */ }
     this.notifyWaiters(repoId);
   }
 
