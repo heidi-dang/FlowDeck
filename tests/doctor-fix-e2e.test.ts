@@ -5,7 +5,6 @@ import { tmpdir } from "node:os"
 import { } from "../src/doctor/doctor"
 import { DoctorRepairLock } from "../src/doctor/repair/repair-lock"
 import { DoctorBackupManager } from "../src/doctor/repair/atomic-backup"
-import { DoctorRepairOrchestrator } from "../src/doctor/repair/repair-orchestrator"
 
 describe("FlowDeck Doctor Fix — Repair Orchestration & Multi-Failure E2E", () => {
   it("acquires and releases repair lock and recovers stale locks", () => {
@@ -49,48 +48,71 @@ describe("FlowDeck Doctor Fix — Repair Orchestration & Multi-Failure E2E", () 
 
   it("multi-failure auto-repair E2E: repairs 5+ simultaneous injected failures and passes post-check", async () => {
     const rootDir = process.cwd()
-    const customConfigDir = join(tmpdir(), "fdx-doc-e2e-cfg-" + Date.now())
-    const customStateDir = join(tmpdir(), "fdx-doc-e2e-state-" + Date.now())
+    const customConfigDir = join(tmpdir(), "fdx-doc-e2e-cfg-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6))
+    const customStateDir = join(tmpdir(), "fdx-doc-e2e-state-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6))
     mkdirSync(customConfigDir, { recursive: true })
     mkdirSync(customStateDir, { recursive: true })
 
-    const origStateDir = process.env.FLOWDECK_STATE_DIR
-    const origConfigDir = process.env.OPENCODE_CONFIG_DIR
-    process.env.FLOWDECK_STATE_DIR = customStateDir
-    process.env.OPENCODE_CONFIG_DIR = customConfigDir
+    const childRunner = `
+import { writeFileSync, readFileSync, existsSync } from "node:fs"
+import { join } from "node:path"
+import { DoctorRepairOrchestrator } from "./src/doctor/repair/repair-orchestrator"
+
+const rootDir = process.argv[1] || process.cwd()
+const customConfigDir = process.env.OPENCODE_CONFIG_DIR
+const customStateDir = process.env.FLOWDECK_STATE_DIR
+
+// 1. Inject Failure 1: Corrupt opencode.json plugin registration
+writeFileSync(join(customConfigDir, "opencode.json"), JSON.stringify({ plugin: ["@dv.nghiem/flowdeck"] }), "utf-8")
+
+// 2. Inject Failure 2: Stale process lock files
+writeFileSync(join(customStateDir, "fdx.lock"), JSON.stringify({ pid: 999999999 }), "utf-8")
+writeFileSync(join(customStateDir, "orchestration.lock"), JSON.stringify({ pid: 999999998 }), "utf-8")
+
+// Execute Doctor Repair Orchestrator
+const orchestrator = new DoctorRepairOrchestrator(rootDir)
+const fixResult = await orchestrator.executeRepair()
+
+if (fixResult.appliedFixes.length < 2) throw new Error("appliedFixes length < 2: " + fixResult.appliedFixes.length)
+if (fixResult.passesExecuted <= 0) throw new Error("passesExecuted <= 0")
+if (fixResult.terminatedReason !== "all_repaired") throw new Error("terminatedReason != all_repaired: " + fixResult.terminatedReason)
+
+// Verify opencode.json registration was repaired
+const cfgContent = readFileSync(join(customConfigDir, "opencode.json"), "utf-8")
+if (!cfgContent.includes("@heidi-dang/flowdeck") || cfgContent.includes("@dv.nghiem/flowdeck")) {
+  throw new Error("opencode.json was not repaired properly: " + cfgContent)
+}
+
+// Verify stale lock files were cleaned
+if (existsSync(join(customStateDir, "fdx.lock"))) throw new Error("fdx.lock still exists")
+if (existsSync(join(customStateDir, "orchestration.lock"))) throw new Error("orchestration.lock still exists")
+
+// Verify idempotence: second repair pass makes no new changes
+const secondFixResult = await orchestrator.executeRepair()
+if (secondFixResult.passesExecuted < 1) throw new Error("second passesExecuted < 1")
+if (secondFixResult.appliedFixes.length > 2) throw new Error("second appliedFixes > 2")
+`
 
     try {
-      // 1. Inject Failure 1: Corrupt opencode.json plugin registration
-      writeFileSync(join(customConfigDir, "opencode.json"), JSON.stringify({ plugin: ["@dv.nghiem/flowdeck"] }), "utf-8")
+      const { spawn } = await import("node:child_process")
+      const child = spawn("bun", ["-e", childRunner, rootDir], {
+        env: {
+          ...process.env,
+          FLOWDECK_STATE_DIR: customStateDir,
+          OPENCODE_CONFIG_DIR: customConfigDir,
+        },
+        stdio: "pipe",
+      })
 
-      // 2. Inject Failure 2: Stale process lock files
-      writeFileSync(join(customStateDir, "fdx.lock"), JSON.stringify({ pid: 999999999 }), "utf-8")
-      writeFileSync(join(customStateDir, "orchestration.lock"), JSON.stringify({ pid: 999999998 }), "utf-8")
-
-      // Execute Doctor Repair Orchestrator
-      const orchestrator = new DoctorRepairOrchestrator(rootDir)
-      const fixResult = await orchestrator.executeRepair()
-
-      expect(fixResult.appliedFixes.length).toBeGreaterThanOrEqual(2)
-      expect(fixResult.passesExecuted).toBeGreaterThan(0)
-      expect(fixResult.terminatedReason).toBe("all_repaired")
-
-      // Verify opencode.json registration was repaired
-      const cfgContent = readFileSync(join(customConfigDir, "opencode.json"), "utf-8")
-      expect(cfgContent).toContain("@heidi-dang/flowdeck")
-      expect(cfgContent).not.toContain("@dv.nghiem/flowdeck")
-
-      // Verify stale lock files were cleaned
-      expect(existsSync(join(customStateDir, "fdx.lock"))).toBe(false)
-      expect(existsSync(join(customStateDir, "orchestration.lock"))).toBe(false)
-
-      // Verify idempotence: second repair pass makes no new changes
-      const secondFixResult = await orchestrator.executeRepair()
-      expect(secondFixResult.passesExecuted).toBeGreaterThanOrEqual(1)
-      expect(secondFixResult.appliedFixes.length).toBeLessThanOrEqual(2)
+      await new Promise<void>((resolve, reject) => {
+        let errOut = ""
+        child.stderr?.on("data", (d: Buffer) => { errOut += d.toString() })
+        child.on("exit", (code) => {
+          if (code === 0) resolve()
+          else reject(new Error(`Doctor E2E child process failed with exit ${code}: ${errOut}`))
+        })
+      })
     } finally {
-      process.env.FLOWDECK_STATE_DIR = origStateDir
-      process.env.OPENCODE_CONFIG_DIR = origConfigDir
       try {
         rmSync(customConfigDir, { recursive: true, force: true })
         rmSync(customStateDir, { recursive: true, force: true })
