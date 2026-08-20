@@ -67,7 +67,7 @@ describe("modern plugin contract", () => {
     } finally {
       if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
     }
   })
 
@@ -86,7 +86,7 @@ describe("modern plugin contract", () => {
     } finally {
       if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
     }
   })
 
@@ -104,7 +104,7 @@ describe("modern plugin contract", () => {
     } finally {
       if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
     }
   })
 
@@ -128,7 +128,7 @@ describe("modern plugin contract", () => {
     } finally {
       if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
     }
   })
 
@@ -146,7 +146,7 @@ describe("modern plugin contract", () => {
     } finally {
       if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
     }
   }, 30000)
 
@@ -170,7 +170,7 @@ describe("modern plugin contract", () => {
     } finally {
       if (hooks?.dispose) { try { await hooks.dispose() } catch {} }
       closeAllConnections()
-      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      try { rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
     }
   })
 })

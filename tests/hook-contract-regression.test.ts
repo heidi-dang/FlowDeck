@@ -20,7 +20,7 @@ describe("OpenCode Hook Contract Registration", () => {
       try { await pluginInstance.dispose() } catch {}
     }
     closeAllConnections()
-    rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+    try { rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) } catch {}
   })
 
   it("registers experimental.chat.messages.transform and experimental.chat.system.transform", async () => {
