@@ -62,7 +62,7 @@ function createMockContractRepo(): IContractRepository {
       const u = { ...e, ...input, updatedAt: new Date().toISOString() }; items.set(id, u); return u;
     }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: ContractFilter, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_filter: ContractFilter, _pagination: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
   };
 }
@@ -76,7 +76,7 @@ function createMockAssignmentRepo(): IAssignmentRepository {
       const u = { ...e, ...input, updatedAt: new Date().toISOString() }; items.set(id, u); return u;
     }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: any, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_filter: any, _pagination: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
   };
 }
@@ -90,7 +90,7 @@ function createMockVerificationRepo(): IVerificationRepository {
       const u = {...e, ...input, updatedAt: new Date().toISOString()}; items.set(id, u); return u;
     }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: VerificationFilter, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_filter: VerificationFilter, _pagination: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
     findByRunId: vi.fn(async (runId: string) => Array.from(items.values()).filter((v: any) => v.runId === runId)),
   };
@@ -118,7 +118,7 @@ function createMockReplayRepo(): IReplayRepository {
       const u = { ...e, ...patch }; items.set(id, u); return u;
     }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_pagination: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
   };
 }
@@ -128,7 +128,7 @@ function createMockEventRepo(): IEventRepository {
   return {
     store: vi.fn(async (e: OrchestrationEvent) => { items.set(e.id, e); return e; }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: any, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_filter: any, _pagination: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     count: vi.fn(async () => items.size),
     findByRunId: vi.fn(async (runId: string) => Array.from(items.values()).filter(e => e.runId === runId)),
   };
@@ -143,7 +143,7 @@ function createMockOutboxRepo(): IOutboxRepository {
       const u = {...e, ...input}; items.set(id, u); return u;
     }),
     findById: vi.fn(async (id: string) => items.get(id) ?? null),
-    findMany: vi.fn(async (_: OutboxFilter, __: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
+    findMany: vi.fn(async (_filter: OutboxFilter, _pagination: PagePaginationRequest) => ({ items: Array.from(items.values()), total: items.size, page: 1, limit: 20 })),
     findPending: vi.fn(async () => Array.from(items.values()).filter(e => e.status === "pending")),
     claimNextBatch: vi.fn(async (batchSize: number) => Array.from(items.values()).filter(e => e.status === "pending").slice(0, batchSize)),
     markDelivered: vi.fn(async (id: string) => { const e = items.get(id); if (e) { e.status = "delivered" as any; } }),
