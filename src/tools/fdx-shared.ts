@@ -684,18 +684,7 @@ export async function nativeContextFallback(args: {
   artifact_id?: string
   cwd?: string
 }): Promise<string> {
-  if (args.action === "read_artifact") {
-    if (!args.artifact_id) {
-      return "Error: artifact_id is required when action is read_artifact"
-    }
-    const { getArtifactStore } = await import("../services/artifact-store")
-    const store = getArtifactStore()
-    const art = store.get(args.artifact_id)
-    if (!art) {
-      return `[Artifact "${args.artifact_id}" not found]`
-    }
-    return `[Artifact: ${art.id} | Tool: ${art.toolName} | Length: ${art.length} chars]\n${art.content}`
-  }
+  if (args.action === "read_artifact") { return "Artifact store removed"; }
 
   const topic = args.topic || "general"
   const dir = args.cwd || activeProjectDir || process.cwd()

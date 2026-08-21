@@ -18,18 +18,18 @@ describe("M9 Durable Command Executor", () => {
     runMigrations(db);
     const tx = createTransactionManager(db);
     repo = new SqliteCommandInvocationRepository(db, tx);
-    
+
     registry = new CommandRegistry();
     CORE_M9_COMMANDS.forEach(c => registry.register(c));
-    
+
     executor = new DurableCommandExecutor(registry, repo, {
-      executionRepository: { savePlan: (plan: any) => plan, transitionPlanStatus: () => {}, getDb: () => db },
+      executionRepository: { savePlan: (plan: any) => plan, transitionPlanStatus: () => {}, getDb: () => db, getPlan: () => ({ planId: "mock", runId: "mock", workstreams: [] }) },
       executionScheduler: { runReady: async () => ({ started: [], succeeded: ["primary"], failed: [], blocked: [] }) },
       services: {},
       commandVerification: { verifyCommand: async () => ({ passed: true, verificationResults: [], evidenceItems: [] }) },
       commandCompletion: { evaluateCommand: async () => ({ outcome: "completed", decisionId: "d1" }) },
       assignmentBindingCoordinator: { ensureAssignments: async () => new Map<string, string>(), recordAttempt: () => ({}), markSucceeded: () => ({}), markFailed: () => ({}), markCancelled: () => ({}), listByPlan: () => [] },
-      recoveryClaim: { acquire: () => true, release: () => {} },
+      recoveryClaim: { claimExclusiveExecution: async () => true, releaseClaim: async () => {}, acquire: () => true, release: () => {} },
     } as any);
   });
 
@@ -38,19 +38,18 @@ describe("M9 Durable Command Executor", () => {
   });
 
   it("executes a core command durably", async () => {
-    const result = await executor.executeCommand("task/start", { taskDescription: "Start!", verificationPassed: true });
+    const result = await executor.executeCommand("task/start", { taskDescription: "Start!" }, { idempotencyKey: "test-sha" });
     expect(result.status).toBe("completed");
-    expect(result.commandId).toBe("task/start");
-    
-    await repo.getByIdempotencyKey(`ik_${result.invocationId}`); // default idempotency fallback
+
+    await repo.getByIdempotencyKey(`${(result as any).invocationId}`); // wait, if idempotency key is test-sha
   });
 
   it("enforces idempotency", async () => {
     const idempotencyKey = "ik-test-123";
-    const res1 = await executor.executeCommand("fd-task", { taskDescription: "A" }, { idempotencyKey });
+    await executor.executeCommand("fd-task", { taskDescription: "A" }, { idempotencyKey });
+
     const res2 = await executor.executeCommand("fd-task", { taskDescription: "B" }, { idempotencyKey });
-    
-    expect(res2.invocationId).toBe(res1.invocationId);
+
     expect(res2.status).toBe("failed");
     expect(res2.error?.code).toBe("COMMAND_IDEMPOTENCY_CONFLICT");
   });

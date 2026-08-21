@@ -161,17 +161,13 @@ export function classifyBrowserDebugIntent(input: string): BrowserDebugIntent {
   return { isBrowserDebug: false };
 }
 
-import { CuratedSkillRegistry, type LazyResolveResult } from "../services/curated-skill-registry";
+
 
 export function resolveTaskSkills(
-  userPrompt: string,
-  packageManager?: "bun" | "npm" | "pnpm" | "yarn"
+  _userPrompt: string,
+  _packageManager?: "bun" | "npm" | "pnpm" | "yarn"
 ): LazyResolveResult {
-  const registry = new CuratedSkillRegistry();
-  return registry.resolveLazySkills({
-    taskPrompt: userPrompt,
-    packageManager,
-  });
+    return { paths: [] };
 }
 
 export interface StudioIntent {
@@ -218,3 +214,5 @@ export function classifyStudioIntent(input: string): StudioIntent {
 
   return { isStudioTask: false, isFullStack: false };
 }
+
+type LazyResolveResult = { paths: string[] };

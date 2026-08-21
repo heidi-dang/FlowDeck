@@ -131,13 +131,15 @@ function setupEnv(): MockNpmSetup {
  */
 function runRegistryCheck(mode: string): { code: number; output: string } {
   const content = readFileSync(publishYmlPath, "utf-8")
-  const body = extractRegistryCheckBody(content).join("\n")
-  expect(body.length).toBeGreaterThan(0)
+  const rawBody = extractRegistryCheckBody(content).join("\n")
+  const env = setupEnv()
+  const mockScriptPath = join(env.root, "bin", "npm").replace(/\\/g, "/")
+  const body = `npm() { "${mockScriptPath}" "$@"; }\n${rawBody}`
+  expect(rawBody.length).toBeGreaterThan(0)
   // The body must still contain the errexit-safe lookup (sanity guard).
   expect(body).toContain("set +e")
   expect(body).toContain("npm view")
 
-  const env = setupEnv()
   try {
     const result = spawnSync("bash", ["-e", "-c", body], {
       cwd: env.root,

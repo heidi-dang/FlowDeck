@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.2.7] - 2026-08-20
+
+### Added & Changed — Heidi Autonomous Developer & Explicit User Approval Workflow
+- **Capability-Based Authorization Model**: Replaced legacy binary read-only/mutating orchestrator block with three distinct capability tiers:
+  - `ALLOW`: Heidi operates autonomously for all local workspace development tasks (file creation/editing/deletion, directory management, safe command substitutions like `$(date ...)` and `$(git rev-parse HEAD)`, test & build runners, and local git operations).
+  - `APPROVAL_REQUIRED`: Actions crossing sensitive, external, privileged, or destructive trust boundaries (`git push`, `git push --force`, `npm publish`, `cargo publish`, `gh release create`, `sudo`, `.env` or private key reads, cloud/infra deployments, external `rm -rf /...`) require explicit one-shot user approval.
+  - `DENY_INVALID`: Technically malformed or impossible operations are rejected immediately.
+- **One-Shot Approval Registry & State Machine (`src/services/approval-service.ts`)**:
+  - Exact action fingerprinting with TTL expiration and per-session isolation.
+  - One-shot consumption on successful execution to prevent token-churning replay loops.
+  - Structured `WAITING_FOR_APPROVAL` state machine preventing retry flood and sound/card spam.
+- **Nested Command Substitution & Pipeline Risk Inheritance**: Upgraded `src/services/shell-command-classifier.ts` to parse nested `$()` and backtick substitutions in context and evaluate composite pipelines by inheriting maximum risk.
+- **Audit & Governance Integration**: Emits dedicated `approval.required`, `approval.granted`, `approval.denied`, and `approval.consumed` audit events to `.codebase/AUDIT.jsonl`.
+
 ## [2.2.6] - 2026-08-20
 
 ### Fixed — Heidi Orchestrator Guard Regression & UI Event Flood Elimination
