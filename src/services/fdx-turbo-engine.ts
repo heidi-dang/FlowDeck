@@ -72,7 +72,7 @@ export class FdxTurboEngine {
   private fileCache: FdxFileCache;
   private maxQueued: number;
   private queued = 0;
-  private inflight = new Map<string, Promise<unknown>>();
+  private inflight = new Map<string, unknown>();
   private daemonFailures = 0;
 
   private nativeDaemon: FdxNativeDaemon;
@@ -159,41 +159,73 @@ export class FdxTurboEngine {
     this.queued = Math.max(0, this.queued - 1);
   }
 
-  private multiplex<T>(key: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const existing = this.inflight.get(key) as Promise<T> | undefined;
-    const taskPromise = existing ?? (async () => {
-      const p = fn().finally(() => this.inflight.delete(key));
-      this.inflight.set(key, p);
-      return p;
-    })();
+  private multiplex<T>(key: string, fn: (innerSignal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    interface Subscriber {
+      resolve: (val: T) => void;
+      reject: (err: unknown) => void;
+      signal?: AbortSignal;
+      onAbort?: () => void;
+    }
 
-    if (!signal) return taskPromise;
-    if (signal.aborted) return Promise.reject(new Error("FDX_TURBO_ABORTED"));
+    interface InflightEntry {
+      controller: AbortController;
+      subscribers: Set<Subscriber>;
+      promise: Promise<T>;
+    }
+
+    let entry = this.inflight.get(key) as InflightEntry | undefined;
+
+    if (!entry) {
+      const controller = new AbortController();
+      const subscribers = new Set<Subscriber>();
+
+      const promise = fn(controller.signal)
+        .then((val) => {
+          this.inflight.delete(key);
+          for (const sub of subscribers) {
+            if (sub.signal && sub.onAbort) sub.signal.removeEventListener("abort", sub.onAbort);
+            sub.resolve(val);
+          }
+          return val;
+        })
+        .catch((err) => {
+          this.inflight.delete(key);
+          for (const sub of subscribers) {
+            if (sub.signal && sub.onAbort) sub.signal.removeEventListener("abort", sub.onAbort);
+            sub.reject(err);
+          }
+          throw err;
+        });
+
+      entry = { controller, subscribers, promise };
+      this.inflight.set(key, entry);
+    }
+
+    if (signal?.aborted) return Promise.reject(new Error("FDX_TURBO_ABORTED"));
 
     return new Promise<T>((resolvePromise, rejectPromise) => {
-      let settled = false;
-      const onAbort = () => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener("abort", onAbort);
-        rejectPromise(new Error("FDX_TURBO_ABORTED"));
+      const activeEntry = entry!;
+      const sub: Subscriber = {
+        resolve: resolvePromise,
+        reject: rejectPromise,
+        signal,
       };
-      signal.addEventListener("abort", onAbort, { once: true });
 
-      taskPromise.then(
-        (val) => {
-          if (settled) return;
-          settled = true;
+      if (signal) {
+        const onAbort = () => {
+          activeEntry.subscribers.delete(sub);
           signal.removeEventListener("abort", onAbort);
-          resolvePromise(val);
-        },
-        (err) => {
-          if (settled) return;
-          settled = true;
-          signal.removeEventListener("abort", onAbort);
-          rejectPromise(err);
-        }
-      );
+          if (activeEntry.subscribers.size === 0) {
+            activeEntry.controller.abort();
+            this.inflight.delete(key);
+          }
+          rejectPromise(new Error("FDX_TURBO_ABORTED"));
+        };
+        sub.onAbort = onAbort;
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      activeEntry.subscribers.add(sub);
     });
   }
 
@@ -207,7 +239,7 @@ export class FdxTurboEngine {
     if (!this.enterQueue()) return { source: "fallback", text: nativeReadFallback(file, opts.limit, opts.offset) };
     try {
       const key = this.requestKey("read", file, String(opts.offset ?? 0), String(opts.limit ?? 0));
-      return await this.multiplex(key, async () => {
+      return await this.multiplex(key, async (innerSignal) => {
         if (!opts.noCache) {
           const cached = this.fileCache.readRange(file, opts.offset, opts.limit);
           if (cached.ok) {
@@ -217,11 +249,11 @@ export class FdxTurboEngine {
         }
         if (this.nativeDaemon.isHealthy()) {
           try {
-            const value = await this.nativeDaemon.request<{ path: string; text: string }>("read", { path: resolve(file), offset: opts.offset, limit: opts.limit }, { signal: opts.signal, timeoutMs: remainingDeadlineMs(deadline) });
+            const value = await this.nativeDaemon.request<{ path: string; text: string }>("read", { path: resolve(file), offset: opts.offset, limit: opts.limit }, { signal: innerSignal, timeoutMs: remainingDeadlineMs(deadline) });
             this.markDaemonHealthy();
             return { source: "daemon", text: value.text };
           } catch (err) {
-            if (isAbortError(err) || opts.signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             this.markDaemonUnavailable();
           }
         }
@@ -231,9 +263,9 @@ export class FdxTurboEngine {
           if (opts.limit !== undefined) cmd.push("--limit", String(opts.limit));
           try {
             this.nativeSpawns++;
-            return { source: "native", text: await runFdxAsync(cmd, { signal: opts.signal, timeoutMs: remainingDeadlineMs(deadline) }) };
+            return { source: "native", text: await runFdxAsync(cmd, { signal: innerSignal, timeoutMs: remainingDeadlineMs(deadline) }) };
           } catch (err) {
-            if (isAbortError(err) || opts.signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             if (shouldDisableFallback()) throw new Error("FDX native read failed");
           }
         }
@@ -253,14 +285,14 @@ export class FdxTurboEngine {
     if (!this.enterQueue()) return { source: "fallback", text: nativeSearchFallback(query, path ?? this.workspace) };
     try {
       const key = this.requestKey("search", query, path ?? "");
-      return await this.multiplex(key, async () => {
+      return await this.multiplex(key, async (innerSignal) => {
         if (!noCache && this.nativeDaemon.isHealthy()) {
           try {
-            const value = await this.nativeDaemon.request<Array<{ path: string; symbol: string }>>("search", { pattern: query, path }, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) });
+            const value = await this.nativeDaemon.request<Array<{ path: string; symbol: string }>>("search", { pattern: query, path }, { signal: innerSignal, timeoutMs: remainingDeadlineMs(totalDeadline) });
             this.markDaemonHealthy();
             return { source: "daemon", text: this.formatSearch("FDX Native", query, value ?? []) };
           } catch (err) {
-            if (isAbortError(err) || signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             this.markDaemonUnavailable();
           }
         }
@@ -271,7 +303,7 @@ export class FdxTurboEngine {
               return { source: "index", text: this.formatSearch("FDX Index", query, matches) };
             }
           } catch (err) {
-            if (isAbortError(err) || signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             /* fall through to native */
           }
         }
@@ -280,13 +312,13 @@ export class FdxTurboEngine {
           if (path) cmd.push("--path", path);
           try {
             this.nativeSpawns++;
-            return { source: "native", text: await runFdxAsync(cmd, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
+            return { source: "native", text: await runFdxAsync(cmd, { signal: innerSignal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
           } catch (err) {
-            if (isAbortError(err) || signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             if (shouldDisableFallback()) throw new Error("FDX native search failed");
           }
         }
-        return { source: "fallback", text: nativeSearchFallback(query, path ?? this.workspace) };
+        return { source: "fallback", text: nativeSearchFallback(query, path ?? this.workspace, undefined, { signal: innerSignal, deadlineMs: remainingDeadlineMs(totalDeadline) }) };
       }, signal);
     } finally {
       this.leaveQueue();
@@ -299,17 +331,17 @@ export class FdxTurboEngine {
    */
   async outline(paths: string[], noCache = false, signal?: AbortSignal, deadline?: number): Promise<TurboReadResult> {
     const totalDeadline = deadline ?? (Date.now() + FDX_TOOL_BUDGET_MS);
-    if (!this.enterQueue()) return { source: "fallback", text: nativeOutlineFallback(paths) };
+    if (!this.enterQueue()) return { source: "fallback", text: nativeOutlineFallback(paths, undefined, { signal, deadlineMs: remainingDeadlineMs(totalDeadline) }) };
     try {
       const key = this.requestKey("outline", paths.join(","));
-      return await this.multiplex(key, async () => {
+      return await this.multiplex(key, async (innerSignal) => {
         if (!noCache && this.nativeDaemon.isHealthy()) {
           try {
-            const value = await this.nativeDaemon.request<Array<{ path: string; symbols: string[] }>>("outline", { paths }, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) });
+            const value = await this.nativeDaemon.request<Array<{ path: string; symbols: string[] }>>("outline", { paths }, { signal: innerSignal, timeoutMs: remainingDeadlineMs(totalDeadline) });
             this.markDaemonHealthy();
             if (value && value.length > 0) return { source: "daemon", text: this.formatOutline("FDX Native", value) };
           } catch (err) {
-            if (isAbortError(err) || signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             this.markDaemonUnavailable();
           }
         }
@@ -320,7 +352,7 @@ export class FdxTurboEngine {
               return { source: "index", text: this.formatOutline("FDX Index", files) };
             }
           } catch (err) {
-            if (isAbortError(err) || signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             /* fall through */
           }
         }
@@ -328,13 +360,13 @@ export class FdxTurboEngine {
           const cmd: string[] = ["outline", ...paths];
           try {
             this.nativeSpawns++;
-            return { source: "native", text: await runFdxAsync(cmd, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
+            return { source: "native", text: await runFdxAsync(cmd, { signal: innerSignal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
           } catch (err) {
-            if (isAbortError(err) || signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             if (shouldDisableFallback()) throw new Error("FDX native outline failed");
           }
         }
-        return { source: "fallback", text: nativeOutlineFallback(paths) };
+        return { source: "fallback", text: nativeOutlineFallback(paths, undefined, { signal: innerSignal, deadlineMs: remainingDeadlineMs(totalDeadline) }) };
       }, signal);
     } finally {
       this.leaveQueue();
@@ -350,16 +382,16 @@ export class FdxTurboEngine {
     if (!this.enterQueue()) return { source: "fallback", text: await nativeImpactFallback(paths, this.workspace, { signal, deadlineMs: remainingDeadlineMs(totalDeadline) }) };
     try {
       const key = this.requestKey("impact", paths.join(","));
-      return await this.multiplex(key, async () => {
+      return await this.multiplex(key, async (innerSignal) => {
         if (!noCache && this.nativeDaemon.isHealthy()) {
           try {
-            const value = await this.nativeDaemon.request<Array<{ target: string }>>("impact", { paths, root: this.workspace }, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) });
+            const value = await this.nativeDaemon.request<Array<{ target: string }>>("impact", { paths, root: this.workspace }, { signal: innerSignal, timeoutMs: remainingDeadlineMs(totalDeadline) });
             this.markDaemonHealthy();
             if (value && value.length > 0) {
               return { source: "daemon", text: "[FDX Native] Impact\n" + value.map((v) => "  " + v.target).join("\n") };
             }
           } catch (err) {
-            if (isAbortError(err) || signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             this.markDaemonUnavailable();
           }
         }
@@ -370,7 +402,7 @@ export class FdxTurboEngine {
               return { source: "index", text: "[FDX Index] Impact\nchanged: " + impact.changedPaths.join(", ") + "\n" + impact.affectedPaths.map((p) => "  " + p).join("\n") };
             }
           } catch (err) {
-            if (isAbortError(err) || signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             /* fall through */
           }
         }
@@ -378,13 +410,13 @@ export class FdxTurboEngine {
           const cmd: string[] = ["impact", ...paths];
           try {
             this.nativeSpawns++;
-            return { source: "native", text: await runFdxAsync(cmd, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
+            return { source: "native", text: await runFdxAsync(cmd, { signal: innerSignal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
           } catch (err) {
-            if (isAbortError(err) || signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             if (shouldDisableFallback()) throw new Error("FDX native impact failed");
           }
         }
-        return { source: "fallback", text: await nativeImpactFallback(paths, this.workspace, { signal, deadlineMs: remainingDeadlineMs(totalDeadline) }) };
+        return { source: "fallback", text: await nativeImpactFallback(paths, this.workspace, { signal: innerSignal, deadlineMs: remainingDeadlineMs(totalDeadline) }) };
       }, signal);
     } finally {
       this.leaveQueue();
@@ -398,10 +430,10 @@ export class FdxTurboEngine {
    */
   async grep(pattern: string, path?: string, opts: { context?: number; maxMatches?: number; noCache?: boolean; signal?: AbortSignal; deadline?: number } = {}): Promise<TurboReadResult> {
     const totalDeadline = opts.deadline ?? (Date.now() + FDX_TOOL_BUDGET_MS);
-    if (!this.enterQueue()) return { source: "fallback", text: nativeSearchFallback(pattern, path ?? this.workspace) };
+    if (!this.enterQueue()) return { source: "fallback", text: nativeSearchFallback(pattern, path ?? this.workspace, undefined, { signal: opts.signal, deadlineMs: remainingDeadlineMs(totalDeadline) }) };
     try {
       const key = this.requestKey("grep", pattern, path ?? "");
-      return await this.multiplex(key, async () => {
+      return await this.multiplex(key, async (innerSignal) => {
         if (checkFdxAvailability()) {
           const cmd: string[] = ["grep", pattern];
           if (path) cmd.push("--path", path);
@@ -409,13 +441,13 @@ export class FdxTurboEngine {
           if (opts.maxMatches !== undefined) cmd.push("--max-matches", String(opts.maxMatches));
           try {
             this.nativeSpawns++;
-            return { source: "native", text: await runFdxAsync(cmd, { signal: opts.signal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
+            return { source: "native", text: await runFdxAsync(cmd, { signal: innerSignal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
           } catch (err) {
-            if (isAbortError(err) || opts.signal?.aborted) throw err;
+            if (isAbortError(err) || innerSignal.aborted) throw err;
             if (shouldDisableFallback()) throw new Error("FDX native grep failed");
           }
         }
-        return { source: "fallback", text: nativeSearchFallback(pattern, path ?? this.workspace) };
+        return { source: "fallback", text: nativeSearchFallback(pattern, path ?? this.workspace, undefined, { signal: innerSignal, deadlineMs: remainingDeadlineMs(totalDeadline) }) };
       }, opts.signal);
     } finally {
       this.leaveQueue();

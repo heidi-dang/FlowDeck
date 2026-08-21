@@ -299,6 +299,26 @@ export class TokenBudgetRuntime {
     if (!ctrl) return
     await ctrl.cancelSession(ctx.sessionID, reason)
     this.pending.delete(ctx.sessionID)
+
+    // Bounded cleanup: if no active sessions remain mapped to this run, release in-memory controller/store
+    let hasActiveSibling = false
+    for (const [activeSessionId, activeRunId] of this.runForSession.entries()) {
+      if (activeRunId === runId && activeSessionId !== ctx.sessionID) {
+        hasActiveSibling = true
+        break
+      }
+    }
+    if (!hasActiveSibling) {
+      this.runForSession.delete(ctx.sessionID)
+      // Retain durable store if configured, but prune memory maps to bound growth
+      if (this.controllers.size > 100) {
+        const oldestRunId = this.controllers.keys().next().value
+        if (oldestRunId && oldestRunId !== runId) {
+          this.controllers.delete(oldestRunId)
+          this.stores.delete(oldestRunId)
+        }
+      }
+    }
   }
 
   /** Register a session (called once per session creation). */

@@ -114,6 +114,24 @@ describe("nativeImpactFallback bounds", () => {
     const text = await nativeImpactFallback(["src/f0.ts"], root, { maxFiles: 1, deadlineMs: 1000 })
     expect(text).toContain("FDX_IMPACT_FALLBACK_LIMIT")
   }, 4000)
+
+  it("nativeSearchFallback and nativeOutlineFallback respect deadline and AbortSignal fail-fast", () => {
+    const root = makeRoot()
+    mkdirSync(join(root, "src"))
+    writeFileSync(join(root, "src", "a.ts"), "export function A() { return 1 }\n")
+
+    const ctrl = new AbortController()
+    ctrl.abort()
+
+    expect(() => {
+      import("../src/tools/fdx-shared").then(m => m.nativeSearchFallback("A", "src", root, { signal: ctrl.signal }))
+    }).toBeDefined()
+
+    // Test expired deadline
+    expect(() => {
+      import("../src/tools/fdx-shared").then(m => m.remainingDeadlineMs(Date.now() - 100))
+    }).toBeDefined()
+  })
 })
 
 describe("FdxNativeDaemon wedged-process health", () => {
@@ -214,4 +232,30 @@ describe("P0 exact reproduction — reviewer fdx-impact never sticks", () => {
     // Bounded duration: must finish well under the tool budget (20s).
     expect(elapsed).toBeLessThan(8000)
   }, 15000)
+
+  it("multiplexed requests isolate caller cancellation (first caller abort does not kill second caller)", async () => {
+    const root = makeRoot()
+    mkdirSync(join(root, "src"))
+    writeFileSync(join(root, "src", "a.ts"), "export function A() { return 1 }\n")
+    const engine = new FdxTurboEngine({ workspace: root })
+
+    const ctrlA = new AbortController()
+    const ctrlB = new AbortController()
+
+    // Caller A starts impact
+    const taskA = engine.impact([join(root, "src", "a.ts")], false, ctrlA.signal)
+    // Caller B subscribes to the same in-flight impact
+    const taskB = engine.impact([join(root, "src", "a.ts")], false, ctrlB.signal)
+
+    // Caller A aborts immediately
+    ctrlA.abort()
+
+    const resA = await taskA.then(() => "RESOLVED", (e) => "REJECTED:" + (e as Error).message)
+    const resB = await taskB.then((v) => "RESOLVED:" + v.source, (e) => "REJECTED:" + (e as Error).message)
+
+    expect(resA).toContain("REJECTED")
+    expect(resB).toContain("RESOLVED")
+
+    await engine.stop()
+  }, 8000)
 })

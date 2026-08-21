@@ -13,7 +13,7 @@
 
 use std::io::BufRead;
 use std::path::PathBuf;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
 use std::thread;
 
@@ -46,6 +46,7 @@ struct ServeResponse<'a> {
 
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
 const NUM_WORKERS: usize = 4;
+const MAX_QUEUED_REQUESTS: usize = 128;
 
 fn format_reply(
     id: &str,
@@ -285,8 +286,8 @@ fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
 pub fn run() {
     let stdin = std::io::stdin();
     let mut reader = std::io::BufReader::new(stdin.lock());
-    let (resp_tx, resp_rx) = channel::<String>();
-    let (req_tx, req_rx) = channel::<ServeRequest>();
+    let (resp_tx, resp_rx) = sync_channel::<String>(MAX_QUEUED_REQUESTS);
+    let (req_tx, req_rx) = sync_channel::<ServeRequest>(MAX_QUEUED_REQUESTS);
     let req_rx = Arc::new(std::sync::Mutex::new(req_rx));
     let cache = Arc::new(AstCache::new());
 

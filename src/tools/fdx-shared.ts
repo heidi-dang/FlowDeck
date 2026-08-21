@@ -314,17 +314,19 @@ export const FDX_MAX_BUFFER = 50 * 1024 * 1024
 export const FDX_TOOL_BUDGET_MS = 20_000
 
 export function remainingDeadlineMs(deadline: number): number {
-  return Math.max(1, deadline - Date.now())
+  const rem = deadline - Date.now()
+  if (rem <= 0) throw new Error("FDX_TOOL_DEADLINE")
+  return rem
 }
 
 export function isAbortError(err: unknown): boolean {
   if (!err) return false
   if (err instanceof Error) {
     if (err.name === "AbortError") return true
-    if (err.message.includes("ABORTED") || err.message.includes("aborted")) return true
+    if (err.message.includes("ABORTED") || err.message.includes("aborted") || err.message.includes("DEADLINE")) return true
   }
   const msg = String((err as any)?.message || err)
-  return msg.includes("ABORTED") || msg.includes("aborted")
+  return msg.includes("ABORTED") || msg.includes("aborted") || msg.includes("DEADLINE")
 }
 
 export interface RunFdxAsyncOptions {
@@ -600,7 +602,18 @@ function loadGitignorePatterns(root: string): (path: string) => boolean {
 /** Directories always excluded from search fallbacks. */
 const ALWAYS_EXCLUDED = ["node_modules", ".git", "dist", "target", ".next", ".cache"]
 
-export function nativeSearchFallback(query: string, searchPath: string = ".", cwd?: string): string {
+export function nativeSearchFallback(
+  query: string,
+  searchPath: string = ".",
+  cwd?: string,
+  opts?: { signal?: AbortSignal; deadlineMs?: number; maxFiles?: number }
+): string {
+  if (opts?.signal?.aborted) throw new Error("FDX_SEARCH_ABORTED")
+  const startTime = Date.now()
+  const deadlineMs = opts?.deadlineMs ?? FDX_TOOL_BUDGET_MS
+  const maxFiles = opts?.maxFiles ?? 20_000
+  let filesScanned = 0
+
   try {
     const root = resolve(cwd || activeProjectDir || process.cwd(), searchPath)
     const isIgnored = loadGitignorePatterns(root)
@@ -610,7 +623,13 @@ export function nativeSearchFallback(query: string, searchPath: string = ".", cw
     const queryRe = new RegExp(escapeRegex(query), "i")
 
     const walk = (dir: string) => {
+      if (opts?.signal?.aborted) throw new Error("FDX_SEARCH_ABORTED")
+      if (Date.now() - startTime > deadlineMs) throw new Error("FDX_TOOL_DEADLINE")
+      if (filesScanned >= maxFiles) return
+
       for (const item of readdirSync(dir)) {
+        if (opts?.signal?.aborted) throw new Error("FDX_SEARCH_ABORTED")
+        if (Date.now() - startTime > deadlineMs) throw new Error("FDX_TOOL_DEADLINE")
         if (ALWAYS_EXCLUDED.includes(item)) continue
         const full = join(dir, item)
         if (isIgnored(full)) continue
@@ -619,6 +638,7 @@ export function nativeSearchFallback(query: string, searchPath: string = ".", cw
           if (st.isDirectory()) {
             walk(full)
           } else if (st.isFile()) {
+            filesScanned++
             const text = readFileSync(full, "utf-8")
 
             // Fast reject: If the file content doesn't match case-insensitively, skip it entirely
@@ -632,13 +652,17 @@ export function nativeSearchFallback(query: string, searchPath: string = ".", cw
               }
             }
           }
-        } catch { /* ignore unreadable */ }
+        } catch (err) {
+          if (isAbortError(err)) throw err
+          /* ignore unreadable */
+        }
       }
     }
     walk(root)
     if (results.length === 0) return `[FDX Native Fallback] No matches found for "${query}"`
     return `[FDX Native Fallback: ${results.length} matches]\n${results.join("\n")}`
   } catch (err: any) {
+    if (isAbortError(err)) throw err
     return `[FDX Fallback] Search error: ${err.message}`
   }
 }
@@ -675,10 +699,22 @@ export function nativeLsFallback(targetPath: string = ".", cwd?: string): string
  * Simple regex-based outline fallback for when the fdx binary is unavailable.
  * Scans for common function/class/interface/type declarations.
  */
-export function nativeOutlineFallback(paths: string[], cwd?: string): string {
+export function nativeOutlineFallback(
+  paths: string[],
+  cwd?: string,
+  opts?: { signal?: AbortSignal; deadlineMs?: number; maxFiles?: number }
+): string {
+  if (opts?.signal?.aborted) throw new Error("FDX_OUTLINE_ABORTED")
+  const startTime = Date.now()
+  const deadlineMs = opts?.deadlineMs ?? FDX_TOOL_BUDGET_MS
+  const maxFiles = opts?.maxFiles ?? 20_000
+  let filesScanned = 0
+
   const effectiveDir = cwd || activeProjectDir || process.cwd()
   const results: string[] = []
   for (const p of paths) {
+    if (opts?.signal?.aborted) throw new Error("FDX_OUTLINE_ABORTED")
+    if (Date.now() - startTime > deadlineMs) throw new Error("FDX_TOOL_DEADLINE")
     const resolved = resolve(effectiveDir, p)
     if (!existsSync(resolved)) {
       results.push(`[FDX Fallback] Path not found: ${p}`)
@@ -686,19 +722,31 @@ export function nativeOutlineFallback(paths: string[], cwd?: string): string {
     }
     const st = statSync(resolved)
     if (st.isDirectory()) {
-      results.push(nativeOutlineDir(resolved))
+      results.push(nativeOutlineDir(resolved, startTime, deadlineMs, maxFiles, filesScanned, opts?.signal))
     } else if (st.isFile()) {
+      filesScanned++
       results.push(nativeOutlineFile(resolved))
     }
   }
   return results.join("\n\n")
 }
 
-function nativeOutlineDir(dir: string): string {
+function nativeOutlineDir(
+  dir: string,
+  startTime: number,
+  deadlineMs: number,
+  maxFiles: number,
+  filesScanned: number,
+  signal?: AbortSignal
+): string {
   const lines: string[] = [`[FDX Native Fallback] Outline of ${dir}`]
   const walk = (d: string, depth: number) => {
-    if (depth > 4) return
+    if (signal?.aborted) throw new Error("FDX_OUTLINE_ABORTED")
+    if (Date.now() - startTime > deadlineMs) throw new Error("FDX_TOOL_DEADLINE")
+    if (depth > 4 || filesScanned >= maxFiles) return
     for (const item of readdirSync(d)) {
+      if (signal?.aborted) throw new Error("FDX_OUTLINE_ABORTED")
+      if (Date.now() - startTime > deadlineMs) throw new Error("FDX_TOOL_DEADLINE")
       if (ALWAYS_EXCLUDED.includes(item)) continue
       const full = join(d, item)
       try {
@@ -707,10 +755,14 @@ function nativeOutlineDir(dir: string): string {
           lines.push(`${"  ".repeat(depth)}📁 ${item}/`)
           walk(full, depth + 1)
         } else if (st.isFile() && /\.(ts|tsx|js|jsx|rs|py|go|java)$/.test(item)) {
+          filesScanned++
           const fileOut = nativeOutlineFile(full)
           if (fileOut) lines.push(fileOut)
         }
-      } catch { /* ignore */ }
+      } catch (err) {
+        if (isAbortError(err)) throw err
+        /* ignore */
+      }
     }
   }
   walk(dir, 0)

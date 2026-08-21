@@ -234,7 +234,7 @@ export const fdxSearchTool: ToolDefinition = tool({
         if (daemonResult !== undefined) return daemonResult
         try { return indexedSearch(activeFdxNextRuntime, args.query, args.path, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
       }
-      return nativeSearchFallback(args.query, args.path, cwd)
+      return nativeSearchFallback(args.query, args.path, cwd, { signal, deadlineMs: remainingDeadlineMs(deadline) })
     }
     const cmd: string[] = ["search", args.query]
     if (args.path) cmd.push("--path", args.path)
@@ -247,7 +247,7 @@ export const fdxSearchTool: ToolDefinition = tool({
     } catch (err) {
       if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
-      return nativeSearchFallback(args.query, args.path, cwd)
+      return nativeSearchFallback(args.query, args.path, cwd, { signal, deadlineMs: remainingDeadlineMs(deadline) })
     }
   },
 })
@@ -280,7 +280,7 @@ export const fdxGrepTool: ToolDefinition = tool({
     if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      return nativeSearchFallback(args.pattern, args.path, cwd)
+      return nativeSearchFallback(args.pattern, args.path, cwd, { signal, deadlineMs: remainingDeadlineMs(deadline) })
     }
     const cmd: string[] = ["grep", args.pattern]
     if (args.path) cmd.push("--path", args.path)
@@ -293,7 +293,7 @@ export const fdxGrepTool: ToolDefinition = tool({
     } catch (err) {
       if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
-      return nativeSearchFallback(args.pattern, args.path, cwd)
+      return nativeSearchFallback(args.pattern, args.path, cwd, { signal, deadlineMs: remainingDeadlineMs(deadline) })
     }
   },
 })
@@ -410,7 +410,7 @@ export const fdxOutlineTool: ToolDefinition = tool({
         if (daemonResult !== undefined) return daemonResult
         try { return indexedOutline(activeFdxNextRuntime, searchPaths, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
       }
-      return nativeOutlineFallback(searchPaths, cwd)
+      return nativeOutlineFallback(searchPaths, cwd, { signal, deadlineMs: remainingDeadlineMs(deadline) })
     }
     const cmd: string[] = ["outline", ...searchPaths]
     if (args.depth !== undefined) cmd.push("--depth", String(args.depth))
@@ -423,7 +423,7 @@ export const fdxOutlineTool: ToolDefinition = tool({
     } catch (err) {
       if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
-      return nativeOutlineFallback(searchPaths, cwd)
+      return nativeOutlineFallback(searchPaths, cwd, { signal, deadlineMs: remainingDeadlineMs(deadline) })
     }
   },
 })

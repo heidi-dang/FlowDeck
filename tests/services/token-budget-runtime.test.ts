@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { TokenBudgetRuntime } from "../../src/services/token-budget-runtime"
+import { TokenBudgetRuntime, type SessionBudgetContext } from "../../src/services/token-budget-runtime"
 import { mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import { join } from "path"
@@ -123,5 +123,18 @@ describe("TokenBudgetRuntime", () => {
     expect(rt.getControllersForTest().size).toBe(1)
     const controller = rt.getControllersForTest().get("execution-run")!
     expect(controller.getSnapshot().agents.every(agent => agent.ceiling === 5_000)).toBe(true)
+  })
+
+  it("prunes session mapping on onSessionEnd and preserves bounded map", async () => {
+    const runtime = new TokenBudgetRuntime({
+      overrides: { profile: "normal" },
+    })
+
+    const ctxA: SessionBudgetContext = { sessionID: "s-1", agent: "dev1", depth: 0 }
+    runtime.registerSession(ctxA)
+    expect(runtime.getSnapshot("s-1")).toBeDefined()
+
+    await runtime.onSessionEnd(ctxA, "completed")
+    expect(runtime.getSnapshot("s-1")?.run.reserved).toBe(0)
   })
 })
