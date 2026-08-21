@@ -2,7 +2,6 @@ use crate::reader::code::{
     cache::AstCache, languages::detect_language, parser::parse_source, prototype::PrototypeReader,
     Symbol,
 };
-use ignore::WalkBuilder;
 use std::path::PathBuf;
 
 /// Options controlling outline generation.
@@ -157,8 +156,7 @@ fn collect_files(paths: &[PathBuf], max_depth: Option<usize>) -> anyhow::Result<
                 files.push(path.clone());
             }
         } else if path.is_dir() {
-            let mut builder = WalkBuilder::new(path);
-            builder.hidden(false).git_ignore(true);
+            let mut builder = crate::reader::build_standard_walker(path);
 
             if let Some(depth) = max_depth {
                 builder.max_depth(Some(depth + 1)); // +1 because WalkBuilder counts from 0

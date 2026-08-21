@@ -18,7 +18,24 @@ use crate::reader::code::{
     prototype::PrototypeReader, CodeReader, CodeResult,
 };
 use crate::reader::text::{read_text, TextResult};
+use ignore::WalkBuilder;
 use std::path::Path;
+pub fn build_standard_walker(path: &Path) -> WalkBuilder {
+    let mut builder = WalkBuilder::new(path);
+    builder.git_ignore(true);
+    builder.hidden(false);
+    builder.filter_entry(|e| {
+        let name = e.file_name().to_string_lossy();
+        if name.starts_with(".opencode")
+            || name.starts_with("session_export")
+            || name.starts_with(".fd-plan")
+        {
+            return false;
+        }
+        true
+    });
+    builder
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReadMode {

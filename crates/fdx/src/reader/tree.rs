@@ -1,5 +1,4 @@
 use anyhow::Result;
-use ignore::WalkBuilder;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::Path;
@@ -63,9 +62,7 @@ pub fn tree_paths(path: &Path, options: &TreeOptions) -> Result<TreeResult> {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| ".".to_string());
 
-    let walker = WalkBuilder::new(path)
-        .hidden(false)
-        .git_ignore(true)
+    let walker = crate::reader::build_standard_walker(path)
         .git_global(false)
         .git_exclude(true)
         .max_depth(Some(options.depth + 1))

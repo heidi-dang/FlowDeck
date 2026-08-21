@@ -130,18 +130,13 @@ fn build_regex(pattern: &str, fixed_strings: bool, case_sensitive: bool) -> anyh
 }
 
 fn collect_text_files(paths: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
-    use ignore::WalkBuilder;
-
     let mut files = Vec::new();
 
     for path in paths {
         if path.is_file() {
             files.push(path.clone());
         } else if path.is_dir() {
-            let walker = WalkBuilder::new(path)
-                .hidden(false)
-                .git_ignore(true)
-                .build();
+            let walker = crate::reader::build_standard_walker(path).build();
 
             for entry in walker {
                 let entry = match entry {

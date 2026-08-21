@@ -2,7 +2,6 @@ use crate::reader::code::{
     cache::AstCache, languages::detect_language, parser::parse_source, prototype::PrototypeReader,
     Symbol,
 };
-use ignore::WalkBuilder;
 use std::path::PathBuf;
 
 /// A single search match: file path + symbol.
@@ -116,10 +115,7 @@ fn collect_code_files(paths: &[PathBuf]) -> anyhow::Result<Vec<PathBuf>> {
         if path.is_file() {
             files.push(path.clone());
         } else if path.is_dir() {
-            let walker = WalkBuilder::new(path)
-                .hidden(false)
-                .git_ignore(true)
-                .build();
+            let walker = crate::reader::build_standard_walker(path).build();
 
             for entry in walker {
                 let entry = match entry {

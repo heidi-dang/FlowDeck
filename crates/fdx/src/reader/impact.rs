@@ -2,7 +2,6 @@ use crate::reader::code::{
     cache::AstCache, languages::detect_language, parser::parse_source, prototype::PrototypeReader,
     Symbol,
 };
-use ignore::WalkBuilder;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -516,10 +515,7 @@ fn collect_code_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         return Ok(files);
     }
 
-    let walker = WalkBuilder::new(root)
-        .hidden(false)
-        .git_ignore(true)
-        .build();
+    let walker = crate::reader::build_standard_walker(root).build();
 
     for entry in walker {
         let entry = match entry {

@@ -115,7 +115,7 @@ describe("nativeImpactFallback bounds", () => {
     expect(text).toContain("FDX_IMPACT_FALLBACK_LIMIT")
   }, 4000)
 
-  it("nativeSearchFallback and nativeOutlineFallback respect deadline and AbortSignal fail-fast", () => {
+  it("nativeSearchFallback and nativeOutlineFallback respect deadline and AbortSignal fail-fast", async () => {
     const root = makeRoot()
     mkdirSync(join(root, "src"))
     writeFileSync(join(root, "src", "a.ts"), "export function A() { return 1 }\n")
@@ -123,14 +123,12 @@ describe("nativeImpactFallback bounds", () => {
     const ctrl = new AbortController()
     ctrl.abort()
 
-    expect(() => {
-      import("../src/tools/fdx-shared").then(m => m.nativeSearchFallback("A", "src", root, { signal: ctrl.signal }))
-    }).toBeDefined()
+    const { nativeSearchFallback, remainingDeadlineMs } = await import("../src/tools/fdx-shared")
 
-    // Test expired deadline
-    expect(() => {
-      import("../src/tools/fdx-shared").then(m => m.remainingDeadlineMs(Date.now() - 100))
-    }).toBeDefined()
+    expect(() => nativeSearchFallback("A", "src", root, { signal: ctrl.signal }))
+      .toThrow("FDX_SEARCH_ABORTED")
+
+    expect(() => remainingDeadlineMs(Date.now() - 100)).toThrow("FDX_TOOL_DEADLINE")
   })
 })
 
@@ -247,6 +245,9 @@ describe("P0 exact reproduction — reviewer fdx-impact never sticks", () => {
     // Caller B subscribes to the same in-flight impact
     const taskB = engine.impact([join(root, "src", "a.ts")], false, ctrlB.signal)
 
+    // Explicitly verify they attached to the exact same underlying inflight entry
+    expect(engine.stats().inflight).toBe(1)
+
     // Caller A aborts immediately
     ctrlA.abort()
 
@@ -258,4 +259,19 @@ describe("P0 exact reproduction — reviewer fdx-impact never sticks", () => {
 
     await engine.stop()
   }, 8000)
+})
+
+describe("Native process cancellation", () => {
+  it("kills an already spawned native process when AbortSignal fires", async () => {
+    const { runExecutableAsync } = await import("../src/tools/fdx-shared")
+    const ctrl = new AbortController()
+
+    const p = runExecutableAsync("node", ["-e", "setTimeout(() => {}, 10000)"], { signal: ctrl.signal, timeoutMs: 10000 })
+
+    // Give it a tiny bit to spawn
+    await new Promise(r => setTimeout(r, 50))
+    ctrl.abort()
+
+    await expect(p).rejects.toThrow("FDX_EXEC_ABORTED")
+  })
 })
