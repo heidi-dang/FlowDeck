@@ -65,6 +65,9 @@ describe("persistent FDX runtime", () => {
       const search = JSON.parse(await fdxSearchTool.execute({ query: "alpha", format: "json" }, {} as any) as string)
       expect(search.matches).toEqual([{ path: "src/alpha.ts", symbol: "Alpha" }])
       writeFileSync(join(source, "beta.ts"), "import { Alpha } from \"src/alpha.ts\"\nexport function Beta() { return Alpha() }\n")
+      // Freshness model: a write/edit invalidates the changed path and the
+      // resident snapshot is refreshed incrementally (no hidden full rescan).
+      index.refreshChanged(root, ["src/beta.ts"])
       const impact = JSON.parse(await fdxImpactTool.execute({ files: ["src/alpha.ts"], format: "json" }, {} as any) as string)
       expect(impact.affectedPaths).toEqual(["src/alpha.ts", "src/beta.ts"])
     } finally {
