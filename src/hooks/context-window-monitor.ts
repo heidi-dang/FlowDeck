@@ -34,8 +34,24 @@ function contextReminder(usedPct: string, remainingPct: string, used: string, li
 }
 
 export function createContextWindowMonitorHook() {
+  const MAX_RETAINED_SESSIONS = 500
   const remindedSessions = new Set<string>()
   const tokenCache = new Map<string, CachedTokenState>()
+
+  const cleanupSession = (id: string) => {
+    remindedSessions.delete(id)
+    tokenCache.delete(id)
+  }
+
+  const pruneIfOversized = () => {
+    if (tokenCache.size > MAX_RETAINED_SESSIONS) {
+      const excess = tokenCache.size - MAX_RETAINED_SESSIONS
+      const keys = [...tokenCache.keys()].slice(0, excess)
+      for (const k of keys) {
+        cleanupSession(k)
+      }
+    }
+  }
 
   const toolExecuteAfter = async (
     input: { sessionID: string },
@@ -66,9 +82,12 @@ export function createContextWindowMonitorHook() {
   const event = async ({ event }: { event: { type: string; properties?: unknown } }) => {
     const props = event.properties as Record<string, unknown> | undefined
 
-    if (event.type === "session.deleted") {
-      const id = (props?.info as { id?: string } | undefined)?.id
-      if (id) { remindedSessions.delete(id); tokenCache.delete(id) }
+    if (event.type === "session.deleted" || event.type === "session.ended" || event.type === "session.abort" || event.type === "session.error") {
+      const id = (props?.info as { id?: string; sessionID?: string } | undefined)?.id ??
+                 (props?.info as { id?: string; sessionID?: string } | undefined)?.sessionID ??
+                 (props?.sessionID as string | undefined) ??
+                 (props?.id as string | undefined)
+      if (id) cleanupSession(id)
       return
     }
 
@@ -81,6 +100,7 @@ export function createContextWindowMonitorHook() {
       } | undefined
       if (!info || info.role !== "assistant" || !info.finish || !info.sessionID || !info.tokens) return
       tokenCache.set(info.sessionID, { tokens: info.tokens })
+      pruneIfOversized()
     }
   }
 

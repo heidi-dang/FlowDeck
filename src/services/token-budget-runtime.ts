@@ -65,11 +65,11 @@ const MAX_PENDING_PER_SESSION = 8
 function serializeEstimate(message: unknown): number {
   if (!message) return 0
   if (typeof message === "string") {
-    return Math.ceil(message.length / 4)
+    return Math.ceil(Buffer.byteLength(message, "utf8") / 4)
   }
   try {
     const json = JSON.stringify(message)
-    return Math.ceil(json.length / 4)
+    return Math.ceil(Buffer.byteLength(json, "utf8") / 4)
   } catch {
     return 0
   }

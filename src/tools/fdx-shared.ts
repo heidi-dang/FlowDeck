@@ -313,6 +313,20 @@ export const FDX_MAX_BUFFER = 50 * 1024 * 1024
  */
 export const FDX_TOOL_BUDGET_MS = 20_000
 
+export function remainingDeadlineMs(deadline: number): number {
+  return Math.max(1, deadline - Date.now())
+}
+
+export function isAbortError(err: unknown): boolean {
+  if (!err) return false
+  if (err instanceof Error) {
+    if (err.name === "AbortError") return true
+    if (err.message.includes("ABORTED") || err.message.includes("aborted")) return true
+  }
+  const msg = String((err as any)?.message || err)
+  return msg.includes("ABORTED") || msg.includes("aborted")
+}
+
 export interface RunFdxAsyncOptions {
   cwd?: string
   timeoutMs?: number
@@ -380,7 +394,12 @@ export function runFdxAsync(args: string[], opts: RunFdxAsyncOptions = {}): Prom
     let settled = false
     let timer: ReturnType<typeof setTimeout> | undefined
 
+    let proc: ReturnType<typeof execFile> | undefined
+
     const onAbort = (): void => {
+      if (proc) {
+        try { proc.kill("SIGKILL") } catch {}
+      }
       finish(new Error("FDX_NATIVE_ABORTED"), null)
     }
 
@@ -411,7 +430,7 @@ export function runFdxAsync(args: string[], opts: RunFdxAsyncOptions = {}): Prom
       signal.addEventListener("abort", onAbort, { once: true })
     }
 
-    const proc = execFile(bin, args, {
+    proc = execFile(bin, args, {
       cwd,
       encoding: "utf8",
       timeout: timeoutMs,
@@ -462,7 +481,14 @@ export function runExecutableAsync(
     let settled = false
     let timer: ReturnType<typeof setTimeout> | undefined
 
-    const onAbort = (): void => { finish(new Error("FDX_EXEC_ABORTED"), null) }
+    let proc: ReturnType<typeof execFile> | undefined
+
+    const onAbort = (): void => {
+      if (proc) {
+        try { proc.kill("SIGKILL") } catch {}
+      }
+      finish(new Error("FDX_EXEC_ABORTED"), null)
+    }
     const finish = (err: Error | null, out: string | null): void => {
       if (settled) return
       settled = true
@@ -485,7 +511,7 @@ export function runExecutableAsync(
       signal.addEventListener("abort", onAbort, { once: true })
     }
 
-    const proc = execFile(exe, args, {
+    proc = execFile(exe, args, {
       cwd,
       encoding: "utf8",
       timeout: timeoutMs,

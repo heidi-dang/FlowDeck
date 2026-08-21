@@ -32,6 +32,8 @@ import {
   nativeSearchFallback,
   runFdxAsync,
   FDX_TOOL_BUDGET_MS,
+  remainingDeadlineMs,
+  isAbortError,
 } from "../tools/fdx-shared"
 
 export interface FdxTurboOptions {
@@ -157,12 +159,42 @@ export class FdxTurboEngine {
     this.queued = Math.max(0, this.queued - 1);
   }
 
-  private multiplex<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  private multiplex<T>(key: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
     const existing = this.inflight.get(key) as Promise<T> | undefined;
-    if (existing) return existing;
-    const p = fn().finally(() => this.inflight.delete(key));
-    this.inflight.set(key, p);
-    return p;
+    const taskPromise = existing ?? (async () => {
+      const p = fn().finally(() => this.inflight.delete(key));
+      this.inflight.set(key, p);
+      return p;
+    })();
+
+    if (!signal) return taskPromise;
+    if (signal.aborted) return Promise.reject(new Error("FDX_TURBO_ABORTED"));
+
+    return new Promise<T>((resolvePromise, rejectPromise) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener("abort", onAbort);
+        rejectPromise(new Error("FDX_TURBO_ABORTED"));
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+
+      taskPromise.then(
+        (val) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          resolvePromise(val);
+        },
+        (err) => {
+          if (settled) return;
+          settled = true;
+          signal.removeEventListener("abort", onAbort);
+          rejectPromise(err);
+        }
+      );
+    });
   }
 
   /**
@@ -170,7 +202,8 @@ export class FdxTurboEngine {
    * hot file cache, then one-shot native, then TS fallback. Prefer this for
    * the wire path so repeated cold reads reuse the resident process.
    */
-  async readAsync(file: string, opts: { offset?: number; limit?: number; noCache?: boolean; signal?: AbortSignal } = {}): Promise<TurboReadResult> {
+  async readAsync(file: string, opts: { offset?: number; limit?: number; noCache?: boolean; signal?: AbortSignal; deadline?: number } = {}): Promise<TurboReadResult> {
+    const deadline = opts.deadline ?? (Date.now() + FDX_TOOL_BUDGET_MS);
     if (!this.enterQueue()) return { source: "fallback", text: nativeReadFallback(file, opts.limit, opts.offset) };
     try {
       const key = this.requestKey("read", file, String(opts.offset ?? 0), String(opts.limit ?? 0));
@@ -184,10 +217,11 @@ export class FdxTurboEngine {
         }
         if (this.nativeDaemon.isHealthy()) {
           try {
-            const value = await this.nativeDaemon.request<{ path: string; text: string }>("read", { path: resolve(file), offset: opts.offset, limit: opts.limit }, { signal: opts.signal });
+            const value = await this.nativeDaemon.request<{ path: string; text: string }>("read", { path: resolve(file), offset: opts.offset, limit: opts.limit }, { signal: opts.signal, timeoutMs: remainingDeadlineMs(deadline) });
             this.markDaemonHealthy();
             return { source: "daemon", text: value.text };
-          } catch {
+          } catch (err) {
+            if (isAbortError(err) || opts.signal?.aborted) throw err;
             this.markDaemonUnavailable();
           }
         }
@@ -197,13 +231,14 @@ export class FdxTurboEngine {
           if (opts.limit !== undefined) cmd.push("--limit", String(opts.limit));
           try {
             this.nativeSpawns++;
-            return { source: "native", text: await runFdxAsync(cmd, { signal: opts.signal, timeoutMs: FDX_TOOL_BUDGET_MS }) };
-          } catch {
+            return { source: "native", text: await runFdxAsync(cmd, { signal: opts.signal, timeoutMs: remainingDeadlineMs(deadline) }) };
+          } catch (err) {
+            if (isAbortError(err) || opts.signal?.aborted) throw err;
             if (shouldDisableFallback()) throw new Error("FDX native read failed");
           }
         }
         return { source: "fallback", text: nativeReadFallback(file, opts.limit, opts.offset) };
-      });
+      }, opts.signal);
     } finally {
       this.leaveQueue();
     }
@@ -213,17 +248,19 @@ export class FdxTurboEngine {
    * fdx-search fast path: resident native daemon first, then warm resident
    * index (no workspace walk), then one-shot native, then TS fallback.
    */
-  async search(query: string, path?: string, noCache = false, signal?: AbortSignal): Promise<TurboReadResult> {
+  async search(query: string, path?: string, noCache = false, signal?: AbortSignal, deadline?: number): Promise<TurboReadResult> {
+    const totalDeadline = deadline ?? (Date.now() + FDX_TOOL_BUDGET_MS);
     if (!this.enterQueue()) return { source: "fallback", text: nativeSearchFallback(query, path ?? this.workspace) };
     try {
       const key = this.requestKey("search", query, path ?? "");
       return await this.multiplex(key, async () => {
         if (!noCache && this.nativeDaemon.isHealthy()) {
           try {
-            const value = await this.nativeDaemon.request<Array<{ path: string; symbol: string }>>("search", { pattern: query, path }, { signal });
+            const value = await this.nativeDaemon.request<Array<{ path: string; symbol: string }>>("search", { pattern: query, path }, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) });
             this.markDaemonHealthy();
             return { source: "daemon", text: this.formatSearch("FDX Native", query, value ?? []) };
-          } catch {
+          } catch (err) {
+            if (isAbortError(err) || signal?.aborted) throw err;
             this.markDaemonUnavailable();
           }
         }
@@ -233,20 +270,24 @@ export class FdxTurboEngine {
             if (matches.length > 0 || (matches.length === 0 && this.daemonSocketPath)) {
               return { source: "index", text: this.formatSearch("FDX Index", query, matches) };
             }
-          } catch { /* fall through to native */ }
+          } catch (err) {
+            if (isAbortError(err) || signal?.aborted) throw err;
+            /* fall through to native */
+          }
         }
         if (checkFdxAvailability()) {
           const cmd: string[] = ["search", query];
           if (path) cmd.push("--path", path);
           try {
             this.nativeSpawns++;
-            return { source: "native", text: await runFdxAsync(cmd, { signal, timeoutMs: FDX_TOOL_BUDGET_MS }) };
-          } catch {
+            return { source: "native", text: await runFdxAsync(cmd, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
+          } catch (err) {
+            if (isAbortError(err) || signal?.aborted) throw err;
             if (shouldDisableFallback()) throw new Error("FDX native search failed");
           }
         }
         return { source: "fallback", text: nativeSearchFallback(query, path ?? this.workspace) };
-      });
+      }, signal);
     } finally {
       this.leaveQueue();
     }
@@ -256,17 +297,19 @@ export class FdxTurboEngine {
    * fdx-outline fast path: resident native daemon, warm resident index, then
    * one-shot native, then TS fallback.
    */
-  async outline(paths: string[], noCache = false, signal?: AbortSignal): Promise<TurboReadResult> {
+  async outline(paths: string[], noCache = false, signal?: AbortSignal, deadline?: number): Promise<TurboReadResult> {
+    const totalDeadline = deadline ?? (Date.now() + FDX_TOOL_BUDGET_MS);
     if (!this.enterQueue()) return { source: "fallback", text: nativeOutlineFallback(paths) };
     try {
       const key = this.requestKey("outline", paths.join(","));
       return await this.multiplex(key, async () => {
         if (!noCache && this.nativeDaemon.isHealthy()) {
           try {
-            const value = await this.nativeDaemon.request<Array<{ path: string; symbols: string[] }>>("outline", { paths }, { signal });
+            const value = await this.nativeDaemon.request<Array<{ path: string; symbols: string[] }>>("outline", { paths }, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) });
             this.markDaemonHealthy();
             if (value && value.length > 0) return { source: "daemon", text: this.formatOutline("FDX Native", value) };
-          } catch {
+          } catch (err) {
+            if (isAbortError(err) || signal?.aborted) throw err;
             this.markDaemonUnavailable();
           }
         }
@@ -276,17 +319,23 @@ export class FdxTurboEngine {
             if (files.length > 0) {
               return { source: "index", text: this.formatOutline("FDX Index", files) };
             }
-          } catch { /* fall through */ }
+          } catch (err) {
+            if (isAbortError(err) || signal?.aborted) throw err;
+            /* fall through */
+          }
         }
         if (checkFdxAvailability()) {
           const cmd: string[] = ["outline", ...paths];
           try {
             this.nativeSpawns++;
-            return { source: "native", text: await runFdxAsync(cmd, { signal, timeoutMs: FDX_TOOL_BUDGET_MS }) };
-          } catch { if (shouldDisableFallback()) throw new Error("FDX native outline failed") }
+            return { source: "native", text: await runFdxAsync(cmd, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
+          } catch (err) {
+            if (isAbortError(err) || signal?.aborted) throw err;
+            if (shouldDisableFallback()) throw new Error("FDX native outline failed");
+          }
         }
         return { source: "fallback", text: nativeOutlineFallback(paths) };
-      });
+      }, signal);
     } finally {
       this.leaveQueue();
     }
@@ -296,19 +345,21 @@ export class FdxTurboEngine {
    * fdx-impact fast path: resident native daemon, warm resident index, then
    * one-shot native, then TS fallback.
    */
-  async impact(paths: string[], noCache = false, signal?: AbortSignal): Promise<TurboReadResult> {
-    if (!this.enterQueue()) return { source: "fallback", text: await nativeImpactFallback(paths, this.workspace, { signal, deadlineMs: FDX_TOOL_BUDGET_MS }) };
+  async impact(paths: string[], noCache = false, signal?: AbortSignal, deadline?: number): Promise<TurboReadResult> {
+    const totalDeadline = deadline ?? (Date.now() + FDX_TOOL_BUDGET_MS);
+    if (!this.enterQueue()) return { source: "fallback", text: await nativeImpactFallback(paths, this.workspace, { signal, deadlineMs: remainingDeadlineMs(totalDeadline) }) };
     try {
       const key = this.requestKey("impact", paths.join(","));
       return await this.multiplex(key, async () => {
         if (!noCache && this.nativeDaemon.isHealthy()) {
           try {
-            const value = await this.nativeDaemon.request<Array<{ target: string }>>("impact", { paths, root: this.workspace }, { signal });
+            const value = await this.nativeDaemon.request<Array<{ target: string }>>("impact", { paths, root: this.workspace }, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) });
             this.markDaemonHealthy();
             if (value && value.length > 0) {
               return { source: "daemon", text: "[FDX Native] Impact\n" + value.map((v) => "  " + v.target).join("\n") };
             }
-          } catch {
+          } catch (err) {
+            if (isAbortError(err) || signal?.aborted) throw err;
             this.markDaemonUnavailable();
           }
         }
@@ -318,17 +369,23 @@ export class FdxTurboEngine {
             if (impact.changedPaths.length > 0 || impact.affectedPaths.length > 0) {
               return { source: "index", text: "[FDX Index] Impact\nchanged: " + impact.changedPaths.join(", ") + "\n" + impact.affectedPaths.map((p) => "  " + p).join("\n") };
             }
-          } catch { /* fall through */ }
+          } catch (err) {
+            if (isAbortError(err) || signal?.aborted) throw err;
+            /* fall through */
+          }
         }
         if (checkFdxAvailability()) {
           const cmd: string[] = ["impact", ...paths];
           try {
             this.nativeSpawns++;
-            return { source: "native", text: await runFdxAsync(cmd, { signal, timeoutMs: FDX_TOOL_BUDGET_MS }) };
-          } catch { if (shouldDisableFallback()) throw new Error("FDX native impact failed") }
+            return { source: "native", text: await runFdxAsync(cmd, { signal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
+          } catch (err) {
+            if (isAbortError(err) || signal?.aborted) throw err;
+            if (shouldDisableFallback()) throw new Error("FDX native impact failed");
+          }
         }
-        return { source: "fallback", text: await nativeImpactFallback(paths, this.workspace, { signal, deadlineMs: FDX_TOOL_BUDGET_MS }) };
-      });
+        return { source: "fallback", text: await nativeImpactFallback(paths, this.workspace, { signal, deadlineMs: remainingDeadlineMs(totalDeadline) }) };
+      }, signal);
     } finally {
       this.leaveQueue();
     }
@@ -339,7 +396,8 @@ export class FdxTurboEngine {
    * the same bounded queue + multiplexing. The resident native serve protocol
    * does not expose a regex grep op, so we do not route it to the daemon.
    */
-  async grep(pattern: string, path?: string, opts: { context?: number; maxMatches?: number; noCache?: boolean; signal?: AbortSignal } = {}): Promise<TurboReadResult> {
+  async grep(pattern: string, path?: string, opts: { context?: number; maxMatches?: number; noCache?: boolean; signal?: AbortSignal; deadline?: number } = {}): Promise<TurboReadResult> {
+    const totalDeadline = opts.deadline ?? (Date.now() + FDX_TOOL_BUDGET_MS);
     if (!this.enterQueue()) return { source: "fallback", text: nativeSearchFallback(pattern, path ?? this.workspace) };
     try {
       const key = this.requestKey("grep", pattern, path ?? "");
@@ -351,13 +409,14 @@ export class FdxTurboEngine {
           if (opts.maxMatches !== undefined) cmd.push("--max-matches", String(opts.maxMatches));
           try {
             this.nativeSpawns++;
-            return { source: "native", text: await runFdxAsync(cmd, { signal: opts.signal, timeoutMs: FDX_TOOL_BUDGET_MS }) };
-          } catch {
+            return { source: "native", text: await runFdxAsync(cmd, { signal: opts.signal, timeoutMs: remainingDeadlineMs(totalDeadline) }) };
+          } catch (err) {
+            if (isAbortError(err) || opts.signal?.aborted) throw err;
             if (shouldDisableFallback()) throw new Error("FDX native grep failed");
           }
         }
         return { source: "fallback", text: nativeSearchFallback(pattern, path ?? this.workspace) };
-      });
+      }, opts.signal);
     } finally {
       this.leaveQueue();
     }

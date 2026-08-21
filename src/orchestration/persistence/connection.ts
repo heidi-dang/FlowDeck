@@ -31,8 +31,7 @@ export function openConnection(config: DatabaseConfig): Database {
       } catch (err: any) {
         lastErr = err
         if (err?.code === "SQLITE_BUSY" || err?.message?.includes("locked") || err?.message?.includes("busy")) {
-          const delay = Math.min(200, 10 * attempts)
-          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delay)
+          // Retry immediately up to attempts limit
           continue
         }
         throw err

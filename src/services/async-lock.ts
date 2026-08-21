@@ -71,23 +71,36 @@ export async function acquireLock(
     try {
       const st = await stat(lockPath)
       const age = Date.now() - st.mtimeMs
-      let isStale = age > staleMs
+      let isStale = false
 
-      if (!isStale) {
-        try {
-          const content = await readFile(lockPath, "utf-8")
-          const [pidStr] = content.trim().split(":")
-          const holderPid = parseInt(pidStr, 10)
-          if (!isNaN(holderPid) && !isPidAlive(holderPid)) {
-            isStale = true // PID is dead
-          }
-        } catch {
-          // File read race; ignore
+      let holderPid: number | null = null
+      try {
+        const content = await readFile(lockPath, "utf-8")
+        const [pidStr] = content.trim().split(":")
+        const parsed = parseInt(pidStr, 10)
+        if (!isNaN(parsed) && parsed > 0) {
+          holderPid = parsed
         }
+      } catch {
+        // File read race; ignore
+      }
+
+      if (holderPid !== null) {
+        // Valid PID found:
+        // alive -> NEVER stale, regardless of age
+        // dead  -> stale
+        if (isPidAlive(holderPid)) {
+          isStale = false
+        } else {
+          isStale = true
+        }
+      } else {
+        // No trustworthy PID -> use mtime fallback
+        isStale = age > staleMs
       }
 
       if (isStale) {
-        // Lock is from a dead or timed-out process — try to steal it.
+        // Lock is from a dead process or timed-out untrusted holder — try to steal it.
         // Remove first; another acquirer may steal in between.
         try {
           await unlink(lockPath)

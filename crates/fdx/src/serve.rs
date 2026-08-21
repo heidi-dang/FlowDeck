@@ -11,8 +11,11 @@
 //!   response: {"id":"<reqid>","ok":false,"error":"..."}
 //! Newline-delimited JSON, one object per line.
 
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::path::PathBuf;
+use std::sync::mpsc::channel;
+use std::sync::Arc;
+use std::thread;
 
 use serde::{Deserialize, Serialize};
 
@@ -42,34 +45,32 @@ struct ServeResponse<'a> {
 }
 
 const MAX_REQUEST_BYTES: usize = 256 * 1024;
+const NUM_WORKERS: usize = 4;
 
-fn reply(
-    writer: &mut dyn Write,
+fn format_reply(
     id: &str,
     ok: bool,
     value: Option<serde_json::Value>,
     error: Option<String>,
-) {
+) -> Option<String> {
     let resp = ServeResponse {
         id,
         ok,
         value,
         error,
     };
-    if let Ok(line) = serde_json::to_string(&resp) {
-        let mut out = line;
-        out.push('\n');
-        let _ = writer.write_all(out.as_bytes());
-        let _ = writer.flush();
-    }
+    serde_json::to_string(&resp).ok().map(|mut s| {
+        s.push('\n');
+        s
+    })
 }
 
-fn ok_value(writer: &mut dyn Write, id: &str, value: serde_json::Value) {
-    reply(writer, id, true, Some(value), None);
+fn format_ok(id: &str, value: serde_json::Value) -> Option<String> {
+    format_reply(id, true, Some(value), None)
 }
 
-fn err(writer: &mut dyn Write, id: &str, message: String) {
-    reply(writer, id, false, None, Some(message));
+fn format_err(id: &str, message: String) -> Option<String> {
+    format_reply(id, false, None, Some(message))
 }
 
 fn read_args(args: &serde_json::Value) -> Result<(PathBuf, Option<usize>, Option<usize>), String> {
@@ -100,10 +101,10 @@ fn parse_paths(args: &serde_json::Value) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn handle_read(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cache: &AstCache) {
+fn handle_read(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option<String> {
     let (path, offset, limit) = match read_args(args) {
         Ok(v) => v,
-        Err(e) => return err(writer, id, e),
+        Err(e) => return format_err(id, e),
     };
     let options = ReaderOptions {
         mode: ReadMode::Auto,
@@ -116,7 +117,6 @@ fn handle_read(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cache
     };
     match read_file(&path, &options, cache) {
         Ok(result) => {
-            // Render a stable textual representation for the replay/tool layer.
             let mut buffer: Vec<u8> = Vec::new();
             let rendered = match result {
                 crate::reader::ReadResult::Code(code) => {
@@ -138,20 +138,19 @@ fn handle_read(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cache
                     String::from_utf8_lossy(&buffer).to_string()
                 }
             };
-            ok_value(
-                writer,
+            format_ok(
                 id,
                 serde_json::json!({ "path": path.to_string_lossy(), "text": rendered }),
-            );
+            )
         }
-        Err(e) => err(writer, id, format!("read error: {}", e)),
+        Err(e) => format_err(id, format!("read error: {}", e)),
     }
 }
 
-fn handle_search(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cache: &AstCache) {
+fn handle_search(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option<String> {
     let pattern = match args.get("pattern").and_then(|v| v.as_str()) {
         Some(p) if !p.is_empty() => p,
-        _ => return err(writer, id, "search: missing pattern".to_string()),
+        _ => return format_err(id, "search: missing pattern".to_string()),
     };
     let mut paths = parse_paths(args);
     if paths.is_empty() {
@@ -177,16 +176,16 @@ fn handle_search(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cac
                 .iter()
                 .map(|m| serde_json::json!({ "path": m.path, "symbol": m.symbol }))
                 .collect();
-            ok_value(writer, id, serde_json::json!(value));
+            format_ok(id, serde_json::json!(value))
         }
-        Err(e) => err(writer, id, format!("search error: {}", e)),
+        Err(e) => format_err(id, format!("search error: {}", e)),
     }
 }
 
-fn handle_outline(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cache: &AstCache) {
+fn handle_outline(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option<String> {
     let paths = parse_paths(args);
     if paths.is_empty() {
-        return err(writer, id, "outline: missing paths".to_string());
+        return format_err(id, "outline: missing paths".to_string());
     }
     let options = OutlineOptions {
         depth: args
@@ -206,17 +205,28 @@ fn handle_outline(writer: &mut dyn Write, id: &str, args: &serde_json::Value, ca
     };
     match outline::outline_paths(&paths, &options, cache) {
         Ok(results) => {
-            let value: Vec<serde_json::Value> = results.iter().map(|r| serde_json::json!({ "path": r.path, "language": r.language, "total_lines": r.total_lines, "symbols": r.symbols, "parse_error": r.parse_error })).collect();
-            ok_value(writer, id, serde_json::json!(value));
+            let value: Vec<serde_json::Value> = results
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "path": r.path,
+                        "language": r.language,
+                        "total_lines": r.total_lines,
+                        "symbols": r.symbols,
+                        "parse_error": r.parse_error
+                    })
+                })
+                .collect();
+            format_ok(id, serde_json::json!(value))
         }
-        Err(e) => err(writer, id, format!("outline error: {}", e)),
+        Err(e) => format_err(id, format!("outline error: {}", e)),
     }
 }
 
-fn handle_impact(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cache: &AstCache) {
+fn handle_impact(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option<String> {
     let targets = parse_paths(args);
     if targets.is_empty() {
-        return err(writer, id, "impact: missing files".to_string());
+        return format_err(id, "impact: missing files".to_string());
     }
     let root = args
         .get("root")
@@ -235,67 +245,117 @@ fn handle_impact(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cac
     };
     match impact::analyze_impact(&targets, &root, depth, direction, cache) {
         Ok(results) => {
-            let value: Vec<serde_json::Value> = results.iter().map(|r| serde_json::json!({ "target": r.target, "depth": r.depth, "outbound": r.outbound, "inbound": r.inbound })).collect();
-            ok_value(writer, id, serde_json::json!(value));
+            let value: Vec<serde_json::Value> = results
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "target": r.target,
+                        "depth": r.depth,
+                        "outbound": r.outbound,
+                        "inbound": r.inbound
+                    })
+                })
+                .collect();
+            format_ok(id, serde_json::json!(value))
         }
-        Err(e) => err(writer, id, format!("impact error: {}", e)),
+        Err(e) => format_err(id, format!("impact error: {}", e)),
+    }
+}
+
+fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
+    match req.op.as_str() {
+        "version" => format_ok(
+            &req.id,
+            serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }),
+        ),
+        "health" => format_ok(
+            &req.id,
+            serde_json::json!({ "healthy": true, "service": "fdx-native-daemon" }),
+        ),
+        "read" => handle_read(&req.id, &req.args, cache),
+        "search" => handle_search(&req.id, &req.args, cache),
+        "outline" => handle_outline(&req.id, &req.args, cache),
+        "impact" => handle_impact(&req.id, &req.args, cache),
+        other => format_err(&req.id, format!("FDX_METHOD_NOT_ALLOWED {}", other)),
     }
 }
 
 /// Run the resident server loop. Reads newline-delimited JSON from stdin and
-/// writes responses to stdout until EOF.
+/// writes responses to stdout until EOF using a bounded worker pool.
 pub fn run() {
     let stdin = std::io::stdin();
     let mut reader = std::io::BufReader::new(stdin.lock());
-    let mut stdout = std::io::stdout();
+    let (resp_tx, resp_rx) = channel::<String>();
+    let (req_tx, req_rx) = channel::<ServeRequest>();
+    let req_rx = Arc::new(std::sync::Mutex::new(req_rx));
+    let cache = Arc::new(AstCache::new());
+
+    // Dedicated stdout writer thread to serialize response lines
+    let writer_handle = thread::spawn(move || {
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        while let Ok(msg) = resp_rx.recv() {
+            let _ = out.write_all(msg.as_bytes());
+            let _ = out.flush();
+        }
+    });
+
+    // Bounded concurrent worker pool
+    let mut workers = Vec::with_capacity(NUM_WORKERS);
+    for _ in 0..NUM_WORKERS {
+        let req_rx_clone = Arc::clone(&req_rx);
+        let resp_tx_clone = resp_tx.clone();
+        let cache_clone = Arc::clone(&cache);
+        let handle = thread::spawn(move || {
+            loop {
+                let req = {
+                    let lock = req_rx_clone.lock().ok();
+                    match lock {
+                        Some(rx) => match rx.recv() {
+                            Ok(r) => r,
+                            Err(_) => break, // Request sender closed
+                        },
+                        None => break,
+                    }
+                };
+                if let Some(resp) = process_request(req, &cache_clone) {
+                    if resp_tx_clone.send(resp).is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+        workers.push(handle);
+    }
+    drop(resp_tx); // Drop initial sender clone so only worker senders remain
+
     let mut line = String::new();
-    let cache = AstCache::new();
     loop {
         line.clear();
         match reader.read_line(&mut line) {
-            Ok(0) => break, // EOF — parent closed the pipe
+            Ok(0) => break, // EOF — parent closed pipe
             Ok(n) => {
                 if n > MAX_REQUEST_BYTES {
-                    err(&mut stdout, "unknown", "FDX_REQUEST_LIMIT".to_string());
                     continue;
                 }
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     continue;
                 }
-                let req: ServeRequest = match serde_json::from_str(trimmed) {
-                    Ok(r) => r,
-                    Err(e) => {
-                        err(&mut stdout, "unknown", format!("FDX_INVALID_REQUEST {}", e));
-                        continue;
+                if let Ok(req) = serde_json::from_str::<ServeRequest>(trimmed) {
+                    if req_tx.send(req).is_err() {
+                        break;
                     }
-                };
-                match req.op.as_str() {
-                    "version" => ok_value(
-                        &mut stdout,
-                        &req.id,
-                        serde_json::json!({ "version": env!("CARGO_PKG_VERSION") }),
-                    ),
-                    "health" => ok_value(
-                        &mut stdout,
-                        &req.id,
-                        serde_json::json!({ "healthy": true, "service": "fdx-native-daemon" }),
-                    ),
-                    "read" => handle_read(&mut stdout, &req.id, &req.args, &cache),
-                    "search" => handle_search(&mut stdout, &req.id, &req.args, &cache),
-                    "outline" => handle_outline(&mut stdout, &req.id, &req.args, &cache),
-                    "impact" => handle_impact(&mut stdout, &req.id, &req.args, &cache),
-                    other => err(
-                        &mut stdout,
-                        &req.id,
-                        format!("FDX_METHOD_NOT_ALLOWED {}", other),
-                    ),
                 }
             }
-            Err(e) => {
-                err(&mut stdout, "unknown", format!("FDX_IO_ERROR {}", e));
-                break;
-            }
+            Err(_) => break,
         }
     }
+
+    drop(req_tx); // Signals workers to finish
+    for w in workers {
+        let _ = w.join();
+    }
+    let _ = writer_handle.join();
 }

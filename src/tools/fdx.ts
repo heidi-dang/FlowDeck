@@ -12,6 +12,8 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 import {
   FDX_TOOL_BUDGET_MS,
+  remainingDeadlineMs,
+  isAbortError,
   checkFdxAvailability,
   shouldDisableFallback,
   runFdxAsync,
@@ -167,10 +169,12 @@ export const fdxReadTool: ToolDefinition = tool({
     // Resident fast path (Requirement Q): deterministic cached read is exact
     // for plain reads without symbol/mode/deps semantics. Routed through the
     // turbo engine's native-daemon-first ordering; falls through on "fallback".
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
     if (turbo && !args.no_cache && !args.symbol && !args.mode && !args.with_deps && args.format !== "json") {
-      const tr = await turbo.readAsync(String(args.file), { offset: args.offset, limit: args.limit, signal })
+      const tr = await turbo.readAsync(String(args.file), { offset: args.offset, limit: args.limit, signal, deadline })
       if (tr.source !== "fallback") return tr.text
     }
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       return nativeReadFallback(args.file, args.limit, args.offset, cwd)
@@ -184,8 +188,9 @@ export const fdxReadTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     if (args.no_cache) cmd.push("--no-cache")
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       return nativeReadFallback(args.file, args.limit, args.offset, cwd)
     }
@@ -213,13 +218,15 @@ export const fdxSearchTool: ToolDefinition = tool({
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
     const turbo = getActiveFdxTurbo()
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
     if (turbo && !args.no_cache && args.format !== "json") {
       // NOTE: JSON-format requests never route through the turbo TEXT fast path;
       // the format-aware persistent-index/daemon/native paths below render JSON.
-      const tr = await turbo.search(String(args.query), args.path, !!args.no_cache, signal)
+      const tr = await turbo.search(String(args.query), args.path, !!args.no_cache, signal, deadline)
       if (tr.source !== "fallback") return tr.text
       // persistent-index path below takes over when native FDX is unavailable
     }
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       if (activeFdxNextRuntime && !args.no_cache) {
@@ -236,8 +243,9 @@ export const fdxSearchTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     if (args.no_cache) cmd.push("--no-cache")
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       return nativeSearchFallback(args.query, args.path, cwd)
     }
@@ -264,10 +272,12 @@ export const fdxGrepTool: ToolDefinition = tool({
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
     const turbo = getActiveFdxTurbo()
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
     if (turbo && !args.no_cache) {
-      const tg = await turbo.grep(String(args.pattern), args.path, { context: args.context, maxMatches: args.max_matches, signal })
+      const tg = await turbo.grep(String(args.pattern), args.path, { context: args.context, maxMatches: args.max_matches, signal, deadline })
       if (tg.source !== "fallback") return tg.text
     }
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       return nativeSearchFallback(args.pattern, args.path, cwd)
@@ -279,8 +289,9 @@ export const fdxGrepTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     if (args.no_cache) cmd.push("--no-cache")
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       return nativeSearchFallback(args.pattern, args.path, cwd)
     }
@@ -301,6 +312,8 @@ export const fdxBatchTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       return args.files.map(f => nativeReadFallback(f, args.limit_per_file, undefined, cwd)).join("\n\n")
@@ -310,8 +323,9 @@ export const fdxBatchTool: ToolDefinition = tool({
     if (args.limit_per_file !== undefined) cmd.push("--limit-per-file", String(args.limit_per_file))
     if (args.format) cmd.push("--format", args.format)
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       return args.files.map(f => nativeReadFallback(f, args.limit_per_file, undefined, cwd)).join("\n\n")
     }
@@ -333,11 +347,13 @@ export const fdxImpactTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
     const turbo = getActiveFdxTurbo()
     if (turbo && args.format !== "json") {
-      const ti = await turbo.impact(args.files, false, signal)
+      const ti = await turbo.impact(args.files, false, signal, deadline)
       if (ti.source !== "fallback") return ti.text
     }
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       if (activeFdxNextRuntime) {
@@ -345,7 +361,7 @@ export const fdxImpactTool: ToolDefinition = tool({
         if (daemonResult !== undefined) return daemonResult
         try { return indexedImpact(activeFdxNextRuntime, args.files, args.format) } catch { activeFdxNextRuntime.metrics?.recordFdx("fallback") }
       }
-      return await nativeImpactFallback(args.files, args.root, { cwd, signal, deadlineMs: FDX_TOOL_BUDGET_MS })
+      return await nativeImpactFallback(args.files, args.root, { cwd, signal, deadlineMs: remainingDeadlineMs(deadline) })
     }
     const cmd: string[] = ["impact", ...args.files]
     if (args.depth !== undefined) cmd.push("--depth", String(args.depth))
@@ -353,10 +369,11 @@ export const fdxImpactTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     if (args.root) cmd.push("--root", args.root)
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
-      return await nativeImpactFallback(args.files, args.root, { cwd, signal, deadlineMs: FDX_TOOL_BUDGET_MS })
+      return await nativeImpactFallback(args.files, args.root, { cwd, signal, deadlineMs: remainingDeadlineMs(deadline) })
     }
   },
 })
@@ -378,12 +395,14 @@ export const fdxOutlineTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
     const searchPaths = args.paths && args.paths.length > 0 ? args.paths : ["."]
     const turbo = getActiveFdxTurbo()
     if (turbo && !args.no_cache && args.format !== "json") {
-      const to = await turbo.outline(searchPaths, !!args.no_cache, signal)
+      const to = await turbo.outline(searchPaths, !!args.no_cache, signal, deadline)
       if (to.source !== "fallback") return to.text
     }
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       if (activeFdxNextRuntime && !args.no_cache) {
@@ -400,8 +419,9 @@ export const fdxOutlineTool: ToolDefinition = tool({
     if (args.format) cmd.push("--format", args.format)
     if (args.no_cache) cmd.push("--no-cache")
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       return nativeOutlineFallback(searchPaths, cwd)
     }
@@ -425,6 +445,8 @@ export const fdxDiffTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       const gArgs = ["diff"]
@@ -441,8 +463,9 @@ export const fdxDiffTool: ToolDefinition = tool({
     if (args.root) cmd.push("--root", args.root)
     if (args.paths && args.paths.length > 0) cmd.push(...args.paths)
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       const gArgs = ["diff"]
       if (args.staged) gArgs.push("--staged")
@@ -466,12 +489,14 @@ export const fdxGitTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
     try {
       validateGitPolicy(args.subcommand, args.args ?? [])
     } catch (err: any) {
       if (shouldDisableFallback()) throw err
       return `[FDX Git Policy] ${err.message}`
     }
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       return nativeGitFallback([args.subcommand, ...(args.args ?? [])], cwd)
@@ -479,8 +504,9 @@ export const fdxGitTool: ToolDefinition = tool({
     const cmd: string[] = ["git", args.subcommand]
     if (args.args && args.args.length > 0) cmd.push(...args.args)
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       return nativeGitFallback([args.subcommand, ...(args.args ?? [])], cwd)
     }
@@ -501,6 +527,8 @@ export const fdxLsTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       return nativeLsFallback(args.path ?? ".", cwd)
@@ -510,8 +538,9 @@ export const fdxLsTool: ToolDefinition = tool({
     if (args.all) cmd.push("--all")
     if (args.format) cmd.push("--format", args.format)
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       return nativeLsFallback(args.path ?? ".", cwd)
     }
@@ -533,6 +562,8 @@ export const fdxTreeTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       return nativeLsFallback(args.path ?? ".", cwd)
@@ -543,8 +574,9 @@ export const fdxTreeTool: ToolDefinition = tool({
     if (args.dirs_only) cmd.push("--dirs-only")
     if (args.format) cmd.push("--format", args.format)
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       return nativeLsFallback(args.path ?? ".", cwd)
     }
@@ -564,20 +596,29 @@ export const fdxTestTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
     const safeRunner = validateExecutable(args.runner, TEST_RUNNER_ALLOWLIST)
     const safeArgs = validateArgs(args.args ?? [])
-    const runNative = () => runExecutableAsync(safeRunner, safeArgs, { cwd, signal, timeoutMs: 30_000 })
+    const runNative = () => runExecutableAsync(safeRunner, safeArgs, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      try { return await runNative() } catch (err: any) { return `[FDX Test Fallback Output]\n${err.stdout || err.stderr || err.message}` }
+      try { return await runNative() } catch (err: any) {
+        if (isAbortError(err) || signal?.aborted) throw err
+        return `[FDX Test Fallback Output]\n${err.stdout || err.stderr || err.message}`
+      }
     }
     const cmd: string[] = ["test", args.runner]
     if (args.args && args.args.length > 0) cmd.push(...args.args)
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
-      try { return await runNative() } catch (err: any) { return `[FDX Test Fallback Output]\n${err.stdout || err.stderr || err.message}` }
+      try { return await runNative() } catch (nativeErr: any) {
+        if (isAbortError(nativeErr) || signal?.aborted) throw nativeErr
+        return `[FDX Test Fallback Output]\n${nativeErr.stdout || nativeErr.stderr || nativeErr.message}`
+      }
     }
   },
 })
@@ -595,20 +636,29 @@ export const fdxLintTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
     const safeLinter = validateExecutable(args.linter, LINTER_ALLOWLIST)
     const safeArgs = validateArgs(args.args ?? [])
-    const runNative = () => runExecutableAsync(safeLinter, safeArgs, { cwd, signal, timeoutMs: 30_000 })
+    const runNative = () => runExecutableAsync(safeLinter, safeArgs, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
-      try { return await runNative() } catch (err: any) { return `[FDX Lint Fallback Output]\n${err.stdout || err.stderr || err.message}` }
+      try { return await runNative() } catch (err: any) {
+        if (isAbortError(err) || signal?.aborted) throw err
+        return `[FDX Lint Fallback Output]\n${err.stdout || err.stderr || err.message}`
+      }
     }
     const cmd: string[] = ["lint", args.linter]
     if (args.args && args.args.length > 0) cmd.push(...args.args)
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
-      try { return await runNative() } catch (err: any) { return `[FDX Lint Fallback Output]\n${err.stdout || err.stderr || err.message}` }
+      try { return await runNative() } catch (nativeErr: any) {
+        if (isAbortError(nativeErr) || signal?.aborted) throw nativeErr
+        return `[FDX Lint Fallback Output]\n${nativeErr.stdout || nativeErr.stderr || nativeErr.message}`
+      }
     }
   },
 })
@@ -631,6 +681,8 @@ export const fdxContextTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     // read_artifact is handled natively regardless of fdx availability
     if (args.action === "read_artifact") {
       return nativeContextFallback({ ...(args as any), cwd })
@@ -647,8 +699,9 @@ export const fdxContextTool: ToolDefinition = tool({
       if (args.summary) cmd.push("--summary", args.summary)
     }
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       return nativeContextFallback({ ...(args as any), cwd })
     }
@@ -672,6 +725,8 @@ export const fdxDecisionsTool: ToolDefinition = tool({
   async execute(args, context?: any): Promise<string> {
     const cwd = context?.directory
     const signal: AbortSignal | undefined = context?.abort
+    const deadline = Date.now() + FDX_TOOL_BUDGET_MS
+    if (signal?.aborted) throw new Error("FDX_NATIVE_ABORTED")
     if (!checkFdxAvailability()) {
       if (shouldDisableFallback()) throw new Error("[FDX Fallback Disabled]")
       return nativeDecisionsFallback({ ...args, cwd })
@@ -683,8 +738,9 @@ export const fdxDecisionsTool: ToolDefinition = tool({
       if (args.made_by) cmd.push("--made-by", args.made_by)
     }
     try {
-      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: FDX_TOOL_BUDGET_MS })
+      return await runFdxAsync(cmd, { cwd, signal, timeoutMs: remainingDeadlineMs(deadline) })
     } catch (err) {
+      if (isAbortError(err) || signal?.aborted) throw err
       if (shouldDisableFallback()) throw err
       return nativeDecisionsFallback({ ...args, cwd })
     }
