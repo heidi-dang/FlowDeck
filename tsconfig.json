@@ -34,6 +34,7 @@
   "exclude": [
     "node_modules",
     "dist",
-    "src/orchestration/persistence/adapters/dev2-compatibility-check.ts"
+    "src/orchestration/persistence/adapters/dev2-compatibility-check.ts",
+    "tests/fixtures/**/*"
   ]
 }

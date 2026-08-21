@@ -19,6 +19,7 @@ use std::thread;
 
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::{NegotiateRequest, NegotiateResponse, FDX_PROTOCOL_VERSION};
 use crate::reader::code::cache::AstCache;
 use crate::reader::impact::{self, ImpactDirection};
 use crate::reader::outline::{self, OutlineOptions};
@@ -426,6 +427,28 @@ fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<S
             &req.id,
             serde_json::json!({ "healthy": true, "service": "fdx-native-daemon" }),
         ),
+        "negotiate" => {
+            let neg_req: NegotiateRequest =
+                serde_json::from_value(req.args).unwrap_or(NegotiateRequest {
+                    protocol: FDX_PROTOCOL_VERSION,
+                    capabilities: Vec::new(),
+                });
+            let resp = NegotiateResponse::negotiate(&neg_req);
+            match serde_json::to_value(&resp) {
+                Ok(val) => format_ok(&req.id, val),
+                Err(e) => format_err(&req.id, format!("negotiate serialization error: {}", e)),
+            }
+        }
+        "capabilities" => {
+            let resp = NegotiateResponse::negotiate(&NegotiateRequest {
+                protocol: FDX_PROTOCOL_VERSION,
+                capabilities: Vec::new(),
+            });
+            match serde_json::to_value(&resp) {
+                Ok(val) => format_ok(&req.id, val),
+                Err(e) => format_err(&req.id, format!("capabilities serialization error: {}", e)),
+            }
+        }
         "read" => handle_read(&req.id, &req.args, cache, root),
         "search" => handle_search(&req.id, &req.args, cache, root),
         "outline" => handle_outline(&req.id, &req.args, cache, root),
