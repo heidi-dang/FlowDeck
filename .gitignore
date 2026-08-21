@@ -168,3 +168,4 @@ fd-worktrees/
 job_logs.txt
 release_notes.txt
 .cargo
+.fdx/
