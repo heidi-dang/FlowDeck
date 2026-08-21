@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.3.0] - Stable Release
+
+### Added & Changed — Native Background Subagents & Orchestration Reliability
+- **Native Background Task Execution**: Migrated FlowDeck's simulated subagent scheduler to natively utilize OpenCode's `OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true` capability. Heidi can now dispatch domain specialists concurrently without blocking the orchestrator turn.
+- **Isolated Multiplex Cancellation**: Hardened `FdxTurboEngine` to support independent caller subscriptions. If caller A aborts, it unsubscribes cleanly without killing the shared in-flight worker for caller B.
+- **Absolute Fallback Deadlines**: Plumbed `AbortSignal` and absolute time-bounding natively through `runFdxAsync` and all TypeScript FDX fallbacks. All FDX pipeline boundaries now guarantee fail-fast settlement to prevent event-loop lockups.
+- **Rust FDX Daemon Bounded Pool**: Refactored `crates/fdx/src/serve.rs` to operate a dedicated bounded thread pool (`sync_channel`) to eliminate head-of-line blocking on concurrent IPC streams.
+- **Token Budget Lifecycle Management**: Eliminated cross-session leakage by implementing rigorous garbage collection on `TokenBudgetRuntime`, alongside O(1) assignment identity lookups.
+- **Lock Stealing & Jitter**: Fortified SQLite file-based synchronization (`acquireLock`) with genuine PID liveness checks, stale lock stealing, and randomized backoff.
+- **Native Task Status UX**: Added integration semantic rules requiring Heidi to natively publish `todowrite` checklist indicators for outstanding background tasks.
+
+
 ## [2.2.7] - 2026-08-20
 
 ### Added & Changed — Heidi Autonomous Developer & Explicit User Approval Workflow
