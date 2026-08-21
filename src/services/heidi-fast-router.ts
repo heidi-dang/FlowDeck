@@ -35,6 +35,7 @@ export type SpecialistDomain =
   | "ARCHITECTURE"
 
 import { evaluateCodeModeEligibility } from "./heidi-code-mode-evaluator"
+import type { CodeModeTelemetry } from "./heidi-code-mode-policy"
 
 export interface RouterDecision {
   /** Resolved execution class */
@@ -54,7 +55,7 @@ export interface RouterDecision {
   /** Whether the task involves MCP tool composition */
   mcpCompositionCandidate?: boolean
   codeModeRejectedReason?: string
-  codeModeTelemetry?: any
+  codeModeTelemetry?: CodeModeTelemetry
 }
 
 // ─── Keyword patterns ────────────────────────────────────────────────────────
@@ -293,7 +294,7 @@ export function classifyTask(
 
   // ── FAST_DIRECT: trivial local task ──────────────────────────────────────
   const mcpCompositionCandidateRaw = matchesAny(text, MCP_COMPOSITION_EXTERNAL_PATTERNS) && matchesAny(text, MCP_COMPOSITION_ACTION_PATTERNS)
-  const codeModeEval = evaluateCodeModeEligibility(prompt, true, mcpCompositionCandidateRaw)
+  const codeModeEval = evaluateCodeModeEligibility(prompt, mcpCompositionCandidateRaw)
   const mcpCompositionCandidate = codeModeEval.isEligible
   const codeModeRejectedReason = codeModeEval.rejectionReason
   const codeModeTelemetry = codeModeEval.telemetry

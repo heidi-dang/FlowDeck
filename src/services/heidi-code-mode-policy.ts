@@ -24,6 +24,8 @@ export const HEIDI_CODE_MODE_POLICY = {
   allowEnvironment: false,
 }
 
+export type CodeModeCapability = "AVAILABLE" | "UNAVAILABLE" | "UNKNOWN"
+
 export type CodeModeRejectionReason =
   | "NOT_MCP_COMPOSITION"
   | "EXECUTE_UNAVAILABLE"
@@ -44,10 +46,10 @@ export interface CodeModeTelemetry {
   codeModeSelected: boolean
   codeModeRejectedReason?: CodeModeRejectionReason
   estimatedToolCalls?: number
+  estimatedParallelWidth?: number
+  estimatedDependencyStages?: number
   actualToolCalls?: number
-  maxParallelWidth?: number
-  dependencyStages?: number
-  durationMs?: number
-  resultBytes?: number
+  actualDurationMs?: number
+  actualResultBytes?: number
   terminalStatus?: "success" | "error" | "timeout"
 }

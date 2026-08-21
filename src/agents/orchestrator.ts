@@ -276,13 +276,13 @@ export function buildTaskSpecificPromptSections(
   specialistDomains?: SpecialistDomain[],
   disabledAgents?: Set<string>,
   options?: {
-    codeModeAvailable?: boolean
+    codeModeCapability?: import("../services/heidi-code-mode-policy").CodeModeCapability
     mcpCompositionCandidate?: boolean
     codeModeRejectedReason?: string
   },
 ): string {
-  // If native Code Mode is available and turn involves MCP tools / automation composition, include lazy guidance
-  const codeModeGuidance = (options?.codeModeAvailable && options?.mcpCompositionCandidate && !options?.codeModeRejectedReason) ? [
+  // If native Code Mode is explicitly AVAILABLE and turn involves MCP tools / automation composition, include lazy guidance
+  const codeModeGuidance = (options?.codeModeCapability === "AVAILABLE" && options?.mcpCompositionCandidate && !options?.codeModeRejectedReason) ? [
     "",
     "## Native Code Mode (OpenCode execute tool)",
     "",

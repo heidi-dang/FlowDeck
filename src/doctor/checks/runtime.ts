@@ -282,7 +282,7 @@ export function codeModeCapabilityCheck(opencodeVersion: string | null): CheckRe
       nativeSupport,
       featureEnabled: enabled,
       eligibleMcpToolsDetected: "unknown",
-      executeToolAvailable: nativeSupport && enabled ? "unknown" : false,
+      executeToolAvailable: nativeSupport && enabled ? "UNKNOWN" : "UNAVAILABLE",
       narrowFlag: narrowFlag ?? null,
       broadFlag: broadFlag ?? null,
       mcpOnlyBoundary: true,

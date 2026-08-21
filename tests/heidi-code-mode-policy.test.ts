@@ -5,62 +5,55 @@ import { buildTaskSpecificPromptSections } from "../src/agents/orchestrator"
 import { evaluateCodeModeEligibility } from "../src/services/heidi-code-mode-evaluator"
 
 describe("Heidi Code Mode Policy", () => {
-  it("rejects when execute is unavailable", () => {
-    const res = evaluateCodeModeEligibility("List open GitHub issues", false, true)
-    expect(res.isEligible).toBe(false)
-    expect(res.rejectionReason).toBe("EXECUTE_UNAVAILABLE")
-    expect(res.telemetry.codeModeSelected).toBe(false)
-  })
-
   it("rejects when not an MCP composition candidate", () => {
-    const res = evaluateCodeModeEligibility("Fix this issue in src/index.ts", true, false)
+    const res = evaluateCodeModeEligibility("Fix this issue in src/index.ts", false)
     expect(res.isEligible).toBe(false)
     expect(res.rejectionReason).toBe("NOT_MCP_COMPOSITION")
   })
 
   it("rejects when workflow is too complex", () => {
-    const res = evaluateCodeModeEligibility("Continuously investigate all GitHub issues, keep iterating until every issue has a root cause.", true, true)
+    const res = evaluateCodeModeEligibility("Continuously investigate all GitHub issues, keep iterating until every issue has a root cause.", true)
     expect(res.isEligible).toBe(false)
     expect(res.rejectionReason).toBe("TOO_COMPLEX")
   })
 
   it("rejects when retry is required", () => {
-    const res = evaluateCodeModeEligibility("Fetch GitHub issues and use exponential backoff for rate limits.", true, true)
+    const res = evaluateCodeModeEligibility("Fetch GitHub issues and use exponential backoff for rate limits.", true)
     expect(res.isEligible).toBe(false)
     expect(res.rejectionReason).toBe("REQUIRES_RETRY")
   })
 
   it("rejects when specialist spawning is requested", () => {
-    const res = evaluateCodeModeEligibility("List GitHub issues and spawn a specialist for each.", true, true)
+    const res = evaluateCodeModeEligibility("List GitHub issues and spawn a specialist for each.", true)
     expect(res.isEligible).toBe(false)
     expect(res.rejectionReason).toBe("REQUIRES_TASK")
   })
 
   it("rejects when shell execution is required", () => {
-    const res = evaluateCodeModeEligibility("Get GitHub issues and run bash to grep them.", true, true)
+    const res = evaluateCodeModeEligibility("Get GitHub issues and run bash to grep them.", true)
     expect(res.isEligible).toBe(false)
     expect(res.rejectionReason).toBe("REQUIRES_SHELL")
   })
 
   it("rejects when file system mutation is required", () => {
-    const res = evaluateCodeModeEligibility("Get GitHub issues and write to file.", true, true)
+    const res = evaluateCodeModeEligibility("Get GitHub issues and write to file.", true)
     expect(res.isEligible).toBe(false)
     expect(res.rejectionReason).toBe("REQUIRES_FILESYSTEM")
   })
 
   it("rejects when too many tool calls are estimated", () => {
-    const res = evaluateCodeModeEligibility("List all issues and every pull request and aggregate them.", true, true)
+    const res = evaluateCodeModeEligibility("List all issues and every pull request and aggregate them.", true)
     expect(res.isEligible).toBe(false)
     expect(res.rejectionReason).toBe("TOO_MANY_TOOL_CALLS")
   })
 
   it("accepts valid bounded compositions", () => {
-    const res = evaluateCodeModeEligibility("List open GitHub issues and PRs, correlate the bug issues with related PRs, and return the matching pairs.", true, true)
+    const res = evaluateCodeModeEligibility("List open GitHub issues and PRs, correlate the bug issues with related PRs, and return the matching pairs.", true)
     expect(res.isEligible).toBe(true)
     expect(res.telemetry.codeModeSelected).toBe(true)
     expect(res.telemetry.estimatedToolCalls).toBeLessThanOrEqual(10)
-    expect(res.telemetry.maxParallelWidth).toBeLessThanOrEqual(4)
-    expect(res.telemetry.dependencyStages).toBeLessThanOrEqual(3)
+    expect(res.telemetry.estimatedParallelWidth).toBeLessThanOrEqual(4)
+    expect(res.telemetry.estimatedDependencyStages).toBeLessThanOrEqual(3)
   })
 
   it("defines bounded execution limits", () => {
@@ -88,13 +81,13 @@ describe("Heidi Code Mode Policy", () => {
   })
 
   it("injects lazy code mode guidance only when available and a composition candidate", () => {
-    const withoutCandidate = buildTaskSpecificPromptSections("STANDARD", undefined, undefined, { codeModeAvailable: true, mcpCompositionCandidate: false })
+    const withoutCandidate = buildTaskSpecificPromptSections("STANDARD", undefined, undefined, { codeModeCapability: "AVAILABLE", mcpCompositionCandidate: false })
     expect(withoutCandidate).not.toContain("Native Code Mode (OpenCode execute tool)")
 
-    const withoutAvailable = buildTaskSpecificPromptSections("STANDARD", undefined, undefined, { codeModeAvailable: false, mcpCompositionCandidate: true })
+    const withoutAvailable = buildTaskSpecificPromptSections("STANDARD", undefined, undefined, { codeModeCapability: "UNAVAILABLE", mcpCompositionCandidate: true })
     expect(withoutAvailable).not.toContain("Native Code Mode (OpenCode execute tool)")
 
-    const withGuidance = buildTaskSpecificPromptSections("STANDARD", undefined, undefined, { codeModeAvailable: true, mcpCompositionCandidate: true })
+    const withGuidance = buildTaskSpecificPromptSections("STANDARD", undefined, undefined, { codeModeCapability: "AVAILABLE", mcpCompositionCandidate: true })
     expect(withGuidance).toContain("Native Code Mode (OpenCode execute tool)")
     expect(withGuidance).toContain("Max Tool Calls: 10 total")
     expect(withGuidance).toContain("NO RETRIES")

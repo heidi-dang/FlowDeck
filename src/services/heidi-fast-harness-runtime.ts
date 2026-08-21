@@ -166,17 +166,21 @@ export function renderTurnContext(sessionID: string, directory: string): string 
   }
   const isCodeMode = process.env.OPENCODE_EXPERIMENTAL_CODE_MODE === "true" ||
     (process.env.OPENCODE_EXPERIMENTAL_CODE_MODE === undefined && process.env.OPENCODE_EXPERIMENTAL === "true")
+
   // Expose telemetry via console.debug for tests/telemetry parsing.
   if (route.decision.codeModeTelemetry?.codeModeConsidered) {
     console.debug?.("[FastHarness] CodeMode Telemetry:", JSON.stringify(route.decision.codeModeTelemetry))
   }
+
+  // Capability is strictly evaluated; fallback to UNKNOWN if enabled but execute not positively observed.
+  const codeModeCapability = isCodeMode ? "UNKNOWN" : "UNAVAILABLE"
 
   const sections = buildTaskSpecificPromptSections(
     route.decision.executionClass,
     route.decision.specialists,
     undefined,
     {
-      codeModeAvailable: isCodeMode,
+      codeModeCapability,
       mcpCompositionCandidate: route.decision.mcpCompositionCandidate,
       codeModeRejectedReason: route.decision.codeModeRejectedReason
     },

@@ -4,22 +4,16 @@ import { HEIDI_CODE_MODE_POLICY } from "./heidi-code-mode-policy"
 export interface CodeModeEvaluation {
   isEligible: boolean
   rejectionReason?: CodeModeRejectionReason
-  telemetry: Partial<CodeModeTelemetry>
+  telemetry: CodeModeTelemetry
 }
 
 export function evaluateCodeModeEligibility(
   prompt: string,
-  isCodeModeAvailable: boolean,
   isMcpCompositionCandidate: boolean
 ): CodeModeEvaluation {
-  const telemetry: Partial<CodeModeTelemetry> = {
+  const telemetry: CodeModeTelemetry = {
     codeModeConsidered: true,
-  }
-
-  if (!isCodeModeAvailable) {
-    telemetry.codeModeSelected = false
-    telemetry.codeModeRejectedReason = "EXECUTE_UNAVAILABLE"
-    return { isEligible: false, rejectionReason: "EXECUTE_UNAVAILABLE", telemetry }
+    codeModeSelected: false,
   }
 
   if (!isMcpCompositionCandidate) {
@@ -71,8 +65,8 @@ export function evaluateCodeModeEligibility(
   }
 
   telemetry.estimatedToolCalls = estimatedToolCalls
-  telemetry.maxParallelWidth = maxParallelWidth
-  telemetry.dependencyStages = dependencyStages
+  telemetry.estimatedParallelWidth = maxParallelWidth
+  telemetry.estimatedDependencyStages = dependencyStages
 
   if (estimatedToolCalls > HEIDI_CODE_MODE_POLICY.maxToolCalls) {
     telemetry.codeModeSelected = false
