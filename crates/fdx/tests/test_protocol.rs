@@ -113,9 +113,9 @@ fn test_capability_negotiation() {
     let resp = NegotiateResponse::negotiate(&req);
 
     assert_eq!(resp.protocol, 2);
-    assert_eq!(resp.selected_capabilities, vec!["search", "vci-v1"]);
+    assert_eq!(resp.selected_capabilities, vec!["search"]);
     assert!(resp.server_capabilities.contains(&"search".to_string()));
-    assert!(resp.server_capabilities.contains(&"why-v1".to_string()));
+    assert!(!resp.server_capabilities.contains(&"why-v1".to_string()));
     assert_eq!(resp.graph_schema_version, FDX_GRAPH_SCHEMA_VERSION);
 }
 
@@ -163,4 +163,52 @@ fn test_node_edge_and_assurance_ceiling() {
     let ceiling = AssuranceCeiling::default();
     assert_eq!(ceiling.max_level, AssuranceLevel::Exact);
     assert!(ceiling.limiting_reasons.is_empty());
+}
+
+#[test]
+fn test_path_jail_escaping() {
+    let root = Path::new("/workspace/project");
+
+    let result = canonicalize_repo_path(Path::new("/etc/passwd"), root);
+    assert_eq!(
+        result,
+        Err(PathCanonicalizationError::EscapesRoot(
+            "/etc/passwd".to_string()
+        ))
+    );
+}
+
+#[test]
+fn test_capability_invariant_operations_exist() {
+    // Every advertised operational capability must correspond to a real operation.
+    // In M1, these are read, search, outline, impact-v1.
+    let expected = vec!["read", "search", "outline", "impact-v1"];
+    let req = NegotiateRequest {
+        protocol: 2,
+        capabilities: expected.iter().map(|&s| s.to_string()).collect(),
+    };
+    let resp = NegotiateResponse::negotiate(&req);
+
+    // Server should advertise exactly what it supports.
+    assert_eq!(resp.server_capabilities.len(), expected.len());
+    for &cap in &expected {
+        assert!(
+            resp.server_capabilities.contains(&cap.to_string()),
+            "Missing capability: {}",
+            cap
+        );
+    }
+}
+
+#[test]
+fn test_empty_capability_request() {
+    let req = NegotiateRequest {
+        protocol: 2,
+        capabilities: vec![],
+    };
+    let resp = NegotiateResponse::negotiate(&req);
+    let expected = vec!["read", "search", "outline", "impact-v1"];
+    assert_eq!(resp.selected_capabilities, expected);
+    // Server should still advertise all capabilities
+    assert_eq!(resp.server_capabilities.len(), 4);
 }
