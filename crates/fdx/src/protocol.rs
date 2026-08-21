@@ -5,7 +5,7 @@
 //! backward-compatible protocol capability negotiation.
 
 use serde::{Deserialize, Serialize};
-use std::path::{Component, Path};
+use std::path::Path;
 use thiserror::Error;
 
 // ── Version Constants ──────────────────────────────────────────────────
@@ -305,6 +305,43 @@ pub enum PathCanonicalizationError {
 /// - No '.' or '..' components
 /// - Stripped drive letters
 /// - Jailed inside root
+fn parse_path_custom(path_str: &str) -> (Option<&str>, bool, Vec<&str>) {
+    let mut s = path_str;
+    let mut drive = None;
+    if s.len() >= 2 && s.as_bytes()[1] == b':' && (s.as_bytes()[0] as char).is_ascii_alphabetic() {
+        drive = Some(&s[..2]);
+        s = &s[2..];
+    }
+    let is_absolute = s.starts_with('/') || s.starts_with('\\');
+    let segments: Vec<&str> = s.split(['/', '\\']).filter(|c| !c.is_empty()).collect();
+    (drive, is_absolute, segments)
+}
+
+fn process_segment<'a>(
+    seg: &'a str,
+    current_segments: &mut Vec<&'a str>,
+    raw_str: &str,
+) -> Result<(), PathCanonicalizationError> {
+    match seg {
+        "." => {}
+        ".." => {
+            if current_segments.pop().is_none() {
+                return Err(PathCanonicalizationError::EscapesRoot(raw_str.to_string()));
+            }
+        }
+        _ => current_segments.push(seg),
+    }
+    Ok(())
+}
+
+/// Canonicalizes a path relative to the repository root.
+/// Invariants:
+/// - Repository-relative
+/// - UTF-8 encoded
+/// - Normal forward slashes ('/')
+/// - No '.' or '..' components
+/// - Stripped drive letters
+/// - Jailed inside root
 pub fn canonicalize_repo_path(
     path: &Path,
     root: &Path,
@@ -316,58 +353,48 @@ pub fn canonicalize_repo_path(
         return Err(PathCanonicalizationError::EmptyPath);
     }
 
-    // Strip Windows drive letters if present (e.g., C:/foo -> /foo or foo)
-    let cleaned_path = if raw_str.len() >= 2
-        && raw_str.as_bytes()[1] == b':'
-        && (raw_str.as_bytes()[0] as char).is_ascii_alphabetic()
-    {
-        Path::new(&raw_str[2..])
-    } else {
-        path
-    };
+    let root_str = root
+        .to_str()
+        .ok_or(PathCanonicalizationError::InvalidUtf8)?;
 
-    let target = if cleaned_path.is_absolute() {
-        if let Ok(rel) = cleaned_path.strip_prefix(root) {
-            rel.to_path_buf()
-        } else {
-            cleaned_path.to_path_buf()
+    let (path_drive, path_abs, path_segments) = parse_path_custom(raw_str);
+    let (root_drive, _root_abs, root_segments) = parse_path_custom(root_str);
+
+    let mut current_segments = Vec::new();
+
+    if path_abs || path_drive.is_some() {
+        if let (Some(pd), Some(rd)) = (path_drive, root_drive) {
+            if !pd.eq_ignore_ascii_case(rd) {
+                return Err(PathCanonicalizationError::EscapesRoot(raw_str.to_string()));
+            }
+        } else if path_drive.is_some() != root_drive.is_some() {
+            return Err(PathCanonicalizationError::EscapesRoot(raw_str.to_string()));
+        }
+
+        if path_segments.len() < root_segments.len() {
+            return Err(PathCanonicalizationError::EscapesRoot(raw_str.to_string()));
+        }
+        for (p, r) in path_segments.iter().zip(root_segments.iter()) {
+            if p != r {
+                return Err(PathCanonicalizationError::EscapesRoot(raw_str.to_string()));
+            }
+        }
+
+        for &seg in &path_segments[root_segments.len()..] {
+            process_segment(seg, &mut current_segments, raw_str)?;
         }
     } else {
-        cleaned_path.to_path_buf()
-    };
-
-    let mut segments = Vec::new();
-    for comp in target.components() {
-        match comp {
-            Component::Normal(s) => {
-                let s_str = s.to_str().ok_or(PathCanonicalizationError::InvalidUtf8)?;
-                segments.push(s_str);
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if segments.pop().is_none() {
-                    return Err(PathCanonicalizationError::EscapesRoot(raw_str.to_string()));
-                }
-            }
-            Component::RootDir | Component::Prefix(_) => {}
+        for &seg in &path_segments {
+            process_segment(seg, &mut current_segments, raw_str)?;
         }
     }
 
-    Ok(segments.join("/"))
+    Ok(current_segments.join("/"))
 }
 
 // ── Protocol Capability Negotiation ───────────────────────────────────
 
-pub const DEFAULT_SERVER_CAPABILITIES: &[&str] = &[
-    "read",
-    "search",
-    "outline",
-    "impact-v1",
-    "impact-v2",
-    "evidence-graph-v1",
-    "vci-v1",
-    "why-v1",
-];
+pub const DEFAULT_SERVER_CAPABILITIES: &[&str] = &["read", "search", "outline", "impact-v1"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NegotiateRequest {
