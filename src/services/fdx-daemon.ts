@@ -65,6 +65,64 @@ export class FdxDaemon {
   private persist(values: Map<string, unknown>): void { const entries = [...values.entries()].slice(-this.maxEntries); const text = JSON.stringify(entries); if (Buffer.byteLength(text) > this.maxEntries * this.maxValueBytes) throw new Error("FDX_CACHE_LIMIT"); mkdirSync(dirname(this.stateFile), { recursive: true }); const temporary = `${this.stateFile}.${process.pid}.tmp`; writeFileSync(temporary, text, "utf8"); renameSync(temporary, this.stateFile) }
 }
 
-export function fdxDaemonRequest<T>(socketPath: string, request: Omit<FdxDaemonRequest, "id">, fallback: () => T, timeoutMs = 1000): Promise<{ value: T; source: "daemon" | "fallback" }> {
-  return new Promise(resolveResult => { const id = createHash("sha256").update(JSON.stringify(request)).digest("hex").slice(0, 16); const socket = createConnection(socketPath); let done = false; const finish = (result: { value: T; source: "daemon" | "fallback" }) => { if (done) return; done = true; socket.destroy(); resolveResult(result) }; const timer = setTimeout(() => finish({ value: fallback(), source: "fallback" }), timeoutMs); socket.setEncoding("utf8"); let input = ""; socket.on("connect", () => socket.write(`${JSON.stringify({ ...request, id })}\n`)); socket.on("data", chunk => { input += chunk; const line = input.split("\n")[0]; if (!line) return; try { const response = JSON.parse(line) as FdxDaemonResponse; clearTimeout(timer); if (response.ok && response.id === id) finish({ value: response.value as T, source: "daemon" }); else finish({ value: fallback(), source: "fallback" }) } catch { clearTimeout(timer); finish({ value: fallback(), source: "fallback" }) } }); socket.on("error", () => { clearTimeout(timer); finish({ value: fallback(), source: "fallback" }) }) })
+export function fdxDaemonRequest<T>(socketPath: string, request: Omit<FdxDaemonRequest, "id">, fallback: () => T, timeoutMs = 1000, signal?: AbortSignal): Promise<{ value: T; source: "daemon" | "fallback" }> {
+  return new Promise<{ value: T; source: "daemon" | "fallback" }>((resolveResult, rejectResult) => {
+    const id = createHash("sha256").update(JSON.stringify(request)).digest("hex").slice(0, 16)
+    const socket = createConnection(socketPath)
+    let done = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const runFallback = (): void => {
+      // If fallback() throws, the exception propagates to settle()'s try/catch,
+      // which converts it into a rejection. The caller ALWAYS settles.
+      resolveResult({ value: fallback(), source: "fallback" })
+    }
+
+    // Exactly-once settlement. Clears the timer, closes the socket, and
+    // detaches external signal handling so no branch can double-settle or
+    // leave a pending timer/socket behind.
+    const settle = (outcome: () => void): void => {
+      if (done) return
+      done = true
+      if (timer) clearTimeout(timer)
+      socket.destroy()
+      if (signal) signal.removeEventListener("abort", onAbort)
+      try { outcome() } catch (err) { rejectResult(err instanceof Error ? err : new Error(String(err))) }
+    }
+
+    const onAbort = (): void => {
+      settle(() => rejectResult(new Error("FDX_DAEMON_ABORTED")))
+    }
+
+    // Timeout: the daemon did not answer. If fallback() throws, the thrown
+    // error is delivered as a rejection — the caller ALWAYS settles. No branch
+    // can leave the Promise pending forever.
+    timer = setTimeout(() => {
+      settle(() => runFallback())
+    }, timeoutMs)
+
+    if (signal) {
+      if (signal.aborted) { settle(() => rejectResult(new Error("FDX_DAEMON_ABORTED"))); return }
+      signal.addEventListener("abort", onAbort, { once: true })
+    }
+
+    socket.setEncoding("utf8")
+    let input = ""
+    socket.on("connect", () => { try { socket.write(`${JSON.stringify({ ...request, id })}\n`) } catch { settle(() => runFallback()) } })
+    socket.on("data", chunk => {
+      if (done) return
+      input += chunk
+      const line = input.split("\n")[0]
+      if (!line) return
+      try {
+        const response = JSON.parse(line) as FdxDaemonResponse
+        if (response.ok && response.id === id) settle(() => resolveResult({ value: response.value as T, source: "daemon" }))
+        else settle(() => runFallback())
+      } catch {
+        settle(() => runFallback())
+      }
+    })
+    socket.on("error", () => settle(() => runFallback()))
+    socket.on("close", () => settle(() => runFallback()))
+  })
 }

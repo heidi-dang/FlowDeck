@@ -8,7 +8,7 @@
  * Extracted from fdx.ts to keep per-tool files focused.
  */
 
-import { execFileSync } from "node:child_process"
+import { execFileSync, execFile } from "node:child_process"
 import { existsSync, readFileSync, readdirSync, statSync, promises as fsPromises } from "fs"
 import { dirname, join, resolve } from "path"
 import { fileURLToPath } from "node:url"
@@ -305,6 +305,26 @@ function fdxBin(): string {
 export const FDX_TIMEOUT_MS = 30_000
 export const FDX_MAX_BUFFER = 50 * 1024 * 1024
 
+/**
+ * Hard upper bound (ms) for a single live FDX tool request across ALL layers
+ * (native daemon -> resident index -> one-shot native -> TS fallback). Ensures
+ * the total request duration never accumulates multiple independent 30s waits.
+ * OpenCode cancellation (AbortSignal) can end it earlier.
+ */
+export const FDX_TOOL_BUDGET_MS = 20_000
+
+export interface RunFdxAsyncOptions {
+  cwd?: string
+  timeoutMs?: number
+  signal?: AbortSignal
+  maxBuffer?: number
+}
+
+/**
+ * Synchronous FDX native execution. Kept only for the startup compatibility
+ * probe, offline scripts, and test-only paths. LIVE OpenCode tool execution
+ * must use runFdxAsync so a slow call never blocks the plugin event loop.
+ */
 export function runFdx(args: string[], cwd?: string): string {
   const bin = fdxBin()
   validateExecutable(bin)
@@ -338,6 +358,145 @@ export function runFdx(args: string[], cwd?: string): string {
     }
     throw err
   }
+}
+
+/**
+ * Asynchronous FDX native execution. Used by the live tool path so that a slow
+ * or wedged native call never blocks the OpenCode plugin event loop (unlike the
+ * synchronous runFdx below). Always settles: resolves with stdout, or rejects
+ * with a descriptive error on timeout / abort / spawn failure / non-zero exit.
+ *
+ * A hard `deadline` is derived from timeoutMs and checked against the caller's
+ * AbortSignal so OpenCode cancellation can end the call earlier. Output is
+ * bounded by maxBuffer (ENOBUFS is surfaced as a clear error).
+ */
+export function runFdxAsync(args: string[], opts: RunFdxAsyncOptions = {}): Promise<string> {
+  const bin = fdxBin()
+  validateExecutable(bin)
+  validateArgs(args)
+  const timeoutMs = opts.timeoutMs ?? FDX_TIMEOUT_MS
+  const maxBuffer = opts.maxBuffer ?? FDX_MAX_BUFFER
+  const signal = opts.signal
+  const cwd = opts.cwd || activeProjectDir || process.cwd()
+
+  return new Promise<string>((resolvePromise, rejectPromise) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const onAbort = (): void => {
+      finish(new Error("FDX_NATIVE_ABORTED"), null)
+    }
+
+    const finish = (err: Error | null, out: string | null): void => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      if (signal) signal.removeEventListener("abort", onAbort)
+      if (err) rejectPromise(err)
+      else resolvePromise(out as string)
+    }
+
+    if (signal) {
+      if (signal.aborted) { finish(new Error("FDX_NATIVE_ABORTED"), null); return }
+      signal.addEventListener("abort", onAbort, { once: true })
+    }
+
+    const proc = execFile(bin, args, {
+      cwd,
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer,
+      killSignal: "SIGTERM",
+      windowsHide: true,
+    }, (err, stdout) => {
+      if (settled) return
+      if (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOBUFS") {
+          finish(new Error(`fdx output exceeded ${maxBuffer / 1024 / 1024}MB. Narrow the query or reduce target scope.`), null)
+        } else if ((err as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+          finish(new Error(`fdx execution timed out after ${timeoutMs / 1000}s. Narrow the query or reduce the target scope.`), null)
+        } else {
+          const stderrText = typeof (err as any)?.stderr === "string" ? (err as any).stderr.trim() : ""
+          if (stderrText) err.message = `${err.message} (${stderrText})`
+          finish(err, null)
+        }
+        return
+      }
+      finish(null, stdout)
+    })
+
+    timer = setTimeout(() => {
+      if (!settled) {
+        try { proc.kill("SIGKILL") } catch {}
+      }
+    }, timeoutMs)
+  })
+}
+
+/**
+ * Asynchronous execution of an arbitrary allowlisted executable (test runners,
+ * linters). Used so live tool execution never blocks the plugin event loop.
+ * Always settles; resolves with stdout, rejects on timeout/abort/failure.
+ */
+export function runExecutableAsync(
+  exe: string,
+  args: string[],
+  opts: RunFdxAsyncOptions = {}
+): Promise<string> {
+  validateExecutable(exe)
+  validateArgs(args)
+  const timeoutMs = opts.timeoutMs ?? FDX_TIMEOUT_MS
+  const maxBuffer = opts.maxBuffer ?? FDX_MAX_BUFFER
+  const signal = opts.signal
+  const cwd = opts.cwd || activeProjectDir || process.cwd()
+
+  return new Promise<string>((resolvePromise, rejectPromise) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const onAbort = (): void => { finish(new Error("FDX_EXEC_ABORTED"), null) }
+    const finish = (err: Error | null, out: string | null): void => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      if (signal) signal.removeEventListener("abort", onAbort)
+      if (err) rejectPromise(err)
+      else resolvePromise(out as string)
+    }
+
+    if (signal) {
+      if (signal.aborted) { finish(new Error("FDX_EXEC_ABORTED"), null); return }
+      signal.addEventListener("abort", onAbort, { once: true })
+    }
+
+    const proc = execFile(exe, args, {
+      cwd,
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer,
+      killSignal: "SIGTERM",
+      windowsHide: true,
+    }, (err, stdout) => {
+      if (settled) return
+      if (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOBUFS") {
+          finish(new Error(`output exceeded ${maxBuffer / 1024 / 1024}MB.`), null)
+        } else if ((err as NodeJS.ErrnoException).code === "ETIMEDOUT") {
+          finish(new Error(`execution timed out after ${timeoutMs / 1000}s.`), null)
+        } else {
+          const stderrText = typeof (err as any)?.stderr === "string" ? (err as any).stderr.trim() : ""
+          if (stderrText) err.message = `${err.message} (${stderrText})`
+          finish(err, null)
+        }
+        return
+      }
+      finish(null, stdout)
+    })
+
+    timer = setTimeout(() => {
+      if (!settled) { try { proc.kill("SIGKILL") } catch {} }
+    }, timeoutMs)
+  })
 }
 
 // ─── Native TS Fallbacks ──────────────────────────────────────────────────
@@ -556,17 +715,37 @@ function nativeOutlineFile(filePath: string): string {
 }
 
 /**
- * Simple import-based impact fallback.
- * Scans TypeScript/JavaScript files for import/require statements matching the target files.
- * Uses a bounded concurrency queue for deterministic, fail-safe traversal.
+ * Import-based impact fallback with hard bounded traversal (Requirement G).
+ * Guarantees:
+ *  - AbortSignal cancels traversal promptly (the returned promise settles).
+ *  - Absolute deadline caps total runtime; exceeding limits returns an explicit
+ *    FDX_IMPACT_FALLBACK_LIMIT result instead of hanging.
+ *  - Symlink cycle protection via a visited canonical-path set.
+ *  - Workspace containment: directory symlinks resolving outside the root are
+ *    never followed, so `repo/foo -> /home` cannot escape into the filesystem.
+ *  - Per-file/byte/directory limits bound memory and scan work.
  */
 export async function nativeImpactFallback(
   files: string[],
   root: string = ".",
-  options: { maxConcurrency?: number; cwd?: string } = {}
+  options: {
+    maxConcurrency?: number
+    cwd?: string
+    signal?: AbortSignal
+    deadlineMs?: number
+    maxDirs?: number
+    maxFiles?: number
+    maxBytesScanned?: number
+  } = {}
 ): Promise<string> {
   const maxConcurrency = options.maxConcurrency ?? 16
   const effectiveDir = options.cwd || activeProjectDir || process.cwd()
+  const signal = options.signal
+  const deadlineMs = options.deadlineMs ?? FDX_TOOL_BUDGET_MS
+  const maxDirs = options.maxDirs ?? 50_000
+  const maxFiles = options.maxFiles ?? 100_000
+  const maxBytesScanned = options.maxBytesScanned ?? 200 * 1024 * 1024
+
   const targetNames = new Set(files.map(f => {
     const base = f.split(/[/\\]/).pop() ?? f
     return base.replace(/\.(ts|tsx|js|jsx)$/, "")
@@ -575,90 +754,159 @@ export async function nativeImpactFallback(
   const results: Array<{ file: string; matches: string[] }> = []
   const resolvedRoot = resolve(effectiveDir, root)
 
+  const throwIfAborted = (): void => {
+    if (signal?.aborted) throw new Error("FDX_IMPACT_ABORTED")
+  }
+
   try {
     const rootStat = await fsPromises.stat(resolvedRoot)
     if (!rootStat.isDirectory()) {
       return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
     }
   } catch {
+    if (signal?.aborted) throw new Error("FDX_IMPACT_ABORTED")
     return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
   }
 
-  const queue: string[] = [resolvedRoot]
+  const rootCanonical = await fsPromises.realpath(resolvedRoot)
+  const startTime = Date.now()
+  const visitedDirs = new Set<string>()
+  let dirsScanned = 0
+  let filesScanned = 0
+  let bytesScanned = 0
+  let limitHit = false
+
+  const queue: string[] = [rootCanonical]
   let activeWorkers = 0
+  const signalListeners: Array<() => void> = []
 
-  await new Promise<void>((resolvePromise) => {
-    const processQueue = async () => {
-      while (queue.length > 0 && activeWorkers < maxConcurrency) {
-        const dir = queue.shift()!
-        activeWorkers++
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    let settled = false
+    const finish = (err: Error | null): void => {
+      if (settled) return
+      settled = true
+      for (const off of signalListeners) if (signal) signal.removeEventListener("abort", off)
+      if (err) rejectPromise(err)
+      else resolvePromise()
+    }
 
-        (async () => {
-          try {
-            const entries = await fsPromises.readdir(dir, { withFileTypes: true })
-            entries.sort((a, b) => a.name.localeCompare(b.name))
+    if (signal) {
+      const onAbort = (): void => { finish(new Error("FDX_IMPACT_ABORTED")) }
+      if (signal.aborted) { finish(new Error("FDX_IMPACT_ABORTED")); return }
+      signal.addEventListener("abort", onAbort, { once: true })
+      signalListeners.push(onAbort)
+    }
 
-            for (const item of entries) {
-              if (ALWAYS_EXCLUDED.includes(item.name)) continue
-              const full = join(dir, item.name)
+    const processQueue = async (): Promise<void> => {
+      try {
+        while (queue.length > 0 && activeWorkers < maxConcurrency) {
+          if (signal?.aborted) { finish(new Error("FDX_IMPACT_ABORTED")); return }
+          if (Date.now() - startTime > deadlineMs) { limitHit = true; finish(null); return }
+          if (dirsScanned >= maxDirs) { limitHit = true; finish(null); return }
+          if (filesScanned >= maxFiles) { limitHit = true; finish(null); return }
+          if (bytesScanned >= maxBytesScanned) { limitHit = true; finish(null); return }
 
-              let isDir = item.isDirectory()
-              let isFile = item.isFile()
+          const dir = queue.shift()!
+          activeWorkers++
 
-              if (item.isSymbolicLink()) {
-                try {
-                  const targetStat = await fsPromises.stat(full)
-                  isDir = targetStat.isDirectory()
-                  isFile = targetStat.isFile()
-                } catch {
-                  continue
+          ;(async () => {
+            try {
+              throwIfAborted()
+              let canonical: string
+              try { canonical = await fsPromises.realpath(dir) } catch { return }
+              if (!canonical.startsWith(rootCanonical + "/") && canonical !== rootCanonical) return
+              if (visitedDirs.has(canonical)) return
+              visitedDirs.add(canonical)
+              dirsScanned++
+
+              const entries = await fsPromises.readdir(dir, { withFileTypes: true })
+              entries.sort((a, b) => a.name.localeCompare(b.name))
+
+              for (const item of entries) {
+                if (signal?.aborted) { finish(new Error("FDX_IMPACT_ABORTED")); return }
+                if (ALWAYS_EXCLUDED.includes(item.name)) continue
+                if (limitHit) return
+                const full = join(dir, item.name)
+
+                let isDir = item.isDirectory()
+                let isFile = item.isFile()
+
+                if (item.isSymbolicLink()) {
+                  try {
+                    const resolvedTarget = await fsPromises.realpath(full)
+                    // Workspace containment: never follow a symlink that escapes the root.
+                    if (!resolvedTarget.startsWith(rootCanonical + "/") && resolvedTarget !== rootCanonical) continue
+                    const targetStat = await fsPromises.stat(full)
+                    isDir = targetStat.isDirectory()
+                    isFile = targetStat.isFile()
+                    if (isDir) {
+                      if (visitedDirs.has(resolvedTarget)) continue
+                      visitedDirs.add(resolvedTarget)
+                    }
+                  } catch {
+                    continue
+                  }
+                }
+
+                if (isDir) {
+                  queue.push(full)
+                } else if (isFile && /\.(ts|tsx|js|jsx)$/.test(item.name)) {
+                  if (filesScanned >= maxFiles) { limitHit = true; return }
+                  try {
+                    const text = await fsPromises.readFile(full, "utf-8")
+                    filesScanned++
+                    bytesScanned += text.length
+                    const matches: string[] = []
+                    for (const target of targetNames) {
+                      const importRe = new RegExp(
+                        `(?:from\\s+['"](?:[./]*/)?${escapeRegex(target)}|require\\(\\s*['"](?:[./]*/)?${escapeRegex(target)})`,
+                        "i"
+                      )
+                      if (importRe.test(text)) {
+                        matches.push(target)
+                      }
+                    }
+                    if (matches.length > 0) {
+                      matches.sort((a, b) => a.localeCompare(b))
+                      results.push({ file: full, matches })
+                    }
+                  } catch { /* per-file failure isolation */ }
                 }
               }
-
-              if (isDir) {
-                queue.push(full)
-              } else if (isFile && /\.(ts|tsx|js|jsx)$/.test(item.name)) {
-                try {
-                  const text = await fsPromises.readFile(full, "utf-8")
-                  const matches: string[] = []
-                  for (const target of targetNames) {
-                    const importRe = new RegExp(
-                      `(?:from\\s+['"](?:[./]*/)?${escapeRegex(target)}|require\\(\\s*['"](?:[./]*/)?${escapeRegex(target)})`,
-                      "i"
-                    )
-                    if (importRe.test(text)) {
-                      matches.push(target)
-                    }
-                  }
-                  if (matches.length > 0) {
-                    matches.sort((a, b) => a.localeCompare(b))
-                    results.push({ file: full, matches })
-                  }
-                } catch { /* per-file failure isolation */ }
+            } catch {
+              /* per-directory failure isolation */
+            } finally {
+              activeWorkers--
+              if (!settled) {
+                if (queue.length === 0 && activeWorkers === 0) {
+                  finish(null)
+                } else {
+                  void processQueue()
+                }
               }
             }
-          } catch {
-            /* per-directory failure isolation */
-          } finally {
-            activeWorkers--
-            if (queue.length === 0 && activeWorkers === 0) {
-              resolvePromise()
-            } else {
-              processQueue()
-            }
-          }
-        })()
-      }
+          })()
+        }
 
-      if (queue.length === 0 && activeWorkers === 0) {
-        resolvePromise()
+        if (queue.length === 0 && activeWorkers === 0 && !settled) {
+          finish(null)
+        }
+      } catch (err) {
+        finish(err instanceof Error ? err : new Error(String(err)))
       }
     }
 
-    processQueue()
+    void processQueue()
+  }).catch((err: Error) => {
+    throw err
   })
 
   results.sort((a, b) => a.file.localeCompare(b.file))
+
+  if (limitHit) {
+    return `[FDX Impact Native Fallback]\nFDX_IMPACT_FALLBACK_LIMIT reached (dirs=${dirsScanned}, files=${filesScanned}, bytes=${bytesScanned}) — partial results:\n` +
+      (results.length === 0 ? "No dependents found before limit." : results.map(r => `  ${r.file} → imports: ${r.matches.join(", ")}`).join("\n"))
+  }
 
   if (results.length === 0) {
     return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`

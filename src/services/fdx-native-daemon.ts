@@ -46,6 +46,8 @@ interface Pending {
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
   timeoutMs: number;
+  signal?: AbortSignal;
+  onAbort?: () => void;
 }
 
 export class FdxNativeDaemonError extends Error {
@@ -56,6 +58,8 @@ export class FdxNativeDaemonError extends Error {
     this.code = code;
   }
 }
+
+export type NativeDaemonHealth = "healthy" | "suspect" | "unhealthy" | "quarantined";
 
 export class FdxNativeDaemon {
   private readonly repo?: string;
@@ -75,6 +79,14 @@ export class FdxNativeDaemon {
   private restarts = 0;
   private ipcRequests = 0;
   private ipcFailures = 0;
+
+  // Health contract: a daemon can be ALIVE but WEDGED (accepts requests but
+  // never replies). Health is tracked by request outcome, not just process
+  // aliveness. A request timeout/malformed-protocol/pipe-failure marks the
+  // daemon suspect; repeated failures mark it unhealthy (quarantined) so no
+  // new requests are routed into the known-wedged process until it restarts.
+  private consecutiveFailures = 0;
+  private health: NativeDaemonHealth = "healthy";
 
   constructor(options: FdxNativeDaemonOptions = {}) {
     this.repo = options.repo;
@@ -106,7 +118,15 @@ export class FdxNativeDaemon {
   }
 
   isHealthy(): boolean {
+    // A process that is alive but wedged (suspect/unhealthy/quarantined) is NOT
+    // healthy for routing. The engine only sends new requests into a process
+    // that is both alive AND not in a degraded health state.
+    if (this.health === "quarantined" || this.health === "unhealthy") return false;
     return this.child !== null && this.child.exitCode === null && !this.child.killed;
+  }
+
+  healthState(): NativeDaemonHealth {
+    return this.health;
   }
 
   get pid(): number | null {
@@ -116,35 +136,60 @@ export class FdxNativeDaemon {
   /**
    * Send a JSON-lines request and await the matched response. Rejects on
    * timeout, spawn failure, or an error response. Callers fall back on reject.
+   * An AbortSignal can cancel the request (rejects with FDX_DAEMON_ABORTED).
+   * A request timeout marks the daemon suspect and quarantines a wedged process
+   * so subsequent requests are not routed into a process that never replies.
    */
-  request<T = unknown>(op: string, args: Record<string, unknown> = {}, opts: { timeoutMs?: number } = {}): Promise<T> {
+  request<T = unknown>(op: string, args: Record<string, unknown> = {}, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<T> {
     if (this.pending.size >= this.maxQueued) {
       this.ipcFailures++;
       return Promise.reject(new FdxNativeDaemonError("FDX_DAEMON_QUEUE_LIMIT", "fdx native daemon request queue full; fell back"));
     }
     this.start();
-    if (!this.child || !this.child.stdin?.writable) {
+    if (!this.child || !this.child.stdin?.writable || !this.isHealthy()) {
       this.ipcFailures++;
-      return Promise.reject(new FdxNativeDaemonError("FDX_DAEMON_UNAVAILABLE", "fdx native daemon not running; fell back"));
+      return Promise.reject(new FdxNativeDaemonError("FDX_DAEMON_UNAVAILABLE", "fdx native daemon not healthy; fell back"));
     }
 
     const id = "fdx" + (this.requestSeq++).toString(36) + "-" + Date.now().toString(36);
     const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
     const child = this.child;
+    const signal = opts.signal;
 
     return new Promise<T>((resolvePromise, rejectPromise) => {
+      let settled = false
+      const finish = (err: Error | null, res?: { value: unknown }): void => {
+        if (settled) return
+        settled = true
+        if (signal) signal.removeEventListener("abort", onAbort as () => void)
+        if (err) rejectPromise(err)
+        else resolvePromise(res!.value as T)
+      };
+
       const timeout = setTimeout(() => {
-        this.pending.delete(id);
         this.ipcFailures++;
-        rejectPromise(new FdxNativeDaemonError("FDX_DAEMON_TIMEOUT", `fdx native daemon request timed out (op=${op})`));
+        this.handleDaemonFailure(id, `fdx native daemon request timed out (op=${op})`);
       }, timeoutMs);
+
+      const onAbort = (): void => {
+        this.ipcFailures++;
+        this.discardPending(id);
+        finish(new FdxNativeDaemonError("FDX_DAEMON_ABORTED", "fdx native daemon request aborted"));
+      };
+
+      if (signal) {
+        if (signal.aborted) { clearTimeout(timeout); finish(new FdxNativeDaemonError("FDX_DAEMON_ABORTED", "fdx native daemon request aborted")); return }
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
 
       this.pending.set(id, {
         op,
-        resolve: (res) => { clearTimeout(timeout); resolvePromise(res.value as T); },
-        reject: (err) => { clearTimeout(timeout); rejectPromise(err); },
+        resolve: (res) => { this.pending.delete(id); clearTimeout(timeout); finish(null, res) },
+        reject: (err) => { this.pending.delete(id); clearTimeout(timeout); finish(err) },
         timer: timeout,
         timeoutMs,
+        signal,
+        onAbort,
       });
 
       const line = JSON.stringify({ id, op, args });
@@ -152,12 +197,60 @@ export class FdxNativeDaemon {
         child.stdin!.write(line + "\n");
         this.ipcRequests++;
       } catch (err) {
-        this.pending.delete(id);
-        clearTimeout(timeout);
         this.ipcFailures++;
-        rejectPromise(new FdxNativeDaemonError("FDX_DAEMON_WRITE", "failed to write fdx native daemon request: " + (err as Error).message));
+        this.discardPending(id);
+        clearTimeout(timeout);
+        finish(new FdxNativeDaemonError("FDX_DAEMON_WRITE", "failed to write fdx native daemon request: " + (err as Error).message));
       }
     });
+  }
+
+  /** Remove a single pending request from the map without settling its caller. */
+  private discardPending(id: string): void {
+    const p = this.pending.get(id);
+    if (p) {
+      clearTimeout(p.timer);
+      if (p.signal) p.signal.removeEventListener("abort", p.onAbort as () => void);
+      this.pending.delete(id);
+    }
+  }
+
+  /**
+   * Health/degradation handling on a failed request. Escalates health from
+   * healthy -> suspect -> unhealthy (quarantined). A quarantined daemon has all
+   * of its pending requests rejected and the wedged process terminated and
+   * restarted (bounded by maxRestarts). No new request routes into a wedged
+   * process because isHealthy() returns false while quarantined.
+   */
+  private handleDaemonFailure(failedId: string, message: string): void {
+    this.consecutiveFailures++;
+    if (this.consecutiveFailures >= 2) {
+      // Repeated failure: treat as wedged. Reject ALL pending requests bound to
+      // this process, quarantine it, and restart so future requests recover.
+      this.health = "quarantined";
+      const child = this.child;
+      for (const [id, p] of this.pending) {
+        clearTimeout(p.timer);
+        this.pending.delete(id);
+        this.ipcFailures++;
+        p.reject(new FdxNativeDaemonError("FDX_DAEMON_UNHEALTHY", "fdx native daemon wedged; request rejected"));
+      }
+      this.child = null;
+      if (child && child.exitCode === null) {
+        try { child.kill("SIGKILL") } catch {}
+      }
+      this.scheduleRestart();
+      return;
+    }
+    // First failure: reject the single timed-out request and mark suspect.
+    const p = this.pending.get(failedId);
+    if (p) {
+      clearTimeout(p.timer);
+      if (p.signal) p.signal.removeEventListener("abort", p.onAbort as () => void);
+      this.pending.delete(failedId);
+      this.health = "suspect";
+      p.reject(new FdxNativeDaemonError("FDX_DAEMON_TIMEOUT", message));
+    }
   }
 
   /** Gracefully stop the resident process and reject outstanding requests. */
@@ -168,6 +261,7 @@ export class FdxNativeDaemon {
     if (child) {
       for (const [, p] of this.pending) {
         clearTimeout(p.timer);
+        if (p.signal) p.signal.removeEventListener("abort", p.onAbort as () => void);
         p.reject(new FdxNativeDaemonError("FDX_DAEMON_STOPPED", "fdx native daemon stopped"));
       }
       this.pending.clear();
@@ -203,6 +297,9 @@ export class FdxNativeDaemon {
     this.child = child;
     this.processStarts++;
     this.buffer = "";
+    // A freshly spawned process is not yet known to be wedged.
+    this.health = "healthy";
+    this.consecutiveFailures = 0;
 
     child.stdout!.setEncoding("utf8");
     child.stdout!.on("data", (chunk: string) => this.onData(chunk));
@@ -220,6 +317,7 @@ export class FdxNativeDaemon {
       if (this.child === child) this.child = null;
       for (const [id, p] of this.pending) {
         clearTimeout(p.timer);
+        if (p.signal) p.signal.removeEventListener("abort", p.onAbort as () => void);
         this.pending.delete(id);
         this.ipcFailures++;
         p.reject(new FdxNativeDaemonError("FDX_DAEMON_SPAWN", "fdx native daemon spawn failed: " + (err as Error).message));
@@ -251,7 +349,11 @@ export class FdxNativeDaemon {
     if (!p) return;
     this.pending.delete(msg.id);
     clearTimeout(p.timer);
+    if (p.signal) p.signal.removeEventListener("abort", p.onAbort as () => void);
     if (msg.ok === true) {
+      // A successful reply proves the daemon responds: reset health.
+      this.health = "healthy";
+      this.consecutiveFailures = 0;
       p.resolve({ ok: true, value: msg.value });
     } else {
       this.ipcFailures++;
@@ -262,6 +364,7 @@ export class FdxNativeDaemon {
   private onExit(_code: number | null, _signal: string | null): void {
     for (const [id, p] of this.pending) {
       clearTimeout(p.timer);
+      if (p.signal) p.signal.removeEventListener("abort", p.onAbort as () => void);
       this.pending.delete(id);
       this.ipcFailures++;
       p.reject(new FdxNativeDaemonError("FDX_DAEMON_EXITED", "fdx native daemon process exited"));
