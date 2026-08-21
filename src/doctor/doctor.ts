@@ -37,7 +37,7 @@ export type { CheckResult, DoctorReport, DoctorOptions, Recommendation, AutoFixR
 export type { CheckStatus, Severity, CheckCategory } from "./types"
 
 export async function runDoctor(directory: string, options: DoctorOptions = {}): Promise<DoctorReport> {
-  const allChecks: CheckResult[] = []
+  let allChecks: CheckResult[] = []
 
   // Run all check categories
   const results = await Promise.all([
@@ -63,22 +63,34 @@ export async function runDoctor(directory: string, options: DoctorOptions = {}):
 
   // Filter by strict mode (only errors and high severity)
   if (options.strict) {
-    allChecks.filter(c => c.severity === "critical" || c.severity === "high" || c.status === "error")
+    allChecks = allChecks.filter(c => c.severity === "critical" || c.severity === "high" || c.status === "error")
   }
 
   // Tally
-  const passed = allChecks.filter(c => c.status === "pass").length
-  const warnings = allChecks.filter(c => c.status === "warning").length
-  const errors = allChecks.filter(c => c.status === "error").length
-  const info = allChecks.filter(c => c.status === "info").length
-  const skipped = allChecks.filter(c => c.status === "skipped").length
-  const total = allChecks.length
+  let passed = 0
+  let warnings = 0
+  let errors = 0
+  let info = 0
+  let skipped = 0
+  let repairableCount = 0
+  let requiresAuthCount = 0
+  let requiresPrivilegeCount = 0
+  let manualCount = 0
 
-  // Tally repairability
-  const repairableCount = allChecks.filter((c) => c.autoFixAvailable || c.repairability === "automatic").length
-  const requiresAuthCount = allChecks.filter((c) => c.repairability === "requires-auth").length
-  const requiresPrivilegeCount = allChecks.filter((c) => c.repairability === "requires-privilege").length
-  const manualCount = allChecks.filter((c) => c.repairability === "manual").length
+  for (let i = 0; i < allChecks.length; i++) {
+    const c = allChecks[i]
+    if (c.status === "pass") passed++
+    else if (c.status === "warning") warnings++
+    else if (c.status === "error") errors++
+    else if (c.status === "info") info++
+    else if (c.status === "skipped") skipped++
+
+    if (c.autoFixAvailable || c.repairability === "automatic") repairableCount++
+    else if (c.repairability === "requires-auth") requiresAuthCount++
+    else if (c.repairability === "requires-privilege") requiresPrivilegeCount++
+    else if (c.repairability === "manual") manualCount++
+  }
+  const total = allChecks.length
 
   // Calculate scores (0-100)
   const envScore = scoreCategory(allChecks, "runtime", "environment", "filesystem")

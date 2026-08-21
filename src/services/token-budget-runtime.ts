@@ -25,7 +25,6 @@ import { InMemoryTokenUsageStore, type TokenUsageStore } from "./token-usage-sto
 import { AdaptiveExecutionControl } from "./adaptive-execution-control"
 import type { WorkstreamBudgetHandle } from "./adaptive-execution-control"
 import type { ExecutionWorkstream } from "../orchestration/execution/contracts"
-import { estimateTokensFromBytes } from "./token-budget"
 import type { OrchestrationMetrics } from "../orchestration/metrics"
 
 export interface TokenBudgetRuntimeOptions {
@@ -64,9 +63,13 @@ interface PendingSlot {
 const MAX_PENDING_PER_SESSION = 8
 
 function serializeEstimate(message: unknown): number {
+  if (!message) return 0
+  if (typeof message === "string") {
+    return Math.ceil(message.length / 4)
+  }
   try {
-    const json = JSON.stringify(message ?? {})
-    return estimateTokensFromBytes(Buffer.byteLength(json, "utf-8"))
+    const json = JSON.stringify(message)
+    return Math.ceil(json.length / 4)
   } catch {
     return 0
   }
@@ -296,6 +299,7 @@ export class TokenBudgetRuntime {
     if (!ctrl) return
     await ctrl.cancelSession(ctx.sessionID, reason)
     this.pending.delete(ctx.sessionID)
+    this.runForSession.delete(ctx.sessionID)
   }
 
   /** Register a session (called once per session creation). */
@@ -304,7 +308,7 @@ export class TokenBudgetRuntime {
   }
 
   getSnapshot(sessionID: string) {
-    const runId = this.runForSession.get(sessionID)
+    const runId = this.runForSession.get(sessionID) ?? (this.controllers.has(sessionID) ? sessionID : null)
     if (!runId) return null
     const ctrl = this.controllers.get(runId)
     return ctrl ? ctrl.getSnapshot() : null

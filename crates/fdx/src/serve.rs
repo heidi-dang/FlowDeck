@@ -100,7 +100,7 @@ fn parse_paths(args: &serde_json::Value) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn handle_read(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
+fn handle_read(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cache: &AstCache) {
     let (path, offset, limit) = match read_args(args) {
         Ok(v) => v,
         Err(e) => return err(writer, id, e),
@@ -114,8 +114,7 @@ fn handle_read(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
         format: crate::output::OutputFormat::Text,
         no_cache: false,
     };
-    let cache = AstCache::new();
-    match read_file(&path, &options, &cache) {
+    match read_file(&path, &options, cache) {
         Ok(result) => {
             // Render a stable textual representation for the replay/tool layer.
             let mut buffer: Vec<u8> = Vec::new();
@@ -149,7 +148,7 @@ fn handle_read(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
     }
 }
 
-fn handle_search(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
+fn handle_search(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cache: &AstCache) {
     let pattern = match args.get("pattern").and_then(|v| v.as_str()) {
         Some(p) if !p.is_empty() => p,
         _ => return err(writer, id, "search: missing pattern".to_string()),
@@ -172,8 +171,7 @@ fn handle_search(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
         .and_then(|v| v.as_u64())
         .map(|v| v as usize)
         .unwrap_or(50);
-    let cache = AstCache::new();
-    match search::search_symbols(pattern, &paths, kind, max_matches, false, &cache) {
+    match search::search_symbols(pattern, &paths, kind, max_matches, false, cache) {
         Ok(matches) => {
             let value: Vec<serde_json::Value> = matches
                 .iter()
@@ -185,7 +183,7 @@ fn handle_search(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
     }
 }
 
-fn handle_outline(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
+fn handle_outline(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cache: &AstCache) {
     let paths = parse_paths(args);
     if paths.is_empty() {
         return err(writer, id, "outline: missing paths".to_string());
@@ -206,8 +204,7 @@ fn handle_outline(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
             .unwrap_or(1),
         no_cache: false,
     };
-    let cache = AstCache::new();
-    match outline::outline_paths(&paths, &options, &cache) {
+    match outline::outline_paths(&paths, &options, cache) {
         Ok(results) => {
             let value: Vec<serde_json::Value> = results.iter().map(|r| serde_json::json!({ "path": r.path, "language": r.language, "total_lines": r.total_lines, "symbols": r.symbols, "parse_error": r.parse_error })).collect();
             ok_value(writer, id, serde_json::json!(value));
@@ -216,7 +213,7 @@ fn handle_outline(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
     }
 }
 
-fn handle_impact(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
+fn handle_impact(writer: &mut dyn Write, id: &str, args: &serde_json::Value, cache: &AstCache) {
     let targets = parse_paths(args);
     if targets.is_empty() {
         return err(writer, id, "impact: missing files".to_string());
@@ -236,8 +233,7 @@ fn handle_impact(writer: &mut dyn Write, id: &str, args: &serde_json::Value) {
         Some("out") => ImpactDirection::Out,
         _ => ImpactDirection::Both,
     };
-    let cache = AstCache::new();
-    match impact::analyze_impact(&targets, &root, depth, direction, &cache) {
+    match impact::analyze_impact(&targets, &root, depth, direction, cache) {
         Ok(results) => {
             let value: Vec<serde_json::Value> = results.iter().map(|r| serde_json::json!({ "target": r.target, "depth": r.depth, "outbound": r.outbound, "inbound": r.inbound })).collect();
             ok_value(writer, id, serde_json::json!(value));
@@ -253,6 +249,7 @@ pub fn run() {
     let mut reader = std::io::BufReader::new(stdin.lock());
     let mut stdout = std::io::stdout();
     let mut line = String::new();
+    let cache = AstCache::new();
     loop {
         line.clear();
         match reader.read_line(&mut line) {
@@ -284,10 +281,10 @@ pub fn run() {
                         &req.id,
                         serde_json::json!({ "healthy": true, "service": "fdx-native-daemon" }),
                     ),
-                    "read" => handle_read(&mut stdout, &req.id, &req.args),
-                    "search" => handle_search(&mut stdout, &req.id, &req.args),
-                    "outline" => handle_outline(&mut stdout, &req.id, &req.args),
-                    "impact" => handle_impact(&mut stdout, &req.id, &req.args),
+                    "read" => handle_read(&mut stdout, &req.id, &req.args, &cache),
+                    "search" => handle_search(&mut stdout, &req.id, &req.args, &cache),
+                    "outline" => handle_outline(&mut stdout, &req.id, &req.args, &cache),
+                    "impact" => handle_impact(&mut stdout, &req.id, &req.args, &cache),
                     other => err(
                         &mut stdout,
                         &req.id,
