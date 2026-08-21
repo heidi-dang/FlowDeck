@@ -46,11 +46,11 @@ export function supportsCodeMode(version: string | null): boolean {
   return parsed.major > 1 || (parsed.major === 1 && (parsed.minor > 18 || (parsed.minor === 18 && parsed.patch >= 18)))
 }
 
-export type OpenCodeCompatibilityStatus = "FULLY_QUALIFIED" | "RECOMMENDED" | "SUPPORTED" | "DEGRADED" | "UNSUPPORTED"
+export type OpenCodeCompatibilityStatus = "FULLY_QUALIFIED" | "RECOMMENDED" | "SUPPORTED" | "SUPPORTED_UNVERIFIED" | "DEGRADED" | "UNSUPPORTED"
 
 export function classifyOpenCodeCompatibility(opencodeVersion: string | null): {
   status: OpenCodeCompatibilityStatus
-  qualification: "FULLY_QUALIFIED" | "RECOMMENDED" | "SUPPORTED" | "DEGRADED" | "UNSUPPORTED"
+  qualification: "FULLY_QUALIFIED" | "RECOMMENDED" | "SUPPORTED" | "SUPPORTED_UNVERIFIED" | "DEGRADED" | "UNSUPPORTED"
   details: string
 } {
   const parsed = parseOpenCodeVersion(opencodeVersion)
@@ -81,11 +81,11 @@ export function classifyOpenCodeCompatibility(opencodeVersion: string | null): {
   }
 
   // Newer minor versions >= 1.19
-  if (parsed.major > 1 || (parsed.major === 1 && parsed.minor > 18)) {
+  if (parsed.major > 1 || (parsed.major === 1 && parsed.minor > 18) || (parsed.major === 1 && parsed.minor === 18 && parsed.patch > 20)) {
     return {
-      status: "SUPPORTED",
-      qualification: "SUPPORTED",
-      details: `OpenCode v${parsed.major}.${parsed.minor}.${parsed.patch} (Forward compatible)`,
+      status: "SUPPORTED_UNVERIFIED",
+      qualification: "SUPPORTED_UNVERIFIED",
+      details: `OpenCode v${parsed.major}.${parsed.minor}.${parsed.patch} (Unverified newer version)`,
     }
   }
 
@@ -268,7 +268,8 @@ export function codeModeCapabilityCheck(opencodeVersion: string | null): CheckRe
       runtimeVersion: opencodeVersion,
       nativeSupport,
       featureEnabled: enabled,
-      executeToolAvailable: nativeSupport && enabled,
+      eligibleMcpToolsDetected: "unknown",
+      executeToolAvailable: nativeSupport && enabled ? "unknown" : false,
       narrowFlag: narrowFlag ?? null,
       broadFlag: broadFlag ?? null,
       mcpOnlyBoundary: true,

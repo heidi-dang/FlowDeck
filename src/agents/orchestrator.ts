@@ -276,10 +276,11 @@ export function buildTaskSpecificPromptSections(
   disabledAgents?: Set<string>,
   options?: {
     codeModeAvailable?: boolean
+    mcpCompositionCandidate?: boolean
   },
 ): string {
   // If native Code Mode is available and turn involves MCP tools / automation composition, include lazy guidance
-  const codeModeGuidance = options?.codeModeAvailable ? [
+  const codeModeGuidance = (options?.codeModeAvailable && options?.mcpCompositionCandidate) ? [
     "",
     "## Native Code Mode (OpenCode execute tool)",
     "",

@@ -52,16 +52,16 @@ function calculatePercentiles(times: number[]) {
 }
 
 async function runSequentialWorkflow() {
-  // 1. Fetch issues (LLM turn 1)
+  // 1. Fetch issues (mock tool invoke 1)
   const issues = await mockMcpTools.github_list_issues({ repo: "heidi-dang/flowdeck", state: "open" })
-  // 2. Fetch PRs (LLM turn 2)
+  // 2. Fetch PRs (mock tool invoke 2)
   const prs = await mockMcpTools.github_list_pull_requests({ repo: "heidi-dang/flowdeck", state: "open" })
-  // 3. For first bug issue, fetch comments (LLM turn 3)
+  // 3. For first bug issue, fetch comments (mock tool invoke 3)
   const bug = issues.find(i => i.labels.includes("bug"))
   const comments = bug ? await mockMcpTools.github_get_issue_comments({ issue_id: bug.id }) : []
-  // 4. Fetch docs (LLM turn 4)
+  // 4. Fetch docs (mock tool invoke 4)
   const docs = await mockMcpTools.context7_resolve_docs({ query: "auth" })
-  // 5. Aggregate result (LLM turn 5)
+  // 5. Aggregate result (mock tool invoke 5)
   return {
     bugs: issues.filter(i => i.labels.includes("bug")),
     activePrs: prs.filter(p => !p.draft),
@@ -71,12 +71,12 @@ async function runSequentialWorkflow() {
 }
 
 async function runParallelWorkflow() {
-  // Turn 1: Parallel fetch issues & PRs
+  // Step 1: Parallel fetch issues & PRs
   const [issues, prs] = await Promise.all([
     mockMcpTools.github_list_issues({ repo: "heidi-dang/flowdeck", state: "open" }),
     mockMcpTools.github_list_pull_requests({ repo: "heidi-dang/flowdeck", state: "open" }),
   ])
-  // Turn 2: Dependent fetch comments & docs in parallel
+  // Step 2: Dependent fetch comments & docs in parallel
   const bug = issues.find(i => i.labels.includes("bug"))
   const [comments, docs] = await Promise.all([
     bug ? mockMcpTools.github_get_issue_comments({ issue_id: bug.id }) : Promise.resolve([]),
@@ -91,7 +91,7 @@ async function runParallelWorkflow() {
 }
 
 async function runNativeCodeModeWorkflow() {
-  // Confined execution script executed by OpenCode in ONE single LLM round trip
+  // Confined execution script executed by OpenCode in ONE single mock scheduling event
   const [issues, prs] = await Promise.all([
     mockMcpTools.github_list_issues({ repo: "heidi-dang/flowdeck", state: "open" }),
     mockMcpTools.github_list_pull_requests({ repo: "heidi-dang/flowdeck", state: "open" }),
@@ -111,7 +111,7 @@ async function runNativeCodeModeWorkflow() {
 
 async function benchmark() {
   const ITERATIONS = 100
-  console.log(`\n=== Running Code Mode vs Ordinary MCP Benchmark (${ITERATIONS} iterations) ===\n`)
+  console.log(`\n=== Running Synthetic Code Mode Orchestration Microbenchmark (${ITERATIONS} iterations) ===\n`)
 
   // Warmup
   for (let i = 0; i < 5; i++) {
@@ -147,21 +147,20 @@ async function benchmark() {
   }
   const cmStats = calculatePercentiles(cmTimes)
 
-  console.log("-----------------------------------------------------------------------------------------")
-  console.log("| Pattern            | Round Trips | Wall (p50) | Wall (p95) | Input Tokens | Output Tokens |")
-  console.log("-----------------------------------------------------------------------------------------")
-  console.log(`| A. Sequential MCP  | 4 LLM turns | ${seqStats.p50.toFixed(2).padStart(8)}ms | ${seqStats.p95.toFixed(2).padStart(8)}ms | ~3,200 tokens| ~1,100 tokens |`)
-  console.log(`| B. Parallel MCP    | 2 LLM turns | ${parStats.p50.toFixed(2).padStart(8)}ms | ${parStats.p95.toFixed(2).padStart(8)}ms | ~1,900 tokens| ~650 tokens   |`)
-  console.log(`| C. Native Code Mode| 1 LLM turn  | ${cmStats.p50.toFixed(2).padStart(8)}ms | ${cmStats.p95.toFixed(2).padStart(8)}ms | ~750 tokens  | ~220 tokens   |`)
-  console.log("-----------------------------------------------------------------------------------------")
+  console.log("----------------------------------------------------------------------")
+  console.log("| Pattern            | Structure           | Wall (p50) | Wall (p95) |")
+  console.log("----------------------------------------------------------------------")
+  console.log(`| A. Sequential MCP  | 4 mock tool invokes | ${seqStats.p50.toFixed(2).padStart(8)}ms | ${seqStats.p95.toFixed(2).padStart(8)}ms |`)
+  console.log(`| B. Parallel MCP    | 2 parallel groups   | ${parStats.p50.toFixed(2).padStart(8)}ms | ${parStats.p95.toFixed(2).padStart(8)}ms |`)
+  console.log(`| C. Code Mode Sim   | 1 Promise.all block | ${cmStats.p50.toFixed(2).padStart(8)}ms | ${cmStats.p95.toFixed(2).padStart(8)}ms |`)
+  console.log("----------------------------------------------------------------------")
 
   const latencyReduction = ((seqStats.p50 - cmStats.p50) / seqStats.p50) * 100
-  const tokenReduction = ((3200 - 750) / 3200) * 100
 
   console.log(`\nResults:`)
-  console.log(`- Round trips reduced from 4 -> 1 (-75%)`)
-  console.log(`- Tool latency reduced by ~${latencyReduction.toFixed(1)}% (p50: ${cmStats.p50.toFixed(2)}ms vs ${seqStats.p50.toFixed(2)}ms)`)
-  console.log(`- Token overhead reduced by ~${tokenReduction.toFixed(1)}%`)
+  console.log(`- Mock tool scheduling latency reduced by ~${latencyReduction.toFixed(1)}% (p50: ${cmStats.p50.toFixed(2)}ms vs ${seqStats.p50.toFixed(2)}ms)`)
+  console.log(`- Methodology: Synthetic microbenchmark measuring sequential vs Promise.all execution structure ONLY.`)
+  console.log(`- Limitations: Does not measure actual model token overhead, OpenCode JS sandbox evaluation overhead, or real MCP IPC latency.`)
 }
 
 benchmark().catch(console.error)

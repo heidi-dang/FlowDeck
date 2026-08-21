@@ -56,7 +56,7 @@ export function getOrchestrationRuntime(): any {
 
 const plugin: Plugin = async ({ directory, client: _client }) => {
   setActiveProjectDir(directory)
-  
+
   let currentConfig: any = {};
 
   return {
@@ -84,7 +84,7 @@ const plugin: Plugin = async ({ directory, client: _client }) => {
       if (cfgMcp) Object.assign(cfgMcp, mcps)
       else cfg.mcp = { ...mcps }
     },
-    
+
     permission: async (ctx: any) => {
       const isHeidiSession = ctx.agent?.name === "heidi" || ctx.agent?.name?.startsWith("heidi-");
       if (isHeidiSession && currentConfig?.heidi?.globalAlwaysApprove === true) {
@@ -95,6 +95,8 @@ const plugin: Plugin = async ({ directory, client: _client }) => {
 
     tool: {
       "doctor": doctorTool,
+      "fdx-force-error": { description: "Force error", args: {}, execute: async () => { throw new Error("Intentional forced error for native failure propagation test"); } } as any,
+
       "codegraph": codegraphTool,
       "fdx-context": fdxContextTool,
       "fdx-decisions": fdxDecisionsTool,

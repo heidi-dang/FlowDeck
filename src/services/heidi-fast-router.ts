@@ -49,6 +49,8 @@ export interface RouterDecision {
   forcedByExplicitSignal: boolean
   /** Absolutely minimal deterministic reason code used for telemetry (no chain-of-thought). */
   reasonCode: string
+  /** Whether the task involves MCP tool composition */
+  mcpCompositionCandidate?: boolean
 }
 
 // ─── Keyword patterns ────────────────────────────────────────────────────────
@@ -215,6 +217,15 @@ const STANDARD_PATTERNS: RegExp[] = [
   /across (multiple|several|many) files/i,
 ]
 
+const MCP_COMPOSITION_PATTERNS: RegExp[] = [
+  /github/i,
+  /issue/i,
+  /pull request/i,
+  /pr /i,
+  /mcp/i,
+  /aggregate/i,
+]
+
 // ─── Classification logic ────────────────────────────────────────────────────
 
 function matchesAny(input: string, patterns: RegExp[]): boolean {
@@ -262,6 +273,8 @@ export function classifyTask(
   const lc = text.toLowerCase()
 
   // ── FAST_DIRECT: trivial local task ──────────────────────────────────────
+  const mcpCompositionCandidate = matchesAny(text, MCP_COMPOSITION_PATTERNS)
+
   const isFastDirect = matchesAny(text, FAST_DIRECT_PATTERNS)
   if (isFastDirect && !hints?.isResuming) {
     const estFiles = hints?.estimatedFileCount ?? 1
@@ -272,6 +285,7 @@ export function classifyTask(
         reasonCode: "FAST_DIRECT_PATTERN",
         confidence: 0.9,
         forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
       }
     }
   }
@@ -284,6 +298,7 @@ export function classifyTask(
       reasonCode: "DEEP_PATTERN",
       confidence: 0.85,
       forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
     }
   }
 
@@ -306,6 +321,7 @@ export function classifyTask(
         reasonCode: "PARALLEL_UI_BACKEND",
         confidence: 0.82,
         forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? true,
+      mcpCompositionCandidate,
       }
     }
     // Parallel-signal text with only ONE detected domain → treat as specialist for that domain
@@ -318,6 +334,7 @@ export function classifyTask(
         reasonCode: "PARALLEL_SIGNAL_SINGLE_DOMAIN",
         confidence: 0.75,
         forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? true,
+      mcpCompositionCandidate,
       }
     }
     // Parallel signal with no detected domain → treat as STANDARD multi-workstream
@@ -327,6 +344,7 @@ export function classifyTask(
       reasonCode: "PARALLEL_SIGNAL_NO_DOMAIN",
       confidence: 0.65,
       forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
     }
   }
 
@@ -341,6 +359,7 @@ export function classifyTask(
       reasonCode: "SPECIALIST_" + domain,
       confidence: 0.88,
       forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? false,
+      mcpCompositionCandidate,
     }
   }
 
@@ -353,6 +372,7 @@ export function classifyTask(
       reasonCode: "STANDARD_MULTIFILE",
       confidence: 0.75,
       forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
     }
   }
 
@@ -365,6 +385,7 @@ export function classifyTask(
       reasonCode: "FAST_DIRECT_SHORT",
       confidence: 0.65,
       forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
     }
   }
 
@@ -375,6 +396,7 @@ export function classifyTask(
     reasonCode: "STANDARD_FALLBACK",
     confidence: 0.6,
     forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
   }
 }
 

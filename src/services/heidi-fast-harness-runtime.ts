@@ -169,7 +169,7 @@ export function renderTurnContext(sessionID: string, directory: string): string 
     route.decision.executionClass,
     route.decision.specialists,
     undefined,
-    { codeModeAvailable: isCodeMode },
+    { codeModeAvailable: isCodeMode, mcpCompositionCandidate: route.decision.mcpCompositionCandidate },
   )
   if (sections.trim()) parts.push(sections)
   // Active-parallel coordinator packet (compact <200 tokens; empty when none).

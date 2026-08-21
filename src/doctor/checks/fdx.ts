@@ -123,7 +123,7 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
 
   // FDX Resident Native Daemon Health
   let daemonHealthy = false
-  let daemonDetail = "FDX resident daemon not running (spawned on demand)"
+  let daemonDetail = "FDX daemon not tested or spawned on demand"
   if (fdxRuns) {
     try {
       const execPath = nativeBinaryPath ?? "fdx"
@@ -171,7 +171,7 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
 
       daemonHealthy = await healthPromise
       if (daemonHealthy) {
-        daemonDetail = "FDX resident daemon protocol responsive (IPC health check passed)"
+        daemonDetail = "FDX daemon spawns, accepts JSON-lines health request, responds validly, and shuts down cleanly"
       }
     } catch {
       daemonHealthy = false
@@ -180,14 +180,14 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
 
   checks.push({
     id: "fdx.resident_daemon",
-    title: "FDX Resident Daemon",
+    title: "FDX Daemon Startup & IPC",
     category: "fdx",
     severity: "info",
     status: daemonHealthy ? "pass" : "info",
     detected: daemonDetail,
-    expected: "FDX daemon responsive over JSON-lines IPC",
+    expected: "FDX daemon spawns and responds to JSON-lines IPC",
     recommendation: daemonHealthy
-      ? "FDX resident daemon operational for persistent warm requests"
+      ? "FDX daemon capability verified (spawn → request → response → shutdown)"
       : "Daemon launches on demand when resident requests are made",
     autoFixAvailable: false,
     affectsRuntime: false,

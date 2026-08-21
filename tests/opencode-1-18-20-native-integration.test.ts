@@ -81,7 +81,7 @@ describe("OpenCode v1.18.20 Native Integration Suite", () => {
         process.env.OPENCODE_EXPERIMENTAL_CODE_MODE = "true"
         const enabled = codeModeCapabilityCheck("1.18.20")
         expect(enabled.status).toBe("pass")
-        expect(enabled.evidence?.executeToolAvailable).toBe(true)
+        expect(enabled.evidence?.executeToolAvailable).toBe("unknown")
         expect(enabled.evidence?.mcpOnlyBoundary).toBe(true)
 
         process.env.OPENCODE_EXPERIMENTAL_CODE_MODE = "false"
@@ -208,12 +208,12 @@ describe("OpenCode v1.18.20 Native Integration Suite", () => {
 
   describe("Phase 4: Code Mode Lazy Guidance & Boundary", () => {
     it("injects Code Mode instructions only when Code Mode is active and preserves MCP-only boundary", () => {
-      const withCodeMode = buildTaskSpecificPromptSections("PARALLEL_SPECIALISTS", undefined, undefined, { codeModeAvailable: true })
+      const withCodeMode = buildTaskSpecificPromptSections("PARALLEL_SPECIALISTS", undefined, undefined, { codeModeAvailable: true, mcpCompositionCandidate: true })
       expect(withCodeMode).toContain("Native Code Mode (OpenCode execute tool)")
       expect(withCodeMode).toContain("Scope & Boundary: `execute` has access ONLY to connected, eligible MCP tools")
       expect(withCodeMode).toContain("Do NOT attempt to invoke internal plugin tools (fdx-*, native read, native shell)")
 
-      const withoutCodeMode = buildTaskSpecificPromptSections("PARALLEL_SPECIALISTS", undefined, undefined, { codeModeAvailable: false })
+      const withoutCodeMode = buildTaskSpecificPromptSections("PARALLEL_SPECIALISTS", undefined, undefined, { codeModeAvailable: true, mcpCompositionCandidate: false })
       expect(withoutCodeMode).not.toContain("Native Code Mode (OpenCode execute tool)")
     })
 

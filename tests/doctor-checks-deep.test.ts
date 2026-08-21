@@ -73,7 +73,7 @@ describe("Doctor Engine Deep Coverage Tests", () => {
       const enabled = codeModeCapabilityCheck("1.18.20")
       expect(enabled.status).toBe("pass")
       expect(enabled.detected).toContain("OPENCODE_EXPERIMENTAL_CODE_MODE=true")
-      expect(enabled.evidence?.executeToolAvailable).toBe(true)
+      expect(enabled.evidence?.executeToolAvailable).toBe("unknown")
 
       process.env.OPENCODE_EXPERIMENTAL_CODE_MODE = "false"
       const disabled = codeModeCapabilityCheck("1.18.20")
