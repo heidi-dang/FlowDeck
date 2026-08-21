@@ -23,6 +23,7 @@ import { resolve, dirname, join } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 import { execFileSync } from "node:child_process"
 import { existsSync } from "node:fs"
+import { homedir } from "node:os"
 import { resolveDoctorExitCode } from "./exit-code.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -31,7 +32,7 @@ const PKG_ROOT = resolve(__dirname, "..", "..")
 // Resolve bun binary path once at module load
 // Stored as a module-level value to avoid PATH issues in child processes
 let BUN_BIN = null
-function resolveBunBinary() {
+export function resolveBunBinary() {
   if (BUN_BIN !== null) return BUN_BIN
   const candidates = []
   if (process.env.FLOWDECK_BUN_BIN) candidates.push(process.env.FLOWDECK_BUN_BIN)
@@ -65,7 +66,7 @@ function resolveBunBinary() {
 
 // ─── Argument Parsing ──────────────────────────────────────────────────
 
-function parseArgs(args) {
+export function parseArgs(args) {
   const options = {
     json: false,
     strict: false,
@@ -123,11 +124,11 @@ function parseArgs(args) {
 
 // ─── Doctor Engine Resolution ──────────────────────────────────────────
 
-function hasBun() {
+export function hasBun() {
   return resolveBunBinary() !== false
 }
 
-function runViaBunInline(options, entryPath) {
+export function runViaBunInline(options, entryPath) {
   const bunBin = resolveBunBinary()
   if (!bunBin) {
     throw new Error("Bun not available. Build the project first: bun run build")
@@ -182,7 +183,7 @@ function runViaBunInline(options, entryPath) {
   }
 }
 
-async function runDoctorEngine(options) {
+export async function runDoctorEngine(options) {
   const doctorSrcPath = join(PKG_ROOT, "src", "doctor", "doctor.ts")
   const distPath = join(PKG_ROOT, "dist", "index.js")
 
@@ -224,9 +225,9 @@ async function runDoctorEngine(options) {
 
 // ─── Secret Redaction ──────────────────────────────────────────────────
 
-const SECRET_KEY_PATTERNS = /api[_-]?key|token|secret|password|credential|auth/i
+export const SECRET_KEY_PATTERNS = /api[_-]?key|token|secret|password|credential|auth/i
 
-function redactSecrets(obj, seen = new WeakSet(), depth = 0) {
+export function redactSecrets(obj, seen = new WeakSet(), depth = 0) {
   if (depth > 50) return "[MAX_DEPTH]"
   if (typeof obj === "string") {
     return obj
@@ -260,7 +261,7 @@ function redactSecrets(obj, seen = new WeakSet(), depth = 0) {
 
 // ─── Report Formatting ─────────────────────────────────────────────────
 
-function buildHumanReport(report, verbose) {
+export function buildHumanReport(report, verbose) {
   const lines = []
 
   // Schema header
