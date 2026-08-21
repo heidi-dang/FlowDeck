@@ -216,6 +216,7 @@ export class TokenBudgetController {
   private run: RunBudgetState
   private readonly agents = new Map<string, AgentBudgetState>()
   private readonly assignments = new Map<string, AssignmentBudgetState>()
+  private readonly assignmentByIdentity = new Map<string, string>() // identity -> assignmentId
   private readonly reservations = new Map<string, ReservationRecord>()
   private readonly records: TokenUsageRecord[] = []
   private readonly committedKeys = new Set<string>()
@@ -259,7 +260,9 @@ export class TokenBudgetController {
       const agent = ctrl.agents.get(restored.sessionId) ?? ctrl.registerSession(restored.sessionId, restored.agentId, restored.parentSessionId)
       agent.reserved += restored.claimed
       if (restored.assignmentId && !ctrl.assignments.has(restored.assignmentId)) {
-        ctrl.assignments.set(restored.assignmentId, { assignmentId: restored.assignmentId, identity: `restored|${restored.assignmentId}`, agentId: restored.agentId, consumed: 0, reserved: restored.claimed, status: "active" })
+        const state: AssignmentBudgetState = { assignmentId: restored.assignmentId, identity: `restored|${restored.assignmentId}`, agentId: restored.agentId, consumed: 0, reserved: restored.claimed, status: "active" }
+        ctrl.assignments.set(restored.assignmentId, state)
+        ctrl.assignmentByIdentity.set(state.identity, state.assignmentId)
       } else if (restored.assignmentId) {
         ctrl.assignments.get(restored.assignmentId)!.reserved += restored.claimed
       }
@@ -275,6 +278,7 @@ export class TokenBudgetController {
         const assignment = ctrl.assignments.get(rec.assignmentId) ?? (() => {
           const created: AssignmentBudgetState = { assignmentId: rec.assignmentId!, identity: `restored|${rec.assignmentId}`, agentId: rec.agent, consumed: 0, reserved: 0, status: "active" }
           ctrl.assignments.set(created.assignmentId, created)
+          ctrl.assignmentByIdentity.set(created.identity, created.assignmentId)
           return created
         })()
         assignment.consumed += rec.billable
@@ -323,31 +327,41 @@ export class TokenBudgetController {
     sha: string,
   ): { assignmentId: string; reused: boolean; existing: AssignmentBudgetState | null } {
     const identity = TokenBudgetController.assignmentIdentity(this.run.runId, assignmentType, agentId, scope, sha)
-    for (const a of this.assignments.values()) {
-      if (a.identity === identity && a.status === "active") {
+    const existingId = this.assignmentByIdentity.get(identity)
+    if (existingId) {
+      const a = this.assignments.get(existingId)
+      if (a && a.status === "active") {
         return { assignmentId: a.assignmentId, reused: true, existing: a }
       }
     }
     const assignmentId = randomUUID()
-    this.assignments.set(assignmentId, {
+    const state: AssignmentBudgetState = {
       assignmentId,
       identity,
       agentId,
       consumed: 0,
       reserved: 0,
       status: "active",
-    })
+    }
+    this.assignments.set(assignmentId, state)
+    this.assignmentByIdentity.set(identity, assignmentId)
     return { assignmentId, reused: false, existing: null }
   }
 
   completeAssignment(assignmentId: string): void {
     const a = this.assignments.get(assignmentId)
-    if (a && a.status === "active") a.status = "completed"
+    if (a && a.status === "active") {
+      a.status = "completed"
+      this.assignmentByIdentity.delete(a.identity)
+    }
   }
 
   supersedeAssignment(assignmentId: string): void {
     const a = this.assignments.get(assignmentId)
-    if (a && a.status === "active") a.status = "superseded"
+    if (a && a.status === "active") {
+      a.status = "superseded"
+      this.assignmentByIdentity.delete(a.identity)
+    }
   }
 
   // ─── Dispatch gate (Phase C) ─────────────────────────────────────────────

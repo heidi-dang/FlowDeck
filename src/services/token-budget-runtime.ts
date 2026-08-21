@@ -291,7 +291,7 @@ export class TokenBudgetRuntime {
     }
   }
 
-  /** Release all pending reservations for a session on abort/error. */
+  /** Release all pending reservations for a session on abort/error/completion. */
   async onSessionEnd(ctx: SessionBudgetContext, reason: string): Promise<void> {
     const runId = this.runForSession.get(ctx.sessionID)
     if (!runId) return
@@ -299,7 +299,6 @@ export class TokenBudgetRuntime {
     if (!ctrl) return
     await ctrl.cancelSession(ctx.sessionID, reason)
     this.pending.delete(ctx.sessionID)
-    this.runForSession.delete(ctx.sessionID)
   }
 
   /** Register a session (called once per session creation). */

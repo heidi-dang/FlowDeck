@@ -22,7 +22,10 @@ fn test_git_status() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Should show either clean or some status groups
     assert!(
-        stdout.contains("clean") || stdout.contains("staged") || stdout.contains("unstaged"),
+        stdout.contains("clean")
+            || stdout.contains("staged")
+            || stdout.contains("unstaged")
+            || stdout.contains("untracked"),
         "should show status: {}",
         stdout
     );

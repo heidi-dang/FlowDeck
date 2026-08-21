@@ -9,7 +9,18 @@ export interface LockOptions {
 
 const DEFAULT_TIMEOUT = 5_000
 const DEFAULT_STALE_MS = 5_000
-const RETRY_DELAY_MS = 50
+const BASE_RETRY_DELAY_MS = 50
+
+/** Check if process with given PID is alive on local machine. */
+function isPidAlive(pid: number): boolean {
+  if (!pid || isNaN(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err: any) {
+    return err?.code === "EPERM" // Process exists but owned by another user
+  }
+}
 
 /**
  * Acquire a file-based advisory lock.
@@ -18,13 +29,13 @@ const RETRY_DELAY_MS = 50
  * Uses `wx` flag (atomic create-or-fail) so concurrent acquirers on the
  * same host cannot interleave.
  *
- * Stale lock detection: if an existing lock file is older than `staleMs`,
- * the lock is stolen (removed and re-created). This prevents a crashed
- * process from blocking all subsequent writers forever.
+ * Stale lock detection: if an existing lock file is older than `staleMs`
+ * OR the holding PID is dead, the lock is stolen (removed and re-created).
+ * This prevents a crashed process from blocking all subsequent writers forever.
  *
- * Retry strategy: `setTimeout`-based delay of 50ms between attempts — no
- * spin loops, no CPU waste. This is safe for co-operative concurrent
- * subagents on the same host.
+ * Retry strategy: `setTimeout`-based randomized exponential delay with jitter
+ * between attempts — no spin loops, no CPU waste. This is safe for co-operative
+ * concurrent subagents on the same host.
  *
  * Timeout behaviour: throws an error when the lock cannot be acquired
  * within `timeout` ms. Never falls through to an unlocked write — the
@@ -42,24 +53,41 @@ export async function acquireLock(
   const timeout = options?.timeout ?? DEFAULT_TIMEOUT
   const staleMs = options?.staleMs ?? DEFAULT_STALE_MS
   const deadline = Date.now() + timeout
+  let attempt = 0
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    attempt++
     // ── Attempt 1: create the lock file atomically ────────────────
     try {
       await writeFile(lockPath, `${process.pid}:${Date.now()}`, { flag: "wx" })
       return // acquired
     } catch (err: any) {
       if (err.code !== "EEXIST") throw err
-      // Lock exists — fall through to staleness check
+      // Lock exists — fall through to staleness/PID check
     }
 
-    // ── Staleness check ───────────────────────────────────────────
+    // ── Staleness & PID liveness check ────────────────────────────
     try {
       const st = await stat(lockPath)
       const age = Date.now() - st.mtimeMs
-      if (age > staleMs) {
-        // Lock is from a crashed process — try to steal it.
+      let isStale = age > staleMs
+
+      if (!isStale) {
+        try {
+          const content = await readFile(lockPath, "utf-8")
+          const [pidStr] = content.trim().split(":")
+          const holderPid = parseInt(pidStr, 10)
+          if (!isNaN(holderPid) && !isPidAlive(holderPid)) {
+            isStale = true // PID is dead
+          }
+        } catch {
+          // File read race; ignore
+        }
+      }
+
+      if (isStale) {
+        // Lock is from a dead or timed-out process — try to steal it.
         // Remove first; another acquirer may steal in between.
         try {
           await unlink(lockPath)
@@ -93,8 +121,11 @@ export async function acquireLock(
       )
     }
 
-    // ── Async wait — no spin loop ─────────────────────────────────
-    await new Promise<void>((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
+    // ── Async wait with backoff & jitter — no spin loop ───────────
+    const backoff = Math.min(200, BASE_RETRY_DELAY_MS + attempt * 10)
+    const jitter = Math.floor(Math.random() * 25)
+    const delay = backoff + jitter
+    await new Promise<void>((resolve) => setTimeout(resolve, delay))
   }
 }
 

@@ -66,7 +66,7 @@ export async function runDoctor(directory: string, options: DoctorOptions = {}):
     allChecks = allChecks.filter(c => c.severity === "critical" || c.severity === "high" || c.status === "error")
   }
 
-  // Tally
+  // Tally & scores
   let passed = 0
   let warnings = 0
   let errors = 0
@@ -76,6 +76,11 @@ export async function runDoctor(directory: string, options: DoctorOptions = {}):
   let requiresAuthCount = 0
   let requiresPrivilegeCount = 0
   let manualCount = 0
+
+  let envTotal = 0, envPass = 0, envErr = 0, envWarn = 0
+  let secTotal = 0, secPass = 0, secErr = 0, secWarn = 0
+  let perfTotal = 0, perfPass = 0, perfErr = 0, perfWarn = 0
+  let cfgTotal = 0, cfgPass = 0, cfgErr = 0, cfgWarn = 0
 
   for (let i = 0; i < allChecks.length; i++) {
     const c = allChecks[i]
@@ -89,14 +94,48 @@ export async function runDoctor(directory: string, options: DoctorOptions = {}):
     else if (c.repairability === "requires-auth") requiresAuthCount++
     else if (c.repairability === "requires-privilege") requiresPrivilegeCount++
     else if (c.repairability === "manual") manualCount++
+
+    const isPass = c.status === "pass" || c.status === "info"
+    const isErr = c.status === "error"
+    const isWarn = c.status === "warning"
+    const cat = c.category
+
+    if (cat === "runtime" || cat === "environment" || cat === "filesystem") {
+      envTotal++
+      if (isPass) envPass++
+      if (isErr) envErr++
+      if (isWarn) envWarn++
+    } else if (cat === "security") {
+      secTotal++
+      if (isPass) secPass++
+      if (isErr) secErr++
+      if (isWarn) secWarn++
+    } else if (cat === "performance") {
+      perfTotal++
+      if (isPass) perfPass++
+      if (isErr) perfErr++
+      if (isWarn) perfWarn++
+    } else if (cat === "configuration" || cat === "mcp" || cat === "plugin" || cat === "hook" || cat === "lsp" || cat === "fdx" || cat === "browser" || cat === "skills" || cat === "heidi") {
+      cfgTotal++
+      if (isPass) cfgPass++
+      if (isErr) cfgErr++
+      if (isWarn) cfgWarn++
+    }
   }
   const total = allChecks.length
 
   // Calculate scores (0-100)
-  const envScore = scoreCategory(allChecks, "runtime", "environment", "filesystem")
-  const secScore = scoreCategory(allChecks, "security")
-  const perfScore = scoreCategory(allChecks, "performance")
-  const configScore = scoreCategory(allChecks, "configuration", "mcp", "plugin", "hook", "lsp", "fdx", "browser", "skills", "heidi")
+  const calcScore = (tot: number, p: number, e: number, w: number) => {
+    if (tot === 0) return 100
+    const passRatio = p / tot
+    const score = Math.max(0, Math.round(passRatio * 100 - e * 15 - w * 5))
+    return Math.min(100, score)
+  }
+
+  const envScore = calcScore(envTotal, envPass, envErr, envWarn)
+  const secScore = calcScore(secTotal, secPass, secErr, secWarn)
+  const perfScore = calcScore(perfTotal, perfPass, perfErr, perfWarn)
+  const configScore = calcScore(cfgTotal, cfgPass, cfgErr, cfgWarn)
   const overall = Math.round((envScore + secScore + perfScore + configScore) / 4)
 
   // Generate recommendations
