@@ -1,0 +1,103 @@
+import { describe, it, expect } from "bun:test"
+import { HEIDI_CODE_MODE_POLICY } from "../src/services/heidi-code-mode-policy"
+import { buildTaskSpecificPromptSections } from "../src/agents/orchestrator"
+
+import { evaluateCodeModeEligibility } from "../src/services/heidi-code-mode-evaluator"
+
+describe("Heidi Code Mode Policy", () => {
+  it("rejects when execute is unavailable", () => {
+    const res = evaluateCodeModeEligibility("List open GitHub issues", false, true)
+    expect(res.isEligible).toBe(false)
+    expect(res.rejectionReason).toBe("EXECUTE_UNAVAILABLE")
+    expect(res.telemetry.codeModeSelected).toBe(false)
+  })
+
+  it("rejects when not an MCP composition candidate", () => {
+    const res = evaluateCodeModeEligibility("Fix this issue in src/index.ts", true, false)
+    expect(res.isEligible).toBe(false)
+    expect(res.rejectionReason).toBe("NOT_MCP_COMPOSITION")
+  })
+
+  it("rejects when workflow is too complex", () => {
+    const res = evaluateCodeModeEligibility("Continuously investigate all GitHub issues, keep iterating until every issue has a root cause.", true, true)
+    expect(res.isEligible).toBe(false)
+    expect(res.rejectionReason).toBe("TOO_COMPLEX")
+  })
+
+  it("rejects when retry is required", () => {
+    const res = evaluateCodeModeEligibility("Fetch GitHub issues and use exponential backoff for rate limits.", true, true)
+    expect(res.isEligible).toBe(false)
+    expect(res.rejectionReason).toBe("REQUIRES_RETRY")
+  })
+
+  it("rejects when specialist spawning is requested", () => {
+    const res = evaluateCodeModeEligibility("List GitHub issues and spawn a specialist for each.", true, true)
+    expect(res.isEligible).toBe(false)
+    expect(res.rejectionReason).toBe("REQUIRES_TASK")
+  })
+
+  it("rejects when shell execution is required", () => {
+    const res = evaluateCodeModeEligibility("Get GitHub issues and run bash to grep them.", true, true)
+    expect(res.isEligible).toBe(false)
+    expect(res.rejectionReason).toBe("REQUIRES_SHELL")
+  })
+
+  it("rejects when file system mutation is required", () => {
+    const res = evaluateCodeModeEligibility("Get GitHub issues and write to file.", true, true)
+    expect(res.isEligible).toBe(false)
+    expect(res.rejectionReason).toBe("REQUIRES_FILESYSTEM")
+  })
+
+  it("rejects when too many tool calls are estimated", () => {
+    const res = evaluateCodeModeEligibility("List all issues and every pull request and aggregate them.", true, true)
+    expect(res.isEligible).toBe(false)
+    expect(res.rejectionReason).toBe("TOO_MANY_TOOL_CALLS")
+  })
+
+  it("accepts valid bounded compositions", () => {
+    const res = evaluateCodeModeEligibility("List open GitHub issues and PRs, correlate the bug issues with related PRs, and return the matching pairs.", true, true)
+    expect(res.isEligible).toBe(true)
+    expect(res.telemetry.codeModeSelected).toBe(true)
+    expect(res.telemetry.estimatedToolCalls).toBeLessThanOrEqual(10)
+    expect(res.telemetry.maxParallelWidth).toBeLessThanOrEqual(4)
+    expect(res.telemetry.dependencyStages).toBeLessThanOrEqual(3)
+  })
+
+  it("defines bounded execution limits", () => {
+    expect(HEIDI_CODE_MODE_POLICY.maxLines).toBe(80)
+    expect(HEIDI_CODE_MODE_POLICY.maxSourceBytes).toBe(12_288)
+    expect(HEIDI_CODE_MODE_POLICY.maxToolCalls).toBe(10)
+    expect(HEIDI_CODE_MODE_POLICY.maxParallelCalls).toBe(4)
+    expect(HEIDI_CODE_MODE_POLICY.maxDependencyStages).toBe(3)
+    expect(HEIDI_CODE_MODE_POLICY.maxCollectionItems).toBe(25)
+    expect(HEIDI_CODE_MODE_POLICY.timeoutMs).toBe(30_000)
+    expect(HEIDI_CODE_MODE_POLICY.maxOutputBytes).toBe(65_536)
+  })
+
+  it("disables complex control flow and ambient authority", () => {
+    expect(HEIDI_CODE_MODE_POLICY.maxRetries).toBe(0)
+    expect(HEIDI_CODE_MODE_POLICY.allowRecursion).toBe(false)
+    expect(HEIDI_CODE_MODE_POLICY.allowNestedExecute).toBe(false)
+    expect(HEIDI_CODE_MODE_POLICY.allowAgentSpawning).toBe(false)
+    expect(HEIDI_CODE_MODE_POLICY.allowImports).toBe(false)
+    expect(HEIDI_CODE_MODE_POLICY.allowDynamicCode).toBe(false)
+    expect(HEIDI_CODE_MODE_POLICY.allowFilesystem).toBe(false)
+    expect(HEIDI_CODE_MODE_POLICY.allowShell).toBe(false)
+    expect(HEIDI_CODE_MODE_POLICY.allowDirectNetwork).toBe(false)
+    expect(HEIDI_CODE_MODE_POLICY.allowEnvironment).toBe(false)
+  })
+
+  it("injects lazy code mode guidance only when available and a composition candidate", () => {
+    const withoutCandidate = buildTaskSpecificPromptSections("STANDARD", undefined, undefined, { codeModeAvailable: true, mcpCompositionCandidate: false })
+    expect(withoutCandidate).not.toContain("Native Code Mode (OpenCode execute tool)")
+
+    const withoutAvailable = buildTaskSpecificPromptSections("STANDARD", undefined, undefined, { codeModeAvailable: false, mcpCompositionCandidate: true })
+    expect(withoutAvailable).not.toContain("Native Code Mode (OpenCode execute tool)")
+
+    const withGuidance = buildTaskSpecificPromptSections("STANDARD", undefined, undefined, { codeModeAvailable: true, mcpCompositionCandidate: true })
+    expect(withGuidance).toContain("Native Code Mode (OpenCode execute tool)")
+    expect(withGuidance).toContain("Max Tool Calls: 10 total")
+    expect(withGuidance).toContain("NO RETRIES")
+    expect(withGuidance).toContain("NO RECURSION")
+  })
+})

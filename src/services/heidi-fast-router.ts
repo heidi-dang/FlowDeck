@@ -34,6 +34,8 @@ export type SpecialistDomain =
   | "REVIEW"
   | "ARCHITECTURE"
 
+import { evaluateCodeModeEligibility } from "./heidi-code-mode-evaluator"
+
 export interface RouterDecision {
   /** Resolved execution class */
   executionClass: ExecutionClass
@@ -51,6 +53,8 @@ export interface RouterDecision {
   reasonCode: string
   /** Whether the task involves MCP tool composition */
   mcpCompositionCandidate?: boolean
+  codeModeRejectedReason?: string
+  codeModeTelemetry?: any
 }
 
 // ─── Keyword patterns ────────────────────────────────────────────────────────
@@ -288,7 +292,11 @@ export function classifyTask(
   const lc = text.toLowerCase()
 
   // ── FAST_DIRECT: trivial local task ──────────────────────────────────────
-  const mcpCompositionCandidate = matchesAny(text, MCP_COMPOSITION_EXTERNAL_PATTERNS) && matchesAny(text, MCP_COMPOSITION_ACTION_PATTERNS)
+  const mcpCompositionCandidateRaw = matchesAny(text, MCP_COMPOSITION_EXTERNAL_PATTERNS) && matchesAny(text, MCP_COMPOSITION_ACTION_PATTERNS)
+  const codeModeEval = evaluateCodeModeEligibility(prompt, true, mcpCompositionCandidateRaw)
+  const mcpCompositionCandidate = codeModeEval.isEligible
+  const codeModeRejectedReason = codeModeEval.rejectionReason
+  const codeModeTelemetry = codeModeEval.telemetry
 
   const isFastDirect = matchesAny(text, FAST_DIRECT_PATTERNS)
   if (isFastDirect && !hints?.isResuming) {
@@ -301,6 +309,8 @@ export function classifyTask(
         confidence: 0.9,
         forcedByExplicitSignal: false,
       mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
       }
     }
   }
@@ -314,6 +324,8 @@ export function classifyTask(
       confidence: 0.85,
       forcedByExplicitSignal: false,
       mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
     }
   }
 
@@ -337,6 +349,8 @@ export function classifyTask(
         confidence: 0.82,
         forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? true,
       mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
       }
     }
     // Parallel-signal text with only ONE detected domain → treat as specialist for that domain
@@ -350,6 +364,8 @@ export function classifyTask(
         confidence: 0.75,
         forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? true,
       mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
       }
     }
     // Parallel signal with no detected domain → treat as STANDARD multi-workstream
@@ -360,6 +376,8 @@ export function classifyTask(
       confidence: 0.65,
       forcedByExplicitSignal: false,
       mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
     }
   }
 
@@ -375,6 +393,8 @@ export function classifyTask(
       confidence: 0.88,
       forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? false,
       mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
     }
   }
 
@@ -388,6 +408,8 @@ export function classifyTask(
       confidence: 0.75,
       forcedByExplicitSignal: false,
       mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
     }
   }
 
@@ -401,6 +423,8 @@ export function classifyTask(
       confidence: 0.65,
       forcedByExplicitSignal: false,
       mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
     }
   }
 
@@ -412,6 +436,8 @@ export function classifyTask(
     confidence: 0.6,
     forcedByExplicitSignal: false,
       mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
   }
 }
 
