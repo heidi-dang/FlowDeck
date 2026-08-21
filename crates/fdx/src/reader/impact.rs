@@ -459,19 +459,21 @@ fn extract_java_imports(_path: &Path, source: &str) -> anyhow::Result<Vec<Import
                 for part in &parts[..parts.len() - 1] {
                     file_path = file_path.join(part);
                 }
-                file_path = file_path.join(format!("{}.java", parts.last().unwrap()));
-                if file_path.exists() {
-                    imports.push(ImportRef {
-                        name: class_path.to_string(),
-                        resolved_path: Some(file_path),
-                        line_number,
-                    });
-                } else {
-                    imports.push(ImportRef {
-                        name: class_path.to_string(),
-                        resolved_path: None,
-                        line_number,
-                    });
+                if let Some(last_part) = parts.last() {
+                    file_path = file_path.join(format!("{}.java", last_part));
+                    if file_path.exists() {
+                        imports.push(ImportRef {
+                            name: class_path.to_string(),
+                            resolved_path: Some(file_path),
+                            line_number,
+                        });
+                    } else {
+                        imports.push(ImportRef {
+                            name: class_path.to_string(),
+                            resolved_path: None,
+                            line_number,
+                        });
+                    }
                 }
             }
         }

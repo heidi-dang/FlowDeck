@@ -44,8 +44,8 @@ describe("GovernanceFastPath — Milestone F2", () => {
     expect(result.reason).toContain("HIGH_RISK")
   })
 
-  it("blocks hash-edit and requires full policy in strict mode", () => {
-    const result = governanceFastPath("hash-edit", "strict")
+  it("blocks write and requires full policy in strict mode", () => {
+    const result = governanceFastPath("write", "strict")
     expect(result.allowed).toBe(false)
     expect(result.usedFastPath).toBe(false)
     expect(result.reason).toContain("HIGH_RISK")
@@ -79,7 +79,7 @@ describe("GovernanceFastPath — Milestone F2", () => {
   })
 
   it("isHighRiskTool correctly identifies write/exec tools", () => {
-    for (const t of ["bash", "hash-edit", "write", "edit", "apply_patch", "task", "computer"]) {
+    for (const t of ["bash", "write", "edit", "apply_patch", "task", "computer"]) {
       expect(isHighRiskTool(t)).toBe(true)
     }
   })

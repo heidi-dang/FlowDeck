@@ -9,7 +9,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, isAbsolute, relative } from "node:path";
 import type { BrowserFailureFingerprint, CorrelatedSourceLocation } from "./types";
-import { checkFdxAvailability, runFdx } from "../tools/fdx-shared";
+import { checkFdxAvailability, runFdxAsync } from "../tools/fdx-shared";
 
 export class FdxSourceCorrelator {
   private projectRoot: string;
@@ -49,7 +49,7 @@ export class FdxSourceCorrelator {
     if (token) {
       if (fdxActive) {
         try {
-          const searchRes = runFdx(["search", token, "--limit", "5"]);
+          const searchRes = await runFdxAsync(["search", token, "--limit", "5"]);
           if (searchRes && typeof searchRes === "string" && searchRes.includes("File:")) {
             const parsed = parseFdxSearchResult(searchRes);
             if (parsed) {

@@ -4,7 +4,7 @@
 
 import { execFileSync } from "child_process"
 import { join } from "path"
-import { mkdtempSync } from "fs"
+import { mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import type { GitHubClient, JobResponse, PrResponse } from "./github-client"
 import { FailureCollector } from "./failure-collector"
@@ -17,6 +17,16 @@ import type {
   RepairTerminal,
 } from "./types"
 import { buildRepairKey } from "./types"
+
+function isValidGitRef(ref: string): boolean {
+  if (!ref || ref.startsWith("-") || ref.includes("\0") || ref.includes(" ") || ref.includes("..")) return false
+  try {
+    execFileSync("git", ["check-ref-format", "--branch", ref], { stdio: "ignore" })
+    return true
+  } catch {
+    return false
+  }
+}
 
 export class RepairOrchestrator {
   private collector: FailureCollector
@@ -93,31 +103,36 @@ export class RepairOrchestrator {
       run.state = "REPAIRING"
       this.store.updateState(repairKey, "REPAIRING")
 
-      const fixed = await this.attemptRepair(repo, prNumber, headSha, report, pr)
-      if (!fixed) {
-        await this.terminate(repairKey, "MODEL_FAILED", repo, prNumber, headSha)
-        return
-      }
+      const worktreeDir = mkdtempSync(join(tmpdir(), "pr-monitor-"))
+      try {
+        const fixed = await this.attemptRepair(worktreeDir, repo, prNumber, headSha, report, pr)
+        if (!fixed) {
+          await this.terminate(repairKey, "MODEL_FAILED", repo, prNumber, headSha)
+          return
+        }
 
-      // Validate locally
-      run.state = "LOCAL_VALIDATION"
-      this.store.updateState(repairKey, "LOCAL_VALIDATION")
-      const validated = await this.runLocalValidation()
-      if (!validated) {
-        await this.terminate(repairKey, "LOCAL_VALIDATION_FAILED", repo, prNumber, headSha)
-        return
-      }
+        // Validate locally
+        run.state = "LOCAL_VALIDATION"
+        this.store.updateState(repairKey, "LOCAL_VALIDATION")
+        const validated = await this.runLocalValidation(worktreeDir)
+        if (!validated) {
+          await this.terminate(repairKey, "LOCAL_VALIDATION_FAILED", repo, prNumber, headSha)
+          return
+        }
 
-      // Push
-      run.state = "PUSHING"
-      this.store.updateState(repairKey, "PUSHING")
-      const pushedSha = await this.pushFix(repo, prNumber, headSha, pr)
-      if (!pushedSha) {
-        await this.terminate(repairKey, "STALE_HEAD", repo, prNumber, headSha)
-        return
+        // Push
+        run.state = "PUSHING"
+        this.store.updateState(repairKey, "PUSHING")
+        const pushedSha = await this.pushFix(worktreeDir, repo, prNumber, headSha, pr)
+        if (!pushedSha) {
+          await this.terminate(repairKey, "STALE_HEAD", repo, prNumber, headSha)
+          return
+        }
+        run.committed_sha = pushedSha
+        this.store.updateState(repairKey, "PUSHING")
+      } finally {
+        try { rmSync(worktreeDir, { recursive: true, force: true }) } catch {}
       }
-      run.committed_sha = pushedSha
-      this.store.updateState(repairKey, "PUSHING")
 
       // Wait for CI
       run.state = "WAITING_FOR_NEW_CI"
@@ -151,14 +166,16 @@ export class RepairOrchestrator {
   }
 
   private async attemptRepair(
+    worktreeDir: string,
     repo: string,
     prNumber: number,
     headSha: string,
     report: CiFailureReport,
     pr: PrResponse,
   ): Promise<boolean> {
+    if (!isValidGitRef(pr.head.ref)) return false
+
     // Create worktree
-    const worktreeDir = mkdtempSync(join(tmpdir(), "pr-monitor-"))
     try {
       execFileSync("git", ["clone", "--branch", pr.head.ref, `https://github.com/${repo}.git`, worktreeDir], {
         stdio: "ignore",
@@ -186,25 +203,28 @@ export class RepairOrchestrator {
           execFileSync(cmd[0], cmd.slice(1), { cwd: worktreeDir, stdio: "pipe", timeout: 60_000, encoding: "utf-8" })
           return true // command passes — no fix needed
         } catch {
-          return true // failed — assume a fix was attempted
+          // Failure reproduced, but we do NOT have actual repair capability in this stub.
+          // Returning true here would be a fake success.
+          return false
         }
       }
     }
 
-    return true
+    return false
   }
 
-  private async runLocalValidation(): Promise<boolean> {
+  private async runLocalValidation(worktreeDir: string): Promise<boolean> {
     const gate = ["node", "scripts/pre-push.mjs"]
     try {
-      execFileSync(gate[0], gate.slice(1), { stdio: "pipe", timeout: 120_000 })
+      execFileSync(gate[0], gate.slice(1), { cwd: worktreeDir, stdio: "pipe", timeout: 120_000 })
       return true
     } catch {
       return false
     }
   }
 
-  private async pushFix(repo: string, prNumber: number, headSha: string, pr: PrResponse): Promise<string | null> {
+  private async pushFix(worktreeDir: string, repo: string, prNumber: number, headSha: string, pr: PrResponse): Promise<string | null> {
+    if (!isValidGitRef(pr.head.ref)) return null
     // Re-read PR to check head SHA hasn't moved
     try {
       const fresh = await this.client.getPr(repo, prNumber)
@@ -215,10 +235,10 @@ export class RepairOrchestrator {
 
     // Commit and push via git CLI
     try {
-      execFileSync("git", ["add", "-A"], { stdio: "ignore", timeout: 15_000 })
-      execFileSync("git", ["commit", "-m", "fix(ci): automated repair by PR Monitor"], { stdio: "ignore", timeout: 15_000 })
-      execFileSync("git", ["push", "origin", `HEAD:${pr.head.ref}`], { stdio: "ignore", timeout: 30_000 })
-      const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf-8", timeout: 5_000 }).trim()
+      execFileSync("git", ["add", "-A"], { cwd: worktreeDir, stdio: "ignore", timeout: 15_000 })
+      execFileSync("git", ["commit", "-m", "fix(ci): automated repair by PR Monitor"], { cwd: worktreeDir, stdio: "ignore", timeout: 15_000 })
+      execFileSync("git", ["push", "origin", `HEAD:${pr.head.ref}`], { cwd: worktreeDir, stdio: "ignore", timeout: 30_000 })
+      const sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: worktreeDir, encoding: "utf-8", timeout: 5_000 }).trim()
       return sha
     } catch {
       return null

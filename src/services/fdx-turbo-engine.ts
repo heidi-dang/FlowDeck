@@ -30,7 +30,6 @@ import {
   nativeOutlineFallback,
   nativeReadFallback,
   nativeSearchFallback,
-  runFdx,
   runFdxAsync,
   FDX_TOOL_BUDGET_MS,
 } from "../tools/fdx-shared"
@@ -164,38 +163,6 @@ export class FdxTurboEngine {
     const p = fn().finally(() => this.inflight.delete(key));
     this.inflight.set(key, p);
     return p;
-  }
-
-  /**
-   * fdx-read fast path (synchronous, backward compatible): hot file cache
-   * first, then one-shot native, then TS fallback. Deterministic and read-only.
-   */
-  read(file: string, opts: { offset?: number; limit?: number; noCache?: boolean } = {}): TurboReadResult {
-    if (!this.enterQueue()) return { source: "fallback", text: nativeReadFallback(file, opts.limit, opts.offset) };
-    try {
-      const key = this.fileKey(file);
-      if (!opts.noCache) {
-        const cached = this.fileCache.readRange(file, opts.offset, opts.limit);
-        if (cached.ok) {
-          if (cached.cached) this.cacheHits++;
-          return { source: "cache", text: (cached.cached ? "[FDX Cache Hit] " : "[FDX Cache] ") + key + "\n" + cached.text };
-        }
-      }
-      if (checkFdxAvailability()) {
-        const cmd: string[] = ["read", file];
-        if (opts.offset !== undefined) cmd.push("--offset", String(opts.offset));
-        if (opts.limit !== undefined) cmd.push("--limit", String(opts.limit));
-        try {
-          this.nativeSpawns++;
-          return { source: "native", text: runFdx(cmd) };
-        } catch {
-          if (shouldDisableFallback()) throw new Error("FDX native read failed");
-        }
-      }
-      return { source: "fallback", text: nativeReadFallback(file, opts.limit, opts.offset) };
-    } finally {
-      this.leaveQueue();
-    }
   }
 
   /**

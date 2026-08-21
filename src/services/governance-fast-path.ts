@@ -40,7 +40,6 @@ const HIGH_RISK_TOOLS = new Set([
   "bash",
   "shell",
   "exec",
-  "hash-edit",
   "write",
   "edit",
   "apply_patch",

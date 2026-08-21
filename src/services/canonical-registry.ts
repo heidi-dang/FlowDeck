@@ -53,7 +53,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     mode: "primary",
     allowedTaskTypes: ["coordination", "orchestration", "direct-execution", "delegation", "phase-management", "implementation", "editing", "testing", "configuration"],
     allowedTools: [
-      "read", "read_file", "write", "write_file", "edit", "edit_file", "patch", "patch_file", "apply_patch", "create_file", "hash-edit", "str-replace", "str_replace", "bash",
+      "read", "read_file", "write", "write_file", "edit", "edit_file", "patch", "patch_file", "apply_patch", "create_file", "str-replace", "str_replace", "bash",
       "glob", "grep", "search",
       "planning-state", "codebase-state", "repo-memory",
       "codegraph", "load-rules", "list-rules",
@@ -98,7 +98,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     mode: "primary",
     allowedTaskTypes: ["coordination", "orchestration", "direct-execution", "delegation", "phase-management"],
     allowedTools: [
-      "read", "read_file", "write", "write_file", "edit", "edit_file", "patch", "patch_file", "apply_patch", "create_file", "hash-edit", "str-replace", "str_replace", "bash",
+      "read", "read_file", "write", "write_file", "edit", "edit_file", "patch", "patch_file", "apply_patch", "create_file", "str-replace", "str_replace", "bash",
       "glob", "grep", "search",
       "planning-state", "codebase-state", "repo-memory",
       "codegraph", "load-rules", "list-rules",

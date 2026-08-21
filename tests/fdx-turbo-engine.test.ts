@@ -83,14 +83,14 @@ describe("FdxTurboEngine — native daemon first + fallback + stats", () => {
     })
   })
 
-  it("synchronous read keeps the hot file cache and counts cache hits", () => {
+  it("asynchronous read keeps the hot file cache and counts cache hits", async () => {
     const { root, source } = makeRoot()
     const file = join(source, "a.ts")
     const engine = new FdxTurboEngine({ workspace: root })
-    const first = engine.read(file, { limit: 5 })
-    expect(["cache", "native", "fallback"]).toContain(first.source)
+    const first = await engine.readAsync(file, { limit: 5 })
+    expect(["cache", "native", "fallback", "daemon"]).toContain(first.source)
     const cacheHitsAfterFirst = engine.stats().cacheHits
-    const second = engine.read(file, { limit: 5 })
+    const second = await engine.readAsync(file, { limit: 5 })
     expect(second.source).toBe("cache")
     expect(engine.stats().cacheHits).toBeGreaterThanOrEqual(cacheHitsAfterFirst + 1)
   })

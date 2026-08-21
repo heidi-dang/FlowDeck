@@ -119,9 +119,9 @@ describe("CONTRACT + CONVERGENCE", () => {
   it("stable contract allows integration prep but not child-owned writes", () => {
     const c = make()
     c.reconcileChildren(["A","B","C","D"].map((w) => child(w, "running")))
-    c.markContractStable("C", { exports: ["executeFastRewrite"], ownFiles: ["src/services/tool-fast-lane.ts"] })
+    c.markContractStable("C", { exports: ["executeFastRewrite"], ownFiles: ["src/services/something.ts"] })
     expect(c.canRootWrite("src/index.ts").allowed).toBe(true)
-    expect(c.canRootWrite("src/services/tool-fast-lane.ts").allowed).toBe(false)
+    expect(c.canRootWrite("src/services/something.ts").allowed).toBe(false)
   })
 
   it("contract changed after stable invalidates prepared integration", () => {

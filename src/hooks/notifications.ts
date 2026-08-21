@@ -55,20 +55,23 @@ export function notify(title: string, body: string, level: NotifyLevel = "info")
         // notify-send not available — no fallback that writes to stdout
       })
     } else if (platform === "darwin") {
-      // osascript (macOS) — always available
-      const script = `display notification "${body.replace(/"/g, '\\"')}" with title "${title.replace(/"/g, '\\"')}" subtitle "FlowDeck"`
-      const proc = execFile("osascript", ["-e", script], { timeout: 3000 })
+      // osascript (macOS) — pass arguments safely to avoid AppleScript injection
+      const script = `on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv) subtitle "FlowDeck"\nend run`
+      const proc = execFile("osascript", ["-e", script, title, body], { timeout: 3000 })
       proc.on("error", () => {})
     } else if (platform === "win32") {
-      // PowerShell toast notification (Windows 10+)
+      // PowerShell toast notification (Windows 10+) — use env vars to avoid injection
       const ps = [
         "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null",
         `$xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)`,
-        `$xml.GetElementsByTagName('text')[0].InnerText = '${title.replace(/'/g, "''")}' `,
-        `$xml.GetElementsByTagName('text')[1].InnerText = '${body.replace(/'/g, "''")}' `,
+        `$xml.GetElementsByTagName('text')[0].InnerText = $env:FD_TITLE`,
+        `$xml.GetElementsByTagName('text')[1].InnerText = $env:FD_BODY`,
         `[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('FlowDeck').Show([Windows.UI.Notifications.ToastNotification]::new($xml))`,
       ].join("; ")
-      const proc = execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], { timeout: 5000 })
+      const proc = execFile("powershell", ["-NoProfile", "-NonInteractive", "-Command", ps], {
+        timeout: 5000,
+        env: { ...process.env, FD_TITLE: title, FD_BODY: body },
+      })
       proc.on("error", () => {})
     }
   } catch {

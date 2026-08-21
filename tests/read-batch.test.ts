@@ -58,7 +58,7 @@ describe("ReadBatchService — Milestone D", () => {
   it("throws for write tool in batch", async () => {
     const executor = async () => "nope"
     const ops: ReadOperation[] = [
-      { tool: "hash-edit", args: {} },
+      { tool: "bash", args: {} },
     ]
     await expect(executeBatchReads(ops, executor)).rejects.toThrow()
   })
@@ -95,7 +95,7 @@ describe("ReadBatchService — Milestone D", () => {
   })
 
   it("isSafeReadTool returns false for write tools", () => {
-    for (const t of ["bash", "hash-edit", "write", "task"]) {
+    for (const t of ["bash", "write", "task"]) {
       expect(isSafeReadTool(t)).toBe(false)
     }
   })

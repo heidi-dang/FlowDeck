@@ -23,12 +23,12 @@ describe("HEIDI PARALLEL OWNERSHIP", () => {
   })
 
   it("root may NOT mutate an active child scope before handoff; handoff transfers ownership", () => {
-    const A = { workstreamId: "A", agent: "a", access: "write" as const, ownedScopes: ["src/services/tool-fast-lane.ts"], forbiddenScopes: [], expectedOutputs: [] }
+    const A = { workstreamId: "A", agent: "a", access: "write" as const, ownedScopes: ["src/services/something.ts"], forbiddenScopes: [], expectedOutputs: [] }
     const coord = { integrationScopes: ["src"], readScopes: [] }
-    const blocked = canRootWrite([A], coord, "src/services/tool-fast-lane.ts")
+    const blocked = canRootWrite([A], coord, "src/services/something.ts")
     expect(blocked.allowed).toBe(false)
     expect(blocked.conflict).toBe("child_owns_A")
-    const allowed = canRootWrite([A], coord, "src/services/tool-fast-lane.ts", ["src/services/tool-fast-lane.ts"])
+    const allowed = canRootWrite([A], coord, "src/services/something.ts", ["src/services/something.ts"])
     expect(allowed.allowed).toBe(true)
   })
 
