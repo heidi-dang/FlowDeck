@@ -121,9 +121,12 @@ describe("FdxNativeDaemon wedged-process health", () => {
     const root = makeRoot()
     // A fake `fdx serve` binary: starts, stays alive (never exits), reads
     // nothing and NEVER replies — simulating an alive-but-wedged process.
-    const fakeBin = join(root, "fake-fdx")
-    writeFileSync(fakeBin, `#!/usr/bin/env bash\nsleep 1000\n`)
-    chmodSync(fakeBin, 0o755)
+    const fakeBin = join(root, process.platform === "win32" ? "fake-fdx.cmd" : "fake-fdx")
+    const fakeContent = process.platform === "win32"
+      ? `@echo off\r\nping -n 1000 127.0.0.1 >nul\r\n`
+      : `#!/usr/bin/env bash\nsleep 1000\n`
+    writeFileSync(fakeBin, fakeContent)
+    try { chmodSync(fakeBin, 0o755) } catch {}
 
     const codeOf = (e: unknown): string => (e as { code?: string })?.code ?? "UNKNOWN"
 

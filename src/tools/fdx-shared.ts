@@ -785,6 +785,12 @@ export async function nativeImpactFallback(
   }
 
   const rootCanonical = await fsPromises.realpath(resolvedRoot)
+  const isContainedInRoot = (target: string): boolean => {
+    if (target === rootCanonical) return true
+    const sep = target.includes("\\") || rootCanonical.includes("\\") ? "\\" : "/"
+    const prefix = rootCanonical.endsWith(sep) ? rootCanonical : rootCanonical + sep
+    return target.startsWith(prefix)
+  }
   const startTime = Date.now()
   const visitedDirs = new Set<string>()
   let dirsScanned = 0
@@ -830,7 +836,7 @@ export async function nativeImpactFallback(
               throwIfAborted()
               let canonical: string
               try { canonical = await fsPromises.realpath(dir) } catch { return }
-              if (!canonical.startsWith(rootCanonical + "/") && canonical !== rootCanonical) return
+              if (!isContainedInRoot(canonical)) return
               if (visitedDirs.has(canonical)) return
               visitedDirs.add(canonical)
               dirsScanned++
@@ -851,7 +857,7 @@ export async function nativeImpactFallback(
                   try {
                     const resolvedTarget = await fsPromises.realpath(full)
                     // Workspace containment: never follow a symlink that escapes the root.
-                    if (!resolvedTarget.startsWith(rootCanonical + "/") && resolvedTarget !== rootCanonical) continue
+                    if (!isContainedInRoot(resolvedTarget)) continue
                     const targetStat = await fsPromises.stat(full)
                     isDir = targetStat.isDirectory()
                     isFile = targetStat.isFile()
