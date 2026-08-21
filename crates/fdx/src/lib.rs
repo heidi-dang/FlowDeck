@@ -3,6 +3,7 @@ pub mod locking;
 pub mod output;
 pub mod paths;
 pub mod pr_monitor;
+pub mod protocol;
 pub mod reader;
 pub mod runner;
 pub mod serve;
