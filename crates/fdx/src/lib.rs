@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod intelligence;
 pub mod locking;
 pub mod output;
 pub mod paths;

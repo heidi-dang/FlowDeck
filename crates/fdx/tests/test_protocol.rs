@@ -182,7 +182,13 @@ fn test_path_jail_escaping() {
 fn test_capability_invariant_operations_exist() {
     // Every advertised operational capability must correspond to a real operation.
     // In M1, these are read, search, outline, impact-v1.
-    let expected = vec!["read", "search", "outline", "impact-v1"];
+    let expected = vec![
+        "read",
+        "search",
+        "outline",
+        "impact-v1",
+        "evidence-graph-v1",
+    ];
     let req = NegotiateRequest {
         protocol: 2,
         capabilities: expected.iter().map(|&s| s.to_string()).collect(),
@@ -207,8 +213,14 @@ fn test_empty_capability_request() {
         capabilities: vec![],
     };
     let resp = NegotiateResponse::negotiate(&req);
-    let expected = vec!["read", "search", "outline", "impact-v1"];
+    let expected = vec![
+        "read",
+        "search",
+        "outline",
+        "impact-v1",
+        "evidence-graph-v1",
+    ];
     assert_eq!(resp.selected_capabilities, expected);
     // Server should still advertise all capabilities
-    assert_eq!(resp.server_capabilities.len(), 4);
+    assert_eq!(resp.server_capabilities.len(), 5);
 }

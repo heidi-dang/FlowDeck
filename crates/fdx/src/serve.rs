@@ -264,6 +264,42 @@ fn handle_impact(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option
     }
 }
 
+fn handle_evidence_graph_v1(
+    id: &str,
+    _args: &serde_json::Value,
+    _cache: &AstCache,
+) -> Option<String> {
+    let cwd = std::path::Path::new(".");
+    match crate::intelligence::db::EvidenceDatabase::open(cwd) {
+        Ok(db) => {
+            let version = db.get_schema_version().map(|v| v.version).unwrap_or(0);
+            let file_count: i32 = db
+                .conn
+                .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
+                .unwrap_or(0);
+            let node_count: i32 = db
+                .conn
+                .query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))
+                .unwrap_or(0);
+            let edge_count: i32 = db
+                .conn
+                .query_row("SELECT count(*) FROM edges", [], |r| r.get(0))
+                .unwrap_or(0);
+
+            format_ok(
+                id,
+                serde_json::json!({
+                    "schema_version": version,
+                    "files": file_count,
+                    "nodes": node_count,
+                    "edges": edge_count,
+                }),
+            )
+        }
+        Err(e) => format_err(id, format!("database error: {}", e)),
+    }
+}
+
 fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
     match req.op.as_str() {
         "version" => format_ok(
@@ -300,6 +336,7 @@ fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
         "search" => handle_search(&req.id, &req.args, cache),
         "outline" => handle_outline(&req.id, &req.args, cache),
         "impact" => handle_impact(&req.id, &req.args, cache),
+        "evidence-graph-v1" => handle_evidence_graph_v1(&req.id, &req.args, cache),
         other => format_err(&req.id, format!("FDX_METHOD_NOT_ALLOWED {}", other)),
     }
 }

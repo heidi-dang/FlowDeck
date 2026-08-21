@@ -394,7 +394,13 @@ pub fn canonicalize_repo_path(
 
 // ── Protocol Capability Negotiation ───────────────────────────────────
 
-pub const DEFAULT_SERVER_CAPABILITIES: &[&str] = &["read", "search", "outline", "impact-v1"];
+pub const DEFAULT_SERVER_CAPABILITIES: &[&str] = &[
+    "read",
+    "search",
+    "outline",
+    "impact-v1",
+    "evidence-graph-v1",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NegotiateRequest {
