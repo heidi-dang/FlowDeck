@@ -335,10 +335,12 @@ export function buildTaskSpecificPromptSections(
       '- Do NOT idle while children run: immediately do coordinator-owned work (doctor/environment checks, central integration files, OpenCode compatibility, acceptance criteria, risk matrix, integration plan, and combined test planning) that does not conflict with running children.',
       "- Never independently re-implement a running child's assigned scope.",
       '- Do not poll, sleep, issue status calls, use Continue/check-subagents prompts, or maintain a custom child registry; OpenCode injects native background results into this parent session.',
-      '- When ANY child result is injected, identify it by the native task/session metadata, review it, and integrate it at the next safe boundary — do NOT wait for all siblings first or assume FIFO completion.',
+      '- Incremental Integration: OpenCode may inject background child results independently. Heidi integrates results incrementally as they arrive. Do NOT wait for all siblings first or assume FIFO completion.',
+      '- Native Status Todo: If one or more results have not yet been integrated, Heidi MUST maintain a native Todo using the `todowrite` tool. Example: `[in_progress] Integrate background specialist results as they complete`. Do NOT use wording that implies passive waiting (e.g., "Wait for subagents"). Keep it truthful: if a child definitively fails or is cancelled, it is terminal; do not leave the Todo permanently running for them. Mark completed only when all required child results are integrated and final convergence finishes.',
+      '- User-Visible UX: If background specialists remain active near the end of your current turn, you MUST include a concise, user-visible status in your response before the turn closes. Example: "Reviewer and Mapper are still running as native OpenCode background tasks. I completed the coordinator-side work. Their results will be integrated automatically as OpenCode returns them; no manual Continue or status check is required." Do NOT artificially keep the SSE response open with heartbeat text, polling, or sleep(). Let the turn close normally.',
       '- Reserve shared integration surfaces (e.g. src/index.ts, cross-workstream tests) for Heidi.',
       '- Keep dependent tasks foreground with the default Task mode when Heidi needs their result before proceeding.',
-      '- Enter the all-child wait barrier ONLY during FINAL_CONVERGENCE, then run combined verification.',
+      '- Final convergence waits ONLY when required.',
     ].join('\n'))
   }
 
