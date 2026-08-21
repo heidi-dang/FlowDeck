@@ -50,20 +50,45 @@ export function backgroundSubagentCapabilityCheck(opencodeVersion: string | null
   // takes precedence over the broad fallback, including an explicit false.
   const enabled = narrowFlag === undefined ? broadEnabled : narrowEnabled
 
-  let detected = "OpenCode runtime not found"
+  let status: "pass" | "warning" | "error" | "info" = "info"
+  let severity: "critical" | "high" | "medium" | "low" | "info" = "info"
+  let recommendation = "Install OpenCode >= 1.18.0: https://opencode.ai"
+  let autoFixAvailable = false
+  let repairability: "automatic" | "requires-auth" | "requires-privilege" | "manual" | "not-applicable" = "not-applicable"
+
+  let detected = "OpenCode runtime not found (optional in CLI/standalone mode)"
   if (opencodeVersion) {
     detected = `${opencodeVersion}; native Task background parameter ${nativeSupport ? "supported" : "not supported"}`
     if (narrowEnabled) detected += "; OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"
     else if (broadEnabled) detected += "; enabled through broad OPENCODE_EXPERIMENTAL fallback"
     else detected += "; OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS is not enabled"
+
+    if (!nativeSupport) {
+      status = "warning"
+      severity = "medium"
+      recommendation = "Upgrade OpenCode to >= 1.18.0 for native background subagent support"
+      repairability = "manual"
+    } else if (enabled) {
+      status = "pass"
+      severity = "info"
+      recommendation = broadEnabled && !narrowEnabled
+        ? "Prefer OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true instead of the broad OPENCODE_EXPERIMENTAL flag"
+        : "Native background Task mode available to Heidi"
+      repairability = "not-applicable"
+    } else {
+      status = "warning"
+      severity = "medium"
+      recommendation = "Set OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true in the environment that launches OpenCode, then restart OpenCode"
+      autoFixAvailable = true
+      repairability = "manual"
+    }
   }
 
-  const status = !nativeSupport ? "error" : enabled ? "pass" : "warning"
   return {
     id: "runtime.opencode_background_subagents",
     title: "OpenCode Background Subagents",
     category: "runtime",
-    severity: nativeSupport && enabled ? "info" : "medium",
+    severity,
     status,
     detected,
     evidence: {
@@ -75,14 +100,10 @@ export function backgroundSubagentCapabilityCheck(opencodeVersion: string | null
       broadFlag: broadFlag ?? null,
     },
     expected: "OpenCode >= 1.18.0 with OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true",
-    recommendation: enabled
-      ? broadEnabled && !narrowEnabled
-        ? "Prefer OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true instead of the broad OPENCODE_EXPERIMENTAL flag"
-        : "Native background Task mode available to Heidi"
-      : "Set OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true in the environment that launches OpenCode, then restart OpenCode",
-    autoFixAvailable: nativeSupport && !enabled,
+    recommendation,
+    autoFixAvailable,
     affectsRuntime: true,
-    repairability: nativeSupport && !enabled ? "manual" : "not-applicable",
+    repairability,
   }
 }
 

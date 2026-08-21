@@ -36,10 +36,12 @@ afterAll(() => {
 describe("runFdxAsync settlement", () => {
   // Force the "native binary unavailable" path deterministically so behavior is
   // identical whether or not the real fdx binary is built (CI shared workspace).
-  function withoutBinary<T>(fn: () => T): T {
+  async function withoutBinary<T>(fn: () => Promise<T>): Promise<T> {
     const prev = process.env.FDX_BINARY_PATH
     process.env.FDX_BINARY_PATH = "/nonexistent/fdx-binary"
-    try { return fn() } finally {
+    try {
+      return await fn()
+    } finally {
       if (prev === undefined) delete process.env.FDX_BINARY_PATH
       else process.env.FDX_BINARY_PATH = prev
     }
@@ -47,24 +49,24 @@ describe("runFdxAsync settlement", () => {
 
   it("rejects on AbortSignal and does not leave a pending promise", async () => {
     const controller = new AbortController()
-    const p = withoutBinary(() =>
-      runFdxAsync(["impact", "a.ts"], { signal: controller.signal, timeoutMs: 10_000 })
+    const outcome = await withoutBinary(async () => {
+      const p = runFdxAsync(["impact", "a.ts"], { signal: controller.signal, timeoutMs: 10_000 })
         .then(() => "SETTLED", (e) => "REJECTED:" + (e as Error).message)
-    )
-    controller.abort()
-    const outcome = await Promise.race([
-      p,
-      new Promise<string>((r) => setTimeout(() => r("HUNG"), 300)),
-    ])
+      controller.abort()
+      return await Promise.race([
+        p,
+        new Promise<string>((r) => setTimeout(() => r("HUNG"), 300)),
+      ])
+    })
     expect(outcome).toContain("REJECTED")
   }, 4000)
 
   it("rejects within the timeout bound (bounded, not indefinite)", async () => {
     const start = Date.now()
-    const outcome = await withoutBinary(() =>
+    const outcome = await withoutBinary(async () =>
       runFdxAsync(["impact", "definitely-missing-file.ts"], { timeoutMs: 50 })
         .then(() => "SETTLED", () => "REJECTED")
-        .catch(() => "REJECTED")
+        .catch(() => "REJECTED"),
     )
     expect(outcome).toBe("REJECTED")
     expect(Date.now() - start).toBeLessThan(2000)
