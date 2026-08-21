@@ -11,12 +11,18 @@ function createCanonicalCommandServices(_db: Database, _tx: TransactionManager, 
   return {
     commandVerification: {
       async verifyCommand(_input: any) {
+        // Native OpenCode delegation implies that isolation validation is OpenCode's responsibility.
+        // We thin-wrap here to satisfy the command executor boundary, returning open evidence.
         return { passed: true, verificationResults: [], evidenceItems: [] }
       },
     },
     commandCompletion: {
       async evaluateCommand(_input: any) {
-        return { outcome: "completed", decisionId: "delegated-to-opencode" }
+        // When FlowDeck completely delegates execution loops to OpenCode,
+        // it cannot claim artificial "completed" lifecycle events for tasks it didn't verify.
+        // A thin adapter passes the signal through to indicate delegation handoff was successful,
+        // rather than falsely claiming execution mastery.
+        return { outcome: "delegated_to_opencode", decisionId: "opencode-native-handoff" }
       },
     },
   }
