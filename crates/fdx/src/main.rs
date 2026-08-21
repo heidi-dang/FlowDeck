@@ -21,6 +21,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Native EvidenceGraph index management
+    ///
+    /// Example: fdx index status
+    Index {
+        /// Action: "status", or none to run index
+        action: Option<String>,
+
+        /// Force refresh existing files
+        #[arg(long)]
+        refresh: bool,
+    },
     /// Read a file with token-optimized output
     ///
     /// Example: fdx read src/main.rs --mode prototype
@@ -1022,6 +1033,58 @@ fn main() {
                 Ok(s) => println!("{}", s),
                 Err(e) => {
                     eprintln!("{}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::Index { action, refresh } => {
+            let cwd = std::path::Path::new(".");
+            let db = match fdx::intelligence::db::EvidenceDatabase::open(cwd) {
+                Ok(db) => db,
+                Err(e) => {
+                    eprintln!("Error opening EvidenceGraph: {}", e);
+                    process::exit(1);
+                }
+            };
+
+            let action_str = action.as_deref().unwrap_or("run");
+            match action_str {
+                "status" => {
+                    let version = db.get_schema_version().map(|v| v.version).unwrap_or(0);
+                    let file_count: i32 = db
+                        .conn
+                        .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
+                        .unwrap_or(0);
+                    let node_count: i32 = db
+                        .conn
+                        .query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))
+                        .unwrap_or(0);
+                    let edge_count: i32 = db
+                        .conn
+                        .query_row("SELECT count(*) FROM edges", [], |r| r.get(0))
+                        .unwrap_or(0);
+
+                    println!("INDEX fresh");
+                    println!("schema={}", version);
+                    println!("files={}", file_count);
+                    println!("nodes={}", node_count);
+                    println!("edges={}", edge_count);
+                }
+                "run" => match fdx::intelligence::engine::run_incremental_index(cwd, refresh) {
+                    Ok(status) => {
+                        println!("INDEX fresh");
+                        println!("files={}", status.files);
+                        println!("changed={}", status.changed);
+                    }
+                    Err(e) => {
+                        eprintln!("INDEX failed");
+                        eprintln!("Error: {}", e);
+                        process::exit(1);
+                    }
+                },
+                other => {
+                    eprintln!("Unknown index action: {}", other);
                     process::exit(1);
                 }
             }

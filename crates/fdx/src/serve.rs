@@ -417,6 +417,42 @@ fn handle_impact(
     }
 }
 
+fn handle_evidence_graph_v1(
+    id: &str,
+    _args: &serde_json::Value,
+    _cache: &AstCache,
+    root: &Path,
+) -> Option<String> {
+    match crate::intelligence::db::EvidenceDatabase::open(root) {
+        Ok(db) => {
+            let version = db.get_schema_version().map(|v| v.version).unwrap_or(0);
+            let file_count: i32 = db
+                .conn
+                .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
+                .unwrap_or(0);
+            let node_count: i32 = db
+                .conn
+                .query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))
+                .unwrap_or(0);
+            let edge_count: i32 = db
+                .conn
+                .query_row("SELECT count(*) FROM edges", [], |r| r.get(0))
+                .unwrap_or(0);
+
+            format_ok(
+                id,
+                serde_json::json!({
+                    "schema_version": version,
+                    "files": file_count,
+                    "nodes": node_count,
+                    "edges": edge_count,
+                }),
+            )
+        }
+        Err(e) => format_err(id, format!("database error: {}", e)),
+    }
+}
+
 fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<String> {
     match req.op.as_str() {
         "version" => format_ok(
@@ -453,6 +489,7 @@ fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<S
         "search" => handle_search(&req.id, &req.args, cache, root),
         "outline" => handle_outline(&req.id, &req.args, cache, root),
         "impact" => handle_impact(&req.id, &req.args, cache, root),
+        "evidence-graph-v1" => handle_evidence_graph_v1(&req.id, &req.args, cache, root),
         other => format_err(&req.id, format!("FDX_METHOD_NOT_ALLOWED {}", other)),
     }
 }
