@@ -166,3 +166,4 @@ fd-worktrees/
 *.db-shm
 .cptr
 .cargo
+.fdx/
