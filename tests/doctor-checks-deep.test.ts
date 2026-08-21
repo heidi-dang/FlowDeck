@@ -60,7 +60,14 @@ describe("Doctor Engine Deep Coverage Tests", () => {
 
     expect(classifyOpenCodeCompatibility("1.18.20").qualification).toBe("FULLY_QUALIFIED")
     expect(classifyOpenCodeCompatibility("1.18.18").qualification).toBe("SUPPORTED")
+    expect(classifyOpenCodeCompatibility("1.18.19").qualification).toBe("SUPPORTED")
+    expect(classifyOpenCodeCompatibility("1.18.21").qualification).toBe("SUPPORTED_UNVERIFIED")
+    expect(classifyOpenCodeCompatibility("1.18.99").qualification).toBe("SUPPORTED_UNVERIFIED")
+    expect(classifyOpenCodeCompatibility("1.19.0").qualification).toBe("SUPPORTED_UNVERIFIED")
+    expect(classifyOpenCodeCompatibility("1.20.0").qualification).toBe("SUPPORTED_UNVERIFIED")
+    expect(classifyOpenCodeCompatibility("2.0.0").qualification).toBe("SUPPORTED_UNVERIFIED")
     expect(classifyOpenCodeCompatibility("1.18.10").qualification).toBe("DEGRADED")
+    expect(classifyOpenCodeCompatibility("1.18.17").qualification).toBe("DEGRADED")
     expect(classifyOpenCodeCompatibility("1.17.0").qualification).toBe("UNSUPPORTED")
   })
 

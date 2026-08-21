@@ -71,8 +71,17 @@ export function classifyOpenCodeCompatibility(opencodeVersion: string | null): {
     }
   }
 
+  // Newer minor versions >= 1.19
+  if (parsed.major > 1 || (parsed.major === 1 && parsed.minor > 18) || (parsed.major === 1 && parsed.minor === 18 && parsed.patch > 20)) {
+    return {
+      status: "SUPPORTED_UNVERIFIED",
+      qualification: "SUPPORTED_UNVERIFIED",
+      details: `OpenCode v${parsed.major}.${parsed.minor}.${parsed.patch} (Unverified newer version)`,
+    }
+  }
+
   // 1.18.18..1.18.19 are SUPPORTED
-  if (parsed.major === 1 && parsed.minor === 18 && parsed.patch >= 18) {
+  if (parsed.major === 1 && parsed.minor === 18 && (parsed.patch === 18 || parsed.patch === 19)) {
     return {
       status: "SUPPORTED",
       qualification: "SUPPORTED",
@@ -124,6 +133,10 @@ export function openCodeCompatibilityCheck(opencodeVersion: string | null): Chec
     status = "pass"
     severity = "info"
     recommendation = "Supported version. Upgrade to 1.18.20 for exact qualification alignment"
+  } else if (compat.qualification === "SUPPORTED_UNVERIFIED") {
+    status = "warning"
+    severity = "low"
+    recommendation = "Detected OpenCode version is newer than FlowDeck's fully-qualified v1.18.20 target. Compatibility has not yet received exact-version qualification."
   } else if (compat.qualification === "DEGRADED") {
     status = "warning"
     severity = "medium"

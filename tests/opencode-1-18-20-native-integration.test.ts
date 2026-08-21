@@ -18,6 +18,7 @@ import {
   clearParallelCoordinator,
 } from "../src/services/heidi-active-coordinator"
 import { renderParallelPacket } from "../src/services/heidi-parallel-context"
+import { classifyTask } from "../src/services/heidi-fast-router"
 
 describe("OpenCode v1.18.20 Native Integration Suite", () => {
   describe("Phase 1 & 2: Version Qualification & Doctor Capability Matrix", () => {
@@ -207,6 +208,17 @@ describe("OpenCode v1.18.20 Native Integration Suite", () => {
   })
 
   describe("Phase 4: Code Mode Lazy Guidance & Boundary", () => {
+    it("evaluates mcpCompositionCandidate correctly", () => {
+      // Negative
+      expect(classifyTask("Fix this issue in src/index.ts").mcpCompositionCandidate).toBe(false)
+      expect(classifyTask("Review PR #130").mcpCompositionCandidate).toBe(false) // Needs both
+      expect(classifyTask("Search Context7").mcpCompositionCandidate).toBe(false) // Needs composition signal
+
+      // Positive
+      expect(classifyTask("List open GitHub issues and PRs and correlate related changes").mcpCompositionCandidate).toBe(true)
+      expect(classifyTask("Search Context7 for two libraries and compare their APIs").mcpCompositionCandidate).toBe(true)
+    })
+
     it("injects Code Mode instructions only when Code Mode is active and preserves MCP-only boundary", () => {
       const withCodeMode = buildTaskSpecificPromptSections("PARALLEL_SPECIALISTS", undefined, undefined, { codeModeAvailable: true, mcpCompositionCandidate: true })
       expect(withCodeMode).toContain("Native Code Mode (OpenCode execute tool)")

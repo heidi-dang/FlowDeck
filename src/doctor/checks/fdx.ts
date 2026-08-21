@@ -133,10 +133,18 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
         windowsHide: true,
       })
       const healthPromise = new Promise<boolean>((resolve) => {
+        let healthResponded = false
         const timeout = setTimeout(() => {
           try { cp.kill("SIGKILL") } catch {}
           resolve(false)
         }, 1500)
+
+        cp.on("close", () => {
+          if (healthResponded) {
+            clearTimeout(timeout)
+            resolve(true)
+          }
+        })
 
         let buffer = ""
         cp.stdout?.on("data", (chunk: Buffer) => {
@@ -147,9 +155,8 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
             try {
               const res = JSON.parse(line)
               if (res.id === "health-check" && res.ok && res.value?.healthy) {
-                clearTimeout(timeout)
+                healthResponded = true
                 try { cp.kill("SIGTERM") } catch {}
-                resolve(true)
                 return
               }
             } catch {}

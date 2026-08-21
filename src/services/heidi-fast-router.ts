@@ -217,13 +217,28 @@ const STANDARD_PATTERNS: RegExp[] = [
   /across (multiple|several|many) files/i,
 ]
 
-const MCP_COMPOSITION_PATTERNS: RegExp[] = [
+const MCP_COMPOSITION_EXTERNAL_PATTERNS: RegExp[] = [
   /github/i,
   /issue/i,
   /pull request/i,
-  /pr /i,
+  /\bpr\b/i,
   /mcp/i,
+  /context7/i,
+  /remote api/i,
+]
+
+const MCP_COMPOSITION_ACTION_PATTERNS: RegExp[] = [
   /aggregate/i,
+  /combine/i,
+  /compare/i,
+  /correlate/i,
+  /summarize across/i,
+  /fetch.*multiple/i,
+  /list.*multiple/i,
+  /search.*across/i,
+  /multiple/i,
+  /several/i,
+  /all/i,
 ]
 
 // ─── Classification logic ────────────────────────────────────────────────────
@@ -273,7 +288,7 @@ export function classifyTask(
   const lc = text.toLowerCase()
 
   // ── FAST_DIRECT: trivial local task ──────────────────────────────────────
-  const mcpCompositionCandidate = matchesAny(text, MCP_COMPOSITION_PATTERNS)
+  const mcpCompositionCandidate = matchesAny(text, MCP_COMPOSITION_EXTERNAL_PATTERNS) && matchesAny(text, MCP_COMPOSITION_ACTION_PATTERNS)
 
   const isFastDirect = matchesAny(text, FAST_DIRECT_PATTERNS)
   if (isFastDirect && !hints?.isResuming) {
