@@ -34,10 +34,23 @@ afterAll(() => {
 })
 
 describe("runFdxAsync settlement", () => {
+  // Force the "native binary unavailable" path deterministically so behavior is
+  // identical whether or not the real fdx binary is built (CI shared workspace).
+  function withoutBinary<T>(fn: () => T): T {
+    const prev = process.env.FDX_BINARY_PATH
+    process.env.FDX_BINARY_PATH = "/nonexistent/fdx-binary"
+    try { return fn() } finally {
+      if (prev === undefined) delete process.env.FDX_BINARY_PATH
+      else process.env.FDX_BINARY_PATH = prev
+    }
+  }
+
   it("rejects on AbortSignal and does not leave a pending promise", async () => {
     const controller = new AbortController()
-    const p = runFdxAsync(["impact", "a.ts"], { signal: controller.signal, timeoutMs: 10_000 })
-      .then(() => "SETTLED", (e) => "REJECTED:" + (e as Error).message)
+    const p = withoutBinary(() =>
+      runFdxAsync(["impact", "a.ts"], { signal: controller.signal, timeoutMs: 10_000 })
+        .then(() => "SETTLED", (e) => "REJECTED:" + (e as Error).message)
+    )
     controller.abort()
     const outcome = await Promise.race([
       p,
@@ -48,9 +61,11 @@ describe("runFdxAsync settlement", () => {
 
   it("rejects within the timeout bound (bounded, not indefinite)", async () => {
     const start = Date.now()
-    const outcome = await runFdxAsync(["impact", "definitely-missing-file.ts"], { timeoutMs: 50 })
-      .then(() => "SETTLED", () => "REJECTED")
-      .catch(() => "REJECTED")
+    const outcome = await withoutBinary(() =>
+      runFdxAsync(["impact", "definitely-missing-file.ts"], { timeoutMs: 50 })
+        .then(() => "SETTLED", () => "REJECTED")
+        .catch(() => "REJECTED")
+    )
     expect(outcome).toBe("REJECTED")
     expect(Date.now() - start).toBeLessThan(2000)
   }, 4000)

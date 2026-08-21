@@ -371,9 +371,6 @@ export function runFdx(args: string[], cwd?: string): string {
  * bounded by maxBuffer (ENOBUFS is surfaced as a clear error).
  */
 export function runFdxAsync(args: string[], opts: RunFdxAsyncOptions = {}): Promise<string> {
-  const bin = fdxBin()
-  validateExecutable(bin)
-  validateArgs(args)
   const timeoutMs = opts.timeoutMs ?? FDX_TIMEOUT_MS
   const maxBuffer = opts.maxBuffer ?? FDX_MAX_BUFFER
   const signal = opts.signal
@@ -394,6 +391,19 @@ export function runFdxAsync(args: string[], opts: RunFdxAsyncOptions = {}): Prom
       if (signal) signal.removeEventListener("abort", onAbort)
       if (err) rejectPromise(err)
       else resolvePromise(out as string)
+    }
+
+    // Binary resolution / arg validation errors must REJECT, not throw
+    // synchronously, so runFdxAsync always settles (never leaves a caller in a
+    // thrown/unhandled state).
+    let bin: string
+    try {
+      bin = fdxBin()
+      validateExecutable(bin)
+      validateArgs(args)
+    } catch (err) {
+      rejectPromise(err instanceof Error ? err : new Error(String(err)))
+      return
     }
 
     if (signal) {
@@ -443,8 +453,6 @@ export function runExecutableAsync(
   args: string[],
   opts: RunFdxAsyncOptions = {}
 ): Promise<string> {
-  validateExecutable(exe)
-  validateArgs(args)
   const timeoutMs = opts.timeoutMs ?? FDX_TIMEOUT_MS
   const maxBuffer = opts.maxBuffer ?? FDX_MAX_BUFFER
   const signal = opts.signal
@@ -462,6 +470,14 @@ export function runExecutableAsync(
       if (signal) signal.removeEventListener("abort", onAbort)
       if (err) rejectPromise(err)
       else resolvePromise(out as string)
+    }
+
+    try {
+      validateExecutable(exe)
+      validateArgs(args)
+    } catch (err) {
+      rejectPromise(err instanceof Error ? err : new Error(String(err)))
+      return
     }
 
     if (signal) {
