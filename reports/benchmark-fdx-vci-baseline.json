@@ -1,0 +1,29 @@
+{
+  "timestamp": "2026-08-21T16:48:02.388Z",
+  "git": {
+    "sha": "b898551554e7d9b8fba02c6b9f9b8bf66fe592d6",
+    "branch": "feat/fdx-verifiable-change-intelligence"
+  },
+  "metrics": {
+    "coldStartupMs": 1.88,
+    "coldReadMs": 5.39,
+    "daemonInitMs": 1304.6,
+    "warmSearchMs": 1141.63,
+    "warmOutlineMs": 0.61,
+    "warmImpactMs": 159.66,
+    "memoryRssBytes": 52166656,
+    "memoryHeapUsedBytes": 5589008,
+    "payloadBytes": {
+      "coldRead": 995,
+      "warmSearch": 23141,
+      "warmOutline": 823,
+      "warmImpact": 54705
+    }
+  },
+  "environment": {
+    "node": "v24.19.0",
+    "platform": "linux",
+    "arch": "x64",
+    "binaryPath": "/home/heidi/flowdeck/target/debug/fdx"
+  }
+}
