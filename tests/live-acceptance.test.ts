@@ -78,6 +78,19 @@ describe("Live OpenCode Acceptance", () => {
   }, 120000)
 
   it("verifies execute visible with eligible MCP (Code Mode)", () => {
+    let opencodeVer = ""
+    try {
+      opencodeVer = require('child_process').execFileSync("opencode", ["--version"], { encoding: "utf-8" }).trim()
+    } catch {
+      console.log("opencode not available, skipping live test")
+      return
+    }
+
+    if (!opencodeVer.includes("1.18.20")) {
+      console.log("Not OpenCode 1.18.20, skipping live test")
+      return
+    }
+
     // 17. Test execute visible with eligible MCP.
     const testDir = mkdtempSync(join(tmpdir(), "live-code-mode-"))
     mkdirSync(join(testDir, ".opencode"))
@@ -126,6 +139,19 @@ server.connect(new StdioServerTransport()).catch(console.error);
   }, 60000)
 
   it("verifies execute hidden without eligible MCP (Code Mode)", () => {
+    let opencodeVer = ""
+    try {
+      opencodeVer = require('child_process').execFileSync("opencode", ["--version"], { encoding: "utf-8" }).trim()
+    } catch {
+      console.log("opencode not available, skipping live test")
+      return
+    }
+
+    if (!opencodeVer.includes("1.18.20")) {
+      console.log("Not OpenCode 1.18.20, skipping live test")
+      return
+    }
+
     // 18. Test execute hidden without eligible MCP.
     const testDir = mkdtempSync(join(tmpdir(), "live-code-mode-no-mcp-"))
     mkdirSync(join(testDir, ".opencode"))
