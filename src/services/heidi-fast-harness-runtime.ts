@@ -163,7 +163,14 @@ export function renderTurnContext(sessionID: string, directory: string): string 
     // Repository facts are best-effort — never break the prompt build.
     console.debug?.("[FastHarness] renderHotContextSummary error:", err)
   }
-  const sections = buildTaskSpecificPromptSections(route.decision.executionClass, route.decision.specialists)
+  const isCodeMode = process.env.OPENCODE_EXPERIMENTAL_CODE_MODE === "true" ||
+    (process.env.OPENCODE_EXPERIMENTAL_CODE_MODE === undefined && process.env.OPENCODE_EXPERIMENTAL === "true")
+  const sections = buildTaskSpecificPromptSections(
+    route.decision.executionClass,
+    route.decision.specialists,
+    undefined,
+    { codeModeAvailable: isCodeMode },
+  )
   if (sections.trim()) parts.push(sections)
   // Active-parallel coordinator packet (compact <200 tokens; empty when none).
   try {

@@ -121,5 +121,78 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
     })
   }
 
+  // FDX Resident Native Daemon Health
+  let daemonHealthy = false
+  let daemonDetail = "FDX resident daemon not running (spawned on demand)"
+  if (fdxRuns) {
+    try {
+      const execPath = nativeBinaryPath ?? "fdx"
+      const { spawn } = await import("node:child_process")
+      const cp = spawn(execPath, ["serve"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      })
+      const healthPromise = new Promise<boolean>((resolve) => {
+        const timeout = setTimeout(() => {
+          try { cp.kill("SIGKILL") } catch {}
+          resolve(false)
+        }, 1500)
+
+        let buffer = ""
+        cp.stdout?.on("data", (chunk: Buffer) => {
+          buffer += chunk.toString("utf-8")
+          const lines = buffer.split("\n")
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const res = JSON.parse(line)
+              if (res.id === "health-check" && res.ok && res.value?.healthy) {
+                clearTimeout(timeout)
+                try { cp.kill("SIGTERM") } catch {}
+                resolve(true)
+                return
+              }
+            } catch {}
+          }
+        })
+
+        cp.on("error", () => {
+          clearTimeout(timeout)
+          resolve(false)
+        })
+
+        try {
+          cp.stdin?.write(JSON.stringify({ id: "health-check", op: "health" }) + "\n")
+        } catch {
+          clearTimeout(timeout)
+          resolve(false)
+        }
+      })
+
+      daemonHealthy = await healthPromise
+      if (daemonHealthy) {
+        daemonDetail = "FDX resident daemon protocol responsive (IPC health check passed)"
+      }
+    } catch {
+      daemonHealthy = false
+    }
+  }
+
+  checks.push({
+    id: "fdx.resident_daemon",
+    title: "FDX Resident Daemon",
+    category: "fdx",
+    severity: "info",
+    status: daemonHealthy ? "pass" : "info",
+    detected: daemonDetail,
+    expected: "FDX daemon responsive over JSON-lines IPC",
+    recommendation: daemonHealthy
+      ? "FDX resident daemon operational for persistent warm requests"
+      : "Daemon launches on demand when resident requests are made",
+    autoFixAvailable: false,
+    affectsRuntime: false,
+    repairability: "not-applicable",
+  })
+
   return checks
 }

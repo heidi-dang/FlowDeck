@@ -1,6 +1,13 @@
 import { describe, it, expect } from "bun:test"
 import { runDoctor, scoreCategory, formatReport, formatJSON } from "../src/doctor/doctor"
-import { runRuntimeChecks, parseOpenCodeVersion, supportsBackgroundSubagents, backgroundSubagentCapabilityCheck } from "../src/doctor/checks/runtime"
+import {
+  runRuntimeChecks,
+  parseOpenCodeVersion,
+  supportsBackgroundSubagents,
+  classifyOpenCodeCompatibility,
+  backgroundSubagentCapabilityCheck,
+  codeModeCapabilityCheck,
+} from "../src/doctor/checks/runtime"
 import { runRepositoryChecks } from "../src/doctor/checks/repository"
 import { runEnvironmentChecks } from "../src/doctor/checks/environment"
 import { runMCPChecks } from "../src/doctor/checks/mcp"
@@ -41,13 +48,43 @@ describe("Doctor Engine Deep Coverage Tests", () => {
     expect(score).toBeLessThanOrEqual(100)
   })
 
-  it("parses OpenCode versions and gates native background support", () => {
+  it("parses OpenCode versions and gates native background support and qualification", () => {
+    expect(parseOpenCodeVersion("1.18.20")).toEqual({ major: 1, minor: 18, patch: 20 })
     expect(parseOpenCodeVersion("1.18.18")).toEqual({ major: 1, minor: 18, patch: 18 })
     expect(parseOpenCodeVersion("opencode 1.18.18")).toEqual({ major: 1, minor: 18, patch: 18 })
     expect(parseOpenCodeVersion(null)).toBeNull()
+    expect(supportsBackgroundSubagents("1.18.20")).toBe(true)
     expect(supportsBackgroundSubagents("1.18.18")).toBe(true)
     expect(supportsBackgroundSubagents("1.17.9")).toBe(false)
     expect(supportsBackgroundSubagents("not-a-version")).toBe(false)
+
+    expect(classifyOpenCodeCompatibility("1.18.20").qualification).toBe("FULLY_QUALIFIED")
+    expect(classifyOpenCodeCompatibility("1.18.18").qualification).toBe("SUPPORTED")
+    expect(classifyOpenCodeCompatibility("1.18.10").qualification).toBe("DEGRADED")
+    expect(classifyOpenCodeCompatibility("1.17.0").qualification).toBe("UNSUPPORTED")
+  })
+
+  it("reports native Code Mode capability correctly based on environment flags", () => {
+    const originalNarrow = process.env.OPENCODE_EXPERIMENTAL_CODE_MODE
+    const originalBroad = process.env.OPENCODE_EXPERIMENTAL
+    try {
+      delete process.env.OPENCODE_EXPERIMENTAL
+      process.env.OPENCODE_EXPERIMENTAL_CODE_MODE = "true"
+      const enabled = codeModeCapabilityCheck("1.18.20")
+      expect(enabled.status).toBe("pass")
+      expect(enabled.detected).toContain("OPENCODE_EXPERIMENTAL_CODE_MODE=true")
+      expect(enabled.evidence?.executeToolAvailable).toBe(true)
+
+      process.env.OPENCODE_EXPERIMENTAL_CODE_MODE = "false"
+      const disabled = codeModeCapabilityCheck("1.18.20")
+      expect(disabled.status).toBe("info")
+      expect(disabled.evidence?.executeToolAvailable).toBe(false)
+    } finally {
+      if (originalNarrow === undefined) delete process.env.OPENCODE_EXPERIMENTAL_CODE_MODE
+      else process.env.OPENCODE_EXPERIMENTAL_CODE_MODE = originalNarrow
+      if (originalBroad === undefined) delete process.env.OPENCODE_EXPERIMENTAL
+      else process.env.OPENCODE_EXPERIMENTAL = originalBroad
+    }
   })
 
   it("reports native background subagent capability from the narrow flag", () => {
