@@ -1,0 +1,2 @@
+// Opaque binary or proprietary syntax not parseable by standard TS/Rust AST
+DATA_BLOCK_VERSION_1_OPAQUE

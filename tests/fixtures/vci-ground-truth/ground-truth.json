@@ -1,0 +1,267 @@
+{
+  "version": 1,
+  "fixture": "vci-ground-truth",
+  "description": "Hand-authored ground truth semantic evidence graph and verification expectations",
+  "nodes": [
+    {
+      "id": "pkg:root",
+      "kind": "package",
+      "path": "package.json"
+    },
+    {
+      "id": "cfg:tsconfig",
+      "kind": "config",
+      "path": "tsconfig.json"
+    },
+    {
+      "id": "file:src/index.ts",
+      "kind": "file",
+      "path": "src/index.ts"
+    },
+    {
+      "id": "file:src/auth/service.ts",
+      "kind": "file",
+      "path": "src/auth/service.ts"
+    },
+    {
+      "id": "file:src/auth/jwt.ts",
+      "kind": "file",
+      "path": "src/auth/jwt.ts"
+    },
+    {
+      "id": "file:src/auth/index.ts",
+      "kind": "file",
+      "path": "src/auth/index.ts"
+    },
+    {
+      "id": "file:src/graph/node-a.ts",
+      "kind": "file",
+      "path": "src/graph/node-a.ts"
+    },
+    {
+      "id": "file:src/graph/node-b.ts",
+      "kind": "file",
+      "path": "src/graph/node-b.ts"
+    },
+    {
+      "id": "file:src/utils/math.ts",
+      "kind": "file",
+      "path": "src/utils/math.ts"
+    },
+    {
+      "id": "file:src/plugins/loader.ts",
+      "kind": "file",
+      "path": "src/plugins/loader.ts"
+    },
+    {
+      "id": "file:src/plugins/dynamic-plugin.ts",
+      "kind": "file",
+      "path": "src/plugins/dynamic-plugin.ts"
+    },
+    {
+      "id": "file:src/generated/schema.d.ts",
+      "kind": "generated_artifact",
+      "path": "src/generated/schema.d.ts"
+    },
+    {
+      "id": "file:schema.graphql",
+      "kind": "config",
+      "path": "schema.graphql"
+    },
+    {
+      "id": "file:src/legacy/opaque.ext",
+      "kind": "external_dependency",
+      "path": "src/legacy/opaque.ext"
+    },
+    {
+      "id": "file:tests/auth.test.ts",
+      "kind": "test",
+      "path": "tests/auth.test.ts"
+    },
+    {
+      "id": "file:tests/order-sensitive.test.ts",
+      "kind": "test",
+      "path": "tests/order-sensitive.test.ts"
+    }
+  ],
+  "edges": [
+    {
+      "source": "file:src/index.ts",
+      "target": "file:src/auth/index.ts",
+      "kind": "re_exports",
+      "strength": "precise",
+      "provider": "tree_sitter"
+    },
+    {
+      "source": "file:src/index.ts",
+      "target": "file:src/graph/node-a.ts",
+      "kind": "re_exports",
+      "strength": "precise",
+      "provider": "tree_sitter"
+    },
+    {
+      "source": "file:src/auth/index.ts",
+      "target": "file:src/auth/service.ts",
+      "kind": "re_exports",
+      "strength": "precise",
+      "provider": "tree_sitter"
+    },
+    {
+      "source": "file:src/auth/service.ts",
+      "target": "file:src/auth/jwt.ts",
+      "kind": "imports",
+      "strength": "precise",
+      "provider": "tree_sitter"
+    },
+    {
+      "source": "file:src/auth/service.ts",
+      "target": "file:src/utils/math.ts",
+      "kind": "imports",
+      "strength": "structural",
+      "provider": "tree_sitter",
+      "alias": "@app/utils"
+    },
+    {
+      "source": "file:src/graph/node-a.ts",
+      "target": "file:src/graph/node-b.ts",
+      "kind": "imports",
+      "strength": "precise",
+      "provider": "tree_sitter",
+      "cycle": true
+    },
+    {
+      "source": "file:src/graph/node-b.ts",
+      "target": "file:src/graph/node-a.ts",
+      "kind": "imports",
+      "strength": "precise",
+      "provider": "tree_sitter",
+      "cycle": true
+    },
+    {
+      "source": "file:src/plugins/loader.ts",
+      "target": "file:src/plugins/dynamic-plugin.ts",
+      "kind": "imports",
+      "strength": "unknown",
+      "provider": "tree_sitter",
+      "dynamic": true
+    },
+    {
+      "source": "file:schema.graphql",
+      "target": "file:src/generated/schema.d.ts",
+      "kind": "generates",
+      "strength": "observed",
+      "provider": "build_native"
+    },
+    {
+      "source": "file:tests/auth.test.ts",
+      "target": "file:src/auth/service.ts",
+      "kind": "tests",
+      "strength": "precise",
+      "provider": "runner_native"
+    },
+    {
+      "source": "file:tests/order-sensitive.test.ts",
+      "target": "file:tests/auth.test.ts",
+      "kind": "orders_before",
+      "strength": "observed",
+      "provider": "runner_native"
+    }
+  ],
+  "changed": [
+    {
+      "path": "src/auth/jwt.ts",
+      "change_type": "signature_change",
+      "affected_symbols": [
+        "verifyToken"
+      ]
+    }
+  ],
+  "impact": [
+    {
+      "target": "src/auth/jwt.ts",
+      "direct_dependents": [
+        "src/auth/service.ts"
+      ],
+      "transitive_dependents": [
+        "src/auth/service.ts",
+        "src/auth/index.ts",
+        "src/index.ts",
+        "tests/auth.test.ts"
+      ],
+      "has_cycles": false
+    },
+    {
+      "target": "src/graph/node-a.ts",
+      "direct_dependents": [
+        "src/graph/node-b.ts",
+        "src/index.ts"
+      ],
+      "transitive_dependents": [
+        "src/graph/node-b.ts",
+        "src/graph/node-a.ts",
+        "src/index.ts"
+      ],
+      "has_cycles": true
+    }
+  ],
+  "tests": [
+    {
+      "target": "src/auth/jwt.ts",
+      "granularity": "symbol",
+      "selected_tests": [
+        "tests/auth.test.ts"
+      ],
+      "assurance": "EXACT"
+    },
+    {
+      "target": "src/plugins/loader.ts",
+      "granularity": "package",
+      "selected_tests": [
+        "tests/auth.test.ts",
+        "tests/order-sensitive.test.ts"
+      ],
+      "assurance": "CONSERVATIVE",
+      "escalation_reason": "dynamic_import"
+    }
+  ],
+  "unknowns": [
+    {
+      "path": "src/plugins/loader.ts",
+      "trigger": "dynamic_import",
+      "scope": "package",
+      "severity": "medium"
+    },
+    {
+      "path": "src/legacy/opaque.ext",
+      "trigger": "unsupported_language",
+      "scope": "package",
+      "severity": "medium"
+    },
+    {
+      "path": "tests/order-sensitive.test.ts",
+      "trigger": "test_order_dependency",
+      "scope": "full_test_suite",
+      "severity": "high"
+    }
+  ],
+  "verificationExpansion": [
+    {
+      "trigger": "dynamic_import",
+      "source": "src/plugins/loader.ts",
+      "escalated_scope": "package",
+      "included_targets": [
+        "src/plugins/loader.ts",
+        "src/plugins/dynamic-plugin.ts"
+      ]
+    },
+    {
+      "trigger": "test_order_dependency",
+      "source": "tests/order-sensitive.test.ts",
+      "escalated_scope": "full_test_suite",
+      "included_targets": [
+        "tests/auth.test.ts",
+        "tests/order-sensitive.test.ts"
+      ]
+    }
+  ]
+}
