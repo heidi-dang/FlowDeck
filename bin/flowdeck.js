@@ -434,7 +434,7 @@ Options:
   const isJson = doctorArgs.includes("--json");
   const isStrict = doctorArgs.includes("--strict");
   const isVerbose = doctorArgs.includes("--verbose");
-  const applyFix = doctorArgs.includes("--apply-recommended");
+  const applyFix = doctorArgs.includes("--apply-recommended") || doctorArgs.includes("fix") || doctorArgs.includes("--fix");
   const profileIdx = doctorArgs.indexOf("--profile");
   const profile = profileIdx >= 0 && profileIdx + 1 < doctorArgs.length ? doctorArgs[profileIdx + 1] : "recommended-dev";
 

@@ -45,6 +45,9 @@ export async function applyAutoFixes(
       case "plugin.runtime_identity":
         results.push(await autoFixRuntimeIdentity(options))
         break
+      case "runtime.opencode_background_subagents":
+        results.push(autoFixBackgroundSubagents())
+        break
       default:
         // No auto-fix defined for this check
         break
@@ -75,6 +78,17 @@ async function autoFixInstall(_options: DoctorOptions): Promise<AutoFixResult> {
     } catch (e: any) {
       return { id: "fix_config.opencode_user", description: "Install FlowDeck", applied: false, error: e.message }
     }
+  }
+}
+
+function autoFixBackgroundSubagents(): AutoFixResult {
+  const instruction = "Set OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true in the environment that launches OpenCode, then restart OpenCode."
+  return {
+    id: "fix_runtime.opencode_background_subagents",
+    description: `Cannot safely mutate the parent OpenCode launch environment from Doctor. ${instruction}`,
+    applied: false,
+    reverified: false,
+    error: "OpenCode launch environment is externally owned; restart OpenCode after setting the narrow flag",
   }
 }
 

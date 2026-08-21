@@ -329,12 +329,14 @@ export function buildTaskSpecificPromptSections(
       '',
       '## Parallel Specialist Execution',
       '',
-      '- Launch ALL independent specialists CONCURRENTLY as separate task calls; each child owns a disjoint file area.',
-      '- Do NOT idle while children run: keep doing coordinator-owned work (integration architecture, central file inspection, caller/callee analysis, acceptance criteria, combined test planning) that does not conflict with running children.',
+      '- Launch ALL independent specialists CONCURRENTLY as separate native `task` calls with `background: true`; each child owns a disjoint file area.',
+      '- `background: true` is available only when OpenCode has OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true; if unavailable, report the degraded native capability rather than inventing a FlowDeck scheduler.',
+      '- Do NOT idle while children run: immediately do coordinator-owned work (doctor/environment checks, central integration files, OpenCode compatibility, acceptance criteria, risk matrix, integration plan, and combined test planning) that does not conflict with running children.',
       "- Never independently re-implement a running child's assigned scope.",
-      '- Between coordinator work units, consume runtime child-status deltas cheaply (no Continue / check-subagents prompts).',
-      '- When ANY child becomes READY (completed with a valid result), review and integrate it at the next safe boundary — do NOT wait for all siblings first.',
+      '- Do not poll, sleep, issue status calls, use Continue/check-subagents prompts, or maintain a custom child registry; OpenCode injects native background results into this parent session.',
+      '- When ANY child result is injected, identify it by the native task/session metadata, review it, and integrate it at the next safe boundary — do NOT wait for all siblings first or assume FIFO completion.',
       '- Reserve shared integration surfaces (e.g. src/index.ts, cross-workstream tests) for Heidi.',
+      '- Keep dependent tasks foreground with the default Task mode when Heidi needs their result before proceeding.',
       '- Enter the all-child wait barrier ONLY during FINAL_CONVERGENCE, then run combined verification.',
     ].join('\n'))
   }

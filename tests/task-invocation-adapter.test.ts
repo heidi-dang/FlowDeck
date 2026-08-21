@@ -129,6 +129,24 @@ describe("normalizeTaskInvocation", () => {
     })
   })
 
+  describe("native background mode", () => {
+    it("records background=true from the OpenCode Task payload", () => {
+      const result = normalizeTaskInvocation(
+        { sessionID: "s15" },
+        { subagent_type: "mapper", background: true },
+      )
+      expect(result.background).toBe(true)
+    })
+
+    it("defaults background to false for foreground Task calls", () => {
+      const result = normalizeTaskInvocation(
+        { sessionID: "s16" },
+        { subagent_type: "reviewer", background: false },
+      )
+      expect(result.background).toBe(false)
+    })
+  })
+
   describe("non-string values are safely ignored", () => {
     it("ignores numeric subagent_type", () => {
       const result = normalizeTaskInvocation(

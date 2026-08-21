@@ -13,9 +13,23 @@
 import { describe, it, expect } from "bun:test"
 import {
   buildOrchestratorPrompt,
+  buildTaskSpecificPromptSections,
   createOrchestratorAgent,
 } from "@/agents/orchestrator"
 import { getAgentRoutes, AGENT_NAMES } from "@/agents/index"
+
+describe("orchestrator prompt: native parallel Task contract", () => {
+  it("requires native background Task calls and coordinator-owned work", () => {
+    const prompt = buildTaskSpecificPromptSections("PARALLEL_SPECIALISTS")
+    expect(prompt).toContain("native `task` calls")
+    expect(prompt).toContain("`background: true`")
+    expect(prompt).toContain("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
+    expect(prompt).toContain("doctor/environment checks")
+    expect(prompt).toContain("OpenCode injects native background results")
+    expect(prompt).toContain("Do not poll, sleep")
+    expect(prompt).toContain("Keep dependent tasks foreground")
+  })
+})
 
 describe("orchestrator prompt: core router rule", () => {
   const prompt = buildOrchestratorPrompt()

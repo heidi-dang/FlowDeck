@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test"
 import { runDoctor, scoreCategory, formatReport, formatJSON } from "../src/doctor/doctor"
-import { runRuntimeChecks } from "../src/doctor/checks/runtime"
+import { runRuntimeChecks, parseOpenCodeVersion, supportsBackgroundSubagents, backgroundSubagentCapabilityCheck } from "../src/doctor/checks/runtime"
 import { runRepositoryChecks } from "../src/doctor/checks/repository"
 import { runEnvironmentChecks } from "../src/doctor/checks/environment"
 import { runMCPChecks } from "../src/doctor/checks/mcp"
@@ -39,6 +39,45 @@ describe("Doctor Engine Deep Coverage Tests", () => {
     const score = scoreCategory(checks, "runtime")
     expect(score).toBeGreaterThanOrEqual(0)
     expect(score).toBeLessThanOrEqual(100)
+  })
+
+  it("parses OpenCode versions and gates native background support", () => {
+    expect(parseOpenCodeVersion("1.18.18")).toEqual({ major: 1, minor: 18, patch: 18 })
+    expect(parseOpenCodeVersion("opencode 1.18.18")).toEqual({ major: 1, minor: 18, patch: 18 })
+    expect(parseOpenCodeVersion(null)).toBeNull()
+    expect(supportsBackgroundSubagents("1.18.18")).toBe(true)
+    expect(supportsBackgroundSubagents("1.17.9")).toBe(false)
+    expect(supportsBackgroundSubagents("not-a-version")).toBe(false)
+  })
+
+  it("reports native background subagent capability from the narrow flag", () => {
+    const originalNarrow = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
+    const originalBroad = process.env.OPENCODE_EXPERIMENTAL
+    try {
+      delete process.env.OPENCODE_EXPERIMENTAL
+      process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = "true"
+      const enabled = backgroundSubagentCapabilityCheck("1.18.18")
+      expect(enabled.status).toBe("pass")
+      expect(enabled.detected).toContain("native Task background parameter supported")
+      expect(enabled.detected).toContain("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
+
+      process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = "false"
+      const disabled = backgroundSubagentCapabilityCheck("1.18.18")
+      expect(disabled.status).toBe("warning")
+      expect(disabled.autoFixAvailable).toBe(true)
+      expect(disabled.detected).toContain("is not enabled")
+
+      delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
+      process.env.OPENCODE_EXPERIMENTAL = "true"
+      const broad = backgroundSubagentCapabilityCheck("1.18.18")
+      expect(broad.status).toBe("pass")
+      expect(broad.detected).toContain("broad OPENCODE_EXPERIMENTAL fallback")
+    } finally {
+      if (originalNarrow === undefined) delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
+      else process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = originalNarrow
+      if (originalBroad === undefined) delete process.env.OPENCODE_EXPERIMENTAL
+      else process.env.OPENCODE_EXPERIMENTAL = originalBroad
+    }
   })
 
   it("runRuntimeChecks checks node, bun, git, opencode executables", async () => {
@@ -162,6 +201,21 @@ describe("Doctor Engine Deep Coverage Tests", () => {
     ]
     const recs = generateRecommendations(checks)
     expect(recs.length).toBeGreaterThan(0)
+  })
+
+  it("reports that Doctor cannot mutate an externally owned OpenCode launch environment", async () => {
+    const original = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
+    try {
+      delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
+      delete process.env.OPENCODE_EXPERIMENTAL
+      const results = await applyAutoFixes([backgroundSubagentCapabilityCheck("1.18.18")], {})
+      expect(results).toHaveLength(1)
+      expect(results[0].applied).toBe(false)
+      expect(results[0].description).toContain("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
+    } finally {
+      if (original === undefined) delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
+      else process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = original
+    }
   })
 
   it("applyAutoFixes applies fixable recommendations safely", async () => {

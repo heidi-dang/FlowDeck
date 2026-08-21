@@ -23,6 +23,8 @@ export interface NormalizedTaskInvocation {
   targetAgent: string
   /** Which args field the target was resolved from, for audit logging */
   resolvedFrom: "subagent_type" | "agent" | "none"
+  /** Native OpenCode background mode requested for this Task call */
+  background: boolean
   prompt: string | undefined
   promptLength?: number
   promptSnippet?: string
@@ -89,6 +91,7 @@ export function normalizeTaskInvocation(
     callerAgent,
     targetAgent,
     resolvedFrom,
+    background: args.background === true,
     prompt: rawPrompt,
     promptLength: rawPrompt ? rawPrompt.length : undefined,
     promptSnippet: truncateSnippet(rawPrompt),

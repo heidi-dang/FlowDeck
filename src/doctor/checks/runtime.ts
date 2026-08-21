@@ -27,6 +27,65 @@ async function tryVersion(cmd: string): Promise<string | null> {
   return out?.split("\n")[0]?.trim() ?? null
 }
 
+export function parseOpenCodeVersion(version: string | null): { major: number; minor: number; patch: number } | null {
+  if (!version) return null
+  const match = version.match(/(?:^|\s|v)(\d+)\.(\d+)\.(\d+)/)
+  if (!match) return null
+  return { major: Number(match[1]), minor: Number(match[2]), patch: Number(match[3]) }
+}
+
+export function supportsBackgroundSubagents(version: string | null): boolean {
+  const parsed = parseOpenCodeVersion(version)
+  if (!parsed) return false
+  return parsed.major > 1 || (parsed.major === 1 && parsed.minor >= 18)
+}
+
+export function backgroundSubagentCapabilityCheck(opencodeVersion: string | null): CheckResult {
+  const narrowFlag = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
+  const broadFlag = process.env.OPENCODE_EXPERIMENTAL
+  const nativeSupport = supportsBackgroundSubagents(opencodeVersion)
+  const narrowEnabled = narrowFlag === "true"
+  const broadEnabled = narrowFlag === undefined && broadFlag === "true"
+  // Match OpenCode's enabledByExperimental contract: an explicit narrow value
+  // takes precedence over the broad fallback, including an explicit false.
+  const enabled = narrowFlag === undefined ? broadEnabled : narrowEnabled
+
+  let detected = "OpenCode runtime not found"
+  if (opencodeVersion) {
+    detected = `${opencodeVersion}; native Task background parameter ${nativeSupport ? "supported" : "not supported"}`
+    if (narrowEnabled) detected += "; OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"
+    else if (broadEnabled) detected += "; enabled through broad OPENCODE_EXPERIMENTAL fallback"
+    else detected += "; OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS is not enabled"
+  }
+
+  const status = !nativeSupport ? "error" : enabled ? "pass" : "warning"
+  return {
+    id: "runtime.opencode_background_subagents",
+    title: "OpenCode Background Subagents",
+    category: "runtime",
+    severity: nativeSupport && enabled ? "info" : "medium",
+    status,
+    detected,
+    evidence: {
+      runtimeVersion: opencodeVersion,
+      nativeSupport,
+      featureEnabled: enabled,
+      taskSchemaBackground: nativeSupport && enabled,
+      narrowFlag: narrowFlag ?? null,
+      broadFlag: broadFlag ?? null,
+    },
+    expected: "OpenCode >= 1.18.0 with OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true",
+    recommendation: enabled
+      ? broadEnabled && !narrowEnabled
+        ? "Prefer OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true instead of the broad OPENCODE_EXPERIMENTAL flag"
+        : "Native background Task mode available to Heidi"
+      : "Set OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true in the environment that launches OpenCode, then restart OpenCode",
+    autoFixAvailable: nativeSupport && !enabled,
+    affectsRuntime: true,
+    repairability: nativeSupport && !enabled ? "manual" : "not-applicable",
+  }
+}
+
 export async function runRuntimeChecks(_directory: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
 
@@ -39,6 +98,7 @@ export async function runRuntimeChecks(_directory: string): Promise<CheckResult[
     _cargoVer,
     pyVer,
     dockerVer,
+    opencodeVer,
   ] = await Promise.all([
     tryVersion("node"),
     tryVersion("npm"),
@@ -48,7 +108,10 @@ export async function runRuntimeChecks(_directory: string): Promise<CheckResult[
     tryVersion("cargo"),
     tryVersion("python3"),
     tryVersion("docker"),
+    tryVersion("opencode"),
   ])
+
+  checks.push(backgroundSubagentCapabilityCheck(opencodeVer))
 
   // OS
   checks.push({
