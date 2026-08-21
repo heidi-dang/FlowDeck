@@ -103,7 +103,7 @@ describe("Command Executor Full Coverage", () => {
 
   it("handles timeout on concurrent recovery", async () => {
     runtime.recoveryClaim.acquire = () => false;
-    executor['awaitConcurrentRecovery'] = async (inv, time) => {
+    executor['awaitConcurrentRecovery'] = async (_inv, _time) => {
         return { status: "pending" } as any;
     };
     const res = await executor.recoverCommand("i1");
