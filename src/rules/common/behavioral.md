@@ -65,6 +65,14 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Direct Tool Execution & Anti-Degeneration
+
+**Action-first. No repetitive monologues.**
+
+- When a tool call is needed, invoke the tool directly.
+- Do NOT generate stream-of-consciousness filler or repetitive preambles (e.g. repeating "Let me check..." across multiple sentences) before invoking tools.
+- Never output repeated blocks of identical text. Keep reasoning focused and actionable.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

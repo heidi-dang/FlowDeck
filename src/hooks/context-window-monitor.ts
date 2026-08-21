@@ -23,10 +23,13 @@ interface CachedTokenState {
 }
 
 function contextReminder(usedPct: string, remainingPct: string, used: string, limit: string): string {
+  const isHigh = parseFloat(usedPct) >= 80
   return (
     `\n\n[FlowDeck Context Monitor]\n` +
     `Context: ${usedPct}% used (${used}/${limit} tokens), ${remainingPct}% remaining.\n` +
-    `You still have context remaining — do NOT rush or skip tasks. Work thoroughly.`
+    (isHigh
+      ? `Context is nearly full. To avoid token repetition degeneration loops, invoke tools directly without stream-of-consciousness monologues or repetitive intention statements.`
+      : `You still have context remaining — do NOT rush or skip tasks. Work thoroughly.`)
   )
 }
 

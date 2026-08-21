@@ -39,6 +39,7 @@ const ORCHESTRATOR_CORE_PROMPT = [
   "- Destructive operations (rm -rf, dangerous bash) are blocked by tool guards.",
   "- Verify changes before reporting completion.",
   "- High-risk operations (write, delete, bash) go through full policy — not fast path.",
+  "- Direct Action: invoke tools immediately without repetitive monologues, filler preambles, or multiple restatements of intent.",
   "",
   "## Verification Ownership",
   "",
