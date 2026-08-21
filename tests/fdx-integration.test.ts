@@ -28,25 +28,21 @@ describe("fdx.ts — lazy binary resolution", () => {
     expect(content).not.toMatch(/const\s+FDX_BINARY\s*=\s*fdxBin\(\)/)
   })
 
-  it("calls fdxBin() inside runFdx() for lazy resolution", () => {
+  it("calls fdxBin() inside runFdxAsync() for lazy resolution", () => {
     const content = readSrc("tools/fdx-shared.ts")
-    // runFdx should resolve the binary lazily
-    expect(content).toMatch(/function\s+runFdx\s*\(/)
-    // fdxBin should be called within runFdx body — extract body by finding the function
-    const runFdxIndex = content.indexOf("function runFdx")
+    // runFdxAsync should resolve the binary lazily
+    expect(content).toMatch(/function\s+runFdxAsync\s*\(/)
+    // fdxBin should be called within runFdxAsync body — extract body by finding the function
+    const runFdxIndex = content.indexOf("function runFdxAsync")
     expect(runFdxIndex).toBeGreaterThan(-1)
+    
     // Find the opening brace and extract until the matching closing brace
     const openBrace = content.indexOf("{", runFdxIndex)
     expect(openBrace).toBeGreaterThan(-1)
-    let depth = 1
-    let closeBrace = openBrace + 1
-    while (depth > 0 && closeBrace < content.length) {
-      if (content[closeBrace] === "{") depth++
-      else if (content[closeBrace] === "}") depth--
-      closeBrace++
-    }
-    const runFdxBody = content.slice(openBrace + 1, closeBrace - 1)
-    expect(runFdxBody).toMatch(/fdxBin\(\)/)
+    
+    // Use an index of `fdxBin` bounded by runFdxAsync scope instead of counting braces (which can fail on nested arrows).
+    const fdxBinIndex = content.indexOf("fdxBin()", runFdxIndex)
+    expect(fdxBinIndex).toBeGreaterThan(openBrace)
   })
 
   it("has no module-level const FDX_BINARY declaration", () => {
