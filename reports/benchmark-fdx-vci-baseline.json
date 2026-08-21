@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "timestamp": "2026-08-21T17:20:45.800Z",
+  "timestamp": "2026-08-21T23:03:03.654Z",
   "git": {
-    "baseSha": "bb705eeb1abecfe7f5f5dc10883e7e1e5071a705",
-    "measuredSha": "bb705eeb1abecfe7f5f5dc10883e7e1e5071a705",
+    "baseSha": "7cb083ec2260f3efa0135c0dadb1443e8d33ea0d",
+    "measuredSha": "7cb083ec2260f3efa0135c0dadb1443e8d33ea0d",
     "branch": "feat/fdx-verifiable-change-intelligence"
   },
   "environment": {
@@ -30,46 +30,46 @@
   "metrics": {
     "binaryLaunchMs": {
       "count": 5,
-      "min": 1.57,
-      "max": 1.83,
-      "mean": 1.68,
-      "median": 1.62,
-      "p95": 1.83
+      "min": 1.65,
+      "max": 1.87,
+      "mean": 1.74,
+      "median": 1.76,
+      "p95": 1.87
     },
     "oneShotReadMs": {
       "count": 5,
-      "min": 2.72,
-      "max": 2.82,
-      "mean": 2.76,
-      "median": 2.76,
-      "p95": 2.82
+      "min": 2.63,
+      "max": 3.74,
+      "mean": 2.93,
+      "median": 2.71,
+      "p95": 3.74
     },
-    "daemonStartupMs": 0.85,
+    "daemonStartupMs": 0.97,
     "warmSearchMs": {
       "count": 10,
-      "min": 44.36,
-      "max": 45.7,
-      "mean": 44.92,
-      "median": 44.93,
-      "p95": 45.7
+      "min": 44.34,
+      "max": 46,
+      "mean": 44.86,
+      "median": 44.71,
+      "p95": 46
     },
     "warmOutlineMs": {
       "count": 10,
-      "min": 0.25,
-      "max": 0.39,
-      "mean": 0.31,
-      "median": 0.3,
-      "p95": 0.39
+      "min": 0.19,
+      "max": 0.36,
+      "mean": 0.29,
+      "median": 0.29,
+      "p95": 0.36
     },
     "warmImpactMs": {
       "count": 10,
-      "min": 54.36,
-      "max": 57.5,
-      "mean": 55.86,
-      "median": 56.33,
-      "p95": 57.5
+      "min": 54.22,
+      "max": 57.27,
+      "mean": 55.53,
+      "median": 55.47,
+      "p95": 57.27
     },
-    "harnessRssBytes": 53067776,
+    "harnessRssBytes": 53215232,
     "payloadBytes": {
       "oneShotRead": 995,
       "warmSearch": 23130,
