@@ -13,8 +13,10 @@ use thiserror::Error;
 /// Protocol version over JSON-lines IPC.
 pub const FDX_PROTOCOL_VERSION: u32 = 2;
 
-/// Relational SQLite schema version for EvidenceGraph.
-pub const FDX_GRAPH_SCHEMA_VERSION: u32 = 1;
+/// Relational SQLite schema version for EvidenceGraph (v2 adds semantic
+/// provider ownership and provenance columns plus the semantic_providers
+/// registry).
+pub const FDX_GRAPH_SCHEMA_VERSION: u32 = 2;
 
 /// Selection and escalation algorithm policy version.
 pub const FDX_SELECTION_POLICY_VERSION: u32 = 1;
@@ -234,7 +236,7 @@ impl Default for GraphCompatibility {
     fn default() -> Self {
         Self {
             graph_schema_version: FDX_GRAPH_SCHEMA_VERSION,
-            semantic_model_version: 1,
+            semantic_model_version: 2,
             selection_policy_version: FDX_SELECTION_POLICY_VERSION,
             provider_fingerprint: format!("fdx-native-{}", env!("CARGO_PKG_VERSION")),
             build_adapter_fingerprint: "native-v1".to_string(),
@@ -264,6 +266,7 @@ pub enum EdgeKind {
     ReExports,
     Calls,
     Defines,
+    Exports,
     Extends,
     Implements,
     References,

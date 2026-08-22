@@ -13,9 +13,20 @@ impl InvalidationEngine {
         conn: &rusqlite::Connection,
         canonical_path: &str,
     ) -> Result<usize, InvalidationError> {
+        // Structural edges are marked stale; semantic provider edges are
+        // governed by provider freshness and are replaced transactionally by
+        // a provider refresh, never cascade-deleted by a file reindex.
         let count = conn.execute(
             "UPDATE edges SET stale = 1 
-             WHERE from_node IN (SELECT stable_id FROM nodes WHERE canonical_path = ?1)",
+             WHERE from_node IN (SELECT stable_id FROM nodes WHERE canonical_path = ?1)
+               AND provider != 'scip'",
+            rusqlite::params![canonical_path],
+        )?;
+        // Provider-owned nodes for this source version become stale so the
+        // query path never presents them as current evidence.
+        conn.execute(
+            "UPDATE nodes SET stale = 1
+             WHERE canonical_path = ?1 AND provider IS NOT NULL",
             rusqlite::params![canonical_path],
         )?;
         Ok(count)

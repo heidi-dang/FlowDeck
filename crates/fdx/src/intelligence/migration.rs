@@ -37,6 +37,10 @@ pub fn migrate_schema(
                 // Migrate v0 -> v1 (synthetic legacy schema to v1)
                 tx.execute_batch(crate::intelligence::schema::INITIALIZE_SCHEMA_SQL)?;
             }
+            1 => {
+                // Migrate v1 -> v2: semantic provider ownership & provenance
+                tx.execute_batch(crate::intelligence::schema::MIGRATE_V1_TO_V2_SQL)?;
+            }
             _ => {
                 return Err(MigrationError::Unsupported(version, target_version));
             }

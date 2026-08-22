@@ -3,7 +3,7 @@ pub struct SchemaVersion {
     pub version: u32,
 }
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 pub const INITIALIZE_SCHEMA_SQL: &str = r#"
 PRAGMA user_version = 1;
@@ -65,4 +65,48 @@ CREATE TABLE IF NOT EXISTS provider_state (
     fingerprint TEXT NOT NULL,
     compatibility_data TEXT
 );
+"#;
+
+/// SQL applied when migrating a v1 database to v2.
+///
+/// v2 additions:
+/// - provider-owned node provenance (nodes.provider / provider_fingerprint /
+///   generation / source_hash / stale)
+/// - semantic generation + occurrence metadata on edges
+/// - the semantic_providers registry table (typed provider state, never an
+///   opaque blob)
+pub const MIGRATE_V1_TO_V2_SQL: &str = r#"
+ALTER TABLE nodes ADD COLUMN provider TEXT;
+ALTER TABLE nodes ADD COLUMN provider_fingerprint TEXT;
+ALTER TABLE nodes ADD COLUMN generation INTEGER;
+ALTER TABLE nodes ADD COLUMN source_hash TEXT;
+ALTER TABLE nodes ADD COLUMN stale BOOLEAN NOT NULL DEFAULT 0;
+ALTER TABLE edges ADD COLUMN generation INTEGER;
+ALTER TABLE edges ADD COLUMN metadata TEXT;
+
+CREATE TABLE IF NOT EXISTS semantic_providers (
+    provider_id TEXT PRIMARY KEY,
+    provider_type TEXT NOT NULL,
+    provider_version TEXT NOT NULL,
+    executable_identity TEXT NOT NULL,
+    scip_schema_version TEXT NOT NULL,
+    languages TEXT NOT NULL,
+    workspace_root TEXT NOT NULL,
+    package TEXT,
+    config_fingerprint TEXT NOT NULL,
+    input_fingerprint TEXT NOT NULL,
+    last_successful_run INTEGER,
+    health TEXT NOT NULL,
+    freshness TEXT NOT NULL,
+    output_digest TEXT,
+    failure_reason TEXT,
+    semantic_generation INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_nodes_provider ON nodes(provider);
+CREATE INDEX IF NOT EXISTS idx_nodes_provider_fingerprint ON nodes(provider_fingerprint);
+CREATE INDEX IF NOT EXISTS idx_nodes_generation ON nodes(generation);
+CREATE INDEX IF NOT EXISTS idx_edges_generation ON edges(generation);
 "#;
