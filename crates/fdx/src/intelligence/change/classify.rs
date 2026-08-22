@@ -11,7 +11,9 @@
 use crate::intelligence::change::model::{
     ChangeKind, ChangeSet, ChangeSubject, SemanticChange, SemanticChangeKind,
 };
-use crate::intelligence::change::uncertainty::UncertaintyReason;
+use crate::intelligence::change::uncertainty::{
+    assurance_ceiling_for_evidence, combine_assurance, UncertaintyReason,
+};
 use crate::protocol::{
     canonicalize_repo_path, AssuranceLevel, EvidenceProviderKind, EvidenceRef, EvidenceStrength,
     FreshnessMetadata,
@@ -100,7 +102,7 @@ fn run_git_bytes(repo_root: &Path, args: &[&str]) -> Result<Vec<u8>, ClassifyErr
 }
 
 /// Read file content from Git ref (e.g. HEAD, HEAD~1, or commit hash).
-fn read_git_file_content(repo_root: &Path, git_ref: &str, repo_path: &str) -> Option<String> {
+pub fn read_git_file_content(repo_root: &Path, git_ref: &str, repo_path: &str) -> Option<String> {
     let spec = format!("{}:{}", git_ref, repo_path);
     let output = Command::new("git")
         .args(["show", &spec])
@@ -253,22 +255,30 @@ pub fn collect_git_deltas(
     Ok(changes)
 }
 
-#[derive(Debug, Clone)]
-struct ParsedSymbolInfo {
-    name: String,
-    #[allow(dead_code)]
-    kind: String,
-    signature: String,
-    body: String,
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct StructuralSymbolKey {
+    pub parent_scope: String,
+    pub kind: String,
+    pub name: String,
 }
 
-fn extract_symbols_from_source(path: &Path, source: &str) -> Option<Vec<ParsedSymbolInfo>> {
+#[derive(Debug, Clone)]
+pub struct ParsedSymbolInfo {
+    pub key: StructuralSymbolKey,
+    pub name: String,
+    #[allow(dead_code)]
+    pub kind: String,
+    pub signature: String,
+    pub body: String,
+}
+
+pub fn extract_symbols_from_source(path: &Path, source: &str) -> Option<Vec<ParsedSymbolInfo>> {
     let lang_provider = detect_language(path)?;
     let tree = parse_source(source, (lang_provider.grammar)()).ok()?;
     let symbols = find_symbols_in_tree(&tree, source, &lang_provider.symbol_node_types);
 
     let mut result = Vec::new();
-    for (node, kind, name, _) in symbols {
+    for (node, kind, name, parent_scope) in symbols {
         let sig = extract_signature(node, source);
         let body_node = find_child_by_kind(node, "block")
             .or_else(|| find_child_by_kind(node, "statement_block"))
@@ -280,6 +290,11 @@ fn extract_symbols_from_source(path: &Path, source: &str) -> Option<Vec<ParsedSy
             .or_else(|| find_child_by_kind(node, "declaration_list"));
         let body_text = body_node.map(|b| node_text(b, source)).unwrap_or_default();
         result.push(ParsedSymbolInfo {
+            key: StructuralSymbolKey {
+                parent_scope,
+                kind: kind.clone(),
+                name: name.clone(),
+            },
             name,
             kind,
             signature: sig,
@@ -329,6 +344,17 @@ pub fn classify_changes(
                     after_digest.as_deref(),
                 );
 
+                let ev = vec![EvidenceRef {
+                    provider: EvidenceProviderKind::TreeSitter,
+                    provider_fingerprint: "ts-native".to_string(),
+                    strength: EvidenceStrength::Structural,
+                    source_identity: file_path.clone(),
+                    source_hash: after_digest.clone(),
+                    freshness: FreshnessMetadata::default(),
+                }];
+                let change_assurance = assurance_ceiling_for_evidence(&ev);
+                overall_assurance = combine_assurance(overall_assurance, change_assurance);
+
                 semantic_changes.push(SemanticChange {
                     id: change_id,
                     file: file_path.clone(),
@@ -341,15 +367,8 @@ pub fn classify_changes(
                         signature: None,
                         digest: after_digest.clone(),
                     }),
-                    evidence: vec![EvidenceRef {
-                        provider: EvidenceProviderKind::TreeSitter,
-                        provider_fingerprint: "ts-native".to_string(),
-                        strength: EvidenceStrength::Structural,
-                        source_identity: file_path.clone(),
-                        source_hash: after_digest.clone(),
-                        freshness: FreshnessMetadata::default(),
-                    }],
-                    assurance: AssuranceLevel::Exact,
+                    evidence: ev,
+                    assurance: change_assurance,
                     reasons: vec!["file_added".to_string()],
                 });
 
@@ -367,6 +386,17 @@ pub fn classify_changes(
                                 None,
                                 Some(&sym_digest),
                             );
+                            let sym_ev = vec![EvidenceRef {
+                                provider: EvidenceProviderKind::TreeSitter,
+                                provider_fingerprint: "ts-native".to_string(),
+                                strength: EvidenceStrength::Structural,
+                                source_identity: file_path.clone(),
+                                source_hash: after_digest.clone(),
+                                freshness: FreshnessMetadata::default(),
+                            }];
+                            let sym_assurance = assurance_ceiling_for_evidence(&sym_ev);
+                            overall_assurance = combine_assurance(overall_assurance, sym_assurance);
+
                             semantic_changes.push(SemanticChange {
                                 id: sym_id,
                                 file: file_path.clone(),
@@ -379,15 +409,8 @@ pub fn classify_changes(
                                     signature: Some(sym.signature),
                                     digest: Some(sym_digest),
                                 }),
-                                evidence: vec![EvidenceRef {
-                                    provider: EvidenceProviderKind::TreeSitter,
-                                    provider_fingerprint: "ts-native".to_string(),
-                                    strength: EvidenceStrength::Structural,
-                                    source_identity: file_path.clone(),
-                                    source_hash: after_digest.clone(),
-                                    freshness: FreshnessMetadata::default(),
-                                }],
-                                assurance: AssuranceLevel::Exact,
+                                evidence: sym_ev,
+                                assurance: sym_assurance,
                                 reasons: vec!["symbol_added".to_string()],
                             });
                         }
@@ -405,6 +428,17 @@ pub fn classify_changes(
                     None,
                 );
 
+                let ev = vec![EvidenceRef {
+                    provider: EvidenceProviderKind::TreeSitter,
+                    provider_fingerprint: "ts-native".to_string(),
+                    strength: EvidenceStrength::Structural,
+                    source_identity: file_path.clone(),
+                    source_hash: before_digest.clone(),
+                    freshness: FreshnessMetadata::default(),
+                }];
+                let change_assurance = assurance_ceiling_for_evidence(&ev);
+                overall_assurance = combine_assurance(overall_assurance, change_assurance);
+
                 semantic_changes.push(SemanticChange {
                     id: change_id,
                     file: file_path.clone(),
@@ -417,15 +451,8 @@ pub fn classify_changes(
                         digest: before_digest.clone(),
                     }),
                     after: None,
-                    evidence: vec![EvidenceRef {
-                        provider: EvidenceProviderKind::TreeSitter,
-                        provider_fingerprint: "ts-native".to_string(),
-                        strength: EvidenceStrength::Structural,
-                        source_identity: file_path.clone(),
-                        source_hash: before_digest.clone(),
-                        freshness: FreshnessMetadata::default(),
-                    }],
-                    assurance: AssuranceLevel::Exact,
+                    evidence: ev,
+                    assurance: change_assurance,
                     reasons: vec!["file_deleted".to_string()],
                 });
 
@@ -443,6 +470,17 @@ pub fn classify_changes(
                                 Some(&sym_digest),
                                 None,
                             );
+                            let sym_ev = vec![EvidenceRef {
+                                provider: EvidenceProviderKind::TreeSitter,
+                                provider_fingerprint: "ts-native".to_string(),
+                                strength: EvidenceStrength::Structural,
+                                source_identity: file_path.clone(),
+                                source_hash: before_digest.clone(),
+                                freshness: FreshnessMetadata::default(),
+                            }];
+                            let sym_assurance = assurance_ceiling_for_evidence(&sym_ev);
+                            overall_assurance = combine_assurance(overall_assurance, sym_assurance);
+
                             semantic_changes.push(SemanticChange {
                                 id: sym_id,
                                 file: file_path.clone(),
@@ -455,15 +493,8 @@ pub fn classify_changes(
                                     digest: Some(sym_digest),
                                 }),
                                 after: None,
-                                evidence: vec![EvidenceRef {
-                                    provider: EvidenceProviderKind::TreeSitter,
-                                    provider_fingerprint: "ts-native".to_string(),
-                                    strength: EvidenceStrength::Structural,
-                                    source_identity: file_path.clone(),
-                                    source_hash: before_digest.clone(),
-                                    freshness: FreshnessMetadata::default(),
-                                }],
-                                assurance: AssuranceLevel::Exact,
+                                evidence: sym_ev,
+                                assurance: sym_assurance,
                                 reasons: vec!["symbol_deleted".to_string()],
                             });
                         }
@@ -491,6 +522,17 @@ pub fn classify_changes(
                     after_digest.as_deref(),
                 );
 
+                let ev = vec![EvidenceRef {
+                    provider: EvidenceProviderKind::TreeSitter,
+                    provider_fingerprint: "ts-native".to_string(),
+                    strength: EvidenceStrength::Structural,
+                    source_identity: file_path.clone(),
+                    source_hash: None,
+                    freshness: FreshnessMetadata::default(),
+                }];
+                let change_assurance = assurance_ceiling_for_evidence(&ev);
+                overall_assurance = combine_assurance(overall_assurance, change_assurance);
+
                 semantic_changes.push(SemanticChange {
                     id: change_id,
                     file: file_path.clone(),
@@ -508,15 +550,8 @@ pub fn classify_changes(
                         signature: None,
                         digest: after_digest,
                     }),
-                    evidence: vec![EvidenceRef {
-                        provider: EvidenceProviderKind::TreeSitter,
-                        provider_fingerprint: "ts-native".to_string(),
-                        strength: EvidenceStrength::Structural,
-                        source_identity: file_path.clone(),
-                        source_hash: None,
-                        freshness: FreshnessMetadata::default(),
-                    }],
-                    assurance: AssuranceLevel::Exact,
+                    evidence: ev,
+                    assurance: change_assurance,
                     reasons: vec![format!("file_renamed_from:{}", old_p)],
                 });
             }
@@ -542,22 +577,38 @@ pub fn classify_changes(
 
                 match (before_symbols_opt, after_symbols_opt) {
                     (Some(before_syms), Some(after_syms)) => {
-                        let mut before_map: HashMap<String, ParsedSymbolInfo> = HashMap::new();
+                        let mut before_map: HashMap<StructuralSymbolKey, ParsedSymbolInfo> =
+                            HashMap::new();
+                        let mut before_duplicates: HashSet<StructuralSymbolKey> = HashSet::new();
                         for sym in before_syms {
-                            before_map.insert(sym.name.clone(), sym);
+                            if before_map.insert(sym.key.clone(), sym.clone()).is_some() {
+                                before_duplicates.insert(sym.key);
+                            }
                         }
 
-                        let mut after_map: HashMap<String, ParsedSymbolInfo> = HashMap::new();
+                        let mut after_map: HashMap<StructuralSymbolKey, ParsedSymbolInfo> =
+                            HashMap::new();
+                        let mut after_duplicates: HashSet<StructuralSymbolKey> = HashSet::new();
                         for sym in after_syms {
-                            after_map.insert(sym.name.clone(), sym);
+                            if after_map.insert(sym.key.clone(), sym.clone()).is_some() {
+                                after_duplicates.insert(sym.key);
+                            }
                         }
 
-                        let mut seen_syms = HashSet::new();
+                        for dup in before_duplicates.union(&after_duplicates) {
+                            uncertainties.push(UncertaintyReason::AmbiguousSymbol(format!(
+                                "Duplicate symbol declaration for {:?} in {}",
+                                dup.name, file_path
+                            )));
+                        }
+
+                        let mut seen_keys = HashSet::new();
 
                         // Check modifications and additions
-                        for (name, after_sym) in &after_map {
-                            seen_syms.insert(name.clone());
-                            if let Some(before_sym) = before_map.get(name) {
+                        for (key, after_sym) in &after_map {
+                            seen_keys.insert(key.clone());
+                            let name = &after_sym.name;
+                            if let Some(before_sym) = before_map.get(key) {
                                 let sig_before_norm = normalize_ws(&before_sym.signature);
                                 let sig_after_norm = normalize_ws(&after_sym.signature);
                                 let body_before_norm = normalize_ws(&before_sym.body);
@@ -573,6 +624,18 @@ pub fn classify_changes(
                                         Some(&b_digest),
                                         Some(&a_digest),
                                     );
+                                    let ev = vec![EvidenceRef {
+                                        provider: EvidenceProviderKind::TreeSitter,
+                                        provider_fingerprint: "ts-native".to_string(),
+                                        strength: EvidenceStrength::Structural,
+                                        source_identity: file_path.clone(),
+                                        source_hash: after_digest.clone(),
+                                        freshness: FreshnessMetadata::default(),
+                                    }];
+                                    let change_assurance = assurance_ceiling_for_evidence(&ev);
+                                    overall_assurance =
+                                        combine_assurance(overall_assurance, change_assurance);
+
                                     semantic_changes.push(SemanticChange {
                                         id: cid,
                                         file: file_path.clone(),
@@ -590,15 +653,8 @@ pub fn classify_changes(
                                             signature: Some(after_sym.signature.clone()),
                                             digest: Some(a_digest),
                                         }),
-                                        evidence: vec![EvidenceRef {
-                                            provider: EvidenceProviderKind::TreeSitter,
-                                            provider_fingerprint: "ts-native".to_string(),
-                                            strength: EvidenceStrength::Structural,
-                                            source_identity: file_path.clone(),
-                                            source_hash: after_digest.clone(),
-                                            freshness: FreshnessMetadata::default(),
-                                        }],
-                                        assurance: AssuranceLevel::Exact,
+                                        evidence: ev,
+                                        assurance: change_assurance,
                                         reasons: vec!["signature_changed".to_string()],
                                     });
                                 } else if body_before_norm != body_after_norm {
@@ -611,6 +667,18 @@ pub fn classify_changes(
                                         Some(&b_digest),
                                         Some(&a_digest),
                                     );
+                                    let ev = vec![EvidenceRef {
+                                        provider: EvidenceProviderKind::TreeSitter,
+                                        provider_fingerprint: "ts-native".to_string(),
+                                        strength: EvidenceStrength::Structural,
+                                        source_identity: file_path.clone(),
+                                        source_hash: after_digest.clone(),
+                                        freshness: FreshnessMetadata::default(),
+                                    }];
+                                    let change_assurance = assurance_ceiling_for_evidence(&ev);
+                                    overall_assurance =
+                                        combine_assurance(overall_assurance, change_assurance);
+
                                     semantic_changes.push(SemanticChange {
                                         id: cid,
                                         file: file_path.clone(),
@@ -628,15 +696,8 @@ pub fn classify_changes(
                                             signature: Some(after_sym.signature.clone()),
                                             digest: Some(a_digest),
                                         }),
-                                        evidence: vec![EvidenceRef {
-                                            provider: EvidenceProviderKind::TreeSitter,
-                                            provider_fingerprint: "ts-native".to_string(),
-                                            strength: EvidenceStrength::Structural,
-                                            source_identity: file_path.clone(),
-                                            source_hash: after_digest.clone(),
-                                            freshness: FreshnessMetadata::default(),
-                                        }],
-                                        assurance: AssuranceLevel::Exact,
+                                        evidence: ev,
+                                        assurance: change_assurance,
                                         reasons: vec!["implementation_changed".to_string()],
                                     });
                                 }
@@ -650,6 +711,18 @@ pub fn classify_changes(
                                     None,
                                     Some(&a_digest),
                                 );
+                                let ev = vec![EvidenceRef {
+                                    provider: EvidenceProviderKind::TreeSitter,
+                                    provider_fingerprint: "ts-native".to_string(),
+                                    strength: EvidenceStrength::Structural,
+                                    source_identity: file_path.clone(),
+                                    source_hash: after_digest.clone(),
+                                    freshness: FreshnessMetadata::default(),
+                                }];
+                                let change_assurance = assurance_ceiling_for_evidence(&ev);
+                                overall_assurance =
+                                    combine_assurance(overall_assurance, change_assurance);
+
                                 semantic_changes.push(SemanticChange {
                                     id: cid,
                                     file: file_path.clone(),
@@ -662,23 +735,17 @@ pub fn classify_changes(
                                         signature: Some(after_sym.signature.clone()),
                                         digest: Some(a_digest),
                                     }),
-                                    evidence: vec![EvidenceRef {
-                                        provider: EvidenceProviderKind::TreeSitter,
-                                        provider_fingerprint: "ts-native".to_string(),
-                                        strength: EvidenceStrength::Structural,
-                                        source_identity: file_path.clone(),
-                                        source_hash: after_digest.clone(),
-                                        freshness: FreshnessMetadata::default(),
-                                    }],
-                                    assurance: AssuranceLevel::Exact,
+                                    evidence: ev,
+                                    assurance: change_assurance,
                                     reasons: vec!["symbol_added".to_string()],
                                 });
                             }
                         }
 
                         // Check deletions
-                        for (name, before_sym) in &before_map {
-                            if !seen_syms.contains(name) {
+                        for (key, before_sym) in &before_map {
+                            if !seen_keys.contains(key) {
+                                let name = &before_sym.name;
                                 let b_digest = sha256_hex(before_sym.body.as_bytes());
                                 let cid = compute_change_id(
                                     file_path,
@@ -687,6 +754,18 @@ pub fn classify_changes(
                                     Some(&b_digest),
                                     None,
                                 );
+                                let ev = vec![EvidenceRef {
+                                    provider: EvidenceProviderKind::TreeSitter,
+                                    provider_fingerprint: "ts-native".to_string(),
+                                    strength: EvidenceStrength::Structural,
+                                    source_identity: file_path.clone(),
+                                    source_hash: before_digest.clone(),
+                                    freshness: FreshnessMetadata::default(),
+                                }];
+                                let change_assurance = assurance_ceiling_for_evidence(&ev);
+                                overall_assurance =
+                                    combine_assurance(overall_assurance, change_assurance);
+
                                 semantic_changes.push(SemanticChange {
                                     id: cid,
                                     file: file_path.clone(),
@@ -699,15 +778,8 @@ pub fn classify_changes(
                                         digest: Some(b_digest),
                                     }),
                                     after: None,
-                                    evidence: vec![EvidenceRef {
-                                        provider: EvidenceProviderKind::TreeSitter,
-                                        provider_fingerprint: "ts-native".to_string(),
-                                        strength: EvidenceStrength::Structural,
-                                        source_identity: file_path.clone(),
-                                        source_hash: before_digest.clone(),
-                                        freshness: FreshnessMetadata::default(),
-                                    }],
-                                    assurance: AssuranceLevel::Exact,
+                                    evidence: ev,
+                                    assurance: change_assurance,
                                     reasons: vec!["symbol_deleted".to_string()],
                                 });
                             }
@@ -722,6 +794,18 @@ pub fn classify_changes(
                                 before_digest.as_deref(),
                                 after_digest.as_deref(),
                             );
+                            let ev = vec![EvidenceRef {
+                                provider: EvidenceProviderKind::TreeSitter,
+                                provider_fingerprint: "ts-native".to_string(),
+                                strength: EvidenceStrength::Structural,
+                                source_identity: file_path.clone(),
+                                source_hash: after_digest.clone(),
+                                freshness: FreshnessMetadata::default(),
+                            }];
+                            let change_assurance = assurance_ceiling_for_evidence(&ev);
+                            overall_assurance =
+                                combine_assurance(overall_assurance, change_assurance);
+
                             semantic_changes.push(SemanticChange {
                                 id: cid,
                                 file: file_path.clone(),
@@ -739,15 +823,8 @@ pub fn classify_changes(
                                     signature: None,
                                     digest: after_digest.clone(),
                                 }),
-                                evidence: vec![EvidenceRef {
-                                    provider: EvidenceProviderKind::TreeSitter,
-                                    provider_fingerprint: "ts-native".to_string(),
-                                    strength: EvidenceStrength::Structural,
-                                    source_identity: file_path.clone(),
-                                    source_hash: after_digest.clone(),
-                                    freshness: FreshnessMetadata::default(),
-                                }],
-                                assurance: AssuranceLevel::Exact,
+                                evidence: ev,
+                                assurance: change_assurance,
                                 reasons: vec!["top_level_or_structural_change".to_string()],
                             });
                         }
@@ -766,7 +843,17 @@ pub fn classify_changes(
                             file_path
                         ));
                         uncertainties.push(reason);
-                        overall_assurance = AssuranceLevel::Degraded;
+
+                        let ev = vec![EvidenceRef {
+                            provider: EvidenceProviderKind::ManualRule,
+                            provider_fingerprint: "file-delta".to_string(),
+                            strength: EvidenceStrength::Heuristic,
+                            source_identity: file_path.clone(),
+                            source_hash: None,
+                            freshness: FreshnessMetadata::default(),
+                        }];
+                        let change_assurance = assurance_ceiling_for_evidence(&ev);
+                        overall_assurance = combine_assurance(overall_assurance, change_assurance);
 
                         semantic_changes.push(SemanticChange {
                             id: cid,
@@ -785,15 +872,8 @@ pub fn classify_changes(
                                 signature: None,
                                 digest: after_digest,
                             }),
-                            evidence: vec![EvidenceRef {
-                                provider: EvidenceProviderKind::ManualRule,
-                                provider_fingerprint: "file-delta".to_string(),
-                                strength: EvidenceStrength::Heuristic,
-                                source_identity: file_path.clone(),
-                                source_hash: None,
-                                freshness: FreshnessMetadata::default(),
-                            }],
-                            assurance: AssuranceLevel::Degraded,
+                            evidence: ev,
+                            assurance: change_assurance,
                             reasons: vec!["unsupported_language_or_non_code".to_string()],
                         });
                     }

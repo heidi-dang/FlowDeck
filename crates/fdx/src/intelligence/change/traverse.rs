@@ -1,6 +1,8 @@
 //! Transitive impact traversal and query engine over EvidenceGraph.
 
-use crate::intelligence::change::classify::{classify_changes, ClassifyError};
+use crate::intelligence::change::classify::{
+    classify_changes, read_git_file_content, ClassifyError,
+};
 use crate::intelligence::change::explain::{
     render_path_explanation, EvidencePath, EvidenceStep, ImpactedTarget,
 };
@@ -11,6 +13,7 @@ use crate::intelligence::change::policy::{
 use crate::intelligence::change::seed::generate_impact_seeds;
 use crate::intelligence::change::uncertainty::{compute_result_assurance, UncertaintyReason};
 use crate::intelligence::db::{DatabaseError, DatabaseOpenMode, EvidenceDatabase};
+use crate::intelligence::semantic::health::{ProviderFreshness, ProviderHealth};
 use crate::protocol::{
     canonicalize_repo_path, AssuranceLevel, EdgeKind, EvidenceStrength, NodeKind,
 };
@@ -73,21 +76,21 @@ fn parse_node_kind(kind_str: &str) -> NodeKind {
     }
 }
 
-fn parse_edge_kind(kind_str: &str) -> EdgeKind {
+pub fn parse_edge_kind(kind_str: &str) -> Option<EdgeKind> {
     match kind_str {
-        "imports" => EdgeKind::Imports,
-        "re_exports" => EdgeKind::ReExports,
-        "calls" => EdgeKind::Calls,
-        "defines" => EdgeKind::Defines,
-        "exports" => EdgeKind::Exports,
-        "extends" => EdgeKind::Extends,
-        "implements" => EdgeKind::Implements,
-        "references" => EdgeKind::References,
-        "configures" => EdgeKind::Configures,
-        "generates" => EdgeKind::Generates,
-        "tests" => EdgeKind::Tests,
-        "orders_before" => EdgeKind::OrdersBefore,
-        _ => EdgeKind::References,
+        "imports" => Some(EdgeKind::Imports),
+        "re_exports" => Some(EdgeKind::ReExports),
+        "calls" => Some(EdgeKind::Calls),
+        "defines" => Some(EdgeKind::Defines),
+        "exports" => Some(EdgeKind::Exports),
+        "extends" => Some(EdgeKind::Extends),
+        "implements" => Some(EdgeKind::Implements),
+        "references" => Some(EdgeKind::References),
+        "configures" => Some(EdgeKind::Configures),
+        "generates" => Some(EdgeKind::Generates),
+        "tests" => Some(EdgeKind::Tests),
+        "orders_before" => Some(EdgeKind::OrdersBefore),
+        _ => None,
     }
 }
 
@@ -120,7 +123,12 @@ fn query_node(conn: &Connection, node_id: &str) -> Option<DbNodeRow> {
     .ok()
 }
 
-fn query_incoming_impact_edges(conn: &Connection, target_node: &str) -> Vec<DbEdgeRow> {
+fn query_incoming_impact_edges(
+    conn: &Connection,
+    target_node: &str,
+    stale_providers: &HashSet<String>,
+    unknown_kinds: &mut HashSet<String>,
+) -> Vec<DbEdgeRow> {
     let mut edges = Vec::new();
 
     // 1. Reverse edges: where to_node = target_node (caller -> callee, importer -> imported, etc.)
@@ -133,19 +141,27 @@ fn query_incoming_impact_edges(conn: &Connection, target_node: &str) -> Vec<DbEd
             let kstr: String = row.get(2)?;
             let prov: String = row.get(3)?;
             let str_val: i64 = row.get(4)?;
-            let stale: bool = row.get(5)?;
-            Ok(DbEdgeRow {
-                from_node: from_n,
-                to_node: to_n,
-                kind: parse_edge_kind(&kstr),
-                provider: prov,
-                strength: parse_strength(str_val),
-                stale,
-            })
+            let mut stale: bool = row.get(5)?;
+            if stale_providers.contains(&prov) {
+                stale = true;
+            }
+            Ok((from_n, to_n, kstr, prov, str_val, stale))
         }) {
-            for edge in rows.flatten() {
-                if edge_impact_direction(edge.kind) == TraversalDirection::Reverse {
-                    edges.push(edge);
+            for item in rows.flatten() {
+                let (from_n, to_n, kstr, prov, str_val, stale) = item;
+                if let Some(kind) = parse_edge_kind(&kstr) {
+                    if edge_impact_direction(kind) == TraversalDirection::Reverse {
+                        edges.push(DbEdgeRow {
+                            from_node: from_n,
+                            to_node: to_n,
+                            kind,
+                            provider: prov,
+                            strength: parse_strength(str_val),
+                            stale,
+                        });
+                    }
+                } else {
+                    unknown_kinds.insert(kstr);
                 }
             }
         }
@@ -161,19 +177,27 @@ fn query_incoming_impact_edges(conn: &Connection, target_node: &str) -> Vec<DbEd
             let kstr: String = row.get(2)?;
             let prov: String = row.get(3)?;
             let str_val: i64 = row.get(4)?;
-            let stale: bool = row.get(5)?;
-            Ok(DbEdgeRow {
-                from_node: from_n,
-                to_node: to_n,
-                kind: parse_edge_kind(&kstr),
-                provider: prov,
-                strength: parse_strength(str_val),
-                stale,
-            })
+            let mut stale: bool = row.get(5)?;
+            if stale_providers.contains(&prov) {
+                stale = true;
+            }
+            Ok((from_n, to_n, kstr, prov, str_val, stale))
         }) {
-            for edge in rows.flatten() {
-                if edge_impact_direction(edge.kind) == TraversalDirection::Forward {
-                    edges.push(edge);
+            for item in rows.flatten() {
+                let (from_n, to_n, kstr, prov, str_val, stale) = item;
+                if let Some(kind) = parse_edge_kind(&kstr) {
+                    if edge_impact_direction(kind) == TraversalDirection::Forward {
+                        edges.push(DbEdgeRow {
+                            from_node: from_n,
+                            to_node: to_n,
+                            kind,
+                            provider: prov,
+                            strength: parse_strength(str_val),
+                            stale,
+                        });
+                    }
+                } else {
+                    unknown_kinds.insert(kstr);
                 }
             }
         }
@@ -206,20 +230,28 @@ fn resolve_import_path(source_file: &Path, import_str: &str, repo_root: &Path) -
     None
 }
 
-/// Inverted index for fast O(1) structural dependency lookups.
+/// Inverted index for fast structural and lexical dependency lookups (with before-state awareness).
 struct StructuralGraphIndex {
     imported_to_importers: HashMap<String, Vec<String>>,
     symbol_to_referencing_files: HashMap<String, Vec<String>>,
 }
 
 impl StructuralGraphIndex {
-    fn build(repo_root: &Path, files: &[String]) -> Self {
+    fn build(repo_root: &Path, files: &[String], base_ref: Option<&str>) -> Self {
         let mut imported_to_importers: HashMap<String, Vec<String>> = HashMap::new();
         let mut symbol_to_referencing_files: HashMap<String, Vec<String>> = HashMap::new();
 
+        let base_name = base_ref.unwrap_or("HEAD");
+
         for canon in files {
             let full = repo_root.join(canon);
-            let Ok(content) = std::fs::read_to_string(&full) else {
+            let content = if full.is_file() {
+                std::fs::read_to_string(&full).ok()
+            } else {
+                read_git_file_content(repo_root, base_name, canon)
+            };
+
+            let Some(content) = content else {
                 continue;
             };
 
@@ -322,12 +354,14 @@ impl StructuralGraphIndex {
 }
 
 /// Pre-collect all candidate repository code files from database or disk (at most once).
-fn collect_all_repo_code_files(conn: &Connection, repo_root: &Path) -> Vec<String> {
+fn collect_all_repo_code_files(conn: Option<&Connection>, repo_root: &Path) -> Vec<String> {
     let mut files = Vec::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT canonical_path FROM files") {
-        if let Ok(rows) = stmt.query_map([], |row| row.get(0)) {
-            for f in rows.flatten() {
-                files.push(f);
+    if let Some(c) = conn {
+        if let Ok(mut stmt) = c.prepare("SELECT canonical_path FROM files") {
+            if let Ok(rows) = stmt.query_map([], |row| row.get(0)) {
+                for f in rows.flatten() {
+                    files.push(f);
+                }
             }
         }
     }
@@ -386,75 +420,188 @@ pub fn analyze_impact_v2(
 
     let change_set = classify_changes(repo_root, base_ref, head_ref)?;
 
-    let db_opt = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly).ok();
-
     let mut uncertainties = change_set.uncertainty.clone();
     let mut impacted_map: HashMap<String, ImpactedTarget> = HashMap::new();
     let mut has_fallback_path = false;
 
-    let Some(ref db) = db_opt else {
-        // No database available: conservative fallback
-        uncertainties.push(UncertaintyReason::ProviderMissing(
-            "Evidence graph database not found or unindexed".to_string(),
-        ));
-        for ch in &change_set.changes {
-            impacted_map.insert(
-                ch.file.clone(),
-                ImpactedTarget {
-                    target: ch.file.clone(),
-                    target_kind: NodeKind::File,
-                    depth: 0,
-                    strength: EvidenceStrength::Heuristic,
-                    primary_path: None,
-                    alternate_paths: Vec::new(),
-                    alternate_path_count: 0,
-                    widening_reason: Some("Unindexed repository fallback".to_string()),
-                },
-            );
+    let db_res = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly);
+
+    let db = match db_res {
+        Ok(d) => d,
+        Err(DatabaseError::NotIndexed) => {
+            uncertainties.push(UncertaintyReason::GraphAbsent(
+                "Evidence graph database not found or unindexed".to_string(),
+            ));
+            for ch in &change_set.changes {
+                impacted_map.insert(
+                    ch.file.clone(),
+                    ImpactedTarget {
+                        target: ch.file.clone(),
+                        target_kind: NodeKind::File,
+                        depth: 0,
+                        strength: EvidenceStrength::Heuristic,
+                        primary_path: None,
+                        alternate_paths: Vec::new(),
+                        alternate_path_count: 0,
+                        widening_reason: Some("Unindexed repository fallback".to_string()),
+                    },
+                );
+            }
+
+            let assurance = compute_result_assurance(change_set.assurance, &uncertainties, true);
+            let mut impacted_list: Vec<ImpactedTarget> = impacted_map.into_values().collect();
+            impacted_list.sort_by(|a, b| a.target.cmp(&b.target));
+
+            return Ok(ImpactV2Result {
+                assurance,
+                changes: change_set.changes,
+                impacted: impacted_list,
+                uncertainty: uncertainties,
+            });
         }
+        Err(DatabaseError::Corrupt) => {
+            uncertainties.push(UncertaintyReason::GraphCorrupt(
+                "Evidence graph database is corrupt".to_string(),
+            ));
+            for ch in &change_set.changes {
+                impacted_map.insert(
+                    ch.file.clone(),
+                    ImpactedTarget {
+                        target: ch.file.clone(),
+                        target_kind: NodeKind::File,
+                        depth: 0,
+                        strength: EvidenceStrength::Heuristic,
+                        primary_path: None,
+                        alternate_paths: Vec::new(),
+                        alternate_path_count: 0,
+                        widening_reason: Some("Corrupt database fallback".to_string()),
+                    },
+                );
+            }
 
-        let assurance = compute_result_assurance(change_set.assurance, &uncertainties, true);
-        let mut impacted_list: Vec<ImpactedTarget> = impacted_map.into_values().collect();
-        impacted_list.sort_by(|a, b| a.target.cmp(&b.target));
+            let assurance = compute_result_assurance(change_set.assurance, &uncertainties, true);
+            let mut impacted_list: Vec<ImpactedTarget> = impacted_map.into_values().collect();
+            impacted_list.sort_by(|a, b| a.target.cmp(&b.target));
 
-        return Ok(ImpactV2Result {
-            assurance,
-            changes: change_set.changes,
-            impacted: impacted_list,
-            uncertainty: uncertainties,
-        });
+            return Ok(ImpactV2Result {
+                assurance,
+                changes: change_set.changes,
+                impacted: impacted_list,
+                uncertainty: uncertainties,
+            });
+        }
+        Err(DatabaseError::FutureSchemaVersion(found)) => {
+            uncertainties.push(UncertaintyReason::GraphIncompatible(format!(
+                "Database schema v{} exceeds supported v{}",
+                found,
+                crate::intelligence::schema::CURRENT_SCHEMA_VERSION
+            )));
+            for ch in &change_set.changes {
+                impacted_map.insert(
+                    ch.file.clone(),
+                    ImpactedTarget {
+                        target: ch.file.clone(),
+                        target_kind: NodeKind::File,
+                        depth: 0,
+                        strength: EvidenceStrength::Heuristic,
+                        primary_path: None,
+                        alternate_paths: Vec::new(),
+                        alternate_path_count: 0,
+                        widening_reason: Some("Future schema incompatible".to_string()),
+                    },
+                );
+            }
+
+            let assurance = compute_result_assurance(change_set.assurance, &uncertainties, true);
+            let mut impacted_list: Vec<ImpactedTarget> = impacted_map.into_values().collect();
+            impacted_list.sort_by(|a, b| a.target.cmp(&b.target));
+
+            return Ok(ImpactV2Result {
+                assurance,
+                changes: change_set.changes,
+                impacted: impacted_list,
+                uncertainty: uncertainties,
+            });
+        }
+        Err(other) => {
+            uncertainties.push(UncertaintyReason::GraphUnavailable(format!(
+                "Database error: {}",
+                other
+            )));
+            for ch in &change_set.changes {
+                impacted_map.insert(
+                    ch.file.clone(),
+                    ImpactedTarget {
+                        target: ch.file.clone(),
+                        target_kind: NodeKind::File,
+                        depth: 0,
+                        strength: EvidenceStrength::Heuristic,
+                        primary_path: None,
+                        alternate_paths: Vec::new(),
+                        alternate_path_count: 0,
+                        widening_reason: Some("Database unavailable fallback".to_string()),
+                    },
+                );
+            }
+
+            let assurance = compute_result_assurance(change_set.assurance, &uncertainties, true);
+            let mut impacted_list: Vec<ImpactedTarget> = impacted_map.into_values().collect();
+            impacted_list.sort_by(|a, b| a.target.cmp(&b.target));
+
+            return Ok(ImpactV2Result {
+                assurance,
+                changes: change_set.changes,
+                impacted: impacted_list,
+                uncertainty: uncertainties,
+            });
+        }
     };
 
-    // Check if any provider in DB is stale or failed
-    if let Ok(mut stmt) = db
-        .conn
-        .prepare("SELECT provider_id, health, freshness FROM semantic_providers")
-    {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            let pid: String = row.get(0)?;
-            let h: String = row.get(1)?;
-            let f: String = row.get(2)?;
-            Ok((pid, h, f))
-        }) {
-            for item in rows.flatten() {
-                let (pid, health, freshness) = item;
-                if freshness.contains("stale") {
-                    uncertainties.push(UncertaintyReason::ProviderStale(format!(
-                        "Provider {} is stale",
-                        pid
-                    )));
-                } else if health.contains("failed") {
-                    uncertainties.push(UncertaintyReason::ProviderFailed(format!(
-                        "Provider {} failed",
-                        pid
-                    )));
-                }
+    // Evaluate M3 effective provider states passively against live disk configuration/executables
+    let registry = crate::intelligence::semantic::registry::ProviderRegistry::default();
+    let persisted_states =
+        crate::intelligence::semantic::state::load_provider_states(&db).unwrap_or_default();
+    let effective_states = crate::intelligence::semantic::state::evaluate_effective_states(
+        repo_root,
+        &registry,
+        persisted_states,
+    );
+
+    let mut stale_providers = HashSet::new();
+    for st in &effective_states {
+        let pid = st.provider_id();
+        if st.freshness != ProviderFreshness::Fresh {
+            stale_providers.insert(pid.to_string());
+            uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                "Provider {} is effectively stale",
+                pid
+            )));
+        } else if st.health == ProviderHealth::Failed {
+            uncertainties.push(UncertaintyReason::ProviderFailed(format!(
+                "Provider {} failed",
+                pid
+            )));
+        } else if st.health == ProviderHealth::Misconfigured {
+            uncertainties.push(UncertaintyReason::ProviderMissing(format!(
+                "Provider {} is misconfigured",
+                pid
+            )));
+        }
+    }
+
+    let mut candidate_files = collect_all_repo_code_files(Some(&db.conn), repo_root);
+    for ch in &change_set.changes {
+        if !candidate_files.contains(&ch.file) {
+            candidate_files.push(ch.file.clone());
+        }
+        if let Some(ref b) = ch.before {
+            if !candidate_files.contains(&b.path) {
+                candidate_files.push(b.path.clone());
             }
         }
     }
 
-    let candidate_files = collect_all_repo_code_files(&db.conn, repo_root);
-    let structural_index = StructuralGraphIndex::build(repo_root, &candidate_files);
+    let structural_index = StructuralGraphIndex::build(repo_root, &candidate_files, base_ref);
 
     // Collect all seeds from changes
     let mut seeds = Vec::new();
@@ -469,12 +616,17 @@ pub fn analyze_impact_v2(
     let mut depth_limit_hit = false;
     let mut node_limit_hit = false;
     let mut edge_limit_hit = false;
+    let mut unknown_kinds = HashSet::new();
 
     let mut queue: VecDeque<QueueItem> = VecDeque::new();
 
     // Enqueue seeds
     for seed in &seeds {
         visited_nodes.insert(seed.seed_node.clone(), 0);
+
+        if let Some(ref w) = seed.widening_reason {
+            uncertainties.push(w.clone());
+        }
 
         // Record seed file target itself at depth 0
         if !impacted_map.contains_key(&seed.canonical_path) {
@@ -484,7 +636,7 @@ pub fn analyze_impact_v2(
                     target: seed.canonical_path.clone(),
                     target_kind: NodeKind::File,
                     depth: 0,
-                    strength: EvidenceStrength::Precise,
+                    strength: seed.strength,
                     primary_path: Some(EvidencePath {
                         change_id: seed.change_id.clone(),
                         seed_node: seed.seed_node.clone(),
@@ -494,10 +646,10 @@ pub fn analyze_impact_v2(
                             edge_kind: EdgeKind::Defines,
                             to_node: format!("file:{}", seed.canonical_path),
                             provider: "change-delta".to_string(),
-                            strength: EvidenceStrength::Precise,
+                            strength: seed.strength,
                             description: Some("directly modified".to_string()),
                         }],
-                        path_strength: EvidenceStrength::Precise,
+                        path_strength: seed.strength,
                         explanation: format!("Directly modified in change {}", seed.change_id),
                     }),
                     alternate_paths: Vec::new(),
@@ -510,7 +662,7 @@ pub fn analyze_impact_v2(
         queue.push_back(QueueItem {
             current_node_id: seed.seed_node.clone(),
             depth: 0,
-            strength: EvidenceStrength::Precise,
+            strength: seed.strength,
             steps: Vec::new(),
             change_id: seed.change_id.clone(),
             seed_node: seed.seed_node.clone(),
@@ -524,9 +676,14 @@ pub fn analyze_impact_v2(
             break;
         }
 
-        let mut outgoing_edges = query_incoming_impact_edges(&db.conn, &item.current_node_id);
+        let mut outgoing_edges = query_incoming_impact_edges(
+            &db.conn,
+            &item.current_node_id,
+            &stale_providers,
+            &mut unknown_kinds,
+        );
 
-        // If no DB edges found for this node, query structural index
+        // If no DB edges found for this node (or for deleted symbols/files), query structural/before index
         if outgoing_edges.is_empty() {
             let (target_p, target_s) =
                 if let Some(stripped) = item.current_node_id.strip_prefix("file:") {
@@ -676,6 +833,13 @@ pub fn analyze_impact_v2(
                 seed_node: item.seed_node.clone(),
             });
         }
+    }
+
+    for unk in unknown_kinds {
+        uncertainties.push(UncertaintyReason::UnknownGraphRelation(format!(
+            "Unknown graph relation kind '{}' skipped",
+            unk
+        )));
     }
 
     if depth_limit_hit {
