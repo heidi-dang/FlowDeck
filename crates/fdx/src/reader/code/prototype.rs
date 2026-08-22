@@ -124,6 +124,7 @@ pub fn extract_symbol_name(node: Node, source: &str) -> Option<String> {
 pub fn extract_signature(node: Node, source: &str) -> String {
     let start_byte = node.start_byte();
     let end_byte = find_child_by_kind(node, "block")
+        .or_else(|| find_child_by_kind(node, "statement_block"))
         .or_else(|| find_child_by_kind(node, "class_body"))
         .or_else(|| find_child_by_kind(node, "interface_body"))
         .or_else(|| find_child_by_kind(node, "enum_body"))
