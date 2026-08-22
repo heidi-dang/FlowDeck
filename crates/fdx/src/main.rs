@@ -1042,68 +1042,63 @@ fn main() {
         }
 
         Commands::Index { action, refresh } => {
-            let cwd = std::path::Path::new(".");
-            let open_mode = if refresh || action.as_deref() == Some("run") || action.is_none() {
+            let cwd_path = std::path::Path::new(".");
+            let repo_root = fdx::paths::find_repository_root(cwd_path)
+                .unwrap_or_else(|_| cwd_path.to_path_buf());
+            let repo_root_ref = repo_root.as_path();
+
+            let action_str = action.as_deref().unwrap_or("run");
+            let open_mode = if refresh || action_str == "run" {
                 fdx::intelligence::db::DatabaseOpenMode::ReadWrite
             } else {
                 fdx::intelligence::db::DatabaseOpenMode::ReadOnly
             };
-            let db = match fdx::intelligence::db::EvidenceDatabase::open(cwd, open_mode) {
-                Ok(db) => db,
-                Err(fdx::intelligence::db::DatabaseError::NotIndexed) => {
-                    println!("INDEX absent");
-                    process::exit(0);
-                }
-                Err(e) => {
-                    eprintln!("INDEX degraded\nError: {}", e);
-                    process::exit(1);
-                }
-            };
 
-            let action_str = action.as_deref().unwrap_or("run");
+            let db_result = fdx::intelligence::db::EvidenceDatabase::open(repo_root_ref, open_mode);
+
+            if action_str == "run" && db_result.is_err() {
+                eprintln!("Error: {}", db_result.err().unwrap());
+                process::exit(1);
+            }
+
             match action_str {
                 "status" => {
-                    let version = db.get_schema_version().map(|v| v.version).unwrap_or(0);
-                    let status = db
-                        .get_metadata("status")
-                        .unwrap_or(Some("ABSENT".to_string()))
-                        .unwrap_or_else(|| "ABSENT".to_string());
-                    let gen = db
-                        .get_metadata("generation")
-                        .unwrap_or(Some("0".to_string()))
-                        .unwrap_or_else(|| "0".to_string());
-                    let file_count: i32 = db
-                        .conn
-                        .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
-                        .unwrap_or(0);
-                    let node_count: i32 = db
-                        .conn
-                        .query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))
-                        .unwrap_or(0);
-                    let edge_count: i32 = db
-                        .conn
-                        .query_row("SELECT count(*) FROM edges", [], |r| r.get(0))
-                        .unwrap_or(0);
-
-                    println!("INDEX {}", status.to_lowercase());
-                    println!("schema={}", version);
-                    println!("generation={}", gen);
-                    println!("files={}", file_count);
-                    println!("nodes={}", node_count);
-                    println!("edges={}", edge_count);
+                    let db_ref = match &db_result {
+                        Ok(db) => Ok(db),
+                        Err(e) => Err(e),
+                    };
+                    let report = fdx::intelligence::status::evaluate_index_status(
+                        repo_root_ref,
+                        db_ref,
+                        &fdx::protocol::GraphCompatibility::default(),
+                    );
+                    println!("INDEX {}", report.state);
+                    if !report.reasons.is_empty() {
+                        println!("reason={}", report.reasons.join(","));
+                    }
+                    println!("schema={}", report.schema_version);
+                    println!("generation={}", report.generation);
+                    println!("files={}", report.files);
+                    println!("nodes={}", report.nodes);
+                    println!("edges={}", report.edges);
+                    println!("journal={}", report.journal_mode);
+                    println!("foreign_keys={}", report.foreign_keys);
+                    println!("busy_timeout={}", report.busy_timeout);
                 }
-                "run" => match fdx::intelligence::engine::run_incremental_index(cwd, refresh) {
-                    Ok(status) => {
-                        println!("INDEX fresh");
-                        println!("files={}", status.files);
-                        println!("changed={}", status.changed);
+                "run" => {
+                    match fdx::intelligence::engine::run_incremental_index(repo_root_ref, refresh) {
+                        Ok(status) => {
+                            println!("INDEX fresh");
+                            println!("files={}", status.files);
+                            println!("changed={}", status.changed);
+                        }
+                        Err(e) => {
+                            eprintln!("INDEX failed");
+                            eprintln!("Error: {}", e);
+                            process::exit(1);
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("INDEX failed");
-                        eprintln!("Error: {}", e);
-                        process::exit(1);
-                    }
-                },
+                }
                 other => {
                     eprintln!("Unknown index action: {}", other);
                     process::exit(1);

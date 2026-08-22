@@ -18,7 +18,16 @@ impl<'a> TransactionalGraph<'a> {
         Ok(Self { tx })
     }
 
+    pub fn replace_file_evidence(&self, canonical_path: &str) -> Result<(), IndexError> {
+        // Delete all nodes owned by this file (cascades to their edges)
+        self.tx.execute("DELETE FROM nodes WHERE canonical_path = ?1", rusqlite::params![canonical_path])?;
+        // Delete edges where this file is explicitly the source
+        self.tx.execute("DELETE FROM edges WHERE source_identity = ?1", rusqlite::params![canonical_path])?;
+        Ok(())
+    }
+
     pub fn insert_file(&self, file: &IndexedFile) -> Result<(), IndexError> {
+        self.replace_file_evidence(&file.canonical_path)?;
         self.tx.execute(
             "INSERT INTO files (canonical_path, content_hash, size, mtime_ms, language, indexed_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
