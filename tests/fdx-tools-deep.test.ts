@@ -12,7 +12,7 @@ import {
   nativeDecisionsFallback,
   nativeOutlineFallback
 } from "../src/tools/fdx-shared"
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "fs"
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, realpathSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 
@@ -38,12 +38,12 @@ describe("FDX Tools & Shared Infrastructure Deep Unit Tests", () => {
   })
 
   it("nativeReadFallback reads files safely", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "fdx-read-"))
+    const tempDir = realpathSync(mkdtempSync(join(tmpdir(), "fdx-read-")))
     try {
       const filePath = join(tempDir, "sample.txt")
       writeFileSync(filePath, "line 1\nline 2\nline 3\nline 4\nline 5\n")
 
-      const res = nativeReadFallback(filePath)
+      const res = nativeReadFallback(filePath, undefined, undefined, tempDir)
       expect(res).toContain("line 1")
     } finally {
       rmSync(tempDir, { recursive: true, force: true })
@@ -51,12 +51,12 @@ describe("FDX Tools & Shared Infrastructure Deep Unit Tests", () => {
   })
 
   it("nativeLsFallback lists directory contents", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "fdx-ls-"))
+    const tempDir = realpathSync(mkdtempSync(join(tmpdir(), "fdx-ls-")))
     try {
       writeFileSync(join(tempDir, "file1.txt"), "hello")
       mkdirSync(join(tempDir, "subdir"))
 
-      const res = nativeLsFallback(tempDir)
+      const res = nativeLsFallback(tempDir, tempDir)
       expect(res).toContain("file1.txt")
       expect(res).toContain("subdir")
     } finally {
@@ -65,11 +65,11 @@ describe("FDX Tools & Shared Infrastructure Deep Unit Tests", () => {
   })
 
   it("nativeSearchFallback searches files in directory", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "fdx-search-"))
+    const tempDir = realpathSync(mkdtempSync(join(tmpdir(), "fdx-search-")))
     try {
       writeFileSync(join(tempDir, "test.txt"), "const secretKey = '12345'")
 
-      const res = nativeSearchFallback("secretKey", tempDir)
+      const res = nativeSearchFallback("secretKey", tempDir, tempDir)
       expect(res).toContain("test.txt")
       expect(res).toContain("secretKey")
     } finally {
@@ -78,7 +78,7 @@ describe("FDX Tools & Shared Infrastructure Deep Unit Tests", () => {
   })
 
   it("nativeSearchFallback matches exact parity for edge cases and generated corpus", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "fdx-search-parity-"))
+    const tempDir = realpathSync(mkdtempSync(join(tmpdir(), "fdx-search-parity-")))
     try {
       writeFileSync(join(tempDir, "meta.txt"), "Line with [regex].*+?^${}()|\\\\ special chars\nAnother line")
       writeFileSync(join(tempDir, "unicode.txt"), "Greeting: 你好世界 🚀\nMiXeD cAsE STriNG")
@@ -124,7 +124,7 @@ describe("FDX Tools & Shared Infrastructure Deep Unit Tests", () => {
       ]
 
       for (const q of testQueries) {
-        const optimized = nativeSearchFallback(q, tempDir)
+        const optimized = nativeSearchFallback(q, tempDir, tempDir)
         const expected = baselineSearch(q, tempDir)
         expect(optimized).toBe(expected)
       }
@@ -159,12 +159,12 @@ describe("FDX Tools & Shared Infrastructure Deep Unit Tests", () => {
   })
 
   it("nativeOutlineFallback extracts file structure", () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "fdx-out-"))
+    const tempDir = realpathSync(mkdtempSync(join(tmpdir(), "fdx-out-")))
     try {
       const codeFile = join(tempDir, "index.ts")
       writeFileSync(codeFile, "export function hello() {}\nexport class App {}")
 
-      const out = nativeOutlineFallback([codeFile])
+      const out = nativeOutlineFallback([codeFile], tempDir)
       expect(out).toContain("hello")
       expect(out).toContain("App")
     } finally {

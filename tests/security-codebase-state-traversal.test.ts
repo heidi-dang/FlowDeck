@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, existsSync, readFileSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, symlinkSync, existsSync, readFileSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { codebaseStateTool } from "../src/tools/codebase-state"
@@ -11,8 +11,8 @@ describe("P0 Security: .codebase path traversal & arbitrary read/write containme
   let outsideSecretFile: string
 
   beforeEach(() => {
-    testWorkspace = mkdtempSync(join(tmpdir(), "fd-codebase-jail-test-"))
-    outsideDir = mkdtempSync(join(tmpdir(), "fd-outside-dir-"))
+    testWorkspace = realpathSync(mkdtempSync(join(tmpdir(), "fd-codebase-jail-test-")))
+    outsideDir = realpathSync(mkdtempSync(join(tmpdir(), "fd-outside-dir-")))
     outsideSecretFile = join(outsideDir, "secret.txt")
     writeFileSync(outsideSecretFile, "TOP_SECRET_DATA", "utf-8")
 

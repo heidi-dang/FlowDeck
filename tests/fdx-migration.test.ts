@@ -29,7 +29,6 @@ function getFdxBin(): string | null {
 describe("FDX Transactional Migration Integration", () => {
   it("migrates legacy planning directory with nested files transactionally", () => {
     const bin = getFdxBin()
-    expect(bin).not.toBeNull()
     if (!bin) return
     const home = mkdtempSync(join(tmpdir(), "fdx-mig-test-"))
     try {

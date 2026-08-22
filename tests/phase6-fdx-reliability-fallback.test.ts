@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { existsSync, mkdirSync, writeFileSync, rmSync } from "fs"
+import { existsSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "fs"
 import { join } from "path"
 import { tmpdir } from "os"
 import {
@@ -19,16 +19,19 @@ import {
 import { fdxWorktreeTool } from "@/tools/fdx-worktree"
 import { fdxValidateTool } from "@/tools/fdx-validate"
 
-const TMP = join(tmpdir(), "phase6-test-" + Date.now())
-const ctx = { directory: TMP } as any
+let TMP: string
+let ctx: any
 
 describe("Phase 6 — FDX Reliability and Fallback", () => {
   beforeEach(() => {
-    if (!existsSync(TMP)) mkdirSync(TMP, { recursive: true })
+    const rawTmp = join(tmpdir(), "phase6-test-" + Date.now() + "-" + Math.random().toString(36).slice(2))
+    if (!existsSync(rawTmp)) mkdirSync(rawTmp, { recursive: true })
+    TMP = realpathSync(rawTmp)
+    ctx = { directory: TMP }
   })
 
   afterEach(() => {
-    rmSync(TMP, { recursive: true, force: true })
+    if (TMP) rmSync(TMP, { recursive: true, force: true })
   })
 
   describe("1. FDX Availability Check & Diagnostics", () => {

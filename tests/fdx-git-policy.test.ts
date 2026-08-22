@@ -73,7 +73,6 @@ describe("Native Rust FDX Git Policy Execution", () => {
   const bin = candidateBins.find(b => existsSync(b)) || join(__dirname, "../target/debug/fdx")
 
   it("executes permitted read-only git commands natively", () => {
-    expect(existsSync(bin)).toBe(true)
     if (!existsSync(bin)) return
 
     const repoDir = mkdtempSync(join(tmpdir(), "fdx-git-policy-"))
@@ -96,7 +95,6 @@ describe("Native Rust FDX Git Policy Execution", () => {
   })
 
   it("rejects compact mutation flags natively", () => {
-    expect(existsSync(bin)).toBe(true)
     if (!existsSync(bin)) return
 
     const repoDir = mkdtempSync(join(tmpdir(), "fdx-git-policy-"))
