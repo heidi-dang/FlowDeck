@@ -39,7 +39,7 @@
 ## 3. Discrepancy & Defect Inventory
 
 ### 3.1 Documentation & Registration Mismatches
-1. **Command Mismatch**: README and `docs/index.md` reference 24 slash commands (`/fd-init-deep`, `/fd-map-codebase`, `/fd-new-feature`, `/fd-discuss`, `/fd-design`, `/fd-plan`, `/fd-fix-bug`, `/fd-write-docs`, `/fd-deploy-check`, `/fd-reflect`, `/fd-retrospective`, `/fd-multi-repo`, `/fd-translate-intent`, `/fd-suggest`, `/fd-ask`, `/fd-doctor`, `/fd-merge-assist`, `/fd-ultrawork`, etc.), but only 8 exist in `src/commands/*.md`.
+1. **Command Mismatch**: Legacy documentation referenced 24 slash commands (`fd-init-deep`, `fd-map-codebase`, `fd-new-feature`, `fd-discuss`, `fd-design`, `fd-plan`, `fd-fix-bug`, `fd-write-docs`, `fd-deploy-check`, `fd-reflect`, `fd-retrospective`, `fd-multi-repo`, `fd-translate-intent`, `fd-suggest`, `fd-ask`, `fd-doctor`, `fd-merge-assist`, `fd-ultrawork`, etc.), which were unified into canonical registered commands.
 2. **Skill Mismatch**: Documentation claims 67 skills; `src/skills` contains 53.
 3. **Skill Validation Failure**: 42 skill markdown files lack YAML frontmatter (`name` and `description`).
 4. **Workflow Naming Mismatch**: Code has competing/conflicting workflow class concepts (`quick` vs `trivial`).

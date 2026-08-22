@@ -1,126 +1,66 @@
 # First Project — End-to-End Walkthrough
 
-This guide walks through creating a simple feature end-to-end, showing what FlowDeck produces at each step.
+This guide walks through creating a simple feature end-to-end using FlowDeck's canonical workflow.
 
-## Step 1: Map the Codebase
+## Step 1: Initialize Task
 
-```bash
-fd-map-codebase
+In OpenCode:
+
+```
+/fd-task "User authentication with JWT"
 ```
 
-FlowDeck analyses the project and creates `.codebase/` with:
-- `.codebase/CODEGRAPH.json` — dependency graph
-- `.codebase/CONVENTIONS.md` — detected code conventions
-- `.codebase/CODEBASE_INDEX.md` — high-level structural index
+FlowDeck analyzes the codebase with `@mapper`, records requirements and decisions, and creates structured planning artifacts under `~/.fd-plan/`.
 
-This step is required before starting a feature.
+## Step 2: Review Plan
 
-## Step 2: Start a Feature
+In OpenCode:
 
-```bash
-fd-new-feature "user authentication"
+```
+/fd-review
 ```
 
-FlowDeck initializes `.planning/` (if it doesn't exist yet) and creates `.planning/phases/phase-1/FEATURE.md`:
+Automated review verifies the plan structure, security requirements, and test strategy before any source code is changed.
 
-```markdown
-# Feature: user authentication
+## Step 3: Execute Implementation
 
-## Description
-user authentication
+In OpenCode:
 
-## Status
-discuss
-
-## Created
-2026-05-26
+```
+/fd-execute
 ```
 
-## Step 3: Discuss
+Specialist agents implement each step following TDD discipline (tests before implementation).
 
-```bash
-fd-discuss
+## Step 4: Verify Implementation
+
+In OpenCode:
+
 ```
-
-The discusser agent runs structured Q&A and produces **`DISCUSS.md`**:
-
-```markdown
-# Discussion — user authentication
-
-## Q: What is the scope?
-A: [agent response]
-
-## Q: What are the constraints?
-A: [agent response]
-
-## Decisions
-- [captured decisions listed here]
-```
-
-## Step 4: Plan
-
-```bash
-fd-plan
-```
-
-When prompted, type `CONFIRM` to proceed. The planner generates **`PLAN.md`**:
-
-```markdown
-# Plan — user authentication
-
-## Wave 1 (parallel)
-- [ ] Implement user model
-- [ ] Create auth service
-- [ ] Write unit tests
-
-## Wave 2 (parallel)
-- [ ] Implement login endpoint
-- [ ] Implement registration endpoint
-- [ ] Add integration tests
-
-## Wave 3 (sequential)
-- [ ] Security audit
-- [ ] Documentation
-```
-
-## Step 5: Execute
-
-```bash
-fd-execute
-```
-
-Agents work through each wave in `PLAN.md`. Independent tasks run in parallel. State is updated in `STATE.md` after each task.
-
-## Step 6: Verify
-
-```bash
-fd-verify
+/fd-verify
 ```
 
 Runs the full verification pipeline:
 - Unit and integration tests
-- Code review by reviewer agent
-- Security scan
-- Deploy check
+- Code review by `@reviewer`
+- Security scan by `@security-auditor`
+- Contract and build qualification
 
-Results are written to `.planning/VERIFICATION.md`.
+## Step 5: Complete Task
+
+In OpenCode:
+
+```
+/fd-done
+```
+
+Finalizes the task, cleans up worktrees, and prepares for git commit/push.
 
 ## What You Have Now
 
 After completing the full workflow:
 
-```
-.planning/
-  STATE.md        — current phase and progress
-  ROADMAP.md      — all features and timeline
-  PLAN.md         — current feature execution plan
-  DISCUSS.md      — captured decisions
-  VERIFICATION.md — test results, review, security
-.codebase/
-  CODEGRAPH.json      — dependency graph
-  CONVENTIONS.md      — detected code conventions
-  CODEBASE_INDEX.md   — structural index
-```
-
-You can now run `/fd-status` to see the project overview, or start a new feature with `/fd-new-feature`.
-
+- Persisted planning history under `~/.fd-plan/`
+- Working code with comprehensive tests
+- Verified code review and security audits
+- Clean state ready for pull request

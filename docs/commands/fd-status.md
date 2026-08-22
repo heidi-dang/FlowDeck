@@ -94,6 +94,6 @@ Show detailed progress for phase 2.
 
 ## Related Commands
 
-- `/fd-map-codebase` — map the codebase (required before starting a feature)
+- `/fd-task` — start or resume task workflow
 - `/fd-execute` — advance phase status by implementing steps
 - `/fd-verify` — update phase status to `verified` after full pipeline pass

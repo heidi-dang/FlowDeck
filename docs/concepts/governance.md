@@ -17,12 +17,12 @@ A contract defines:
 - **required-inputs** — fields that must be present in the delegation call
 - **success-criteria** — conditions that must be true after execution
 
-Example contract for `@coder`:
+Example contract for `@backend-coder`:
 
 ```json
 {
-  "agent": "coder",
-  "allowed-tools": ["read", "edit", "write", "bash", "run-pipeline"],
+  "agent": "backend-coder",
+  "allowed-tools": ["read", "write", "edit", "bash", "glob", "grep"],
   "forbidden-tools": ["delete", "remove", "drop"],
   "required-inputs": ["prompt", "files"],
   "success-criteria": [
@@ -79,8 +79,8 @@ Each span records:
 {
   "span_id": "s1a2b3c",
   "parent_id": "s0a1b2c",
-  "agent": "coder",
-  "tool": "delegate",
+  "agent": "backend-coder",
+  "tool": "task",
   "prompt": "Implement user authentication",
   "files": ["src/auth/login.ts"],
   "started_at": "2026-05-26T10:00:00Z",
@@ -107,13 +107,13 @@ Every run has a **delegation budget** — per-run limits that prevent runaway ag
   "run_id": "run-2026-05-26-001",
   "limits": {
     "maxToolCalls": 200,
-    "maxDepth": 8,
+    "maxDepth": 1,
     "maxSameStepRetries": 3,
     "maxSubAgentDelegations": 40
   },
   "consumed": {
     "toolCalls": 47,
-    "depth": 3,
+    "depth": 1,
     "sameStepRetries": 1,
     "subAgentDelegations": 12
   }
@@ -129,7 +129,7 @@ Configuration:
   "governance": {
     "delegationBudget": {
       "maxToolCalls": 200,
-      "maxDepth": 8,
+      "maxDepth": 1,
       "maxSameStepRetries": 3
     }
   }
