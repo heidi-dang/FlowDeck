@@ -13,7 +13,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m5-build-config.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m5-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "71b86b90f2a1ba61f7209cdb943d2ab38451e317";
+const EXPECTED_FUNCTIONAL_SHA = "0f5e3ed9d94509d3539ffbf84a7507ec1fdb60bd";
 
 function getReleaseBinaryPath() {
   if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
@@ -98,13 +98,37 @@ async function runBenchmark() {
     }
   }
 
+  // Verify harness script itself has NO working-tree or staged differences relative to HEAD
+  const unstagedHarnessDiff = execFileSync(
+    "git",
+    ["diff", "--name-only", "HEAD", "--", "scripts/benchmark-fdx-vci-m5.mjs"],
+    { cwd: ROOT, encoding: "utf8" }
+  ).trim();
+  if (unstagedHarnessDiff) {
+    throw new Error(
+      "Benchmark harness differs from committed HEAD; commit harness before execution"
+    );
+  }
+
+  const stagedHarnessDiff = execFileSync(
+    "git",
+    ["diff", "--cached", "--name-only", "--", "scripts/benchmark-fdx-vci-m5.mjs"],
+    { cwd: ROOT, encoding: "utf8" }
+  ).trim();
+  if (stagedHarnessDiff) {
+    throw new Error(
+      "Benchmark harness has staged uncommitted changes; commit harness before execution"
+    );
+  }
+
+  const harnessSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
   const binaryPath = getReleaseBinaryPath();
 
   const results = {};
   const warmup = 2;
   const iterations = 5;
 
-  // 1. package.json workspace discovery
+  // 1. package.json workspace discovery & discovery bounds qualification
   {
     const benchDir = join(tmpdir(), `fdx-bench-m5-pkg-discover-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
@@ -123,6 +147,12 @@ async function runBenchmark() {
       );
     }
     gitCommitAll(benchDir, "init");
+
+    // Semantic qualification before timing
+    const refreshOutput = execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir, encoding: "utf8" });
+    if (!refreshOutput.includes("builtin-package-json ok") || refreshOutput.includes("FAILED")) {
+      throw new Error(`Discovery semantic qualification failed: ${refreshOutput}`);
+    }
 
     const samples = [];
     for (let r = 0; r < warmup + iterations; r++) {
@@ -336,7 +366,7 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 8. fresh build/config-aware impact
+  // 8. fresh build/config-aware impact (with semantic assertions)
   {
     const benchDir = join(tmpdir(), `fdx-bench-m5-fresh-impact-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
@@ -362,6 +392,27 @@ async function runBenchmark() {
     // Modify pkg-0
     writeFileSync(join(benchDir, "packages", "pkg-0", "src", "index.ts"), "export const x = 999;");
 
+    // Semantic qualification assertions
+    const verifyRaw = execFileSync(
+      binaryPath,
+      ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"],
+      { cwd: benchDir, encoding: "utf8" }
+    );
+    const verifyImpact = JSON.parse(verifyRaw);
+
+    // Assert: source file mapped to owning package pkg-0 and dependent package pkg-1 appears
+    const pkg1Target = verifyImpact.impacted.find((t) => t.target === "packages/pkg-1");
+    if (!pkg1Target) {
+      throw new Error(`fresh_build_config_aware_impact semantic assertion failed: packages/pkg-1 not found in impacted: ${JSON.stringify(verifyImpact.impacted)}`);
+    }
+    if (!pkg1Target.primary_path || !pkg1Target.primary_path.steps) {
+      throw new Error("fresh_build_config_aware_impact semantic assertion failed: missing primary path steps");
+    }
+    const hasBuildNative = pkg1Target.primary_path.steps.some((s) => s.provider === "build_native");
+    if (!hasBuildNative) {
+      throw new Error("fresh_build_config_aware_impact semantic assertion failed: evidence path does not contain provider=build_native");
+    }
+
     const samples = [];
     for (let r = 0; r < warmup + iterations; r++) {
       const t0 = performance.now();
@@ -375,7 +426,7 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 9. stale scoped config widening
+  // 9. stale scoped config widening (with semantic assertions)
   {
     const benchDir = join(tmpdir(), `fdx-bench-m5-stale-widening-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
@@ -395,11 +446,26 @@ async function runBenchmark() {
     gitCommitAll(benchDir, "init");
     execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
 
-    // Modify package.json without refreshing
+    // Modify package.json without refreshing (creates Stale provider state)
     writeFileSync(
       join(benchDir, "packages", "web", "package.json"),
       JSON.stringify({ name: "@app/web", version: "1.0.1" }, null, 2)
     );
+
+    // Semantic qualification assertions
+    const verifyRaw = execFileSync(
+      binaryPath,
+      ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"],
+      { cwd: benchDir, encoding: "utf8" }
+    );
+    const verifyImpact = JSON.parse(verifyRaw);
+    const hasStaleUncertainty = verifyImpact.uncertainty.some((u) => u.kind === "build_provider_stale");
+    if (!hasStaleUncertainty) {
+      throw new Error("stale_scoped_config_widening semantic assertion failed: build_provider_stale uncertainty missing");
+    }
+    if (verifyImpact.assurance === "exact") {
+      throw new Error("stale_scoped_config_widening semantic assertion failed: assurance was exact despite stale provider");
+    }
 
     const samples = [];
     for (let r = 0; r < warmup + iterations; r++) {
@@ -414,7 +480,7 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 10. malformed package-local config
+  // 10. malformed package-local config (with non-degradation semantic assertions)
   {
     const benchDir = join(tmpdir(), `fdx-bench-m5-malformed-pkg-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
@@ -442,6 +508,20 @@ async function runBenchmark() {
     } catch {}
 
     writeFileSync(join(pdirA, "index.ts"), "export const a = 2;");
+
+    // Semantic qualification assertion: malformed pkg-b uncertainty is present as scoped diagnostic
+    const verifyRaw = execFileSync(
+      binaryPath,
+      ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"],
+      { cwd: benchDir, encoding: "utf8" }
+    );
+    const verifyImpact = JSON.parse(verifyRaw);
+    const hasMalformedB = verifyImpact.uncertainty.some(
+      (u) => u.kind === "malformed_config" && JSON.stringify(u).includes("packages/b")
+    );
+    if (!hasMalformedB) {
+      throw new Error("malformed_package_local_config semantic assertion failed: malformed_config scoped uncertainty missing");
+    }
 
     const samples = [];
     for (let r = 0; r < warmup + iterations; r++) {
@@ -550,6 +630,7 @@ async function runBenchmark() {
       arch: process.arch,
       functional_source_sha: declaredFunctionalSha,
       binary_source_sha: declaredFunctionalSha,
+      benchmark_harness_sha: harnessSha,
       binary_path: binaryPath,
     },
     results,
@@ -565,6 +646,7 @@ async function runBenchmark() {
     `- **Timestamp**: \`${reportPayload.metadata.timestamp}\`\n` +
     `- **Functional Source SHA**: \`${reportPayload.metadata.functional_source_sha}\`\n` +
     `- **Binary Source SHA**: \`${reportPayload.metadata.binary_source_sha}\`\n` +
+    `- **Benchmark Harness SHA**: \`${reportPayload.metadata.benchmark_harness_sha}\`\n` +
     `- **Platform**: \`${reportPayload.metadata.platform} (${reportPayload.metadata.arch})\`\n\n` +
     "## Performance Results\n\n" +
     "| Benchmark Scenario | Samples | Median (ms) | P95 (ms) | Min (ms) | Max (ms) | Mean (ms) |\n" +
