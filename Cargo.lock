@@ -280,6 +280,7 @@ dependencies = [
  "dashmap",
  "glob",
  "ignore",
+ "libc",
  "once_cell",
  "regex",
  "rusqlite",
