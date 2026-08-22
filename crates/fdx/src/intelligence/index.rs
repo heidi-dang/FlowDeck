@@ -236,7 +236,7 @@ impl<'a> TransactionalGraph<'a> {
             "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint,
                                 strength, source_identity, source_hash, created_revision, updated_revision,
                                 stale, generation, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?12, ?12, 0, ?12, ?13)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13)
              ON CONFLICT(stable_id) DO UPDATE SET
                 stale = 0,
                 updated_revision = excluded.updated_revision,
@@ -254,6 +254,8 @@ impl<'a> TransactionalGraph<'a> {
                 strength_int,
                 edge.source_identity,
                 edge.source_hash,
+                edge.generation as i64,
+                edge.generation as i64,
                 edge.generation as i64,
                 edge.metadata,
             ],
