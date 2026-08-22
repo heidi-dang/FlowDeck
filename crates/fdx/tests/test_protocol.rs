@@ -10,7 +10,7 @@ use std::path::Path;
 #[test]
 fn test_version_constants() {
     assert_eq!(FDX_PROTOCOL_VERSION, 2);
-    assert_eq!(FDX_GRAPH_SCHEMA_VERSION, 4);
+    assert_eq!(FDX_GRAPH_SCHEMA_VERSION, 5);
     assert_eq!(FDX_SELECTION_POLICY_VERSION, 1);
     assert_eq!(FDX_ATTESTATION_PREDICATE_VERSION, 1);
 }

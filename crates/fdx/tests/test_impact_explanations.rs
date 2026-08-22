@@ -94,6 +94,26 @@ fn test_path_strength_is_min_of_edge_strengths() {
     let repo = tmp.path();
     init_git_repo(repo);
 
+    let mock_bin = repo.join("mock-scip-ts");
+    fs::write(&mock_bin, "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&mock_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
+    let exec_digest =
+        fdx::intelligence::semantic::provider::executable_content_digest(&mock_bin).unwrap();
+
+    let tsconfig = repo.join("tsconfig.json");
+    fs::write(&tsconfig, r#"{"compilerOptions":{"strict":true}}"#).unwrap();
+
+    use fdx::intelligence::semantic::provider::SemanticProvider;
+    let ts_provider = fdx::intelligence::semantic::scip::ts::ScipTypescriptProvider::new();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("0.4.0"))
+        .unwrap();
+
     // Build a 2-hop chain where hop 1 is Precise and hop 2 is Structural
     use fdx::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
     use fdx::intelligence::index::TransactionalGraph;
@@ -176,7 +196,8 @@ fn test_path_strength_is_min_of_edge_strengths() {
         to_node: n1.stable_id.clone(),
         kind: EdgeKind::References,
         provider: EvidenceProviderKind::Scip,
-        provider_fingerprint: "scip-v1".to_string(),
+        provider_id: Some("scip-typescript".to_string()),
+        provider_fingerprint: fp.digest.clone(),
         strength: EvidenceStrength::Precise,
         source_identity: Some("src/mid.ts".to_string()),
         source_hash: Some("h2".to_string()),
@@ -186,6 +207,33 @@ fn test_path_strength_is_min_of_edge_strengths() {
     })
     .unwrap();
 
+    let state = fdx::intelligence::semantic::provider::ProviderState {
+        identity: fdx::intelligence::semantic::provider::ProviderIdentity {
+            provider_id: "scip-typescript".to_string(),
+            provider_type: fdx::intelligence::semantic::provider::ProviderType::Scip,
+            provider_version: "0.4.0".to_string(),
+            executable_identity: exec_digest,
+            scip_schema_version: "0.1.0".to_string(),
+        },
+        scope: fdx::intelligence::semantic::provider::ProviderScope {
+            workspace_root: String::new(),
+            package: None,
+            languages: vec![fdx::intelligence::semantic::LanguageId::TypeScript],
+        },
+        fingerprint: fp,
+        last_successful_run: Some(fdx::intelligence::semantic::provider::now_ms()),
+        health: fdx::intelligence::semantic::health::ProviderHealth::Available,
+        freshness: fdx::intelligence::semantic::health::ProviderFreshness::Fresh,
+        output_digest: Some("out-dig".to_string()),
+        failure_reason: None,
+        semantic_generation: 1,
+        last_attempt_fingerprint: None,
+        last_attempt_at: None,
+        last_attempt_health: None,
+        last_attempt_failure_reason: None,
+    };
+    fdx::intelligence::semantic::state::upsert_provider_state(&tx, &state).unwrap();
+
     // Edge 2: appFn -> midFn (Structural fallback)
     tx.insert_edge(&GraphEdge {
         stable_id: "edge:app->mid".to_string(),
@@ -193,6 +241,7 @@ fn test_path_strength_is_min_of_edge_strengths() {
         to_node: n2.stable_id.clone(),
         kind: EdgeKind::Calls,
         provider: EvidenceProviderKind::TreeSitter,
+        provider_id: None,
         provider_fingerprint: "ts-v1".to_string(),
         strength: EvidenceStrength::Structural,
         source_identity: Some("src/app.ts".to_string()),
@@ -248,6 +297,8 @@ export function appFn() { midFn(); }
     if let Some(ref path) = app_target.primary_path {
         assert_eq!(path.path_strength, EvidenceStrength::Structural);
     }
+
+    std::env::remove_var("SCIP_TYPESCRIPT_BIN");
 }
 
 #[test]
@@ -336,6 +387,7 @@ fn test_alternate_explanation_paths_bounded() {
             to_node: seed.stable_id.clone(),
             kind: EdgeKind::References,
             provider: EvidenceProviderKind::Scip,
+            provider_id: Some("scip-typescript".to_string()),
             provider_fingerprint: "scip".to_string(),
             strength: EvidenceStrength::Precise,
             source_identity: Some(p.clone()),
@@ -352,6 +404,7 @@ fn test_alternate_explanation_paths_bounded() {
             to_node: mid_node.stable_id.clone(),
             kind: EdgeKind::Calls,
             provider: EvidenceProviderKind::Scip,
+            provider_id: Some("scip-typescript".to_string()),
             provider_fingerprint: "scip".to_string(),
             strength: EvidenceStrength::Precise,
             source_identity: Some("src/target.ts".to_string()),

@@ -213,6 +213,7 @@ fn test_impact_interface_and_inheritance_direction() {
         to_node: "sym:src/types.ts:IWorker".to_string(),
         kind: EdgeKind::Implements,
         provider: EvidenceProviderKind::TreeSitter,
+        provider_id: None,
         provider_fingerprint: "ts-v1".to_string(),
         strength: EvidenceStrength::Structural,
         source_identity: Some("src/impl.ts".to_string()),

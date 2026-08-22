@@ -48,6 +48,8 @@ struct DbEdgeRow {
     to_node: String,
     kind: EdgeKind,
     provider: String,
+    provider_id: Option<String>,
+    provider_fingerprint: String,
     strength: EvidenceStrength,
     stale: bool,
 }
@@ -123,32 +125,30 @@ fn query_node(conn: &Connection, node_id: &str) -> Option<DbNodeRow> {
     .ok()
 }
 
-fn query_incoming_impact_edges(
+fn query_raw_incoming_impact_edges(
     conn: &Connection,
     target_node: &str,
-    stale_providers: &HashSet<String>,
-    unknown_kinds: &mut HashSet<String>,
-) -> Vec<DbEdgeRow> {
+) -> (Vec<DbEdgeRow>, Vec<String>) {
     let mut edges = Vec::new();
+    let mut unknown_kinds = Vec::new();
 
     // 1. Reverse edges: where to_node = target_node (caller -> callee, importer -> imported, etc.)
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT from_node, to_node, kind, provider, strength, stale FROM edges WHERE to_node = ?1",
+        "SELECT from_node, to_node, kind, provider, provider_id, provider_fingerprint, strength, stale FROM edges WHERE to_node = ?1",
     ) {
         if let Ok(rows) = stmt.query_map(rusqlite::params![target_node], |row| {
             let from_n: String = row.get(0)?;
             let to_n: String = row.get(1)?;
             let kstr: String = row.get(2)?;
             let prov: String = row.get(3)?;
-            let str_val: i64 = row.get(4)?;
-            let mut stale: bool = row.get(5)?;
-            if stale_providers.contains(&prov) {
-                stale = true;
-            }
-            Ok((from_n, to_n, kstr, prov, str_val, stale))
+            let pid: Option<String> = row.get(4)?;
+            let p_fp: String = row.get(5).unwrap_or_default();
+            let str_val: i64 = row.get(6)?;
+            let stale: bool = row.get(7)?;
+            Ok((from_n, to_n, kstr, prov, pid, p_fp, str_val, stale))
         }) {
             for item in rows.flatten() {
-                let (from_n, to_n, kstr, prov, str_val, stale) = item;
+                let (from_n, to_n, kstr, prov, pid, p_fp, str_val, stale) = item;
                 if let Some(kind) = parse_edge_kind(&kstr) {
                     if edge_impact_direction(kind) == TraversalDirection::Reverse {
                         edges.push(DbEdgeRow {
@@ -156,12 +156,14 @@ fn query_incoming_impact_edges(
                             to_node: to_n,
                             kind,
                             provider: prov,
+                            provider_id: pid,
+                            provider_fingerprint: p_fp,
                             strength: parse_strength(str_val),
                             stale,
                         });
                     }
                 } else {
-                    unknown_kinds.insert(kstr);
+                    unknown_kinds.push(kstr);
                 }
             }
         }
@@ -169,22 +171,21 @@ fn query_incoming_impact_edges(
 
     // 2. Forward edges: where from_node = target_node (config -> target, generator -> artifact)
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT from_node, to_node, kind, provider, strength, stale FROM edges WHERE from_node = ?1",
+        "SELECT from_node, to_node, kind, provider, provider_id, provider_fingerprint, strength, stale FROM edges WHERE from_node = ?1",
     ) {
         if let Ok(rows) = stmt.query_map(rusqlite::params![target_node], |row| {
             let from_n: String = row.get(0)?;
             let to_n: String = row.get(1)?;
             let kstr: String = row.get(2)?;
             let prov: String = row.get(3)?;
-            let str_val: i64 = row.get(4)?;
-            let mut stale: bool = row.get(5)?;
-            if stale_providers.contains(&prov) {
-                stale = true;
-            }
-            Ok((from_n, to_n, kstr, prov, str_val, stale))
+            let pid: Option<String> = row.get(4)?;
+            let p_fp: String = row.get(5).unwrap_or_default();
+            let str_val: i64 = row.get(6)?;
+            let stale: bool = row.get(7)?;
+            Ok((from_n, to_n, kstr, prov, pid, p_fp, str_val, stale))
         }) {
             for item in rows.flatten() {
-                let (from_n, to_n, kstr, prov, str_val, stale) = item;
+                let (from_n, to_n, kstr, prov, pid, p_fp, str_val, stale) = item;
                 if let Some(kind) = parse_edge_kind(&kstr) {
                     if edge_impact_direction(kind) == TraversalDirection::Forward {
                         edges.push(DbEdgeRow {
@@ -192,18 +193,20 @@ fn query_incoming_impact_edges(
                             to_node: to_n,
                             kind,
                             provider: prov,
+                            provider_id: pid,
+                            provider_fingerprint: p_fp,
                             strength: parse_strength(str_val),
                             stale,
                         });
                     }
                 } else {
-                    unknown_kinds.insert(kstr);
+                    unknown_kinds.push(kstr);
                 }
             }
         }
     }
 
-    edges
+    (edges, unknown_kinds)
 }
 
 fn resolve_import_path(source_file: &Path, import_str: &str, repo_root: &Path) -> Option<String> {
@@ -230,76 +233,107 @@ fn resolve_import_path(source_file: &Path, import_str: &str, repo_root: &Path) -
     None
 }
 
-/// Inverted index for fast structural and lexical dependency lookups (with before-state awareness).
-struct StructuralGraphIndex {
+/// Inverted index for fast lexical dependency lookups (truthfully labeled as manual_rule/Heuristic).
+struct LexicalFallbackIndex {
     imported_to_importers: HashMap<String, Vec<String>>,
     symbol_to_referencing_files: HashMap<String, Vec<String>>,
 }
 
-impl StructuralGraphIndex {
-    fn build(repo_root: &Path, files: &[String], base_ref: Option<&str>) -> Self {
+impl LexicalFallbackIndex {
+    fn build_from_working_tree(repo_root: &Path, files: &[String]) -> Self {
         let mut imported_to_importers: HashMap<String, Vec<String>> = HashMap::new();
         let mut symbol_to_referencing_files: HashMap<String, Vec<String>> = HashMap::new();
 
-        let base_name = base_ref.unwrap_or("HEAD");
-
         for canon in files {
             let full = repo_root.join(canon);
-            let content = if full.is_file() {
-                std::fs::read_to_string(&full).ok()
-            } else {
-                read_git_file_content(repo_root, base_name, canon)
-            };
-
-            let Some(content) = content else {
+            let Ok(content) = std::fs::read_to_string(&full) else {
                 continue;
             };
-
-            let mut imported_files = HashSet::new();
-
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("import ") || trimmed.starts_with("export ") {
-                    for q in ['\'', '"'] {
-                        if let Some(start) = trimmed.rfind(q) {
-                            if let Some(end) = trimmed[..start].rfind(q) {
-                                let spec = &trimmed[end + 1..start];
-                                if let Some(resolved) = resolve_import_path(
-                                    &canon_to_path(repo_root, canon),
-                                    spec,
-                                    repo_root,
-                                ) {
-                                    imported_files.insert(resolved);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            for imp in imported_files {
-                imported_to_importers
-                    .entry(imp)
-                    .or_default()
-                    .push(canon.clone());
-            }
-
-            // Extract alphanumeric tokens for symbol references
-            for word in content.split(|c: char| !c.is_alphanumeric() && c != '_') {
-                if word.len() >= 2 {
-                    let entry = symbol_to_referencing_files
-                        .entry(word.to_string())
-                        .or_default();
-                    if entry.last().map(|s| s != canon).unwrap_or(true) {
-                        entry.push(canon.clone());
-                    }
-                }
-            }
+            Self::index_content(
+                repo_root,
+                canon,
+                &content,
+                &mut imported_to_importers,
+                &mut symbol_to_referencing_files,
+            );
         }
 
         Self {
             imported_to_importers,
             symbol_to_referencing_files,
+        }
+    }
+
+    fn build_from_base_ref(repo_root: &Path, files: &[String], base_ref: &str) -> Self {
+        let mut imported_to_importers: HashMap<String, Vec<String>> = HashMap::new();
+        let mut symbol_to_referencing_files: HashMap<String, Vec<String>> = HashMap::new();
+
+        for canon in files {
+            let content = read_git_file_content(repo_root, base_ref, canon);
+            let Some(content) = content else {
+                continue;
+            };
+            Self::index_content(
+                repo_root,
+                canon,
+                &content,
+                &mut imported_to_importers,
+                &mut symbol_to_referencing_files,
+            );
+        }
+
+        Self {
+            imported_to_importers,
+            symbol_to_referencing_files,
+        }
+    }
+
+    fn index_content(
+        repo_root: &Path,
+        canon: &str,
+        content: &str,
+        imported_to_importers: &mut HashMap<String, Vec<String>>,
+        symbol_to_referencing_files: &mut HashMap<String, Vec<String>>,
+    ) {
+        let mut imported_files = HashSet::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("import ") || trimmed.starts_with("export ") {
+                for q in ['\'', '"'] {
+                    if let Some(start) = trimmed.rfind(q) {
+                        if let Some(end) = trimmed[..start].rfind(q) {
+                            let spec = &trimmed[end + 1..start];
+                            if let Some(resolved) = resolve_import_path(
+                                &canon_to_path(repo_root, canon),
+                                spec,
+                                repo_root,
+                            ) {
+                                imported_files.insert(resolved);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for imp in imported_files {
+            imported_to_importers
+                .entry(imp)
+                .or_default()
+                .push(canon.to_string());
+        }
+
+        // Extract alphanumeric tokens for symbol references
+        for word in content.split(|c: char| !c.is_alphanumeric() && c != '_') {
+            if word.len() >= 2 {
+                let entry = symbol_to_referencing_files
+                    .entry(word.to_string())
+                    .or_default();
+                if entry.last().map(|s| s != canon).unwrap_or(true) {
+                    entry.push(canon.to_string());
+                }
+            }
         }
     }
 
@@ -321,8 +355,10 @@ impl StructuralGraphIndex {
                         from_node: format!("file:{}", imp),
                         to_node: format!("file:{}", target_path),
                         kind: EdgeKind::Imports,
-                        provider: "tree_sitter".to_string(),
-                        strength: EvidenceStrength::Structural,
+                        provider: "manual_rule".to_string(),
+                        provider_id: None,
+                        provider_fingerprint: "manual-import".to_string(),
+                        strength: EvidenceStrength::Heuristic,
                         stale: false,
                     });
                 }
@@ -340,8 +376,10 @@ impl StructuralGraphIndex {
                             from_node: format!("file:{}", ref_file),
                             to_node: format!("sym:{}:{}", target_path, sym),
                             kind: EdgeKind::References,
-                            provider: "tree_sitter".to_string(),
-                            strength: EvidenceStrength::Structural,
+                            provider: "manual_rule".to_string(),
+                            provider_id: None,
+                            provider_fingerprint: "manual-token".to_string(),
+                            strength: EvidenceStrength::Heuristic,
                             stale: false,
                         });
                     }
@@ -349,6 +387,33 @@ impl StructuralGraphIndex {
             }
         }
 
+        edges
+    }
+}
+
+struct ImpactFallbackIndexes {
+    current: LexicalFallbackIndex,
+    before: Option<LexicalFallbackIndex>,
+}
+
+impl ImpactFallbackIndexes {
+    fn find_incoming_edges(
+        &self,
+        target_path: &str,
+        target_symbol: Option<&str>,
+    ) -> Vec<DbEdgeRow> {
+        let mut edges = self.current.find_incoming_edges(target_path, target_symbol);
+        if let Some(ref before) = self.before {
+            let before_edges = before.find_incoming_edges(target_path, target_symbol);
+            for be in before_edges {
+                if !edges
+                    .iter()
+                    .any(|e| e.from_node == be.from_node && e.to_node == be.to_node)
+                {
+                    edges.push(be);
+                }
+            }
+        }
         edges
     }
 }
@@ -422,73 +487,22 @@ pub fn analyze_impact_v2(
 
     let mut uncertainties = change_set.uncertainty.clone();
     let mut impacted_map: HashMap<String, ImpactedTarget> = HashMap::new();
-    let mut has_fallback_path = false;
 
     let db_res = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly);
 
-    let db = match db_res {
-        Ok(d) => d,
+    let (db_opt, mut has_fallback_path) = match db_res {
+        Ok(d) => (Some(d), false),
         Err(DatabaseError::NotIndexed) => {
             uncertainties.push(UncertaintyReason::GraphAbsent(
                 "Evidence graph database not found or unindexed".to_string(),
             ));
-            for ch in &change_set.changes {
-                impacted_map.insert(
-                    ch.file.clone(),
-                    ImpactedTarget {
-                        target: ch.file.clone(),
-                        target_kind: NodeKind::File,
-                        depth: 0,
-                        strength: EvidenceStrength::Heuristic,
-                        primary_path: None,
-                        alternate_paths: Vec::new(),
-                        alternate_path_count: 0,
-                        widening_reason: Some("Unindexed repository fallback".to_string()),
-                    },
-                );
-            }
-
-            let assurance = compute_result_assurance(change_set.assurance, &uncertainties, true);
-            let mut impacted_list: Vec<ImpactedTarget> = impacted_map.into_values().collect();
-            impacted_list.sort_by(|a, b| a.target.cmp(&b.target));
-
-            return Ok(ImpactV2Result {
-                assurance,
-                changes: change_set.changes,
-                impacted: impacted_list,
-                uncertainty: uncertainties,
-            });
+            (None, true)
         }
         Err(DatabaseError::Corrupt) => {
             uncertainties.push(UncertaintyReason::GraphCorrupt(
                 "Evidence graph database is corrupt".to_string(),
             ));
-            for ch in &change_set.changes {
-                impacted_map.insert(
-                    ch.file.clone(),
-                    ImpactedTarget {
-                        target: ch.file.clone(),
-                        target_kind: NodeKind::File,
-                        depth: 0,
-                        strength: EvidenceStrength::Heuristic,
-                        primary_path: None,
-                        alternate_paths: Vec::new(),
-                        alternate_path_count: 0,
-                        widening_reason: Some("Corrupt database fallback".to_string()),
-                    },
-                );
-            }
-
-            let assurance = compute_result_assurance(change_set.assurance, &uncertainties, true);
-            let mut impacted_list: Vec<ImpactedTarget> = impacted_map.into_values().collect();
-            impacted_list.sort_by(|a, b| a.target.cmp(&b.target));
-
-            return Ok(ImpactV2Result {
-                assurance,
-                changes: change_set.changes,
-                impacted: impacted_list,
-                uncertainty: uncertainties,
-            });
+            (None, true)
         }
         Err(DatabaseError::FutureSchemaVersion(found)) => {
             uncertainties.push(UncertaintyReason::GraphIncompatible(format!(
@@ -496,100 +510,51 @@ pub fn analyze_impact_v2(
                 found,
                 crate::intelligence::schema::CURRENT_SCHEMA_VERSION
             )));
-            for ch in &change_set.changes {
-                impacted_map.insert(
-                    ch.file.clone(),
-                    ImpactedTarget {
-                        target: ch.file.clone(),
-                        target_kind: NodeKind::File,
-                        depth: 0,
-                        strength: EvidenceStrength::Heuristic,
-                        primary_path: None,
-                        alternate_paths: Vec::new(),
-                        alternate_path_count: 0,
-                        widening_reason: Some("Future schema incompatible".to_string()),
-                    },
-                );
-            }
-
-            let assurance = compute_result_assurance(change_set.assurance, &uncertainties, true);
-            let mut impacted_list: Vec<ImpactedTarget> = impacted_map.into_values().collect();
-            impacted_list.sort_by(|a, b| a.target.cmp(&b.target));
-
-            return Ok(ImpactV2Result {
-                assurance,
-                changes: change_set.changes,
-                impacted: impacted_list,
-                uncertainty: uncertainties,
-            });
+            (None, true)
         }
         Err(other) => {
             uncertainties.push(UncertaintyReason::GraphUnavailable(format!(
                 "Database error: {}",
                 other
             )));
-            for ch in &change_set.changes {
-                impacted_map.insert(
-                    ch.file.clone(),
-                    ImpactedTarget {
-                        target: ch.file.clone(),
-                        target_kind: NodeKind::File,
-                        depth: 0,
-                        strength: EvidenceStrength::Heuristic,
-                        primary_path: None,
-                        alternate_paths: Vec::new(),
-                        alternate_path_count: 0,
-                        widening_reason: Some("Database unavailable fallback".to_string()),
-                    },
-                );
-            }
-
-            let assurance = compute_result_assurance(change_set.assurance, &uncertainties, true);
-            let mut impacted_list: Vec<ImpactedTarget> = impacted_map.into_values().collect();
-            impacted_list.sort_by(|a, b| a.target.cmp(&b.target));
-
-            return Ok(ImpactV2Result {
-                assurance,
-                changes: change_set.changes,
-                impacted: impacted_list,
-                uncertainty: uncertainties,
-            });
+            (None, true)
         }
     };
 
-    // Evaluate M3 effective provider states passively against live disk configuration/executables
-    let registry = crate::intelligence::semantic::registry::ProviderRegistry::default();
-    let persisted_states =
-        crate::intelligence::semantic::state::load_provider_states(&db).unwrap_or_default();
-    let effective_states = crate::intelligence::semantic::state::evaluate_effective_states(
-        repo_root,
-        &registry,
-        persisted_states,
-    );
+    let mut effective_states_map = HashMap::new();
+    if let Some(ref db) = db_opt {
+        let registry = crate::intelligence::semantic::registry::ProviderRegistry::default();
+        let persisted_states =
+            crate::intelligence::semantic::state::load_provider_states(db).unwrap_or_default();
+        let effective_states = crate::intelligence::semantic::state::evaluate_effective_states(
+            repo_root,
+            &registry,
+            persisted_states,
+        );
 
-    let mut stale_providers = HashSet::new();
-    for st in &effective_states {
-        let pid = st.provider_id();
-        if st.freshness != ProviderFreshness::Fresh {
-            stale_providers.insert(pid.to_string());
-            uncertainties.push(UncertaintyReason::ProviderStale(format!(
-                "Provider {} is effectively stale",
-                pid
-            )));
-        } else if st.health == ProviderHealth::Failed {
-            uncertainties.push(UncertaintyReason::ProviderFailed(format!(
-                "Provider {} failed",
-                pid
-            )));
-        } else if st.health == ProviderHealth::Misconfigured {
-            uncertainties.push(UncertaintyReason::ProviderMissing(format!(
-                "Provider {} is misconfigured",
-                pid
-            )));
+        for st in &effective_states {
+            effective_states_map.insert(st.provider_id().to_string(), st.clone());
+            if st.freshness != ProviderFreshness::Fresh {
+                uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                    "Provider {} is effectively stale",
+                    st.provider_id()
+                )));
+            } else if st.health == ProviderHealth::Failed {
+                uncertainties.push(UncertaintyReason::ProviderFailed(format!(
+                    "Provider {} failed",
+                    st.provider_id()
+                )));
+            } else if st.health == ProviderHealth::Misconfigured {
+                uncertainties.push(UncertaintyReason::ProviderMissing(format!(
+                    "Provider {} is misconfigured",
+                    st.provider_id()
+                )));
+            }
         }
     }
 
-    let mut candidate_files = collect_all_repo_code_files(Some(&db.conn), repo_root);
+    let mut candidate_files =
+        collect_all_repo_code_files(db_opt.as_ref().map(|d| &d.conn), repo_root);
     for ch in &change_set.changes {
         if !candidate_files.contains(&ch.file) {
             candidate_files.push(ch.file.clone());
@@ -601,12 +566,19 @@ pub fn analyze_impact_v2(
         }
     }
 
-    let structural_index = StructuralGraphIndex::build(repo_root, &candidate_files, base_ref);
+    let current_fallback_index =
+        LexicalFallbackIndex::build_from_working_tree(repo_root, &candidate_files);
+    let before_fallback_index =
+        base_ref.map(|b| LexicalFallbackIndex::build_from_base_ref(repo_root, &candidate_files, b));
+    let fallback_indexes = ImpactFallbackIndexes {
+        current: current_fallback_index,
+        before: before_fallback_index,
+    };
 
     // Collect all seeds from changes
     let mut seeds = Vec::new();
     for change in &change_set.changes {
-        let s = generate_impact_seeds(change, Some(&db.conn));
+        let s = generate_impact_seeds(change, db_opt.as_ref().map(|d| &d.conn));
         seeds.extend(s);
     }
 
@@ -676,15 +648,94 @@ pub fn analyze_impact_v2(
             break;
         }
 
-        let mut outgoing_edges = query_incoming_impact_edges(
-            &db.conn,
-            &item.current_node_id,
-            &stale_providers,
-            &mut unknown_kinds,
-        );
+        let (raw_edges, unknown_kinds_list) = if let Some(ref db) = db_opt {
+            query_raw_incoming_impact_edges(&db.conn, &item.current_node_id)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        for unk in unknown_kinds_list {
+            unknown_kinds.insert(unk);
+        }
 
-        // If no DB edges found for this node (or for deleted symbols/files), query structural/before index
-        if outgoing_edges.is_empty() {
+        let mut current_edges = Vec::new();
+        let mut stale_or_unverified_edges = Vec::new();
+        let mut node_needs_widening = false;
+
+        for mut edge in raw_edges {
+            let mut is_edge_fresh = false;
+
+            if edge.provider == "scip" {
+                if let Some(ref pid) = edge.provider_id {
+                    if let Some(st) = effective_states_map.get(pid) {
+                        if st.health != ProviderHealth::Available {
+                            uncertainties.push(UncertaintyReason::ProviderMissing(format!(
+                                "Provider {} unavailable ({:?})",
+                                pid, st.health
+                            )));
+                            node_needs_widening = true;
+                        } else if st.freshness != ProviderFreshness::Fresh {
+                            uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                                "Provider {} is effectively stale",
+                                pid
+                            )));
+                            node_needs_widening = true;
+                        } else if edge.provider_fingerprint != st.fingerprint.digest {
+                            uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                                "Provider {} fingerprint mismatch on edge",
+                                pid
+                            )));
+                            node_needs_widening = true;
+                        } else if edge.stale {
+                            uncertainties.push(UncertaintyReason::ProviderStale(
+                                "Edge is marked stale in database".to_string(),
+                            ));
+                            node_needs_widening = true;
+                        } else {
+                            is_edge_fresh = true;
+                        }
+                    } else {
+                        uncertainties.push(UncertaintyReason::ProviderMissing(format!(
+                            "Provider {} not found in registry",
+                            pid
+                        )));
+                        node_needs_widening = true;
+                    }
+                } else {
+                    // Unknown SCIP provider ownership (legacy v4 edge without provider_id)
+                    uncertainties.push(UncertaintyReason::FallbackUsed(format!(
+                        "SCIP edge {}->{} has unknown provider ownership",
+                        edge.from_node, edge.to_node
+                    )));
+                    node_needs_widening = true;
+                }
+            } else {
+                // Built-in structural or lexical edge
+                if edge.stale {
+                    node_needs_widening = true;
+                } else {
+                    is_edge_fresh = true;
+                }
+            }
+
+            if is_edge_fresh {
+                current_edges.push(edge);
+            } else {
+                edge.stale = true;
+                if edge.strength > EvidenceStrength::Heuristic {
+                    edge.strength = EvidenceStrength::Heuristic;
+                }
+                stale_or_unverified_edges.push(edge);
+            }
+        }
+
+        let mut outgoing_edges = Vec::new();
+        if !current_edges.is_empty() && !node_needs_widening {
+            outgoing_edges.extend(current_edges);
+        } else {
+            has_fallback_path = true;
+            outgoing_edges.extend(current_edges);
+            outgoing_edges.extend(stale_or_unverified_edges);
+
             let (target_p, target_s) =
                 if let Some(stripped) = item.current_node_id.strip_prefix("file:") {
                     (stripped, None)
@@ -699,10 +750,14 @@ pub fn analyze_impact_v2(
                     (item.current_node_id.as_str(), None)
                 };
 
-            let structural = structural_index.find_incoming_edges(target_p, target_s);
-            if !structural.is_empty() {
-                has_fallback_path = true;
-                outgoing_edges.extend(structural);
+            let fallback_edges = fallback_indexes.find_incoming_edges(target_p, target_s);
+            for fe in fallback_edges {
+                if !outgoing_edges
+                    .iter()
+                    .any(|e| e.from_node == fe.from_node && e.to_node == fe.to_node)
+                {
+                    outgoing_edges.push(fe);
+                }
             }
         }
 
@@ -753,22 +808,24 @@ pub fn analyze_impact_v2(
             new_steps.push(step);
 
             // Determine target key
-            let (target_key, node_kind) =
-                if let Some(node_row) = query_node(&db.conn, &next_node_id) {
-                    (
-                        node_row
-                            .canonical_path
-                            .unwrap_or_else(|| next_node_id.clone()),
-                        node_row.kind,
-                    )
-                } else if let Some(stripped) = next_node_id.strip_prefix("file:") {
-                    (stripped.to_string(), NodeKind::File)
-                } else if let Some(stripped) = next_node_id.strip_prefix("sym:") {
-                    let parts: Vec<&str> = stripped.splitn(2, ':').collect();
-                    (parts[0].to_string(), NodeKind::Symbol)
-                } else {
-                    (next_node_id.clone(), NodeKind::File)
-                };
+            let (target_key, node_kind) = if let Some(node_row) = db_opt
+                .as_ref()
+                .and_then(|d| query_node(&d.conn, &next_node_id))
+            {
+                (
+                    node_row
+                        .canonical_path
+                        .unwrap_or_else(|| next_node_id.clone()),
+                    node_row.kind,
+                )
+            } else if let Some(stripped) = next_node_id.strip_prefix("file:") {
+                (stripped.to_string(), NodeKind::File)
+            } else if let Some(stripped) = next_node_id.strip_prefix("sym:") {
+                let parts: Vec<&str> = stripped.splitn(2, ':').collect();
+                (parts[0].to_string(), NodeKind::Symbol)
+            } else {
+                (next_node_id.clone(), NodeKind::File)
+            };
 
             let path_expl = render_path_explanation(&next_node_id, &item.seed_node, &new_steps);
 

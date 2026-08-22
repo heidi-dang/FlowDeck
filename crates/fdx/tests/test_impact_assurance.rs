@@ -91,6 +91,7 @@ fn test_impact_seed_strength_propagation_structural_plus_precise_edge() {
 
     let file_a = repo.join("service.ts");
     let file_b = repo.join("controller.ts");
+    let tsconfig = repo.join("tsconfig.json");
 
     fs::write(
         &file_a,
@@ -105,7 +106,26 @@ export function handle() { execute(); }
 ",
     )
     .unwrap();
+    fs::write(&tsconfig, r#"{"compilerOptions":{"strict":true}}"#).unwrap();
     git_commit_all(repo, "initial");
+
+    let mock_bin = repo.join("mock-scip-ts");
+    fs::write(&mock_bin, "#!/bin/sh\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&mock_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
+
+    let exec_digest =
+        fdx::intelligence::semantic::provider::executable_content_digest(&mock_bin).unwrap();
+
+    use fdx::intelligence::semantic::provider::SemanticProvider;
+    let ts_provider = fdx::intelligence::semantic::scip::ts::ScipTypescriptProvider::new();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("0.4.0"))
+        .unwrap();
 
     // Seed database with Precise SCIP edge from controller -> execute
     let mut db = EvidenceDatabase::open(repo, DatabaseOpenMode::ReadWrite).unwrap();
@@ -154,7 +174,8 @@ export function handle() { execute(); }
         to_node: "sym:service.ts:execute".to_string(),
         kind: EdgeKind::Calls,
         provider: EvidenceProviderKind::Scip,
-        provider_fingerprint: "scip".to_string(),
+        provider_id: Some("scip-typescript".to_string()),
+        provider_fingerprint: fp.digest.clone(),
         strength: EvidenceStrength::Precise,
         source_identity: None,
         source_hash: None,
@@ -163,6 +184,33 @@ export function handle() { execute(); }
         stale: false,
     })
     .unwrap();
+
+    let state = fdx::intelligence::semantic::provider::ProviderState {
+        identity: fdx::intelligence::semantic::provider::ProviderIdentity {
+            provider_id: "scip-typescript".to_string(),
+            provider_type: fdx::intelligence::semantic::provider::ProviderType::Scip,
+            provider_version: "0.4.0".to_string(),
+            executable_identity: exec_digest.clone(),
+            scip_schema_version: "0.1.0".to_string(),
+        },
+        scope: fdx::intelligence::semantic::provider::ProviderScope {
+            workspace_root: String::new(),
+            package: None,
+            languages: vec![fdx::intelligence::semantic::LanguageId::TypeScript],
+        },
+        fingerprint: fp,
+        last_successful_run: Some(fdx::intelligence::semantic::provider::now_ms()),
+        health: fdx::intelligence::semantic::health::ProviderHealth::Available,
+        freshness: fdx::intelligence::semantic::health::ProviderFreshness::Fresh,
+        output_digest: Some("out-dig".to_string()),
+        failure_reason: None,
+        semantic_generation: 1,
+        last_attempt_fingerprint: None,
+        last_attempt_at: None,
+        last_attempt_health: None,
+        last_attempt_failure_reason: None,
+    };
+    fdx::intelligence::semantic::state::upsert_provider_state(&tx, &state).unwrap();
     tx.commit().unwrap();
 
     // Now change body of execute in service.ts (Structural change)
@@ -202,4 +250,6 @@ export function handle() { execute(); }
         AssuranceLevel::Exact,
         "Impact result assurance must not be EXACT when change is Structural"
     );
+
+    std::env::remove_var("SCIP_TYPESCRIPT_BIN");
 }
