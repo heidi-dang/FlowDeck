@@ -1,3 +1,4 @@
+pub mod change;
 pub mod compatibility;
 pub mod db;
 pub mod engine;
