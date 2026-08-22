@@ -181,9 +181,17 @@ describe("Turbo engine multiplexing always settles", () => {
       engine.search("nothing"),
       engine.grep("nothing"),
     ])
-    for (const r of results) expect(r.status === "fulfilled" || r.status === "rejected").toBe(true)
+    expect(results.length).toBe(4)
+    for (const r of results) {
+      if (r.status === "rejected") {
+        expect(r.reason).toBeInstanceOf(Error)
+      } else {
+        expect(typeof r.value.text).toBe("string")
+      }
+    }
     // After all settle, no inflight entries may remain.
     expect(engine.stats().inflight).toBe(0)
+    expect(engine.stats().queued).toBe(0)
     await engine.stop()
   }, 5000)
 
@@ -194,13 +202,22 @@ describe("Turbo engine multiplexing always settles", () => {
     const engine = new FdxTurboEngine({ workspace: root, makeNativeDaemon: () => fdxNativeDaemonFactory.create({ repo: root }) })
     const tasks: Promise<unknown>[] = []
     for (let i = 0; i < 10; i++) {
-      tasks.push(engine.search("alpha").then(() => true).catch(() => true))
-      tasks.push(engine.outline([join(root, "src")]).then(() => true).catch(() => true))
-      tasks.push(engine.impact([join(root, "src", "a.ts")]).then(() => true).catch(() => true))
-      tasks.push(engine.grep("Alpha").then(() => true).catch(() => true))
+      tasks.push(engine.search("alpha"))
+      tasks.push(engine.outline([join(root, "src")]))
+      tasks.push(engine.impact([join(root, "src", "a.ts")]))
+      tasks.push(engine.grep("Alpha"))
     }
     const settled = await Promise.allSettled(tasks)
-    for (const s of settled) expect(s.status === "fulfilled" || s.status === "rejected").toBe(true)
+    expect(settled.length).toBe(40)
+    const fulfilled = settled.filter(s => s.status === "fulfilled")
+    const rejected = settled.filter(s => s.status === "rejected")
+    expect(fulfilled.length + rejected.length).toBe(40)
+    expect(fulfilled.length).toBeGreaterThan(0)
+    for (const r of rejected) {
+      if (r.status === "rejected") {
+        expect(r.reason).toBeInstanceOf(Error)
+      }
+    }
     expect(engine.stats().inflight).toBe(0)
     expect(engine.stats().queued).toBe(0)
     await engine.stop()

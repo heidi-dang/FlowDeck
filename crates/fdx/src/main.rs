@@ -367,10 +367,21 @@ fn main() {
         return;
     }
 
-    // Resident daemon mode: `fdx serve` runs the persistent JSON-lines IPC loop
+    // Resident daemon mode: `fdx serve [--root <dir>]` runs the persistent JSON-lines IPC loop
     // over stdin/stdout (one long-lived process serving many requests).
     if args.iter().any(|a| a == "serve") {
-        fdx::serve::run();
+        let mut root_path = None;
+        let mut iter = args.iter().skip(1);
+        while let Some(arg) = iter.next() {
+            if arg == "--root" {
+                if let Some(val) = iter.next() {
+                    root_path = Some(PathBuf::from(val));
+                }
+            } else if let Some(stripped) = arg.strip_prefix("--root=") {
+                root_path = Some(PathBuf::from(stripped));
+            }
+        }
+        fdx::serve::run(root_path);
         return;
     }
 

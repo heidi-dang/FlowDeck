@@ -95,7 +95,7 @@ describe("sessionEventsHook — Comprehensive verification", () => {
       await sessionEventsHook({ directory: uncreatableDir }, "idle", "sess-fail-test")
       await sessionEventsHook({ directory: uncreatableDir }, "error", "sess-fail-test")
 
-      expect(true).toBe(true)
+      expect(warnLogs.length).toBeLessThanOrEqual(1)
     } finally {
       console.warn = originalWarn
       process.env = originalEnv

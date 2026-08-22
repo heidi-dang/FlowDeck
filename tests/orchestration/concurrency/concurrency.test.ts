@@ -19,8 +19,8 @@ describe('Concurrency Harness Validation', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'conc-test-'));
     const dbPath = join(tempDir, 'concurrency_test.db');
-    const setupDb = createConnection(dbPath);
-    setupDb.exec(`CREATE TABLE events (aggregate_id TEXT, version INTEGER, UNIQUE(aggregate_id, version))`);
+    const setupDb = new Database(dbPath);
+    setupDb.exec(`PRAGMA journal_mode = WAL; CREATE TABLE events (aggregate_id TEXT, version INTEGER, UNIQUE(aggregate_id, version))`);
     setupDb.close();
     connections = [];
   });

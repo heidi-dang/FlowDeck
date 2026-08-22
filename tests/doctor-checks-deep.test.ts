@@ -108,7 +108,7 @@ describe("Doctor Engine Deep Coverage Tests", () => {
       process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = "false"
       const disabled = backgroundSubagentCapabilityCheck("1.18.18")
       expect(disabled.status).toBe("warning")
-      expect(disabled.autoFixAvailable).toBe(true)
+      expect(disabled.autoFixAvailable).toBe(false)
       expect(disabled.detected).toContain("is not enabled")
 
       delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
@@ -247,15 +247,13 @@ describe("Doctor Engine Deep Coverage Tests", () => {
     expect(recs.length).toBeGreaterThan(0)
   })
 
-  it("reports that Doctor cannot mutate an externally owned OpenCode launch environment", async () => {
+  it("truthfully reports autoFixAvailable false when Doctor cannot mutate an externally owned OpenCode launch environment", () => {
     const original = process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
     try {
-      delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
-      delete process.env.OPENCODE_EXPERIMENTAL
-      const results = await applyAutoFixes([backgroundSubagentCapabilityCheck("1.18.18")], {})
-      expect(results).toHaveLength(1)
-      expect(results[0].applied).toBe(false)
-      expect(results[0].description).toContain("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
+      process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = "false"
+      const disabled = backgroundSubagentCapabilityCheck("1.18.18")
+      expect(disabled.autoFixAvailable).toBe(false)
+      expect(disabled.recommendation).toContain("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
     } finally {
       if (original === undefined) delete process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS
       else process.env.OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS = original

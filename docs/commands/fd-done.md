@@ -15,7 +15,7 @@
 
 ### Step 0: Pre-flight
 
-1. Check `.planning/STATE.md` exists. If not: error "No active feature. Run `/fd-map-codebase` then `/fd-new-feature` to start a feature."
+1. Check state exists. If not: error "No active task. Run `/fd-task` to start a task."
 2. Read current STATE.md using `planning_state action=read`.
 3. Record: `phase`, `status`, `plan_confirmed`, `blockers`, `steps_complete`, `requires_design_first`, `design_stage`, `design_approved`.
 
@@ -67,8 +67,8 @@ Update STATE.md:
 ```
 planning_state action=update updates={
   status: "complete",
-  last_action: "Phase <N> marked done via /fd-done",
-  next_action: "Run /fd-status to review project state, or /fd-new-feature to start the next phase"
+  last_action: "Task marked done via /fd-done",
+  next_action: "Run /fd-status to review project state, or /fd-task to start a new task"
 }
 ```
 
@@ -117,8 +117,7 @@ Write `.planning/phases/phase-<N>/DONE.md`:
 ## Next Steps
 
 - Run `/fd-status` to see the full project state
-- Run `/fd-new-feature` or increment the phase to start the next feature
-- Run `/fd-deploy-check` if preparing for production deployment
+- Run `/fd-task` to start the next task
 ```
 
 ### Step 6: Update ROADMAP.md (if present)
@@ -134,7 +133,7 @@ Print final summary with completion timestamp, prior status, steps complete, cha
 
 ## Error Handling
 
-- STATE.md not found → error with remediation ("No active feature. Run `/fd-map-codebase` then `/fd-new-feature` to start a feature.")
+- STATE.md not found → error with remediation ("No active task. Run `/fd-task` to start a task.")
 - Completion validation fails → list all failures, do not update state
 - Mapping refresh fails → log error, continue with `mappingFreshnessStatus: stale`
 - DONE.md write fails → log error, do not fail overall — state is already updated
@@ -186,8 +185,7 @@ The completion artifact at `.planning/phases/phase-<N>/DONE.md` uses this struct
 ## Next Steps
 
 - Run `/fd-status` to see the full project state
-- Run `/fd-new-feature` or increment the phase to start the next feature
-- Run `/fd-deploy-check` if preparing for production deployment
+- Run `/fd-task` to start the next task
 ```
 
 ## Examples
@@ -210,6 +208,5 @@ The completion artifact at `.planning/phases/phase-<N>/DONE.md` uses this struct
 ## Related Commands
 
 - `/fd-status` — review the completed project state
-- `/fd-new-feature` — start the next feature
-- `/fd-deploy-check` — pre-deployment checks after completing a phase
+- `/fd-task` — start a new task
 - `/fd-verify` — full verification before marking done (recommended)

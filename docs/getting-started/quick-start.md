@@ -18,57 +18,61 @@ flowdeck doctor
 
 Checks that FlowDeck is installed, the OpenCode plugin is loaded, and your environment is ready.
 
-## Step 3: Map the Codebase
+## Step 3: Initialize a Task
 
-```bash
-fd-map-codebase
+In OpenCode:
+
+```
+/fd-task "Add user authentication endpoint"
 ```
 
-Analyses the project and writes structured indexes to `.codebase/`. This is required before starting a feature — it gives all subsequent agents the context they need.
+Analyzes the project with `@mapper`, explores requirements, and initializes structured planning under `~/.fd-plan/`.
 
-## Step 4: Start a Feature
+## Step 4: Review the Plan
 
-```bash
-fd-new-feature "hello world API"
+In OpenCode:
+
+```
+/fd-review
 ```
 
-Initializes feature context and creates a `FEATURE.md` file in the current phase directory. If `.planning/` does not exist yet, it is created automatically.
+Performs automated plan quality review and security audit using `@reviewer` and `@security-auditor`.
 
-## Step 5: Discuss the Feature
+## Step 5: Execute Implementation
 
-```bash
-fd-discuss
+In OpenCode:
+
+```
+/fd-execute
 ```
 
-Runs structured Q&A to capture requirements, constraints, and decisions. Saves to `DISCUSS.md`.
+Executes the plan steps with specialist subagents (`@backend-coder`, `@frontend-coder`, `@devops`) following TDD discipline.
 
-## Step 6: Plan Implementation
+## Step 6: Verify Implementation
 
-```bash
-fd-plan
+In OpenCode:
+
+```
+/fd-verify
 ```
 
-Generates a wave-structured execution plan. When prompted, type `CONFIRM` to proceed.
+Runs the test suite, linting, typechecking, and contract verification to guarantee stability.
 
-The planner outputs a `PLAN.md` with task waves — groups of independent tasks that can run in parallel.
+## Step 7: Complete and Commit
 
-## Step 7: Execute
+In OpenCode:
 
-```bash
-fd-execute
+```
+/fd-done
 ```
 
-Implements the feature using TDD discipline. Parallel agents (architect, coder, tester, reviewer) work through the plan waves.
+Summarizes the outcome, cleans up worktrees, and records the finalized delivery.
 
 ## What to Expect
 
 After completing these steps you will have:
 
-- A `.planning/` directory with full project state
-- A `PLAN.md` with executable task breakdown
-- Working code with tests
-- Verification results from the review pipeline
-
-## Next Steps
-
-- [First Project → End-to-End Walkthrough](first-project.md) — see what the output files actually look like
+- Structured planning logs and decisions under `~/.fd-plan/`
+- Working code with passing tests
+- Completed verification and review audits
+- Safe, non-invasive commits ready for pull request

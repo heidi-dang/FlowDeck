@@ -81,10 +81,16 @@ describe("generateProjectId path parity", () => {
 })
 
 describe("Exact TypeScript vs Native Rust Project ID Parity", () => {
-  const bin = resolveFdxBinaryPath() || join(__dirname, "../crates/fdx/target/debug/fdx")
+  const candidateBins = [
+    resolveFdxBinaryPath(),
+    join(__dirname, "../target/debug/fdx"),
+    join(__dirname, "../crates/fdx/target/debug/fdx"),
+  ].filter(Boolean) as string[]
+  const bin = candidateBins.find(b => existsSync(b)) || join(__dirname, "../target/debug/fdx")
 
   it("matches native Rust project_slug for real directories, symlinks, spaces, unicode, and relative paths", () => {
-    if (!existsSync(bin)) return // skip if binary not built yet in light test runs
+    expect(existsSync(bin)).toBe(true)
+    if (!existsSync(bin)) return
 
     const tmpRoot = mkdtempSync(join(tmpdir(), "fdx-parity-"))
     try {

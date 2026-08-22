@@ -81,7 +81,7 @@ export async function runEnvironmentChecks(_directory: string): Promise<CheckRes
     detected: configExists ? configDir : `${configDir} (not found)`,
     expected: "~/.config/opencode/ should exist after installation",
     recommendation: "Run the FlowDeck installer to create OpenCode configuration",
-    autoFixAvailable: true,
+    autoFixAvailable: false,
   })
 
   return checks

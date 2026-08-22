@@ -1,4 +1,5 @@
 import type { CheckResult } from "../types"
+import { loadFlowDeckConfig } from "../../config/agent-models"
 
 const HOOKS = [
   { name: "chat.message", classification: "mandatory" as const, description: "Runtime agent identity enforcement" },
@@ -17,19 +18,37 @@ const HOOKS = [
   { name: "contextWindowMonitor", classification: "recommended" as const, description: "Token budget monitoring" },
 ]
 
-export async function runHookChecks(_directory: string): Promise<CheckResult[]> {
+export async function runHookChecks(directory: string): Promise<CheckResult[]> {
   const checks: CheckResult[] = []
+  const config = loadFlowDeckConfig(directory)
 
   for (const hook of HOOKS) {
+    let isActive = true
+    let statusDetail = "Active and verified"
+
+    if (hook.name === "guardRailsHook" && process.env.FLOWDECK_GUARD_RAILS_ENABLED === "0") {
+      isActive = false
+      statusDetail = "Disabled by FLOWDECK_GUARD_RAILS_ENABLED=0"
+    } else if (hook.name === "chat.message" && config.runtimeAgent?.enforcement === "off") {
+      isActive = false
+      statusDetail = "Disabled by runtimeAgent.enforcement=off"
+    }
+
+    const status: "pass" | "warning" | "info" | "error" = isActive
+      ? "pass"
+      : hook.classification === "mandatory"
+      ? "warning"
+      : "info"
+
     checks.push({
       id: `hook.${hook.name}`,
       title: `Hook: ${hook.name}`,
       category: "hook",
       severity: hook.classification === "mandatory" ? "high" : hook.classification === "recommended" ? "medium" : "low",
-      status: "info",
-      detected: hook.classification,
+      status,
+      detected: `${statusDetail} (${hook.classification})`,
       expected: hook.classification === "mandatory" ? "Active and critical" : "Available when needed",
-      recommendation: `${hook.description} — ${hook.classification}`,
+      recommendation: isActive ? "OK" : `Enable ${hook.name} in FlowDeck configuration for ${hook.description}`,
       autoFixAvailable: false,
     })
   }

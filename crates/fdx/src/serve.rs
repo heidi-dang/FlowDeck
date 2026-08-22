@@ -12,7 +12,7 @@
 //! Newline-delimited JSON, one object per line.
 
 use std::io::BufRead;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
 use std::thread;
@@ -74,6 +74,104 @@ fn format_err(id: &str, message: String) -> Option<String> {
     format_reply(id, false, None, Some(message))
 }
 
+/// Safely resolves and checks that `user_path` is strictly contained inside `canonical_root`.
+pub fn resolve_contained_path(
+    canonical_root: &Path,
+    user_path: &Path,
+    must_exist: bool,
+) -> Result<PathBuf, String> {
+    let raw_str = user_path.to_string_lossy();
+    if raw_str.is_empty() {
+        return Err("path cannot be empty".to_string());
+    }
+    if raw_str.contains('\0') {
+        return Err("path contains NUL byte".to_string());
+    }
+
+    // Windows UNC / raw drive escape checks
+    if raw_str.starts_with(r"\\") || raw_str.starts_with("//") {
+        return Err(format!("UNC paths are not permitted: {}", raw_str));
+    }
+
+    // Candidate path constructed relative to canonical root if relative, or taken as-is if absolute
+    let candidate = if user_path.is_absolute() {
+        user_path.to_path_buf()
+    } else {
+        // Normalize any Windows-style backslashes on non-Windows systems if present
+        let normalized = raw_str.replace('\\', "/");
+        canonical_root.join(normalized)
+    };
+
+    if candidate.exists() {
+        let canonical = match std::fs::canonicalize(&candidate) {
+            Ok(c) => c,
+            Err(e) => return Err(format!("failed to canonicalize path: {}", e)),
+        };
+
+        if !canonical.starts_with(canonical_root) {
+            return Err(format!(
+                "security error: path {:?} escapes repository root {:?}",
+                user_path, canonical_root
+            ));
+        }
+        return Ok(canonical);
+    }
+
+    if must_exist {
+        return Err(format!("file not found: {:?}", user_path));
+    }
+
+    // For non-existent files: lexical component check
+    let mut depth: isize = 0;
+    for c in user_path.components() {
+        match c {
+            Component::ParentDir => {
+                depth -= 1;
+                if depth < 0 && !user_path.is_absolute() {
+                    return Err(format!(
+                        "security error: path {:?} escapes repository root",
+                        user_path
+                    ));
+                }
+            }
+            Component::Normal(_) => {
+                depth += 1;
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                // Absolute path: must check against canonical root
+            }
+            _ => {}
+        }
+    }
+
+    // Check closest existing ancestor for symlink escapes
+    let mut ancestor = candidate.as_path();
+    while !ancestor.exists() {
+        if let Some(parent) = ancestor.parent() {
+            ancestor = parent;
+        } else {
+            break;
+        }
+    }
+
+    if ancestor.exists() {
+        if let Ok(canonical_ancestor) = std::fs::canonicalize(ancestor) {
+            if !canonical_ancestor.starts_with(canonical_root) {
+                return Err("security error: ancestor path escapes repository root".to_string());
+            }
+        }
+    }
+
+    if candidate.is_absolute() && !candidate.starts_with(canonical_root) {
+        return Err(format!(
+            "security error: absolute path {:?} escapes repository root {:?}",
+            user_path, canonical_root
+        ));
+    }
+
+    Ok(candidate)
+}
+
 fn read_args(args: &serde_json::Value) -> Result<(PathBuf, Option<usize>, Option<usize>), String> {
     let path = args
         .get("path")
@@ -102,10 +200,19 @@ fn parse_paths(args: &serde_json::Value) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-fn handle_read(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option<String> {
-    let (path, offset, limit) = match read_args(args) {
+fn handle_read(
+    id: &str,
+    args: &serde_json::Value,
+    cache: &AstCache,
+    root: &Path,
+) -> Option<String> {
+    let (raw_path, offset, limit) = match read_args(args) {
         Ok(v) => v,
         Err(e) => return format_err(id, e),
+    };
+    let path = match resolve_contained_path(root, &raw_path, true) {
+        Ok(p) => p,
+        Err(e) => return format_err(id, format!("read error: {}", e)),
     };
     let options = ReaderOptions {
         mode: ReadMode::Auto,
@@ -148,20 +255,34 @@ fn handle_read(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option<S
     }
 }
 
-fn handle_search(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option<String> {
+fn handle_search(
+    id: &str,
+    args: &serde_json::Value,
+    cache: &AstCache,
+    root: &Path,
+) -> Option<String> {
     let pattern = match args.get("pattern").and_then(|v| v.as_str()) {
         Some(p) if !p.is_empty() => p,
         _ => return format_err(id, "search: missing pattern".to_string()),
     };
-    let mut paths = parse_paths(args);
-    if paths.is_empty() {
+    let mut raw_paths = parse_paths(args);
+    if raw_paths.is_empty() {
         if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
-            paths.push(PathBuf::from(p));
+            raw_paths.push(PathBuf::from(p));
         }
     }
-    if paths.is_empty() {
-        paths.push(PathBuf::from("."));
+    if raw_paths.is_empty() {
+        raw_paths.push(PathBuf::from("."));
     }
+
+    let mut paths = Vec::with_capacity(raw_paths.len());
+    for p in raw_paths {
+        match resolve_contained_path(root, &p, false) {
+            Ok(cp) => paths.push(cp),
+            Err(e) => return format_err(id, format!("search error: {}", e)),
+        }
+    }
+
     let kind = args
         .get("kind")
         .and_then(|v| v.as_str())
@@ -183,11 +304,25 @@ fn handle_search(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option
     }
 }
 
-fn handle_outline(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option<String> {
-    let paths = parse_paths(args);
-    if paths.is_empty() {
+fn handle_outline(
+    id: &str,
+    args: &serde_json::Value,
+    cache: &AstCache,
+    root: &Path,
+) -> Option<String> {
+    let raw_paths = parse_paths(args);
+    if raw_paths.is_empty() {
         return format_err(id, "outline: missing paths".to_string());
     }
+
+    let mut paths = Vec::with_capacity(raw_paths.len());
+    for p in raw_paths {
+        match resolve_contained_path(root, &p, false) {
+            Ok(cp) => paths.push(cp),
+            Err(e) => return format_err(id, format!("outline error: {}", e)),
+        }
+    }
+
     let options = OutlineOptions {
         depth: args
             .get("depth")
@@ -224,16 +359,34 @@ fn handle_outline(id: &str, args: &serde_json::Value, cache: &AstCache) -> Optio
     }
 }
 
-fn handle_impact(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option<String> {
-    let targets = parse_paths(args);
-    if targets.is_empty() {
+fn handle_impact(
+    id: &str,
+    args: &serde_json::Value,
+    cache: &AstCache,
+    root: &Path,
+) -> Option<String> {
+    let raw_targets = parse_paths(args);
+    if raw_targets.is_empty() {
         return format_err(id, "impact: missing files".to_string());
     }
-    let root = args
-        .get("root")
-        .and_then(|v| v.as_str())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+
+    let mut targets = Vec::with_capacity(raw_targets.len());
+    for t in raw_targets {
+        match resolve_contained_path(root, &t, false) {
+            Ok(ct) => targets.push(ct),
+            Err(e) => return format_err(id, format!("impact error: {}", e)),
+        }
+    }
+
+    // Enforce authoritative repository root; do not allow caller to bypass root
+    let impact_root = match args.get("root").and_then(|v| v.as_str()) {
+        Some(r) => match resolve_contained_path(root, Path::new(r), false) {
+            Ok(cr) => cr,
+            Err(e) => return format_err(id, format!("impact error: {}", e)),
+        },
+        None => root.to_path_buf(),
+    };
+
     let depth = args
         .get("depth")
         .and_then(|v| v.as_u64())
@@ -244,7 +397,7 @@ fn handle_impact(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option
         Some("out") => ImpactDirection::Out,
         _ => ImpactDirection::Both,
     };
-    match impact::analyze_impact(&targets, &root, depth, direction, cache) {
+    match impact::analyze_impact(&targets, &impact_root, depth, direction, cache) {
         Ok(results) => {
             let value: Vec<serde_json::Value> = results
                 .iter()
@@ -263,7 +416,7 @@ fn handle_impact(id: &str, args: &serde_json::Value, cache: &AstCache) -> Option
     }
 }
 
-fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
+fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<String> {
     match req.op.as_str() {
         "version" => format_ok(
             &req.id,
@@ -273,17 +426,24 @@ fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
             &req.id,
             serde_json::json!({ "healthy": true, "service": "fdx-native-daemon" }),
         ),
-        "read" => handle_read(&req.id, &req.args, cache),
-        "search" => handle_search(&req.id, &req.args, cache),
-        "outline" => handle_outline(&req.id, &req.args, cache),
-        "impact" => handle_impact(&req.id, &req.args, cache),
+        "read" => handle_read(&req.id, &req.args, cache, root),
+        "search" => handle_search(&req.id, &req.args, cache, root),
+        "outline" => handle_outline(&req.id, &req.args, cache, root),
+        "impact" => handle_impact(&req.id, &req.args, cache, root),
         other => format_err(&req.id, format!("FDX_METHOD_NOT_ALLOWED {}", other)),
     }
 }
 
 /// Run the resident server loop. Reads newline-delimited JSON from stdin and
 /// writes responses to stdout until EOF using a bounded worker pool.
-pub fn run() {
+pub fn run(root_opt: Option<PathBuf>) {
+    let raw_root = root_opt.unwrap_or_else(|| PathBuf::from("."));
+    let canonical_root = match std::fs::canonicalize(&raw_root) {
+        Ok(p) => p,
+        Err(_) => std::env::current_dir().unwrap_or(raw_root),
+    };
+    let root = Arc::new(canonical_root);
+
     let stdin = std::io::stdin();
     let mut reader = std::io::BufReader::new(stdin.lock());
     let (resp_tx, resp_rx) = sync_channel::<String>(MAX_QUEUED_REQUESTS);
@@ -308,6 +468,7 @@ pub fn run() {
         let req_rx_clone = Arc::clone(&req_rx);
         let resp_tx_clone = resp_tx.clone();
         let cache_clone = Arc::clone(&cache);
+        let root_clone = Arc::clone(&root);
         let handle = thread::spawn(move || {
             loop {
                 let req = {
@@ -320,7 +481,7 @@ pub fn run() {
                         None => break,
                     }
                 };
-                if let Some(resp) = process_request(req, &cache_clone) {
+                if let Some(resp) = process_request(req, &cache_clone, &root_clone) {
                     if resp_tx_clone.send(resp).is_err() {
                         break;
                     }
@@ -359,4 +520,65 @@ pub fn run() {
         let _ = w.join();
     }
     let _ = writer_handle.join();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{self, File};
+    use std::io::Write;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_resolve_contained_path_success() {
+        let dir = tempdir().unwrap();
+        let canonical_root = fs::canonicalize(dir.path()).unwrap();
+        let file_path = canonical_root.join("hello.txt");
+        let mut f = File::create(&file_path).unwrap();
+        writeln!(f, "hello world").unwrap();
+
+        let resolved =
+            resolve_contained_path(&canonical_root, Path::new("hello.txt"), true).unwrap();
+        assert_eq!(resolved, file_path);
+    }
+
+    #[test]
+    fn test_resolve_contained_path_rejects_escape() {
+        let dir = tempdir().unwrap();
+        let canonical_root = fs::canonicalize(dir.path()).unwrap();
+
+        assert!(resolve_contained_path(&canonical_root, Path::new("../outside"), false).is_err());
+        assert!(
+            resolve_contained_path(&canonical_root, Path::new("../../outside"), false).is_err()
+        );
+        assert!(
+            resolve_contained_path(&canonical_root, Path::new("a/../../../../outside"), false)
+                .is_err()
+        );
+        assert!(resolve_contained_path(&canonical_root, Path::new("/etc/passwd"), false).is_err());
+    }
+
+    #[test]
+    fn test_resolve_contained_path_symlink_escape() {
+        let repo_dir = tempdir().unwrap();
+        let outside_dir = tempdir().unwrap();
+
+        let canonical_root = fs::canonicalize(repo_dir.path()).unwrap();
+        let canonical_outside = fs::canonicalize(outside_dir.path()).unwrap();
+
+        let outside_secret = canonical_outside.join("secret.txt");
+        File::create(&outside_secret).unwrap();
+
+        let symlink_path = canonical_root.join("symlink_to_outside.txt");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside_secret, &symlink_path).unwrap();
+            assert!(resolve_contained_path(
+                &canonical_root,
+                Path::new("symlink_to_outside.txt"),
+                true
+            )
+            .is_err());
+        }
+    }
 }
