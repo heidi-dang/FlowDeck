@@ -364,19 +364,13 @@ pub fn run_bounded_process(
     max_stderr_bytes: u64,
     stdout_sink: Option<&Path>,
 ) -> Result<ExecOutcome, ExecFailure> {
-    #[cfg(windows)]
-    let mut command = {
-        let ext = exec.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat") {
-            let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
-            let mut cmd = Command::new(comspec);
-            cmd.arg("/D").arg("/C").arg(exec);
-            cmd
-        } else {
-            Command::new(exec)
-        }
-    };
-    #[cfg(not(windows))]
+    if is_command_shim(exec) {
+        return Err(ExecFailure::Spawn(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unsupported command shim (.cmd/.bat); native executable required",
+        )));
+    }
+
     let mut command = Command::new(exec);
 
     command
@@ -638,44 +632,118 @@ pub fn fingerprint_config_files(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Resolve an executable name against PATH.
-pub fn find_executable(name: &str) -> Option<PathBuf> {
-    let path_var = std::env::var_os("PATH")?;
-    #[cfg(windows)]
-    let pathext_var = std::env::var_os("PATHEXT")
-        .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
-    #[cfg(windows)]
-    let extensions: Vec<String> = std::env::split_paths(&pathext_var)
-        .filter_map(|p| p.to_str().map(|s| s.to_string()))
-        .collect();
+/// Classification of an executable resolution candidate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutableResolution {
+    /// Native executable (.exe/.com on Windows, executable file on Unix).
+    Native(PathBuf),
+    /// Command script shim (.cmd/.bat on Windows), which is not executed automatically.
+    CommandShim(PathBuf),
+    /// Not found.
+    NotFound,
+}
 
-    for dir in std::env::split_paths(&path_var) {
-        #[cfg(windows)]
-        {
+impl ExecutableResolution {
+    pub fn into_native(self) -> Option<PathBuf> {
+        match self {
+            ExecutableResolution::Native(p) => Some(p),
+            _ => None,
+        }
+    }
+}
+
+/// Check if a path refers to a Windows command script shim (.cmd or .bat).
+pub fn is_command_shim(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat")
+}
+
+/// Resolve an executable name against PATH with classification.
+pub fn find_executable_resolved(name: &str) -> ExecutableResolution {
+    let path_var = match std::env::var_os("PATH") {
+        Some(v) => v,
+        None => return ExecutableResolution::NotFound,
+    };
+    #[cfg(windows)]
+    {
+        let pathext_var = std::env::var_os("PATHEXT")
+            .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+        let extensions: Vec<String> = std::env::split_paths(&pathext_var)
+            .filter_map(|p| p.to_str().map(|s| s.to_string()))
+            .collect();
+
+        let mut first_shim: Option<PathBuf> = None;
+
+        for dir in std::env::split_paths(&path_var) {
             let candidate = dir.join(name);
             if is_executable_file(&candidate) {
-                return Some(candidate);
+                if is_command_shim(&candidate) {
+                    if first_shim.is_none() {
+                        first_shim = Some(candidate);
+                    }
+                } else {
+                    return ExecutableResolution::Native(candidate);
+                }
             }
             for ext in &extensions {
                 let ext_clean = ext.trim_start_matches('.');
                 let with_ext = dir.join(format!("{}.{}", name, ext_clean));
                 if is_executable_file(&with_ext) {
-                    return Some(with_ext);
+                    if is_command_shim(&with_ext) {
+                        if first_shim.is_none() {
+                            first_shim = Some(with_ext);
+                        }
+                    } else {
+                        return ExecutableResolution::Native(with_ext);
+                    }
                 }
             }
         }
-        #[cfg(not(windows))]
-        {
-            let candidate = dir.join(name);
-            if is_executable_file(&candidate) {
-                return Some(candidate);
-            }
+
+        if let Some(shim) = first_shim {
+            return ExecutableResolution::CommandShim(shim);
         }
     }
-    None
+    #[cfg(not(windows))]
+    {
+        let mut first_shim: Option<PathBuf> = None;
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(name);
+            if is_executable_file(&candidate) {
+                if is_command_shim(&candidate) {
+                    if first_shim.is_none() {
+                        first_shim = Some(candidate);
+                    }
+                } else {
+                    return ExecutableResolution::Native(candidate);
+                }
+            }
+            for ext in &["exe", "com", "bat", "cmd"] {
+                let with_ext = dir.join(format!("{}.{}", name, ext));
+                if with_ext.is_file() {
+                    if is_command_shim(&with_ext) {
+                        if first_shim.is_none() {
+                            first_shim = Some(with_ext);
+                        }
+                    } else if is_executable_file(&with_ext) {
+                        return ExecutableResolution::Native(with_ext);
+                    }
+                }
+            }
+        }
+        if let Some(shim) = first_shim {
+            return ExecutableResolution::CommandShim(shim);
+        }
+    }
+    ExecutableResolution::NotFound
 }
 
-fn is_executable_file(p: &Path) -> bool {
+/// Resolve a native executable name against PATH.
+pub fn find_executable(name: &str) -> Option<PathBuf> {
+    find_executable_resolved(name).into_native()
+}
+
+pub fn is_executable_file(p: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
