@@ -98,6 +98,29 @@ async function runBenchmark() {
     }
   }
 
+  // Verify harness script itself has NO working-tree or staged differences relative to HEAD
+  const unstagedHarnessDiff = execFileSync(
+    "git",
+    ["diff", "--name-only", "HEAD", "--", "scripts/benchmark-fdx-vci-m4.mjs"],
+    { cwd: ROOT, encoding: "utf8" }
+  ).trim();
+  if (unstagedHarnessDiff) {
+    throw new Error(
+      "Benchmark harness differs from committed HEAD; commit harness before execution"
+    );
+  }
+
+  const stagedHarnessDiff = execFileSync(
+    "git",
+    ["diff", "--cached", "--name-only", "--", "scripts/benchmark-fdx-vci-m4.mjs"],
+    { cwd: ROOT, encoding: "utf8" }
+  ).trim();
+  if (stagedHarnessDiff) {
+    throw new Error(
+      "Benchmark harness has staged uncommitted changes; commit harness before execution"
+    );
+  }
+
   const harnessSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
   const gitBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
   const binaryPath = getReleaseBinaryPath();
