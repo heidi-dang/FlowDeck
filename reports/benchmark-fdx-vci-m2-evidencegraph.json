@@ -1,37 +1,38 @@
 {
   "schemaVersion": 1,
-  "timestamp": "2026-08-22T02:21:09.609Z",
+  "timestamp": "2026-08-22T02:22:49.110Z",
   "git": {
-    "measuredSha": "e8c5626c3221a63cc6ecf65f8423a51cb6c25845",
+    "sourceCommitSha": "319c4f1981ccd50b2e026babf86523f739198bf0",
+    "measuredSha": "319c4f1981ccd50b2e026babf86523f739198bf0",
     "branch": "feat/fdx-verifiable-change-intelligence"
   },
   "metrics": {
-    "initialIndexMs": 153.7,
+    "initialIndexMs": 150.58,
     "warmStatusMs": {
       "count": 10,
-      "min": 17,
-      "max": 20.57,
-      "mean": 17.99,
-      "median": 17.65,
-      "p95": 20.57
+      "min": 16.6,
+      "max": 17.73,
+      "mean": 17.3,
+      "median": 17.54,
+      "p95": 17.73
     },
     "unchangedRefreshMs": {
       "count": 5,
-      "min": 68.64,
-      "max": 77.91,
-      "mean": 72.06,
-      "median": 70.86,
-      "p95": 77.91
+      "min": 68.04,
+      "max": 76.82,
+      "mean": 71.13,
+      "median": 69.62,
+      "p95": 76.82
     },
     "singleFileRefreshMs": {
       "count": 5,
-      "min": 68.06,
-      "max": 70.36,
-      "mean": 68.88,
-      "median": 68.79,
-      "p95": 70.36
+      "min": 67.6,
+      "max": 70.56,
+      "mean": 68.46,
+      "median": 67.98,
+      "p95": 70.56
     },
-    "deleteFileRefreshMs": 70.62,
+    "deleteFileRefreshMs": 67.93,
     "dbSizeBytes": 294912,
     "counts": {
       "files": 1164,
