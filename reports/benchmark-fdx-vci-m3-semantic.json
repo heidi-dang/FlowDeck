@@ -1,65 +1,63 @@
 {
   "benchmark": "fdx-vci-m3-semantic",
-  "source_sha": "b0004f99297534a9eec5ee1bc029cf14c37155f0",
+  "source_sha": "ab673e043263fbc045b86dc7cb803f53421d721b",
   "branch": "feat/fdx-verifiable-change-intelligence",
-  "date": "2026-08-22T04:44:59.315Z",
-  "methodology": "FDX overhead measured with a deterministic fake provider (fixture copy); provider execution time is excluded from FDX-only latency; release build.",
+  "date": "2026-08-22T07:01:59.808Z",
+  "profile": "release",
+  "methodology": "FDX overhead measured with a deterministic fake provider (fixture copy); provider execution time is excluded from FDX-only latency; release build; effective freshness evaluated at read-time.",
   "results": {
     "semantic_refresh_with_fake_provider_ms": {
-      "count": 6,
-      "min": 17,
-      "max": 19,
-      "mean": 18.33,
-      "median": 19,
-      "p95": 19
+      "count": 10,
+      "min": 18.26,
+      "max": 25.81,
+      "mean": 24.51,
+      "median": 25.13,
+      "p95": 25.81
     },
     "semantic_status_provider_diagnostics_ms": {
       "count": 15,
-      "min": 7,
-      "max": 8,
-      "mean": 7.2,
-      "median": 7,
-      "p95": 8
+      "min": 20.84,
+      "max": 25.48,
+      "mean": 23,
+      "median": 22.42,
+      "p95": 25.48
     },
     "scip_decode_small_fixture_484b_ms": {
       "count": 15,
-      "min": 7,
-      "max": 8,
-      "mean": 7.07,
-      "median": 7,
-      "p95": 8
+      "min": 2.76,
+      "max": 3.78,
+      "mean": 2.97,
+      "median": 2.94,
+      "p95": 3.78
     },
     "scip_decode_medium_fixture_16kb_ms": {
       "count": 15,
-      "min": 6,
-      "max": 7,
-      "mean": 6.13,
-      "median": 6,
-      "p95": 7
+      "min": 2.83,
+      "max": 3.27,
+      "mean": 2.98,
+      "median": 2.97,
+      "p95": 3.27
     },
     "warm_semantic_reference_query_ms": {
       "count": 15,
-      "min": 7,
-      "max": 10,
-      "mean": 7.73,
-      "median": 7,
-      "p95": 10
+      "min": 21.92,
+      "max": 25.94,
+      "mean": 25.05,
+      "median": 25.58,
+      "p95": 25.94
     },
     "treesitter_fallback_reference_query_ms": {
       "count": 15,
-      "min": 7,
-      "max": 11,
-      "mean": 8.13,
-      "median": 7,
-      "p95": 11
+      "min": 13.99,
+      "max": 25.74,
+      "mean": 20.38,
+      "median": 22.34,
+      "p95": 25.74
     }
   },
   "db_bytes_before_refresh": 90112,
   "db_bytes_after_refresh": 90112,
   "db_size_growth_bytes": 0,
-  "provider_execution_time": "not measured: no real indexer in this environment; fake-provider runtime dominates refresh samples and is not FDX latency",
-  "notes": [
-    "provider discovery and health checks are included in semantic_status samples",
-    "decode timings are for the dependency-free bounded protobuf decoder"
-  ]
+  "cache_size_after_benchmark_bytes": 0,
+  "provider_execution_time": "not measured: no real indexer in this environment; fake-provider runtime dominates refresh samples and is not FDX latency"
 }
