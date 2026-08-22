@@ -23,6 +23,14 @@ pub enum UncertaintyReason {
     GraphCorrupt(String),
     GraphUnavailable(String),
     UnknownGraphRelation(String),
+    BuildProviderMissing(String),
+    BuildProviderStale(String),
+    BuildProviderFailed(String),
+    MalformedConfig(String),
+    ConfigCycleDetected(String),
+    UnknownWorkspaceMembership(String),
+    DynamicConfigExpression(String),
+    BuildLimitReached(String),
 }
 
 impl UncertaintyReason {
@@ -45,6 +53,14 @@ impl UncertaintyReason {
             Self::GraphCorrupt(_) => "graph_corrupt",
             Self::GraphUnavailable(_) => "graph_unavailable",
             Self::UnknownGraphRelation(_) => "unknown_graph_relation",
+            Self::BuildProviderMissing(_) => "build_provider_missing",
+            Self::BuildProviderStale(_) => "build_provider_stale",
+            Self::BuildProviderFailed(_) => "build_provider_failed",
+            Self::MalformedConfig(_) => "malformed_config",
+            Self::ConfigCycleDetected(_) => "config_cycle_detected",
+            Self::UnknownWorkspaceMembership(_) => "unknown_workspace_membership",
+            Self::DynamicConfigExpression(_) => "dynamic_config_expression",
+            Self::BuildLimitReached(_) => "build_limit_reached",
         }
     }
 
@@ -54,10 +70,20 @@ impl UncertaintyReason {
             | Self::NodeLimitReached { .. }
             | Self::EdgeLimitReached { .. }
             | Self::ProviderStale(_)
+            | Self::BuildProviderStale(_)
             | Self::FallbackUsed(_)
             | Self::UnsupportedLanguage(_)
             | Self::GraphAbsent(_)
-            | Self::UnknownGraphRelation(_) => AssuranceLevel::Degraded,
+            | Self::UnknownGraphRelation(_)
+            | Self::MalformedConfig(_)
+            | Self::ConfigCycleDetected(_)
+            | Self::UnknownWorkspaceMembership(_)
+            | Self::DynamicConfigExpression(_)
+            | Self::BuildLimitReached(_) => AssuranceLevel::Degraded,
+
+            Self::BuildProviderMissing(_) | Self::BuildProviderFailed(_) => {
+                AssuranceLevel::Conservative
+            }
 
             Self::ProviderMissing(_)
             | Self::ProviderFailed(_)

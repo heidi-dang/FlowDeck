@@ -98,6 +98,25 @@ pub fn find_node_ids_for_symbol(
     }
 }
 
+/// Find all build, config, and package nodes associated with a file path.
+pub fn find_build_nodes_for_file(conn: &Connection, canonical_path: &str) -> Vec<String> {
+    let mut matching = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT stable_id FROM nodes WHERE canonical_path = ?1 AND kind IN ('config', 'package', 'build_target', 'workspace')"
+    ) {
+        if let Ok(rows) = stmt.query_map(rusqlite::params![canonical_path], |r| r.get(0)) {
+            for id in rows.flatten() {
+                matching.push(id);
+            }
+        }
+    }
+    let config_id = format!("config:{}", canonical_path);
+    if !matching.contains(&config_id) {
+        matching.push(config_id);
+    }
+    matching
+}
+
 /// Find all symbol nodes defined in a file from previous index (for deletions).
 pub fn find_prior_symbol_nodes_for_file(conn: &Connection, canonical_path: &str) -> Vec<String> {
     let mut node_ids = Vec::new();
@@ -202,6 +221,20 @@ pub fn generate_impact_seeds(
                     widening_reason: None,
                 });
             }
+        }
+    }
+
+    if let Some(c) = conn {
+        for b_node in find_build_nodes_for_file(c, &change.file) {
+            seeds.push(ImpactSeed {
+                seed_node: b_node,
+                canonical_path: change.file.clone(),
+                change_id: change.id.clone(),
+                symbol: None,
+                strength: seed_strength,
+                assurance: seed_assurance,
+                widening_reason: None,
+            });
         }
     }
 

@@ -1,3 +1,4 @@
+pub mod build;
 pub mod change;
 pub mod compatibility;
 pub mod db;

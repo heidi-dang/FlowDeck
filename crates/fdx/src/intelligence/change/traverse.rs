@@ -74,6 +74,8 @@ fn parse_node_kind(kind_str: &str) -> NodeKind {
         "config" => NodeKind::Config,
         "generated_artifact" => NodeKind::GeneratedArtifact,
         "external_dependency" => NodeKind::ExternalDependency,
+        "workspace" => NodeKind::Workspace,
+        "build_target" => NodeKind::BuildTarget,
         _ => NodeKind::File,
     }
 }
@@ -92,6 +94,11 @@ pub fn parse_edge_kind(kind_str: &str) -> Option<EdgeKind> {
         "generates" => Some(EdgeKind::Generates),
         "tests" => Some(EdgeKind::Tests),
         "orders_before" => Some(EdgeKind::OrdersBefore),
+        "contains" => Some(EdgeKind::Contains),
+        "depends_on" => Some(EdgeKind::DependsOn),
+        "belongs_to" => Some(EdgeKind::BelongsTo),
+        "reads" => Some(EdgeKind::Reads),
+        "uses" => Some(EdgeKind::Uses),
         _ => None,
     }
 }
@@ -625,6 +632,54 @@ pub fn analyze_impact_v2(
                 )));
             }
         }
+
+        let build_states =
+            crate::intelligence::build::freshness::evaluate_build_freshness(repo_root)
+                .unwrap_or_default();
+        for bst in &build_states {
+            if bst.freshness != ProviderFreshness::Fresh {
+                uncertainties.push(UncertaintyReason::BuildProviderStale(format!(
+                    "Build provider {} is effectively stale",
+                    bst.provider_id
+                )));
+            } else if bst.health == ProviderHealth::Failed {
+                uncertainties.push(UncertaintyReason::BuildProviderFailed(format!(
+                    "Build provider {} failed",
+                    bst.provider_id
+                )));
+            } else if bst.health == ProviderHealth::Misconfigured {
+                uncertainties.push(UncertaintyReason::BuildProviderMissing(format!(
+                    "Build provider {} is misconfigured",
+                    bst.provider_id
+                )));
+            }
+        }
+
+        for unc in crate::intelligence::build::freshness::collect_build_uncertainties(repo_root) {
+            match unc.code.as_str() {
+                "malformed_package_json" | "malformed_tsconfig" | "malformed_cargo_toml" => {
+                    uncertainties.push(UncertaintyReason::MalformedConfig(format!(
+                        "{}: {}",
+                        unc.scope.as_str(),
+                        unc.reason
+                    )));
+                }
+                "config_cycle_detected" => {
+                    uncertainties.push(UncertaintyReason::ConfigCycleDetected(format!(
+                        "{}: {}",
+                        unc.scope.as_str(),
+                        unc.reason
+                    )));
+                }
+                _ => {
+                    uncertainties.push(UncertaintyReason::BuildProviderFailed(format!(
+                        "{}: {}",
+                        unc.scope.as_str(),
+                        unc.reason
+                    )));
+                }
+            }
+        }
     }
 
     let mut candidate_files =
@@ -790,6 +845,12 @@ pub fn analyze_impact_v2(
                     )));
                     node_needs_widening = true;
                 }
+            } else if edge.provider == "build_native" {
+                if edge.stale {
+                    node_needs_widening = true;
+                } else {
+                    is_edge_fresh = true;
+                }
             } else {
                 // Built-in structural or lexical edge
                 if edge.stale {
@@ -905,6 +966,14 @@ pub fn analyze_impact_v2(
             } else if let Some(stripped) = next_node_id.strip_prefix("sym:") {
                 let parts: Vec<&str> = stripped.splitn(2, ':').collect();
                 (parts[0].to_string(), NodeKind::Symbol)
+            } else if let Some(stripped) = next_node_id.strip_prefix("config:") {
+                (stripped.to_string(), NodeKind::Config)
+            } else if let Some(stripped) = next_node_id.strip_prefix("pkg:") {
+                (stripped.to_string(), NodeKind::Package)
+            } else if let Some(stripped) = next_node_id.strip_prefix("build:") {
+                (stripped.to_string(), NodeKind::BuildTarget)
+            } else if let Some(stripped) = next_node_id.strip_prefix("workspace:") {
+                (stripped.to_string(), NodeKind::Workspace)
             } else {
                 (next_node_id.clone(), NodeKind::File)
             };
@@ -1035,9 +1104,16 @@ pub fn explain_why_target(
     depth_limit: Option<usize>,
 ) -> Result<Option<ImpactedTarget>, TraverseError> {
     let result = analyze_impact_v2(repo_root, base_ref, head_ref, depth_limit)?;
-    let found = result
-        .impacted
-        .into_iter()
-        .find(|t| t.target == target || t.target.ends_with(target) || target.ends_with(&t.target));
+    let clean_target = target
+        .trim_start_matches("config:")
+        .trim_start_matches("pkg:")
+        .trim_start_matches("build:")
+        .trim_start_matches("file:");
+    let found = result.impacted.into_iter().find(|t| {
+        t.target == target
+            || t.target == clean_target
+            || t.target.ends_with(clean_target)
+            || clean_target.ends_with(&t.target)
+    });
     Ok(found)
 }

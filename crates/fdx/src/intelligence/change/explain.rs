@@ -64,6 +64,11 @@ fn format_edge_verb(kind: EdgeKind) -> &'static str {
         EdgeKind::Generates => "generates",
         EdgeKind::Tests => "tests",
         EdgeKind::OrdersBefore => "is ordered before",
+        EdgeKind::Contains => "contains",
+        EdgeKind::DependsOn => "depends on",
+        EdgeKind::BelongsTo => "belongs to",
+        EdgeKind::Reads => "reads",
+        EdgeKind::Uses => "uses",
     }
 }
 
