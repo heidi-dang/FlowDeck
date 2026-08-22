@@ -205,9 +205,11 @@ impl EvidenceDatabase {
     ) -> Result<crate::intelligence::schema::SchemaVersion, DatabaseError> {
         // MAX: the table accumulates one row per applied migration step; the
         // effective version is the highest applied step.
-        let version: u32 = self
-            .conn
-            .query_row("SELECT MAX(version) FROM schema_metadata", [], |row| row.get(0))?;
+        let version: u32 =
+            self.conn
+                .query_row("SELECT MAX(version) FROM schema_metadata", [], |row| {
+                    row.get(0)
+                })?;
         Ok(crate::intelligence::schema::SchemaVersion { version })
     }
 }
