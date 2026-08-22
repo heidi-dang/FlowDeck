@@ -200,11 +200,11 @@ pub fn evaluate_effective_state(
     persisted: &ProviderState,
 ) -> ProviderState {
     let mut effective = persisted.clone();
-    let current_health = provider.health(repo_root);
+    let current_health = provider.passive_health(repo_root);
     effective.health = current_health;
 
     if persisted.freshness == ProviderFreshness::Fresh {
-        match provider.fingerprint(repo_root) {
+        match provider.passive_fingerprint(repo_root, Some(&persisted.identity.provider_version)) {
             Ok(current_fp) => {
                 if current_fp.digest != persisted.fingerprint.digest
                     || current_health != ProviderHealth::Available
@@ -334,15 +334,16 @@ pub fn reconcile_provider_freshness(
         let Some(provider) = registry.by_id(state.provider_id()) else {
             continue;
         };
-        let fingerprint = match provider.fingerprint(repo_root) {
-            Ok(f) => f,
-            Err(_) => {
-                // Provider no longer resolvable (executable gone): stale.
-                mark_stale_by_id(db, state.provider_id())?;
-                changed += 1;
-                continue;
-            }
-        };
+        let fingerprint =
+            match provider.passive_fingerprint(repo_root, Some(&state.identity.provider_version)) {
+                Ok(f) => f,
+                Err(_) => {
+                    // Provider no longer resolvable (executable gone): stale.
+                    mark_stale_by_id(db, state.provider_id())?;
+                    changed += 1;
+                    continue;
+                }
+            };
         if fingerprint.digest != state.fingerprint.digest {
             mark_stale_by_id(db, state.provider_id())?;
             changed += 1;

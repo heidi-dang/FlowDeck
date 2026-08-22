@@ -59,6 +59,7 @@ fn seed_old_provider_evidence(repo: &Path, provider_fingerprint: &str) {
             symbol_identity: Some("foo".to_string()),
             package_identity: None,
             metadata: None,
+            source_identity: None,
         })
         .unwrap();
         tx.insert_edge(&GraphEdge {
@@ -189,6 +190,7 @@ fn test_selection_policy_change_keeps_semantic_evidence() {
             symbol_identity: Some("foo".to_string()),
             package_identity: None,
             metadata: None,
+            source_identity: None,
         })
         .unwrap();
         tx.insert_edge(&GraphEdge {

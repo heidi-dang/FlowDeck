@@ -139,22 +139,16 @@ fn refresh_provider_impl(
 ) -> Result<IngestReport, IngestError> {
     let mut db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite)?;
     let scope = provider.scope(repo_root);
-    let fingerprint = match provider.fingerprint(repo_root) {
+    let fingerprint = match provider.active_fingerprint(repo_root) {
         Ok(f) => f,
         Err(e) => {
-            let persisted = load_or_default_state(
-                &db,
-                provider.id(),
-                scope.clone(),
-                fingerprint_default(provider),
-            );
-            let failed_state = persisted_with_failure(
-                persisted,
-                provider.id(),
-                scope,
-                fingerprint_default(provider),
-                &e,
-            );
+            let default_fp = provider
+                .passive_fingerprint(repo_root, None)
+                .unwrap_or_else(|_| fingerprint_default(provider));
+            let persisted =
+                load_or_default_state(&db, provider.id(), scope.clone(), default_fp.clone());
+            let failed_state =
+                persisted_with_failure(persisted, provider.id(), scope, default_fp, &e);
             let tx = TransactionalGraph::new(&mut db.conn)?;
             state::upsert_provider_state(&tx, &failed_state)?;
             tx.commit()?;
@@ -199,7 +193,7 @@ fn refresh_provider_impl(
         });
     }
 
-    match provider.health(repo_root) {
+    match provider.passive_health(repo_root) {
         ProviderHealth::Missing => {
             let failed_state = persisted_with_failure(
                 persisted,
@@ -429,6 +423,7 @@ fn ingest_scip_index_impl(
             provider: provider.id().to_string(),
             provider_fingerprint: fingerprint.digest.clone(),
             generation: new_generation,
+            source_identity: Some(p.canonical.clone()),
             source_hash: Some(p.source_hash.clone()),
         };
         semantic_nodes.push(node);
@@ -460,6 +455,7 @@ fn ingest_scip_index_impl(
                 provider: provider.id().to_string(),
                 provider_fingerprint: fingerprint.digest.clone(),
                 generation: new_generation,
+                source_identity: Some(p.canonical.clone()),
                 source_hash: Some(p.source_hash.clone()),
             });
             if let Some(pkg) = package_id {
@@ -541,13 +537,14 @@ fn ingest_scip_index_impl(
                 semantic_nodes.push(SemanticNode {
                     stable_id: node_id.clone(),
                     kind: NodeKind::Symbol,
-                    canonical_path: Some(def_canon),
+                    canonical_path: Some(def_canon.clone()),
                     symbol_identity: Some(occ.symbol.clone()),
                     package_identity: package_id.clone(),
                     metadata: None,
                     provider: provider.id().to_string(),
                     provider_fingerprint: fingerprint.digest.clone(),
                     generation: new_generation,
+                    source_identity: Some(def_canon),
                     source_hash: Some(def_hash),
                 });
                 if let Some(pkg) = package_id {
@@ -847,6 +844,7 @@ fn ensure_package_node(
             provider: provider.id().to_string(),
             provider_fingerprint: fingerprint.digest.clone(),
             generation,
+            source_identity: Some(format!("provider-scope:{}:{}", provider.id(), pkg)),
             source_hash: Some(output_digest.to_string()),
         });
     }

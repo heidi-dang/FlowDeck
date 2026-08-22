@@ -114,23 +114,7 @@ impl SemanticProvider for ScipRustProvider {
         }
     }
 
-    fn fingerprint(&self, repo_root: &Path) -> Result<ProviderFingerprint, SemanticProviderError> {
-        let (exec, _prefix) = self
-            .invocation()
-            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
-        let version = self.version(repo_root)?;
-        let config_files: Vec<&Path> = CONFIG_FILES.iter().map(Path::new).collect();
-        let config_fingerprint = fingerprint_config_files(repo_root, &config_files)?;
-        Ok(ProviderFingerprint::compute(
-            &version,
-            &exec.to_string_lossy(),
-            SCIP_SCHEMA_VERSION,
-            None,
-            &config_fingerprint,
-        ))
-    }
-
-    fn health(&self, repo_root: &Path) -> ProviderHealth {
+    fn passive_health(&self, repo_root: &Path) -> ProviderHealth {
         if !self.workspace_has_rust_sources(repo_root) {
             return ProviderHealth::Unsupported;
         }
@@ -138,6 +122,55 @@ impl SemanticProvider for ScipRustProvider {
             Some(_) => ProviderHealth::Available,
             None => ProviderHealth::Missing,
         }
+    }
+
+    fn passive_fingerprint(
+        &self,
+        repo_root: &Path,
+        persisted_version: Option<&str>,
+    ) -> Result<ProviderFingerprint, SemanticProviderError> {
+        let (exec, _prefix) = self
+            .invocation()
+            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
+        let exec_identity = crate::intelligence::semantic::provider::executable_content_digest(
+            &exec,
+        )
+        .map_err(|e| SemanticProviderError::Failed(format!("cannot hash executable: {}", e)))?;
+        let version = persisted_version.unwrap_or("");
+        let config_files: Vec<&Path> = CONFIG_FILES.iter().map(Path::new).collect();
+        let config_fingerprint = fingerprint_config_files(repo_root, &config_files)?;
+        Ok(ProviderFingerprint::compute(
+            version,
+            &exec_identity,
+            SCIP_SCHEMA_VERSION,
+            None,
+            &config_fingerprint,
+        ))
+    }
+
+    fn active_fingerprint(
+        &self,
+        repo_root: &Path,
+    ) -> Result<ProviderFingerprint, SemanticProviderError> {
+        let (exec, prefix) = self
+            .invocation()
+            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
+        let exec_identity = crate::intelligence::semantic::provider::executable_content_digest(
+            &exec,
+        )
+        .map_err(|e| SemanticProviderError::Failed(format!("cannot hash executable: {}", e)))?;
+        let version = probe_version(&exec, &prefix).ok_or_else(|| {
+            SemanticProviderError::Failed("cannot probe rust SCIP provider version".to_string())
+        })?;
+        let config_files: Vec<&Path> = CONFIG_FILES.iter().map(Path::new).collect();
+        let config_fingerprint = fingerprint_config_files(repo_root, &config_files)?;
+        Ok(ProviderFingerprint::compute(
+            &version,
+            &exec_identity,
+            SCIP_SCHEMA_VERSION,
+            None,
+            &config_fingerprint,
+        ))
     }
 
     fn discover(
@@ -185,18 +218,37 @@ impl SemanticProvider for ScipRustProvider {
         let (exec, mut prefix) = self
             .invocation()
             .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
-        prefix.push("--output".to_string());
-        prefix.push(request.output_path.to_string_lossy().into_owned());
+        let help_text =
+            crate::intelligence::semantic::scip::probe_help(&exec, &prefix).unwrap_or_default();
+        let supports_output_flag = help_text.contains("--output");
 
-        let outcome = run_bounded_process(
-            &exec,
-            &prefix,
-            &request.repo_root,
-            request.time_limit,
-            request.max_output_bytes,
-            request.max_stderr_bytes,
-        )
-        .map_err(map_exec_failure)?;
+        let outcome = if supports_output_flag {
+            prefix.push("--output".to_string());
+            prefix.push(request.output_path.to_string_lossy().into_owned());
+            run_bounded_process(
+                &exec,
+                &prefix,
+                &request.repo_root,
+                request.time_limit,
+                request.max_output_bytes,
+                request.max_stderr_bytes,
+                None,
+            )
+            .map_err(map_exec_failure)?
+        } else {
+            // Stdout streaming mode (e.g. rust-analyzer scip .)
+            prefix.push(request.repo_root.to_string_lossy().into_owned());
+            run_bounded_process(
+                &exec,
+                &prefix,
+                &request.repo_root,
+                request.time_limit,
+                request.max_output_bytes,
+                request.max_stderr_bytes,
+                Some(&request.output_path),
+            )
+            .map_err(map_exec_failure)?
+        };
 
         if outcome.exit_code != Some(0) {
             return Err(SemanticProviderError::Failed(format!(
@@ -300,7 +352,7 @@ mod tests {
             let discovery = p.discover(dir.path()).unwrap();
             assert!(!discovery.supported);
             assert!(discovery.executable.is_none());
-            assert_eq!(p.health(dir.path()), ProviderHealth::Missing);
+            assert_eq!(p.passive_health(dir.path()), ProviderHealth::Missing);
         }
     }
 
@@ -315,7 +367,7 @@ mod tests {
         )
         .unwrap();
         let p = ScipRustProvider::new();
-        assert_eq!(p.health(dir.path()), ProviderHealth::Unsupported);
+        assert_eq!(p.passive_health(dir.path()), ProviderHealth::Unsupported);
         let d = p.discover(dir.path()).unwrap();
         assert!(d.reasons.iter().any(|r| r.contains("no Rust")));
     }
@@ -335,12 +387,12 @@ version = \"0.1.0\"
         .unwrap();
         let p = ScipRustProvider::new();
         if p.invocation().is_none() {
-            let err = p.fingerprint(dir.path()).unwrap_err();
+            let err = p.active_fingerprint(dir.path()).unwrap_err();
             assert!(matches!(err, SemanticProviderError::Missing(_)));
             return;
         }
-        let a = p.fingerprint(dir.path()).unwrap();
-        let b = p.fingerprint(dir.path()).unwrap();
+        let a = p.passive_fingerprint(dir.path(), Some("0.1.0")).unwrap();
+        let b = p.passive_fingerprint(dir.path(), Some("0.1.0")).unwrap();
         assert_eq!(a, b);
         std::fs::write(
             dir.path().join("Cargo.toml"),
@@ -350,7 +402,7 @@ version = \"0.2.0\"
 ",
         )
         .unwrap();
-        let c = p.fingerprint(dir.path()).unwrap();
+        let c = p.passive_fingerprint(dir.path(), Some("0.1.0")).unwrap();
         assert_ne!(a.digest, c.digest);
     }
 }

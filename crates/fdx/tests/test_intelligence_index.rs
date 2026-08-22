@@ -30,6 +30,7 @@ fn test_transactional_insert_and_commit() {
         symbol_identity: None,
         package_identity: None,
         metadata: None,
+        source_identity: None,
     };
 
     let node2 = GraphNode {
@@ -39,6 +40,7 @@ fn test_transactional_insert_and_commit() {
         symbol_identity: None,
         package_identity: None,
         metadata: None,
+        source_identity: None,
     };
 
     let edge = GraphEdge {
@@ -145,6 +147,7 @@ fn test_foreign_key_cascade() {
         symbol_identity: None,
         package_identity: None,
         metadata: None,
+        source_identity: None,
     };
     let edge = GraphEdge {
         stable_id: "edge_a".to_string(),

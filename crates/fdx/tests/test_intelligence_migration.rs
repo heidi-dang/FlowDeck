@@ -18,9 +18,9 @@ fn test_synthetic_migration() {
             .unwrap();
     }
 
-    // Open ReadWrite -> should migrate 0 to the current schema version (3)
+    // Open ReadWrite -> should migrate 0 to the current schema version (4)
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 3);
+    assert_eq!(db.get_schema_version().unwrap().version, 4);
 
     // Legacy table should still exist
     let count: i32 = db
@@ -88,7 +88,7 @@ fn test_v1_to_v2_migration_preserves_data() {
     drop(conn);
 
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 3);
+    assert_eq!(db.get_schema_version().unwrap().version, 4);
     let files: i64 = db
         .conn
         .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
@@ -121,6 +121,50 @@ fn test_v1_to_v2_migration_preserves_data() {
         )
         .unwrap();
     assert_eq!(attempt_cols, 1, "v3 last_attempt_fingerprint column added");
+    let node_src_cols: i64 = db
+        .conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('nodes') WHERE name = 'source_identity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(node_src_cols, 1, "v4 nodes source_identity column added");
+}
+
+#[test]
+fn test_v3_to_v4_migration_adds_node_source_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo_root = dir.path();
+    let fdx_dir = repo_root.join(".fdx");
+    std::fs::create_dir_all(&fdx_dir).unwrap();
+    let db_path = fdx_dir.join("index.sqlite");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(fdx::intelligence::schema::INITIALIZE_SCHEMA_SQL)
+        .unwrap();
+    conn.execute_batch(fdx::intelligence::schema::MIGRATE_V1_TO_V2_SQL)
+        .unwrap();
+    conn.execute_batch(fdx::intelligence::schema::MIGRATE_V2_TO_V3_SQL)
+        .unwrap();
+    conn.pragma_update(None, "user_version", 3).unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_metadata (version) VALUES (3)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
+    assert_eq!(db.get_schema_version().unwrap().version, 4);
+    let count: i64 = db
+        .conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('nodes') WHERE name = 'source_identity'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "v4 nodes source_identity column created");
 }
 
 #[test]
@@ -144,7 +188,7 @@ fn test_v2_to_v3_migration_adds_attempt_columns() {
     drop(conn);
 
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 3);
+    assert_eq!(db.get_schema_version().unwrap().version, 4);
     let count: i64 = db
         .conn
         .query_row(
