@@ -71,6 +71,8 @@ impl UncertaintyReason {
             | Self::EdgeLimitReached { .. }
             | Self::ProviderStale(_)
             | Self::BuildProviderStale(_)
+            | Self::BuildProviderMissing(_)
+            | Self::BuildProviderFailed(_)
             | Self::FallbackUsed(_)
             | Self::UnsupportedLanguage(_)
             | Self::GraphAbsent(_)
@@ -80,10 +82,6 @@ impl UncertaintyReason {
             | Self::UnknownWorkspaceMembership(_)
             | Self::DynamicConfigExpression(_)
             | Self::BuildLimitReached(_) => AssuranceLevel::Degraded,
-
-            Self::BuildProviderMissing(_) | Self::BuildProviderFailed(_) => {
-                AssuranceLevel::Conservative
-            }
 
             Self::ProviderMissing(_)
             | Self::ProviderFailed(_)

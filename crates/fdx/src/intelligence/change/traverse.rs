@@ -1,5 +1,7 @@
 //! Transitive impact traversal and query engine over EvidenceGraph.
 
+use crate::intelligence::build::scope::UncertaintyScope;
+use crate::intelligence::build::uncertainty::BuildUncertainty;
 use crate::intelligence::change::classify::{
     classify_changes, read_git_file_content, ClassifyError,
 };
@@ -139,7 +141,7 @@ fn query_raw_incoming_impact_edges(
     let mut edges = Vec::new();
     let mut unknown_kinds = Vec::new();
 
-    // 1. Reverse edges: where to_node = target_node (caller -> callee, importer -> imported, etc.)
+    // 1. Reverse edges: where to_node = target_node (caller -> callee, importer -> imported, package CONTAINS file, etc.)
     if let Ok(mut stmt) = conn.prepare(
         "SELECT from_node, to_node, kind, provider, provider_id, provider_fingerprint, strength, stale FROM edges WHERE to_node = ?1",
     ) {
@@ -157,7 +159,17 @@ fn query_raw_incoming_impact_edges(
             for item in rows.flatten() {
                 let (from_n, to_n, kstr, prov, pid, p_fp, str_val, stale) = item;
                 if let Some(kind) = parse_edge_kind(&kstr) {
-                    if edge_impact_direction(kind) == TraversalDirection::Reverse {
+                    // Package CONTAINS File: when File changes, package is impacted (Reverse).
+                    // Workspace CONTAINS Package: changing a package does NOT fan out to sibling packages.
+                    let is_applicable = match kind {
+                        EdgeKind::Contains => to_n.starts_with("file:"),
+                        _ => {
+                            let dir = edge_impact_direction(kind);
+                            dir == TraversalDirection::Reverse || dir == TraversalDirection::Both
+                        }
+                    };
+
+                    if is_applicable {
                         edges.push(DbEdgeRow {
                             from_node: from_n,
                             to_node: to_n,
@@ -176,7 +188,7 @@ fn query_raw_incoming_impact_edges(
         }
     }
 
-    // 2. Forward edges: where from_node = target_node (config -> target, generator -> artifact)
+    // 2. Forward edges: where from_node = target_node (config -> target, generator -> artifact, workspace CONTAINS package)
     if let Ok(mut stmt) = conn.prepare(
         "SELECT from_node, to_node, kind, provider, provider_id, provider_fingerprint, strength, stale FROM edges WHERE from_node = ?1",
     ) {
@@ -194,7 +206,20 @@ fn query_raw_incoming_impact_edges(
             for item in rows.flatten() {
                 let (from_n, to_n, kstr, prov, pid, p_fp, str_val, stale) = item;
                 if let Some(kind) = parse_edge_kind(&kstr) {
-                    if edge_impact_direction(kind) == TraversalDirection::Forward {
+                    // Workspace CONTAINS Package: when Workspace changes, member packages are impacted (Forward).
+                    let is_applicable = match kind {
+                        EdgeKind::Contains => from_n.starts_with("workspace:"),
+                        _ => {
+                            let dir = edge_impact_direction(kind);
+                            dir == TraversalDirection::Forward || dir == TraversalDirection::Both
+                        }
+                    };
+
+                    if is_applicable
+                        && !edges.iter().any(|e| {
+                            e.from_node == from_n && e.to_node == to_n && e.kind == kind
+                        })
+                    {
                         edges.push(DbEdgeRow {
                             from_node: from_n,
                             to_node: to_n,
@@ -250,7 +275,7 @@ impl SnapshotFileSet {
                             .extension()
                             .and_then(|e| e.to_str())
                             .unwrap_or("");
-                        if ["ts", "tsx", "js", "jsx", "rs", "py"].contains(&ext) {
+                        if ["ts", "tsx", "js", "jsx", "rs", "py", "json", "toml"].contains(&ext) {
                             if paths.len() >= 2000 {
                                 truncated = true;
                                 break;
@@ -409,8 +434,10 @@ impl LexicalFallbackIndex {
                 .push(canon.to_string());
         }
 
-        // Extract alphanumeric tokens for symbol references
-        for word in content.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        // Extract alphanumeric tokens for symbol references and dependencies
+        for word in content
+            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '@' && c != '-' && c != '/')
+        {
             if word.len() >= 2 {
                 let entry = symbol_to_referencing_files
                     .entry(word.to_string())
@@ -443,6 +470,27 @@ impl LexicalFallbackIndex {
                         provider: "manual_rule".to_string(),
                         provider_id: None,
                         provider_fingerprint: "manual-import".to_string(),
+                        strength: EvidenceStrength::Heuristic,
+                        stale: false,
+                    });
+                }
+            }
+        }
+
+        // Check target_path as token (e.g. package name or path)
+        if let Some(referencers) = self.symbol_to_referencing_files.get(target_path) {
+            for ref_file in referencers {
+                if ref_file == target_path {
+                    continue;
+                }
+                if seen.insert(ref_file.clone()) {
+                    edges.push(DbEdgeRow {
+                        from_node: format!("file:{}", ref_file),
+                        to_node: format!("file:{}", target_path),
+                        kind: EdgeKind::References,
+                        provider: "manual_rule".to_string(),
+                        provider_id: None,
+                        provider_fingerprint: "manual-token".to_string(),
                         strength: EvidenceStrength::Heuristic,
                         stale: false,
                     });
@@ -528,7 +576,7 @@ fn collect_all_repo_code_files(conn: Option<&Connection>, repo_root: &Path) -> V
             if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                 let path = entry.path();
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if ["ts", "tsx", "js", "jsx", "rs", "py"].contains(&ext) {
+                if ["ts", "tsx", "js", "jsx", "rs", "py", "json", "toml"].contains(&ext) {
                     if let Ok(canon) = canonicalize_repo_path(path, repo_root) {
                         files.push(canon);
                         if files.len() >= 2000 {
@@ -567,6 +615,7 @@ pub fn analyze_impact_v2(
     let change_set = classify_changes(repo_root, base_ref, head_ref)?;
 
     let mut uncertainties = change_set.uncertainty.clone();
+    let mut scoped_build_uncertainties: Vec<BuildUncertainty> = Vec::new();
     let mut impacted_map: HashMap<String, ImpactedTarget> = HashMap::new();
 
     let db_res = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly);
@@ -603,6 +652,8 @@ pub fn analyze_impact_v2(
     };
 
     let mut effective_states_map = HashMap::new();
+    let mut build_states_map = HashMap::new();
+
     if let Some(ref db) = db_opt {
         let registry = crate::intelligence::semantic::registry::ProviderRegistry::default();
         let persisted_states =
@@ -637,6 +688,7 @@ pub fn analyze_impact_v2(
             crate::intelligence::build::freshness::evaluate_build_freshness(repo_root)
                 .unwrap_or_default();
         for bst in &build_states {
+            build_states_map.insert(bst.provider_id.clone(), bst.clone());
             if bst.freshness != ProviderFreshness::Fresh {
                 uncertainties.push(UncertaintyReason::BuildProviderStale(format!(
                     "Build provider {} is effectively stale",
@@ -671,6 +723,20 @@ pub fn analyze_impact_v2(
                         unc.reason
                     )));
                 }
+                "build_limit_reached" => {
+                    uncertainties.push(UncertaintyReason::BuildLimitReached(format!(
+                        "{}: {}",
+                        unc.scope.as_str(),
+                        unc.reason
+                    )));
+                }
+                "unknown_workspace_membership" => {
+                    uncertainties.push(UncertaintyReason::UnknownWorkspaceMembership(format!(
+                        "{}: {}",
+                        unc.scope.as_str(),
+                        unc.reason
+                    )));
+                }
                 _ => {
                     uncertainties.push(UncertaintyReason::BuildProviderFailed(format!(
                         "{}: {}",
@@ -679,6 +745,7 @@ pub fn analyze_impact_v2(
                     )));
                 }
             }
+            scoped_build_uncertainties.push(unc);
         }
     }
 
@@ -729,9 +796,14 @@ pub fn analyze_impact_v2(
 
     let mut queue: VecDeque<QueueItem> = VecDeque::new();
 
+    // Track all identities affected by this impact query (for scoped uncertainty)
+    let mut affected_identities: HashSet<String> = HashSet::new();
+
     // Enqueue seeds
     for seed in &seeds {
         visited_nodes.insert(seed.seed_node.clone(), 0);
+        affected_identities.insert(seed.seed_node.clone());
+        affected_identities.insert(seed.canonical_path.clone());
 
         if let Some(ref w) = seed.widening_reason {
             uncertainties.push(w.clone());
@@ -838,7 +910,7 @@ pub fn analyze_impact_v2(
                         node_needs_widening = true;
                     }
                 } else {
-                    // Unknown SCIP provider ownership (legacy v4 edge without provider_id)
+                    // Unknown SCIP provider ownership
                     uncertainties.push(UncertaintyReason::FallbackUsed(format!(
                         "SCIP edge {}->{} has unknown provider ownership",
                         edge.from_node, edge.to_node
@@ -846,10 +918,48 @@ pub fn analyze_impact_v2(
                     node_needs_widening = true;
                 }
             } else if edge.provider == "build_native" {
-                if edge.stale {
-                    node_needs_widening = true;
+                // Blocker 1: Enforce effective build provider freshness on every build_native edge
+                if let Some(ref pid) = edge.provider_id {
+                    if let Some(bst) = build_states_map.get(pid) {
+                        if bst.health != ProviderHealth::Available {
+                            uncertainties.push(UncertaintyReason::BuildProviderMissing(format!(
+                                "Build provider {} unavailable ({:?})",
+                                pid, bst.health
+                            )));
+                            node_needs_widening = true;
+                        } else if bst.freshness != ProviderFreshness::Fresh {
+                            uncertainties.push(UncertaintyReason::BuildProviderStale(format!(
+                                "Build provider {} is effectively stale",
+                                pid
+                            )));
+                            node_needs_widening = true;
+                        } else if edge.provider_fingerprint != bst.fingerprint {
+                            uncertainties.push(UncertaintyReason::BuildProviderStale(format!(
+                                "Build provider {} fingerprint mismatch on edge",
+                                pid
+                            )));
+                            node_needs_widening = true;
+                        } else if edge.stale {
+                            uncertainties.push(UncertaintyReason::BuildProviderStale(
+                                "Build edge is marked stale in database".to_string(),
+                            ));
+                            node_needs_widening = true;
+                        } else {
+                            is_edge_fresh = true;
+                        }
+                    } else {
+                        uncertainties.push(UncertaintyReason::BuildProviderMissing(format!(
+                            "Build provider {} not found in registry",
+                            pid
+                        )));
+                        node_needs_widening = true;
+                    }
                 } else {
-                    is_edge_fresh = true;
+                    uncertainties.push(UncertaintyReason::BuildProviderMissing(format!(
+                        "Build edge {}->{} has unknown provider ownership",
+                        edge.from_node, edge.to_node
+                    )));
+                    node_needs_widening = true;
                 }
             } else {
                 // Built-in structural or lexical edge
@@ -929,11 +1039,13 @@ pub fn analyze_impact_v2(
                 has_fallback_path = true;
             }
 
-            let next_node_id = if edge_impact_direction(edge.kind) == TraversalDirection::Reverse {
+            let next_node_id = if edge.to_node == item.current_node_id {
                 edge.from_node.clone()
             } else {
                 edge.to_node.clone()
             };
+
+            affected_identities.insert(next_node_id.clone());
 
             let next_strength = std::cmp::min(item.strength, edge.strength);
             let next_depth = item.depth + 1;
@@ -977,6 +1089,8 @@ pub fn analyze_impact_v2(
             } else {
                 (next_node_id.clone(), NodeKind::File)
             };
+
+            affected_identities.insert(target_key.clone());
 
             let path_expl = render_path_explanation(&next_node_id, &item.seed_node, &new_steps);
 
@@ -1066,7 +1180,7 @@ pub fn analyze_impact_v2(
         });
     }
 
-    // Deduplicate and sort uncertainties
+    // Deduplicate and sort uncertainties for output
     uncertainties.sort_by(|a, b| {
         a.code()
             .cmp(b.code())
@@ -1074,8 +1188,62 @@ pub fn analyze_impact_v2(
     });
     uncertainties.dedup();
 
-    let assurance =
-        compute_result_assurance(change_set.assurance, &uncertainties, has_fallback_path);
+    // Blocker 2: Scoped uncertainty preservation
+    // Filter uncertainties relevant to result assurance:
+    // Only uncertainties whose scope affects the seeds or impacted targets closure degrade assurance.
+    let relevant_uncertainties: Vec<UncertaintyReason> = uncertainties
+        .iter()
+        .filter(|u| {
+            match u {
+                UncertaintyReason::MalformedConfig(details)
+                | UncertaintyReason::ConfigCycleDetected(details)
+                | UncertaintyReason::BuildProviderFailed(details) => {
+                    // Check if this uncertainty originates from a scoped build uncertainty
+                    for s_unc in &scoped_build_uncertainties {
+                        let is_match = match &s_unc.scope {
+                            UncertaintyScope::Package(p) => affected_identities.iter().any(|id| {
+                                id == p
+                                    || id.starts_with(&format!("{}/", p))
+                                    || id.contains(&format!(":{}", p))
+                                    || id.contains(&format!(":npm:{}", p))
+                                    || id.contains(&format!(":cargo:{}", p))
+                            }),
+                            UncertaintyScope::Config(c) => affected_identities.iter().any(|id| {
+                                id == c || id.contains(c) || id.contains(&format!("config:{}", c))
+                            }),
+                            UncertaintyScope::BuildTarget(t) => affected_identities
+                                .iter()
+                                .any(|id| id == t || id.contains(t)),
+                            UncertaintyScope::File(f) => affected_identities
+                                .iter()
+                                .any(|id| id == f || id.contains(f)),
+                            UncertaintyScope::Workspace(_) => true,
+                            UncertaintyScope::Repository => true,
+                        };
+
+                        if is_match && details.contains(&s_unc.reason) {
+                            return true;
+                        }
+                    }
+
+                    // If not found in scoped_build_uncertainties, check if details match affected identities
+                    let prefix = details.split(':').next().unwrap_or("");
+                    if prefix == "repository" || prefix == "workspace" {
+                        return true;
+                    }
+                    affected_identities.iter().any(|id| details.contains(id))
+                }
+                _ => true,
+            }
+        })
+        .cloned()
+        .collect();
+
+    let assurance = compute_result_assurance(
+        change_set.assurance,
+        &relevant_uncertainties,
+        has_fallback_path,
+    );
 
     // Convert map to sorted deterministic list
     let mut impacted_list: Vec<ImpactedTarget> = impacted_map.into_values().collect();

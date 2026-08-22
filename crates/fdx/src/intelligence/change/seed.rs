@@ -102,7 +102,7 @@ pub fn find_node_ids_for_symbol(
 pub fn find_build_nodes_for_file(conn: &Connection, canonical_path: &str) -> Vec<String> {
     let mut matching = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT stable_id FROM nodes WHERE canonical_path = ?1 AND kind IN ('config', 'package', 'build_target', 'workspace')"
+        "SELECT stable_id FROM nodes WHERE canonical_path = ?1 AND kind IN ('config', 'package', 'build_target', 'workspace')",
     ) {
         if let Ok(rows) = stmt.query_map(rusqlite::params![canonical_path], |r| r.get(0)) {
             for id in rows.flatten() {
@@ -110,6 +110,7 @@ pub fn find_build_nodes_for_file(conn: &Connection, canonical_path: &str) -> Vec
             }
         }
     }
+
     let config_id = format!("config:{}", canonical_path);
     if !matching.contains(&config_id) {
         matching.push(config_id);

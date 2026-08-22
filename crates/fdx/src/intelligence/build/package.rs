@@ -1,13 +1,18 @@
 //! Static parser and provider for package.json and npm/pnpm/yarn/bun workspaces.
 
-use crate::intelligence::build::discover::discover_build_files;
+use crate::intelligence::build::discover::{
+    discover_build_files, MAX_DISCOVERED_EDGES, MAX_DISCOVERED_PACKAGES, MAX_DISCOVERED_TARGETS,
+    MAX_WORKSPACE_MEMBERS,
+};
 use crate::intelligence::build::model::*;
 use crate::intelligence::build::provider::{
     hash_files, BuildConfigProvider, BuildIngestResult, BuildProviderScope,
 };
 use crate::intelligence::build::scope::UncertaintyScope;
 use crate::intelligence::build::uncertainty::BuildUncertainty;
-use crate::protocol::{AssuranceLevel, EdgeKind, EvidenceStrength, NodeKind};
+use crate::protocol::{
+    canonicalize_repo_path, AssuranceLevel, EdgeKind, EvidenceStrength, NodeKind,
+};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
@@ -59,6 +64,72 @@ fn parse_pnpm_workspace_packages(content: &str) -> Vec<String> {
     patterns
 }
 
+fn matches_workspace_pattern(dir: &str, patterns: &[String]) -> Result<bool, String> {
+    if patterns.is_empty() {
+        return Ok(false);
+    }
+    let mut matched = false;
+    for pat in patterns {
+        let is_negated = pat.starts_with('!');
+        let clean_pat = if is_negated { &pat[1..] } else { pat.as_str() };
+        let glob_pat = glob::Pattern::new(clean_pat).map_err(|e| e.to_string())?;
+        if glob_pat.matches(dir) {
+            if is_negated {
+                return Ok(false);
+            } else {
+                matched = true;
+            }
+        }
+    }
+    Ok(matched)
+}
+
+fn find_package_owned_files(
+    repo_root: &Path,
+    package_dirs: &[String],
+) -> HashMap<String, Vec<String>> {
+    let mut map: HashMap<String, Vec<String>> = HashMap::new();
+    for d in package_dirs {
+        map.insert(d.clone(), Vec::new());
+    }
+
+    // Sort package dirs longest first so nearest boundary matches first
+    let mut sorted_dirs = package_dirs.to_vec();
+    sorted_dirs.sort_by_key(|d| std::cmp::Reverse(d.len()));
+
+    let walker = ignore::WalkBuilder::new(repo_root)
+        .hidden(true)
+        .git_ignore(true)
+        .require_git(false)
+        .build();
+
+    for res in walker {
+        let Ok(entry) = res else { continue };
+        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let Ok(canon) = canonicalize_repo_path(entry.path(), repo_root) else {
+            continue;
+        };
+
+        // Find nearest package directory
+        for pdir in &sorted_dirs {
+            let is_match = pdir == "."
+                || canon == *pdir
+                || (canon.starts_with(pdir) && canon.as_bytes().get(pdir.len()) == Some(&b'/'));
+
+            if is_match {
+                if let Some(list) = map.get_mut(pdir) {
+                    list.push(canon);
+                }
+                break;
+            }
+        }
+    }
+
+    map
+}
+
 impl BuildConfigProvider for PackageJsonProvider {
     fn id(&self) -> &'static str {
         PACKAGE_JSON_PROVIDER_ID
@@ -104,6 +175,23 @@ impl BuildConfigProvider for PackageJsonProvider {
             fingerprint: fingerprint.clone(),
             ..Default::default()
         };
+
+        if files.package_jsons_truncated
+            || files.pnpm_workspaces_truncated
+            || !files.walker_errors.is_empty()
+        {
+            res.uncertainties.push(BuildUncertainty::new(
+                "build_limit_reached",
+                UncertaintyScope::Repository,
+                PACKAGE_JSON_PROVIDER_ID,
+                format!(
+                    "Discovery limits reached or walker errors encountered (package.json limit {}, pnpm limit {})",
+                    MAX_DISCOVERED_PACKAGES, MAX_DISCOVERED_PACKAGES
+                ),
+                AssuranceLevel::Degraded,
+                true,
+            ));
+        }
 
         // Check root workspace
         let mut workspace_patterns: Vec<String> = Vec::new();
@@ -171,20 +259,22 @@ impl BuildConfigProvider for PackageJsonProvider {
         // Parse individual packages
         let mut name_to_package_id: HashMap<String, String> = HashMap::new();
         let mut parsed_packages: Vec<Package> = Vec::new();
+        let mut package_dirs: Vec<String> = Vec::new();
 
         for pkg_json_path in &files.package_jsons {
+            let dir = Path::new(pkg_json_path)
+                .parent()
+                .and_then(|p| p.to_str())
+                .unwrap_or(".");
+            let dir_str = if dir.is_empty() { "." } else { dir }.to_string();
+
             let full = repo_root.join(pkg_json_path);
             let content = match std::fs::read_to_string(&full) {
                 Ok(c) => c,
                 Err(e) => {
-                    let dir = Path::new(pkg_json_path)
-                        .parent()
-                        .and_then(|p| p.to_str())
-                        .unwrap_or(".");
-                    let dir_str = if dir.is_empty() { "." } else { dir };
                     res.uncertainties.push(BuildUncertainty::new(
                         "package_read_error",
-                        UncertaintyScope::Package(dir_str.to_string()),
+                        UncertaintyScope::Package(dir_str.clone()),
                         PACKAGE_JSON_PROVIDER_ID,
                         format!("Failed to read {}: {}", pkg_json_path, e),
                         AssuranceLevel::Degraded,
@@ -197,17 +287,12 @@ impl BuildConfigProvider for PackageJsonProvider {
             let val: Value = match serde_json::from_str(&content) {
                 Ok(v) => v,
                 Err(e) => {
-                    let dir = Path::new(pkg_json_path)
-                        .parent()
-                        .and_then(|p| p.to_str())
-                        .unwrap_or(".");
-                    let dir_str = if dir.is_empty() { "." } else { dir };
                     if !is_monorepo || dir_str == "." {
                         return Err(format!("Malformed package.json in {}: {}", dir_str, e));
                     }
                     res.uncertainties.push(BuildUncertainty::new(
                         "malformed_package_json",
-                        UncertaintyScope::Package(dir_str.to_string()),
+                        UncertaintyScope::Package(dir_str.clone()),
                         PACKAGE_JSON_PROVIDER_ID,
                         format!("Malformed package.json in {}: {}", dir_str, e),
                         AssuranceLevel::Degraded,
@@ -216,12 +301,6 @@ impl BuildConfigProvider for PackageJsonProvider {
                     continue;
                 }
             };
-
-            let dir = Path::new(pkg_json_path)
-                .parent()
-                .and_then(|p| p.to_str())
-                .unwrap_or(".");
-            let dir_str = if dir.is_empty() { "." } else { dir }.to_string();
 
             if is_monorepo && dir_str == "." && val.get("workspaces").is_some() {
                 // Root monorepo manifest defines the workspace, not a member package
@@ -240,6 +319,7 @@ impl BuildConfigProvider for PackageJsonProvider {
             let pkg_stable_id = format!("pkg:npm:{}", dir_str);
 
             name_to_package_id.insert(pkg_name.clone(), pkg_stable_id.clone());
+            package_dirs.push(dir_str.clone());
 
             let mut pkg_deps = Vec::new();
 
@@ -272,6 +352,17 @@ impl BuildConfigProvider for PackageJsonProvider {
             let mut script_target_ids = Vec::new();
             if let Some(scripts) = val.get("scripts").and_then(|s| s.as_object()) {
                 for (script_name, script_cmd_val) in scripts {
+                    if res.targets.len() >= MAX_DISCOVERED_TARGETS {
+                        res.uncertainties.push(BuildUncertainty::new(
+                            "build_limit_reached",
+                            UncertaintyScope::Repository,
+                            PACKAGE_JSON_PROVIDER_ID,
+                            format!("Target limit {} reached", MAX_DISCOVERED_TARGETS),
+                            AssuranceLevel::Degraded,
+                            true,
+                        ));
+                        break;
+                    }
                     let cmd_str = script_cmd_val.as_str().map(String::from);
                     let target_id = format!("build:{}:script:{}", pkg_stable_id, script_name);
                     script_target_ids.push(target_id.clone());
@@ -358,18 +449,55 @@ impl BuildConfigProvider for PackageJsonProvider {
                 ),
             });
 
-            // Edge from workspace CONTAINS package
-            res.edges.push(BuildEdge {
-                stable_id: format!("edge:contains:{}:{}", ws_stable_id, pkg_stable_id),
-                from_node: ws_stable_id.clone(),
-                to_node: pkg_stable_id.clone(),
-                kind: EdgeKind::Contains,
-                provider: "build_native".to_string(),
-                provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                provider_fingerprint: fingerprint.clone(),
-                strength: EvidenceStrength::Structural,
-                metadata: None,
-            });
+            // Workspace membership check (Blocker 8)
+            let is_member = if !is_monorepo {
+                true
+            } else {
+                match matches_workspace_pattern(&dir_str, &workspace_patterns) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        res.uncertainties.push(BuildUncertainty::new(
+                            "unknown_workspace_membership",
+                            UncertaintyScope::Workspace(".".to_string()),
+                            PACKAGE_JSON_PROVIDER_ID,
+                            format!("Failed to match workspace pattern for {}: {}", dir_str, e),
+                            AssuranceLevel::Degraded,
+                            true,
+                        ));
+                        false
+                    }
+                }
+            };
+
+            if is_member {
+                if let Some(ws) = res.workspaces.first_mut() {
+                    if ws.members.len() < MAX_WORKSPACE_MEMBERS {
+                        ws.members.push(pkg_stable_id.clone());
+                    } else {
+                        res.uncertainties.push(BuildUncertainty::new(
+                            "build_limit_reached",
+                            UncertaintyScope::Repository,
+                            PACKAGE_JSON_PROVIDER_ID,
+                            format!("Workspace members limit {} reached", MAX_WORKSPACE_MEMBERS),
+                            AssuranceLevel::Degraded,
+                            true,
+                        ));
+                    }
+                }
+
+                // Edge from workspace CONTAINS package
+                res.edges.push(BuildEdge {
+                    stable_id: format!("edge:contains:{}:{}", ws_stable_id, pkg_stable_id),
+                    from_node: ws_stable_id.clone(),
+                    to_node: pkg_stable_id.clone(),
+                    kind: EdgeKind::Contains,
+                    provider: "build_native".to_string(),
+                    provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
+                    provider_fingerprint: fingerprint.clone(),
+                    strength: EvidenceStrength::Structural,
+                    metadata: None,
+                });
+            }
 
             parsed_packages.push(Package {
                 stable_id: pkg_stable_id,
@@ -384,6 +512,50 @@ impl BuildConfigProvider for PackageJsonProvider {
             });
         }
 
+        // Ordinary source file ownership (Blocker 3)
+        let owned_files_map = find_package_owned_files(repo_root, &package_dirs);
+        for (pkg_dir, files_list) in owned_files_map {
+            let pkg_id = format!("pkg:npm:{}", pkg_dir);
+            for file_path in files_list {
+                let file_node_id = format!("file:{}", file_path);
+                if !res.nodes.iter().any(|n| n.stable_id == file_node_id) {
+                    res.nodes.push(BuildNode {
+                        stable_id: file_node_id.clone(),
+                        kind: NodeKind::File,
+                        canonical_path: Some(file_path.clone()),
+                        metadata: None,
+                    });
+                }
+
+                let edge_id = format!("edge:contains:{}:{}", pkg_id, file_node_id);
+                if !res.edges.iter().any(|e| e.stable_id == edge_id) {
+                    if res.edges.len() < MAX_DISCOVERED_EDGES {
+                        res.edges.push(BuildEdge {
+                            stable_id: edge_id,
+                            from_node: pkg_id.clone(),
+                            to_node: file_node_id,
+                            kind: EdgeKind::Contains,
+                            provider: "build_native".to_string(),
+                            provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
+                            provider_fingerprint: fingerprint.clone(),
+                            strength: EvidenceStrength::Structural,
+                            metadata: None,
+                        });
+                    } else {
+                        res.uncertainties.push(BuildUncertainty::new(
+                            "build_limit_reached",
+                            UncertaintyScope::Repository,
+                            PACKAGE_JSON_PROVIDER_ID,
+                            format!("Edge limit {} reached", MAX_DISCOVERED_EDGES),
+                            AssuranceLevel::Degraded,
+                            true,
+                        ));
+                        break;
+                    }
+                }
+            }
+        }
+
         // Resolve package dependencies and create dependency / external edges
         for mut pkg in parsed_packages {
             for dep in &mut pkg.dependencies {
@@ -393,17 +565,19 @@ impl BuildConfigProvider for PackageJsonProvider {
 
                     // Package A DEPENDS_ON Package B
                     let edge_id = format!("edge:depends_on:{}:{}", pkg.stable_id, target_pkg_id);
-                    res.edges.push(BuildEdge {
-                        stable_id: edge_id,
-                        from_node: pkg.stable_id.clone(),
-                        to_node: target_pkg_id.clone(),
-                        kind: EdgeKind::DependsOn,
-                        provider: "build_native".to_string(),
-                        provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                        provider_fingerprint: fingerprint.clone(),
-                        strength: EvidenceStrength::Structural,
-                        metadata: None,
-                    });
+                    if res.edges.len() < MAX_DISCOVERED_EDGES {
+                        res.edges.push(BuildEdge {
+                            stable_id: edge_id,
+                            from_node: pkg.stable_id.clone(),
+                            to_node: target_pkg_id.clone(),
+                            kind: EdgeKind::DependsOn,
+                            provider: "build_native".to_string(),
+                            provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
+                            provider_fingerprint: fingerprint.clone(),
+                            strength: EvidenceStrength::Structural,
+                            metadata: None,
+                        });
+                    }
                 } else {
                     // External dependency
                     let ext_id = format!("ext:npm:{}", dep.name);
@@ -434,22 +608,20 @@ impl BuildConfigProvider for PackageJsonProvider {
 
                     // Package USES ExternalDependency
                     let edge_id = format!("edge:uses:{}:{}", pkg.stable_id, ext_id);
-                    res.edges.push(BuildEdge {
-                        stable_id: edge_id,
-                        from_node: pkg.stable_id.clone(),
-                        to_node: ext_id,
-                        kind: EdgeKind::Uses,
-                        provider: "build_native".to_string(),
-                        provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                        provider_fingerprint: fingerprint.clone(),
-                        strength: EvidenceStrength::Structural,
-                        metadata: None,
-                    });
+                    if res.edges.len() < MAX_DISCOVERED_EDGES {
+                        res.edges.push(BuildEdge {
+                            stable_id: edge_id,
+                            from_node: pkg.stable_id.clone(),
+                            to_node: ext_id,
+                            kind: EdgeKind::Uses,
+                            provider: "build_native".to_string(),
+                            provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
+                            provider_fingerprint: fingerprint.clone(),
+                            strength: EvidenceStrength::Structural,
+                            metadata: None,
+                        });
+                    }
                 }
-            }
-
-            if let Some(ws) = res.workspaces.first_mut() {
-                ws.members.push(pkg.stable_id.clone());
             }
             res.packages.push(pkg);
         }

@@ -95,11 +95,13 @@ pub fn build_graph_json(repo_root: &Path) -> Result<String, String> {
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly)
         .map_err(|e| format!("cannot open database: {}", e))?;
 
-    let mut nodes = Vec::new();
-    if let Ok(mut stmt) = db.conn.prepare(
-        "SELECT stable_id, kind, canonical_path, metadata FROM nodes WHERE provider = 'build_native'"
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
+    let mut stmt = db
+        .conn
+        .prepare("SELECT stable_id, kind, canonical_path, metadata FROM nodes WHERE provider = 'build_native' ORDER BY stable_id ASC")
+        .map_err(|e| format!("prepare nodes query failed: {}", e))?;
+
+    let node_rows = stmt
+        .query_map([], |row| {
             let sid: String = row.get(0)?;
             let kind: String = row.get(1)?;
             let cpath: Option<String> = row.get(2)?;
@@ -110,18 +112,21 @@ pub fn build_graph_json(repo_root: &Path) -> Result<String, String> {
                 "canonical_path": cpath,
                 "metadata": meta,
             }))
-        }) {
-            for item in rows.flatten() {
-                nodes.push(item);
-            }
-        }
+        })
+        .map_err(|e| format!("query nodes failed: {}", e))?;
+
+    let mut nodes = Vec::new();
+    for item in node_rows {
+        nodes.push(item.map_err(|e| format!("decode node row failed: {}", e))?);
     }
 
-    let mut edges = Vec::new();
-    if let Ok(mut stmt) = db.conn.prepare(
-        "SELECT stable_id, from_node, to_node, kind, provider_id, strength FROM edges WHERE provider = 'build_native'"
-    ) {
-        if let Ok(rows) = stmt.query_map([], |row| {
+    let mut stmt = db
+        .conn
+        .prepare("SELECT stable_id, from_node, to_node, kind, provider_id, strength FROM edges WHERE provider = 'build_native' ORDER BY stable_id ASC, from_node ASC, to_node ASC")
+        .map_err(|e| format!("prepare edges query failed: {}", e))?;
+
+    let edge_rows = stmt
+        .query_map([], |row| {
             let sid: String = row.get(0)?;
             let from_n: String = row.get(1)?;
             let to_n: String = row.get(2)?;
@@ -136,11 +141,12 @@ pub fn build_graph_json(repo_root: &Path) -> Result<String, String> {
                 "provider_id": pid,
                 "strength": str_val,
             }))
-        }) {
-            for item in rows.flatten() {
-                edges.push(item);
-            }
-        }
+        })
+        .map_err(|e| format!("query edges failed: {}", e))?;
+
+    let mut edges = Vec::new();
+    for item in edge_rows {
+        edges.push(item.map_err(|e| format!("decode edge row failed: {}", e))?);
     }
 
     let value = serde_json::json!({

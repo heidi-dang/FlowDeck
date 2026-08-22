@@ -80,7 +80,7 @@ fn publish_provider_evidence(
         .unwrap_or_default()
         .as_millis() as i64;
 
-    // Determine generation
+    // Determine next generation
     let prev_gen: i64 = tx
         .tx
         .query_row(
@@ -94,12 +94,20 @@ fn publish_provider_evidence(
     // 1. Delete previous edges owned by this provider
     tx.tx
         .execute(
-            "DELETE FROM edges WHERE provider_id = ?1",
+            "DELETE FROM edges WHERE provider_id = ?1 OR (provider = 'build_native' AND source_identity = ?1)",
             rusqlite::params![provider_id],
         )
         .map_err(|e| e.to_string())?;
 
-    // 2. Insert/upsert files for Foreign Key constraints
+    // 2. Delete previous nodes owned by this provider (Blocker 5)
+    tx.tx
+        .execute(
+            "DELETE FROM nodes WHERE provider = 'build_native' AND source_identity = ?1",
+            rusqlite::params![provider_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+    // 3. Insert/upsert files for Foreign Key constraints
     for node in &result.nodes {
         if let Some(ref cpath) = node.canonical_path {
             let ifile = IndexedFile {
@@ -114,7 +122,7 @@ fn publish_provider_evidence(
         }
     }
 
-    // 3. Insert provider-owned build nodes
+    // 4. Insert provider-owned build nodes with explicit generation and source_identity
     for node in &result.nodes {
         let snode = crate::intelligence::model::SemanticNode {
             stable_id: node.stable_id.clone(),
@@ -132,7 +140,7 @@ fn publish_provider_evidence(
         tx.insert_semantic_node(&snode).map_err(|e| e.to_string())?;
     }
 
-    // 4. Ensure all referenced from_node / to_node exist in nodes
+    // 5. Ensure any external target nodes referenced by edges exist
     for edge in &result.edges {
         tx.tx.execute(
             "INSERT OR IGNORE INTO nodes (stable_id, kind, canonical_path) VALUES (?1, 'package', NULL)",
@@ -144,7 +152,7 @@ fn publish_provider_evidence(
         ).map_err(|e| e.to_string())?;
     }
 
-    // 5. Insert edges
+    // 6. Insert edges
     for edge in &result.edges {
         let gedge = GraphEdge {
             stable_id: edge.stable_id.clone(),
@@ -164,7 +172,7 @@ fn publish_provider_evidence(
         tx.insert_edge(&gedge).map_err(|e| e.to_string())?;
     }
 
-    // 5. Update provider state in semantic_providers
+    // 7. Update provider state in semantic_providers
     tx.tx.execute(
         "INSERT INTO semantic_providers (
             provider_id, provider_type, provider_version, executable_identity,
