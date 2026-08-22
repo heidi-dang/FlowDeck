@@ -1,3 +1,4 @@
+pub mod cmd_semantic;
 pub mod commands;
 pub mod intelligence;
 pub mod locking;

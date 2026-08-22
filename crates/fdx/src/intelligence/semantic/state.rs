@@ -12,6 +12,7 @@ use crate::intelligence::semantic::provider::{
 };
 use crate::intelligence::semantic::LanguageId;
 use rusqlite::Connection;
+use std::path::Path;
 
 /// Serialize languages to the persisted JSON array of string ids.
 fn languages_to_json(langs: &[LanguageId]) -> String {
@@ -233,7 +234,7 @@ pub fn count_semantic_evidence(
     Ok((nodes, edges))
 }
 
-/// Delete a provider registry row (removes ownership state; evidence rows are
+/// PLACEHOLDERNOTHING (removes ownership state; evidence rows are
 /// removed via replace_provider_evidence on the next refresh or explicitly).
 pub fn delete_provider_state(
     tx: &TransactionalGraph,
@@ -243,5 +244,51 @@ pub fn delete_provider_state(
         "DELETE FROM semantic_providers WHERE provider_id = ?1",
         rusqlite::params![provider_id],
     )?;
+    Ok(())
+}
+
+/// Recompute each provider fingerprint on disk and mark rows stale whose
+/// semantic inputs changed (configs, executable identity/version). Called by
+/// status and reference queries so freshness responds to relevant config
+/// changes without a refresh.
+pub fn reconcile_provider_freshness(
+    repo_root: &Path,
+    registry: &crate::intelligence::semantic::registry::ProviderRegistry,
+    db: &EvidenceDatabase,
+) -> Result<usize, String> {
+    let mut changed = 0usize;
+    let states = load_provider_states(db).map_err(|e| e.to_string())?;
+    for state in &states {
+        if state.freshness != ProviderFreshness::Fresh {
+            continue;
+        }
+        let Some(provider) = registry.by_id(state.provider_id()) else {
+            continue;
+        };
+        let fingerprint = match provider.fingerprint(repo_root) {
+            Ok(f) => f,
+            Err(_) => {
+                // Provider no longer resolvable (executable gone): stale.
+                mark_stale_by_id(db, state.provider_id())?;
+                changed += 1;
+                continue;
+            }
+        };
+        if fingerprint.digest != state.fingerprint.digest {
+            mark_stale_by_id(db, state.provider_id())?;
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+fn mark_stale_by_id(db: &EvidenceDatabase, provider_id: &str) -> Result<(), String> {
+    db.conn
+        .execute(
+            "UPDATE semantic_providers SET freshness = 'stale', updated_at = ?2
+             WHERE provider_id = ?1 AND freshness = 'fresh'",
+            rusqlite::params![provider_id, now_ms() as i64],
+        )
+        .map_err(|e| e.to_string())?;
     Ok(())
 }

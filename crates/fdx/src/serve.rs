@@ -456,6 +456,69 @@ fn handle_evidence_graph_v1(
     )
 }
 
+fn handle_semantic_status_v1(
+    id: &str,
+    _args: &serde_json::Value,
+    _cache: &AstCache,
+    root: &Path,
+) -> Option<String> {
+    // Read-only provider diagnostics: consumes already-persisted semantic
+    // evidence only. The daemon never executes providers.
+    let db = match crate::intelligence::db::EvidenceDatabase::open(
+        root,
+        crate::intelligence::db::DatabaseOpenMode::ReadOnly,
+    ) {
+        Ok(d) => d,
+        Err(crate::intelligence::db::DatabaseError::NotIndexed) => {
+            return format_ok(
+                id,
+                serde_json::json!({
+                    "providers": [],
+                    "semantic_nodes": 0,
+                    "semantic_edges": 0,
+                    "status": "absent",
+                }),
+            );
+        }
+        Err(e) => return format_err(id, format!("semantic status error: {}", e)),
+    };
+    let states = match crate::intelligence::semantic::state::load_provider_states(&db) {
+        Ok(s) => s,
+        Err(e) => return format_err(id, format!("semantic status error: {}", e)),
+    };
+    let (nodes, edges) = match crate::intelligence::semantic::state::count_semantic_evidence(&db) {
+        Ok(n) => n,
+        Err(_) => (0, 0),
+    };
+    let providers: Vec<serde_json::Value> = states
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "provider": s.provider_id(),
+                "type": s.identity.provider_type.as_str(),
+                "version": s.identity.provider_version,
+                "health": s.health.as_str(),
+                "freshness": s.freshness.as_str(),
+                "fingerprint": s.fingerprint.digest,
+                "scope_root": s.scope.workspace_root,
+                "scope_package": s.scope.package,
+                "last_success": s.last_successful_run,
+                "generation": s.semantic_generation,
+                "reason": s.failure_reason,
+            })
+        })
+        .collect();
+    format_ok(
+        id,
+        serde_json::json!({
+            "providers": providers,
+            "semantic_nodes": nodes,
+            "semantic_edges": edges,
+            "status": "ok",
+        }),
+    )
+}
+
 fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<String> {
     match req.op.as_str() {
         "version" => format_ok(
@@ -493,6 +556,7 @@ fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<S
         "outline" => handle_outline(&req.id, &req.args, cache, root),
         "impact" => handle_impact(&req.id, &req.args, cache, root),
         "evidence-graph-v1" => handle_evidence_graph_v1(&req.id, &req.args, cache, root),
+        "semantic-status-v1" => handle_semantic_status_v1(&req.id, &req.args, cache, root),
         other => format_err(&req.id, format!("FDX_METHOD_NOT_ALLOWED {}", other)),
     }
 }

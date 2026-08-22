@@ -230,40 +230,49 @@ fn fallback_to_semantic(r: &FallbackReference) -> SemanticReference {
 }
 
 /// Query references for a symbol with the given intent, honoring routing.
+///
+/// The database argument is optional: a query never creates semantic state.
+/// Without a database the plan degrades to structural/lexical evidence,
+/// which is the truthful lower bound.
 pub fn query_references(
     repo_root: &Path,
-    db: &EvidenceDatabase,
+    db: Option<&EvidenceDatabase>,
     lang: LanguageId,
     symbol: &str,
     intent: IntelligenceIntent,
 ) -> Result<ReferenceResult, QueryError> {
-    let states: Vec<ProviderState> = state::load_provider_states(db)?;
+    let states: Vec<ProviderState> = match db {
+        Some(d) => state::load_provider_states(d)?,
+        None => Vec::new(),
+    };
     let plan = plan_routing(intent, lang, &states);
 
     match plan.primary {
         EvidenceSource::Scip => {
-            if let Some((scip_refs, provider, fp)) = query_scip(db, symbol)? {
-                return Ok(ReferenceResult {
-                    references: scip_refs,
-                    provenance: EvidenceProvenance {
-                        provider: if provider.is_empty() {
-                            None
-                        } else {
-                            Some(provider)
+            if let Some(d) = db {
+                if let Some((scip_refs, provider, fp)) = query_scip(d, symbol)? {
+                    return Ok(ReferenceResult {
+                        references: scip_refs,
+                        provenance: EvidenceProvenance {
+                            provider: if provider.is_empty() {
+                                None
+                            } else {
+                                Some(provider)
+                            },
+                            provider_fingerprint: fp,
+                            strength: EvidenceStrength::Precise,
+                            source_identity: None,
+                            source_hash: None,
+                            degraded: false,
                         },
-                        provider_fingerprint: fp,
-                        strength: EvidenceStrength::Precise,
-                        source_identity: None,
-                        source_hash: None,
-                        degraded: false,
-                    },
-                    completeness: plan.completeness_cap,
-                    intent,
-                    source: EvidenceSource::Scip,
-                });
+                        completeness: plan.completeness_cap,
+                        intent,
+                        source: EvidenceSource::Scip,
+                    });
+                }
             }
-            // Symbol not present in a fresh provider graph: do NOT claim
-            // absence; degrade to structural evidence.
+            // Symbol not present in a fresh provider graph (or no database):
+            // do NOT claim absence; degrade to structural evidence.
             structural_query(repo_root, lang, symbol, intent)
         }
         EvidenceSource::TreeSitter => structural_query(repo_root, lang, symbol, intent),

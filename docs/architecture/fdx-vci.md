@@ -192,7 +192,7 @@ Escalation expands verification to the smallest boundary known to contain the un
 The system decouples versioning across four independent dimensions:
 
 1. **`FDX_PROTOCOL_VERSION`** (Current: `2`): Wire format between client/tools and daemon.
-2. **`FDX_GRAPH_SCHEMA_VERSION`** (Current: `1`): Physical SQLite relational schema.
+2. **`FDX_GRAPH_SCHEMA_VERSION`** (Current: `2`): Physical SQLite relational schema. v2 adds provider-owned semantic node provenance (provider, provider_fingerprint, generation, source_hash, stale), semantic generation/occurrence metadata on edges, and the typed `semantic_providers` registry table (migrated transactionally from v1).
 3. **`FDX_SELECTION_POLICY_VERSION`** (Current: `1`): Verification selection and escalation heuristics.
 4. **`FDX_ATTESTATION_PREDICATE_VERSION`** (Current: `1`): Attestation cryptographic signature format.
 
