@@ -2,6 +2,7 @@ use crate::intelligence::db::EvidenceDatabase;
 use crate::intelligence::index::TransactionalGraph;
 use crate::intelligence::invalidation::InvalidationEngine;
 use crate::intelligence::model::IndexedFile;
+use crate::intelligence::status::IndexFreshness;
 use crate::protocol::canonicalize_repo_path;
 
 use ignore::WalkBuilder;
@@ -28,7 +29,7 @@ pub enum EngineError {
 
 #[derive(Debug)]
 pub struct IndexRunReport {
-    pub state: String, // e.g., "FRESH", "DEGRADED"
+    pub state: IndexFreshness,
     pub files: usize,
     pub changed: usize,
     pub skipped: usize,
@@ -36,20 +37,89 @@ pub struct IndexRunReport {
     pub generation: u64,
 }
 
-const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10MB limit
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_INDEXED_FILES: usize = 50000;
-const MAX_TOTAL_INDEX_BYTES_PER_REFRESH: u64 = 5 * 1024 * 1024 * 1024; // 5GB limit
+const MAX_TOTAL_INDEX_BYTES_PER_REFRESH: u64 = 5 * 1024 * 1024 * 1024;
 
 pub fn run_incremental_index(
     repo_root: &Path,
     refresh: bool,
+) -> Result<IndexRunReport, EngineError> {
+    run_incremental_index_impl(repo_root, refresh, false)
+}
+
+#[doc(hidden)]
+pub fn run_incremental_index_with_fault_injection(
+    repo_root: &Path,
+    refresh: bool,
+    inject_traversal_error: bool,
+) -> Result<IndexRunReport, EngineError> {
+    run_incremental_index_impl(repo_root, refresh, inject_traversal_error)
+}
+
+fn run_incremental_index_impl(
+    repo_root: &Path,
+    refresh: bool,
+    inject_traversal_error: bool,
 ) -> Result<IndexRunReport, EngineError> {
     let mut db = EvidenceDatabase::open(
         repo_root,
         crate::intelligence::db::DatabaseOpenMode::ReadWrite,
     )?;
 
-    // Read current files
+    let gen: u64 = db
+        .get_metadata("generation")
+        .unwrap_or(None)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let new_gen = gen + 1;
+
+    // Enforce stored GraphCompatibility BEFORE indexing, but only when a
+    // prior index exists. A pristine database (never indexed) has no
+    // evidence that could be stale; the first index establishes the contract.
+    let existing_files: i64 = db
+        .conn
+        .query_row("SELECT count(*) FROM files", [], |row| row.get(0))?;
+    let prior_indexed = gen > 0 || existing_files > 0;
+
+    let current_compat = crate::protocol::GraphCompatibility::default();
+    let mut compat_blocked = false;
+    let mut compat_reason = String::new();
+    if prior_indexed {
+        match crate::intelligence::compatibility::check_compatibility(&db, &current_compat)? {
+            crate::intelligence::compatibility::CompatibilityStatus::Compatible => {}
+            crate::intelligence::compatibility::CompatibilityStatus::ProviderRefreshRequired => {
+                let tx = TransactionalGraph::new(&mut db.conn)?;
+                tx.tx.execute(
+                    "DELETE FROM edges WHERE provider_fingerprint != ?1",
+                    rusqlite::params![current_compat.provider_fingerprint],
+                )?;
+                tx.tx.execute(
+                    "DELETE FROM provider_state WHERE fingerprint != ?1",
+                    rusqlite::params![current_compat.provider_fingerprint],
+                )?;
+                tx.commit()?;
+                compat_blocked = true;
+                compat_reason = "provider_refresh_required".to_string();
+            }
+            crate::intelligence::compatibility::CompatibilityStatus::SemanticRebuildRequired => {
+                let tx = TransactionalGraph::new(&mut db.conn)?;
+                tx.tx.execute("DELETE FROM edges", [])?;
+                tx.tx.execute("DELETE FROM nodes", [])?;
+                tx.commit()?;
+                compat_blocked = true;
+                compat_reason = "semantic_rebuild_required".to_string();
+            }
+            crate::intelligence::compatibility::CompatibilityStatus::MigrationRequired(_, _) => {}
+            crate::intelligence::compatibility::CompatibilityStatus::FutureSchema
+            | crate::intelligence::compatibility::CompatibilityStatus::Incompatible => {
+                return Err(EngineError::Io(std::io::Error::other(
+                    "Database schema is incompatible or from the future",
+                )));
+            }
+        }
+    }
+
     let mut current_files: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     {
@@ -80,21 +150,12 @@ pub fn run_incremental_index(
         .require_git(false)
         .build();
 
-    let gen: u64 = db
-        .get_metadata("generation")
-        .unwrap_or(None)
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(0);
-    let new_gen = gen + 1;
-
-    // ONE BIG TRANSACTION for atomicity
     let tx = TransactionalGraph::new(&mut db.conn)?;
 
-    // Update status to IN_PROGRESS so a crash is detectable
     tx.set_metadata("status", "IN_PROGRESS")?;
 
     let mut traversal_errors = 0;
-    if std::env::var("FDX_INJECT_TRAVERSAL_ERROR").is_ok() {
+    if inject_traversal_error {
         traversal_errors += 1;
     }
     for result in walker {
@@ -184,8 +245,6 @@ pub fn run_incremental_index(
         }
     }
 
-    // Delete files that no longer exist, only if traversal was completely successful.
-    // If there were traversal errors, we cannot be sure if a file was deleted or just inaccessible.
     if traversal_errors == 0 {
         for old_path in current_files.keys() {
             if !discovered.contains(old_path) {
@@ -200,8 +259,6 @@ pub fn run_incremental_index(
     if traversal_errors > 0 {
         tx.rollback()?;
 
-        // Save diagnostic metadata using a separate short transaction
-        // so we don't commit partial graph updates
         let err_msg = "Traversal errors occurred during indexing";
 
         let tx_err = TransactionalGraph::new(&mut db.conn)?;
@@ -212,21 +269,27 @@ pub fn run_incremental_index(
         return Err(EngineError::Io(std::io::Error::other(err_msg)));
     }
 
-    // Commit generation and status
+    let mut reasons = Vec::new();
+    let mut state = IndexFreshness::Fresh;
     if skipped_files > 0 {
-        tx.set_metadata("status", "DEGRADED")?;
-        let mut sorted_reasons: Vec<_> = skip_reasons.iter().copied().collect();
-        sorted_reasons.sort();
-        let err_msg = format!(
-            "Skipped {} files due to: {}",
-            skipped_files,
-            sorted_reasons.join(",")
-        );
-        tx.set_metadata("last_error", &err_msg)?;
+        state = IndexFreshness::Degraded;
+        for reason in &skip_reasons {
+            reasons.push(reason.to_string());
+        }
+    }
+    if compat_blocked {
+        state = IndexFreshness::Degraded;
+        reasons.push(compat_reason.clone());
+    }
+
+    if state == IndexFreshness::Degraded {
+        if !reasons.is_empty() {
+            tx.set_metadata("last_error", &reasons.join(","))?;
+        }
     } else {
-        tx.set_metadata("status", "FRESH")?;
         tx.set_metadata("last_error", "")?;
     }
+    tx.set_metadata("status", state.as_status_str())?;
 
     tx.set_metadata("generation", &new_gen.to_string())?;
     let now_ms = SystemTime::now()
@@ -234,12 +297,11 @@ pub fn run_incremental_index(
         .unwrap()
         .as_millis() as u64;
     tx.set_metadata("last_successful_refresh_at", &now_ms.to_string())?;
-    crate::intelligence::compatibility::persist_compatibility(
-        &tx,
-        &crate::protocol::GraphCompatibility::default(),
-    )?;
 
-    // Save snapshot
+    if !compat_blocked {
+        crate::intelligence::compatibility::persist_compatibility(&tx, &current_compat)?;
+    }
+
     if let Ok(snapshot) = crate::intelligence::snapshot::get_repository_snapshot(repo_root) {
         if let Some(h) = snapshot.head {
             tx.set_metadata("snapshot_head", &h)?;
@@ -253,17 +315,8 @@ pub fn run_incremental_index(
         .conn
         .query_row("SELECT count(*) FROM files", [], |row| row.get(0))?;
 
-    let mut reasons = Vec::new();
-    let mut state = "FRESH";
-    if skipped_files > 0 {
-        state = "DEGRADED";
-        for reason in &skip_reasons {
-            reasons.push(reason.to_string());
-        }
-    }
-
     Ok(IndexRunReport {
-        state: state.to_string(),
+        state,
         files: total_files as usize,
         changed: changed_count,
         skipped: skipped_files,

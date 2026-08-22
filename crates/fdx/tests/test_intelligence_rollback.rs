@@ -97,10 +97,10 @@ fn test_failed_refresh_rollback_neutral() {
     assert_eq!(files_before, 1);
     drop(db);
 
-    // Inject error
-    std::env::set_var("FDX_INJECT_TRAVERSAL_ERROR", "1");
-    let result = run_incremental_index(repo_root, true);
-    std::env::remove_var("FDX_INJECT_TRAVERSAL_ERROR");
+    // Deterministic test-only fault injection: no environment hook involved.
+    let result = fdx::intelligence::engine::run_incremental_index_with_fault_injection(
+        repo_root, true, true,
+    );
 
     assert!(result.is_err(), "Expected error due to traversal failure");
 

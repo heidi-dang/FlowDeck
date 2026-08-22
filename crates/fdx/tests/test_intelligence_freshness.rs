@@ -57,38 +57,61 @@ fn test_freshness_snapshot_invalidation() {
     assert_eq!(report3.state, "fresh");
 }
 
-
 #[test]
 fn test_compatibility_invalidation() {
     let dir = tempdir().unwrap();
     let repo_root = dir.path();
-    
-    std::process::Command::new("git").arg("init").current_dir(repo_root).output().unwrap();
-    std::process::Command::new("git").args(["config", "user.name", "test"]).current_dir(repo_root).output().unwrap();
-    std::process::Command::new("git").args(["config", "user.email", "test@test.com"]).current_dir(repo_root).output().unwrap();
+
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(repo_root)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "test"])
+        .current_dir(repo_root)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(repo_root)
+        .output()
+        .unwrap();
     fs::write(repo_root.join("src1.ts"), "const a = 1;").unwrap();
-    std::process::Command::new("git").args(["add", "src1.ts"]).current_dir(repo_root).output().unwrap();
-    std::process::Command::new("git").args(["commit", "-m", "init"]).current_dir(repo_root).output().unwrap();
-    
+    std::process::Command::new("git")
+        .args(["add", "src1.ts"])
+        .current_dir(repo_root)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(repo_root)
+        .output()
+        .unwrap();
+
     run_incremental_index(repo_root, false).unwrap();
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly).unwrap();
-    
+
     let current_compat = GraphCompatibility::default();
-    
+
     let report1 = evaluate_index_status(repo_root, Ok(&db), &current_compat);
     assert_eq!(report1.state, "fresh");
-    
+
     // Provider fingerprint changes -> should be STALE
     let mut bad_compat = current_compat.clone();
     bad_compat.provider_fingerprint = "different".to_string();
     let report2 = evaluate_index_status(repo_root, Ok(&db), &bad_compat);
     assert_eq!(report2.state, "stale");
-    assert!(report2.reasons.contains(&"provider_refresh_required".to_string()));
-    
+    assert!(report2
+        .reasons
+        .contains(&"provider_refresh_required".to_string()));
+
     // Semantic model version changes -> should be STALE
     let mut bad_compat2 = current_compat.clone();
     bad_compat2.semantic_model_version = 999;
     let report3 = evaluate_index_status(repo_root, Ok(&db), &bad_compat2);
     assert_eq!(report3.state, "stale");
-    assert!(report3.reasons.contains(&"semantic_rebuild_required".to_string()));
+    assert!(report3
+        .reasons
+        .contains(&"semantic_rebuild_required".to_string()));
 }

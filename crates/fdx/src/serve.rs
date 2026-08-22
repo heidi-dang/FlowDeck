@@ -269,40 +269,51 @@ fn handle_evidence_graph_v1(
     _args: &serde_json::Value,
     _cache: &AstCache,
 ) -> Option<String> {
-    let cwd = std::path::Path::new(".");
-    match crate::intelligence::db::EvidenceDatabase::open(
-        cwd,
+    // Resolve the canonical repository root exactly like the CLI does.
+    // The daemon must never fall back to an arbitrary nested CWD for graph
+    // storage identity.
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root_ref = repo_root.as_path();
+
+    let db_result = crate::intelligence::db::EvidenceDatabase::open(
+        repo_root_ref,
         crate::intelligence::db::DatabaseOpenMode::ReadOnly,
-    ) {
-        Ok(db) => {
-            let version = db.get_schema_version().map(|v| v.version).unwrap_or(0);
-            let file_count: i32 = db
-                .conn
-                .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
-                .unwrap_or(0);
-            let node_count: i32 = db
-                .conn
-                .query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))
-                .unwrap_or(0);
-            let edge_count: i32 = db
-                .conn
-                .query_row("SELECT count(*) FROM edges", [], |r| r.get(0))
-                .unwrap_or(0);
+    );
+    let db_ref = match &db_result {
+        Ok(db) => Ok(db),
+        Err(e) => Err(e),
+    };
 
-            format_ok(
-                id,
-                serde_json::json!({
-                    "schema_version": version,
-                    "files": file_count,
-                    "nodes": node_count,
-                    "edges": edge_count,
-                }),
-            )
-        }
-        Err(e) => format_err(id, format!("database error: {}", e)),
-    }
+    // Same production status evaluator used by `fdx index status`.
+    let report = crate::intelligence::status::evaluate_index_status(
+        repo_root_ref,
+        db_ref,
+        &crate::protocol::GraphCompatibility::default(),
+    );
+
+    format_ok(
+        id,
+        serde_json::json!({
+            "status": report.state,
+            "reasons": report.reasons,
+            "generation": report.generation,
+            "schema_version": report.schema_version,
+            "files": report.files,
+            "nodes": report.nodes,
+            "edges": report.edges,
+            "journal_mode": report.journal_mode,
+            "foreign_keys": report.foreign_keys,
+            "busy_timeout": report.busy_timeout,
+        }),
+    )
 }
-
 fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
     match req.op.as_str() {
         "version" => format_ok(

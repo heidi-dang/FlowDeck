@@ -1076,10 +1076,17 @@ fn main() {
                 }
                 "run" => {
                     match fdx::intelligence::engine::run_incremental_index(repo_root_ref, refresh) {
-                        Ok(status) => {
-                            println!("INDEX fresh");
-                            println!("files={}", status.files);
-                            println!("changed={}", status.changed);
+                        Ok(report) => {
+                            println!("INDEX {}", report.state.to_string());
+                            if !report.reasons.is_empty() {
+                                println!("reason={}", report.reasons.join(","));
+                            }
+                            if report.skipped > 0 {
+                                println!("skipped={}", report.skipped);
+                            }
+                            println!("files={}", report.files);
+                            println!("changed={}", report.changed);
+                            println!("generation={}", report.generation);
                         }
                         Err(e) => {
                             eprintln!("INDEX failed");
