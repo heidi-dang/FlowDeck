@@ -18,9 +18,9 @@ fn test_synthetic_migration() {
             .unwrap();
     }
 
-    // Open ReadWrite -> should migrate 0 to the current schema version (4)
+    // Open ReadWrite -> should migrate 0 to the current schema version (5)
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 4);
+    assert_eq!(db.get_schema_version().unwrap().version, 5);
 
     // Legacy table should still exist
     let count: i32 = db
@@ -60,7 +60,7 @@ fn test_future_schema_rejected_after_migration_setup() {
 
 #[test]
 fn test_v1_to_v2_migration_preserves_data() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = tempdir().unwrap();
     let repo_root = dir.path();
     let fdx_dir = repo_root.join(".fdx");
     std::fs::create_dir_all(&fdx_dir).unwrap();
@@ -82,13 +82,13 @@ fn test_v1_to_v2_migration_preserves_data() {
          CREATE TABLE provider_state (provider TEXT PRIMARY KEY, fingerprint TEXT NOT NULL,
                                       compatibility_data TEXT);
          PRAGMA user_version = 1;
-         INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('a.rs', 'h1', 3, 0);"
+         INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('a.rs', 'h1', 3, 0);",
     )
     .unwrap();
     drop(conn);
 
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 4);
+    assert_eq!(db.get_schema_version().unwrap().version, 5);
     let files: i64 = db
         .conn
         .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
@@ -130,6 +130,15 @@ fn test_v1_to_v2_migration_preserves_data() {
         )
         .unwrap();
     assert_eq!(node_src_cols, 1, "v4 nodes source_identity column added");
+    let edge_pid_cols: i64 = db
+        .conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('edges') WHERE name = 'provider_id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(edge_pid_cols, 1, "v5 edges provider_id column added");
 }
 
 #[test]
@@ -155,7 +164,7 @@ fn test_v3_to_v4_migration_adds_node_source_identity() {
     drop(conn);
 
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 4);
+    assert_eq!(db.get_schema_version().unwrap().version, 5);
     let count: i64 = db
         .conn
         .query_row(
@@ -165,6 +174,43 @@ fn test_v3_to_v4_migration_adds_node_source_identity() {
         )
         .unwrap();
     assert_eq!(count, 1, "v4 nodes source_identity column created");
+}
+
+#[test]
+fn test_v4_to_v5_migration_adds_edge_provider_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo_root = dir.path();
+    let fdx_dir = repo_root.join(".fdx");
+    std::fs::create_dir_all(&fdx_dir).unwrap();
+    let db_path = fdx_dir.join("index.sqlite");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(fdx::intelligence::schema::INITIALIZE_SCHEMA_SQL)
+        .unwrap();
+    conn.execute_batch(fdx::intelligence::schema::MIGRATE_V1_TO_V2_SQL)
+        .unwrap();
+    conn.execute_batch(fdx::intelligence::schema::MIGRATE_V2_TO_V3_SQL)
+        .unwrap();
+    conn.execute_batch(fdx::intelligence::schema::MIGRATE_V3_TO_V4_SQL)
+        .unwrap();
+    conn.pragma_update(None, "user_version", 4).unwrap();
+    conn.execute(
+        "INSERT OR REPLACE INTO schema_metadata (version) VALUES (4)",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
+    assert_eq!(db.get_schema_version().unwrap().version, 5);
+    let count: i64 = db
+        .conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('edges') WHERE name = 'provider_id'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "v5 edges provider_id column created");
 }
 
 #[test]
@@ -188,7 +234,7 @@ fn test_v2_to_v3_migration_adds_attempt_columns() {
     drop(conn);
 
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 4);
+    assert_eq!(db.get_schema_version().unwrap().version, 5);
     let count: i64 = db
         .conn
         .query_row(
@@ -218,10 +264,11 @@ fn test_migration_failure_rolls_back_to_v1() {
     drop(conn);
     // Missing files/nodes tables => ALTER during 1->2 fails => tx rollback.
     let result = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite);
-    assert!(result.is_err(), "migration must fail closed");
-    let conn = rusqlite::Connection::open(&db_path).unwrap();
-    let version: u32 = conn
+    assert!(result.is_err(), "Broken migration must fail");
+
+    let conn2 = rusqlite::Connection::open(&db_path).unwrap();
+    let v: u32 = conn2
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 1, "rollback must preserve v1");
+    assert_eq!(v, 1, "Rollback leaves user_version at 1");
 }

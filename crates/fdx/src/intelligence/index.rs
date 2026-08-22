@@ -197,9 +197,11 @@ impl<'a> TransactionalGraph<'a> {
         let strength_int = edge.strength as i32;
 
         self.tx.execute(
-            "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+            "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_id, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(stable_id) DO UPDATE SET
+                provider_id = excluded.provider_id,
+                provider_fingerprint = excluded.provider_fingerprint,
                 stale = excluded.stale,
                 updated_revision = excluded.updated_revision,
                 source_hash = excluded.source_hash,
@@ -210,6 +212,7 @@ impl<'a> TransactionalGraph<'a> {
                 edge.to_node,
                 kind_str,
                 provider_str,
+                edge.provider_id,
                 edge.provider_fingerprint,
                 strength_int,
                 edge.source_identity,
@@ -237,11 +240,13 @@ impl<'a> TransactionalGraph<'a> {
         let strength_int = edge.strength as i32;
 
         self.tx.execute(
-            "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint,
+            "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_id, provider_fingerprint,
                                 strength, source_identity, source_hash, created_revision, updated_revision,
                                 stale, generation, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, ?12, ?13)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 0, ?13, ?14)
              ON CONFLICT(stable_id) DO UPDATE SET
+                provider_id = excluded.provider_id,
+                provider_fingerprint = excluded.provider_fingerprint,
                 stale = 0,
                 updated_revision = excluded.updated_revision,
                 source_hash = excluded.source_hash,
@@ -254,6 +259,7 @@ impl<'a> TransactionalGraph<'a> {
                 edge.to_node,
                 kind_str,
                 provider_str,
+                edge.provider_id,
                 edge.provider_fingerprint,
                 strength_int,
                 edge.source_identity,

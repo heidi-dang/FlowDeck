@@ -3,7 +3,7 @@ pub struct SchemaVersion {
     pub version: u32,
 }
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+pub const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 pub const INITIALIZE_SCHEMA_SQL: &str = r#"
 PRAGMA user_version = 1;
@@ -130,4 +130,13 @@ ALTER TABLE semantic_providers ADD COLUMN last_attempt_failure_reason TEXT;
 /// - explicit semantic node derivation identity (nodes.source_identity)
 pub const MIGRATE_V3_TO_V4_SQL: &str = r#"
 ALTER TABLE nodes ADD COLUMN source_identity TEXT;
+"#;
+
+/// SQL applied when migrating a v4 database to v5.
+///
+/// v5 additions:
+/// - explicit semantic edge provider_id ownership for precise provenance and freshness correlation
+pub const MIGRATE_V4_TO_V5_SQL: &str = r#"
+ALTER TABLE edges ADD COLUMN provider_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_edges_provider_id ON edges(provider_id);
 "#;

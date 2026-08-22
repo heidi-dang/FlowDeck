@@ -105,6 +105,7 @@ fn test_stale_provider_widens_impact_and_downgrades_assurance() {
         to_node: n1.stable_id.clone(),
         kind: EdgeKind::References,
         provider: EvidenceProviderKind::Scip,
+        provider_id: Some("scip-typescript".to_string()),
         provider_fingerprint: "scip-v1".to_string(),
         strength: EvidenceStrength::Precise,
         source_identity: Some("src/client.ts".to_string()),

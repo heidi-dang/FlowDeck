@@ -49,6 +49,10 @@ pub fn migrate_schema(
                 // Migrate v3 -> v4: node derivation source_identity
                 tx.execute_batch(crate::intelligence::schema::MIGRATE_V3_TO_V4_SQL)?;
             }
+            4 => {
+                // Migrate v4 -> v5: edge provider_id ownership
+                tx.execute_batch(crate::intelligence::schema::MIGRATE_V4_TO_V5_SQL)?;
+            }
             _ => {
                 return Err(MigrationError::Unsupported(version, target_version));
             }
