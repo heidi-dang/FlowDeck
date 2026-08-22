@@ -1,0 +1,109 @@
+{
+  "metadata": {
+    "benchmark": "benchmark-fdx-vci-m5-build-config",
+    "timestamp": "2026-08-22T16:24:55.383Z",
+    "platform": "linux",
+    "arch": "x64",
+    "functional_source_sha": "71b86b90f2a1ba61f7209cdb943d2ab38451e317",
+    "binary_source_sha": "71b86b90f2a1ba61f7209cdb943d2ab38451e317",
+    "binary_path": "/home/heidi/flowdeck/target/release/fdx"
+  },
+  "results": {
+    "package_json_workspace_discovery": {
+      "count": 5,
+      "min": 8.78,
+      "max": 10.06,
+      "mean": 9.1,
+      "median": 8.92,
+      "p95": 10.06
+    },
+    "100_package_workspace_graph": {
+      "count": 5,
+      "min": 23.23,
+      "max": 24.32,
+      "mean": 23.58,
+      "median": 23.38,
+      "p95": 24.32
+    },
+    "1000_package_dependency_edges": {
+      "count": 5,
+      "min": 41.19,
+      "max": 42.18,
+      "mean": 41.67,
+      "median": 41.56,
+      "p95": 42.18
+    },
+    "tsconfig_extends_chain": {
+      "count": 5,
+      "min": 9.5,
+      "max": 9.98,
+      "mean": 9.74,
+      "median": 9.63,
+      "p95": 9.98
+    },
+    "tsconfig_reference_fanout": {
+      "count": 5,
+      "min": 10.9,
+      "max": 11.19,
+      "mean": 11.05,
+      "median": 11,
+      "p95": 11.19
+    },
+    "cargo_workspace_discovery": {
+      "count": 5,
+      "min": 10.94,
+      "max": 11.1,
+      "mean": 11.03,
+      "median": 11.03,
+      "p95": 11.1
+    },
+    "cargo_path_dependency_fanout": {
+      "count": 5,
+      "min": 11.7,
+      "max": 12.36,
+      "mean": 11.91,
+      "median": 11.79,
+      "p95": 12.36
+    },
+    "fresh_build_config_aware_impact": {
+      "count": 5,
+      "min": 55.04,
+      "max": 91.89,
+      "mean": 83.57,
+      "median": 91.39,
+      "p95": 91.89
+    },
+    "stale_scoped_config_widening": {
+      "count": 5,
+      "min": 19.13,
+      "max": 19.28,
+      "mean": 19.2,
+      "median": 19.21,
+      "p95": 19.28
+    },
+    "malformed_package_local_config": {
+      "count": 5,
+      "min": 32.25,
+      "max": 32.9,
+      "mean": 32.56,
+      "median": 32.6,
+      "p95": 32.9
+    },
+    "workspace_root_uncertainty": {
+      "count": 5,
+      "min": 31.47,
+      "max": 31.98,
+      "mean": 31.63,
+      "median": 31.54,
+      "p95": 31.98
+    },
+    "why_explanation_through_build_path": {
+      "count": 5,
+      "min": 33.27,
+      "max": 34.67,
+      "mean": 33.73,
+      "median": 33.62,
+      "p95": 34.67
+    }
+  }
+}
