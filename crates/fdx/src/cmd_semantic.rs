@@ -101,12 +101,9 @@ pub fn semantic_refresh(
                 continue;
             }
         }
-        match provider.health(repo_root) {
-            ProviderHealth::Unsupported => {
-                out.push_str(&format!("SEMANTIC {} unsupported\n", provider.id()));
-                continue;
-            }
-            _ => {}
+        if provider.health(repo_root) == ProviderHealth::Unsupported {
+            out.push_str(&format!("SEMANTIC {} unsupported\n", provider.id()));
+            continue;
         }
         match refresh_provider(repo_root, provider, false) {
             Ok(report) if report.skipped => {

@@ -351,10 +351,8 @@ fn handle_semantic_status_v1(
         Ok(s) => s,
         Err(e) => return format_err(id, format!("semantic status error: {}", e)),
     };
-    let (nodes, edges) = match crate::intelligence::semantic::state::count_semantic_evidence(&db) {
-        Ok(n) => n,
-        Err(_) => (0, 0),
-    };
+    let (nodes, edges) =
+        crate::intelligence::semantic::state::count_semantic_evidence(&db).unwrap_or_default();
     let providers: Vec<serde_json::Value> = states
         .iter()
         .map(|s| {

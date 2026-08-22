@@ -121,7 +121,7 @@ fn cli_semantic_refresh_runs_fake_provider_and_status_reports_it() {
 fn cli_semantic_refresh_missing_provider_is_truthful() {
     let repo = tempfile::tempdir().unwrap();
     ts_repo(repo.path());
-    let (code, _out, err) = run(
+    let (code, _out, _err) = run(
         repo.path(),
         &["semantic", "refresh", "--provider", "scip-typescript"],
         &[("SCIP_TYPESCRIPT_BIN", "/nonexistent/scip-typescript")],
