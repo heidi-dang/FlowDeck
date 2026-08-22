@@ -29,6 +29,30 @@ pub enum IntelligenceIntent {
     Context,
 }
 
+impl IntelligenceIntent {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            IntelligenceIntent::Localize => "localize",
+            IntelligenceIntent::ReferenceComplete => "reference_complete",
+            IntelligenceIntent::Rename => "rename",
+            IntelligenceIntent::ImpactSeed => "impact_seed",
+            IntelligenceIntent::Context => "context",
+        }
+    }
+    pub fn parse(s: &str) -> Option<IntelligenceIntent> {
+        match s.to_ascii_lowercase().as_str() {
+            "localize" => Some(IntelligenceIntent::Localize),
+            "reference_complete" | "reference-complete" => {
+                Some(IntelligenceIntent::ReferenceComplete)
+            }
+            "rename" => Some(IntelligenceIntent::Rename),
+            "impact_seed" | "impact-seed" => Some(IntelligenceIntent::ImpactSeed),
+            "context" => Some(IntelligenceIntent::Context),
+            _ => None,
+        }
+    }
+}
+
 /// Evidence source selected by routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -20,6 +20,34 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+pub enum SemanticAction {
+    /// Show provider health/freshness/fingerprint/scope/last run/reason
+    Status,
+    /// Refresh semantic providers (bounded, no downloads)
+    Refresh {
+        /// Refresh only this provider id
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Decode an SCIP index file and report bounded statistics
+    Decode {
+        /// Path to the .scip file
+        file: PathBuf,
+    },
+    /// Reference query with explicit provenance and completeness
+    References {
+        /// Symbol name or SCIP canonical symbol
+        symbol: String,
+        /// Language: rust, typescript, javascript
+        #[arg(long, default_value = "rust")]
+        lang: String,
+        /// Intent: localize, reference_complete, rename, impact_seed, context
+        #[arg(long, default_value = "reference_complete")]
+        intent: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
     /// Native EvidenceGraph index management
     ///
@@ -31,6 +59,13 @@ enum Commands {
         /// Force refresh existing files
         #[arg(long)]
         refresh: bool,
+    },
+    /// Semantic provider diagnostics and refresh (SCIP evidence)
+    ///
+    /// Example: fdx semantic status
+    Semantic {
+        #[command(subcommand)]
+        action: SemanticAction,
     },
     /// Read a file with token-optimized output
     ///
@@ -1098,6 +1133,72 @@ fn main() {
                 other => {
                     eprintln!("Unknown index action: {}", other);
                     process::exit(1);
+                }
+            }
+        }
+        Commands::Semantic { action } => {
+            use fdx::intelligence::semantic::router::IntelligenceIntent;
+            use fdx::intelligence::semantic::LanguageId;
+            let cwd_path = std::path::Path::new(".");
+            let repo_root = fdx::paths::find_repository_root(cwd_path)
+                .unwrap_or_else(|_| cwd_path.to_path_buf());
+            match action {
+                SemanticAction::Status => match fdx::cmd_semantic::semantic_status(&repo_root) {
+                    Ok(s) => print!("{}", s),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        process::exit(1);
+                    }
+                },
+                SemanticAction::Refresh { provider } => {
+                    match fdx::cmd_semantic::semantic_refresh(&repo_root, provider.as_deref()) {
+                        Ok((out, failed)) => {
+                            print!("{}", out);
+                            if failed {
+                                process::exit(1);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                SemanticAction::Decode { file } => {
+                    match fdx::cmd_semantic::semantic_decode(&repo_root, &file) {
+                        Ok(s) => print!("{}", s),
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                SemanticAction::References {
+                    symbol,
+                    lang,
+                    intent,
+                } => {
+                    let language = match LanguageId::from_str_opt(&lang) {
+                        Some(l) => l,
+                        None => {
+                            eprintln!("Error: unsupported language: {}", lang);
+                            process::exit(1);
+                        }
+                    };
+                    let intent_parsed = IntelligenceIntent::parse(&intent)
+                        .unwrap_or(IntelligenceIntent::ReferenceComplete);
+                    match fdx::cmd_semantic::semantic_references(
+                        &repo_root,
+                        language,
+                        &symbol,
+                        intent_parsed,
+                    ) {
+                        Ok(s) => print!("{}", s),
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            process::exit(1);
+                        }
+                    }
                 }
             }
         }

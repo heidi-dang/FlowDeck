@@ -79,10 +79,40 @@ pub struct IngestReport {
 }
 
 /// Refresh one provider: bounded run -> SCIP decode -> transactional publish.
+#[doc(hidden)]
+pub fn refresh_provider_with_limits(
+    repo_root: &Path,
+    provider: &dyn SemanticProvider,
+    force: bool,
+    time_limit: std::time::Duration,
+    max_output_bytes: u64,
+    max_stderr_bytes: u64,
+) -> Result<IngestReport, IngestError> {
+    refresh_provider_impl(
+        repo_root,
+        provider,
+        force,
+        Some(time_limit),
+        Some(max_output_bytes),
+        Some(max_stderr_bytes),
+    )
+}
+
 pub fn refresh_provider(
     repo_root: &Path,
     provider: &dyn SemanticProvider,
     force: bool,
+) -> Result<IngestReport, IngestError> {
+    refresh_provider_impl(repo_root, provider, force, None, None, None)
+}
+
+fn refresh_provider_impl(
+    repo_root: &Path,
+    provider: &dyn SemanticProvider,
+    force: bool,
+    time_limit: Option<std::time::Duration>,
+    max_output_bytes: Option<u64>,
+    max_stderr_bytes: Option<u64>,
 ) -> Result<IngestReport, IngestError> {
     let mut db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite)?;
     let scope = provider.scope(repo_root);
@@ -190,9 +220,11 @@ pub fn refresh_provider(
         scope: scope.clone(),
         fingerprint: fingerprint.clone(),
         output_path: output_path.clone(),
-        time_limit: crate::intelligence::semantic::limits::MAX_PROVIDER_RUNTIME,
-        max_output_bytes: MAX_SCIP_INDEX_BYTES,
-        max_stderr_bytes: crate::intelligence::semantic::limits::MAX_PROVIDER_STDERR_BYTES,
+        time_limit: time_limit
+            .unwrap_or(crate::intelligence::semantic::limits::MAX_PROVIDER_RUNTIME),
+        max_output_bytes: max_output_bytes.unwrap_or(MAX_SCIP_INDEX_BYTES),
+        max_stderr_bytes: max_stderr_bytes
+            .unwrap_or(crate::intelligence::semantic::limits::MAX_PROVIDER_STDERR_BYTES),
     };
 
     let result: SemanticIngestResult = match provider.ingest(request) {

@@ -50,8 +50,8 @@ Clients and daemons negotiate protocol capabilities on startup or on demand.
   "value": {
     "protocol": 2,
     "selected_capabilities": ["search", "outline", "impact-v1", "vci-v1"],
-    "server_capabilities": ["search", "outline", "read", "impact-v1", "impact-v2", "evidence-graph-v1", "vci-v1", "why-v1"],
-    "graph_schema_version": 1,
+    "server_capabilities": ["search", "outline", "read", "impact-v1", "evidence-graph-v1", "semantic-status-v1"],
+    "graph_schema_version": 2,
     "selection_policy_version": 1,
     "attestation_predicate_version": 1
   }

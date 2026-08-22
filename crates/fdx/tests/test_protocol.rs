@@ -188,6 +188,7 @@ fn test_capability_invariant_operations_exist() {
         "outline",
         "impact-v1",
         "evidence-graph-v1",
+        "semantic-status-v1",
     ];
     let req = NegotiateRequest {
         protocol: 2,
@@ -219,8 +220,9 @@ fn test_empty_capability_request() {
         "outline",
         "impact-v1",
         "evidence-graph-v1",
+        "semantic-status-v1",
     ];
     assert_eq!(resp.selected_capabilities, expected);
     // Server should still advertise all capabilities
-    assert_eq!(resp.server_capabilities.len(), 5);
+    assert_eq!(resp.server_capabilities.len(), 6);
 }
