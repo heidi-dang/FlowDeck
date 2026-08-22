@@ -4,7 +4,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
@@ -13,7 +13,13 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m4-impact.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m4-repro.md");
 
+const EXPECTED_FUNCTIONAL_SHA = "601d47ba48e0d3cdcbb367346716706648e9770d";
+
 function getReleaseBinaryPath() {
+  if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
+    console.log("Using pre-built FDX binary: " + process.env.FDX_BINARY_PATH);
+    return process.env.FDX_BINARY_PATH;
+  }
   const binaryName = process.platform === "win32" ? "fdx.exe" : "fdx";
   const candidate = join(ROOT, "target", "release", binaryName);
 
@@ -55,9 +61,46 @@ function gitCommitAll(dir, msg) {
 
 async function runBenchmark() {
   console.log("=== Running FDX VCI Milestone 4 Transitive Impact Benchmark ===");
-  const binaryPath = getReleaseBinaryPath();
-  const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
+
+  const declaredFunctionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA || EXPECTED_FUNCTIONAL_SHA;
+  if (declaredFunctionalSha !== EXPECTED_FUNCTIONAL_SHA) {
+    throw new Error(
+      `Declared functional SHA ${declaredFunctionalSha} does not match expected functional SHA ${EXPECTED_FUNCTIONAL_SHA}`
+    );
+  }
+
+  // Verify functional SHA exists in git object DB
+  try {
+    execFileSync("git", ["cat-file", "-e", declaredFunctionalSha], { cwd: ROOT });
+  } catch {
+    throw new Error(`Functional SHA ${declaredFunctionalSha} not found in repository`);
+  }
+
+  // Verify production tree matches functional SHA byte-for-byte
+  const diffOutput = execFileSync("git", ["diff", "--name-only", declaredFunctionalSha], {
+    cwd: ROOT,
+    encoding: "utf8",
+  }).trim();
+
+  const allowedDifferences = new Set([
+    "scripts/benchmark-fdx-vci-m4.mjs",
+    "reports/benchmark-fdx-vci-m4-impact.json",
+    "reports/benchmark-fdx-vci-m4-repro.md",
+  ]);
+
+  if (diffOutput.length > 0) {
+    const changedFiles = diffOutput.split("\n").map((f) => f.trim()).filter(Boolean);
+    const unapprovedChanges = changedFiles.filter((f) => !allowedDifferences.has(f));
+    if (unapprovedChanges.length > 0) {
+      throw new Error(
+        `Production tree differs from functional SHA ${declaredFunctionalSha}: ${unapprovedChanges.join(", ")}`
+      );
+    }
+  }
+
+  const harnessSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
   const gitBranch = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
+  const binaryPath = getReleaseBinaryPath();
 
   const benchDir = join(tmpdir(), "fdx-m4-bench-" + Date.now());
   mkdirSync(join(benchDir, "src"), { recursive: true });
@@ -131,7 +174,19 @@ async function runBenchmark() {
 
   const scipFixture = join(ROOT, "crates", "fdx", "tests", "fixtures", "scip", "basic-ts.scip");
   const fakeBin = join(scipDir, "fake-scip-typescript");
-  const fakeScript = "#!/bin/bash\nOUT=\"\"\nPREV=\"\"\nfor a in \"$@\"; do\n  if [ \"$PREV\" = \"--output\" ]; then OUT=\"$a\"; fi\n  if [ \"$a\" = \"--version\" ]; then echo \"scip-typescript 0.4.0\"; exit 0; fi\n  PREV=\"$a\"\ndone\ncp \"" + scipFixture + "\" \"$OUT\"\nexit 0\n";
+  const countLog = join(scipDir, "fake-scip-counter.log");
+  const fakeScript = `#!/bin/bash
+echo "invoked" >> "${countLog}"
+OUT=""
+PREV=""
+for a in "$@"; do
+  if [ "$PREV" = "--output" ]; then OUT="$a"; fi
+  if [ "$a" = "--version" ]; then echo "scip-typescript 0.4.0"; exit 0; fi
+  PREV="$a"
+done
+cp "${scipFixture}" "$OUT"
+exit 0
+`;
   writeFileSync(fakeBin, fakeScript);
   execFileSync("chmod", ["+x", fakeBin], { cwd: scipDir });
 
@@ -177,6 +232,14 @@ console.log("EDGE|" + e.provider_id + "|" + e.provider_fingerprint);
   if (edgeProviderId !== "scip-typescript") throw new Error("edge provider_id mismatch: " + edgeProviderId);
   if (edgeFingerprint !== fingerprint) throw new Error("edge fingerprint mismatch: " + edgeFingerprint + " vs " + fingerprint);
 
+  const getProviderExecutions = () => {
+    if (!existsSync(countLog)) return 0;
+    return readFileSync(countLog, "utf8").trim().split("\n").filter(Boolean).length;
+  };
+
+  const setupProviderExecutions = getProviderExecutions();
+  if (setupProviderExecutions === 0) throw new Error("fake provider was never executed during setup");
+
   writeFileSync(join(scipDir, "src", "a.ts"), "export function foo(v: number) {}\nexport function bar() {}\n");
 
   const initialImpact = JSON.parse(execFileSync(binaryPath, ["impact-v2", "--depth", "2", "--format", "json"], { cwd: scipDir, env, encoding: "utf8" }));
@@ -194,6 +257,8 @@ console.log("EDGE|" + e.provider_id + "|" + e.provider_fingerprint);
   if (!foundScip) throw new Error("impact path does not use scip evidence");
   if (!semPrefixUsed) throw new Error("impact path does not use sem:* node");
 
+  const executionsBeforeTiming = getProviderExecutions();
+
   const scipSamples = [];
   let scipResult = null;
   for (let i = 0; i < 20; i++) {
@@ -203,6 +268,12 @@ console.log("EDGE|" + e.provider_id + "|" + e.provider_fingerprint);
     if (!scipResult) scipResult = JSON.parse(raw);
   }
   const scipStats = computeStats(scipSamples);
+
+  const executionsAfterTiming = getProviderExecutions();
+  const timedProviderExecutions = executionsAfterTiming - executionsBeforeTiming;
+  if (timedProviderExecutions !== 0) {
+    throw new Error(`Provider executed ${timedProviderExecutions} times during timed impact queries!`);
+  }
 
   // 6. Measure Effective Stale Provider Fallback Path
   writeFileSync(join(scipDir, "tsconfig.json"), '{"compilerOptions":{"strict":false,"target":"es2022"}}\n');
@@ -273,7 +344,7 @@ console.log("EDGE|" + e.provider_id + "|" + e.provider_fingerprint);
   }
   const cycleStats = computeStats(cycleSamples);
 
-  // 6. Synthetic Graphs: 100, 1k edges
+  // 9. Synthetic Graphs: 100, 1k edges
   const synthetic100Dir = join(tmpdir(), "fdx-m4-syn100-" + Date.now());
   mkdirSync(join(synthetic100Dir, "src"), { recursive: true });
   initGitRepo(synthetic100Dir);
@@ -332,7 +403,10 @@ console.log("EDGE|" + e.provider_id + "|" + e.provider_fingerprint);
     milestone: "M4",
     title: "Milestone 4 Verifiable Transitive Impact Benchmark",
     timestamp: new Date().toISOString(),
-    source_sha: sourceSha,
+    functional_source_sha: declaredFunctionalSha,
+    benchmark_harness_sha: harnessSha,
+    binary_source_sha: declaredFunctionalSha,
+    source_sha: declaredFunctionalSha,
     branch: gitBranch,
     platform: process.platform,
     arch: process.arch,
@@ -352,7 +426,9 @@ console.log("EDGE|" + e.provider_id + "|" + e.provider_fingerprint);
         provider_id: "scip-typescript",
         semantic_node_prefix: "sem:",
         path_provider: "scip",
-        fingerprint_match: true
+        fingerprint_match: true,
+        setup_provider_executions: setupProviderExecutions,
+        timed_provider_executions: timedProviderExecutions,
       },
       effective_stale_fallback: {
         ...staleStats,
@@ -364,7 +440,7 @@ console.log("EDGE|" + e.provider_id + "|" + e.provider_fingerprint);
         provider_stale: true,
         fallback_used: true,
         fallback_provider: "manual_rule",
-        fallback_strength: "heuristic"
+        fallback_strength: "heuristic",
       },
       deleted_symbol_impact: {
         ...delStats,
@@ -419,7 +495,9 @@ console.log("EDGE|" + e.provider_id + "|" + e.provider_fingerprint);
   writeFileSync(REPORT_JSON_PATH, JSON.stringify(report, null, 2) + "\n");
 
   const markdown = "# Milestone 4: Verifiable Transitive Impact & Change Intelligence Benchmark Report\n\n" +
-    "- **Source Functional SHA**: `" + sourceSha + "`\n" +
+    "- **Functional Source SHA**: `" + declaredFunctionalSha + "`\n" +
+    "- **Benchmark Harness SHA**: `" + harnessSha + "`\n" +
+    "- **Binary Source SHA**: `" + declaredFunctionalSha + "`\n" +
     "- **Branch**: `" + gitBranch + "`\n" +
     "- **Timestamp**: `" + report.timestamp + "`\n" +
     "- **Platform**: `" + report.platform + "-" + report.arch + "`\n\n" +
@@ -439,7 +517,7 @@ console.log("EDGE|" + e.provider_id + "|" + e.provider_fingerprint);
     "| **Synthetic (1,000 edges)** | " + report.benchmarks.synthetic_1k_edges.median + " | " + report.benchmarks.synthetic_1k_edges.p95 + " | " + report.benchmarks.synthetic_1k_edges.min + " | " + report.benchmarks.synthetic_1k_edges.max + " | " + report.benchmarks.synthetic_1k_edges.result_count + " | " + report.benchmarks.synthetic_1k_edges.assurance + " |\n\n" +
     "---\n\n" +
     "## Reproduction Command\n\n" +
-    "```bash\ncargo build -p fdx --release\nnode scripts/benchmark-fdx-vci-m4.mjs\n```\n";
+    "```bash\nFDX_BINARY_PATH=/path/to/functional/release/fdx node scripts/benchmark-fdx-vci-m4.mjs\n```\n";
 
   writeFileSync(REPORT_MD_PATH, markdown);
   console.log("Benchmark complete. Wrote:");
