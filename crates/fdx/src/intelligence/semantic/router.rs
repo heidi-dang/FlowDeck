@@ -239,6 +239,10 @@ mod tests {
             output_digest: None,
             failure_reason: None,
             semantic_generation: 0,
+            last_attempt_fingerprint: None,
+            last_attempt_at: None,
+            last_attempt_health: None,
+            last_attempt_failure_reason: None,
         }
     }
 

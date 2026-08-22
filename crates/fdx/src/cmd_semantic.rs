@@ -29,7 +29,9 @@ pub fn semantic_status(repo_root: &Path) -> Result<String, String> {
         }
         Err(e) => return Err(format!("cannot open evidence database: {}", e)),
     };
-    let states = state::load_provider_states(&db).map_err(|e| e.to_string())?;
+    let registry = ProviderRegistry::new();
+    let persisted = state::load_provider_states(&db).map_err(|e| e.to_string())?;
+    let states = state::evaluate_effective_states(repo_root, &registry, persisted);
     let (nodes, edges) = state::count_semantic_evidence(&db).map_err(|e| e.to_string())?;
     let mut out = String::new();
     for s in &states {

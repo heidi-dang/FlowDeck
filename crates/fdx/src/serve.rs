@@ -347,10 +347,14 @@ fn handle_semantic_status_v1(
         }
         Err(e) => return format_err(id, format!("semantic status error: {}", e)),
     };
-    let states = match crate::intelligence::semantic::state::load_provider_states(&db) {
+    let persisted = match crate::intelligence::semantic::state::load_provider_states(&db) {
         Ok(s) => s,
         Err(e) => return format_err(id, format!("semantic status error: {}", e)),
     };
+    let registry = crate::intelligence::semantic::registry::ProviderRegistry::new();
+    let states = crate::intelligence::semantic::state::evaluate_effective_states(
+        &repo_root, &registry, persisted,
+    );
     let (nodes, edges) =
         crate::intelligence::semantic::state::count_semantic_evidence(&db).unwrap_or_default();
     let providers: Vec<serde_json::Value> = states
