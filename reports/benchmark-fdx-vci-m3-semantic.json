@@ -1,0 +1,65 @@
+{
+  "benchmark": "fdx-vci-m3-semantic",
+  "source_sha": "b0004f99297534a9eec5ee1bc029cf14c37155f0",
+  "branch": "feat/fdx-verifiable-change-intelligence",
+  "date": "2026-08-22T04:44:59.315Z",
+  "methodology": "FDX overhead measured with a deterministic fake provider (fixture copy); provider execution time is excluded from FDX-only latency; release build.",
+  "results": {
+    "semantic_refresh_with_fake_provider_ms": {
+      "count": 6,
+      "min": 17,
+      "max": 19,
+      "mean": 18.33,
+      "median": 19,
+      "p95": 19
+    },
+    "semantic_status_provider_diagnostics_ms": {
+      "count": 15,
+      "min": 7,
+      "max": 8,
+      "mean": 7.2,
+      "median": 7,
+      "p95": 8
+    },
+    "scip_decode_small_fixture_484b_ms": {
+      "count": 15,
+      "min": 7,
+      "max": 8,
+      "mean": 7.07,
+      "median": 7,
+      "p95": 8
+    },
+    "scip_decode_medium_fixture_16kb_ms": {
+      "count": 15,
+      "min": 6,
+      "max": 7,
+      "mean": 6.13,
+      "median": 6,
+      "p95": 7
+    },
+    "warm_semantic_reference_query_ms": {
+      "count": 15,
+      "min": 7,
+      "max": 10,
+      "mean": 7.73,
+      "median": 7,
+      "p95": 10
+    },
+    "treesitter_fallback_reference_query_ms": {
+      "count": 15,
+      "min": 7,
+      "max": 11,
+      "mean": 8.13,
+      "median": 7,
+      "p95": 11
+    }
+  },
+  "db_bytes_before_refresh": 90112,
+  "db_bytes_after_refresh": 90112,
+  "db_size_growth_bytes": 0,
+  "provider_execution_time": "not measured: no real indexer in this environment; fake-provider runtime dominates refresh samples and is not FDX latency",
+  "notes": [
+    "provider discovery and health checks are included in semantic_status samples",
+    "decode timings are for the dependency-free bounded protobuf decoder"
+  ]
+}
