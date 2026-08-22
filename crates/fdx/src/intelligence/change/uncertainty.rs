@@ -1,6 +1,6 @@
 //! Uncertainty reasoning and assurance computation for impact analysis.
 
-use crate::protocol::AssuranceLevel;
+use crate::protocol::{AssuranceLevel, EvidenceRef, EvidenceStrength};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -18,6 +18,11 @@ pub enum UncertaintyReason {
     MissingBeforeEvidence(String),
     MissingAfterEvidence(String),
     FallbackUsed(String),
+    GraphAbsent(String),
+    GraphIncompatible(String),
+    GraphCorrupt(String),
+    GraphUnavailable(String),
+    UnknownGraphRelation(String),
 }
 
 impl UncertaintyReason {
@@ -35,6 +40,11 @@ impl UncertaintyReason {
             Self::MissingBeforeEvidence(_) => "missing_before_evidence",
             Self::MissingAfterEvidence(_) => "missing_after_evidence",
             Self::FallbackUsed(_) => "fallback_used",
+            Self::GraphAbsent(_) => "graph_absent",
+            Self::GraphIncompatible(_) => "graph_incompatible",
+            Self::GraphCorrupt(_) => "graph_corrupt",
+            Self::GraphUnavailable(_) => "graph_unavailable",
+            Self::UnknownGraphRelation(_) => "unknown_graph_relation",
         }
     }
 
@@ -45,18 +55,58 @@ impl UncertaintyReason {
             | Self::EdgeLimitReached { .. }
             | Self::ProviderStale(_)
             | Self::FallbackUsed(_)
-            | Self::UnsupportedLanguage(_) => AssuranceLevel::Degraded,
+            | Self::UnsupportedLanguage(_)
+            | Self::GraphAbsent(_)
+            | Self::UnknownGraphRelation(_) => AssuranceLevel::Degraded,
 
             Self::ProviderMissing(_)
             | Self::ProviderFailed(_)
             | Self::SemanticChangeUnknown(_)
             | Self::AmbiguousSymbol(_) => AssuranceLevel::Conservative,
 
-            Self::MissingBeforeEvidence(_) | Self::MissingAfterEvidence(_) => {
-                AssuranceLevel::Unverified
-            }
+            Self::MissingBeforeEvidence(_)
+            | Self::MissingAfterEvidence(_)
+            | Self::GraphIncompatible(_)
+            | Self::GraphCorrupt(_)
+            | Self::GraphUnavailable(_) => AssuranceLevel::Unverified,
         }
     }
+}
+
+/// Compute minimum evidence strength across a set of evidence references.
+pub fn minimum_evidence_strength(evidence: &[EvidenceRef]) -> EvidenceStrength {
+    if evidence.is_empty() {
+        return EvidenceStrength::Unknown;
+    }
+    let mut min_str = EvidenceStrength::Precise;
+    for ev in evidence {
+        if ev.strength < min_str {
+            min_str = ev.strength;
+        }
+    }
+    min_str
+}
+
+/// Map an evidence strength to its maximum achievable assurance level.
+pub fn assurance_ceiling_for_strength(strength: EvidenceStrength) -> AssuranceLevel {
+    match strength {
+        EvidenceStrength::Precise => AssuranceLevel::Exact,
+        EvidenceStrength::Observed => AssuranceLevel::Conservative,
+        EvidenceStrength::Structural => AssuranceLevel::Degraded,
+        EvidenceStrength::Heuristic => AssuranceLevel::Degraded,
+        EvidenceStrength::Unknown => AssuranceLevel::Unverified,
+    }
+}
+
+/// Compute assurance ceiling directly from a list of evidence references.
+pub fn assurance_ceiling_for_evidence(evidence: &[EvidenceRef]) -> AssuranceLevel {
+    let min_str = minimum_evidence_strength(evidence);
+    assurance_ceiling_for_strength(min_str)
+}
+
+/// Combine two assurance levels into the conservative minimum.
+pub fn combine_assurance(a: AssuranceLevel, b: AssuranceLevel) -> AssuranceLevel {
+    std::cmp::min(a, b)
 }
 
 /// Compute aggregate assurance level from base change assurance, traversal findings, and uncertainty reasons.
