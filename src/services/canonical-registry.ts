@@ -210,7 +210,7 @@ const CANONICAL_AGENTS: CanonicalAgentEntry[] = [
     description: "Implement backend features: API endpoints, services, data layer, business logic.",
     mode: "subagent",
     allowedTaskTypes: ["implementation", "backend", "api", "database", "service", "bugfix"],
-    allowedTools: ["read", "write", "edit", "bash", "glob", "grep", "capture-lesson", "review-lessons"],
+    allowedTools: ["read", "write", "edit", "bash", "glob", "grep", "capture-lesson", "review-lessons", "fdx-force-error"],
     forbiddenActions: ["modify frontend UI components", "change CI/CD without devops"],
     ownedPaths: [],
     modelPolicy: "inherit",

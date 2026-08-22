@@ -40,6 +40,7 @@ const ORCHESTRATOR_CORE_PROMPT = [
   "- Verify changes before reporting completion.",
   "- High-risk operations (write, delete, bash) go through full policy — not fast path.",
   "- Direct Action: invoke tools immediately without repetitive monologues, filler preambles, or multiple restatements of intent.",
+  "- Use native Code Mode only for small bounded MCP compositions. Never use it for open-ended reasoning, retries, specialists, shell/filesystem workflows, or complex multi-stage execution.",
   "",
   "## Verification Ownership",
   "",
@@ -274,7 +275,38 @@ export function buildTaskSpecificPromptSections(
   executionClass?: ExecutionClass,
   specialistDomains?: SpecialistDomain[],
   disabledAgents?: Set<string>,
+  options?: {
+    codeModeCapability?: import("../services/heidi-code-mode-policy").CodeModeCapability
+    mcpCompositionCandidate?: boolean
+    codeModeRejectedReason?: string
+  },
 ): string {
+  // If native Code Mode is explicitly AVAILABLE and turn involves MCP tools / automation composition, include lazy guidance
+  const codeModeGuidance = (options?.codeModeCapability === "AVAILABLE" && options?.mcpCompositionCandidate && !options?.codeModeRejectedReason) ? [
+    "",
+    "## Native Code Mode (OpenCode execute tool)",
+    "",
+    "- OpenCode provides native experimental Code Mode via the `execute` tool when OPENCODE_EXPERIMENTAL_CODE_MODE=true.",
+    "- Scope & Boundary: `execute` has access ONLY to connected, eligible MCP tools. Do NOT attempt to invoke internal plugin tools (fdx-*, native read, native shell) inside `execute`.",
+    "- Use `execute` when composing dependent MCP calls, filtering/aggregating MCP responses, or running `Promise.all` across independent MCP operations in a single turn to eliminate inference round trips.",
+    "",
+    "### Code Mode Limits & Guardrails",
+    "- Max Tool Calls: 10 total, 4 parallel max.",
+    "- Max Dependency Stages: 3 (e.g. Gather -> Correlate -> Return).",
+    "- Max Collection Items: 25. Do not map over unbounded arrays; always slice/filter first.",
+    "- Execution Timeout: 30 seconds. Result size: under 64 KiB.",
+    "- Return structured evidence: `return { targets, details, missing }`. Do not generate prose inside Code Mode.",
+    "",
+    "### Forbidden Control Flow",
+    "- NO RETRIES (budget=0): Do not use try/catch in loops to retry failures. Return failures and let Heidi decide.",
+    "- NO RECURSION, no nested execute.",
+    "- NO Task/specialist spawning: Do not launch agents from inside Code Mode.",
+    "- NO infinite/open-ended loops (while, do...while) or setTimeout/setInterval.",
+    "- NO shell/filesystem/network operations (allowImports=false, allowDirectNetwork=false, allowShell=false).",
+    "",
+    "Fall back to Heidi's normal execution loop or delegates if a workflow exceeds these bounds.",
+  ].join("\n") : ""
+
   if (!executionClass || executionClass === 'FAST_DIRECT' || executionClass === 'STANDARD') {
     // FAST_DIRECT: nothing extra — the lean core prompt is sufficient.
     // STANDARD: add only scoped planning instructions (no full lifecycle).
@@ -288,9 +320,10 @@ export function buildTaskSpecificPromptSections(
         '2. Produce a SHORT numbered plan (3-6 steps) in this turn — do not invoke a full workflow.',
         '3. Execute, then run focused verification (affected tests + typecheck).',
         '4. Keep planning artifacts under ~/.fd-plan/<project-slug>/ only if the task spans >3 files.',
-      ].join('\n')
+        codeModeGuidance,
+      ].filter(Boolean).join('\n')
     }
-    return ''
+    return codeModeGuidance ? codeModeGuidance.trim() : ''
   }
 
   const parts: string[] = []
@@ -300,6 +333,7 @@ export function buildTaskSpecificPromptSections(
   parts.push(LAZY_WRITES)
   parts.push(LAZY_TOOLS)
   parts.push(LAZY_OBS)
+  if (codeModeGuidance) parts.push(codeModeGuidance)
 
   // Targeted specialist directory: only the selected/eligible specialists.
   const routes = getAgentRoutes();
@@ -337,6 +371,7 @@ export function buildTaskSpecificPromptSections(
       '- Do not poll, sleep, issue status calls, use Continue/check-subagents prompts, or maintain a custom child registry; OpenCode injects native background results into this parent session.',
       '- Protocol Discipline: NEVER fabricate, quote as live state, or emit `<task ...>` control envelopes. Only OpenCode native Task injection determines task completion.',
       '- Incremental Integration: OpenCode may inject background child results independently. Heidi integrates results incrementally as they arrive. Do NOT wait for all siblings first or assume FIFO completion.',
+      '- Native Child Error Propagation: In OpenCode v1.18.20+, child tool or assistant errors cause the native Task and BackgroundJob to fail with an error state and inject a native task error. Heidi consumes native error notifications directly without maintaining redundant recovery compensation.',
       '- Strict No-Polling: Do NOT use `heidi-agents` action=list to track native Task state. Do NOT send tasks prompting agents to "Check status". Rely entirely on OpenCode injecting the results.',
       '- Result Grounding: Treat specialist reports as evidence, not authority. You MUST independently verify Critical/High findings (by reading the exact code or constructing a minimal test) before synthesizing them into a final report. Do NOT claim token/timeout limits were respected unless you explicitly query telemetry data.',
       '- Native Status Todo: If results are pending, maintain a native Todo with `todowrite`. Example: `[in_progress] Integrate 3 background specialist results as they complete`. Decrease the count as they arrive. Keep it truthful and do not use passive "waiting" language.',

@@ -121,5 +121,85 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
     })
   }
 
+  // FDX Resident Native Daemon Health
+  let daemonHealthy = false
+  let daemonDetail = "FDX daemon not tested or spawned on demand"
+  if (fdxRuns) {
+    try {
+      const execPath = nativeBinaryPath ?? "fdx"
+      const { spawn } = await import("node:child_process")
+      const cp = spawn(execPath, ["serve"], {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true,
+      })
+      const healthPromise = new Promise<boolean>((resolve) => {
+        let healthResponded = false
+        const timeout = setTimeout(() => {
+          try { cp.kill("SIGKILL") } catch {}
+          resolve(false)
+        }, 1500)
+
+        cp.on("close", () => {
+          if (healthResponded) {
+            clearTimeout(timeout)
+            resolve(true)
+          }
+        })
+
+        let buffer = ""
+        cp.stdout?.on("data", (chunk: Buffer) => {
+          buffer += chunk.toString("utf-8")
+          const lines = buffer.split("\n")
+          for (const line of lines) {
+            if (!line.trim()) continue
+            try {
+              const res = JSON.parse(line)
+              if (res.id === "health-check" && res.ok && res.value?.healthy) {
+                healthResponded = true
+                try { cp.kill("SIGTERM") } catch {}
+                return
+              }
+            } catch {}
+          }
+        })
+
+        cp.on("error", () => {
+          clearTimeout(timeout)
+          resolve(false)
+        })
+
+        try {
+          cp.stdin?.write(JSON.stringify({ id: "health-check", op: "health" }) + "\n")
+        } catch {
+          clearTimeout(timeout)
+          resolve(false)
+        }
+      })
+
+      daemonHealthy = await healthPromise
+      if (daemonHealthy) {
+        daemonDetail = "FDX daemon spawns, accepts JSON-lines health request, responds validly, and shuts down cleanly"
+      }
+    } catch {
+      daemonHealthy = false
+    }
+  }
+
+  checks.push({
+    id: "fdx.resident_daemon",
+    title: "FDX Daemon Startup & IPC",
+    category: "fdx",
+    severity: "info",
+    status: daemonHealthy ? "pass" : "info",
+    detected: daemonDetail,
+    expected: "FDX daemon spawns and responds to JSON-lines IPC",
+    recommendation: daemonHealthy
+      ? "FDX daemon capability verified (spawn → request → response → shutdown)"
+      : "Daemon launches on demand when resident requests are made",
+    autoFixAvailable: false,
+    affectsRuntime: false,
+    repairability: "not-applicable",
+  })
+
   return checks
 }

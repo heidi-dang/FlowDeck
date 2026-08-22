@@ -28,6 +28,7 @@ import { renderParallelPacket } from "./heidi-parallel-context"
 import { getRepositoryContext, renderHotContextSummary, invalidateRepositoryContext } from "./repository-hot-context"
 import { getCachedConfig } from "./config-cache"
 import type { GovernanceMode } from "./governance-fast-path"
+
 import { buildTaskSpecificPromptSections, estimateCorePromptTokens } from "../agents/orchestrator"
 import { createTracker, getTracker, clearTracker } from "./heidi-performance"
 
@@ -163,7 +164,27 @@ export function renderTurnContext(sessionID: string, directory: string): string 
     // Repository facts are best-effort — never break the prompt build.
     console.debug?.("[FastHarness] renderHotContextSummary error:", err)
   }
-  const sections = buildTaskSpecificPromptSections(route.decision.executionClass, route.decision.specialists)
+  const isCodeMode = process.env.OPENCODE_EXPERIMENTAL_CODE_MODE === "true" ||
+    (process.env.OPENCODE_EXPERIMENTAL_CODE_MODE === undefined && process.env.OPENCODE_EXPERIMENTAL === "true")
+
+  // Expose telemetry via console.debug for tests/telemetry parsing.
+  if (route.decision.codeModeTelemetry?.codeModeConsidered) {
+    console.debug?.("[FastHarness] CodeMode Telemetry:", JSON.stringify(route.decision.codeModeTelemetry))
+  }
+
+  // Capability is strictly evaluated; fallback to UNKNOWN if enabled but execute not positively observed.
+  const codeModeCapability = isCodeMode ? "UNKNOWN" : "UNAVAILABLE"
+
+  const sections = buildTaskSpecificPromptSections(
+    route.decision.executionClass,
+    route.decision.specialists,
+    undefined,
+    {
+      codeModeCapability,
+      mcpCompositionCandidate: route.decision.mcpCompositionCandidate,
+      codeModeRejectedReason: route.decision.codeModeRejectedReason
+    },
+  )
   if (sections.trim()) parts.push(sections)
   // Active-parallel coordinator packet (compact <200 tokens; empty when none).
   try {

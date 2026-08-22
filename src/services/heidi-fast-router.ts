@@ -34,6 +34,9 @@ export type SpecialistDomain =
   | "REVIEW"
   | "ARCHITECTURE"
 
+import { evaluateCodeModeEligibility } from "./heidi-code-mode-evaluator"
+import type { CodeModeTelemetry } from "./heidi-code-mode-policy"
+
 export interface RouterDecision {
   /** Resolved execution class */
   executionClass: ExecutionClass
@@ -49,6 +52,10 @@ export interface RouterDecision {
   forcedByExplicitSignal: boolean
   /** Absolutely minimal deterministic reason code used for telemetry (no chain-of-thought). */
   reasonCode: string
+  /** Whether the task involves MCP tool composition */
+  mcpCompositionCandidate?: boolean
+  codeModeRejectedReason?: string
+  codeModeTelemetry?: CodeModeTelemetry
 }
 
 // ─── Keyword patterns ────────────────────────────────────────────────────────
@@ -215,6 +222,30 @@ const STANDARD_PATTERNS: RegExp[] = [
   /across (multiple|several|many) files/i,
 ]
 
+const MCP_COMPOSITION_EXTERNAL_PATTERNS: RegExp[] = [
+  /github/i,
+  /issue/i,
+  /pull request/i,
+  /\bpr\b/i,
+  /mcp/i,
+  /context7/i,
+  /remote api/i,
+]
+
+const MCP_COMPOSITION_ACTION_PATTERNS: RegExp[] = [
+  /aggregate/i,
+  /combine/i,
+  /compare/i,
+  /correlate/i,
+  /summarize across/i,
+  /fetch.*multiple/i,
+  /list.*multiple/i,
+  /search.*across/i,
+  /multiple/i,
+  /several/i,
+  /all/i,
+]
+
 // ─── Classification logic ────────────────────────────────────────────────────
 
 function matchesAny(input: string, patterns: RegExp[]): boolean {
@@ -262,6 +293,12 @@ export function classifyTask(
   const lc = text.toLowerCase()
 
   // ── FAST_DIRECT: trivial local task ──────────────────────────────────────
+  const mcpCompositionCandidateRaw = matchesAny(text, MCP_COMPOSITION_EXTERNAL_PATTERNS) && matchesAny(text, MCP_COMPOSITION_ACTION_PATTERNS)
+  const codeModeEval = evaluateCodeModeEligibility(prompt, mcpCompositionCandidateRaw)
+  const mcpCompositionCandidate = codeModeEval.isEligible
+  const codeModeRejectedReason = codeModeEval.rejectionReason
+  const codeModeTelemetry = codeModeEval.telemetry
+
   const isFastDirect = matchesAny(text, FAST_DIRECT_PATTERNS)
   if (isFastDirect && !hints?.isResuming) {
     const estFiles = hints?.estimatedFileCount ?? 1
@@ -272,6 +309,9 @@ export function classifyTask(
         reasonCode: "FAST_DIRECT_PATTERN",
         confidence: 0.9,
         forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
       }
     }
   }
@@ -284,6 +324,9 @@ export function classifyTask(
       reasonCode: "DEEP_PATTERN",
       confidence: 0.85,
       forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
     }
   }
 
@@ -306,6 +349,9 @@ export function classifyTask(
         reasonCode: "PARALLEL_UI_BACKEND",
         confidence: 0.82,
         forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? true,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
       }
     }
     // Parallel-signal text with only ONE detected domain → treat as specialist for that domain
@@ -318,6 +364,9 @@ export function classifyTask(
         reasonCode: "PARALLEL_SIGNAL_SINGLE_DOMAIN",
         confidence: 0.75,
         forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? true,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
       }
     }
     // Parallel signal with no detected domain → treat as STANDARD multi-workstream
@@ -327,6 +376,9 @@ export function classifyTask(
       reasonCode: "PARALLEL_SIGNAL_NO_DOMAIN",
       confidence: 0.65,
       forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
     }
   }
 
@@ -341,6 +393,9 @@ export function classifyTask(
       reasonCode: "SPECIALIST_" + domain,
       confidence: 0.88,
       forcedByExplicitSignal: hints?.hasExplicitDomainSignal ?? false,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
     }
   }
 
@@ -353,6 +408,9 @@ export function classifyTask(
       reasonCode: "STANDARD_MULTIFILE",
       confidence: 0.75,
       forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
     }
   }
 
@@ -365,6 +423,9 @@ export function classifyTask(
       reasonCode: "FAST_DIRECT_SHORT",
       confidence: 0.65,
       forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
     }
   }
 
@@ -375,6 +436,9 @@ export function classifyTask(
     reasonCode: "STANDARD_FALLBACK",
     confidence: 0.6,
     forcedByExplicitSignal: false,
+      mcpCompositionCandidate,
+      codeModeRejectedReason,
+      codeModeTelemetry,
   }
 }
 
