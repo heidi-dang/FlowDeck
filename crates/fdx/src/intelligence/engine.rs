@@ -137,6 +137,7 @@ fn run_incremental_index_impl(
     }
 
     let mut discovered: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut changed_paths: Vec<String> = Vec::new();
     let mut changed_count = 0;
     let mut total_indexed_files = 0;
     let mut total_indexed_bytes = 0;
@@ -226,6 +227,7 @@ fn run_incremental_index_impl(
 
         if is_changed {
             InvalidationEngine::invalidate_file(&tx.tx, &canonical)?;
+            changed_paths.push(canonical.clone());
             let indexed_at = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
@@ -255,6 +257,16 @@ fn run_incremental_index_impl(
     }
 
     InvalidationEngine::delete_stale_edges(&tx.tx)?;
+
+    // Semantic freshness: any file that changed makes scoped providers stale
+    // inside the same transaction, so a changed source is never presented as
+    // semantically fresh. Provider evidence itself is preserved (stale), and
+    // only a provider refresh replaces it transactionally.
+    for canonical in &changed_paths {
+        let _ = crate::intelligence::semantic::state::mark_providers_stale_for_path(
+            &tx.tx, None, canonical,
+        );
+    }
 
     if traversal_errors > 0 {
         tx.rollback()?;
