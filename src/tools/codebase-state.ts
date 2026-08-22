@@ -2,7 +2,7 @@ import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 import { writeFileSync, existsSync, readdirSync, mkdirSync } from "fs"
 import { readFile, stat } from "fs/promises"
 import { join, dirname } from "path"
-import { resolveCodebasePath, getCanonicalRoot } from "./path-jail"
+import { resolveCodebasePath } from "./path-jail"
 
 const CODEBASE_DIR = ".codebase"
 
