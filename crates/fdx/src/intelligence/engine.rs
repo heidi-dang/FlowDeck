@@ -3,6 +3,7 @@ use crate::intelligence::index::TransactionalGraph;
 use crate::intelligence::invalidation::InvalidationEngine;
 use crate::intelligence::model::IndexedFile;
 use crate::protocol::canonicalize_repo_path;
+
 use ignore::WalkBuilder;
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -61,6 +62,8 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
     let mut changed_count = 0;
     let mut total_indexed_files = 0;
     let mut total_indexed_bytes = 0;
+    let mut skipped_files = 0;
+    let mut skip_reasons: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
 
     let walker = WalkBuilder::new(repo_root)
         .hidden(true)
@@ -118,15 +121,20 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
             .map(|d| d.as_millis() as u64);
 
         if size > MAX_FILE_BYTES {
-            // Track skipped files later
+            skipped_files += 1;
+            skip_reasons.insert("file_too_large");
             continue;
         }
 
         if total_indexed_files >= MAX_INDEXED_FILES {
+            skipped_files += 1;
+            skip_reasons.insert("file_limit_exceeded");
             continue;
         }
 
         if total_indexed_bytes + size > MAX_TOTAL_INDEX_BYTES_PER_REFRESH {
+            skipped_files += 1;
+            skip_reasons.insert("byte_budget_exceeded");
             continue;
         }
 
@@ -177,25 +185,52 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
 
     InvalidationEngine::delete_stale_edges(&tx.tx)?;
 
-    // Commit generation and status
     if traversal_errors > 0 {
+        tx.rollback()?;
+        
+        // Save diagnostic metadata using a separate short transaction
+        // so we don't commit partial graph updates
+        let err_msg = "Traversal errors occurred during indexing";
+        
+        let tx_err = TransactionalGraph::new(&mut db.conn)?;
+        tx_err.set_metadata("status", "DEGRADED")?;
+        tx_err.set_metadata("last_error", err_msg)?;
+        tx_err.commit()?;
+        
+        return Err(EngineError::Io(std::io::Error::other(err_msg)));
+    }
+
+    // Commit generation and status
+    if skipped_files > 0 {
         tx.set_metadata("status", "DEGRADED")?;
+        let mut sorted_reasons: Vec<_> = skip_reasons.into_iter().collect();
+        sorted_reasons.sort();
+        let err_msg = format!("Skipped {} files due to: {}", skipped_files, sorted_reasons.join(","));
+        tx.set_metadata("last_error", &err_msg)?;
     } else {
         tx.set_metadata("status", "FRESH")?;
-        tx.set_metadata("generation", &new_gen.to_string())?;
-        let now_ms = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
-        tx.set_metadata("last_successful_refresh_at", &now_ms.to_string())?;
+        tx.set_metadata("last_error", "")?;
     }
-    tx.commit()?;
+    
+    tx.set_metadata("generation", &new_gen.to_string())?;
+    let now_ms = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    tx.set_metadata("last_successful_refresh_at", &now_ms.to_string())?;
+    crate::intelligence::compatibility::persist_compatibility(
+        &tx,
+        &crate::protocol::GraphCompatibility::default(),
+    )?;
 
-    if traversal_errors > 0 {
-        return Err(EngineError::Io(std::io::Error::other(
-            "Traversal errors occurred during indexing",
-        )));
+    // Save snapshot
+    let snapshot = crate::intelligence::snapshot::get_repository_snapshot(repo_root);
+    if let Some(h) = snapshot.head {
+        tx.set_metadata("snapshot_head", &h)?;
     }
+    tx.set_metadata("snapshot_dirty", &snapshot.dirty_fingerprint)?;
+
+    tx.commit()?;
 
     let total_files: i64 = db
         .conn

@@ -3,5 +3,8 @@ pub mod db;
 pub mod engine;
 pub mod index;
 pub mod invalidation;
+pub mod migration;
 pub mod model;
 pub mod schema;
+pub mod snapshot;
+pub mod status;

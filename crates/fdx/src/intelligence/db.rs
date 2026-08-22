@@ -1,4 +1,4 @@
-use crate::intelligence::schema::{CURRENT_SCHEMA_VERSION, INITIALIZE_SCHEMA_SQL};
+use crate::intelligence::schema::CURRENT_SCHEMA_VERSION;
 use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -77,7 +77,7 @@ impl EvidenceDatabase {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
         };
 
-        let conn = match Connection::open_with_flags(db_path, flags) {
+        let mut conn = match Connection::open_with_flags(db_path, flags) {
             Ok(c) => c,
             Err(e) => return Err(Self::classify_sqlite_error(e)),
         };
@@ -100,15 +100,29 @@ impl EvidenceDatabase {
             if mode == DatabaseOpenMode::ReadOnly {
                 return Err(DatabaseError::NotIndexed);
             }
-            // New database
-            conn.execute_batch(INITIALIZE_SCHEMA_SQL)
-                .map_err(Self::classify_sqlite_error)?;
+            // New database handled by migration from 0
+            crate::intelligence::migration::migrate_schema(&mut conn, 0, CURRENT_SCHEMA_VERSION)?;
         } else if user_version > CURRENT_SCHEMA_VERSION {
             return Err(DatabaseError::FutureSchemaVersion(user_version));
+        } else if user_version < CURRENT_SCHEMA_VERSION {
+            if mode == DatabaseOpenMode::ReadOnly {
+                // Must be migrated first
+                // However, read-only mode can't migrate.
+                // Status evaluation might need to report this.
+                // But for opening, we just let it open and the user must refresh/migrate via ReadWrite.
+            } else {
+                crate::intelligence::migration::migrate_schema(
+                    &mut conn,
+                    user_version,
+                    CURRENT_SCHEMA_VERSION,
+                )?;
+            }
         } else {
-            // Validate schema_metadata exists if user_version > 0
+            // Validating schema_metadata
             let meta_version: Result<u32, _> =
-                conn.query_row("SELECT version FROM schema_metadata", [], |row| row.get(0));
+                conn.query_row("SELECT MAX(version) FROM schema_metadata", [], |row| {
+                    row.get(0)
+                });
             match meta_version {
                 Ok(v) if v > CURRENT_SCHEMA_VERSION => {
                     return Err(DatabaseError::FutureSchemaVersion(v))

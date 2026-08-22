@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "timestamp": "2026-08-22T00:32:16.380Z",
+  "git": {
+    "measuredSha": "b83c83bbbd58fc445c28f68eecc40be9aaae6a31",
+    "branch": "feat/fdx-verifiable-change-intelligence"
+  },
+  "metrics": {
+    "initialIndexMs": 154.87,
+    "warmStatusMs": {
+      "count": 10,
+      "min": 17.09,
+      "max": 20.9,
+      "mean": 18.15,
+      "median": 18.12,
+      "p95": 20.9
+    },
+    "unchangedRefreshMs": {
+      "count": 5,
+      "min": 69.58,
+      "max": 86.11,
+      "mean": 73.57,
+      "median": 70.75,
+      "p95": 86.11
+    },
+    "singleFileRefreshMs": {
+      "count": 5,
+      "min": 70.28,
+      "max": 96.4,
+      "mean": 79.58,
+      "median": 72.08,
+      "p95": 96.4
+    },
+    "deleteFileRefreshMs": 70.74,
+    "dbSizeBytes": 294912,
+    "counts": {
+      "files": 1164,
+      "nodes": 0,
+      "edges": 0
+    }
+  }
+}
