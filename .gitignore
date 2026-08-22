@@ -165,3 +165,5 @@ fd-worktrees/
 *.db-wal
 *.db-shm
 .cptr
+job_logs.txt
+release_notes.txt
