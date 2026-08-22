@@ -1,8 +1,8 @@
 # Milestone 4: Verifiable Transitive Impact & Change Intelligence Benchmark Report
 
-- **Source Functional SHA**: `c0077186f208e3541cfd54c2d59b8d124c23e842`
+- **Source Functional SHA**: `4512e1cc3a90eb4e82dc9d821a5c4b264dd9325c`
 - **Branch**: `feat/fdx-verifiable-change-intelligence`
-- **Timestamp**: `2026-08-22T13:00:03.527Z`
+- **Timestamp**: `2026-08-22T13:45:17.726Z`
 - **Platform**: `linux-x64`
 
 ---
@@ -11,16 +11,16 @@
 
 | Scenario | Median (ms) | p95 (ms) | Min (ms) | Max (ms) | Impact Count | Assurance |
 |---|---|---|---|---|---|---|
-| **Change Extraction** | 2.03 | 2.64 | 1.94 | 2.64 | - | - |
-| **Fresh SCIP Impact** | 20.63 | 28.63 | 20.4 | 28.63 | 2 | DEGRADED |
-| **Effective Stale Fallback** | 24.18 | 24.71 | 23.99 | 24.71 | 3 | DEGRADED |
-| **Deleted-Symbol Impact** | 16.7 | 37.05 | 10.56 | 37.05 | 2 | DEGRADED |
-| **1-Hop Impact** | 8.17 | 8.92 | 7.57 | 8.92 | 2 | DEGRADED |
-| **3-Hop Impact** | 9.37 | 19.47 | 8.18 | 19.47 | 4 | DEGRADED |
-| **Why Explanation** | 28.9 | 30.32 | 23.98 | 30.32 | 1 | - |
-| **Cycle Graph** | 15.87 | 16.33 | 13.55 | 16.33 | 2 | DEGRADED |
-| **Synthetic (100 edges)** | 22.52 | 23.06 | 22.08 | 23.06 | 101 | DEGRADED |
-| **Synthetic (1,000 edges)** | 63.18 | 66.72 | 63.08 | 66.72 | 1001 | DEGRADED |
+| **Change Extraction** | 2.02 | 2.76 | 1.93 | 2.76 | - | - |
+| **Fresh SCIP Impact** | 27.07 | 28.26 | 8.71 | 28.26 | 4 | DEGRADED |
+| **Effective Stale Fallback** | 31.97 | 33.37 | 31.66 | 33.37 | 5 | DEGRADED |
+| **Deleted-Symbol Impact** | 40.82 | 42.15 | 40.39 | 42.15 | 2 | DEGRADED |
+| **1-Hop Impact** | 10.21 | 12.42 | 7.65 | 12.42 | 2 | DEGRADED |
+| **3-Hop Impact** | 28.35 | 29.5 | 12.99 | 29.5 | 4 | DEGRADED |
+| **Why Explanation** | 28.15 | 29.06 | 25.89 | 29.06 | 1 | - |
+| **Cycle Graph** | 26.01 | 26.71 | 25.75 | 26.71 | 2 | DEGRADED |
+| **Synthetic (100 edges)** | 12.78 | 13.7 | 12.43 | 13.7 | 101 | DEGRADED |
+| **Synthetic (1,000 edges)** | 63.47 | 64.14 | 62.59 | 64.14 | 1001 | DEGRADED |
 
 ---
 
