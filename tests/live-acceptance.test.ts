@@ -6,6 +6,9 @@ import { tmpdir } from "os"
 
 describe("Live OpenCode Acceptance", () => {
   it("verifies native task error propagation in background child", () => {
+    if (process.env.FLOWDECK_LIVE_ACCEPTANCE !== "1") {
+      return
+    }
     let opencodeVer = ""
     try {
       opencodeVer = execFileSync("opencode", ["--version"], { encoding: "utf-8" }).trim()

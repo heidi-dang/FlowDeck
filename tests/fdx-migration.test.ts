@@ -18,16 +18,18 @@ import { execFileSync } from "child_process"
 import { resolveFdxBinaryPath } from "../src/tools/fdx"
 
 function getFdxBin(): string | null {
-  const bin = resolveFdxBinaryPath() || join(__dirname, "../crates/fdx/target/debug/fdx")
-  if (!existsSync(bin)) {
-    return null
-  }
-  return bin
+  const candidateBins = [
+    resolveFdxBinaryPath(),
+    join(__dirname, "../target/debug/fdx"),
+    join(__dirname, "../crates/fdx/target/debug/fdx"),
+  ].filter(Boolean) as string[]
+  return candidateBins.find(b => existsSync(b)) || null
 }
 
 describe("FDX Transactional Migration Integration", () => {
   it("migrates legacy planning directory with nested files transactionally", () => {
     const bin = getFdxBin()
+    expect(bin).not.toBeNull()
     if (!bin) return
     const home = mkdtempSync(join(tmpdir(), "fdx-mig-test-"))
     try {

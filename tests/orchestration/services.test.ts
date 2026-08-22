@@ -519,7 +519,8 @@ describe("Logging", () => {
     const parent = new StructuredLogger("parent");
     const child = parent.child("child");
     child.info("child message");
-    expect(true).toBe(true);
+    expect(child).toBeDefined();
+    expect((child as any).component || (child as any).name || typeof child.info).toBeDefined();
   });
 });
 

@@ -15,21 +15,20 @@ describe('Integration Runner CLI (Negative)', () => {
   });
 
   it('rejects short SHA or invalid SHAs internally', () => {
-    // If we stubbed git rev-parse it would throw, but testing the script's exit code is enough.
-    // The script currently exits with 1 when merge conflict or fetch failure occurs.
-    expect(true).toBe(true);
-  });
+    let failed = false;
+    try {
+      execFileSync(process.execPath, [runnerPath, '--target', 'short'], { stdio: 'pipe', timeout: 3000 });
+    } catch {
+      failed = true;
+    }
+    expect(failed).toBe(true);
+  }, 10000);
 });
 
 describe('Artifact Validator (Negative)', () => {
-  it('rejects invalid schema or SHAs', () => {
+  it('runs artifact validator and asserts exit code', () => {
     const validatorPath = join(process.cwd(), 'scripts', 'orchestration', 'validate-artifacts.mjs');
-    // We expect it to pass currently or if no artifacts exist, it just returns.
-    try {
-      execFileSync(process.execPath, [validatorPath], { stdio: 'pipe' });
-      expect(true).toBe(true);
-    } catch {
-      // If we manually place a bad json it would fail.
-    }
+    const out = execFileSync(process.execPath, [validatorPath], { encoding: 'utf-8', stdio: 'pipe' });
+    expect(typeof out).toBe('string');
   });
 });
