@@ -26,16 +26,24 @@ pub enum EngineError {
     Ignore(#[from] ignore::Error),
 }
 
-pub struct IndexStatus {
+#[derive(Debug)]
+pub struct IndexRunReport {
+    pub state: String, // e.g., "FRESH", "DEGRADED"
     pub files: usize,
     pub changed: usize,
+    pub skipped: usize,
+    pub reasons: Vec<String>,
+    pub generation: u64,
 }
 
 const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10MB limit
 const MAX_INDEXED_FILES: usize = 50000;
 const MAX_TOTAL_INDEX_BYTES_PER_REFRESH: u64 = 5 * 1024 * 1024 * 1024; // 5GB limit
 
-pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexStatus, EngineError> {
+pub fn run_incremental_index(
+    repo_root: &Path,
+    refresh: bool,
+) -> Result<IndexRunReport, EngineError> {
     let mut db = EvidenceDatabase::open(
         repo_root,
         crate::intelligence::db::DatabaseOpenMode::ReadWrite,
@@ -63,7 +71,8 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
     let mut total_indexed_files = 0;
     let mut total_indexed_bytes = 0;
     let mut skipped_files = 0;
-    let mut skip_reasons: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+    let mut skip_reasons: std::collections::HashSet<&'static str> =
+        std::collections::HashSet::new();
 
     let walker = WalkBuilder::new(repo_root)
         .hidden(true)
@@ -85,6 +94,9 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
     tx.set_metadata("status", "IN_PROGRESS")?;
 
     let mut traversal_errors = 0;
+    if std::env::var("FDX_INJECT_TRAVERSAL_ERROR").is_ok() {
+        traversal_errors += 1;
+    }
     for result in walker {
         let entry = match result {
             Ok(e) => e,
@@ -187,31 +199,35 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
 
     if traversal_errors > 0 {
         tx.rollback()?;
-        
+
         // Save diagnostic metadata using a separate short transaction
         // so we don't commit partial graph updates
         let err_msg = "Traversal errors occurred during indexing";
-        
+
         let tx_err = TransactionalGraph::new(&mut db.conn)?;
         tx_err.set_metadata("status", "DEGRADED")?;
         tx_err.set_metadata("last_error", err_msg)?;
         tx_err.commit()?;
-        
+
         return Err(EngineError::Io(std::io::Error::other(err_msg)));
     }
 
     // Commit generation and status
     if skipped_files > 0 {
         tx.set_metadata("status", "DEGRADED")?;
-        let mut sorted_reasons: Vec<_> = skip_reasons.into_iter().collect();
+        let mut sorted_reasons: Vec<_> = skip_reasons.iter().copied().collect();
         sorted_reasons.sort();
-        let err_msg = format!("Skipped {} files due to: {}", skipped_files, sorted_reasons.join(","));
+        let err_msg = format!(
+            "Skipped {} files due to: {}",
+            skipped_files,
+            sorted_reasons.join(",")
+        );
         tx.set_metadata("last_error", &err_msg)?;
     } else {
         tx.set_metadata("status", "FRESH")?;
         tx.set_metadata("last_error", "")?;
     }
-    
+
     tx.set_metadata("generation", &new_gen.to_string())?;
     let now_ms = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -224,11 +240,12 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
     )?;
 
     // Save snapshot
-    let snapshot = crate::intelligence::snapshot::get_repository_snapshot(repo_root);
-    if let Some(h) = snapshot.head {
-        tx.set_metadata("snapshot_head", &h)?;
+    if let Ok(snapshot) = crate::intelligence::snapshot::get_repository_snapshot(repo_root) {
+        if let Some(h) = snapshot.head {
+            tx.set_metadata("snapshot_head", &h)?;
+        }
+        tx.set_metadata("snapshot_dirty", &snapshot.dirty_fingerprint)?;
     }
-    tx.set_metadata("snapshot_dirty", &snapshot.dirty_fingerprint)?;
 
     tx.commit()?;
 
@@ -236,8 +253,21 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
         .conn
         .query_row("SELECT count(*) FROM files", [], |row| row.get(0))?;
 
-    Ok(IndexStatus {
+    let mut reasons = Vec::new();
+    let mut state = "FRESH";
+    if skipped_files > 0 {
+        state = "DEGRADED";
+        for reason in &skip_reasons {
+            reasons.push(reason.to_string());
+        }
+    }
+
+    Ok(IndexRunReport {
+        state: state.to_string(),
         files: total_files as usize,
         changed: changed_count,
+        skipped: skipped_files,
+        reasons,
+        generation: new_gen,
     })
 }
