@@ -45,13 +45,13 @@ while [ $i -le $# ]; do
     --non-interactive)  NON_INTERACTIVE=true; i=$((i + 1)) ;;
     --yes|-y)           NON_INTERACTIVE=true; i=$((i + 1)) ;;
     --profile)
-      i=$((i + 1)); [ $i -ge $# ] && { err "--profile requires a value"; exit 1; }
+      i=$((i + 1)); [ $i -gt $# ] && { err "--profile requires a value"; exit 1; }
       PROFILE="${@:$i:1}"; i=$((i + 1)) ;;
     --version)
-      i=$((i + 1)); [ $i -ge $# ] && { err "--version requires a value"; exit 1; }
+      i=$((i + 1)); [ $i -gt $# ] && { err "--version requires a value"; exit 1; }
       VERSION="${@:$i:1}"; i=$((i + 1)) ;;
     --local-repo)
-      i=$((i + 1)); [ $i -ge $# ] && { err "--local-repo requires a path"; exit 1; }
+      i=$((i + 1)); [ $i -gt $# ] && { err "--local-repo requires a path"; exit 1; }
       LOCAL_REPO="${@:$i:1}"; i=$((i + 1)) ;;
     *) i=$((i + 1)) ;;
   esac
@@ -140,23 +140,32 @@ if [ "$DOCTOR_MODE" = true ]; then
     fi
   fi
 
-  # Build doctor arguments
-  DOCTOR_ARGS=""
-  [ "$STRICT_MODE" = true ] && DOCTOR_ARGS="$DOCTOR_ARGS --strict"
-  [ "$VERBOSE" = true ] && DOCTOR_ARGS="$DOCTOR_ARGS --verbose"
-  [ "$APPLY_RECOMMENDED" = true ] && DOCTOR_ARGS="$DOCTOR_ARGS --apply-recommended"
-  [ "$NON_INTERACTIVE" = true ] && DOCTOR_ARGS="$DOCTOR_ARGS --non-interactive"
-  DOCTOR_ARGS="$DOCTOR_ARGS --profile $PROFILE"
+  # Validate profile against supported profiles
+  case "$PROFILE" in
+    minimal|recommended-dev|full-dev|ci|release) ;;
+    *)
+      err "Invalid profile '$PROFILE'. Supported profiles: minimal, recommended-dev, full-dev, ci, release"
+      exit 1
+      ;;
+  esac
 
-  # Run doctor
+  # Build doctor arguments as Bash array
+  DOCTOR_ARGS=()
+  [ "$STRICT_MODE" = true ] && DOCTOR_ARGS+=(--strict)
+  [ "$VERBOSE" = true ] && DOCTOR_ARGS+=(--verbose)
+  [ "$APPLY_RECOMMENDED" = true ] && DOCTOR_ARGS+=(--apply-recommended)
+  [ "$NON_INTERACTIVE" = true ] && DOCTOR_ARGS+=(--non-interactive)
+  DOCTOR_ARGS+=(--profile "$PROFILE")
+
+  # Run doctor with safe array expansion
   if [ -n "${DOCTOR_SCRIPT:-}" ]; then
-    node "$DOCTOR_SCRIPT" $DOCTOR_ARGS
+    node "$DOCTOR_SCRIPT" "${DOCTOR_ARGS[@]}"
     DOCTOR_EXIT=$?
   elif [ "${DOCTOR_USE_CLI:-}" = true ]; then
-    flowdeck doctor $DOCTOR_ARGS
+    flowdeck doctor "${DOCTOR_ARGS[@]}"
     DOCTOR_EXIT=$?
   elif [ -n "${DOCTOR_NPM_SPEC:-}" ]; then
-    npm exec --yes --package="$DOCTOR_NPM_SPEC" -- flowdeck doctor $DOCTOR_ARGS
+    npm exec --yes --package="$DOCTOR_NPM_SPEC" -- flowdeck doctor "${DOCTOR_ARGS[@]}"
     DOCTOR_EXIT=$?
   fi
 
@@ -234,27 +243,12 @@ if [ "$NODE_MAJOR" -lt 18 ]; then err "Node.js >= 18 required (found v$NODE_VERS
 info "Node.js: v$NODE_VERSION, npm: v$(npm --version 2>/dev/null || echo '?')"
 command -v opencode &>/dev/null && info "OpenCode: $(command -v opencode)" || warn "OpenCode not in PATH"
 
-# ---- Pre-install doctor ----
-if [ "$DOCTOR_MODE" = true ] || [ -n "$DOCTOR_PROFILE" ]; then
-  echo -e "\n${BLUE}[Pre-flight]${NC} Doctor checks"
-  pkg_dir=$(locate_flowdeck) || true
-  if [ -n "$pkg_dir" ]; then
-    if ! run_doctor_check "$pkg_dir" "pre-install"; then
-      err "Pre-install doctor checks failed. Fix issues before installing."
-      err "Run './install --doctor' for details."
-      exit 1
-    fi
-    ok "Pre-install doctor checks passed."
-  else
-    warn "Cannot run pre-install doctor (package not found). Skipping."
-  fi
-fi
-
 # ---- Non-interactive profile selection ----
-if [ -z "$DOCTOR_PROFILE" ] && [ "$NON_INTERACTIVE" = true ]; then
-  # Default to recommended-dev when non-interactive
-  DOCTOR_PROFILE="recommended-dev"
-  info "Non-interactive mode: using profile 'recommended-dev'"
+if [ -n "$DOCTOR_PROFILE" ] || [ "$NON_INTERACTIVE" = true ]; then
+  if [ -z "$DOCTOR_PROFILE" ]; then
+    DOCTOR_PROFILE="recommended-dev"
+    info "Non-interactive mode: using profile 'recommended-dev'"
+  fi
 fi
 
 # Isolated temp directory
