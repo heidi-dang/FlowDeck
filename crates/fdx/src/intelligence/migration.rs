@@ -45,6 +45,10 @@ pub fn migrate_schema(
                 // Migrate v2 -> v3: provider attempt diagnostics
                 tx.execute_batch(crate::intelligence::schema::MIGRATE_V2_TO_V3_SQL)?;
             }
+            3 => {
+                // Migrate v3 -> v4: node derivation source_identity
+                tx.execute_batch(crate::intelligence::schema::MIGRATE_V3_TO_V4_SQL)?;
+            }
             _ => {
                 return Err(MigrationError::Unsupported(version, target_version));
             }

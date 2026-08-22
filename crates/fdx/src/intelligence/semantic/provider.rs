@@ -289,15 +289,24 @@ pub trait SemanticProvider: Send + Sync {
     /// The workspace/package scope this provider indexes for `repo_root`.
     fn scope(&self, repo_root: &Path) -> ProviderScope;
 
-    /// Fingerprint of semantic inputs (executable/version, config, SCIP
-    /// version). Must be stable for identical inputs and change when any
-    /// semantic-relevant input changes.
-    fn fingerprint(&self, repo_root: &Path) -> Result<ProviderFingerprint, SemanticProviderError>;
+    /// Passive health check: inspects filesystem/PATH without spawning a process.
+    fn passive_health(&self, repo_root: &Path) -> ProviderHealth;
 
-    /// Current health: can this provider run right now?
-    fn health(&self, repo_root: &Path) -> ProviderHealth;
+    /// Passive fingerprint: computes executable content digest + config files digest.
+    /// Uses persisted version if available, never spawns executable.
+    fn passive_fingerprint(
+        &self,
+        repo_root: &Path,
+        persisted_version: Option<&str>,
+    ) -> Result<ProviderFingerprint, SemanticProviderError>;
 
-    /// Discover the installed indexer without downloading anything.
+    /// Active fingerprint: runs `--version` probe and active discovery.
+    fn active_fingerprint(
+        &self,
+        repo_root: &Path,
+    ) -> Result<ProviderFingerprint, SemanticProviderError>;
+
+    /// Discover the installed indexer (active probe allowed).
     fn discover(
         &self,
         repo_root: &Path,
@@ -353,8 +362,23 @@ pub fn run_bounded_process(
     deadline: Duration,
     max_stdout_bytes: u64,
     max_stderr_bytes: u64,
+    stdout_sink: Option<&Path>,
 ) -> Result<ExecOutcome, ExecFailure> {
+    #[cfg(windows)]
+    let mut command = {
+        let ext = exec.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext.eq_ignore_ascii_case("cmd") || ext.eq_ignore_ascii_case("bat") {
+            let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
+            let mut cmd = Command::new(comspec);
+            cmd.arg("/D").arg("/C").arg(exec);
+            cmd
+        } else {
+            Command::new(exec)
+        }
+    };
+    #[cfg(not(windows))]
     let mut command = Command::new(exec);
+
     command
         .args(args)
         .current_dir(workdir)
@@ -442,14 +466,58 @@ pub fn run_bounded_process(
         })
     }
 
+    fn spawn_sink(
+        mut pipe: impl Read + Send + 'static,
+        sink_path: PathBuf,
+        cap: Arc<Mutex<Capture>>,
+        overflow: Arc<Mutex<bool>>,
+        max_bytes: u64,
+    ) -> std::thread::JoinHandle<()> {
+        std::thread::spawn(move || {
+            use std::io::Write;
+            let mut file = match std::fs::File::create(&sink_path) {
+                Ok(f) => f,
+                Err(_) => return,
+            };
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = match pipe.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => n,
+                    Err(_) => break,
+                };
+                let mut guard = cap.lock().unwrap();
+                if guard.bytes + n as u64 > max_bytes {
+                    *overflow.lock().unwrap() = true;
+                    break;
+                }
+                guard.bytes += n as u64;
+                if file.write_all(&buf[..n]).is_err() {
+                    break;
+                }
+            }
+            let _ = file.flush();
+        })
+    }
+
     let tail_limit = crate::intelligence::semantic::limits::MAX_PROVIDER_STDERR_TAIL_BYTES;
-    let h_stdout = spawn_capture(
-        stdout_pipe,
-        Arc::clone(&stdout_cap),
-        Arc::clone(&stdout_overflow),
-        max_stdout_bytes,
-        tail_limit,
-    );
+    let h_stdout = if let Some(sink) = stdout_sink {
+        spawn_sink(
+            stdout_pipe,
+            sink.to_path_buf(),
+            Arc::clone(&stdout_cap),
+            Arc::clone(&stdout_overflow),
+            max_stdout_bytes,
+        )
+    } else {
+        spawn_capture(
+            stdout_pipe,
+            Arc::clone(&stdout_cap),
+            Arc::clone(&stdout_overflow),
+            max_stdout_bytes,
+            tail_limit,
+        )
+    };
     let h_stderr = spawn_capture(
         stderr_pipe,
         Arc::clone(&stderr_cap),
@@ -523,6 +591,20 @@ pub fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Compute a passive content digest for an executable without running it.
+/// Uses canonical path + file content SHA256 + length.
+pub fn executable_content_digest(exec: &Path) -> Result<String, std::io::Error> {
+    let canonical = std::fs::canonicalize(exec).unwrap_or_else(|_| exec.to_path_buf());
+    let bytes = std::fs::read(exec)?;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.to_string_lossy().as_bytes());
+    hasher.update(b":");
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(b":");
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 /// Fingerprint a set of relevant configuration files.
@@ -755,6 +837,7 @@ mod tests {
             Duration::from_secs(5),
             1024 * 1024,
             1024 * 1024,
+            None,
         )
         .unwrap();
         assert_eq!(out.exit_code, Some(0));
@@ -773,6 +856,7 @@ mod tests {
             Duration::from_millis(300),
             1024 * 1024,
             1024 * 1024,
+            None,
         )
         .unwrap_err();
         assert!(matches!(err, ExecFailure::TimedOut(_)));
@@ -794,6 +878,7 @@ mod tests {
             Duration::from_secs(5),
             1024 * 1024,
             1024,
+            None,
         )
         .unwrap_err();
         assert!(matches!(err, ExecFailure::StderrTooLarge(1024)));

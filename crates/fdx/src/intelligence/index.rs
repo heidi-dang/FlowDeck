@@ -97,14 +97,15 @@ impl<'a> TransactionalGraph<'a> {
             .trim_matches('"')
             .to_string();
         self.tx.execute(
-            "INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity, metadata)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity, metadata, source_identity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(stable_id) DO UPDATE SET
                 kind = excluded.kind,
                 canonical_path = excluded.canonical_path,
                 symbol_identity = excluded.symbol_identity,
                 package_identity = excluded.package_identity,
-                metadata = excluded.metadata",
+                metadata = excluded.metadata,
+                source_identity = excluded.source_identity",
             rusqlite::params![
                 node.stable_id,
                 kind_str,
@@ -112,6 +113,7 @@ impl<'a> TransactionalGraph<'a> {
                 node.symbol_identity,
                 node.package_identity,
                 node.metadata,
+                node.source_identity,
             ],
         )?;
         Ok(())
@@ -125,8 +127,8 @@ impl<'a> TransactionalGraph<'a> {
             .to_string();
         self.tx.execute(
             "INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity,
-                                metadata, provider, provider_fingerprint, generation, source_hash, stale)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 0)
+                                metadata, provider, provider_fingerprint, generation, source_identity, source_hash, stale)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0)
              ON CONFLICT(stable_id) DO UPDATE SET
                 kind = excluded.kind,
                 canonical_path = excluded.canonical_path,
@@ -136,6 +138,7 @@ impl<'a> TransactionalGraph<'a> {
                 provider = excluded.provider,
                 provider_fingerprint = excluded.provider_fingerprint,
                 generation = excluded.generation,
+                source_identity = excluded.source_identity,
                 source_hash = excluded.source_hash,
                 stale = 0",
             rusqlite::params![
@@ -148,6 +151,7 @@ impl<'a> TransactionalGraph<'a> {
                 node.provider,
                 node.provider_fingerprint,
                 node.generation as i64,
+                node.source_identity,
                 node.source_hash,
             ],
         )?;

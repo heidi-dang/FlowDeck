@@ -28,11 +28,28 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+fn write_counted_provider(dir: &Path, fixture_name: &str, count_file: &Path) -> PathBuf {
+    let bin = dir.join("scip-typescript");
+    let fixture_abs = fixture(fixture_name);
+    let script = format!(
+        "#!/bin/bash\n        echo run >> \"{}\"\n        OUT=\"\"\n        PREV=\"\"\n        for a in \"$@\"; do\n          if [ \"$PREV\" = \"--output\" ]; then OUT=\"$a\"; fi\n          if [ \"$a\" = \"--version\" ]; then echo \"scip-typescript 0.4.0\"; exit 0; fi\n          if [ \"$a\" = \"--help\" ]; then echo \"usage: scip-typescript --output <path>\"; exit 0; fi\n          PREV=\"$a\"\n        done\n        cp \"{}\" \"$OUT\"\n        exit 0\n",
+        count_file.display(),
+        fixture_abs.display()
+    );
+    std::fs::write(&bin, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    bin
+}
+
 fn write_provider(dir: &Path, fixture_name: &str, mode: &str) -> PathBuf {
     let bin = dir.join("scip-typescript");
     let fixture_abs = fixture(fixture_name);
     let script = format!(
-        "#!/bin/bash\n        OUT=\"\"\n        PREV=\"\"\n        for a in \"$@\"; do\n          if [ \"$PREV\" = \"--output\" ]; then OUT=\"$a\"; fi\n          if [ \"$a\" = \"--version\" ]; then echo \"scip-typescript 0.4.0\"; exit 0; fi\n          PREV=\"$a\"\n        done\n        MODE={}\n        if [ \"$MODE\" = \"fail\" ]; then echo boom >&2; exit 7; fi\n        if [ \"$MODE\" = \"sleep\" ]; then sleep 30; exit 0; fi\n        if [ \"$MODE\" = \"stderr_big\" ]; then head -c 100000 /dev/zero >&2; exit 0; fi\n        cp \"{}\" \"$OUT\"\n        exit 0\n",
+        "#!/bin/bash\n        OUT=\"\"\n        PREV=\"\"\n        for a in \"$@\"; do\n          if [ \"$PREV\" = \"--output\" ]; then OUT=\"$a\"; fi\n          if [ \"$a\" = \"--version\" ]; then echo \"scip-typescript 0.4.0\"; exit 0; fi\n          if [ \"$a\" = \"--help\" ]; then echo \"usage: scip-typescript --output <path>\"; exit 0; fi\n          PREV=\"$a\"\n        done\n        MODE={}\n        if [ \"$MODE\" = \"fail\" ]; then echo boom >&2; exit 7; fi\n        if [ \"$MODE\" = \"sleep\" ]; then sleep 30; exit 0; fi\n        if [ \"$MODE\" = \"stderr_big\" ]; then head -c 100000 /dev/zero >&2; exit 0; fi\n        cp \"{}\" \"$OUT\"\n        exit 0\n",
         mode,
         fixture_abs.display()
     );
@@ -49,7 +66,7 @@ fn write_rust_provider(dir: &Path, fixture_name: &str) -> PathBuf {
     let bin = dir.join("scip-rust-shim");
     let fixture_abs = fixture(fixture_name);
     let script = format!(
-        "#!/bin/bash\n        OUT=\"\"\n        PREV=\"\"\n        for a in \"$@\"; do\n          if [ \"$PREV\" = \"--output\" ]; then OUT=\"$a\"; fi\n          if [ \"$a\" = \"--version\" ]; then echo \"0.1.0\"; exit 0; fi\n          PREV=\"$a\"\n        done\n        cp \"{}\" \"$OUT\"\n        exit 0\n",
+        "#!/bin/bash\n        OUT=\"\"\n        PREV=\"\"\n        for a in \"$@\"; do\n          if [ \"$PREV\" = \"--output\" ]; then OUT=\"$a\"; fi\n          if [ \"$a\" = \"--version\" ]; then echo \"0.1.0\"; exit 0; fi\n          if [ \"$a\" = \"--help\" ]; then echo \"usage: scip-rust --output <path>\"; exit 0; fi\n          PREV=\"$a\"\n        done\n        cp \"{}\" \"$OUT\"\n        exit 0\n",
         fixture_abs.display()
     );
     std::fs::write(&bin, script).unwrap();
@@ -110,6 +127,128 @@ fn seed_rust(repo: &Path) -> (tempfile::TempDir, std::sync::MutexGuard<'static, 
     let provider = ScipRustProvider::new();
     refresh_provider(repo, &provider, true).unwrap();
     (dir, guard)
+}
+
+#[test]
+fn test_semantic_read_never_executes_provider_binary() {
+    let repo = tempfile::tempdir().unwrap();
+    ts_repo(repo.path());
+    let dir = tempfile::tempdir().unwrap();
+    let count_file = dir.path().join("runs.log");
+    let bin = write_counted_provider(dir.path(), "basic-ts.scip", &count_file);
+
+    let guard = lock_env();
+    std::env::set_var("SCIP_TYPESCRIPT_BIN", &bin);
+    let _ = fdx::intelligence::engine::run_incremental_index(repo.path(), false);
+    let provider = ScipTypescriptProvider::new();
+    refresh_provider(repo.path(), &provider, true).unwrap();
+
+    // Reset count file after refresh
+    let _ = std::fs::remove_file(&count_file);
+
+    let db = EvidenceDatabase::open(repo.path(), DatabaseOpenMode::ReadOnly).unwrap();
+
+    // 1. Run references queries (all intents)
+    let _ = query_references(
+        repo.path(),
+        Some(&db),
+        LanguageId::TypeScript,
+        "scip-typescript npm mypkg 1.0.0 src/a.ts/foo().",
+        IntelligenceIntent::ReferenceComplete,
+    )
+    .unwrap();
+
+    let _ = query_references(
+        repo.path(),
+        Some(&db),
+        LanguageId::TypeScript,
+        "scip-typescript npm mypkg 1.0.0 src/a.ts/foo().",
+        IntelligenceIntent::Localize,
+    )
+    .unwrap();
+
+    let _ = query_references(
+        repo.path(),
+        Some(&db),
+        LanguageId::TypeScript,
+        "scip-typescript npm mypkg 1.0.0 src/a.ts/foo().",
+        IntelligenceIntent::Context,
+    )
+    .unwrap();
+
+    let _ = query_references(
+        repo.path(),
+        Some(&db),
+        LanguageId::TypeScript,
+        "scip-typescript npm mypkg 1.0.0 src/a.ts/foo().",
+        IntelligenceIntent::Rename,
+    )
+    .unwrap();
+
+    // 2. Run semantic status CLI
+    let _ = fdx::cmd_semantic::semantic_status(repo.path()).unwrap();
+
+    // 3. Assert zero executions occurred during read operations
+    let executions = if count_file.exists() {
+        std::fs::read_to_string(&count_file)
+            .unwrap()
+            .lines()
+            .count()
+    } else {
+        0
+    };
+
+    assert_eq!(
+        executions, 0,
+        "semantic reads must perform zero provider process spawns"
+    );
+
+    std::env::remove_var("SCIP_TYPESCRIPT_BIN");
+    drop(guard);
+}
+
+#[test]
+fn test_binary_replacement_at_same_path_detected_passively() {
+    let repo = tempfile::tempdir().unwrap();
+    ts_repo(repo.path());
+    let dir = tempfile::tempdir().unwrap();
+    let bin = write_provider(dir.path(), "basic-ts.scip", "ok");
+
+    let guard = lock_env();
+    std::env::set_var("SCIP_TYPESCRIPT_BIN", &bin);
+    let _ = fdx::intelligence::engine::run_incremental_index(repo.path(), false);
+    let provider = ScipTypescriptProvider::new();
+    refresh_provider(repo.path(), &provider, true).unwrap();
+
+    let db = EvidenceDatabase::open(repo.path(), DatabaseOpenMode::ReadOnly).unwrap();
+
+    // Replace binary content in place (without changing path)
+    std::fs::write(&bin, "#!/bin/bash\necho changed-binary\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let query = query_references(
+        repo.path(),
+        Some(&db),
+        LanguageId::TypeScript,
+        "scip-typescript npm mypkg 1.0.0 src/a.ts/foo().",
+        IntelligenceIntent::ReferenceComplete,
+    )
+    .unwrap();
+
+    assert_ne!(
+        query.source,
+        EvidenceSource::Scip,
+        "replaced binary must not be used as fresh SCIP"
+    );
+    assert_eq!(query.provenance.strength, EvidenceStrength::Structural);
+    assert!(query.provenance.degraded);
+
+    std::env::remove_var("SCIP_TYPESCRIPT_BIN");
+    drop(guard);
 }
 
 #[test]
@@ -388,24 +527,61 @@ fn test_provenance_populated_on_all_nodes_and_edges() {
     let mut stmt = db
         .conn
         .prepare(
-            "SELECT stable_id, canonical_path, source_hash FROM nodes WHERE provider IS NOT NULL AND kind = 'symbol'",
+            "SELECT stable_id, canonical_path, source_identity, source_hash FROM nodes WHERE provider IS NOT NULL AND kind = 'symbol'",
         )
         .unwrap();
-    let rows: Vec<(String, Option<String>, Option<String>)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    type SymbolProvenanceRow = (String, Option<String>, Option<String>, Option<String>);
+    let rows: Vec<SymbolProvenanceRow> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .unwrap()
         .flatten()
         .collect();
 
     assert!(!rows.is_empty(), "expected semantic symbol nodes");
-    for (id, path, hash) in &rows {
+    for (id, path, src_id, hash) in &rows {
         assert!(
             path.is_some(),
             "symbol node {} must have canonical_path",
             id
         );
+        assert!(
+            src_id.is_some(),
+            "symbol node {} must have explicit source_identity",
+            id
+        );
         assert!(hash.is_some(), "symbol node {} must have source_hash", id);
         assert!(!hash.as_ref().unwrap().is_empty());
+    }
+
+    // Check package nodes have explicit package derivation source_identity
+    let mut pkg_stmt = db
+        .conn
+        .prepare(
+            "SELECT stable_id, source_identity, source_hash FROM nodes WHERE provider IS NOT NULL AND kind = 'package'",
+        )
+        .unwrap();
+    let pkg_rows: Vec<(String, Option<String>, Option<String>)> = pkg_stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .flatten()
+        .collect();
+
+    assert!(!pkg_rows.is_empty(), "expected semantic package nodes");
+    for (id, src_id, src_hash) in &pkg_rows {
+        assert!(
+            src_id.is_some(),
+            "package node {} must have source_identity",
+            id
+        );
+        assert!(
+            src_id.as_ref().unwrap().starts_with("provider-scope:"),
+            "package node source_identity format"
+        );
+        assert!(
+            src_hash.is_some(),
+            "package node {} must have source_hash",
+            id
+        );
     }
 
     // Check all edges have source_identity and source_hash
@@ -570,4 +746,128 @@ fn test_windows_executable_discovery_pathext() {
         // On Unix, looking up test-custom-indexer when only test-custom-indexer.cmd exists returns None
         assert!(found.is_none());
     }
+}
+
+#[test]
+fn test_probe_version_stdout_and_stderr() {
+    use fdx::intelligence::semantic::scip::probe_version;
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // 1. Version on stdout
+    let bin_stdout = dir.path().join("prog_stdout.sh");
+    std::fs::write(&bin_stdout, "#!/bin/sh\necho 'tool 1.2.3'\nexit 0\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin_stdout, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let ver1 = probe_version(&bin_stdout, &[]);
+    assert_eq!(
+        ver1,
+        Some("tool 1.2.3".to_string()),
+        "stdout version must be probed"
+    );
+
+    // 2. Version on stderr
+    let bin_stderr = dir.path().join("prog_stderr.sh");
+    std::fs::write(
+        &bin_stderr,
+        "#!/bin/sh\necho 'tool-err 2.0.0' >&2\nexit 0\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin_stderr, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let ver2 = probe_version(&bin_stderr, &[]);
+    assert_eq!(
+        ver2,
+        Some("tool-err 2.0.0".to_string()),
+        "stderr version must be probed"
+    );
+
+    // 3. Failing exit code
+    let bin_fail = dir.path().join("prog_fail.sh");
+    std::fs::write(&bin_fail, "#!/bin/sh\necho 'broken'\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin_fail, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let ver3 = probe_version(&bin_fail, &[]);
+    assert_eq!(ver3, None, "failed exit must return None");
+}
+
+#[test]
+fn test_cross_platform_special_characters_in_paths() {
+    // Test repository path containing spaces, &, (, ), and unicode
+    let base_dir = tempfile::tempdir().unwrap();
+    let repo_path = base_dir.path().join("repo space & (special) [test] ñ 世界");
+    std::fs::create_dir_all(&repo_path).unwrap();
+    ts_repo(&repo_path);
+
+    let (_dir, guard) = seed_ts(&repo_path);
+    let db = EvidenceDatabase::open(&repo_path, DatabaseOpenMode::ReadOnly).unwrap();
+
+    let query = query_references(
+        &repo_path,
+        Some(&db),
+        LanguageId::TypeScript,
+        "scip-typescript npm mypkg 1.0.0 src/a.ts/foo().",
+        IntelligenceIntent::ReferenceComplete,
+    )
+    .unwrap();
+
+    assert_eq!(query.source, EvidenceSource::Scip);
+    assert_eq!(query.provenance.strength, EvidenceStrength::Precise);
+    assert!(!query.references.is_empty());
+
+    std::env::remove_var("SCIP_TYPESCRIPT_BIN");
+    drop(guard);
+}
+
+#[test]
+fn test_rust_provider_stdout_streaming_mode() {
+    // Write a fake rust-analyzer that does NOT accept --output and streams SCIP to stdout
+    let dir = tempfile::tempdir().unwrap();
+    let bin = dir.path().join("rust-analyzer");
+    let fixture_abs = fixture("basic-rust.scip");
+    let script = format!(
+        "#!/bin/bash\n        if [ \"$1\" = \"--version\" ]; then echo \"rust-analyzer 1.80.0\"; exit 0; fi\n        if [ \"$1\" = \"scip\" ] && [ \"$2\" = \"--help\" ]; then echo \"usage: rust-analyzer scip <dir> (emits to stdout)\"; exit 0; fi\n        cat \"{}\"\n        exit 0\n",
+        fixture_abs.display()
+    );
+    std::fs::write(&bin, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let repo = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(repo.path().join("src")).unwrap();
+    std::fs::write(repo.path().join("src/lib.rs"), "pub fn area() {}\n").unwrap();
+    std::fs::write(
+        repo.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+
+    let guard = lock_env();
+    std::env::set_var("SCIP_RUST_BIN", &bin);
+
+    let provider = ScipRustProvider::new();
+    let report = refresh_provider(repo.path(), &provider, true).unwrap();
+    assert_eq!(report.generation, 1);
+    assert!(report.edges > 0);
+
+    let db = EvidenceDatabase::open(repo.path(), DatabaseOpenMode::ReadOnly).unwrap();
+    let state = state::load_provider_state(&db, "scip-rust")
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.freshness, ProviderFreshness::Fresh);
+
+    std::env::remove_var("SCIP_RUST_BIN");
+    drop(guard);
 }

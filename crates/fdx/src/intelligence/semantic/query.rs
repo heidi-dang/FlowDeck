@@ -97,7 +97,7 @@ type ScipResolved = (
 /// that produced the node so provenance stays precise.
 fn query_scip(db: &EvidenceDatabase, symbol: &str) -> Result<Option<ScipResolved>, QueryError> {
     let mut stmt = db.conn.prepare(
-        "SELECT stable_id, metadata, provider, provider_fingerprint, canonical_path, source_hash FROM nodes
+        "SELECT stable_id, metadata, provider, provider_fingerprint, source_identity, source_hash FROM nodes
          WHERE symbol_identity = ?1 AND stale = 0 AND provider IS NOT NULL
          LIMIT 1",
     )?;

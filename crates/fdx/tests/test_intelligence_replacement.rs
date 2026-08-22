@@ -26,6 +26,7 @@ fn test_replace_file_evidence() {
         symbol_identity: None,
         package_identity: None,
         metadata: None,
+        source_identity: None,
     };
 
     let node_x = GraphNode {
@@ -35,6 +36,7 @@ fn test_replace_file_evidence() {
         symbol_identity: None,
         package_identity: None,
         metadata: None,
+        source_identity: None,
     };
 
     let edge_a_x = GraphEdge {

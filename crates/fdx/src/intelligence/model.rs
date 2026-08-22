@@ -19,6 +19,7 @@ pub struct GraphNode {
     pub symbol_identity: Option<String>,
     pub package_identity: Option<String>,
     pub metadata: Option<String>,
+    pub source_identity: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +51,7 @@ pub struct SemanticNode {
     pub provider: String,
     pub provider_fingerprint: String,
     pub generation: u64,
+    pub source_identity: Option<String>,
     pub source_hash: Option<String>,
 }
 

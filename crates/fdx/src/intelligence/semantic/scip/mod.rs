@@ -31,6 +31,7 @@ pub fn probe_version(exec: &Path, args_prefix: &[String]) -> Option<String> {
         Duration::from_secs(10),
         64 * 1024,
         64 * 1024,
+        None,
     ) {
         Ok(o) => o,
         Err(_) => return None,
@@ -38,10 +39,47 @@ pub fn probe_version(exec: &Path, args_prefix: &[String]) -> Option<String> {
     if outcome.exit_code != Some(0) {
         return None;
     }
+    let stdout_line = outcome
+        .stdout_tail
+        .lines()
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if stdout_line.is_some() {
+        return stdout_line;
+    }
     outcome
         .stderr_tail
         .lines()
         .next()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Probe an executable's help output (bounded) to inspect CLI flags.
+pub fn probe_help(exec: &Path, args_prefix: &[String]) -> Option<String> {
+    let mut args = args_prefix.to_vec();
+    args.push("--help".to_string());
+    let outcome = match run_bounded_process(
+        exec,
+        &args,
+        Path::new("."),
+        Duration::from_secs(5),
+        64 * 1024,
+        64 * 1024,
+        None,
+    ) {
+        Ok(o) => o,
+        Err(_) => return None,
+    };
+    let text = if !outcome.stdout_tail.is_empty() {
+        outcome.stdout_tail
+    } else {
+        outcome.stderr_tail
+    };
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }

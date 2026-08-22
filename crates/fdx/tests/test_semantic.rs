@@ -44,6 +44,9 @@ fn write_provider(dir: &Path, fixture_name: &str, mode: &str) -> PathBuf {
     script.push_str(
         "  if [ \"$a\" = \"--version\" ]; then echo \"scip-typescript 0.4.0\"; exit 0; fi\n",
     );
+    script.push_str(
+        "  if [ \"$a\" = \"--help\" ]; then echo \"usage: scip-typescript --output <path>\"; exit 0; fi\n",
+    );
     script.push_str("  PREV=\"$a\"\n");
     script.push_str("done\n");
     script.push_str(&format!("MODE={}\n", mode));
@@ -411,7 +414,7 @@ fn atomic_refresh_old_generation_preserved_on_failure() {
     let (_pd, repo, _g) = seed_provider("ok", "basic-ts.scip");
     let provider = ScipTypescriptProvider::new();
     let scope = provider.scope(repo.path());
-    let fingerprint = provider.fingerprint(repo.path()).unwrap();
+    let fingerprint = provider.active_fingerprint(repo.path()).unwrap();
     let index_bytes = std::fs::read(fixture("basic-ts.scip")).unwrap();
     let index = decode_index(&index_bytes).unwrap();
     let result = fdx::intelligence::semantic::provider::SemanticIngestResult {
@@ -474,7 +477,7 @@ fn successful_refresh_replaces_old_generation() {
     let (_pd, repo, _g) = seed_provider("ok", "basic-ts.scip");
     let provider = ScipTypescriptProvider::new();
     let scope = provider.scope(repo.path());
-    let fingerprint = provider.fingerprint(repo.path()).unwrap();
+    let fingerprint = provider.active_fingerprint(repo.path()).unwrap();
     let index_bytes = std::fs::read(fixture("basic-ts.scip")).unwrap();
     let index = decode_index(&index_bytes).unwrap();
     let result = fdx::intelligence::semantic::provider::SemanticIngestResult {
@@ -582,6 +585,7 @@ fn write_provider_generic(dir: &Path, name: &str, fixture_name: &str, mode: &str
     script.push_str("for a in \"$@\"; do\n");
     script.push_str("  if [ \"$PREV\" = \"--output\" ]; then OUT=\"$a\"; fi\n");
     script.push_str("  if [ \"$a\" = \"--version\" ]; then echo \"0.1.0\"; exit 0; fi\n");
+    script.push_str("  if [ \"$a\" = \"--help\" ]; then echo \"usage: scip-rust --output <path>\"; exit 0; fi\n");
     script.push_str("  PREV=\"$a\"\n");
     script.push_str("done\n");
     script.push_str(&format!("MODE={}\n", mode));

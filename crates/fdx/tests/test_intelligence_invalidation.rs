@@ -31,6 +31,7 @@ fn test_invalidation() {
         symbol_identity: None,
         package_identity: None,
         metadata: None,
+        source_identity: None,
     };
 
     let edge = GraphEdge {
@@ -106,6 +107,7 @@ fn tx_insert(db: &mut EvidenceDatabase) {
         symbol_identity: None,
         package_identity: None,
         metadata: None,
+        source_identity: None,
     };
     let edge = GraphEdge {
         stable_id: "edge1".to_string(),
@@ -160,6 +162,7 @@ fn check_provider_string() {
         symbol_identity: None,
         package_identity: None,
         metadata: None,
+        source_identity: None,
     })
     .unwrap();
     tx.insert_edge(&edge).unwrap();

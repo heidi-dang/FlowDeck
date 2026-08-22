@@ -73,12 +73,13 @@ impl ScipTypescriptProvider {
         has_sources_with_extensions(repo_root, &["ts", "tsx", "js", "jsx", "mjs", "cjs"])
     }
 
-    fn version(&self, repo_root: &Path) -> Result<String, SemanticProviderError> {
-        let _ = repo_root;
+    #[allow(dead_code)]
+    fn version(&self, _repo_root: &Path) -> Result<String, SemanticProviderError> {
         let exec = self
             .executable()
             .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
-        Ok(probe_version(&exec, &[]).unwrap_or_else(|| "unknown".to_string()))
+        probe_version(&exec, &[])
+            .ok_or_else(|| SemanticProviderError::Failed("cannot probe version".to_string()))
     }
 }
 
@@ -107,23 +108,7 @@ impl SemanticProvider for ScipTypescriptProvider {
         }
     }
 
-    fn fingerprint(&self, repo_root: &Path) -> Result<ProviderFingerprint, SemanticProviderError> {
-        let exec = self
-            .executable()
-            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
-        let version = self.version(repo_root)?;
-        let config_files: Vec<&Path> = CONFIG_FILES.iter().map(Path::new).collect();
-        let config_fingerprint = fingerprint_config_files(repo_root, &config_files)?;
-        Ok(ProviderFingerprint::compute(
-            &version,
-            &exec.to_string_lossy(),
-            SCIP_SCHEMA_VERSION,
-            None,
-            &config_fingerprint,
-        ))
-    }
-
-    fn health(&self, repo_root: &Path) -> ProviderHealth {
+    fn passive_health(&self, repo_root: &Path) -> ProviderHealth {
         if !self.workspace_has_ts_sources(repo_root) {
             return ProviderHealth::Unsupported;
         }
@@ -131,6 +116,55 @@ impl SemanticProvider for ScipTypescriptProvider {
             Some(_) => ProviderHealth::Available,
             None => ProviderHealth::Missing,
         }
+    }
+
+    fn passive_fingerprint(
+        &self,
+        repo_root: &Path,
+        persisted_version: Option<&str>,
+    ) -> Result<ProviderFingerprint, SemanticProviderError> {
+        let exec = self
+            .executable()
+            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
+        let exec_identity = crate::intelligence::semantic::provider::executable_content_digest(
+            &exec,
+        )
+        .map_err(|e| SemanticProviderError::Failed(format!("cannot hash executable: {}", e)))?;
+        let version = persisted_version.unwrap_or("");
+        let config_files: Vec<&Path> = CONFIG_FILES.iter().map(Path::new).collect();
+        let config_fingerprint = fingerprint_config_files(repo_root, &config_files)?;
+        Ok(ProviderFingerprint::compute(
+            version,
+            &exec_identity,
+            SCIP_SCHEMA_VERSION,
+            None,
+            &config_fingerprint,
+        ))
+    }
+
+    fn active_fingerprint(
+        &self,
+        repo_root: &Path,
+    ) -> Result<ProviderFingerprint, SemanticProviderError> {
+        let exec = self
+            .executable()
+            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
+        let exec_identity = crate::intelligence::semantic::provider::executable_content_digest(
+            &exec,
+        )
+        .map_err(|e| SemanticProviderError::Failed(format!("cannot hash executable: {}", e)))?;
+        let version = probe_version(&exec, &[]).ok_or_else(|| {
+            SemanticProviderError::Failed("cannot probe scip-typescript version".to_string())
+        })?;
+        let config_files: Vec<&Path> = CONFIG_FILES.iter().map(Path::new).collect();
+        let config_fingerprint = fingerprint_config_files(repo_root, &config_files)?;
+        Ok(ProviderFingerprint::compute(
+            &version,
+            &exec_identity,
+            SCIP_SCHEMA_VERSION,
+            None,
+            &config_fingerprint,
+        ))
     }
 
     fn discover(
@@ -201,6 +235,7 @@ impl SemanticProvider for ScipTypescriptProvider {
             request.time_limit,
             request.max_output_bytes,
             request.max_stderr_bytes,
+            None,
         )
         .map_err(map_exec_failure)?;
 
@@ -316,7 +351,7 @@ mod tests {
         assert!(discovery.executable.is_none());
         assert!(discovery.reasons.iter().any(|r| r.contains("not found")));
         // health must be MISSING, not Available/Failed.
-        assert_eq!(p.health(dir.path()), ProviderHealth::Missing);
+        assert_eq!(p.passive_health(dir.path()), ProviderHealth::Missing);
     }
 
     #[test]
@@ -331,7 +366,7 @@ mod tests {
         )
         .unwrap();
         let p = ScipTypescriptProvider::new();
-        assert_eq!(p.health(dir.path()), ProviderHealth::Unsupported);
+        assert_eq!(p.passive_health(dir.path()), ProviderHealth::Unsupported);
         let d = p.discover(dir.path()).unwrap();
         assert!(!d.supported);
         assert!(d.reasons.iter().any(|r| r.contains("no TypeScript")));
@@ -348,15 +383,15 @@ mod tests {
         let p = ScipTypescriptProvider::new();
         if p.executable().is_none() {
             // In environments without scip-typescript, verify the failure mode.
-            let err = p.fingerprint(dir.path()).unwrap_err();
+            let err = p.active_fingerprint(dir.path()).unwrap_err();
             assert!(matches!(err, SemanticProviderError::Missing(_)));
             return;
         }
-        let a = p.fingerprint(dir.path()).unwrap();
-        let b = p.fingerprint(dir.path()).unwrap();
+        let a = p.passive_fingerprint(dir.path(), Some("0.4.0")).unwrap();
+        let b = p.passive_fingerprint(dir.path(), Some("0.4.0")).unwrap();
         assert_eq!(a, b);
         std::fs::write(dir.path().join("tsconfig.json"), "{\"files\":[\"lib\"]}").unwrap();
-        let c = p.fingerprint(dir.path()).unwrap();
+        let c = p.passive_fingerprint(dir.path(), Some("0.4.0")).unwrap();
         assert_ne!(a.digest, c.digest);
     }
 }

@@ -3,7 +3,7 @@ pub struct SchemaVersion {
     pub version: u32,
 }
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 pub const INITIALIZE_SCHEMA_SQL: &str = r#"
 PRAGMA user_version = 1;
@@ -122,4 +122,12 @@ ALTER TABLE semantic_providers ADD COLUMN last_attempt_fingerprint TEXT;
 ALTER TABLE semantic_providers ADD COLUMN last_attempt_at INTEGER;
 ALTER TABLE semantic_providers ADD COLUMN last_attempt_health TEXT;
 ALTER TABLE semantic_providers ADD COLUMN last_attempt_failure_reason TEXT;
+"#;
+
+/// SQL applied when migrating a v3 database to v4.
+///
+/// v4 additions:
+/// - explicit semantic node derivation identity (nodes.source_identity)
+pub const MIGRATE_V3_TO_V4_SQL: &str = r#"
+ALTER TABLE nodes ADD COLUMN source_identity TEXT;
 "#;

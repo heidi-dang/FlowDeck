@@ -103,7 +103,7 @@ pub fn semantic_refresh(
                 continue;
             }
         }
-        if provider.health(repo_root) == ProviderHealth::Unsupported {
+        if provider.passive_health(repo_root) == ProviderHealth::Unsupported {
             out.push_str(&format!("SEMANTIC {} unsupported\n", provider.id()));
             continue;
         }
