@@ -112,6 +112,7 @@ async function runBenchmark() {
     schemaVersion: 1,
     timestamp: new Date().toISOString(),
     git: {
+      sourceCommitSha: measuredSha,
       measuredSha,
       branch: gitBranch,
     },
