@@ -14,9 +14,9 @@
 
 use crate::intelligence::semantic::health::ProviderHealth;
 use crate::intelligence::semantic::provider::{
-    find_executable, fingerprint_config_files, run_bounded_process, ExecFailure,
-    ProviderFingerprint, ProviderScope, SemanticIngestRequest, SemanticIngestResult,
-    SemanticProvider, SemanticProviderDiscovery, SemanticProviderError,
+    find_executable_resolved, fingerprint_config_files, is_command_shim, run_bounded_process,
+    ExecFailure, ExecutableResolution, ProviderFingerprint, ProviderScope, SemanticIngestRequest,
+    SemanticIngestResult, SemanticProvider, SemanticProviderDiscovery, SemanticProviderError,
 };
 use crate::intelligence::semantic::scip::probe_version;
 use crate::intelligence::semantic::scip::SCIP_SCHEMA_VERSION;
@@ -45,15 +45,22 @@ fn executable_override() -> Option<PathBuf> {
     std::env::var_os("SCIP_TYPESCRIPT_BIN").map(PathBuf::from)
 }
 
-fn resolve_executable() -> Option<PathBuf> {
+fn resolve_executable() -> ExecutableResolution {
     if let Some(bin) = executable_override() {
         if bin.is_file() {
-            return Some(bin);
+            if is_command_shim(&bin) {
+                return ExecutableResolution::CommandShim(bin);
+            }
+            return ExecutableResolution::Native(bin);
         }
     }
-    EXECUTABLE_CANDIDATES
-        .iter()
-        .find_map(|name| find_executable(name))
+    for name in EXECUTABLE_CANDIDATES {
+        let res = find_executable_resolved(name);
+        if res != ExecutableResolution::NotFound {
+            return res;
+        }
+    }
+    ExecutableResolution::NotFound
 }
 
 #[derive(Debug, Default)]
@@ -64,8 +71,18 @@ impl ScipTypescriptProvider {
         Self
     }
 
-    fn executable(&self) -> Option<PathBuf> {
+    fn resolution(&self) -> ExecutableResolution {
         resolve_executable()
+    }
+
+    fn native_executable(&self) -> Result<PathBuf, SemanticProviderError> {
+        match self.resolution() {
+            ExecutableResolution::Native(p) => Ok(p),
+            ExecutableResolution::CommandShim(_) => Err(SemanticProviderError::Misconfigured(
+                "provider command shim (.cmd/.bat) requires native executable resolution (configure SCIP_TYPESCRIPT_BIN to a native executable or Node launcher)".to_string(),
+            )),
+            ExecutableResolution::NotFound => Err(SemanticProviderError::Missing(PROVIDER_ID.to_string())),
+        }
     }
 
     /// Whether the workspace root contains TypeScript/JavaScript sources.
@@ -75,9 +92,7 @@ impl ScipTypescriptProvider {
 
     #[allow(dead_code)]
     fn version(&self, _repo_root: &Path) -> Result<String, SemanticProviderError> {
-        let exec = self
-            .executable()
-            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
+        let exec = self.native_executable()?;
         probe_version(&exec, &[])
             .ok_or_else(|| SemanticProviderError::Failed("cannot probe version".to_string()))
     }
@@ -112,9 +127,10 @@ impl SemanticProvider for ScipTypescriptProvider {
         if !self.workspace_has_ts_sources(repo_root) {
             return ProviderHealth::Unsupported;
         }
-        match self.executable() {
-            Some(_) => ProviderHealth::Available,
-            None => ProviderHealth::Missing,
+        match self.resolution() {
+            ExecutableResolution::Native(_) => ProviderHealth::Available,
+            ExecutableResolution::CommandShim(_) => ProviderHealth::Misconfigured,
+            ExecutableResolution::NotFound => ProviderHealth::Missing,
         }
     }
 
@@ -123,9 +139,7 @@ impl SemanticProvider for ScipTypescriptProvider {
         repo_root: &Path,
         persisted_version: Option<&str>,
     ) -> Result<ProviderFingerprint, SemanticProviderError> {
-        let exec = self
-            .executable()
-            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
+        let exec = self.native_executable()?;
         let exec_identity = crate::intelligence::semantic::provider::executable_content_digest(
             &exec,
         )
@@ -146,9 +160,7 @@ impl SemanticProvider for ScipTypescriptProvider {
         &self,
         repo_root: &Path,
     ) -> Result<ProviderFingerprint, SemanticProviderError> {
-        let exec = self
-            .executable()
-            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
+        let exec = self.native_executable()?;
         let exec_identity = crate::intelligence::semantic::provider::executable_content_digest(
             &exec,
         )
@@ -180,10 +192,31 @@ impl SemanticProvider for ScipTypescriptProvider {
                 reasons: vec!["no TypeScript/JavaScript sources".to_string()],
             });
         }
-        let exec = match self.executable() {
-            Some(e) => e,
-            None => {
-                return Ok(SemanticProviderDiscovery {
+        match self.resolution() {
+            ExecutableResolution::Native(exec) => {
+                let version = probe_version(&exec, &[]);
+                Ok(SemanticProviderDiscovery {
+                    provider_id: PROVIDER_ID.to_string(),
+                    executable: Some(exec),
+                    provider_version: version,
+                    supported: true,
+                    reasons: Vec::new(),
+                })
+            }
+            ExecutableResolution::CommandShim(shim) => {
+                Ok(SemanticProviderDiscovery {
+                    provider_id: PROVIDER_ID.to_string(),
+                    executable: Some(shim),
+                    provider_version: None,
+                    supported: false,
+                    reasons: vec![
+                        "provider command shim (.cmd/.bat) requires native executable resolution (configure SCIP_TYPESCRIPT_BIN to a native executable or Node launcher)"
+                            .to_string(),
+                    ],
+                })
+            }
+            ExecutableResolution::NotFound => {
+                Ok(SemanticProviderDiscovery {
                     provider_id: PROVIDER_ID.to_string(),
                     executable: None,
                     provider_version: None,
@@ -194,24 +227,14 @@ impl SemanticProvider for ScipTypescriptProvider {
                     ],
                 })
             }
-        };
-        let version = probe_version(&exec, &[]);
-        Ok(SemanticProviderDiscovery {
-            provider_id: PROVIDER_ID.to_string(),
-            executable: Some(exec),
-            provider_version: version,
-            supported: true,
-            reasons: Vec::new(),
-        })
+        }
     }
 
     fn ingest(
         &self,
         request: SemanticIngestRequest,
     ) -> Result<SemanticIngestResult, SemanticProviderError> {
-        let exec = self
-            .executable()
-            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
+        let exec = self.native_executable()?;
         let output_str = request.output_path.to_string_lossy().into_owned();
         let mut args = vec![
             "index".to_string(),
@@ -381,7 +404,7 @@ mod tests {
         // Fingerprint requires the executable; without it the provider is
         // missing and fingerprint fails with a Missing error (never fabricates).
         let p = ScipTypescriptProvider::new();
-        if p.executable().is_none() {
+        if p.native_executable().is_err() {
             // In environments without scip-typescript, verify the failure mode.
             let err = p.active_fingerprint(dir.path()).unwrap_err();
             assert!(matches!(err, SemanticProviderError::Missing(_)));

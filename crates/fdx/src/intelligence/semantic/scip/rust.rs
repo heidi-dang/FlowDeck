@@ -6,7 +6,7 @@
 //!
 //! Invocation contracts (pinned against the published indexers):
 //! - `scip-rust --output <out>`  (scip-rust shim forwards args to rust-analyzer)
-//! - `rust-analyzer scip --output <out>` (direct)
+//! - `rust-analyzer scip <repo_root> --output <out>` (direct)
 //!
 //! Non-Rust repositories are unsupported; a missing executable is reported as
 //! MISSING, never auto-installed.
@@ -17,9 +17,9 @@
 
 use crate::intelligence::semantic::health::ProviderHealth;
 use crate::intelligence::semantic::provider::{
-    find_executable, fingerprint_config_files, run_bounded_process, ExecFailure,
-    ProviderFingerprint, ProviderScope, SemanticIngestRequest, SemanticIngestResult,
-    SemanticProvider, SemanticProviderDiscovery, SemanticProviderError,
+    find_executable_resolved, fingerprint_config_files, is_command_shim, run_bounded_process,
+    ExecFailure, ExecutableResolution, ProviderFingerprint, ProviderScope, SemanticIngestRequest,
+    SemanticIngestResult, SemanticProvider, SemanticProviderDiscovery, SemanticProviderError,
 };
 use crate::intelligence::semantic::scip::probe_version;
 use crate::intelligence::semantic::scip::SCIP_SCHEMA_VERSION;
@@ -41,20 +41,141 @@ fn executable_override() -> Option<PathBuf> {
     std::env::var_os("SCIP_RUST_BIN").map(PathBuf::from)
 }
 
-/// (executable, args-prefix before --output)
-fn resolve_invocation() -> Option<(PathBuf, Vec<String>)> {
-    if let Some(bin) = executable_override() {
-        if bin.is_file() {
-            return Some((bin, Vec::new()));
+/// Explicit typed invocation mode for Rust SCIP providers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustScipInvocation {
+    RustAnalyzer { executable: PathBuf },
+    ScipRustShim { executable: PathBuf },
+}
+
+impl RustScipInvocation {
+    pub fn executable(&self) -> &Path {
+        match self {
+            RustScipInvocation::RustAnalyzer { executable } => executable,
+            RustScipInvocation::ScipRustShim { executable } => executable,
         }
     }
-    if let Some(bin) = find_executable("scip-rust") {
-        return Some((bin, Vec::new()));
+
+    pub fn probe_version(&self) -> Option<String> {
+        probe_version(self.executable(), &[])
     }
-    if let Some(bin) = find_executable("rust-analyzer") {
-        return Some((bin, vec!["scip".to_string()]));
+
+    pub fn probe_help(&self) -> Option<String> {
+        match self {
+            RustScipInvocation::RustAnalyzer { executable } => {
+                crate::intelligence::semantic::scip::probe_help(executable, &["scip".to_string()])
+            }
+            RustScipInvocation::ScipRustShim { executable } => {
+                crate::intelligence::semantic::scip::probe_help(executable, &[])
+            }
+        }
     }
-    None
+
+    /// Construct CLI arguments and determine if stdout streaming mode is needed.
+    /// Returns `(args, is_stdout_mode)`.
+    pub fn build_args(
+        &self,
+        repo_root: &Path,
+        output_path: &Path,
+        help_text: &str,
+    ) -> (Vec<String>, bool) {
+        match self {
+            RustScipInvocation::RustAnalyzer { .. } => {
+                let supports_output_flag = help_text.contains("--output");
+                if supports_output_flag {
+                    (
+                        vec![
+                            "scip".to_string(),
+                            repo_root.to_string_lossy().into_owned(),
+                            "--output".to_string(),
+                            output_path.to_string_lossy().into_owned(),
+                        ],
+                        false,
+                    )
+                } else {
+                    (
+                        vec!["scip".to_string(), repo_root.to_string_lossy().into_owned()],
+                        true,
+                    )
+                }
+            }
+            RustScipInvocation::ScipRustShim { .. } => {
+                let supports_output_flag = help_text.contains("--output");
+                let accepts_positional = help_text.contains("<PROJECT_PATH>")
+                    || help_text.contains("<project-path>")
+                    || help_text.contains("<path>")
+                    || help_text.contains("<PATH>")
+                    || help_text.contains("<dir>")
+                    || help_text.contains("<DIR>")
+                    || help_text.contains("[path]")
+                    || help_text.contains("[PATH]")
+                    || help_text.contains("[dir]")
+                    || help_text.contains("[DIR]");
+
+                let mut args = Vec::new();
+                if accepts_positional {
+                    args.push(repo_root.to_string_lossy().into_owned());
+                }
+                if supports_output_flag {
+                    args.push("--output".to_string());
+                    args.push(output_path.to_string_lossy().into_owned());
+                    (args, false)
+                } else {
+                    (args, true)
+                }
+            }
+        }
+    }
+}
+
+/// Resolution state for Rust SCIP provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RustResolution {
+    Resolved(RustScipInvocation),
+    CommandShim(PathBuf),
+    NotFound,
+}
+
+fn resolve_invocation() -> RustResolution {
+    if let Some(bin) = executable_override() {
+        if bin.is_file() {
+            if is_command_shim(&bin) {
+                return RustResolution::CommandShim(bin);
+            }
+            let fname = bin.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if fname.starts_with("rust-analyzer") {
+                return RustResolution::Resolved(RustScipInvocation::RustAnalyzer {
+                    executable: bin,
+                });
+            } else {
+                return RustResolution::Resolved(RustScipInvocation::ScipRustShim {
+                    executable: bin,
+                });
+            }
+        }
+    }
+
+    match find_executable_resolved("scip-rust") {
+        ExecutableResolution::Native(bin) => {
+            return RustResolution::Resolved(RustScipInvocation::ScipRustShim { executable: bin });
+        }
+        ExecutableResolution::CommandShim(shim) => {
+            return RustResolution::CommandShim(shim);
+        }
+        ExecutableResolution::NotFound => {}
+    }
+
+    match find_executable_resolved("rust-analyzer") {
+        ExecutableResolution::Native(bin) => {
+            return RustResolution::Resolved(RustScipInvocation::RustAnalyzer { executable: bin });
+        }
+        ExecutableResolution::CommandShim(shim) => {
+            return RustResolution::CommandShim(shim);
+        }
+        ExecutableResolution::NotFound => {}
+    }
+
+    RustResolution::NotFound
 }
 
 #[derive(Debug, Default)]
@@ -65,8 +186,18 @@ impl ScipRustProvider {
         Self
     }
 
-    fn invocation(&self) -> Option<(PathBuf, Vec<String>)> {
+    pub fn resolution(&self) -> RustResolution {
         resolve_invocation()
+    }
+
+    fn active_invocation(&self) -> Result<RustScipInvocation, SemanticProviderError> {
+        match self.resolution() {
+            RustResolution::Resolved(inv) => Ok(inv),
+            RustResolution::CommandShim(_) => Err(SemanticProviderError::Misconfigured(
+                "provider command shim (.cmd/.bat) requires native executable resolution (configure SCIP_RUST_BIN to a native executable)".to_string(),
+            )),
+            RustResolution::NotFound => Err(SemanticProviderError::Missing(PROVIDER_ID.to_string())),
+        }
     }
 
     /// Whether the workspace root contains Rust sources.
@@ -74,21 +205,12 @@ impl ScipRustProvider {
         has_rust_sources(repo_root)
     }
 
+    #[allow(dead_code)]
     fn version(&self, _repo_root: &Path) -> Result<String, SemanticProviderError> {
-        let (exec, _prefix) = self
-            .invocation()
-            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
-        // The engine behind both entry points is rust-analyzer.
-        let version = if exec
-            .file_name()
-            .map(|n| n == "rust-analyzer")
-            .unwrap_or(false)
-        {
-            probe_version(&exec, &[])
-        } else {
-            probe_version(&exec, &["scip".to_string()])
-        };
-        Ok(version.unwrap_or_else(|| "unknown".to_string()))
+        let inv = self.active_invocation()?;
+        inv.probe_version().ok_or_else(|| {
+            SemanticProviderError::Failed("cannot probe rust SCIP provider version".to_string())
+        })
     }
 }
 
@@ -118,9 +240,10 @@ impl SemanticProvider for ScipRustProvider {
         if !self.workspace_has_rust_sources(repo_root) {
             return ProviderHealth::Unsupported;
         }
-        match self.invocation() {
-            Some(_) => ProviderHealth::Available,
-            None => ProviderHealth::Missing,
+        match self.resolution() {
+            RustResolution::Resolved(_) => ProviderHealth::Available,
+            RustResolution::CommandShim(_) => ProviderHealth::Misconfigured,
+            RustResolution::NotFound => ProviderHealth::Missing,
         }
     }
 
@@ -129,13 +252,12 @@ impl SemanticProvider for ScipRustProvider {
         repo_root: &Path,
         persisted_version: Option<&str>,
     ) -> Result<ProviderFingerprint, SemanticProviderError> {
-        let (exec, _prefix) = self
-            .invocation()
-            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
-        let exec_identity = crate::intelligence::semantic::provider::executable_content_digest(
-            &exec,
-        )
-        .map_err(|e| SemanticProviderError::Failed(format!("cannot hash executable: {}", e)))?;
+        let inv = self.active_invocation()?;
+        let exec_identity =
+            crate::intelligence::semantic::provider::executable_content_digest(inv.executable())
+                .map_err(|e| {
+                    SemanticProviderError::Failed(format!("cannot hash executable: {}", e))
+                })?;
         let version = persisted_version.unwrap_or("");
         let config_files: Vec<&Path> = CONFIG_FILES.iter().map(Path::new).collect();
         let config_fingerprint = fingerprint_config_files(repo_root, &config_files)?;
@@ -152,14 +274,13 @@ impl SemanticProvider for ScipRustProvider {
         &self,
         repo_root: &Path,
     ) -> Result<ProviderFingerprint, SemanticProviderError> {
-        let (exec, prefix) = self
-            .invocation()
-            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
-        let exec_identity = crate::intelligence::semantic::provider::executable_content_digest(
-            &exec,
-        )
-        .map_err(|e| SemanticProviderError::Failed(format!("cannot hash executable: {}", e)))?;
-        let version = probe_version(&exec, &prefix).ok_or_else(|| {
+        let inv = self.active_invocation()?;
+        let exec_identity =
+            crate::intelligence::semantic::provider::executable_content_digest(inv.executable())
+                .map_err(|e| {
+                    SemanticProviderError::Failed(format!("cannot hash executable: {}", e))
+                })?;
+        let version = inv.probe_version().ok_or_else(|| {
             SemanticProviderError::Failed("cannot probe rust SCIP provider version".to_string())
         })?;
         let config_files: Vec<&Path> = CONFIG_FILES.iter().map(Path::new).collect();
@@ -186,10 +307,31 @@ impl SemanticProvider for ScipRustProvider {
                 reasons: vec!["no Rust sources".to_string()],
             });
         }
-        let (exec, prefix) = match self.invocation() {
-            Some(v) => v,
-            None => {
-                return Ok(SemanticProviderDiscovery {
+        match self.resolution() {
+            RustResolution::Resolved(inv) => {
+                let version = inv.probe_version();
+                Ok(SemanticProviderDiscovery {
+                    provider_id: PROVIDER_ID.to_string(),
+                    executable: Some(inv.executable().to_path_buf()),
+                    provider_version: version,
+                    supported: true,
+                    reasons: Vec::new(),
+                })
+            }
+            RustResolution::CommandShim(shim) => {
+                Ok(SemanticProviderDiscovery {
+                    provider_id: PROVIDER_ID.to_string(),
+                    executable: Some(shim),
+                    provider_version: None,
+                    supported: false,
+                    reasons: vec![
+                        "provider command shim (.cmd/.bat) requires native executable resolution (configure SCIP_RUST_BIN to a native executable)"
+                            .to_string(),
+                    ],
+                })
+            }
+            RustResolution::NotFound => {
+                Ok(SemanticProviderDiscovery {
                     provider_id: PROVIDER_ID.to_string(),
                     executable: None,
                     provider_version: None,
@@ -200,55 +342,32 @@ impl SemanticProvider for ScipRustProvider {
                     ],
                 })
             }
-        };
-        let version = probe_version(&exec, &prefix);
-        Ok(SemanticProviderDiscovery {
-            provider_id: PROVIDER_ID.to_string(),
-            executable: Some(exec),
-            provider_version: version,
-            supported: true,
-            reasons: Vec::new(),
-        })
+        }
     }
 
     fn ingest(
         &self,
         request: SemanticIngestRequest,
     ) -> Result<SemanticIngestResult, SemanticProviderError> {
-        let (exec, mut prefix) = self
-            .invocation()
-            .ok_or_else(|| SemanticProviderError::Missing(PROVIDER_ID.to_string()))?;
-        let help_text =
-            crate::intelligence::semantic::scip::probe_help(&exec, &prefix).unwrap_or_default();
-        let supports_output_flag = help_text.contains("--output");
+        let inv = self.active_invocation()?;
+        let help_text = inv.probe_help().unwrap_or_default();
+        let (args, is_stdout_mode) =
+            inv.build_args(&request.repo_root, &request.output_path, &help_text);
 
-        let outcome = if supports_output_flag {
-            prefix.push("--output".to_string());
-            prefix.push(request.output_path.to_string_lossy().into_owned());
-            run_bounded_process(
-                &exec,
-                &prefix,
-                &request.repo_root,
-                request.time_limit,
-                request.max_output_bytes,
-                request.max_stderr_bytes,
-                None,
-            )
-            .map_err(map_exec_failure)?
-        } else {
-            // Stdout streaming mode (e.g. rust-analyzer scip .)
-            prefix.push(request.repo_root.to_string_lossy().into_owned());
-            run_bounded_process(
-                &exec,
-                &prefix,
-                &request.repo_root,
-                request.time_limit,
-                request.max_output_bytes,
-                request.max_stderr_bytes,
-                Some(&request.output_path),
-            )
-            .map_err(map_exec_failure)?
-        };
+        let outcome = run_bounded_process(
+            inv.executable(),
+            &args,
+            &request.repo_root,
+            request.time_limit,
+            request.max_output_bytes,
+            request.max_stderr_bytes,
+            if is_stdout_mode {
+                Some(&request.output_path)
+            } else {
+                None
+            },
+        )
+        .map_err(map_exec_failure)?;
 
         if outcome.exit_code != Some(0) {
             return Err(SemanticProviderError::Failed(format!(
@@ -273,7 +392,7 @@ impl SemanticProvider for ScipRustProvider {
             output_digest: digest,
             output_bytes,
             tool_name: Some(PROVIDER_ID.to_string()),
-            tool_version: self.version(&request.repo_root).ok(),
+            tool_version: inv.probe_version(),
             provider_runtime_ms: outcome.runtime_ms,
         })
     }
@@ -341,14 +460,11 @@ mod tests {
 
     #[test]
     fn missing_provider_is_reported_not_downloaded() {
-        // Discovery must tolerate absence and never auto-download. On
-        // machines with rust-analyzer on PATH the provider IS available; the
-        // truthful PATH-isolated proof lives in the integration suite.
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}").unwrap();
         let p = ScipRustProvider::new();
-        if p.invocation().is_none() {
+        if matches!(p.resolution(), RustResolution::NotFound) {
             let discovery = p.discover(dir.path()).unwrap();
             assert!(!discovery.supported);
             assert!(discovery.executable.is_none());
@@ -379,14 +495,14 @@ mod tests {
         std::fs::write(dir.path().join("src/lib.rs"), "pub fn f() {}").unwrap();
         std::fs::write(
             dir.path().join("Cargo.toml"),
-            "[package]
-name = \"demo\"
-version = \"0.1.0\"
-",
+            r#"[package]
+name = "demo"
+version = "0.1.0"
+"#,
         )
         .unwrap();
         let p = ScipRustProvider::new();
-        if p.invocation().is_none() {
+        if matches!(p.resolution(), RustResolution::NotFound) {
             let err = p.active_fingerprint(dir.path()).unwrap_err();
             assert!(matches!(err, SemanticProviderError::Missing(_)));
             return;
@@ -396,10 +512,10 @@ version = \"0.1.0\"
         assert_eq!(a, b);
         std::fs::write(
             dir.path().join("Cargo.toml"),
-            "[package]
-name = \"demo\"
-version = \"0.2.0\"
-",
+            r#"[package]
+name = "demo"
+version = "0.2.0"
+"#,
         )
         .unwrap();
         let c = p.passive_fingerprint(dir.path(), Some("0.1.0")).unwrap();
