@@ -9,7 +9,7 @@ pub enum IndexError {
 }
 
 pub struct TransactionalGraph<'a> {
-    tx: Transaction<'a>,
+    pub tx: Transaction<'a>,
 }
 
 impl<'a> TransactionalGraph<'a> {
@@ -62,6 +62,15 @@ impl<'a> TransactionalGraph<'a> {
                 node.package_identity,
                 node.metadata,
             ]
+        )?;
+        Ok(())
+    }
+
+    pub fn set_metadata(&self, key: &str, value: &str) -> Result<(), IndexError> {
+        self.tx.execute(
+            "INSERT INTO metadata (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![key, value],
         )?;
         Ok(())
     }

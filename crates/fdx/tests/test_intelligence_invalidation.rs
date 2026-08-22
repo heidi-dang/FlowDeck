@@ -9,7 +9,11 @@ use tempfile::tempdir;
 fn test_invalidation() {
     let dir = tempdir().unwrap();
     let repo_root = dir.path();
-    let mut db = EvidenceDatabase::open(repo_root).unwrap();
+    let mut db = EvidenceDatabase::open(
+        repo_root,
+        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+    )
+    .unwrap();
 
     let file = IndexedFile {
         canonical_path: "src/main.rs".to_string(),
@@ -127,7 +131,11 @@ fn tx_insert(db: &mut EvidenceDatabase) {
 fn check_provider_string() {
     let dir = tempdir().unwrap();
     let repo_root = dir.path();
-    let mut db = EvidenceDatabase::open(repo_root).unwrap();
+    let mut db = EvidenceDatabase::open(
+        repo_root,
+        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+    )
+    .unwrap();
 
     let edge = GraphEdge {
         stable_id: "edge_check".to_string(),

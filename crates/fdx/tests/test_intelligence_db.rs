@@ -8,7 +8,11 @@ fn test_database_creation_and_schema() {
     let db_path = repo_root.join(".fdx").join("index.sqlite");
 
     // Test initialization
-    let db = EvidenceDatabase::open(repo_root).expect("Failed to open database");
+    let db = EvidenceDatabase::open(
+        repo_root,
+        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+    )
+    .expect("Failed to open database");
     assert!(db_path.exists(), "Database file should be created");
 
     // Check schema version
@@ -17,7 +21,11 @@ fn test_database_creation_and_schema() {
 
     // Reopen preserves state
     drop(db);
-    let db2 = EvidenceDatabase::open(repo_root).expect("Failed to reopen database");
+    let db2 = EvidenceDatabase::open(
+        repo_root,
+        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+    )
+    .expect("Failed to reopen database");
     let version2 = db2.get_schema_version().unwrap();
     assert_eq!(version2.version, 1);
 }
@@ -42,7 +50,10 @@ fn test_future_schema_rejected() {
     }
 
     // Should fail to open due to future schema
-    let result = EvidenceDatabase::open(repo_root);
+    let result = EvidenceDatabase::open(
+        repo_root,
+        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+    );
     assert!(result.is_err(), "Should reject future schema versions");
 }
 
@@ -57,8 +68,11 @@ fn test_corruption_recovery() {
     std::fs::write(&db_path, b"garbage data that is not sqlite").unwrap();
 
     // Opening should recover (quarantine and rebuild)
-    let db =
-        EvidenceDatabase::open(repo_root).expect("Failed to open and recover corrupt database");
+    let db = EvidenceDatabase::open(
+        repo_root,
+        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+    )
+    .expect("Failed to open and recover corrupt database");
     assert_eq!(db.get_schema_version().unwrap().version, 1);
 
     // Check that corrupt DB was moved
@@ -73,4 +87,39 @@ fn test_corruption_recovery() {
         })
         .count();
     assert_eq!(corrupt_count, 1, "Should quarantine corrupt database");
+}
+
+#[test]
+fn test_busy_contention_timeout() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo_root = dir.path();
+
+    // Writer A
+    let db_a = EvidenceDatabase::open(
+        repo_root,
+        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+    )
+    .unwrap();
+    // Writer A takes an exclusive lock
+    db_a.conn.execute_batch("BEGIN EXCLUSIVE;").unwrap();
+
+    // Writer B attempts write, should hit busy timeout (5000ms)
+    // To not wait 5 seconds in tests, let's change writer B's busy_timeout
+    let db_b = EvidenceDatabase::open(
+        repo_root,
+        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+    )
+    .unwrap();
+    db_b.conn.pragma_update(None, "busy_timeout", 100).unwrap();
+
+    let result = db_b.conn.execute(
+        "INSERT INTO metadata (key, value) VALUES ('test', 'val')",
+        [],
+    );
+    match result {
+        Err(rusqlite::Error::SqliteFailure(ffi_err, _)) => {
+            assert_eq!(ffi_err.code, rusqlite::ffi::ErrorCode::DatabaseBusy);
+        }
+        _ => panic!("Expected DatabaseBusy error, got {:?}", result),
+    }
 }

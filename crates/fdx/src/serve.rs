@@ -270,7 +270,10 @@ fn handle_evidence_graph_v1(
     _cache: &AstCache,
 ) -> Option<String> {
     let cwd = std::path::Path::new(".");
-    match crate::intelligence::db::EvidenceDatabase::open(cwd) {
+    match crate::intelligence::db::EvidenceDatabase::open(
+        cwd,
+        crate::intelligence::db::DatabaseOpenMode::ReadOnly,
+    ) {
         Ok(db) => {
             let version = db.get_schema_version().map(|v| v.version).unwrap_or(0);
             let file_count: i32 = db
