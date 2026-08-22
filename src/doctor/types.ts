@@ -116,6 +116,7 @@ export interface AutoFixResult {
 }
 
 export interface DoctorOptions {
+  directory?: string
   json?: boolean
   fix?: boolean
   applyRecommended?: boolean

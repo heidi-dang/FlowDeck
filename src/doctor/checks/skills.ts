@@ -37,11 +37,10 @@ export async function runCuratedSkillChecks(directory: string): Promise<CheckRes
         status: "error",
         detected: "skills-lock.json is corrupt or unparseable",
         expected: "Valid skills-lock.json",
-        recommendation: "Run `flowdeck doctor fix` to rebuild skills lockfile",
-        autoFixAvailable: true,
+        recommendation: "Reinstall FlowDeck or regenerate skills lockfile",
+        autoFixAvailable: false,
         affectsRuntime: true,
-        repairability: "automatic",
-        repairAction: "rebuild_skills_lockfile",
+        repairability: "manual",
       })
     }
   } else {
@@ -53,11 +52,10 @@ export async function runCuratedSkillChecks(directory: string): Promise<CheckRes
       status: "warning",
       detected: "skills-lock.json missing",
       expected: "skills-lock.json present",
-      recommendation: "Run `flowdeck doctor fix` to generate skills lockfile",
-      autoFixAvailable: true,
+      recommendation: "Reinstall FlowDeck or generate skills lockfile",
+      autoFixAvailable: false,
       affectsRuntime: true,
-      repairability: "automatic",
-      repairAction: "rebuild_skills_lockfile",
+      repairability: "manual",
     })
   }
 
@@ -108,11 +106,10 @@ export async function runCuratedSkillChecks(directory: string): Promise<CheckRes
         status: "error",
         detected: `${invalidSkillCount} skill modules have invalid or missing frontmatter`,
         expected: "All SKILL.md modules valid",
-        recommendation: "Run `flowdeck doctor fix` to restore skill definitions",
-        autoFixAvailable: true,
+        recommendation: "Fix or restore skill definitions",
+        autoFixAvailable: false,
         affectsRuntime: true,
-        repairability: "automatic",
-        repairAction: "restore_skills",
+        repairability: "manual",
       })
     }
   }
