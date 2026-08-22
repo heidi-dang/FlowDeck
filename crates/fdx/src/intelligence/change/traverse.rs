@@ -19,7 +19,7 @@ use crate::protocol::{
 };
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -209,25 +209,100 @@ fn query_raw_incoming_impact_edges(
     (edges, unknown_kinds)
 }
 
-fn resolve_import_path(source_file: &Path, import_str: &str, repo_root: &Path) -> Option<String> {
+struct SnapshotFileSet {
+    paths: HashSet<String>,
+    truncated: bool,
+}
+
+impl SnapshotFileSet {
+    fn from_working_tree(_repo_root: &Path, files: &[String]) -> Self {
+        Self {
+            paths: files.iter().cloned().collect(),
+            truncated: false,
+        }
+    }
+
+    fn from_base_ref(repo_root: &Path, base_ref: &str) -> Self {
+        use std::process::Command;
+        let mut paths = HashSet::new();
+        let mut truncated = false;
+
+        let output = Command::new("git")
+            .current_dir(repo_root)
+            .args(["ls-tree", "-r", "-z", "--name-only", base_ref])
+            .output();
+
+        if let Ok(out) = output {
+            if out.status.success() {
+                for slice in out.stdout.split(|&b| b == 0) {
+                    if slice.is_empty() {
+                        continue;
+                    }
+                    if let Ok(path_str) = std::str::from_utf8(slice) {
+                        let ext = Path::new(path_str)
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("");
+                        if ["ts", "tsx", "js", "jsx", "rs", "py"].contains(&ext) {
+                            if paths.len() >= 2000 {
+                                truncated = true;
+                                break;
+                            }
+                            paths.insert(path_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        Self { paths, truncated }
+    }
+
+    fn is_file(&self, canon: &str) -> bool {
+        self.paths.contains(canon)
+    }
+}
+
+fn normalize_path(path: &Path) -> Option<String> {
+    let mut components = Vec::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::Normal(c) => components.push(c.to_string_lossy().into_owned()),
+            std::path::Component::ParentDir => {
+                components.pop();
+            }
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(components.join("/"))
+}
+
+fn resolve_import_path_in_snapshot(
+    source_canonical_path: &str,
+    import_str: &str,
+    snapshot: &SnapshotFileSet,
+) -> Option<String> {
     if !import_str.starts_with('.') {
         return None;
     }
-    let parent = source_file.parent().unwrap_or(Path::new(""));
+    let source_path = Path::new(source_canonical_path);
+    let parent = source_path.parent().unwrap_or(Path::new(""));
     let candidate = parent.join(import_str);
 
+    let candidate_str = normalize_path(&candidate)?;
+
     let extensions = ["ts", "tsx", "js", "jsx", "rs"];
-    if candidate.is_file() {
-        return canonicalize_repo_path(&candidate, repo_root).ok();
+    if snapshot.is_file(&candidate_str) {
+        return Some(candidate_str);
     }
     for ext in extensions {
-        let with_ext = candidate.with_extension(ext);
-        if with_ext.is_file() {
-            return canonicalize_repo_path(&with_ext, repo_root).ok();
+        let with_ext = format!("{}.{}", candidate_str, ext);
+        if snapshot.is_file(&with_ext) {
+            return Some(with_ext);
         }
-        let index_file = candidate.join(format!("index.{}", ext));
-        if index_file.is_file() {
-            return canonicalize_repo_path(&index_file, repo_root).ok();
+        let index_file = format!("{}/index.{}", candidate_str, ext);
+        if snapshot.is_file(&index_file) {
+            return Some(index_file);
         }
     }
     None
@@ -243,6 +318,7 @@ impl LexicalFallbackIndex {
     fn build_from_working_tree(repo_root: &Path, files: &[String]) -> Self {
         let mut imported_to_importers: HashMap<String, Vec<String>> = HashMap::new();
         let mut symbol_to_referencing_files: HashMap<String, Vec<String>> = HashMap::new();
+        let snapshot = SnapshotFileSet::from_working_tree(repo_root, files);
 
         for canon in files {
             let full = repo_root.join(canon);
@@ -250,9 +326,9 @@ impl LexicalFallbackIndex {
                 continue;
             };
             Self::index_content(
-                repo_root,
                 canon,
                 &content,
+                &snapshot,
                 &mut imported_to_importers,
                 &mut symbol_to_referencing_files,
             );
@@ -264,34 +340,38 @@ impl LexicalFallbackIndex {
         }
     }
 
-    fn build_from_base_ref(repo_root: &Path, files: &[String], base_ref: &str) -> Self {
+    fn build_from_base_ref(repo_root: &Path, base_ref: &str) -> (Self, bool) {
         let mut imported_to_importers: HashMap<String, Vec<String>> = HashMap::new();
         let mut symbol_to_referencing_files: HashMap<String, Vec<String>> = HashMap::new();
+        let snapshot = SnapshotFileSet::from_base_ref(repo_root, base_ref);
 
-        for canon in files {
+        for canon in &snapshot.paths {
             let content = read_git_file_content(repo_root, base_ref, canon);
             let Some(content) = content else {
                 continue;
             };
             Self::index_content(
-                repo_root,
                 canon,
                 &content,
+                &snapshot,
                 &mut imported_to_importers,
                 &mut symbol_to_referencing_files,
             );
         }
 
-        Self {
-            imported_to_importers,
-            symbol_to_referencing_files,
-        }
+        (
+            Self {
+                imported_to_importers,
+                symbol_to_referencing_files,
+            },
+            snapshot.truncated,
+        )
     }
 
     fn index_content(
-        repo_root: &Path,
         canon: &str,
         content: &str,
+        snapshot: &SnapshotFileSet,
         imported_to_importers: &mut HashMap<String, Vec<String>>,
         symbol_to_referencing_files: &mut HashMap<String, Vec<String>>,
     ) {
@@ -304,11 +384,9 @@ impl LexicalFallbackIndex {
                     if let Some(start) = trimmed.rfind(q) {
                         if let Some(end) = trimmed[..start].rfind(q) {
                             let spec = &trimmed[end + 1..start];
-                            if let Some(resolved) = resolve_import_path(
-                                &canon_to_path(repo_root, canon),
-                                spec,
-                                repo_root,
-                            ) {
+                            if let Some(resolved) =
+                                resolve_import_path_in_snapshot(canon, spec, snapshot)
+                            {
                                 imported_files.insert(resolved);
                             }
                         }
@@ -458,10 +536,6 @@ fn collect_all_repo_code_files(conn: Option<&Connection>, repo_root: &Path) -> V
     files
 }
 
-fn canon_to_path(repo_root: &Path, canon: &str) -> PathBuf {
-    repo_root.join(canon)
-}
-
 struct QueueItem {
     current_node_id: String,
     depth: usize,
@@ -568,8 +642,16 @@ pub fn analyze_impact_v2(
 
     let current_fallback_index =
         LexicalFallbackIndex::build_from_working_tree(repo_root, &candidate_files);
-    let before_fallback_index =
-        base_ref.map(|b| LexicalFallbackIndex::build_from_base_ref(repo_root, &candidate_files, b));
+    let mut before_fallback_index = None;
+    if let Some(b) = base_ref {
+        let (idx, truncated) = LexicalFallbackIndex::build_from_base_ref(repo_root, b);
+        before_fallback_index = Some(idx);
+        if truncated {
+            uncertainties.push(UncertaintyReason::MissingBeforeEvidence(
+                "Historical snapshot exceeded file bounds".to_string(),
+            ));
+        }
+    }
     let fallback_indexes = ImpactFallbackIndexes {
         current: current_fallback_index,
         before: before_fallback_index,
