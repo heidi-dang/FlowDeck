@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "milestone": "M4",
+  "title": "Milestone 4 Verifiable Transitive Impact Benchmark",
+  "timestamp": "2026-08-22T10:54:11.685Z",
+  "source_sha": "5ae68af1aacf021b519b7b2eff72cc1f265f8976",
+  "branch": "feat/fdx-verifiable-change-intelligence",
+  "platform": "linux",
+  "arch": "x64",
+  "benchmarks": {
+    "change_extraction": {
+      "count": 20,
+      "min": 1.96,
+      "max": 2.71,
+      "mean": 2.13,
+      "median": 2.04,
+      "p95": 2.71,
+      "description": "NUL-delimited safe git delta extraction"
+    },
+    "one_hop_impact": {
+      "count": 20,
+      "min": 7.91,
+      "max": 13.9,
+      "mean": 11.76,
+      "median": 12.91,
+      "p95": 13.9,
+      "assurance": "DEGRADED",
+      "result_count": 2,
+      "changes_count": 1,
+      "description": "1-hop direct caller and importer impact traversal"
+    },
+    "three_hop_impact": {
+      "count": 20,
+      "min": 12.94,
+      "max": 26.46,
+      "mean": 15.34,
+      "median": 13.05,
+      "p95": 26.46,
+      "assurance": "DEGRADED",
+      "result_count": 4,
+      "changes_count": 1,
+      "description": "3-hop bounded transitive impact traversal"
+    },
+    "why_explanation": {
+      "count": 20,
+      "min": 7.6,
+      "max": 29.75,
+      "mean": 23.04,
+      "median": 26.17,
+      "p95": 29.75,
+      "target": "src/d.ts",
+      "depth": 3,
+      "strength": "structural",
+      "description": "why explanation path generation from impact machinery"
+    },
+    "cycle_graph": {
+      "count": 20,
+      "min": 10.43,
+      "max": 26.14,
+      "mean": 20.67,
+      "median": 25.83,
+      "p95": 26.14,
+      "assurance": "DEGRADED",
+      "result_count": 2,
+      "description": "Cycle-safe traversal over mutual dependencies"
+    },
+    "synthetic_100_edges": {
+      "count": 10,
+      "min": 13.36,
+      "max": 18.53,
+      "mean": 16.98,
+      "median": 18.4,
+      "p95": 18.53,
+      "assurance": "DEGRADED",
+      "result_count": 101,
+      "description": "100-edge fanout traversal"
+    },
+    "synthetic_1k_edges": {
+      "count": 5,
+      "min": 60.94,
+      "max": 62.68,
+      "mean": 61.89,
+      "median": 62.03,
+      "p95": 62.68,
+      "assurance": "DEGRADED",
+      "result_count": 1001,
+      "description": "1,000-edge fanout traversal"
+    }
+  }
+}
