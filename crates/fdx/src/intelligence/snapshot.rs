@@ -1,7 +1,6 @@
-
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::Command;
-use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositorySnapshot {
@@ -18,7 +17,9 @@ pub fn get_repository_snapshot(repo_root: &Path) -> Result<RepositorySnapshot, &
         .ok()
         .and_then(|o| {
             if o.status.success() {
-                String::from_utf8(o.stdout).ok().map(|s| s.trim().to_string())
+                String::from_utf8(o.stdout)
+                    .ok()
+                    .map(|s| s.trim().to_string())
             } else {
                 None
             }
@@ -43,35 +44,44 @@ pub fn get_repository_snapshot(repo_root: &Path) -> Result<RepositorySnapshot, &
                 let xy = &o.stdout[i..i + 2];
                 i += 3; // skip XY and space
 
+                // First NUL-delimited path (the new/current path for renames/copies)
                 let start = i;
                 while i < o.stdout.len() && o.stdout[i] != 0 {
                     i += 1;
                 }
-                let path_bytes = &o.stdout[start..i];
-                i += 1; // skip \0
+                let path1 = &o.stdout[start..i];
+                i += 1;
 
-                // If rename, there's another path
-                if xy[0] == b'R' || xy[0] == b'C' {
-                    let _orig_start = i;
+                // Rename/copy records carry a second NUL-delimited path (the
+                // source/original path). It MUST be part of the snapshot identity
+                // so "a.ts -> b.ts" and "c.ts -> b.ts" never collide.
+                let mut path2: Option<&[u8]> = None;
+                if (xy[0] == b'R' || xy[0] == b'C') && i < o.stdout.len() {
+                    let start2 = i;
                     while i < o.stdout.len() && o.stdout[i] != 0 {
                         i += 1;
                     }
+                    path2 = Some(&o.stdout[start2..i]);
                     i += 1;
                 }
 
-                // Exclude .fdx/
-                if path_bytes.starts_with(b".fdx/") {
+                // Exclude .fdx/ from snapshot identity.
+                if path1.starts_with(b".fdx/") {
                     continue;
                 }
 
                 hasher.update(xy);
                 hasher.update(b"|");
-                hasher.update(path_bytes);
+                hasher.update(path1);
                 hasher.update(b"|");
+                if let Some(p2) = path2 {
+                    hasher.update(p2);
+                    hasher.update(b"|");
+                }
 
-                // If it's not a deletion, hash the content
+                // If it's not a deletion, hash the current (destination) content
                 if xy[1] != b'D' && xy[0] != b'D' {
-                    if let Ok(path_str) = std::str::from_utf8(path_bytes) {
+                    if let Ok(path_str) = std::str::from_utf8(path1) {
                         let full_path = repo_root.join(path_str);
                         if let Ok(metadata) = std::fs::metadata(&full_path) {
                             if metadata.is_file() {

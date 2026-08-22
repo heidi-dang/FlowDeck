@@ -423,37 +423,37 @@ fn handle_evidence_graph_v1(
     _cache: &AstCache,
     root: &Path,
 ) -> Option<String> {
-    match crate::intelligence::db::EvidenceDatabase::open(
+    let db_result = crate::intelligence::db::EvidenceDatabase::open(
         root,
         crate::intelligence::db::DatabaseOpenMode::ReadOnly,
-    ) {
-        Ok(db) => {
-            let version = db.get_schema_version().map(|v| v.version).unwrap_or(0);
-            let file_count: i32 = db
-                .conn
-                .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
-                .unwrap_or(0);
-            let node_count: i32 = db
-                .conn
-                .query_row("SELECT count(*) FROM nodes", [], |r| r.get(0))
-                .unwrap_or(0);
-            let edge_count: i32 = db
-                .conn
-                .query_row("SELECT count(*) FROM edges", [], |r| r.get(0))
-                .unwrap_or(0);
+    );
+    let db_ref = match &db_result {
+        Ok(db) => Ok(db),
+        Err(e) => Err(e),
+    };
 
-            format_ok(
-                id,
-                serde_json::json!({
-                    "schema_version": version,
-                    "files": file_count,
-                    "nodes": node_count,
-                    "edges": edge_count,
-                }),
-            )
-        }
-        Err(e) => format_err(id, format!("database error: {}", e)),
-    }
+    // Same production status evaluator used by `fdx index status`.
+    let report = crate::intelligence::status::evaluate_index_status(
+        root,
+        db_ref,
+        &crate::protocol::GraphCompatibility::default(),
+    );
+
+    format_ok(
+        id,
+        serde_json::json!({
+            "status": report.state,
+            "reasons": report.reasons,
+            "generation": report.generation,
+            "schema_version": report.schema_version,
+            "files": report.files,
+            "nodes": report.nodes,
+            "edges": report.edges,
+            "journal_mode": report.journal_mode,
+            "foreign_keys": report.foreign_keys,
+            "busy_timeout": report.busy_timeout,
+        }),
+    )
 }
 
 fn process_request(req: ServeRequest, cache: &AstCache, root: &Path) -> Option<String> {

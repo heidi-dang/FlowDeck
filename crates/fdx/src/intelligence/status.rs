@@ -29,6 +29,17 @@ impl IndexFreshness {
             IndexFreshness::Absent => "absent",
         }
     }
+
+    /// Uppercase form stored in metadata.status (e.g. FRESH, DEGRADED).
+    pub fn as_status_str(&self) -> &'static str {
+        match self {
+            IndexFreshness::Fresh => "FRESH",
+            IndexFreshness::Stale => "STALE",
+            IndexFreshness::Degraded => "DEGRADED",
+            IndexFreshness::Incompatible => "INCOMPATIBLE",
+            IndexFreshness::Absent => "ABSENT",
+        }
+    }
 }
 
 pub struct IndexStatusReport {
