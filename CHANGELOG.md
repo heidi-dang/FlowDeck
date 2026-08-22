@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.4.0] - FlowDeck v2.4.0 — OpenCode-Native Heidi Code Mode
+
+### Added & Changed
+- **OpenCode 1.18.20 Support**: Fully qualified integration with OpenCode version 1.18.20.
+- **Native Code Mode Selection**: Heidi now intelligently evaluates small MCP tool compositions against strict policy boundaries to dispatch them directly to OpenCode's native Code Mode, leveraging OpenCode's authoritative execution sandbox.
+- **Truthful Capability Handling**: Code Mode availability is now accurately modeled as `AVAILABLE`, `UNKNOWN` (enabled but missing eligible MCP context), or `UNAVAILABLE`. Heidi will only utilize Code Mode when explicitly `AVAILABLE`.
+- **Bounded MCP Composition**: Configured robust boundaries (max 10 tool calls, max 4 parallel calls, max 3 dependency stages, 30-second timeout) for native Code Mode execution, rejecting overly complex operations back to normal Heidi execution.
+- **FAST_DIRECT Prompt Isolation**: The fast-path prompt remains lean (under 600 baseline tokens) with no Code Mode guidance leakage, maintaining baseline execution speeds for non-Code Mode tasks.
+- **FDX Architecture Independence**: FlowDeck's native Rust FDX code intelligence tooling remains deliberately excluded from OpenCode 1.18.20 Code Mode environments, running instead on FlowDeck's established secure path.
+- **Improved Diagnostics**: FlowDeck Doctor now provides precise runtime qualification reporting, verifying accurate architecture configurations and OpenCode version alignment.
+- **CI & Quality Improvements**: Strengthened CI qualification production gates. The release includes full coverage metrics ensuring 90% aggregate line coverage, passing Rust unit and integration validation.
+- **Architectural Clarification**: Solidified system boundaries—FlowDeck provides development intelligence, task classification, and coordination policy, while OpenCode retains full ownership of model execution, session lifecycle, and sandboxed native runtimes.
+
+
 ## [2.3.0] - Stable Release
 
 ### Added & Changed — Native Background Subagents & Orchestration Reliability
