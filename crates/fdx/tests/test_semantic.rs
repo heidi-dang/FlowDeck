@@ -100,7 +100,7 @@ fn open_db(repo: &Path) -> EvidenceDatabase {
     EvidenceDatabase::open(repo, DatabaseOpenMode::ReadWrite).unwrap()
 }
 
-fn node_count(db: &EvidenceDatabase, stable_id: &str) -> i64 {
+fn _node_count(db: &EvidenceDatabase, stable_id: &str) -> i64 {
     db.conn
         .query_row(
             "SELECT count(*) FROM nodes WHERE stable_id = ?1",
@@ -410,7 +410,6 @@ fn path_jail_rejects_escaping_document() {
 fn atomic_refresh_old_generation_preserved_on_failure() {
     let (_pd, repo, _g) = seed_provider("ok", "basic-ts.scip");
     let provider = ScipTypescriptProvider::new();
-    let db = open_db(repo.path());
     let scope = provider.scope(repo.path());
     let fingerprint = provider.fingerprint(repo.path()).unwrap();
     let index_bytes = std::fs::read(fixture("basic-ts.scip")).unwrap();
@@ -474,7 +473,6 @@ fn atomic_refresh_old_generation_preserved_on_failure() {
 fn successful_refresh_replaces_old_generation() {
     let (_pd, repo, _g) = seed_provider("ok", "basic-ts.scip");
     let provider = ScipTypescriptProvider::new();
-    let db = open_db(repo.path());
     let scope = provider.scope(repo.path());
     let fingerprint = provider.fingerprint(repo.path()).unwrap();
     let index_bytes = std::fs::read(fixture("basic-ts.scip")).unwrap();
