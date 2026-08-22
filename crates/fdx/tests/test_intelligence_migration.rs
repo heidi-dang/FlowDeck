@@ -18,9 +18,9 @@ fn test_synthetic_migration() {
             .unwrap();
     }
 
-    // Open ReadWrite -> should migrate 0 to 1
+    // Open ReadWrite -> should migrate 0 to the current schema version (2)
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite).unwrap();
-    assert_eq!(db.get_schema_version().unwrap().version, 1);
+    assert_eq!(db.get_schema_version().unwrap().version, 2);
 
     // Legacy table should still exist
     let count: i32 = db
