@@ -123,18 +123,82 @@ async function runBenchmark() {
   const scipDir = join(tmpdir(), "fdx-m4-scip-" + Date.now());
   mkdirSync(join(scipDir, "src"), { recursive: true });
   initGitRepo(scipDir);
-  writeFileSync(join(scipDir, "src", "core.ts"), "export function coreCalc(v: number): number { return v * 10; }\n");
-  writeFileSync(join(scipDir, "src", "client.ts"), "import { coreCalc } from './core';\nexport function runClient(): number { return coreCalc(5); }\n");
+  writeFileSync(join(scipDir, "src", "a.ts"), "export function foo() {}\nexport function bar() {}\n");
+  writeFileSync(join(scipDir, "src", "b.ts"), "import { foo } from './a';\n");
+  writeFileSync(join(scipDir, "src", "c.ts"), "let x = bar;\n");
   writeFileSync(join(scipDir, "tsconfig.json"), '{"compilerOptions":{"strict":true}}\n');
   gitCommitAll(scipDir, "initial");
-  execFileSync(binaryPath, ["index"], { cwd: scipDir });
-  writeFileSync(join(scipDir, "src", "core.ts"), "export function coreCalc(v: number, opt?: boolean): number { return v * 10; }\n");
+
+  const scipFixture = join(ROOT, "crates", "fdx", "tests", "fixtures", "scip", "basic-ts.scip");
+  const fakeBin = join(scipDir, "fake-scip-typescript");
+  const fakeScript = "#!/bin/bash\nOUT=\"\"\nPREV=\"\"\nfor a in \"$@\"; do\n  if [ \"$PREV\" = \"--output\" ]; then OUT=\"$a\"; fi\n  if [ \"$a\" = \"--version\" ]; then echo \"scip-typescript 0.4.0\"; exit 0; fi\n  PREV=\"$a\"\ndone\ncp \"" + scipFixture + "\" \"$OUT\"\nexit 0\n";
+  writeFileSync(fakeBin, fakeScript);
+  execFileSync("chmod", ["+x", fakeBin], { cwd: scipDir });
+
+  const env = { ...process.env, SCIP_TYPESCRIPT_BIN: fakeBin };
+
+  execFileSync(binaryPath, ["index"], { cwd: scipDir, env });
+  execFileSync(binaryPath, ["semantic", "refresh", "--provider", "scip-typescript"], { cwd: scipDir, env });
+
+  const checkerPath = join(scipDir, "checker.mjs");
+  writeFileSync(checkerPath, `
+import { Database } from "bun:sqlite";
+const db = new Database(".fdx/index.sqlite");
+const p = db.query("SELECT health, freshness, input_fingerprint AS fingerprint FROM semantic_providers WHERE provider_id = 'scip-typescript'").get();
+if (!p) throw new Error("No provider");
+console.log("PROVIDER|" + p.health + "|" + p.freshness + "|" + p.fingerprint);
+const n = db.query("SELECT stable_id FROM nodes WHERE stable_id LIKE 'sem:%' LIMIT 1").get();
+if (!n) throw new Error("No sem node");
+console.log("NODE|" + n.stable_id);
+const e = db.query("SELECT provider_id, provider_fingerprint FROM edges WHERE provider = 'scip' LIMIT 1").get();
+if (!e) throw new Error("No scip edge");
+console.log("EDGE|" + e.provider_id + "|" + e.provider_fingerprint);
+  `);
+
+  const checkerOut = execFileSync("bun", ["run", "checker.mjs"], { cwd: scipDir, encoding: "utf8" });
+  let health, freshness, fingerprint, node_id, edgeProviderId, edgeFingerprint;
+  for (const line of checkerOut.trim().split("\n")) {
+    const parts = line.split("|");
+    if (parts[0] === "PROVIDER") {
+      health = parts[1];
+      freshness = parts[2];
+      fingerprint = parts[3];
+    } else if (parts[0] === "NODE") {
+      node_id = parts[1];
+    } else if (parts[0] === "EDGE") {
+      edgeProviderId = parts[1];
+      edgeFingerprint = parts[2];
+    }
+  }
+
+  if (health !== "available") throw new Error("provider health not available: " + health);
+  if (freshness !== "fresh") throw new Error("provider freshness not fresh: " + freshness);
+  if (!node_id || !node_id.startsWith("sem:")) throw new Error("no canonical semantic node found: " + node_id);
+  if (edgeProviderId !== "scip-typescript") throw new Error("edge provider_id mismatch: " + edgeProviderId);
+  if (edgeFingerprint !== fingerprint) throw new Error("edge fingerprint mismatch: " + edgeFingerprint + " vs " + fingerprint);
+
+  writeFileSync(join(scipDir, "src", "a.ts"), "export function foo(v: number) {}\nexport function bar() {}\n");
+
+  const initialImpact = JSON.parse(execFileSync(binaryPath, ["impact-v2", "--depth", "2", "--format", "json"], { cwd: scipDir, env, encoding: "utf8" }));
+  const bTarget = initialImpact.impacted.find(t => t.target === "src/b.ts");
+  if (!bTarget) throw new Error("impact did not reach consumer src/b.ts");
+
+  let foundScip = false;
+  let semPrefixUsed = false;
+  for (const path of [bTarget.primary_path, ...bTarget.alternate_paths]) {
+    if (path.seed_node.startsWith("sem:") || path.target_node.startsWith("sem:")) semPrefixUsed = true;
+    for (const step of path.steps) {
+      if (step.provider === "scip") foundScip = true;
+    }
+  }
+  if (!foundScip) throw new Error("impact path does not use scip evidence");
+  if (!semPrefixUsed) throw new Error("impact path does not use sem:* node");
 
   const scipSamples = [];
   let scipResult = null;
   for (let i = 0; i < 20; i++) {
     const t0 = performance.now();
-    const raw = execFileSync(binaryPath, ["impact-v2", "--depth", "2", "--format", "json"], { cwd: scipDir, encoding: "utf8" });
+    const raw = execFileSync(binaryPath, ["impact-v2", "--depth", "2", "--format", "json"], { cwd: scipDir, env, encoding: "utf8" });
     scipSamples.push(performance.now() - t0);
     if (!scipResult) scipResult = JSON.parse(raw);
   }
@@ -142,11 +206,26 @@ async function runBenchmark() {
 
   // 6. Measure Effective Stale Provider Fallback Path
   writeFileSync(join(scipDir, "tsconfig.json"), '{"compilerOptions":{"strict":false,"target":"es2022"}}\n');
+
+  const staleCheck = JSON.parse(execFileSync(binaryPath, ["impact-v2", "--depth", "2", "--format", "json"], { cwd: scipDir, env, encoding: "utf8" }));
+  const isStale = staleCheck.uncertainty.some(u => u.kind === "provider_stale");
+  if (!isStale) throw new Error("Effective provider state is not stale");
+
+  let hasManual = false;
+  const staleB = staleCheck.impacted.find(t => t.target === "src/b.ts");
+  if (!staleB) throw new Error("impact did not reach consumer src/b.ts in stale case");
+  for (const path of [staleB.primary_path, ...staleB.alternate_paths]) {
+    for (const step of path.steps) {
+      if (step.provider === "manual_rule") hasManual = true;
+    }
+  }
+  if (!hasManual) throw new Error("manual_rule fallback not present in stale case");
+
   const staleSamples = [];
   let staleResult = null;
   for (let i = 0; i < 20; i++) {
     const t0 = performance.now();
-    const raw = execFileSync(binaryPath, ["impact-v2", "--depth", "2", "--format", "json"], { cwd: scipDir, encoding: "utf8" });
+    const raw = execFileSync(binaryPath, ["impact-v2", "--depth", "2", "--format", "json"], { cwd: scipDir, env, encoding: "utf8" });
     staleSamples.push(performance.now() - t0);
     if (!staleResult) staleResult = JSON.parse(raw);
   }
@@ -268,6 +347,12 @@ async function runBenchmark() {
         result_count: scipResult?.impacted?.length ?? 0,
         changes_count: scipResult?.changes?.length ?? 0,
         description: "Fresh SCIP-backed canonical-symbol impact traversal",
+        provider_state: "Fresh",
+        provider_health: "Available",
+        provider_id: "scip-typescript",
+        semantic_node_prefix: "sem:",
+        path_provider: "scip",
+        fingerprint_match: true
       },
       effective_stale_fallback: {
         ...staleStats,
@@ -275,6 +360,11 @@ async function runBenchmark() {
         result_count: staleResult?.impacted?.length ?? 0,
         changes_count: staleResult?.changes?.length ?? 0,
         description: "Effective stale provider fallback impact traversal",
+        effective_provider_state: "Stale",
+        provider_stale: true,
+        fallback_used: true,
+        fallback_provider: "manual_rule",
+        fallback_strength: "heuristic"
       },
       deleted_symbol_impact: {
         ...delStats,
