@@ -256,6 +256,8 @@ pub enum NodeKind {
     Config,
     GeneratedArtifact,
     ExternalDependency,
+    Workspace,
+    BuildTarget,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -273,6 +275,11 @@ pub enum EdgeKind {
     Generates,
     Tests,
     OrdersBefore,
+    Contains,
+    DependsOn,
+    BelongsTo,
+    Reads,
+    Uses,
 }
 
 // ── Query Routing Intents ─────────────────────────────────────────────

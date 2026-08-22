@@ -20,6 +20,19 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+pub enum BuildAction {
+    /// Show build provider status / freshness / topology stats
+    Status,
+    /// Refresh build providers (bounded, read-only discovery)
+    Refresh,
+    /// Output build graph in JSON format
+    Graph {
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum SemanticAction {
     /// Show provider health/freshness/fingerprint/scope/last run/reason
     Status,
@@ -66,6 +79,13 @@ enum Commands {
     Semantic {
         #[command(subcommand)]
         action: SemanticAction,
+    },
+    /// Build/config provider diagnostics, refresh, and graph query (Milestone 5)
+    ///
+    /// Example: fdx build status
+    Build {
+        #[command(subcommand)]
+        action: BuildAction,
     },
     /// Read a file with token-optimized output
     ///
@@ -1182,6 +1202,42 @@ fn main() {
                 }
             }
         }
+        Commands::Build { action } => {
+            let cwd_path = std::path::Path::new(".");
+            let repo_root = fdx::paths::find_repository_root(cwd_path)
+                .unwrap_or_else(|_| cwd_path.to_path_buf());
+            match action {
+                BuildAction::Status => match fdx::cmd_build::build_status(&repo_root) {
+                    Ok(s) => print!("{}", s),
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        process::exit(1);
+                    }
+                },
+                BuildAction::Refresh => match fdx::cmd_build::build_refresh(&repo_root) {
+                    Ok((out, failed)) => {
+                        print!("{}", out);
+                        if failed {
+                            process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        process::exit(1);
+                    }
+                },
+                BuildAction::Graph { format: _ } => {
+                    match fdx::cmd_build::build_graph_json(&repo_root) {
+                        Ok(s) => println!("{}", s),
+                        Err(e) => {
+                            eprintln!("Error: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
+
         Commands::Semantic { action } => {
             use fdx::intelligence::semantic::router::IntelligenceIntent;
             use fdx::intelligence::semantic::LanguageId;

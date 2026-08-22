@@ -370,6 +370,67 @@ fn handle_why_v1(id: &str, args: &serde_json::Value, _cache: &AstCache) -> Optio
     }
 }
 
+fn handle_build_status_v1(
+    id: &str,
+    _args: &serde_json::Value,
+    _cache: &AstCache,
+) -> Option<String> {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let states = match crate::intelligence::build::freshness::evaluate_build_freshness(&repo_root) {
+        Ok(s) => s,
+        Err(e) => return format_err(id, format!("build status error: {}", e)),
+    };
+    let providers: Vec<serde_json::Value> = states
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "provider": s.provider_id,
+                "type": s.provider_type,
+                "version": s.provider_version,
+                "health": s.health.as_str(),
+                "freshness": s.freshness.as_str(),
+                "fingerprint": s.fingerprint,
+                "workspace_root": s.workspace_root,
+                "last_success": s.last_successful_run,
+                "generation": s.generation,
+                "reason": s.failure_reason,
+            })
+        })
+        .collect();
+    format_ok(
+        id,
+        serde_json::json!({
+            "providers": providers,
+            "status": "ok",
+        }),
+    )
+}
+
+fn handle_build_graph_v1(id: &str, _args: &serde_json::Value, _cache: &AstCache) -> Option<String> {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    match crate::cmd_build::build_graph_json(&repo_root) {
+        Ok(json_str) => match serde_json::from_str::<serde_json::Value>(&json_str) {
+            Ok(v) => format_ok(id, v),
+            Err(e) => format_err(id, format!("serialization error: {}", e)),
+        },
+        Err(e) => format_err(id, format!("build graph error: {}", e)),
+    }
+}
+
 fn handle_semantic_status_v1(
     id: &str,
     _args: &serde_json::Value,
@@ -479,6 +540,8 @@ fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
         "impact" => handle_impact(&req.id, &req.args, cache),
         "evidence-graph-v1" => handle_evidence_graph_v1(&req.id, &req.args, cache),
         "semantic-status-v1" => handle_semantic_status_v1(&req.id, &req.args, cache),
+        "build-status-v1" | "build-status" => handle_build_status_v1(&req.id, &req.args, cache),
+        "build-graph-v1" | "build-graph" => handle_build_graph_v1(&req.id, &req.args, cache),
         "impact-v2" => handle_impact_v2(&req.id, &req.args, cache),
         "why-v1" | "why" => handle_why_v1(&req.id, &req.args, cache),
         other => format_err(&req.id, format!("FDX_METHOD_NOT_ALLOWED {}", other)),
