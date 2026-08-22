@@ -1,7 +1,7 @@
 # M3 Semantic Benchmark reproduction
 
 Report: reports/benchmark-fdx-vci-m3-semantic.json
-Source SHA: ab673e043263fbc045b86dc7cb803f53421d721b (committed functional state)
+Source SHA: fc89af51ddcecae83de5c5e73b340340fcb31fc2 (committed functional state)
 Branch: feat/fdx-verifiable-change-intelligence
 
 Method: release fdx binary (cargo build -p fdx --release); a temp repo with
