@@ -119,7 +119,62 @@ async function runBenchmark() {
   }
   const whyStats = computeStats(whySamples);
 
-  // 5. Measure Cycle Graph (A <-> B cyclic dependency)
+  // 5. Measure Fresh SCIP canonical-symbol impact
+  const scipDir = join(tmpdir(), "fdx-m4-scip-" + Date.now());
+  mkdirSync(join(scipDir, "src"), { recursive: true });
+  initGitRepo(scipDir);
+  writeFileSync(join(scipDir, "src", "core.ts"), "export function coreCalc(v: number): number { return v * 10; }\n");
+  writeFileSync(join(scipDir, "src", "client.ts"), "import { coreCalc } from './core';\nexport function runClient(): number { return coreCalc(5); }\n");
+  writeFileSync(join(scipDir, "tsconfig.json"), '{"compilerOptions":{"strict":true}}\n');
+  gitCommitAll(scipDir, "initial");
+  execFileSync(binaryPath, ["index"], { cwd: scipDir });
+  writeFileSync(join(scipDir, "src", "core.ts"), "export function coreCalc(v: number, opt?: boolean): number { return v * 10; }\n");
+
+  const scipSamples = [];
+  let scipResult = null;
+  for (let i = 0; i < 20; i++) {
+    const t0 = performance.now();
+    const raw = execFileSync(binaryPath, ["impact-v2", "--depth", "2", "--format", "json"], { cwd: scipDir, encoding: "utf8" });
+    scipSamples.push(performance.now() - t0);
+    if (!scipResult) scipResult = JSON.parse(raw);
+  }
+  const scipStats = computeStats(scipSamples);
+
+  // 6. Measure Effective Stale Provider Fallback Path
+  writeFileSync(join(scipDir, "tsconfig.json"), '{"compilerOptions":{"strict":false,"target":"es2022"}}\n');
+  const staleSamples = [];
+  let staleResult = null;
+  for (let i = 0; i < 20; i++) {
+    const t0 = performance.now();
+    const raw = execFileSync(binaryPath, ["impact-v2", "--depth", "2", "--format", "json"], { cwd: scipDir, encoding: "utf8" });
+    staleSamples.push(performance.now() - t0);
+    if (!staleResult) staleResult = JSON.parse(raw);
+  }
+  const staleStats = computeStats(staleSamples);
+
+  // 7. Measure Deleted-Symbol Before-Evidence Traversal
+  const delDir = join(tmpdir(), "fdx-m4-del-" + Date.now());
+  mkdirSync(join(delDir, "src"), { recursive: true });
+  initGitRepo(delDir);
+  writeFileSync(join(delDir, "src", "api.ts"), "export function legacyHelper(): number { return 1; }\n");
+  writeFileSync(join(delDir, "src", "user.ts"), "import { legacyHelper } from './api';\nexport function invoke(): number { return legacyHelper(); }\n");
+  gitCommitAll(delDir, "commit_1_define");
+  execFileSync(binaryPath, ["index"], { cwd: delDir });
+  writeFileSync(join(delDir, "src", "api.ts"), "export const newApi = 2;\n");
+  gitCommitAll(delDir, "commit_2_delete");
+  execFileSync(binaryPath, ["index"], { cwd: delDir });
+
+  const delSamples = [];
+  let delResult = null;
+  for (let i = 0; i < 20; i++) {
+    const t0 = performance.now();
+    const raw = execFileSync(binaryPath, ["impact-v2", "--base", "HEAD~1", "--depth", "2", "--format", "json"], { cwd: delDir, encoding: "utf8" });
+    delSamples.push(performance.now() - t0);
+    if (!delResult) delResult = JSON.parse(raw);
+  }
+  const delStats = computeStats(delSamples);
+
+  // 8. Measure Cycle Graph (A <-> B cyclic dependency)
   const cycleDir = join(tmpdir(), "fdx-m4-cycle-" + Date.now());
   mkdirSync(join(cycleDir, "src"), { recursive: true });
   initGitRepo(cycleDir);
@@ -186,6 +241,8 @@ async function runBenchmark() {
   // Clean up temp dirs
   try {
     rmSync(benchDir, { recursive: true, force: true });
+    rmSync(scipDir, { recursive: true, force: true });
+    rmSync(delDir, { recursive: true, force: true });
     rmSync(cycleDir, { recursive: true, force: true });
     rmSync(synthetic100Dir, { recursive: true, force: true });
     rmSync(synthetic1kDir, { recursive: true, force: true });
@@ -205,16 +262,37 @@ async function runBenchmark() {
         ...changeExtractionStats,
         description: "NUL-delimited safe git delta extraction",
       },
+      fresh_scip_impact: {
+        ...scipStats,
+        assurance: scipResult?.assurance ?? "DEGRADED",
+        result_count: scipResult?.impacted?.length ?? 0,
+        changes_count: scipResult?.changes?.length ?? 0,
+        description: "Fresh SCIP-backed canonical-symbol impact traversal",
+      },
+      effective_stale_fallback: {
+        ...staleStats,
+        assurance: staleResult?.assurance ?? "DEGRADED",
+        result_count: staleResult?.impacted?.length ?? 0,
+        changes_count: staleResult?.changes?.length ?? 0,
+        description: "Effective stale provider fallback impact traversal",
+      },
+      deleted_symbol_impact: {
+        ...delStats,
+        assurance: delResult?.assurance ?? "DEGRADED",
+        result_count: delResult?.impacted?.length ?? 0,
+        changes_count: delResult?.changes?.length ?? 0,
+        description: "Deleted-symbol before-evidence traversal",
+      },
       one_hop_impact: {
         ...oneHopStats,
-        assurance: oneHopResult?.assurance ?? "EXACT",
+        assurance: oneHopResult?.assurance ?? "DEGRADED",
         result_count: oneHopResult?.impacted?.length ?? 0,
         changes_count: oneHopResult?.changes?.length ?? 0,
         description: "1-hop direct caller and importer impact traversal",
       },
       three_hop_impact: {
         ...threeHopStats,
-        assurance: threeHopResult?.assurance ?? "EXACT",
+        assurance: threeHopResult?.assurance ?? "DEGRADED",
         result_count: threeHopResult?.impacted?.length ?? 0,
         changes_count: threeHopResult?.changes?.length ?? 0,
         description: "3-hop bounded transitive impact traversal",
@@ -228,19 +306,19 @@ async function runBenchmark() {
       },
       cycle_graph: {
         ...cycleStats,
-        assurance: cycleResult?.assurance ?? "EXACT",
+        assurance: cycleResult?.assurance ?? "DEGRADED",
         result_count: cycleResult?.impacted?.length ?? 0,
         description: "Cycle-safe traversal over mutual dependencies",
       },
       synthetic_100_edges: {
         ...syn100Stats,
-        assurance: syn100Result?.assurance ?? "EXACT",
+        assurance: syn100Result?.assurance ?? "DEGRADED",
         result_count: syn100Result?.impacted?.length ?? 0,
         description: "100-edge fanout traversal",
       },
       synthetic_1k_edges: {
         ...syn1kStats,
-        assurance: syn1kResult?.assurance ?? "EXACT",
+        assurance: syn1kResult?.assurance ?? "DEGRADED",
         result_count: syn1kResult?.impacted?.length ?? 0,
         description: "1,000-edge fanout traversal",
       },
@@ -260,6 +338,9 @@ async function runBenchmark() {
     "| Scenario | Median (ms) | p95 (ms) | Min (ms) | Max (ms) | Impact Count | Assurance |\n" +
     "|---|---|---|---|---|---|---|\n" +
     "| **Change Extraction** | " + report.benchmarks.change_extraction.median + " | " + report.benchmarks.change_extraction.p95 + " | " + report.benchmarks.change_extraction.min + " | " + report.benchmarks.change_extraction.max + " | - | - |\n" +
+    "| **Fresh SCIP Impact** | " + report.benchmarks.fresh_scip_impact.median + " | " + report.benchmarks.fresh_scip_impact.p95 + " | " + report.benchmarks.fresh_scip_impact.min + " | " + report.benchmarks.fresh_scip_impact.max + " | " + report.benchmarks.fresh_scip_impact.result_count + " | " + report.benchmarks.fresh_scip_impact.assurance + " |\n" +
+    "| **Effective Stale Fallback** | " + report.benchmarks.effective_stale_fallback.median + " | " + report.benchmarks.effective_stale_fallback.p95 + " | " + report.benchmarks.effective_stale_fallback.min + " | " + report.benchmarks.effective_stale_fallback.max + " | " + report.benchmarks.effective_stale_fallback.result_count + " | " + report.benchmarks.effective_stale_fallback.assurance + " |\n" +
+    "| **Deleted-Symbol Impact** | " + report.benchmarks.deleted_symbol_impact.median + " | " + report.benchmarks.deleted_symbol_impact.p95 + " | " + report.benchmarks.deleted_symbol_impact.min + " | " + report.benchmarks.deleted_symbol_impact.max + " | " + report.benchmarks.deleted_symbol_impact.result_count + " | " + report.benchmarks.deleted_symbol_impact.assurance + " |\n" +
     "| **1-Hop Impact** | " + report.benchmarks.one_hop_impact.median + " | " + report.benchmarks.one_hop_impact.p95 + " | " + report.benchmarks.one_hop_impact.min + " | " + report.benchmarks.one_hop_impact.max + " | " + report.benchmarks.one_hop_impact.result_count + " | " + report.benchmarks.one_hop_impact.assurance + " |\n" +
     "| **3-Hop Impact** | " + report.benchmarks.three_hop_impact.median + " | " + report.benchmarks.three_hop_impact.p95 + " | " + report.benchmarks.three_hop_impact.min + " | " + report.benchmarks.three_hop_impact.max + " | " + report.benchmarks.three_hop_impact.result_count + " | " + report.benchmarks.three_hop_impact.assurance + " |\n" +
     "| **Why Explanation** | " + report.benchmarks.why_explanation.median + " | " + report.benchmarks.why_explanation.p95 + " | " + report.benchmarks.why_explanation.min + " | " + report.benchmarks.why_explanation.max + " | 1 | - |\n" +
