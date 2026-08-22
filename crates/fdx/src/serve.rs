@@ -423,7 +423,10 @@ fn handle_evidence_graph_v1(
     _cache: &AstCache,
     root: &Path,
 ) -> Option<String> {
-    match crate::intelligence::db::EvidenceDatabase::open(root) {
+    match crate::intelligence::db::EvidenceDatabase::open(
+        root,
+        crate::intelligence::db::DatabaseOpenMode::ReadOnly,
+    ) {
         Ok(db) => {
             let version = db.get_schema_version().map(|v| v.version).unwrap_or(0);
             let file_count: i32 = db

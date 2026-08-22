@@ -1001,7 +1001,10 @@ fn main() {
                     process::exit(1);
                 }
             };
-            let cwd = std::path::Path::new(".");
+            let cwd_path = std::path::Path::new(".");
+            let repo_root = fdx::paths::find_repository_root(cwd_path)
+                .unwrap_or_else(|_| cwd_path.to_path_buf());
+            let cwd = repo_root.as_path();
             let legacy_name = cwd
                 .canonicalize()
                 .ok()
@@ -1040,10 +1043,19 @@ fn main() {
 
         Commands::Index { action, refresh } => {
             let cwd = std::path::Path::new(".");
-            let db = match fdx::intelligence::db::EvidenceDatabase::open(cwd) {
+            let open_mode = if refresh || action.as_deref() == Some("run") || action.is_none() {
+                fdx::intelligence::db::DatabaseOpenMode::ReadWrite
+            } else {
+                fdx::intelligence::db::DatabaseOpenMode::ReadOnly
+            };
+            let db = match fdx::intelligence::db::EvidenceDatabase::open(cwd, open_mode) {
                 Ok(db) => db,
+                Err(fdx::intelligence::db::DatabaseError::NotIndexed) => {
+                    println!("INDEX absent");
+                    process::exit(0);
+                }
                 Err(e) => {
-                    eprintln!("Error opening EvidenceGraph: {}", e);
+                    eprintln!("INDEX degraded\nError: {}", e);
                     process::exit(1);
                 }
             };
@@ -1052,6 +1064,14 @@ fn main() {
             match action_str {
                 "status" => {
                     let version = db.get_schema_version().map(|v| v.version).unwrap_or(0);
+                    let status = db
+                        .get_metadata("status")
+                        .unwrap_or(Some("ABSENT".to_string()))
+                        .unwrap_or_else(|| "ABSENT".to_string());
+                    let gen = db
+                        .get_metadata("generation")
+                        .unwrap_or(Some("0".to_string()))
+                        .unwrap_or_else(|| "0".to_string());
                     let file_count: i32 = db
                         .conn
                         .query_row("SELECT count(*) FROM files", [], |r| r.get(0))
@@ -1065,8 +1085,9 @@ fn main() {
                         .query_row("SELECT count(*) FROM edges", [], |r| r.get(0))
                         .unwrap_or(0);
 
-                    println!("INDEX fresh");
+                    println!("INDEX {}", status.to_lowercase());
                     println!("schema={}", version);
+                    println!("generation={}", gen);
                     println!("files={}", file_count);
                     println!("nodes={}", node_count);
                     println!("edges={}", edge_count);

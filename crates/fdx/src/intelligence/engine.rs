@@ -30,8 +30,15 @@ pub struct IndexStatus {
     pub changed: usize,
 }
 
+const MAX_FILE_BYTES: u64 = 10 * 1024 * 1024; // 10MB limit
+const MAX_INDEXED_FILES: usize = 50000;
+const MAX_TOTAL_INDEX_BYTES_PER_REFRESH: u64 = 5 * 1024 * 1024 * 1024; // 5GB limit
+
 pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexStatus, EngineError> {
-    let mut db = EvidenceDatabase::open(repo_root)?;
+    let mut db = EvidenceDatabase::open(
+        repo_root,
+        crate::intelligence::db::DatabaseOpenMode::ReadWrite,
+    )?;
 
     // Read current files
     let mut current_files: std::collections::HashMap<String, String> =
@@ -52,6 +59,8 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
 
     let mut discovered: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut changed_count = 0;
+    let mut total_indexed_files = 0;
+    let mut total_indexed_bytes = 0;
 
     let walker = WalkBuilder::new(repo_root)
         .hidden(true)
@@ -59,10 +68,27 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
         .require_git(false)
         .build();
 
+    let gen: u64 = db
+        .get_metadata("generation")
+        .unwrap_or(None)
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let new_gen = gen + 1;
+
+    // ONE BIG TRANSACTION for atomicity
+    let tx = TransactionalGraph::new(&mut db.conn)?;
+
+    // Update status to IN_PROGRESS so a crash is detectable
+    tx.set_metadata("status", "IN_PROGRESS")?;
+
+    let mut traversal_errors = 0;
     for result in walker {
         let entry = match result {
             Ok(e) => e,
-            Err(_) => continue,
+            Err(_) => {
+                traversal_errors += 1;
+                continue;
+            }
         };
 
         if entry.file_type().is_none_or(|ft| !ft.is_file()) {
@@ -91,10 +117,26 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
             .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64);
 
-        let content = std::fs::read(path)?;
+        if size > MAX_FILE_BYTES {
+            // Track skipped files later
+            continue;
+        }
+
+        if total_indexed_files >= MAX_INDEXED_FILES {
+            continue;
+        }
+
+        if total_indexed_bytes + size > MAX_TOTAL_INDEX_BYTES_PER_REFRESH {
+            continue;
+        }
+
+        let mut file = std::fs::File::open(path)?;
         let mut hasher = Sha256::new();
-        hasher.update(&content);
+        std::io::copy(&mut file, &mut hasher)?;
         let hash = format!("{:x}", hasher.finalize());
+
+        total_indexed_files += 1;
+        total_indexed_bytes += size;
 
         let is_changed = match current_files.get(&canonical) {
             Some(old_hash) => old_hash != &hash || refresh,
@@ -102,7 +144,7 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
         };
 
         if is_changed {
-            InvalidationEngine::invalidate_file(&db.conn, &canonical)?;
+            InvalidationEngine::invalidate_file(&tx.tx, &canonical)?;
             let indexed_at = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
@@ -113,26 +155,47 @@ pub fn run_incremental_index(repo_root: &Path, refresh: bool) -> Result<IndexSta
                 content_hash: hash,
                 size,
                 mtime_ms,
-                language: None, // Simplified for now
+                language: None,
                 indexed_at,
             };
 
-            let tx = TransactionalGraph::new(&mut db.conn)?;
             tx.insert_file(&file_model)?;
-            tx.commit()?;
             changed_count += 1;
         }
     }
 
-    // Delete files that no longer exist
-    for old_path in current_files.keys() {
-        if !discovered.contains(old_path) {
-            InvalidationEngine::delete_file(&db.conn, old_path)?;
-            changed_count += 1;
+    // Delete files that no longer exist, only if traversal was completely successful.
+    // If there were traversal errors, we cannot be sure if a file was deleted or just inaccessible.
+    if traversal_errors == 0 {
+        for old_path in current_files.keys() {
+            if !discovered.contains(old_path) {
+                InvalidationEngine::delete_file(&tx.tx, old_path)?;
+                changed_count += 1;
+            }
         }
     }
 
-    InvalidationEngine::delete_stale_edges(&db.conn)?;
+    InvalidationEngine::delete_stale_edges(&tx.tx)?;
+
+    // Commit generation and status
+    if traversal_errors > 0 {
+        tx.set_metadata("status", "DEGRADED")?;
+    } else {
+        tx.set_metadata("status", "FRESH")?;
+        tx.set_metadata("generation", &new_gen.to_string())?;
+        let now_ms = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        tx.set_metadata("last_successful_refresh_at", &now_ms.to_string())?;
+    }
+    tx.commit()?;
+
+    if traversal_errors > 0 {
+        return Err(EngineError::Io(std::io::Error::other(
+            "Traversal errors occurred during indexing",
+        )));
+    }
 
     let total_files: i64 = db
         .conn
