@@ -314,6 +314,62 @@ fn handle_evidence_graph_v1(
         }),
     )
 }
+fn handle_impact_v2(id: &str, args: &serde_json::Value, _cache: &AstCache) -> Option<String> {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let base = args.get("base").and_then(|v| v.as_str());
+    let head = args.get("head").and_then(|v| v.as_str());
+    let depth = args
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    match crate::intelligence::change::traverse::analyze_impact_v2(&repo_root, base, head, depth) {
+        Ok(res) => match serde_json::to_value(&res) {
+            Ok(v) => format_ok(id, v),
+            Err(e) => format_err(id, format!("serialization error: {}", e)),
+        },
+        Err(e) => format_err(id, format!("impact-v2 error: {}", e)),
+    }
+}
+
+fn handle_why_v1(id: &str, args: &serde_json::Value, _cache: &AstCache) -> Option<String> {
+    let cwd = match std::env::current_dir() {
+        Ok(c) => c,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let repo_root = match crate::paths::find_repository_root(&cwd) {
+        Ok(r) => r,
+        Err(_) => return format_err(id, "repository root unavailable".to_string()),
+    };
+    let target = match args.get("target").and_then(|v| v.as_str()) {
+        Some(t) => t,
+        None => return format_err(id, "why: missing target argument".to_string()),
+    };
+    let base = args.get("base").and_then(|v| v.as_str());
+    let head = args.get("head").and_then(|v| v.as_str());
+    let depth = args
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
+
+    match crate::intelligence::change::traverse::explain_why_target(
+        &repo_root, target, base, head, depth,
+    ) {
+        Ok(res) => match serde_json::to_value(&res) {
+            Ok(v) => format_ok(id, v),
+            Err(e) => format_err(id, format!("serialization error: {}", e)),
+        },
+        Err(e) => format_err(id, format!("why error: {}", e)),
+    }
+}
+
 fn handle_semantic_status_v1(
     id: &str,
     _args: &serde_json::Value,
@@ -423,6 +479,8 @@ fn process_request(req: ServeRequest, cache: &AstCache) -> Option<String> {
         "impact" => handle_impact(&req.id, &req.args, cache),
         "evidence-graph-v1" => handle_evidence_graph_v1(&req.id, &req.args, cache),
         "semantic-status-v1" => handle_semantic_status_v1(&req.id, &req.args, cache),
+        "impact-v2" => handle_impact_v2(&req.id, &req.args, cache),
+        "why-v1" | "why" => handle_why_v1(&req.id, &req.args, cache),
         other => format_err(&req.id, format!("FDX_METHOD_NOT_ALLOWED {}", other)),
     }
 }

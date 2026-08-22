@@ -115,7 +115,11 @@ fn test_capability_negotiation() {
     assert_eq!(resp.protocol, 2);
     assert_eq!(resp.selected_capabilities, vec!["search"]);
     assert!(resp.server_capabilities.contains(&"search".to_string()));
-    assert!(!resp.server_capabilities.contains(&"why-v1".to_string()));
+    assert!(resp.server_capabilities.contains(&"impact-v2".to_string()));
+    assert!(resp.server_capabilities.contains(&"why-v1".to_string()));
+    assert!(!resp
+        .server_capabilities
+        .contains(&"unsupported-feat".to_string()));
     assert_eq!(resp.graph_schema_version, FDX_GRAPH_SCHEMA_VERSION);
 }
 
@@ -181,7 +185,6 @@ fn test_path_jail_escaping() {
 #[test]
 fn test_capability_invariant_operations_exist() {
     // Every advertised operational capability must correspond to a real operation.
-    // In M1, these are read, search, outline, impact-v1.
     let expected = vec![
         "read",
         "search",
@@ -189,6 +192,8 @@ fn test_capability_invariant_operations_exist() {
         "impact-v1",
         "evidence-graph-v1",
         "semantic-status-v1",
+        "impact-v2",
+        "why-v1",
     ];
     let req = NegotiateRequest {
         protocol: 2,
@@ -221,8 +226,10 @@ fn test_empty_capability_request() {
         "impact-v1",
         "evidence-graph-v1",
         "semantic-status-v1",
+        "impact-v2",
+        "why-v1",
     ];
     assert_eq!(resp.selected_capabilities, expected);
     // Server should still advertise all capabilities
-    assert_eq!(resp.server_capabilities.len(), 6);
+    assert_eq!(resp.server_capabilities.len(), 8);
 }

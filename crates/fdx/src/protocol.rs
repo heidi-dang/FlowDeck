@@ -403,6 +403,8 @@ pub const DEFAULT_SERVER_CAPABILITIES: &[&str] = &[
     "impact-v1",
     "evidence-graph-v1",
     "semantic-status-v1",
+    "impact-v2",
+    "why-v1",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

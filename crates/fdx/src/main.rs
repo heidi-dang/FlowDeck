@@ -404,6 +404,52 @@ enum Commands {
         #[arg(long)]
         made_by: Option<String>,
     },
+
+    /// Verifiable transitive impact analysis (Milestone 4)
+    ///
+    /// Example: fdx impact-v2 --base HEAD~1 --depth 3
+    #[command(name = "impact-v2")]
+    ImpactV2 {
+        /// Base Git ref (e.g. HEAD, HEAD~1, main)
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Head Git ref (defaults to working tree)
+        #[arg(long)]
+        head: Option<String>,
+
+        /// Maximum traversal depth (default: 3)
+        #[arg(long, default_value = "3")]
+        depth: usize,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+
+    /// Explain why a target is impacted by semantic changes
+    ///
+    /// Example: fdx why src/api.ts --base HEAD~1
+    Why {
+        /// Target file or symbol path to explain
+        target: String,
+
+        /// Base Git ref (e.g. HEAD, HEAD~1, main)
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Head Git ref (defaults to working tree)
+        #[arg(long)]
+        head: Option<String>,
+
+        /// Maximum traversal depth (default: 3)
+        #[arg(long, default_value = "3")]
+        depth: usize,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 fn main() {
@@ -1248,6 +1294,146 @@ fn main() {
                 Ok(s) => println!("{}", s),
                 Err(e) => {
                     eprintln!("{}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::ImpactV2 {
+            base,
+            head,
+            depth,
+            format,
+        } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+            let format = parse_format(&format);
+
+            match fdx::intelligence::change::analyze_impact_v2(
+                &repo_root,
+                base.as_deref(),
+                head.as_deref(),
+                Some(depth),
+            ) {
+                Ok(result) => match format {
+                    OutputFormat::Json => {
+                        if let Ok(json_str) = serde_json::to_string_pretty(&result) {
+                            println!("{}", json_str);
+                        }
+                    }
+                    OutputFormat::Text => {
+                        println!("Assurance: {:?}", result.assurance);
+                        println!("Changes ({}):", result.changes.len());
+                        for c in &result.changes {
+                            if let Some(ref sym) = c.symbol {
+                                println!("  - [{:?}] {}::{}", c.change_kind, c.file, sym);
+                            } else {
+                                println!("  - [{:?}] {}", c.change_kind, c.file);
+                            }
+                        }
+                        println!("Impacted Targets ({}):", result.impacted.len());
+                        for t in &result.impacted {
+                            let strength_str = format!("{:?}", t.strength).to_lowercase();
+                            if let Some(ref p) = t.primary_path {
+                                println!("  - [{}] (depth {}) {}", strength_str, t.depth, t.target);
+                                println!("    Reason: {}", p.explanation);
+                            } else if let Some(ref w) = t.widening_reason {
+                                println!("  - [{}] (depth {}) {}", strength_str, t.depth, t.target);
+                                println!("    Widening: {}", w);
+                            } else {
+                                println!("  - [{}] (depth {}) {}", strength_str, t.depth, t.target);
+                            }
+                        }
+                        if !result.uncertainty.is_empty() {
+                            println!("Uncertainties ({}):", result.uncertainty.len());
+                            for u in &result.uncertainty {
+                                println!("  - [{}] {:?}", u.code(), u);
+                            }
+                        }
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error in impact analysis: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::Why {
+            target,
+            base,
+            head,
+            depth,
+            format,
+        } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+            let format = parse_format(&format);
+
+            match fdx::intelligence::change::explain_why_target(
+                &repo_root,
+                &target,
+                base.as_deref(),
+                head.as_deref(),
+                Some(depth),
+            ) {
+                Ok(Some(target_info)) => match format {
+                    OutputFormat::Json => {
+                        if let Ok(json_str) = serde_json::to_string_pretty(&target_info) {
+                            println!("{}", json_str);
+                        }
+                    }
+                    OutputFormat::Text => {
+                        println!("Target: {}", target_info.target);
+                        println!("Kind: {:?}", target_info.target_kind);
+                        println!("Depth: {}", target_info.depth);
+                        println!("Strength: {:?}", target_info.strength);
+                        if let Some(ref p) = target_info.primary_path {
+                            println!(
+                                "Primary Explanation:
+  {}",
+                                p.explanation
+                            );
+                            if !p.steps.is_empty() {
+                                println!("Evidence Steps:");
+                                for (i, s) in p.steps.iter().enumerate() {
+                                    println!(
+                                        "  {}. {} -> {:?} -> {} (provider: {}, strength: {:?})",
+                                        i + 1,
+                                        s.from_node,
+                                        s.edge_kind,
+                                        s.to_node,
+                                        s.provider,
+                                        s.strength
+                                    );
+                                }
+                            }
+                        }
+                        if !target_info.alternate_paths.is_empty() {
+                            println!(
+                                "Alternate Paths ({} of {} total):",
+                                target_info.alternate_paths.len(),
+                                target_info.alternate_path_count
+                            );
+                            for (i, p) in target_info.alternate_paths.iter().enumerate() {
+                                println!("  Alt {}: {}", i + 1, p.explanation);
+                            }
+                        }
+                        if let Some(ref w) = target_info.widening_reason {
+                            println!("Widening Reason: {}", w);
+                        }
+                    }
+                },
+                Ok(None) => match format {
+                    OutputFormat::Json => {
+                        println!("null");
+                    }
+                    OutputFormat::Text => {
+                        println!("Target '{}' is not impacted by detected changes.", target);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error explaining target: {}", e);
                     process::exit(1);
                 }
             }
