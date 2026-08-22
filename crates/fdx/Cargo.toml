@@ -25,6 +25,7 @@ tempfile = "3"
 sha2 = "0.10"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 libc = "0.2.186"
+toml = "0.8"
 
 
 [[bin]]

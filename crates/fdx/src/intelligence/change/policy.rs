@@ -48,9 +48,12 @@ pub fn edge_impact_direction(kind: EdgeKind) -> TraversalDirection {
         EdgeKind::Reads => TraversalDirection::Reverse,
         EdgeKind::Uses => TraversalDirection::Reverse,
 
-        // Source change propagates to target (e.g. config file changed -> target impacted, workspace changed -> package impacted)
+        // Source change propagates to target (e.g. config file changed -> target impacted)
         EdgeKind::Configures => TraversalDirection::Forward,
         EdgeKind::Generates => TraversalDirection::Forward,
-        EdgeKind::Contains => TraversalDirection::Forward,
+
+        // Bidirectional: package contains file (file changes -> package impacted; package changes -> file impacted)
+        // and workspace contains package (package changes -> workspace impacted; workspace changes -> package impacted)
+        EdgeKind::Contains => TraversalDirection::Both,
     }
 }

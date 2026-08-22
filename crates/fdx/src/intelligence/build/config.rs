@@ -1,6 +1,8 @@
 //! Static parser and provider for tsconfig.json inheritance and project references.
 
-use crate::intelligence::build::discover::discover_build_files;
+use crate::intelligence::build::discover::{
+    discover_build_files, MAX_DISCOVERED_ARTIFACTS, MAX_DISCOVERED_CONFIGS, MAX_DISCOVERED_EDGES,
+};
 use crate::intelligence::build::model::*;
 use crate::intelligence::build::provider::{
     hash_files, BuildConfigProvider, BuildIngestResult, BuildProviderScope,
@@ -168,6 +170,20 @@ impl BuildConfigProvider for TsConfigProvider {
             ..Default::default()
         };
 
+        if files.tsconfigs_truncated || !files.walker_errors.is_empty() {
+            res.uncertainties.push(BuildUncertainty::new(
+                "build_limit_reached",
+                UncertaintyScope::Repository,
+                TSCONFIG_PROVIDER_ID,
+                format!(
+                    "Discovery limits reached or walker errors encountered (tsconfig limit {})",
+                    MAX_DISCOVERED_CONFIGS
+                ),
+                AssuranceLevel::Degraded,
+                true,
+            ));
+        }
+
         let mut extends_map: Vec<(String, String)> = Vec::new();
         let mut references_map: Vec<(String, String)> = Vec::new();
 
@@ -242,29 +258,43 @@ impl BuildConfigProvider for TsConfigProvider {
                 let artifact_dir = parent_dir.join(out_dir);
                 if let Ok(canon_artifact) = canonicalize_repo_path(&artifact_dir, Path::new("")) {
                     let artifact_id = format!("artifact:{}", canon_artifact);
-                    res.artifacts.push(GeneratedArtifact {
-                        stable_id: artifact_id.clone(),
-                        canonical_path: canon_artifact.clone(),
-                        generated_by: config_stable_id.clone(),
-                    });
-                    res.nodes.push(BuildNode {
-                        stable_id: artifact_id.clone(),
-                        kind: NodeKind::GeneratedArtifact,
-                        canonical_path: Some(canon_artifact),
-                        metadata: None,
-                    });
-                    // Config / target GENERATES artifact
-                    res.edges.push(BuildEdge {
-                        stable_id: format!("edge:generates:{}:{}", config_stable_id, artifact_id),
-                        from_node: config_stable_id.clone(),
-                        to_node: artifact_id,
-                        kind: EdgeKind::Generates,
-                        provider: "build_native".to_string(),
-                        provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                        provider_fingerprint: fingerprint.clone(),
-                        strength: EvidenceStrength::Structural,
-                        metadata: None,
-                    });
+                    if res.artifacts.len() < MAX_DISCOVERED_ARTIFACTS {
+                        res.artifacts.push(GeneratedArtifact {
+                            stable_id: artifact_id.clone(),
+                            canonical_path: canon_artifact.clone(),
+                            generated_by: config_stable_id.clone(),
+                        });
+                        res.nodes.push(BuildNode {
+                            stable_id: artifact_id.clone(),
+                            kind: NodeKind::GeneratedArtifact,
+                            canonical_path: Some(canon_artifact),
+                            metadata: None,
+                        });
+                        // Config / target GENERATES artifact
+                        res.edges.push(BuildEdge {
+                            stable_id: format!(
+                                "edge:generates:{}:{}",
+                                config_stable_id, artifact_id
+                            ),
+                            from_node: config_stable_id.clone(),
+                            to_node: artifact_id,
+                            kind: EdgeKind::Generates,
+                            provider: "build_native".to_string(),
+                            provider_id: TSCONFIG_PROVIDER_ID.to_string(),
+                            provider_fingerprint: fingerprint.clone(),
+                            strength: EvidenceStrength::Structural,
+                            metadata: None,
+                        });
+                    } else {
+                        res.uncertainties.push(BuildUncertainty::new(
+                            "build_limit_reached",
+                            UncertaintyScope::Repository,
+                            TSCONFIG_PROVIDER_ID,
+                            format!("Artifact limit {} reached", MAX_DISCOVERED_ARTIFACTS),
+                            AssuranceLevel::Degraded,
+                            true,
+                        ));
+                    }
                 }
             }
 
@@ -347,17 +377,19 @@ impl BuildConfigProvider for TsConfigProvider {
             let from_node = format!("config:{}", from_cfg);
             let to_node = format!("config:{}", to_cfg);
             let edge_id = format!("edge:extends:{}:{}", from_node, to_node);
-            res.edges.push(BuildEdge {
-                stable_id: edge_id,
-                from_node,
-                to_node,
-                kind: EdgeKind::Extends,
-                provider: "build_native".to_string(),
-                provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                provider_fingerprint: fingerprint.clone(),
-                strength: EvidenceStrength::Structural,
-                metadata: None,
-            });
+            if res.edges.len() < MAX_DISCOVERED_EDGES {
+                res.edges.push(BuildEdge {
+                    stable_id: edge_id,
+                    from_node,
+                    to_node,
+                    kind: EdgeKind::Extends,
+                    provider: "build_native".to_string(),
+                    provider_id: TSCONFIG_PROVIDER_ID.to_string(),
+                    provider_fingerprint: fingerprint.clone(),
+                    strength: EvidenceStrength::Structural,
+                    metadata: None,
+                });
+            }
         }
 
         // Add references edges
@@ -365,17 +397,19 @@ impl BuildConfigProvider for TsConfigProvider {
             let from_node = format!("config:{}", from_cfg);
             let to_node = format!("config:{}", to_cfg);
             let edge_id = format!("edge:references:{}:{}", from_node, to_node);
-            res.edges.push(BuildEdge {
-                stable_id: edge_id,
-                from_node,
-                to_node,
-                kind: EdgeKind::References,
-                provider: "build_native".to_string(),
-                provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                provider_fingerprint: fingerprint.clone(),
-                strength: EvidenceStrength::Structural,
-                metadata: None,
-            });
+            if res.edges.len() < MAX_DISCOVERED_EDGES {
+                res.edges.push(BuildEdge {
+                    stable_id: edge_id,
+                    from_node,
+                    to_node,
+                    kind: EdgeKind::References,
+                    provider: "build_native".to_string(),
+                    provider_id: TSCONFIG_PROVIDER_ID.to_string(),
+                    provider_fingerprint: fingerprint.clone(),
+                    strength: EvidenceStrength::Structural,
+                    metadata: None,
+                });
+            }
         }
 
         // Check for cycles in extends / references
