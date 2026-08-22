@@ -41,6 +41,10 @@ pub fn migrate_schema(
                 // Migrate v1 -> v2: semantic provider ownership & provenance
                 tx.execute_batch(crate::intelligence::schema::MIGRATE_V1_TO_V2_SQL)?;
             }
+            2 => {
+                // Migrate v2 -> v3: provider attempt diagnostics
+                tx.execute_batch(crate::intelligence::schema::MIGRATE_V2_TO_V3_SQL)?;
+            }
             _ => {
                 return Err(MigrationError::Unsupported(version, target_version));
             }

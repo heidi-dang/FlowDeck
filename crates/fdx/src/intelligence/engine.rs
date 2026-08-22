@@ -251,6 +251,7 @@ fn run_incremental_index_impl(
         for old_path in current_files.keys() {
             if !discovered.contains(old_path) {
                 InvalidationEngine::delete_file(&tx.tx, old_path)?;
+                changed_paths.push(old_path.clone());
                 changed_count += 1;
             }
         }

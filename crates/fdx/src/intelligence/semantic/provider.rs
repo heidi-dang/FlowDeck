@@ -71,6 +71,52 @@ impl ProviderScope {
         let p = canonical_path.trim_start_matches('/');
         p == root || p.starts_with(&format!("{}/", root))
     }
+
+    /// True when `canonical_path` falls inside this scope AND is relevant to its languages/configs.
+    pub fn is_relevant_path(&self, canonical_path: &str) -> bool {
+        self.covers(canonical_path)
+            && is_relevant_path_for_languages(&self.languages, canonical_path)
+    }
+}
+
+/// Check if a repository-relative canonical path is a semantic source or config
+/// file relevant to the given languages.
+pub fn is_relevant_path_for_languages(languages: &[LanguageId], canonical_path: &str) -> bool {
+    let path = Path::new(canonical_path);
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+    for lang in languages {
+        if lang.extensions().contains(&ext) {
+            return true;
+        }
+        match lang {
+            LanguageId::TypeScript | LanguageId::JavaScript => {
+                if matches!(
+                    file_name,
+                    "tsconfig.json"
+                        | "jsconfig.json"
+                        | "package.json"
+                        | "package-lock.json"
+                        | "yarn.lock"
+                        | "pnpm-lock.yaml"
+                        | "bun.lock"
+                        | "bun.lockb"
+                ) {
+                    return true;
+                }
+            }
+            LanguageId::Rust => {
+                if matches!(
+                    file_name,
+                    "Cargo.toml" | "Cargo.lock" | "rust-toolchain" | "rust-toolchain.toml"
+                ) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Fingerprint of the inputs that determine provider semantics.
@@ -134,6 +180,10 @@ pub struct ProviderState {
     pub output_digest: Option<String>,
     pub failure_reason: Option<String>,
     pub semantic_generation: u64,
+    pub last_attempt_fingerprint: Option<String>,
+    pub last_attempt_at: Option<u64>,
+    pub last_attempt_health: Option<ProviderHealth>,
+    pub last_attempt_failure_reason: Option<String>,
 }
 
 impl ProviderState {
@@ -318,7 +368,24 @@ pub fn run_bounded_process(
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = command.spawn().map_err(ExecFailure::Spawn)?;
+    let mut child = {
+        let mut spawn_res = command.spawn();
+        #[cfg(unix)]
+        {
+            let mut attempts = 0;
+            while let Err(ref e) = spawn_res {
+                if e.raw_os_error() == Some(26) && attempts < 10 {
+                    // ETXTBUSY: executable file busy (common right after writing script)
+                    std::thread::sleep(Duration::from_millis(5));
+                    attempts += 1;
+                    spawn_res = command.spawn();
+                } else {
+                    break;
+                }
+            }
+        }
+        spawn_res.map_err(ExecFailure::Spawn)?
+    };
 
     let stdout_pipe = child
         .stdout
@@ -492,10 +559,35 @@ pub fn fingerprint_config_files(
 /// Resolve an executable name against PATH.
 pub fn find_executable(name: &str) -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    let pathext_var = std::env::var_os("PATHEXT")
+        .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+    #[cfg(windows)]
+    let extensions: Vec<String> = std::env::split_paths(&pathext_var)
+        .filter_map(|p| p.to_str().map(|s| s.to_string()))
+        .collect();
+
     for dir in std::env::split_paths(&path_var) {
-        let candidate = dir.join(name);
-        if is_executable_file(&candidate) {
-            return Some(candidate);
+        #[cfg(windows)]
+        {
+            let candidate = dir.join(name);
+            if is_executable_file(&candidate) {
+                return Some(candidate);
+            }
+            for ext in &extensions {
+                let ext_clean = ext.trim_start_matches('.');
+                let with_ext = dir.join(format!("{}.{}", name, ext_clean));
+                if is_executable_file(&with_ext) {
+                    return Some(with_ext);
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let candidate = dir.join(name);
+            if is_executable_file(&candidate) {
+                return Some(candidate);
+            }
         }
     }
     None

@@ -103,7 +103,11 @@ fn cli_semantic_refresh_runs_fake_provider_and_status_reports_it() {
         "got: {}",
         out
     );
-    let (code2, status, _e2) = run(repo.path(), &["semantic", "status"], &[]);
+    let (code2, status, _e2) = run(
+        repo.path(),
+        &["semantic", "status"],
+        &[("SCIP_TYPESCRIPT_BIN", bin_str.as_str())],
+    );
     assert_eq!(code2, 0);
     assert!(
         status.contains("provider=scip-typescript"),
@@ -115,6 +119,12 @@ fn cli_semantic_refresh_runs_fake_provider_and_status_reports_it() {
     assert!(status.contains("fingerprint="), "got: {}", status);
     assert!(status.contains("scope_root="), "got: {}", status);
     assert!(status.contains("reason=none"), "got: {}", status);
+
+    // Without provider binary in env/PATH, status accurately reports effective missing/stale
+    let (code3, status3, _e3) = run(repo.path(), &["semantic", "status"], &[]);
+    assert_eq!(code3, 0);
+    assert!(status3.contains("health=missing"), "got: {}", status3);
+    assert!(status3.contains("freshness=stale"), "got: {}", status3);
 }
 
 #[test]

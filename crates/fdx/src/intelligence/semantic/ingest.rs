@@ -34,7 +34,7 @@ use crate::protocol::{
     canonicalize_repo_path, EdgeKind, EvidenceProviderKind, EvidenceStrength, NodeKind,
 };
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -59,6 +59,29 @@ pub enum IngestError {
     UnknownLanguage(String),
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// RAII wrapper to guarantee cleanup of temporary SCIP output files.
+pub struct TempScipOutput {
+    path: PathBuf,
+}
+
+impl TempScipOutput {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TempScipOutput {
+    fn drop(&mut self) {
+        if self.path.exists() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 /// Result of a provider refresh.
@@ -125,7 +148,13 @@ fn refresh_provider_impl(
                 scope.clone(),
                 fingerprint_default(provider),
             );
-            let failed_state = persisted_with_failure(persisted, provider.id(), scope, &e);
+            let failed_state = persisted_with_failure(
+                persisted,
+                provider.id(),
+                scope,
+                fingerprint_default(provider),
+                &e,
+            );
             let tx = TransactionalGraph::new(&mut db.conn)?;
             state::upsert_provider_state(&tx, &failed_state)?;
             tx.commit()?;
@@ -176,6 +205,7 @@ fn refresh_provider_impl(
                 persisted,
                 provider.id(),
                 scope,
+                fingerprint,
                 &SemanticProviderError::Missing(format!(
                     "{} not found on PATH (no auto-download; install manually)",
                     provider.id()
@@ -214,12 +244,13 @@ fn refresh_provider_impl(
         provider.id(),
         &sha256_hex(&now_ms().to_le_bytes())[..12]
     ));
+    let temp_output = TempScipOutput::new(output_path.clone());
 
     let request = SemanticIngestRequest {
         repo_root: repo_root.to_path_buf(),
         scope: scope.clone(),
         fingerprint: fingerprint.clone(),
-        output_path: output_path.clone(),
+        output_path: temp_output.path().to_path_buf(),
         time_limit: time_limit
             .unwrap_or(crate::intelligence::semantic::limits::MAX_PROVIDER_RUNTIME),
         max_output_bytes: max_output_bytes.unwrap_or(MAX_SCIP_INDEX_BYTES),
@@ -318,7 +349,7 @@ pub fn ingest_scip_index_with_faults(
     )
 }
 
-#[allow(clippy::too_many_arguments)] // fault-injection seam for atomicity tests
+#[allow(clippy::too_many_arguments)]
 fn ingest_scip_index_impl(
     repo_root: &Path,
     provider: &dyn SemanticProvider,
@@ -340,7 +371,7 @@ fn ingest_scip_index_impl(
     // 1. Validate + normalize (outside the transaction): every path must jail
     //    inside the repository, and every document must resolve to a real file.
     let mut plan: Vec<DocPlan> = Vec::new();
-    let mut symbol_defining_file: HashMap<String, String> = HashMap::new();
+    let mut symbol_defining_file: HashMap<String, (String, String)> = HashMap::new();
 
     for (doc_index, doc) in index.documents.iter().enumerate() {
         let lang = doc_language(doc)?;
@@ -349,9 +380,12 @@ fn ingest_scip_index_impl(
         if !absolute.is_file() {
             return Err(IngestError::UnresolvablePath(canonical.clone()));
         }
+        let bytes = std::fs::read(&absolute)?;
+        let source_hash = sha256_hex(&bytes);
         let file_node = format!("{}{}", FILE_NODE_PREFIX, canonical);
         plan.push(DocPlan {
             canonical: canonical.clone(),
+            source_hash: source_hash.clone(),
             language: lang,
             file_node: file_node.clone(),
             doc_index,
@@ -360,7 +394,7 @@ fn ingest_scip_index_impl(
             if occ.symbol_roles.is_definition() && !is_local_symbol(&occ.symbol) {
                 symbol_defining_file
                     .entry(occ.symbol.clone())
-                    .or_insert_with(|| canonical.clone());
+                    .or_insert_with(|| (canonical.clone(), source_hash.clone()));
             }
         }
         if let Some(limit) = fail_after_documents {
@@ -377,8 +411,9 @@ fn ingest_scip_index_impl(
 
     let mut semantic_nodes: Vec<SemanticNode> = Vec::new();
     let mut semantic_edges: Vec<SemanticEdge> = Vec::new();
-    let mut occurrence_groups: HashMap<(String, String, EdgeKind), Vec<serde_json::Value>> =
-        HashMap::new();
+    type OccGroupKey = (String, String, EdgeKind);
+    type OccGroupVal = (String, String, Vec<serde_json::Value>);
+    let mut occurrence_groups: HashMap<OccGroupKey, OccGroupVal> = HashMap::new();
     let mut package_nodes: HashMap<String, String> = HashMap::new();
     let mut seen_symbol_nodes: HashMap<String, String> = HashMap::new();
 
@@ -390,41 +425,42 @@ fn ingest_scip_index_impl(
             canonical_path: Some(p.canonical.clone()),
             symbol_identity: None,
             package_identity: None,
-            metadata: Some(format!("{{\"language\":\"{}\"}}", p.language.as_str())),
+            metadata: Some(format!(r#"{{"language":"{}"}}"#, p.language.as_str())),
             provider: provider.id().to_string(),
             provider_fingerprint: fingerprint.digest.clone(),
             generation: new_generation,
-            source_hash: None,
+            source_hash: Some(p.source_hash.clone()),
         };
         semantic_nodes.push(node);
     }
 
     // Symbol nodes from Document.symbols (metadata: display name, kind) plus
     // relationship edges between locally-defined symbols.
-    for doc in &index.documents {
+    for p in &plan {
+        let doc = &index.documents[p.doc_index];
         for info in &doc.symbols {
             if info.symbol.is_empty() {
                 continue;
             }
-            let node_id = semantic_symbol_node_id(&doc.relative_path, &info.symbol);
+            let node_id = semantic_symbol_node_id(&p.canonical, &info.symbol);
             seen_symbol_nodes.insert(info.symbol.clone(), node_id.clone());
             let package_id = package_node_id_for_symbol(&info.symbol);
             let metadata = format!(
-                "{{\"display_name\":{},\"scip_kind\":{}}}",
+                r#"{{"display_name":{},"scip_kind":{}}}"#,
                 json_str_or_null(info.display_name.as_deref()),
                 info.kind,
             );
             semantic_nodes.push(SemanticNode {
                 stable_id: node_id.clone(),
                 kind: NodeKind::Symbol,
-                canonical_path: None,
+                canonical_path: Some(p.canonical.clone()),
                 symbol_identity: Some(info.symbol.clone()),
                 package_identity: package_id.clone(),
                 metadata: Some(metadata),
                 provider: provider.id().to_string(),
                 provider_fingerprint: fingerprint.digest.clone(),
                 generation: new_generation,
-                source_hash: None,
+                source_hash: Some(p.source_hash.clone()),
             });
             if let Some(pkg) = package_id {
                 ensure_package_node(
@@ -434,6 +470,7 @@ fn ingest_scip_index_impl(
                     provider,
                     fingerprint,
                     new_generation,
+                    &result.output_digest,
                 );
             }
             for rel in &info.relationships {
@@ -442,6 +479,8 @@ fn ingest_scip_index_impl(
                 }
                 let target = seen_symbol_nodes.get(&rel.symbol).cloned();
                 if let Some(target) = target {
+                    let rel_src_id = format!("scip-index:{}:{}", provider.id(), new_generation);
+                    let rel_src_hash = result.output_digest.clone();
                     if rel.is_implementation {
                         semantic_edges.push(make_symbol_edge(
                             &node_id,
@@ -450,6 +489,8 @@ fn ingest_scip_index_impl(
                             provider,
                             fingerprint,
                             new_generation,
+                            Some(rel_src_id.clone()),
+                            Some(rel_src_hash.clone()),
                         ));
                     }
                     if rel.is_definition && target != node_id {
@@ -460,6 +501,8 @@ fn ingest_scip_index_impl(
                             provider,
                             fingerprint,
                             new_generation,
+                            Some(rel_src_id.clone()),
+                            Some(rel_src_hash.clone()),
                         ));
                     }
                     if rel.is_reference && target != node_id {
@@ -470,6 +513,8 @@ fn ingest_scip_index_impl(
                             provider,
                             fingerprint,
                             new_generation,
+                            Some(rel_src_id),
+                            Some(rel_src_hash),
                         ));
                     }
                 }
@@ -489,17 +534,21 @@ fn ingest_scip_index_impl(
             seen_symbol_nodes.insert(occ.symbol.clone(), node_id.clone());
             if !semantic_nodes.iter().any(|n| n.stable_id == node_id) {
                 let package_id = package_node_id_for_symbol(&occ.symbol);
+                let (def_canon, def_hash) = symbol_defining_file
+                    .get(&occ.symbol)
+                    .cloned()
+                    .unwrap_or_else(|| (p.canonical.clone(), p.source_hash.clone()));
                 semantic_nodes.push(SemanticNode {
                     stable_id: node_id.clone(),
                     kind: NodeKind::Symbol,
-                    canonical_path: None,
+                    canonical_path: Some(def_canon),
                     symbol_identity: Some(occ.symbol.clone()),
                     package_identity: package_id.clone(),
                     metadata: None,
                     provider: provider.id().to_string(),
                     provider_fingerprint: fingerprint.digest.clone(),
                     generation: new_generation,
-                    source_hash: None,
+                    source_hash: Some(def_hash),
                 });
                 if let Some(pkg) = package_id {
                     ensure_package_node(
@@ -509,6 +558,7 @@ fn ingest_scip_index_impl(
                         provider,
                         fingerprint,
                         new_generation,
+                        &result.output_digest,
                     );
                 }
             }
@@ -520,14 +570,14 @@ fn ingest_scip_index_impl(
                 EdgeKind::References
             };
             let key = (p.file_node.clone(), node_id.clone(), kind);
-            occurrence_groups
+            let entry = occurrence_groups
                 .entry(key)
-                .or_default()
-                .push(occurrence_json(occ));
+                .or_insert_with(|| (p.canonical.clone(), p.source_hash.clone(), Vec::new()));
+            entry.2.push(occurrence_json(occ));
         }
     }
 
-    for ((from, to, kind), positions) in occurrence_groups {
+    for ((from, to, kind), (src_id, src_hash, positions)) in occurrence_groups {
         semantic_edges.push(SemanticEdge {
             stable_id: semantic_edge_id(&from, &to, kind, provider.id()),
             from_node: from,
@@ -536,8 +586,8 @@ fn ingest_scip_index_impl(
             provider: EvidenceProviderKind::Scip,
             provider_fingerprint: fingerprint.digest.clone(),
             strength: EvidenceStrength::Precise,
-            source_identity: None,
-            source_hash: None,
+            source_identity: Some(src_id),
+            source_hash: Some(src_hash),
             generation: new_generation,
             metadata: Some(serde_json::to_string(&positions).unwrap_or_else(|_| "[]".to_string())),
         });
@@ -555,7 +605,7 @@ fn ingest_scip_index_impl(
                 continue;
             }
             let importer_pkg = package_id_of(&occ.symbol).unwrap_or_default();
-            if let Some(definer) = symbol_defining_file.get(&occ.symbol) {
+            if let Some((definer, definer_hash)) = symbol_defining_file.get(&occ.symbol) {
                 let definer_pkg = package_id_of(&occ.symbol).unwrap_or_default();
                 if definer != &p.canonical
                     && importer_pkg != definer_pkg
@@ -577,8 +627,8 @@ fn ingest_scip_index_impl(
                             provider: EvidenceProviderKind::Scip,
                             provider_fingerprint: fingerprint.digest.clone(),
                             strength: EvidenceStrength::Precise,
-                            source_identity: None,
-                            source_hash: None,
+                            source_identity: Some(definer.clone()),
+                            source_hash: Some(definer_hash.clone()),
                             generation: new_generation,
                             metadata: None,
                         });
@@ -606,7 +656,7 @@ fn ingest_scip_index_impl(
         let bytes = std::fs::read(&absolute)?;
         let file_model = IndexedFile {
             canonical_path: p.canonical.clone(),
-            content_hash: sha256_hex(&bytes),
+            content_hash: p.source_hash.clone(),
             size: bytes.len() as u64,
             mtime_ms: None,
             language: Some(p.language.as_str().to_string()),
@@ -649,6 +699,10 @@ fn ingest_scip_index_impl(
         output_digest: Some(result.output_digest.clone()),
         failure_reason: None,
         semantic_generation: new_generation,
+        last_attempt_fingerprint: Some(fingerprint.digest.clone()),
+        last_attempt_at: Some(now_ms()),
+        last_attempt_health: Some(ProviderHealth::Available),
+        last_attempt_failure_reason: None,
     };
     state::upsert_provider_state(&tx, &new_state)?;
     tx.commit()?;
@@ -675,6 +729,7 @@ fn ingest_scip_index_impl(
 
 struct DocPlan {
     canonical: String,
+    source_hash: String,
     language: LanguageId,
     file_node: String,
     doc_index: usize,
@@ -700,7 +755,9 @@ fn jail_document_path(repo_root: &Path, relative_path: &str) -> Result<String, I
     let candidate = repo_root.join(relative_path);
     let canonical = std::fs::canonicalize(&candidate)
         .map_err(|_| IngestError::PathJail(relative_path.to_string()))?;
-    let canonical_str = canonicalize_repo_path(&canonical, repo_root)
+    let canonical_root =
+        std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    let canonical_str = canonicalize_repo_path(&canonical, &canonical_root)
         .map_err(|e| IngestError::PathJail(format!("{}: {}", relative_path, e)))?;
     Ok(canonical_str)
 }
@@ -742,6 +799,7 @@ fn json_str_or_null(s: Option<&str>) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_symbol_edge(
     from: &str,
     to: &str,
@@ -749,6 +807,8 @@ fn make_symbol_edge(
     provider: &dyn SemanticProvider,
     fingerprint: &ProviderFingerprint,
     generation: u64,
+    source_identity: Option<String>,
+    source_hash: Option<String>,
 ) -> SemanticEdge {
     SemanticEdge {
         stable_id: semantic_edge_id(from, to, kind, provider.id()),
@@ -758,8 +818,8 @@ fn make_symbol_edge(
         provider: EvidenceProviderKind::Scip,
         provider_fingerprint: fingerprint.digest.clone(),
         strength: EvidenceStrength::Precise,
-        source_identity: None,
-        source_hash: None,
+        source_identity,
+        source_hash,
         generation,
         metadata: None,
     }
@@ -772,6 +832,7 @@ fn ensure_package_node(
     provider: &dyn SemanticProvider,
     fingerprint: &ProviderFingerprint,
     generation: u64,
+    output_digest: &str,
 ) {
     if !package_nodes.contains_key(pkg) {
         let package_node_id = format!("pkg:{}", pkg);
@@ -786,7 +847,7 @@ fn ensure_package_node(
             provider: provider.id().to_string(),
             provider_fingerprint: fingerprint.digest.clone(),
             generation,
-            source_hash: None,
+            source_hash: Some(output_digest.to_string()),
         });
     }
 }
@@ -839,13 +900,17 @@ impl ProviderStateForPersist {
                 scip_schema_version: self.fingerprint.scip_schema_version.clone(),
             },
             scope: self.scope,
-            fingerprint: self.fingerprint,
+            fingerprint: self.fingerprint.clone(),
             health: self.health,
             freshness: self.freshness,
             last_successful_run: None,
             output_digest: None,
-            failure_reason: self.failure_reason,
+            failure_reason: self.failure_reason.clone(),
             semantic_generation: 0,
+            last_attempt_fingerprint: Some(self.fingerprint.digest),
+            last_attempt_at: Some(now_ms()),
+            last_attempt_health: Some(self.health),
+            last_attempt_failure_reason: self.failure_reason,
         }
     }
 }
@@ -891,6 +956,10 @@ fn default_state(
         output_digest: None,
         failure_reason: None,
         semantic_generation: 0,
+        last_attempt_fingerprint: None,
+        last_attempt_at: None,
+        last_attempt_health: None,
+        last_attempt_failure_reason: None,
     }
 }
 
@@ -898,25 +967,27 @@ fn persisted_with_failure(
     persisted: Option<ProviderState>,
     provider_id: &str,
     scope: ProviderScope,
+    attempted_fingerprint: ProviderFingerprint,
     err: &SemanticProviderError,
 ) -> ProviderState {
+    let now = now_ms();
     let mut state = persisted
         .unwrap_or_else(|| default_state(provider_id, scope, fingerprint_unknown(provider_id)));
-    match &err {
-        SemanticProviderError::Missing(_) => {
-            state.health = ProviderHealth::Missing;
-            state.freshness = ProviderFreshness::Absent;
-        }
-        SemanticProviderError::TimedOut(_) => {
-            state.health = ProviderHealth::TimedOut;
-            state.freshness = ProviderFreshness::Unknown;
-        }
-        _ => {
-            state.health = ProviderHealth::Failed;
-            state.freshness = ProviderFreshness::Unknown;
-        }
-    }
+    let attempt_health = match err {
+        SemanticProviderError::Missing(_) => ProviderHealth::Missing,
+        SemanticProviderError::TimedOut(_) => ProviderHealth::TimedOut,
+        _ => ProviderHealth::Failed,
+    };
+    state.health = attempt_health;
+    state.freshness = match err {
+        SemanticProviderError::Missing(_) => ProviderFreshness::Absent,
+        _ => ProviderFreshness::Unknown,
+    };
     state.failure_reason = Some(err.to_string());
+    state.last_attempt_fingerprint = Some(attempted_fingerprint.digest);
+    state.last_attempt_at = Some(now);
+    state.last_attempt_health = Some(attempt_health);
+    state.last_attempt_failure_reason = Some(err.to_string());
     state
 }
 
@@ -925,11 +996,16 @@ fn persist_failure_state(
     persisted: &Option<ProviderState>,
     provider_id: &str,
     scope: ProviderScope,
-    fingerprint: ProviderFingerprint,
+    attempted_fingerprint: ProviderFingerprint,
     err: &SemanticProviderError,
 ) -> Result<(), IngestError> {
-    let mut fail_state = persisted_with_failure(persisted.clone(), provider_id, scope, err);
-    fail_state.fingerprint = fingerprint;
+    let fail_state = persisted_with_failure(
+        persisted.clone(),
+        provider_id,
+        scope,
+        attempted_fingerprint,
+        err,
+    );
     let mut db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadWrite)?;
     let tx = TransactionalGraph::new(&mut db.conn)?;
     state::upsert_provider_state(&tx, &fail_state)?;

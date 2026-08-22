@@ -13,10 +13,9 @@ use thiserror::Error;
 /// Protocol version over JSON-lines IPC.
 pub const FDX_PROTOCOL_VERSION: u32 = 2;
 
-/// Relational SQLite schema version for EvidenceGraph (v2 adds semantic
-/// provider ownership and provenance columns plus the semantic_providers
-/// registry).
-pub const FDX_GRAPH_SCHEMA_VERSION: u32 = 2;
+/// Relational SQLite schema version for EvidenceGraph (v3 separates active
+/// provider state from attempt diagnostics).
+pub const FDX_GRAPH_SCHEMA_VERSION: u32 = 3;
 
 /// Selection and escalation algorithm policy version.
 pub const FDX_SELECTION_POLICY_VERSION: u32 = 1;

@@ -3,7 +3,7 @@ pub struct SchemaVersion {
     pub version: u32,
 }
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 pub const INITIALIZE_SCHEMA_SQL: &str = r#"
 PRAGMA user_version = 1;
@@ -109,4 +109,17 @@ CREATE INDEX IF NOT EXISTS idx_nodes_provider ON nodes(provider);
 CREATE INDEX IF NOT EXISTS idx_nodes_provider_fingerprint ON nodes(provider_fingerprint);
 CREATE INDEX IF NOT EXISTS idx_nodes_generation ON nodes(generation);
 CREATE INDEX IF NOT EXISTS idx_edges_generation ON edges(generation);
+"#;
+
+/// SQL applied when migrating a v2 database to v3.
+///
+/// v3 additions:
+/// - separate active provider state from attempt diagnostics
+///   (last_attempt_fingerprint, last_attempt_at, last_attempt_health,
+///   last_attempt_failure_reason)
+pub const MIGRATE_V2_TO_V3_SQL: &str = r#"
+ALTER TABLE semantic_providers ADD COLUMN last_attempt_fingerprint TEXT;
+ALTER TABLE semantic_providers ADD COLUMN last_attempt_at INTEGER;
+ALTER TABLE semantic_providers ADD COLUMN last_attempt_health TEXT;
+ALTER TABLE semantic_providers ADD COLUMN last_attempt_failure_reason TEXT;
 "#;

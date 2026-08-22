@@ -10,6 +10,7 @@ use crate::intelligence::semantic::fallback::{
     structural_references, FallbackReference, FallbackRole,
 };
 use crate::intelligence::semantic::provider::ProviderState;
+use crate::intelligence::semantic::registry::ProviderRegistry;
 use crate::intelligence::semantic::router::{
     plan_routing, Completeness, EvidenceSource, IntelligenceIntent,
 };
@@ -21,9 +22,12 @@ use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticReference {
+    /// The SCIP canonical symbol or structural name.
     pub symbol: String,
     pub display_name: Option<String>,
+    /// Repository-relative canonical path.
     pub path: String,
+    /// 1-based line number.
     pub start_line: u32,
     pub start_character: u32,
     pub end_line: u32,
@@ -78,15 +82,22 @@ pub enum QueryError {
     #[error("SQLite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 }
-/// Resolved SCIP reference set: (references, provider id, provider fingerprint).
-type ScipResolved = (Vec<SemanticReference>, String, Option<String>);
+
+/// Resolved SCIP reference set: (references, provider id, provider fingerprint, source identity, source hash).
+type ScipResolved = (
+    Vec<SemanticReference>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 /// Resolve the SCIP graph reference set for a symbol: the symbol node plus
 /// incoming semantic edges with occurrence positions. Returns the provider
 /// that produced the node so provenance stays precise.
 fn query_scip(db: &EvidenceDatabase, symbol: &str) -> Result<Option<ScipResolved>, QueryError> {
     let mut stmt = db.conn.prepare(
-        "SELECT stable_id, metadata, provider, provider_fingerprint FROM nodes
+        "SELECT stable_id, metadata, provider, provider_fingerprint, canonical_path, source_hash FROM nodes
          WHERE symbol_identity = ?1 AND stale = 0 AND provider IS NOT NULL
          LIMIT 1",
     )?;
@@ -95,27 +106,39 @@ fn query_scip(db: &EvidenceDatabase, symbol: &str) -> Result<Option<ScipResolved
         let meta: Option<String> = row.get(1)?;
         let provider: Option<String> = row.get(2)?;
         let fp: Option<String> = row.get(3)?;
-        Ok((id, meta, provider, fp))
+        let cpath: Option<String> = row.get(4)?;
+        let shash: Option<String> = row.get(5)?;
+        Ok((id, meta, provider, fp, cpath, shash))
     })?;
-    let Some((node_id, symbol_meta, provider, fp)) = rows.next().transpose()? else {
+    let Some((node_id, symbol_meta, provider, fp, node_cpath, node_shash)) =
+        rows.next().transpose()?
+    else {
         return Ok(None); // symbol not in graph: not negative evidence
     };
     let mut stmt = db.conn.prepare(
-        r#"SELECT e.kind, e.metadata, n2.canonical_path
+        r#"SELECT e.kind, e.metadata, n2.canonical_path, e.source_identity, e.source_hash
          FROM edges e
          JOIN nodes n2 ON n2.stable_id = e.from_node
          WHERE e.to_node = ?1 AND e.provider = 'scip' AND e.stale = 0
          ORDER BY n2.canonical_path"#,
     )?;
+    let mut first_edge_src_id: Option<String> = None;
+    let mut first_edge_src_hash: Option<String> = None;
     let rows = stmt.query_map(rusqlite::params![node_id], |row| {
         let kind: String = row.get(0)?;
         let meta: Option<String> = row.get(1)?;
         let canon: Option<String> = row.get(2)?;
-        Ok((kind, meta, canon))
+        let esrc_id: Option<String> = row.get(3)?;
+        let esrc_hash: Option<String> = row.get(4)?;
+        Ok((kind, meta, canon, esrc_id, esrc_hash))
     })?;
     let mut references: Vec<SemanticReference> = Vec::new();
     for r in rows.flatten() {
-        let (kind, meta, canon) = r;
+        let (kind, meta, canon, esrc_id, esrc_hash) = r;
+        if first_edge_src_id.is_none() && esrc_id.is_some() {
+            first_edge_src_id = esrc_id;
+            first_edge_src_hash = esrc_hash;
+        }
         let path = canon.unwrap_or_default();
         let role = match kind.as_str() {
             "imports" => OccurrenceRole::Import,
@@ -148,7 +171,15 @@ fn query_scip(db: &EvidenceDatabase, symbol: &str) -> Result<Option<ScipResolved
             });
         }
     }
-    Ok(Some((references, provider.unwrap_or_default(), fp)))
+    let src_id = node_cpath.or(first_edge_src_id);
+    let src_hash = node_shash.or(first_edge_src_hash);
+    Ok(Some((
+        references,
+        provider.unwrap_or_default(),
+        fp,
+        src_id,
+        src_hash,
+    )))
 }
 
 fn parse_display_name(meta: Option<&str>) -> Option<String> {
@@ -189,6 +220,7 @@ fn parse_edge_metadata(meta: Option<&str>) -> Vec<Position> {
         })
         .collect()
 }
+
 fn structural_query(
     repo_root: &Path,
     lang: LanguageId,
@@ -229,7 +261,8 @@ fn fallback_to_semantic(r: &FallbackReference) -> SemanticReference {
     }
 }
 
-/// Query references for a symbol with the given intent, honoring routing.
+/// Query references for a symbol with the given intent, honoring routing and
+/// non-mutating effective provider freshness.
 ///
 /// The database argument is optional: a query never creates semantic state.
 /// Without a database the plan degrades to structural/lexical evidence,
@@ -241,8 +274,12 @@ pub fn query_references(
     symbol: &str,
     intent: IntelligenceIntent,
 ) -> Result<ReferenceResult, QueryError> {
+    let registry = ProviderRegistry::new();
     let states: Vec<ProviderState> = match db {
-        Some(d) => state::load_provider_states(d)?,
+        Some(d) => {
+            let persisted = state::load_provider_states(d)?;
+            state::evaluate_effective_states(repo_root, &registry, persisted)
+        }
         None => Vec::new(),
     };
     let plan = plan_routing(intent, lang, &states);
@@ -250,7 +287,7 @@ pub fn query_references(
     match plan.primary {
         EvidenceSource::Scip => {
             if let Some(d) = db {
-                if let Some((scip_refs, provider, fp)) = query_scip(d, symbol)? {
+                if let Some((scip_refs, provider, fp, src_id, src_hash)) = query_scip(d, symbol)? {
                     return Ok(ReferenceResult {
                         references: scip_refs,
                         provenance: EvidenceProvenance {
@@ -261,8 +298,8 @@ pub fn query_references(
                             },
                             provider_fingerprint: fp,
                             strength: EvidenceStrength::Precise,
-                            source_identity: None,
-                            source_hash: None,
+                            source_identity: src_id,
+                            source_hash: src_hash,
                             degraded: false,
                         },
                         completeness: plan.completeness_cap,
@@ -295,6 +332,7 @@ pub fn query_references(
         }
     }
 }
+
 const MAX_LEXICAL_FILES: usize = 500;
 const MAX_LEXICAL_MATCHES: usize = 5000;
 

@@ -1,8 +1,9 @@
-//! Persistence of provider state in the EvidenceGraph (schema v2).
+//! Persistence of provider state in the EvidenceGraph (schema v3).
 //!
 //! Provider state is typed, not an opaque blob: every component needed for
 //! diagnostics and selective invalidation is a column
-//! (semantic_providers table).
+//! (semantic_providers table). Active published evidence is kept distinct
+//! from attempt diagnostics.
 
 use crate::intelligence::db::EvidenceDatabase;
 use crate::intelligence::index::TransactionalGraph;
@@ -42,8 +43,9 @@ pub fn upsert_provider_state(
             scip_schema_version, languages, workspace_root, package,
             config_fingerprint, input_fingerprint, last_successful_run, health,
             freshness, output_digest, failure_reason, semantic_generation,
-            created_at, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17)
+            created_at, updated_at,
+            last_attempt_fingerprint, last_attempt_at, last_attempt_health, last_attempt_failure_reason
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17, ?18, ?19, ?20, ?21)
          ON CONFLICT(provider_id) DO UPDATE SET
             provider_type = excluded.provider_type,
             provider_version = excluded.provider_version,
@@ -60,7 +62,11 @@ pub fn upsert_provider_state(
             output_digest = excluded.output_digest,
             failure_reason = excluded.failure_reason,
             semantic_generation = excluded.semantic_generation,
-            updated_at = excluded.updated_at",
+            updated_at = excluded.updated_at,
+            last_attempt_fingerprint = excluded.last_attempt_fingerprint,
+            last_attempt_at = excluded.last_attempt_at,
+            last_attempt_health = excluded.last_attempt_health,
+            last_attempt_failure_reason = excluded.last_attempt_failure_reason",
         rusqlite::params![
             state.provider_id(),
             provider_type,
@@ -79,6 +85,10 @@ pub fn upsert_provider_state(
             state.failure_reason,
             state.semantic_generation as i64,
             now,
+            state.last_attempt_fingerprint,
+            state.last_attempt_at.map(|v| v as i64),
+            state.last_attempt_health.map(|h| h.as_str()),
+            state.last_attempt_failure_reason,
         ],
     )?;
     Ok(())
@@ -101,6 +111,10 @@ fn row_to_state(row: &rusqlite::Row) -> Result<ProviderState, rusqlite::Error> {
     let output_digest: Option<String> = row.get(13)?;
     let failure_reason: Option<String> = row.get(14)?;
     let semantic_generation: i64 = row.get(15)?;
+    let last_attempt_fingerprint: Option<String> = row.get(16)?;
+    let last_attempt_at: Option<i64> = row.get(17)?;
+    let last_attempt_health: Option<String> = row.get(18)?;
+    let last_attempt_failure_reason: Option<String> = row.get(19)?;
 
     Ok(ProviderState {
         identity: ProviderIdentity {
@@ -130,13 +144,20 @@ fn row_to_state(row: &rusqlite::Row) -> Result<ProviderState, rusqlite::Error> {
         output_digest,
         failure_reason,
         semantic_generation: semantic_generation as u64,
+        last_attempt_fingerprint,
+        last_attempt_at: last_attempt_at.map(|v| v as u64),
+        last_attempt_health: last_attempt_health
+            .as_deref()
+            .and_then(ProviderHealth::from_str_opt),
+        last_attempt_failure_reason,
     })
 }
 
 const PROVIDER_COLUMNS: &str = "provider_id, provider_type, provider_version, executable_identity,
     scip_schema_version, languages, workspace_root, package, config_fingerprint,
     input_fingerprint, last_successful_run, health, freshness, output_digest,
-    failure_reason, semantic_generation";
+    failure_reason, semantic_generation, last_attempt_fingerprint, last_attempt_at,
+    last_attempt_health, last_attempt_failure_reason";
 
 /// Load all persisted provider states.
 pub fn load_provider_states(
@@ -171,9 +192,59 @@ pub fn load_provider_state(
     }
 }
 
-/// Mark providers whose scope covers a canonical path stale. Called inside an
-/// index transaction when a file changes, so a changed source is never
-/// presented as semantically fresh.
+/// Non-mutating evaluation of effective provider state for a single provider.
+/// If configuration or executable changed on disk, effective freshness is Stale.
+pub fn evaluate_effective_state(
+    repo_root: &Path,
+    provider: &dyn crate::intelligence::semantic::provider::SemanticProvider,
+    persisted: &ProviderState,
+) -> ProviderState {
+    let mut effective = persisted.clone();
+    let current_health = provider.health(repo_root);
+    effective.health = current_health;
+
+    if persisted.freshness == ProviderFreshness::Fresh {
+        match provider.fingerprint(repo_root) {
+            Ok(current_fp) => {
+                if current_fp.digest != persisted.fingerprint.digest
+                    || current_health != ProviderHealth::Available
+                {
+                    effective.freshness = ProviderFreshness::Stale;
+                } else {
+                    effective.freshness = ProviderFreshness::Fresh;
+                }
+            }
+            Err(_) => {
+                effective.freshness = ProviderFreshness::Stale;
+            }
+        }
+    }
+    effective
+}
+
+/// Non-mutating evaluation of effective provider states for all registered providers.
+pub fn evaluate_effective_states(
+    repo_root: &Path,
+    registry: &crate::intelligence::semantic::registry::ProviderRegistry,
+    persisted: Vec<ProviderState>,
+) -> Vec<ProviderState> {
+    persisted
+        .into_iter()
+        .map(|s| {
+            if let Some(provider) = registry.by_id(s.provider_id()) {
+                evaluate_effective_state(repo_root, provider, &s)
+            } else {
+                let mut st = s;
+                st.freshness = ProviderFreshness::Stale;
+                st.health = ProviderHealth::Missing;
+                st
+            }
+        })
+        .collect()
+}
+
+/// Mark providers whose scope and language relevance covers a canonical path stale.
+/// Called inside an index transaction when a file changes or is deleted/renamed.
 pub fn mark_providers_stale_for_path(
     conn: &Connection,
     provider_id_filter: Option<&str>,
@@ -205,7 +276,7 @@ pub fn mark_providers_stale_for_path(
             package: pkg,
             languages: languages_from_json(&langs),
         };
-        if scope.covers(canonical_path) {
+        if scope.is_relevant_path(canonical_path) {
             conn.execute(
                 "UPDATE semantic_providers SET freshness = 'stale', updated_at = ?2
                  WHERE provider_id = ?1 AND freshness = 'fresh'",
@@ -234,7 +305,7 @@ pub fn count_semantic_evidence(
     Ok((nodes, edges))
 }
 
-/// PLACEHOLDERNOTHING (removes ownership state; evidence rows are
+/// Delete a provider registry row (removes ownership state; evidence rows are
 /// removed via replace_provider_evidence on the next refresh or explicitly).
 pub fn delete_provider_state(
     tx: &TransactionalGraph,
@@ -248,9 +319,7 @@ pub fn delete_provider_state(
 }
 
 /// Recompute each provider fingerprint on disk and mark rows stale whose
-/// semantic inputs changed (configs, executable identity/version). Called by
-/// status and reference queries so freshness responds to relevant config
-/// changes without a refresh.
+/// semantic inputs changed (configs, executable identity/version).
 pub fn reconcile_provider_freshness(
     repo_root: &Path,
     registry: &crate::intelligence::semantic::registry::ProviderRegistry,
