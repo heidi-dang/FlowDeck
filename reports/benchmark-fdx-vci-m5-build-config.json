@@ -1,109 +1,110 @@
 {
   "metadata": {
     "benchmark": "benchmark-fdx-vci-m5-build-config",
-    "timestamp": "2026-08-22T16:26:20.307Z",
+    "timestamp": "2026-08-22T17:11:48.081Z",
     "platform": "linux",
     "arch": "x64",
-    "functional_source_sha": "71b86b90f2a1ba61f7209cdb943d2ab38451e317",
-    "binary_source_sha": "71b86b90f2a1ba61f7209cdb943d2ab38451e317",
-    "binary_path": "/home/heidi/flowdeck/target/release/fdx"
+    "functional_source_sha": "0f5e3ed9d94509d3539ffbf84a7507ec1fdb60bd",
+    "binary_source_sha": "0f5e3ed9d94509d3539ffbf84a7507ec1fdb60bd",
+    "benchmark_harness_sha": "243bc7f983cdec5db8138deafcdca4135206e186",
+    "binary_path": "/tmp/flowdeck-m5-functional/target/release/fdx"
   },
   "results": {
     "package_json_workspace_discovery": {
       "count": 5,
-      "min": 8.61,
-      "max": 9.38,
-      "mean": 9,
-      "median": 9.1,
-      "p95": 9.38
+      "min": 9.67,
+      "max": 9.78,
+      "mean": 9.74,
+      "median": 9.76,
+      "p95": 9.78
     },
     "100_package_workspace_graph": {
       "count": 5,
-      "min": 22.57,
-      "max": 23.76,
-      "mean": 23.13,
-      "median": 23.18,
-      "p95": 23.76
+      "min": 27.09,
+      "max": 27.82,
+      "mean": 27.43,
+      "median": 27.4,
+      "p95": 27.82
     },
     "1000_package_dependency_edges": {
       "count": 5,
-      "min": 41.04,
-      "max": 41.47,
-      "mean": 41.27,
-      "median": 41.26,
-      "p95": 41.47
+      "min": 43.21,
+      "max": 44.43,
+      "mean": 43.84,
+      "median": 43.77,
+      "p95": 44.43
     },
     "tsconfig_extends_chain": {
       "count": 5,
-      "min": 9.32,
-      "max": 9.78,
-      "mean": 9.54,
-      "median": 9.45,
-      "p95": 9.78
+      "min": 9.56,
+      "max": 10.01,
+      "mean": 9.77,
+      "median": 9.77,
+      "p95": 10.01
     },
     "tsconfig_reference_fanout": {
       "count": 5,
-      "min": 11.35,
-      "max": 11.71,
-      "mean": 11.51,
-      "median": 11.48,
-      "p95": 11.71
+      "min": 11.17,
+      "max": 11.61,
+      "mean": 11.37,
+      "median": 11.28,
+      "p95": 11.61
     },
     "cargo_workspace_discovery": {
       "count": 5,
-      "min": 11.56,
-      "max": 11.66,
-      "mean": 11.62,
-      "median": 11.63,
-      "p95": 11.66
+      "min": 13.48,
+      "max": 14.31,
+      "mean": 13.76,
+      "median": 13.68,
+      "p95": 14.31
     },
     "cargo_path_dependency_fanout": {
       "count": 5,
-      "min": 12.37,
-      "max": 12.53,
-      "mean": 12.44,
-      "median": 12.44,
-      "p95": 12.53
+      "min": 14.52,
+      "max": 14.74,
+      "mean": 14.65,
+      "median": 14.68,
+      "p95": 14.74
     },
     "fresh_build_config_aware_impact": {
       "count": 5,
-      "min": 29.65,
-      "max": 78.05,
-      "mean": 57.2,
-      "median": 60.68,
-      "p95": 78.05
+      "min": 99.52,
+      "max": 144.72,
+      "mean": 135.31,
+      "median": 144.21,
+      "p95": 144.72
     },
     "stale_scoped_config_widening": {
       "count": 5,
-      "min": 34.11,
-      "max": 34.91,
-      "mean": 34.44,
-      "median": 34.33,
-      "p95": 34.91
+      "min": 50.93,
+      "max": 51.41,
+      "mean": 51.25,
+      "median": 51.32,
+      "p95": 51.41
     },
     "malformed_package_local_config": {
       "count": 5,
-      "min": 34.85,
-      "max": 35.61,
-      "mean": 35.08,
-      "median": 34.96,
-      "p95": 35.61
+      "min": 26.63,
+      "max": 56.71,
+      "mean": 36.54,
+      "median": 28.36,
+      "p95": 56.71
     },
     "workspace_root_uncertainty": {
       "count": 5,
-      "min": 33.92,
-      "max": 40.78,
-      "mean": 37.17,
-      "median": 36.75,
-      "p95": 40.78
+      "min": 50.35,
+      "max": 51.39,
+      "mean": 50.68,
+      "median": 50.46,
+      "p95": 51.39
     },
     "why_explanation_through_build_path": {
       "count": 5,
-      "min": 24.37,
-      "max": 24.58,
-      "mean": 24.46,
-      "median": 24.48,
-      "p95": 24.58
+      "min": 61.76,
+      "max": 62.72,
+      "mean": 62.09,
+      "median": 62.01,
+      "p95": 62.72
     }
   }
 }
