@@ -7,8 +7,7 @@ import { resolveCodebasePath, getCanonicalRoot } from "./path-jail"
 const CODEBASE_DIR = ".codebase"
 
 export function codebaseDir(directory: string): string {
-  const canonicalRoot = getCanonicalRoot(directory)
-  return join(canonicalRoot, CODEBASE_DIR)
+  return join(directory, CODEBASE_DIR)
 }
 
 function codebaseFilePath(directory: string, filename: string, forWrite: boolean = false): string {
