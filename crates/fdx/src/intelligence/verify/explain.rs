@@ -30,6 +30,7 @@ pub fn format_verification_run_text(run: &VerificationRun) -> String {
             CheckExecutionStatus::Passed => "PASS",
             CheckExecutionStatus::Failed => "FAIL",
             CheckExecutionStatus::TimedOut => "TIMEOUT",
+            CheckExecutionStatus::OutputLimitExceeded => "OUTPUT_LIMIT_EXCEEDED",
             CheckExecutionStatus::SpawnFailed => "SPAWN_FAILED",
             CheckExecutionStatus::Unsupported => "UNSUPPORTED",
             CheckExecutionStatus::Skipped => "SKIPPED",

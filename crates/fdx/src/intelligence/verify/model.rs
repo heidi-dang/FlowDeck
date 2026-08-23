@@ -14,6 +14,7 @@ pub enum CheckExecutionStatus {
     Passed,
     Failed,
     TimedOut,
+    OutputLimitExceeded,
     SpawnFailed,
     Unsupported,
     Skipped,
@@ -37,6 +38,7 @@ impl CheckExecutionStatus {
         matches!(
             self,
             Self::TimedOut
+                | Self::OutputLimitExceeded
                 | Self::SpawnFailed
                 | Self::Unsupported
                 | Self::Cancelled
@@ -66,10 +68,10 @@ pub struct CheckExecutionResult {
     pub signal: Option<String>,
     /// Execution duration in milliseconds.
     pub duration_ms: u64,
-    /// SHA256 hex digest of full captured stdout.
+    /// SHA256 hex digest of captured stdout prefix under executor bound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stdout_digest: Option<String>,
-    /// SHA256 hex digest of full captured stderr.
+    /// SHA256 hex digest of captured stderr prefix under executor bound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr_digest: Option<String>,
     /// Bounded, redacted stdout tail/excerpt.
@@ -78,6 +80,12 @@ pub struct CheckExecutionResult {
     /// Bounded, redacted stderr tail/excerpt.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr_excerpt: Option<String>,
+    /// Total captured stdout bytes under executor bound.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub stdout_captured_bytes: u64,
+    /// Total captured stderr bytes under executor bound.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub stderr_captured_bytes: u64,
     /// Whether stdout exceeded buffer limit and was truncated.
     pub stdout_truncated: bool,
     /// Whether stderr exceeded buffer limit and was truncated.
@@ -87,6 +95,29 @@ pub struct CheckExecutionResult {
     /// Detailed diagnostic reason if check failed, timed out, or was unsupported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+/// Artifact persistence status for a verification run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum PersistenceStatus {
+    NotRequested,
+    Persisted { path: String },
+    Failed { reason: String },
+}
+
+impl PersistenceStatus {
+    pub fn is_not_requested(&self) -> bool {
+        matches!(self, Self::NotRequested)
+    }
+}
+
+fn default_persistence_status() -> PersistenceStatus {
+    PersistenceStatus::NotRequested
 }
 
 /// Overall outcome of a verification execution run.
@@ -122,6 +153,12 @@ pub struct VerificationRun {
     /// Head commit/ref against which verification was planned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head: Option<String>,
+    /// Artifact persistence status.
+    #[serde(
+        default = "default_persistence_status",
+        skip_serializing_if = "PersistenceStatus::is_not_requested"
+    )]
+    pub persistence_status: PersistenceStatus,
     /// Epoch timestamp when verification run began.
     pub executed_at_ms: u64,
     /// Total wall-clock execution duration in milliseconds.
