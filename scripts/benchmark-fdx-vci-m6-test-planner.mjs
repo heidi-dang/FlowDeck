@@ -15,7 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-test-planner.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "3385212921b40d9cc3f56173d723b06191afba83";
+const EXPECTED_FUNCTIONAL_SHA = "3a530035b08db7d0767a95df88063e910c37fb94";
 
 function getReleaseBinaryPath() {
   if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
@@ -234,6 +234,8 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/api/src/user.ts', 'hash_src', 50, 100);
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/api/tests/user.test.ts', 'file', 'packages/api/tests/user.test.ts', 'pkg:npm:packages/api');
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/api/src/user.ts:createUser', 'symbol', 'packages/api/src/user.ts', 'createUser', 'pkg:npm:packages/api');
+      INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+        VALUES ('scip-api', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/api', 'cfg_api', 'in_api', 'available', 'fresh', 1, 100, 100);
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:user_test_refs_createUser', 'file:packages/api/tests/user.test.ts', 'sym:packages/api/src/user.ts:createUser', 'references', 'scip_ts', 'fp_scip_m6', 4, 'packages/api/tests/user.test.ts', 'hash_test', 1, 1, 0, 'scip-typescript');
     `);
@@ -286,9 +288,9 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 2. build_transitive_test_mapping
+  // 2. build_transitive_test_mapping (persisted fresh core semantic DB must not suppress app test obligation)
   {
-    console.log("-> Running build_transitive_test_mapping scenario...");
+    console.log("-> Running build_transitive_test_mapping scenario (fresh core DB vs dependent app)...");
     const benchDir = join(tmpdir(), `fdx-bench-m6-transitive-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
     initGitRepo(benchDir);
@@ -296,29 +298,56 @@ async function runBenchmark() {
     const coreDir = join(benchDir, "packages", "core");
     const appDir = join(benchDir, "packages", "app");
     mkdirSync(join(coreDir, "src"), { recursive: true });
+    mkdirSync(join(coreDir, "tests"), { recursive: true });
     mkdirSync(join(appDir, "src"), { recursive: true });
     mkdirSync(join(appDir, "tests"), { recursive: true });
 
-    writeFileSync(join(coreDir, "package.json"), JSON.stringify({ name: "@my/core", version: "1.0.0" }, null, 2));
-    writeFileSync(join(coreDir, "src", "index.ts"), "export const V = 1;");
+    writeFileSync(join(coreDir, "package.json"), JSON.stringify({ name: "@my/core", version: "1.0.0", scripts: { test: "vitest" } }, null, 2));
+    writeFileSync(join(coreDir, "src", "index.ts"), "export function coreFn() { return 1; }");
+    writeFileSync(join(coreDir, "tests", "core.test.ts"), "test('core', () => {});");
     writeFileSync(
       join(appDir, "package.json"),
       JSON.stringify({ name: "@my/app", dependencies: { "@my/core": "workspace:*" }, scripts: { test: "vitest" } }, null, 2)
     );
-    writeFileSync(join(appDir, "src", "main.ts"), "import { V } from '@my/core';");
+    writeFileSync(join(appDir, "src", "main.ts"), "import { coreFn } from '@my/core'; export function appFn() { return coreFn(); }");
     writeFileSync(join(appDir, "tests", "main.test.ts"), "test('app', () => {});");
+
+    const mockBin = join(benchDir, "mock-scip-ts");
+    writeFileSync(mockBin, "#!/bin/sh\nexit 0\n");
+    chmodSync(mockBin, 0o755);
 
     gitCommitAll(benchDir, "init");
 
-    writeFileSync(join(coreDir, "src", "index.ts"), "export const V = 2;");
+    execFileSync(binaryPath, ["build", "refresh"], {
+      cwd: benchDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBin },
+      stdio: "ignore",
+    });
+
+    // Persist fresh provider covering ONLY package core
+    const db = initFdxDb(benchDir, binaryPath);
+    db.exec(`
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/core/tests/core.test.ts', 'h1', 50, 100);
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/core/src/index.ts', 'h2', 50, 100);
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/core/tests/core.test.ts', 'file', 'packages/core/tests/core.test.ts', 'pkg:npm:packages/core');
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/core/src/index.ts:coreFn', 'symbol', 'packages/core/src/index.ts', 'coreFn', 'pkg:npm:packages/core');
+      INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+        VALUES ('scip-core', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/core', 'cfg_core', 'in_core', 'available', 'fresh', 1, 100, 100);
+      INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:core_test', 'file:packages/core/tests/core.test.ts', 'sym:packages/core/src/index.ts:coreFn', 'references', 'scip_ts', 'fp_core', 4, 'packages/core/tests/core.test.ts', 'h1', 1, 1, 0, 'scip-typescript');
+    `);
+    db.close();
+
+    writeFileSync(join(coreDir, "src", "index.ts"), "export function coreFn() { return 2; }");
 
     const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
       cwd: benchDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBin },
       encoding: "utf8",
     });
     const plan = JSON.parse(planRaw);
     if (!plan.selected_checks.some((c) => c.check_id.includes("packages/app"))) {
-      throw new Error("build_transitive_test_mapping failed: app checks not selected on core modification");
+      throw new Error("build_transitive_test_mapping failed: app checks not selected on core modification despite fresh core DB");
     }
 
     const samples = [];
@@ -326,6 +355,7 @@ async function runBenchmark() {
       const t0 = performance.now();
       execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
         cwd: benchDir,
+        env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBin },
       });
       const t1 = performance.now();
       if (r >= warmup) samples.push(t1 - t0);
@@ -355,6 +385,8 @@ async function runBenchmark() {
       INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('src/mod.ts', 'h2', 50, 100);
       INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:tests/mod.test.ts', 'file', 'tests/mod.test.ts', 'pkg:npm:.');
       INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:src/mod.ts:oldFn', 'symbol', 'src/mod.ts', 'oldFn', 'pkg:npm:.');
+      INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+        VALUES ('scip-root', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', '.', 'cfg_root', 'in_root', 'available', 'fresh', 1, 100, 100);
       INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:mod_test_refs_oldFn', 'file:tests/mod.test.ts', 'sym:src/mod.ts:oldFn', 'references', 'scip_ts', 'fp_old_union', 4, 'tests/mod.test.ts', 'h1', 1, 1, 0, 'scip-typescript');
     `);
@@ -420,6 +452,8 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/feat/src/a.ts', 'h2', 50, 100);
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/feat/tests/a.test.ts', 'file', 'packages/feat/tests/a.test.ts', 'pkg:npm:packages/feat');
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/feat/src/a.ts:fnA', 'symbol', 'packages/feat/src/a.ts', 'fnA', 'pkg:npm:packages/feat');
+      INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+        VALUES ('scip-feat', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/feat', 'cfg_feat', 'in_feat', 'available', 'fresh', 1, 100, 100);
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:a_fresh_edge', 'file:packages/feat/tests/a.test.ts', 'sym:packages/feat/src/a.ts:fnA', 'references', 'scip_ts', 'fp_stale', 4, 'packages/feat/tests/a.test.ts', 'h1', 1, 1, 0, 'scip-typescript');
     `);
@@ -702,9 +736,9 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 9. disconnected_scope_isolation (verified against clean control repo)
+  // 9. disconnected_scope_isolation (simultaneous stale A + fresh B change vs clean control)
   {
-    console.log("-> Running disconnected_scope_isolation scenario (control vs test isolation)...");
+    console.log("-> Running disconnected_scope_isolation scenario (simultaneous stale A + fresh B)...");
     const controlDir = join(tmpdir(), `fdx-bench-m6-control-${Date.now()}`);
     const testDir = join(tmpdir(), `fdx-bench-m6-isolation-${Date.now()}`);
     mkdirSync(controlDir, { recursive: true });
@@ -712,17 +746,46 @@ async function runBenchmark() {
     initGitRepo(controlDir);
     initGitRepo(testDir);
 
-    // Control: only package B
+    const mockBinControl = join(controlDir, "mock-scip-ts");
+    writeFileSync(mockBinControl, "#!/bin/sh\nexit 0\n");
+    chmodSync(mockBinControl, 0o755);
+
+    const mockBinTest = join(testDir, "mock-scip-ts");
+    writeFileSync(mockBinTest, "#!/bin/sh\nexit 0\n");
+    chmodSync(mockBinTest, 0o755);
+
+    // Control: only package B with fresh SCIP
     const controlPb = join(controlDir, "packages", "pb");
     mkdirSync(join(controlPb, "src"), { recursive: true });
     mkdirSync(join(controlPb, "tests"), { recursive: true });
     writeFileSync(join(controlPb, "package.json"), JSON.stringify({ name: "@my/pb", scripts: { test: "vitest" } }));
-    writeFileSync(join(controlPb, "src", "b.ts"), "export const b = 1;");
+    writeFileSync(join(controlPb, "src", "b.ts"), "export function fnB() { return 1; }");
     writeFileSync(join(controlPb, "tests", "b.test.ts"), "test('b', () => {});");
+    writeFileSync(join(controlPb, "tests", "b_other.test.ts"), "test('b_other', () => {});");
     gitCommitAll(controlDir, "init");
-    writeFileSync(join(controlPb, "src", "b.ts"), "export const b = 2;");
 
-    // Test: package A + package B (only B modified)
+    execFileSync(binaryPath, ["build", "refresh"], {
+      cwd: controlDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBinControl },
+      stdio: "ignore",
+    });
+
+    const dbControl = initFdxDb(controlDir, binaryPath);
+    dbControl.exec(`
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pb/tests/b.test.ts', 'h3', 50, 100);
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pb/src/b.ts', 'h4', 50, 100);
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/pb/tests/b.test.ts', 'file', 'packages/pb/tests/b.test.ts', 'pkg:npm:packages/pb');
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pb/src/b.ts:fnB', 'symbol', 'packages/pb/src/b.ts', 'fnB', 'pkg:npm:packages/pb');
+      INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'cfg_pb', 'in_pb', 'available', 'fresh', 1, 100, 100);
+      INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-typescript');
+    `);
+    dbControl.close();
+
+    writeFileSync(join(controlPb, "src", "b.ts"), "export function fnB() { return 2; }");
+
+    // Test: package A (stale) + package B (fresh) (both A and B modified)
     const pa = join(testDir, "packages", "pa");
     const pb = join(testDir, "packages", "pb");
     mkdirSync(join(pa, "src"), { recursive: true });
@@ -731,31 +794,73 @@ async function runBenchmark() {
     mkdirSync(join(pb, "tests"), { recursive: true });
     writeFileSync(join(pa, "package.json"), JSON.stringify({ name: "@my/pa", scripts: { test: "vitest" } }));
     writeFileSync(join(pb, "package.json"), JSON.stringify({ name: "@my/pb", scripts: { test: "vitest" } }));
-    writeFileSync(join(pa, "src", "a.ts"), "export const a = 1;");
+    writeFileSync(join(pa, "src", "a.ts"), "export function fnA() { return 1; }");
     writeFileSync(join(pa, "tests", "a.test.ts"), "test('a', () => {});");
-    writeFileSync(join(pb, "src", "b.ts"), "export const b = 1;");
+    writeFileSync(join(pa, "tests", "a_other.test.ts"), "test('a_other', () => {});");
+    writeFileSync(join(pb, "src", "b.ts"), "export function fnB() { return 1; }");
     writeFileSync(join(pb, "tests", "b.test.ts"), "test('b', () => {});");
+    writeFileSync(join(pb, "tests", "b_other.test.ts"), "test('b_other', () => {});");
     gitCommitAll(testDir, "init");
-    writeFileSync(join(pb, "src", "b.ts"), "export const b = 2;");
+
+    execFileSync(binaryPath, ["build", "refresh"], {
+      cwd: testDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBinTest },
+      stdio: "ignore",
+    });
+
+    const dbTest = initFdxDb(testDir, binaryPath);
+    dbTest.exec(`
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pa/tests/a.test.ts', 'h1', 50, 100);
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pa/src/a.ts', 'h2', 50, 100);
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pb/tests/b.test.ts', 'h3', 50, 100);
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pb/src/b.ts', 'h4', 50, 100);
+
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/pa/tests/a.test.ts', 'file', 'packages/pa/tests/a.test.ts', 'pkg:npm:packages/pa');
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pa/src/a.ts:fnA', 'symbol', 'packages/pa/src/a.ts', 'fnA', 'pkg:npm:packages/pa');
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/pb/tests/b.test.ts', 'file', 'packages/pb/tests/b.test.ts', 'pkg:npm:packages/pb');
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pb/src/b.ts:fnB', 'symbol', 'packages/pb/src/b.ts', 'fnB', 'pkg:npm:packages/pb');
+
+      INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'cfg_pb', 'in_pb', 'available', 'fresh', 1, 100, 100);
+
+      INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:stale_a', 'file:packages/pa/tests/a.test.ts', 'sym:packages/pa/src/a.ts:fnA', 'references', 'scip_ts', 'fp_a', 4, 'packages/pa/tests/a.test.ts', 'h1', 1, 1, 1, 'scip-typescript');
+      INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-typescript');
+    `);
+    dbTest.close();
+
+    writeFileSync(join(pa, "src", "a.ts"), "export function fnA() { return 2; }");
+    writeFileSync(join(pb, "src", "b.ts"), "export function fnB() { return 2; }");
 
     const controlPlanRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
       cwd: controlDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBinControl },
       encoding: "utf8",
     });
     const testPlanRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
       cwd: testDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBinTest },
       encoding: "utf8",
     });
+
     const controlPlan = JSON.parse(controlPlanRaw);
     const testPlan = JSON.parse(testPlanRaw);
 
-    const selectsA = testPlan.selected_checks.some((c) => c.check_id.includes("packages/pa"));
-    const selectsB = testPlan.selected_checks.some((c) => c.check_id.includes("packages/pb"));
-    if (!selectsB || selectsA) {
-      throw new Error("disconnected_scope_isolation failed: changed package B must be selected, isolated A must not");
+    const controlBCheck = controlPlan.selected_checks.find((c) => c.check_id.includes("b.test.ts"));
+    const testBCheck = testPlan.selected_checks.find((c) => c.check_id.includes("b.test.ts"));
+
+    if (!controlBCheck || !testBCheck) {
+      throw new Error("disconnected_scope_isolation failed: b.test.ts must be selected in both control and test");
     }
-    if (testPlan.assurance !== controlPlan.assurance) {
-      throw new Error("disconnected_scope_isolation failed: isolated package presence must not alter assurance");
+    if (controlBCheck.check_id !== testBCheck.check_id || controlBCheck.strength !== testBCheck.strength) {
+      throw new Error("disconnected_scope_isolation failed: package B selection diverged between isolated control and multi-package repo");
+    }
+    if (testPlan.selected_checks.some((c) => c.check_id.includes("packages/pb/tests/b_other.test.ts"))) {
+      throw new Error("disconnected_scope_isolation failed: fresh package B must NOT be widened by stale package A");
+    }
+    if (!testPlan.selected_checks.some((c) => c.check_id.includes("packages/pa/tests/a_other.test.ts") || c.check_id.includes("check:pkg:npm:packages/pa:test"))) {
+      throw new Error("disconnected_scope_isolation failed: stale package A MUST be widened");
     }
 
     const samples = [];
@@ -763,6 +868,7 @@ async function runBenchmark() {
       const t0 = performance.now();
       execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
         cwd: testDir,
+        env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBinTest },
       });
       const t1 = performance.now();
       if (r >= warmup) samples.push(t1 - t0);
