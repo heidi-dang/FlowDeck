@@ -1,37 +1,68 @@
+/**
+ * ChildExecutionLifecycleService — Canonical native child execution lifecycle & state management.
+ *
+ * Implements:
+ * - Single authoritative child execution domain backed by SqliteNativeChildExecutionRepository (execution_metadata).
+ * - Canonical immutable terminal state machine (completed, failed, cancelled, timed_out).
+ * - Truthful cancellation: distinguishes cancel_requested from confirmed cancelled state.
+ * - Transactionally consistent child transitions + Assignment status synchronization.
+ * - Exact identity reconciliation across restarts without identifier fabrication.
+ */
+
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { AssignmentService } from "./assignment-service";
 import type { SqliteSessionRepository } from "../persistence/repositories/session";
 import type { ExecutionRegistry } from "./execution-registry";
 import type { IEventBus } from "./ports";
+import type { TransactionManager } from "../persistence/transaction-manager";
 import { HeidiDelegationRuntime } from "../../services/heidi-delegation-runtime";
+import {
+  SqliteNativeChildExecutionRepository,
+  type ChildExecutionRecord,
+  type ChildExecutionState,
+} from "../persistence/repositories/native-child-execution";
 
-export type ChildExecutionState =
-  | "queued"
-  | "running"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "timed_out"
-  | "unknown";
+export { type ChildExecutionRecord, type ChildExecutionState };
 
-export interface ChildExecutionRecord {
-  executionId: string;
-  runId: string;
-  assignmentId: string;
-  taskCallId: string;
-  parentSessionId: string;
-  childSessionId?: string;
-  agentId: string;
-  status: ChildExecutionState;
-  background: boolean;
-  prompt?: string;
-  description?: string;
-  result?: string;
-  error?: string;
-  cancelRequested?: boolean;
-  startedAt: string;
-  completedAt?: string | null;
+export const TERMINAL_CHILD_STATES: ReadonlySet<ChildExecutionState> = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+  "timed_out",
+]);
+
+export function isTerminalChildState(state: ChildExecutionState): boolean {
+  return TERMINAL_CHILD_STATES.has(state);
+}
+
+/**
+ * Allowed child lifecycle transitions:
+ * queued: running, completed, failed, cancel_requested, cancelled, timed_out
+ * running: completed, failed, cancel_requested, cancelled, timed_out
+ * cancel_requested: cancelled, failed, timed_out
+ * completed: terminal (immutable)
+ * failed: terminal (immutable)
+ * cancelled: terminal (immutable)
+ * timed_out: terminal (immutable)
+ * unknown: queued, running, completed, failed, cancelled, timed_out
+ */
+const ALLOWED_CHILD_TRANSITIONS: Record<ChildExecutionState, ReadonlyArray<ChildExecutionState>> = {
+  queued: ["running", "completed", "failed", "cancel_requested", "cancelled", "timed_out"],
+  running: ["completed", "failed", "cancel_requested", "cancelled", "timed_out"],
+  cancel_requested: ["cancelled", "failed", "timed_out"],
+  completed: [],
+  failed: [],
+  cancelled: [],
+  timed_out: [],
+  unknown: ["queued", "running", "completed", "failed", "cancelled", "timed_out"],
+};
+
+export function isValidChildTransition(from: ChildExecutionState, to: ChildExecutionState): boolean {
+  if (from === to) return true;
+  if (TERMINAL_CHILD_STATES.has(from)) return false;
+  const allowed = ALLOWED_CHILD_TRANSITIONS[from];
+  return allowed ? allowed.includes(to) : false;
 }
 
 export interface ChildExecutionTransitionResult {
@@ -58,6 +89,7 @@ export class ChildExecutionLifecycleService {
   private readonly recordsByChildSession = new Map<string, ChildExecutionRecord>();
   private readonly recordsByAssignment = new Map<string, ChildExecutionRecord>();
   private readonly delegationRuntime: HeidiDelegationRuntime;
+  private readonly nativeChildRepo: SqliteNativeChildExecutionRepository;
 
   constructor(
     private readonly db: Database,
@@ -65,26 +97,82 @@ export class ChildExecutionLifecycleService {
     private readonly sessionRepo: SqliteSessionRepository,
     private readonly executionRegistry: ExecutionRegistry,
     private readonly eventBus: IEventBus,
+    nativeChildRepo?: SqliteNativeChildExecutionRepository,
+    private readonly txManager?: TransactionManager,
   ) {
     this.delegationRuntime = new HeidiDelegationRuntime(db);
+    this.nativeChildRepo = nativeChildRepo ?? new SqliteNativeChildExecutionRepository(db, {
+      write: <T>(fn: () => T): T => {
+        return (db.transaction ? db.transaction(fn)() : fn()) as T;
+      },
+      read: <T>(fn: () => T): T => fn(),
+    } as any);
+
     this.reconcileAfterRestart();
   }
 
-  /** Persist child execution record in SQLite execution_metadata table. */
-  private persistRecord(record: ChildExecutionRecord): void {
-    const key = `child_exec:${record.taskCallId}`;
-    const val = JSON.stringify(record);
-    this.db.query(
-      `INSERT INTO execution_metadata (id, run_id, session_id, key, value, created_at)
-       VALUES (?, ?, ?, ?, ?, datetime('now'))
-       ON CONFLICT(run_id, key) DO UPDATE SET value = excluded.value`
-    ).run(
-      `meta-${record.executionId}`,
-      record.runId,
-      record.childSessionId ?? null,
-      key,
-      val
-    );
+  /**
+   * Authoritative, canonical child state transition engine.
+   * Enforces:
+   * - Strict immutability of terminal states.
+   * - Atomic persistence via SqliteNativeChildExecutionRepository before in-memory cache is updated.
+   * - Structured diagnostic logging on stale or conflicting transitions.
+   */
+  private transitionChild(
+    record: ChildExecutionRecord,
+    targetState: ChildExecutionState,
+    extra?: {
+      result?: string;
+      error?: string;
+      cancelRequested?: boolean;
+      nativeTerminationConfirmed?: boolean;
+      completedAt?: string | null;
+    }
+  ): ChildExecutionTransitionResult {
+    const previousState = record.status;
+
+    // Idempotent no-op: terminal states are immutable and ignore duplicate / late payload mutations
+    if (previousState === targetState) {
+      return { record, changed: false, previousState, newState: previousState };
+    }
+
+    // Terminal immutability guard
+    if (TERMINAL_CHILD_STATES.has(previousState)) {
+      console.warn(
+        `[ChildExecutionLifecycleService] Conflicting transition rejected: execution ${record.executionId} is terminal in state '${previousState}', ignoring event requesting '${targetState}'.`
+      );
+      return { record, changed: false, previousState, newState: previousState };
+    }
+
+    // Allowed transition guard
+    if (!isValidChildTransition(previousState, targetState)) {
+      console.warn(
+        `[ChildExecutionLifecycleService] Invalid child transition rejected: execution ${record.executionId} from '${previousState}' to '${targetState}'.`
+      );
+      return { record, changed: false, previousState, newState: previousState };
+    }
+
+    // Apply mutation
+    record.status = targetState;
+    if (extra) {
+      if (extra.result !== undefined) record.result = extra.result;
+      if (extra.error !== undefined) record.error = extra.error;
+      if (extra.cancelRequested !== undefined) record.cancelRequested = extra.cancelRequested;
+      if (extra.nativeTerminationConfirmed !== undefined) record.nativeTerminationConfirmed = extra.nativeTerminationConfirmed;
+      if (extra.completedAt !== undefined) record.completedAt = extra.completedAt;
+    }
+
+    // Persist durably FIRST — fail closed if write fails
+    this.nativeChildRepo.save(record);
+
+    // Update in-memory caches
+    this.recordsByTaskCall.set(record.taskCallId, record);
+    this.recordsByAssignment.set(record.assignmentId, record);
+    if (record.childSessionId) {
+      this.recordsByChildSession.set(record.childSessionId, record);
+    }
+
+    return { record, changed: true, previousState, newState: targetState };
   }
 
   /** Register a child delegation when Heidi calls native Task. Creates Assignment & Execution. */
@@ -111,7 +199,7 @@ export class ChildExecutionLifecycleService {
       correlationId: input.runId,
     });
 
-    // 3. Record in HeidiDelegationRuntime (SQLite heidi_delegation_activity)
+    // 3. Record in HeidiDelegationRuntime (best effort projection)
     try {
       this.delegationRuntime.queued({
         childId: executionId,
@@ -141,15 +229,17 @@ export class ChildExecutionLifecycleService {
       background: input.background === true,
       prompt: input.prompt,
       description: input.description,
+      cancelRequested: false,
+      nativeTerminationConfirmed: false,
       startedAt: now,
       completedAt: null,
     };
 
+    // Durable persistence before cache population
+    this.nativeChildRepo.save(record);
+
     this.recordsByTaskCall.set(input.taskCallId, record);
     this.recordsByAssignment.set(assignmentId, record);
-
-    // Persist durably
-    this.persistRecord(record);
 
     return record;
   }
@@ -196,17 +286,20 @@ export class ChildExecutionLifecycleService {
 
     // Fail-closed guard: prevent conflicting/corrupt session rebinding
     if (record.childSessionId && record.childSessionId !== input.childSessionId) {
-      console.warn(`[ChildExecutionLifecycleService] Conflicting child session binding rejected: execution ${record.executionId} already bound to ${record.childSessionId}, ignoring ${input.childSessionId}`);
+      console.warn(
+        `[ChildExecutionLifecycleService] Conflicting child session binding rejected: execution ${record.executionId} already bound to ${record.childSessionId}, ignoring ${input.childSessionId}`
+      );
       return null;
     }
     const existingOwner = this.recordsByChildSession.get(input.childSessionId);
     if (existingOwner && existingOwner.executionId !== record.executionId) {
-      console.warn(`[ChildExecutionLifecycleService] Conflicting child session binding rejected: session ${input.childSessionId} already belongs to execution ${existingOwner.executionId}`);
+      console.warn(
+        `[ChildExecutionLifecycleService] Conflicting child session binding rejected: session ${input.childSessionId} already belongs to execution ${existingOwner.executionId}`
+      );
       return null;
     }
 
     record.childSessionId = input.childSessionId;
-    this.recordsByChildSession.set(input.childSessionId, record);
 
     // Persist agent_sessions row in SQLite
     try {
@@ -227,8 +320,9 @@ export class ChildExecutionLifecycleService {
       }
     }
 
-    // Persist updated execution record
-    this.persistRecord(record);
+    // Persist updated execution record durably
+    this.nativeChildRepo.save(record);
+    this.recordsByChildSession.set(input.childSessionId, record);
 
     return record;
   }
@@ -238,17 +332,13 @@ export class ChildExecutionLifecycleService {
     const record = this.resolveRecord(input);
     if (!record) return null;
 
-    const previousState = record.status;
-    if (record.status !== "queued") {
-      return { record, changed: false, previousState, newState: record.status };
-    }
-
-    record.status = "running";
+    const trans = this.transitionChild(record, "running");
+    if (!trans.changed) return trans;
 
     // Update Assignment in SQLite
     await this.assignmentService.startAssignment(record.assignmentId);
 
-    // Update HeidiDelegationRuntime
+    // Update HeidiDelegationRuntime (best-effort projection)
     try {
       this.delegationRuntime.transition(record.executionId, "running");
     } catch {}
@@ -260,9 +350,7 @@ export class ChildExecutionLifecycleService {
       } catch {}
     }
 
-    this.persistRecord(record);
-
-    return { record, changed: true, previousState, newState: "running" };
+    return trans;
   }
 
   /** Mark child execution successfully completed. */
@@ -276,27 +364,17 @@ export class ChildExecutionLifecycleService {
     const record = this.resolveRecord(input);
     if (!record) return null;
 
-    const previousState = record.status;
-
-    // Idempotency: already completed
-    if (record.status === "completed") {
-      return { record, changed: false, previousState, newState: "completed" };
-    }
-
-    // Guard: Do not overwrite cancelled or failed state with late completion
-    if (record.status === "cancelled" || record.status === "failed") {
-      return { record, changed: false, previousState, newState: record.status };
-    }
-
     const now = new Date().toISOString();
-    record.status = "completed";
-    record.result = input.output;
-    record.completedAt = now;
+    const trans = this.transitionChild(record, "completed", {
+      result: input.output,
+      completedAt: now,
+    });
+    if (!trans.changed) return trans;
 
     // Update Assignment in SQLite
     await this.assignmentService.completeAssignment(record.assignmentId);
 
-    // Update HeidiDelegationRuntime
+    // Update HeidiDelegationRuntime (best-effort projection)
     try {
       this.delegationRuntime.transition(record.executionId, "completed", {
         summary: input.title ?? (input.output ? input.output.slice(0, 200) : "Task completed"),
@@ -314,9 +392,7 @@ export class ChildExecutionLifecycleService {
     this.executionRegistry.resolveExecution(record.executionId);
     this.executionRegistry.unregisterRun(record.executionId);
 
-    this.persistRecord(record);
-
-    return { record, changed: true, previousState, newState: "completed" };
+    return trans;
   }
 
   /** Mark child execution failed. */
@@ -328,91 +404,135 @@ export class ChildExecutionLifecycleService {
     const record = this.resolveRecord(input);
     if (!record) return null;
 
-    const previousState = record.status;
-
-    // Guard: NEVER regress completed -> failed on stale late failure events
-    if (record.status === "completed") {
-      return { record, changed: false, previousState, newState: "completed" };
-    }
-
-    if (record.status === "failed") {
-      return { record, changed: false, previousState, newState: "failed" };
-    }
-
     const now = new Date().toISOString();
-    record.status = "failed";
-    record.error = input.error ?? "Child task execution failed";
-    record.completedAt = now;
+    const err = input.error ?? "Child task execution failed";
+    const trans = this.transitionChild(record, "failed", {
+      error: err,
+      completedAt: now,
+    });
+    if (!trans.changed) return trans;
 
     // Update Assignment in SQLite
     await this.assignmentService.failAssignment(record.assignmentId);
 
-    // Update HeidiDelegationRuntime
+    // Update HeidiDelegationRuntime (best-effort projection)
     try {
       this.delegationRuntime.transition(record.executionId, "failed", {
-        error: record.error,
+        error: err,
       });
     } catch {}
 
     // Update agent_sessions in SQLite
     if (record.childSessionId) {
       try {
-        this.sessionRepo.updateStatus(record.childSessionId, "failed", undefined, record.error);
+        this.sessionRepo.updateStatus(record.childSessionId, "failed", undefined, err);
       } catch {}
     }
 
     this.executionRegistry.resolveExecution(record.executionId);
     this.executionRegistry.unregisterRun(record.executionId);
 
-    this.persistRecord(record);
-
-    return { record, changed: true, previousState, newState: "failed" };
+    return trans;
   }
 
-  /** Mark child execution cancelled. */
+  /**
+   * Request native child cancellation and transition truthfully.
+   * If native termination is confirmed (or native client abort succeeds), marks status="cancelled".
+   * If native abort cannot be verified, records cancelRequested=true and nativeTerminationConfirmed=false.
+   */
   async markCancelled(input: {
     taskCallId?: string;
     childSessionId?: string;
     reason?: string;
+    confirmed?: boolean;
+    client?: any;
+    workspace?: string;
   }): Promise<ChildExecutionTransitionResult | null> {
     const record = this.resolveRecord(input);
     if (!record) return null;
 
-    const previousState = record.status;
+    if (TERMINAL_CHILD_STATES.has(record.status)) {
+      return { record, changed: false, previousState: record.status, newState: record.status };
+    }
 
-    if (record.status === "completed" || record.status === "cancelled") {
-      return { record, changed: false, previousState, newState: record.status };
+    const reason = input.reason ?? "Child task cancelled";
+    let isConfirmed = input.confirmed === true;
+
+    // If native client is provided, attempt native session abort
+    if (!isConfirmed && input.client && record.childSessionId) {
+      try {
+        const res = await input.client.session?.abort?.({
+          path: { id: record.childSessionId },
+          query: input.workspace ? { directory: input.workspace } : undefined,
+        });
+        if (res === true || res?.data === true || (res && !res.error)) {
+          isConfirmed = true;
+        }
+      } catch (err) {
+        console.warn(`[ChildExecutionLifecycleService] native session abort for ${record.childSessionId} threw:`, err);
+        isConfirmed = false;
+      }
     }
 
     const now = new Date().toISOString();
-    record.status = "cancelled";
-    record.cancelRequested = true;
-    record.error = input.reason ?? "Child task cancelled";
-    record.completedAt = now;
 
-    // Update Assignment in SQLite
-    await this.assignmentService.cancelAssignment(record.assignmentId);
-
-    // Update HeidiDelegationRuntime
-    try {
-      this.delegationRuntime.transition(record.executionId, "cancelled", {
-        error: record.error,
+    if (isConfirmed) {
+      // Confirmed cancellation -> transition to "cancelled"
+      const trans = this.transitionChild(record, "cancelled", {
+        cancelRequested: true,
+        nativeTerminationConfirmed: true,
+        error: reason,
+        completedAt: now,
       });
-    } catch {}
+      if (!trans.changed) return trans;
 
-    // Update agent_sessions in SQLite
-    if (record.childSessionId) {
+      // Update Assignment in SQLite
+      await this.assignmentService.cancelAssignment(record.assignmentId);
+
+      // Update HeidiDelegationRuntime (best-effort projection)
       try {
-        this.sessionRepo.updateStatus(record.childSessionId, "cancelled", undefined, record.error);
+        this.delegationRuntime.transition(record.executionId, "cancelled", {
+          error: reason,
+        });
       } catch {}
+
+      // Update agent_sessions in SQLite
+      if (record.childSessionId) {
+        try {
+          this.sessionRepo.updateStatus(record.childSessionId, "cancelled", undefined, reason);
+        } catch {}
+      }
+
+      this.executionRegistry.resolveExecution(record.executionId);
+      this.executionRegistry.unregisterRun(record.executionId);
+
+      return trans;
+    } else {
+      // Cancellation requested but native stop NOT yet confirmed
+      record.cancelRequested = true;
+      record.nativeTerminationConfirmed = false;
+      record.error = reason;
+      this.nativeChildRepo.save(record);
+
+      return {
+        record,
+        changed: true,
+        previousState: record.status,
+        newState: record.status, // Preserves running / queued state until native termination confirmed
+      };
     }
+  }
 
-    this.executionRegistry.resolveExecution(record.executionId);
-    this.executionRegistry.unregisterRun(record.executionId);
-
-    this.persistRecord(record);
-
-    return { record, changed: true, previousState, newState: "cancelled" };
+  /** Confirm native child termination after external proof (e.g. session.deleted or tool finish). */
+  async confirmNativeTermination(input: {
+    taskCallId?: string;
+    childSessionId?: string;
+    reason?: string;
+  }): Promise<ChildExecutionTransitionResult | null> {
+    return this.markCancelled({
+      ...input,
+      confirmed: true,
+    });
   }
 
   /** Mark child execution timed out. */
@@ -420,16 +540,12 @@ export class ChildExecutionLifecycleService {
     const record = this.resolveRecord(input);
     if (!record) return null;
 
-    const previousState = record.status;
-
-    if (record.status === "completed" || record.status === "cancelled" || record.status === "failed") {
-      return { record, changed: false, previousState, newState: record.status };
-    }
-
     const now = new Date().toISOString();
-    record.status = "timed_out";
-    record.error = "Child task timed out";
-    record.completedAt = now;
+    const trans = this.transitionChild(record, "timed_out", {
+      error: "Child task timed out",
+      completedAt: now,
+    });
+    if (!trans.changed) return trans;
 
     await this.assignmentService.failAssignment(record.assignmentId);
 
@@ -446,24 +562,31 @@ export class ChildExecutionLifecycleService {
     this.executionRegistry.resolveExecution(record.executionId);
     this.executionRegistry.unregisterRun(record.executionId);
 
-    this.persistRecord(record);
-
-    return { record, changed: true, previousState, newState: "timed_out" };
+    return trans;
   }
 
   /** Cancel all active child executions for a specific run. */
-  async cancelChildrenForRun(runId: string, reason?: string): Promise<number> {
+  async cancelChildrenForRun(runId: string, reason?: string, client?: any): Promise<number> {
     let count = 0;
     const records = Array.from(this.recordsByTaskCall.values()).filter(
       r => r.runId === runId && (r.status === "queued" || r.status === "running")
     );
 
     for (const record of records) {
-      await this.markCancelled({ taskCallId: record.taskCallId, reason: reason ?? "Parent run cancelled" });
+      // Mark cancelled truthfully (confirmed if queued or via client abort)
+      const isQueued = record.status === "queued";
+      await this.markCancelled({
+        taskCallId: record.taskCallId,
+        reason: reason ?? "Parent run cancelled",
+        confirmed: isQueued, // Queued tasks never spawned native processes, so stop is immediate
+        client,
+      });
+      // Explicitly signal and cancel child ExecutionRegistry handle
+      await this.executionRegistry.cancelRunExecution(record.executionId, reason);
       count += 1;
     }
 
-    // Also query SQLite for any orphan child sessions under this run
+    // Cross-check sessionRepo for any orphan child sessions
     try {
       const sessions = this.sessionRepo.findByRunId(runId);
       for (const s of sessions) {
@@ -485,22 +608,16 @@ export class ChildExecutionLifecycleService {
   /** Recover / reconcile non-terminal children from durable SQLite state after restart without fabricating identifiers. */
   reconcileAfterRestart(runId?: string): void {
     try {
-      // 1. Reconcile from execution_metadata (which holds the exact original taskCallId, executionId, assignmentId, background, parentSessionId)
-      const metaRows = runId
-        ? this.db.query("SELECT * FROM execution_metadata WHERE run_id = ? AND key LIKE 'child_exec:%'").all(runId)
-        : this.db.query("SELECT * FROM execution_metadata WHERE key LIKE 'child_exec:%'").all();
-
-      for (const row of metaRows as any[]) {
-        try {
-          const rec = JSON.parse(row.value) as ChildExecutionRecord;
-          if (rec.taskCallId && rec.executionId && rec.assignmentId) {
-            this.recordsByTaskCall.set(rec.taskCallId, rec);
-            this.recordsByAssignment.set(rec.assignmentId, rec);
-            if (rec.childSessionId) {
-              this.recordsByChildSession.set(rec.childSessionId, rec);
-            }
+      // 1. Reconcile from nativeChildRepo (execution_metadata)
+      const records = this.nativeChildRepo.listAll(runId);
+      for (const rec of records) {
+        if (rec.taskCallId && rec.executionId && rec.assignmentId) {
+          this.recordsByTaskCall.set(rec.taskCallId, rec);
+          this.recordsByAssignment.set(rec.assignmentId, rec);
+          if (rec.childSessionId) {
+            this.recordsByChildSession.set(rec.childSessionId, rec);
           }
-        } catch {}
+        }
       }
 
       // 2. Cross-reference agent_sessions table for any updated statuses
@@ -517,7 +634,9 @@ export class ChildExecutionLifecycleService {
             this.recordsByChildSession.set(row.id, existing);
           }
           if (row.status === "completed" || row.status === "failed" || row.status === "cancelled") {
-            existing.status = row.status as ChildExecutionState;
+            if (!TERMINAL_CHILD_STATES.has(existing.status)) {
+              existing.status = row.status as ChildExecutionState;
+            }
           }
         }
       }
@@ -560,6 +679,8 @@ export class ChildExecutionLifecycleService {
       taskCallId: string;
       childSessionId?: string;
       status: string;
+      cancelRequested?: boolean;
+      nativeTerminationConfirmed?: boolean;
       startedAt?: string;
       completedAt?: string | null;
     }>;
@@ -599,6 +720,8 @@ export class ChildExecutionLifecycleService {
         taskCallId: item.taskCallId,
         childSessionId: item.childSessionId,
         status: item.status,
+        cancelRequested: item.cancelRequested,
+        nativeTerminationConfirmed: item.nativeTerminationConfirmed,
         startedAt: item.startedAt,
         completedAt: item.completedAt,
       })),

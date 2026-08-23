@@ -77,6 +77,7 @@ import { RuntimeSnapshotService } from "./services/runtime-snapshot";
 import { AuthoritativeRoutingService } from "./routing/authoritative";
 import { RoutingRevisionService } from "./routing/routing-revision-service";
 import { ChildExecutionLifecycleService } from "./services/child-execution-lifecycle-service";
+import { SqliteNativeChildExecutionRepository } from "./persistence/repositories/native-child-execution";
 import { ProgressObservationService } from "./services/progress-observation-service";
 import { TokenBudgetRuntime } from "../services/token-budget-runtime";
 import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
@@ -691,7 +692,8 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const transactionalRunWriter = new SqliteTransactionalRunWriter();
 
   const assignmentService = new AssignmentService(assignmentRepo, eventBus);
-  const childExecutionLifecycleService = new ChildExecutionLifecycleService(db, assignmentService, sessionRepo, executionRegistry, eventBus);
+  const nativeChildRepo = new SqliteNativeChildExecutionRepository(db, txManager);
+  const childExecutionLifecycleService = new ChildExecutionLifecycleService(db, assignmentService, sessionRepo, executionRegistry, eventBus, nativeChildRepo, txManager);
   const progressObservationService = new ProgressObservationService(db);
   const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db, childExecutionLifecycleService);
   const contractService = new ContractService(contractRepo, eventBus);
