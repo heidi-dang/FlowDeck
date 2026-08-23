@@ -5,7 +5,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync, unlinkSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
@@ -14,7 +14,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-test-planner.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "f151a9de7fb1776b705d04c5fdcda2662c51f238";
+const EXPECTED_FUNCTIONAL_SHA = "8b6ebba9b01b1d452229019c9a04f3ab18216049";
 
 function getReleaseBinaryPath() {
   if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
@@ -117,10 +117,11 @@ async function runBenchmark() {
 
     writeFileSync(
       join(pkgDir, "package.json"),
-      JSON.stringify({ name: "@my/api", scripts: { test: "vitest" } }, null, 2)
+      JSON.stringify({ name: "@my/api", scripts: { test: "vitest", typecheck: "tsc" } }, null, 2)
     );
     writeFileSync(join(pkgDir, "src", "user.ts"), "export const user = 1;");
     writeFileSync(join(pkgDir, "tests", "user.test.ts"), "test('user', () => {});");
+    writeFileSync(join(pkgDir, "tests", "unrelated.test.ts"), "test('unrelated', () => {});");
     gitCommitAll(benchDir, "init");
 
     writeFileSync(join(pkgDir, "src", "user.ts"), "export const user = 2;");
@@ -131,7 +132,8 @@ async function runBenchmark() {
       encoding: "utf8",
     });
     const plan = JSON.parse(planRaw);
-    if (!plan.selected_checks.some((c) => c.check_id.includes("user.test.ts"))) {
+    const userTest = plan.selected_checks.find((c) => c.check_id.includes("user.test.ts"));
+    if (!userTest) {
       throw new Error("precise_semantic_test_mapping failed: user.test.ts not selected");
     }
 
