@@ -1,9 +1,9 @@
 /**
  * ProgressObservationService — Authoritative progress and stall detection service.
  *
- * Normalizes tool activity, child lifecycle events, repository state deltas,
- * assignment state deltas, and verification deltas into the existing
- * AdaptiveExecutionControl (StallObservation) model.
+ * Persists progress observation aggregates in SQLite (execution_metadata table),
+ * tracks pre/post tool execution state (repository hashes, verification results),
+ * and feeds normalized StallObservation into AdaptiveExecutionControl.
  */
 
 import { createHash } from "node:crypto";
@@ -57,11 +57,32 @@ export interface ProgressDiagnostics {
   isStalled: boolean;
 }
 
+interface DurableProgressState {
+  lastActionFingerprint?: string;
+  lastResultFingerprint?: string;
+  lastRepositoryHash?: string;
+  lastVerificationHash?: string;
+  repeatedFailure: number;
+  repeatedTool: number;
+  unchangedDiff: number;
+  repeatedContext: number;
+  tokensSinceProgress: number;
+  noProgressCount: number;
+  lastProgressAt?: string;
+  lastProgressReason?: string;
+  lastStallResult?: StallResult;
+  lastEvidenceDelta: number;
+  lastRepositoryDelta: number;
+  seenFailureSignatures: string[];
+  seenEvidenceHashes: string[];
+}
+
 export class ProgressObservationService {
   private readonly stateByRun = new Map<string, {
     lastActionFingerprint?: string;
     lastResultFingerprint?: string;
     lastRepositoryHash?: string;
+    lastVerificationHash?: string;
     repeatedFailure: number;
     repeatedTool: number;
     unchangedDiff: number;
@@ -77,7 +98,86 @@ export class ProgressObservationService {
     seenEvidenceHashes: Set<string>;
   }>();
 
-  constructor(private readonly db: Database) {}
+  constructor(private readonly db: Database) {
+    this.reconcileAfterRestart();
+  }
+
+  /** Persist state for run into execution_metadata table. */
+  private persistState(runId: string): void {
+    const mem = this.stateByRun.get(runId);
+    if (!mem) return;
+    const durable: DurableProgressState = {
+      lastActionFingerprint: mem.lastActionFingerprint,
+      lastResultFingerprint: mem.lastResultFingerprint,
+      lastRepositoryHash: mem.lastRepositoryHash,
+      lastVerificationHash: mem.lastVerificationHash,
+      repeatedFailure: mem.repeatedFailure,
+      repeatedTool: mem.repeatedTool,
+      unchangedDiff: mem.unchangedDiff,
+      repeatedContext: mem.repeatedContext,
+      tokensSinceProgress: mem.tokensSinceProgress,
+      noProgressCount: mem.noProgressCount,
+      lastProgressAt: mem.lastProgressAt,
+      lastProgressReason: mem.lastProgressReason,
+      lastStallResult: mem.lastStallResult,
+      lastEvidenceDelta: mem.lastEvidenceDelta,
+      lastRepositoryDelta: mem.lastRepositoryDelta,
+      seenFailureSignatures: Array.from(mem.seenFailureSignatures),
+      seenEvidenceHashes: Array.from(mem.seenEvidenceHashes),
+    };
+
+    try {
+      this.db.query(
+        `INSERT INTO execution_metadata (id, run_id, session_id, key, value, created_at)
+         VALUES (?, ?, NULL, ?, ?, datetime('now'))
+         ON CONFLICT(run_id, key) DO UPDATE SET value = excluded.value`
+      ).run(
+        `meta-prog-${runId}`,
+        runId,
+        `progress_state:${runId}`,
+        JSON.stringify(durable)
+      );
+    } catch (err) {
+      console.warn("[ProgressObservationService] persistState non-fatal error:", err);
+    }
+  }
+
+  /** Reconcile durable progress state after restart. */
+  reconcileAfterRestart(runId?: string): void {
+    try {
+      const rows = runId
+        ? this.db.query("SELECT * FROM execution_metadata WHERE run_id = ? AND key LIKE 'progress_state:%'").all(runId)
+        : this.db.query("SELECT * FROM execution_metadata WHERE key LIKE 'progress_state:%'").all();
+
+      for (const row of rows as any[]) {
+        try {
+          const durable = JSON.parse(row.value) as DurableProgressState;
+          const rId = row.run_id as string;
+          this.stateByRun.set(rId, {
+            lastActionFingerprint: durable.lastActionFingerprint,
+            lastResultFingerprint: durable.lastResultFingerprint,
+            lastRepositoryHash: durable.lastRepositoryHash,
+            lastVerificationHash: durable.lastVerificationHash,
+            repeatedFailure: durable.repeatedFailure ?? 0,
+            repeatedTool: durable.repeatedTool ?? 0,
+            unchangedDiff: durable.unchangedDiff ?? 0,
+            repeatedContext: durable.repeatedContext ?? 0,
+            tokensSinceProgress: durable.tokensSinceProgress ?? 0,
+            noProgressCount: durable.noProgressCount ?? 0,
+            lastProgressAt: durable.lastProgressAt,
+            lastProgressReason: durable.lastProgressReason,
+            lastStallResult: durable.lastStallResult,
+            lastEvidenceDelta: durable.lastEvidenceDelta ?? 0,
+            lastRepositoryDelta: durable.lastRepositoryDelta ?? 0,
+            seenFailureSignatures: new Set(durable.seenFailureSignatures ?? []),
+            seenEvidenceHashes: new Set(durable.seenEvidenceHashes ?? []),
+          });
+        } catch {}
+      }
+    } catch (err) {
+      console.error("[ProgressObservationService] reconcileAfterRestart error:", err);
+    }
+  }
 
   /** Normalize action fingerprint deterministically. */
   computeActionFingerprint(input: ActionFingerprintInput): string {
@@ -100,7 +200,8 @@ export class ProgressObservationService {
     output?: string;
     metadata?: Record<string, unknown>;
     error?: string;
-    repositoryHash?: string;
+    preRepositoryHash?: string;
+    postRepositoryHash?: string;
     tokensUsed?: number;
     assignmentId?: string;
     executionId?: string;
@@ -143,17 +244,27 @@ export class ProgressObservationService {
       evidenceDelta = 1;
     }
 
-    // 2. Repository delta check
+    // 2. Repository delta check: compare pre and post hashes
     let repositoryStateDelta = 0;
-    if (input.repositoryHash && input.repositoryHash !== state.lastRepositoryHash) {
+    const preHash = input.preRepositoryHash ?? state.lastRepositoryHash;
+    const postHash = input.postRepositoryHash;
+    if (preHash !== undefined && postHash !== undefined && preHash !== postHash) {
       repositoryStateDelta = 1;
-      state.lastRepositoryHash = input.repositoryHash;
+      state.lastRepositoryHash = postHash;
+    } else if (postHash !== undefined && state.lastRepositoryHash === undefined) {
+      // First baseline observation
+      state.lastRepositoryHash = postHash;
+      repositoryStateDelta = 0;
     }
 
-    // 3. Verification delta check (e.g. test outputs or audit checks)
+    // 3. Verification delta check (deterministic verification fingerprint comparison)
     let verificationDelta = 0;
-    if (input.metadata && (input.metadata.verified === true || typeof input.metadata.passed === "number")) {
-      verificationDelta = 1;
+    if (input.metadata && (typeof input.metadata.passed === "number" || typeof input.metadata.failed === "number" || input.metadata.verified !== undefined)) {
+      const verKey = `${input.metadata.passed ?? 0}:${input.metadata.failed ?? 0}:${input.metadata.verified ?? ""}:${input.metadata.exitCode ?? 0}`;
+      if (state.lastVerificationHash !== undefined && state.lastVerificationHash !== verKey) {
+        verificationDelta = 1;
+      }
+      state.lastVerificationHash = verKey;
     }
 
     // 4. Repeated action / failure tracking
@@ -166,7 +277,6 @@ export class ProgressObservationService {
         state.repeatedFailure += 1;
       } else {
         state.seenFailureSignatures.add(failSig);
-        // Novel failure evidence is progress on first encounter
         evidenceDelta = Math.max(evidenceDelta, 1);
         state.repeatedFailure = 0;
       }
@@ -180,7 +290,7 @@ export class ProgressObservationService {
       state.repeatedTool = 0;
     }
 
-    if (repositoryStateDelta === 0 && (input.tool === "write" || input.tool === "edit" || input.tool === "patch")) {
+    if (repositoryStateDelta === 0 && (input.tool === "write" || input.tool === "edit" || input.tool === "patch" || input.tool === "apply_patch")) {
       state.unchangedDiff += 1;
     } else if (repositoryStateDelta > 0) {
       state.unchangedDiff = 0;
@@ -205,7 +315,7 @@ export class ProgressObservationService {
     } else if (verificationDelta > 0) {
       isProgress = true;
       progressReason = "verification_state_change";
-    } else if (evidenceDelta > 0 && (!isSameAction || !isSameResult)) {
+    } else if (evidenceDelta > 0 && input.tool !== "write" && input.tool !== "edit" && input.tool !== "patch" && input.tool !== "apply_patch" && (!isSameAction || !isSameResult)) {
       isProgress = true;
       progressReason = "novel_evidence_acquired";
     }
@@ -235,6 +345,9 @@ export class ProgressObservationService {
 
     const stallResult = detectStall(stallObservation);
     state.lastStallResult = stallResult;
+
+    // Persist durably
+    this.persistState(input.runId);
 
     return {
       runId: input.runId,
@@ -320,6 +433,11 @@ export class ProgressObservationService {
       progressReason = "child_execution_started";
       executionStateDelta = 1;
       assignmentStateDelta = 1;
+    } else if (input.newState === "cancelled") {
+      executionStateDelta = 1;
+      assignmentStateDelta = 1;
+      // Cancellation is a state transition but not positive task progress
+      isProgress = false;
     }
 
     if (isProgress) {
@@ -327,7 +445,7 @@ export class ProgressObservationService {
       state.noProgressCount = 0;
       state.lastProgressAt = now;
       state.lastProgressReason = progressReason;
-    } else {
+    } else if (input.newState !== "cancelled") {
       state.noProgressCount += 1;
     }
 
@@ -344,6 +462,9 @@ export class ProgressObservationService {
 
     const stallResult = detectStall(stallObservation);
     state.lastStallResult = stallResult;
+
+    // Persist durably
+    this.persistState(input.runId);
 
     return {
       runId: input.runId,
@@ -390,12 +511,18 @@ export class ProgressObservationService {
     };
   }
 
-  /** Reset in-memory state (useful in tests or session reset). */
+  /** Reset in-memory and durable state (useful in tests or session reset). */
   reset(runId?: string): void {
     if (runId) {
       this.stateByRun.delete(runId);
+      try {
+        this.db.query("DELETE FROM execution_metadata WHERE run_id = ? AND key = ?").run(runId, `progress_state:${runId}`);
+      } catch {}
     } else {
       this.stateByRun.clear();
+      try {
+        this.db.query("DELETE FROM execution_metadata WHERE key LIKE 'progress_state:%'").run();
+      } catch {}
     }
   }
 }

@@ -1,24 +1,9 @@
-/**
- * ChildExecutionLifecycleService — Authoritative FlowDeck native child execution and assignment lifecycle manager.
- *
- * Bridges native OpenCode Task/background child invocations to FlowDeck:
- * - Run -> Assignment linkage (created before/at delegation boundary)
- * - TaskCall -> Execution identity correlation
- * - Child session late-binding
- * - Authoritative state transitions (queued -> running -> completed | failed | cancelled | timed_out)
- * - Result & error ingestion
- * - Stale event protection (never regress completed -> failed/cancelled)
- * - Canonical cancellation propagation from parent Run
- * - Cold restart reconciliation from SQLite
- */
-
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { AssignmentService } from "./assignment-service";
 import type { SqliteSessionRepository } from "../persistence/repositories/session";
 import type { ExecutionRegistry } from "./execution-registry";
 import type { IEventBus } from "./ports";
-
 import { HeidiDelegationRuntime } from "../../services/heidi-delegation-runtime";
 
 export type ChildExecutionState =
@@ -44,8 +29,16 @@ export interface ChildExecutionRecord {
   description?: string;
   result?: string;
   error?: string;
+  cancelRequested?: boolean;
   startedAt: string;
   completedAt?: string | null;
+}
+
+export interface ChildExecutionTransitionResult {
+  record: ChildExecutionRecord;
+  changed: boolean;
+  previousState: ChildExecutionState;
+  newState: ChildExecutionState;
 }
 
 export interface RegisterDelegationInput {
@@ -74,6 +67,24 @@ export class ChildExecutionLifecycleService {
     private readonly eventBus: IEventBus,
   ) {
     this.delegationRuntime = new HeidiDelegationRuntime(db);
+    this.reconcileAfterRestart();
+  }
+
+  /** Persist child execution record in SQLite execution_metadata table. */
+  private persistRecord(record: ChildExecutionRecord): void {
+    const key = `child_exec:${record.taskCallId}`;
+    const val = JSON.stringify(record);
+    this.db.query(
+      `INSERT INTO execution_metadata (id, run_id, session_id, key, value, created_at)
+       VALUES (?, ?, ?, ?, ?, datetime('now'))
+       ON CONFLICT(run_id, key) DO UPDATE SET value = excluded.value`
+    ).run(
+      `meta-${record.executionId}`,
+      record.runId,
+      record.childSessionId ?? null,
+      key,
+      val
+    );
   }
 
   /** Register a child delegation when Heidi calls native Task. Creates Assignment & Execution. */
@@ -109,8 +120,8 @@ export class ChildExecutionLifecycleService {
         specialist: agentId,
         goal: input.prompt || input.description,
       });
-    } catch {
-      // Safe fallback
+    } catch (err) {
+      console.warn("[ChildExecutionLifecycleService] delegationRuntime.queued non-fatal error:", err);
     }
 
     // 4. Register execution handle in ExecutionRegistry with cancellation hook
@@ -137,6 +148,9 @@ export class ChildExecutionLifecycleService {
     this.recordsByTaskCall.set(input.taskCallId, record);
     this.recordsByAssignment.set(assignmentId, record);
 
+    // Persist durably
+    this.persistRecord(record);
+
     return record;
   }
 
@@ -154,14 +168,27 @@ export class ChildExecutionLifecycleService {
     }
 
     if (!record) {
-      // Find the most recent unbound record for this parent session (matching agentId if provided)
+      // Find unbound records for this parent session (matching agentId if provided)
       const candidates = Array.from(this.recordsByTaskCall.values()).filter(
         r => r.parentSessionId === input.parentSessionId && !r.childSessionId
       );
-      if (input.agentId) {
-        record = candidates.find(r => r.agentId === input.agentId) ?? candidates[0];
+
+      const matching = input.agentId
+        ? candidates.filter(r => r.agentId === input.agentId)
+        : candidates;
+
+      if (matching.length === 1) {
+        // EXACT UNAMBIGUOUS MATCH
+        record = matching[0];
+      } else if (matching.length > 1) {
+        // AMBIGUOUS: multiple concurrent unbound executions for same parent and specialist
+        // Fail closed — do NOT guess or bind arbitrarily
+        console.warn(
+          `[ChildExecutionLifecycleService] Ambiguous child session binding: ${matching.length} candidates for parent=${input.parentSessionId}, agent=${input.agentId}. Session ${input.childSessionId} left unbound until explicit resolution.`
+        );
+        return null;
       } else {
-        record = candidates[0];
+        return null;
       }
     }
 
@@ -193,30 +220,33 @@ export class ChildExecutionLifecycleService {
         status: record.status === "queued" ? "running" : record.status,
       });
     } catch {
-      // Session might already exist, update status
       try {
         this.sessionRepo.updateStatus(input.childSessionId, record.status === "queued" ? "running" : record.status);
-      } catch {}
+      } catch (err) {
+        console.warn("[ChildExecutionLifecycleService] sessionRepo update error:", err);
+      }
     }
+
+    // Persist updated execution record
+    this.persistRecord(record);
 
     return record;
   }
 
   /** Mark child execution started / running. */
-  async markStarted(input: { taskCallId?: string; childSessionId?: string }): Promise<ChildExecutionRecord | null> {
+  async markStarted(input: { taskCallId?: string; childSessionId?: string }): Promise<ChildExecutionTransitionResult | null> {
     const record = this.resolveRecord(input);
     if (!record) return null;
 
+    const previousState = record.status;
     if (record.status !== "queued") {
-      return record;
+      return { record, changed: false, previousState, newState: record.status };
     }
 
     record.status = "running";
 
     // Update Assignment in SQLite
-    try {
-      await this.assignmentService.startAssignment(record.assignmentId);
-    } catch {}
+    await this.assignmentService.startAssignment(record.assignmentId);
 
     // Update HeidiDelegationRuntime
     try {
@@ -230,7 +260,9 @@ export class ChildExecutionLifecycleService {
       } catch {}
     }
 
-    return record;
+    this.persistRecord(record);
+
+    return { record, changed: true, previousState, newState: "running" };
   }
 
   /** Mark child execution successfully completed. */
@@ -240,18 +272,20 @@ export class ChildExecutionLifecycleService {
     output?: string;
     title?: string;
     metadata?: any;
-  }): Promise<ChildExecutionRecord | null> {
+  }): Promise<ChildExecutionTransitionResult | null> {
     const record = this.resolveRecord(input);
     if (!record) return null;
 
+    const previousState = record.status;
+
     // Idempotency: already completed
     if (record.status === "completed") {
-      return record;
+      return { record, changed: false, previousState, newState: "completed" };
     }
 
     // Guard: Do not overwrite cancelled or failed state with late completion
     if (record.status === "cancelled" || record.status === "failed") {
-      return record;
+      return { record, changed: false, previousState, newState: record.status };
     }
 
     const now = new Date().toISOString();
@@ -260,9 +294,7 @@ export class ChildExecutionLifecycleService {
     record.completedAt = now;
 
     // Update Assignment in SQLite
-    try {
-      await this.assignmentService.completeAssignment(record.assignmentId);
-    } catch {}
+    await this.assignmentService.completeAssignment(record.assignmentId);
 
     // Update HeidiDelegationRuntime
     try {
@@ -282,7 +314,9 @@ export class ChildExecutionLifecycleService {
     this.executionRegistry.resolveExecution(record.executionId);
     this.executionRegistry.unregisterRun(record.executionId);
 
-    return record;
+    this.persistRecord(record);
+
+    return { record, changed: true, previousState, newState: "completed" };
   }
 
   /** Mark child execution failed. */
@@ -290,17 +324,19 @@ export class ChildExecutionLifecycleService {
     taskCallId?: string;
     childSessionId?: string;
     error?: string;
-  }): Promise<ChildExecutionRecord | null> {
+  }): Promise<ChildExecutionTransitionResult | null> {
     const record = this.resolveRecord(input);
     if (!record) return null;
 
+    const previousState = record.status;
+
     // Guard: NEVER regress completed -> failed on stale late failure events
     if (record.status === "completed") {
-      return record;
+      return { record, changed: false, previousState, newState: "completed" };
     }
 
     if (record.status === "failed") {
-      return record;
+      return { record, changed: false, previousState, newState: "failed" };
     }
 
     const now = new Date().toISOString();
@@ -309,9 +345,7 @@ export class ChildExecutionLifecycleService {
     record.completedAt = now;
 
     // Update Assignment in SQLite
-    try {
-      await this.assignmentService.failAssignment(record.assignmentId);
-    } catch {}
+    await this.assignmentService.failAssignment(record.assignmentId);
 
     // Update HeidiDelegationRuntime
     try {
@@ -330,7 +364,9 @@ export class ChildExecutionLifecycleService {
     this.executionRegistry.resolveExecution(record.executionId);
     this.executionRegistry.unregisterRun(record.executionId);
 
-    return record;
+    this.persistRecord(record);
+
+    return { record, changed: true, previousState, newState: "failed" };
   }
 
   /** Mark child execution cancelled. */
@@ -338,23 +374,24 @@ export class ChildExecutionLifecycleService {
     taskCallId?: string;
     childSessionId?: string;
     reason?: string;
-  }): Promise<ChildExecutionRecord | null> {
+  }): Promise<ChildExecutionTransitionResult | null> {
     const record = this.resolveRecord(input);
     if (!record) return null;
 
+    const previousState = record.status;
+
     if (record.status === "completed" || record.status === "cancelled") {
-      return record;
+      return { record, changed: false, previousState, newState: record.status };
     }
 
     const now = new Date().toISOString();
     record.status = "cancelled";
+    record.cancelRequested = true;
     record.error = input.reason ?? "Child task cancelled";
     record.completedAt = now;
 
     // Update Assignment in SQLite
-    try {
-      await this.assignmentService.cancelAssignment(record.assignmentId);
-    } catch {}
+    await this.assignmentService.cancelAssignment(record.assignmentId);
 
     // Update HeidiDelegationRuntime
     try {
@@ -373,16 +410,20 @@ export class ChildExecutionLifecycleService {
     this.executionRegistry.resolveExecution(record.executionId);
     this.executionRegistry.unregisterRun(record.executionId);
 
-    return record;
+    this.persistRecord(record);
+
+    return { record, changed: true, previousState, newState: "cancelled" };
   }
 
   /** Mark child execution timed out. */
-  async markTimedOut(input: { taskCallId?: string; childSessionId?: string }): Promise<ChildExecutionRecord | null> {
+  async markTimedOut(input: { taskCallId?: string; childSessionId?: string }): Promise<ChildExecutionTransitionResult | null> {
     const record = this.resolveRecord(input);
     if (!record) return null;
 
+    const previousState = record.status;
+
     if (record.status === "completed" || record.status === "cancelled" || record.status === "failed") {
-      return record;
+      return { record, changed: false, previousState, newState: record.status };
     }
 
     const now = new Date().toISOString();
@@ -390,9 +431,7 @@ export class ChildExecutionLifecycleService {
     record.error = "Child task timed out";
     record.completedAt = now;
 
-    try {
-      await this.assignmentService.failAssignment(record.assignmentId);
-    } catch {}
+    await this.assignmentService.failAssignment(record.assignmentId);
 
     try {
       this.delegationRuntime.transition(record.executionId, "timed_out", { error: "Timed out" });
@@ -407,10 +446,12 @@ export class ChildExecutionLifecycleService {
     this.executionRegistry.resolveExecution(record.executionId);
     this.executionRegistry.unregisterRun(record.executionId);
 
-    return record;
+    this.persistRecord(record);
+
+    return { record, changed: true, previousState, newState: "timed_out" };
   }
 
-  /** Cancel all active child executions for a specific run (called when RunService.cancelRun is executed). */
+  /** Cancel all active child executions for a specific run. */
   async cancelChildrenForRun(runId: string, reason?: string): Promise<number> {
     let count = 0;
     const records = Array.from(this.recordsByTaskCall.values()).filter(
@@ -422,7 +463,7 @@ export class ChildExecutionLifecycleService {
       count += 1;
     }
 
-    // Also query SQLite for any orphan child sessions under this run that might not be in memory
+    // Also query SQLite for any orphan child sessions under this run
     try {
       const sessions = this.sessionRepo.findByRunId(runId);
       for (const s of sessions) {
@@ -441,38 +482,44 @@ export class ChildExecutionLifecycleService {
     return count;
   }
 
-  /** Recover / reconcile non-terminal children from SQLite after restart without fabricating success. */
+  /** Recover / reconcile non-terminal children from durable SQLite state after restart without fabricating identifiers. */
   reconcileAfterRestart(runId?: string): void {
     try {
-      const query = runId
+      // 1. Reconcile from execution_metadata (which holds the exact original taskCallId, executionId, assignmentId, background, parentSessionId)
+      const metaRows = runId
+        ? this.db.query("SELECT * FROM execution_metadata WHERE run_id = ? AND key LIKE 'child_exec:%'").all(runId)
+        : this.db.query("SELECT * FROM execution_metadata WHERE key LIKE 'child_exec:%'").all();
+
+      for (const row of metaRows as any[]) {
+        try {
+          const rec = JSON.parse(row.value) as ChildExecutionRecord;
+          if (rec.taskCallId && rec.executionId && rec.assignmentId) {
+            this.recordsByTaskCall.set(rec.taskCallId, rec);
+            this.recordsByAssignment.set(rec.assignmentId, rec);
+            if (rec.childSessionId) {
+              this.recordsByChildSession.set(rec.childSessionId, rec);
+            }
+          }
+        } catch {}
+      }
+
+      // 2. Cross-reference agent_sessions table for any updated statuses
+      const sessionRows = runId
         ? this.db.query("SELECT * FROM agent_sessions WHERE run_id = ? AND depth > 0").all(runId)
         : this.db.query("SELECT * FROM agent_sessions WHERE depth > 0").all();
 
-      for (const row of query as any[]) {
+      for (const row of sessionRows as any[]) {
         if (!row.id || !row.assignment_id) continue;
-        const status: ChildExecutionState =
-          row.status === "completed" ? "completed" :
-          row.status === "failed" ? "failed" :
-          row.status === "cancelled" ? "cancelled" :
-          "running";
-
-        const record: ChildExecutionRecord = {
-          executionId: `exec-${row.id}`,
-          runId: row.run_id,
-          assignmentId: row.assignment_id,
-          taskCallId: `call-recovered-${row.id}`,
-          parentSessionId: row.parent_session_id ?? "unknown",
-          childSessionId: row.id,
-          agentId: row.agent_id,
-          status,
-          background: false,
-          startedAt: row.started_at ?? new Date().toISOString(),
-          completedAt: row.completed_at,
-        };
-
-        this.recordsByChildSession.set(row.id, record);
-        this.recordsByAssignment.set(row.assignment_id, record);
-        this.recordsByTaskCall.set(record.taskCallId, record);
+        const existing = this.recordsByAssignment.get(row.assignment_id);
+        if (existing) {
+          if (!existing.childSessionId) {
+            existing.childSessionId = row.id;
+            this.recordsByChildSession.set(row.id, existing);
+          }
+          if (row.status === "completed" || row.status === "failed" || row.status === "cancelled") {
+            existing.status = row.status as ChildExecutionState;
+          }
+        }
       }
     } catch (err) {
       console.error("[ChildExecutionLifecycleService] reconcileAfterRestart error:", err);

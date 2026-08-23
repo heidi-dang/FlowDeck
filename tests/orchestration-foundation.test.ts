@@ -1018,7 +1018,7 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
       args: { subagent_type: "security-auditor", prompt: "Audit SQL queries", background: true },
     });
 
-    // Bind sessions
+    // Bind sessions via native session.created
     await ctx.adapter.onEvent({
       type: "session.created" as any,
       properties: { info: { id: "sess-bg-1", parentID: sessionID, agent: "mapper" } } as any,
@@ -1078,19 +1078,10 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
       args: { subagent_type: "backend-coder", prompt: "Build Widget B", description: "Widget B" },
     });
 
-    // Session bindings
-    ctx.runtime.childExecutionLifecycleService.bindChildSession({
-      parentSessionId: sessionID,
-      childSessionId: "sess-coder-a",
-      taskCallId: callA,
-      agentId: "backend-coder",
-    });
-
-    ctx.runtime.childExecutionLifecycleService.bindChildSession({
-      parentSessionId: sessionID,
-      childSessionId: "sess-coder-b",
-      taskCallId: callB,
-      agentId: "backend-coder",
+    // When session.created arrives for both without taskCallId, ambiguous binding fails closed (leaves unbound)
+    await ctx.adapter.onEvent({
+      type: "session.created" as any,
+      properties: { info: { id: "sess-coder-1", parentID: sessionID, agent: "backend-coder" } } as any,
     });
 
     // Reverse order completion: Call B completes FIRST
@@ -1221,7 +1212,7 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     );
 
     const call1 = "call-reb-1";
-    await ctx1.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID: call1, args: { subagent_type: "mapper" } });
+    await ctx1.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID: call1, args: { subagent_type: "mapper", background: true } });
     const childSessionId = "sess-child-reb-1";
     await ctx1.adapter.onEvent({
       type: "session.created" as any,
@@ -1230,6 +1221,9 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
 
     const initialRec = ctx1.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: call1 });
     expect(initialRec?.status).toBe("running");
+    expect(initialRec?.taskCallId).toBe(call1);
+    expect(initialRec?.executionId).toBe("exec-call-reb-1");
+    expect(initialRec?.background).toBe(true);
 
     // Cold restart
     await disposeProjectRuntime(dirA);
@@ -1237,13 +1231,14 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     _resetRouteState();
 
     const ctx2 = acquireProjectRuntime(dirA);
-    // Reconcile from SQLite
-    ctx2.runtime.childExecutionLifecycleService.reconcileAfterRestart();
 
     const recoveredRec = ctx2.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId });
     expect(recoveredRec).not.toBeNull();
     expect(recoveredRec?.status).toBe("running");
     expect(recoveredRec?.agentId).toBe("mapper");
+    expect(recoveredRec?.taskCallId).toBe(call1);
+    expect(recoveredRec?.executionId).toBe("exec-call-reb-1");
+    expect(recoveredRec?.background).toBe(true);
 
     await releaseProjectRuntime(dirA);
   });
@@ -1463,7 +1458,8 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
       tool: "write",
       args: { file: "main.ts" },
       output: "written",
-      repositoryHash: "sha-repo-v2",
+      preRepositoryHash: "sha-repo-v1",
+      postRepositoryHash: "sha-repo-v2",
     });
 
     expect(obs.isProgress).toBe(true);
@@ -1542,6 +1538,264 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
       error: "Syntax error on line 40",
     });
     expect(obs3.repeatedFailure).toBe(2);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("49. queued-child-restart-preserves-task-call-id: un-started queued task call survives cold restart with exact IDs", async () => {
+    const ctx1 = acquireProjectRuntime(dirA);
+    const sessionID = "sess-queued-restart";
+
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor architecture before child session starts", id: "1", sessionID, messageID: "msg-q-1" }] }
+    );
+
+    const callID = "call-queued-orig-123";
+    await ctx1.adapter.onToolExecuteBefore({
+      tool: "task",
+      sessionID,
+      callID,
+      args: { subagent_type: "reviewer", prompt: "Audit security", background: true },
+    });
+
+    const origRec = ctx1.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callID });
+    expect(origRec?.status).toBe("queued");
+    expect(origRec?.taskCallId).toBe(callID);
+    expect(origRec?.executionId).toBe("exec-call-queued-orig-123");
+    expect(origRec?.background).toBe(true);
+
+    // COLD RESTART without any session.created event having arrived
+    await disposeProjectRuntime(dirA);
+    closeAllConnections();
+    _resetRouteState();
+
+    const ctx2 = acquireProjectRuntime(dirA);
+    const restoredRec = ctx2.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callID });
+
+    expect(restoredRec).not.toBeNull();
+    expect(restoredRec?.status).toBe("queued");
+    expect(restoredRec?.taskCallId).toBe(callID);
+    expect(restoredRec?.executionId).toBe("exec-call-queued-orig-123");
+    expect(restoredRec?.assignmentId).toBe(origRec?.assignmentId);
+    expect(restoredRec?.background).toBe(true);
+    expect(restoredRec?.parentSessionId).toBe(sessionID);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("50. session-error-marks-execution-and-assignment-failed: child session error triggers failure transition and progress observation", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-error-child";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor telemetry with possible session crash", id: "1", sessionID, messageID: "msg-err-1" }] }
+    );
+
+    const callID = "call-err-worker";
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "task",
+      sessionID,
+      callID,
+      args: { subagent_type: "backend-coder", prompt: "Run database queries" },
+    });
+
+    const childSessionId = "sess-child-crash-1";
+    await ctx.adapter.onEvent({
+      type: "session.created" as any,
+      properties: { info: { id: childSessionId, parentID: sessionID, agent: "backend-coder" } } as any,
+    });
+
+    // Deliver session.error on the child session
+    await ctx.adapter.onEvent({
+      type: "session.error" as any,
+      properties: { sessionID: childSessionId, error: "Out of memory in child container" } as any,
+    });
+
+    const rec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callID });
+    expect(rec?.status).toBe("failed");
+    expect(rec?.error).toContain("Out of memory");
+
+    const assign = await ctx.runtime.services.assignmentService.getAssignment(rec!.assignmentId);
+    expect(assign.status).toBe("failed");
+
+    // Parent run must remain non-terminal
+    const parentRun = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(parentRun).not.toBeNull();
+    expect(isTerminalRunStatus(parentRun!.status)).toBe(false);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("51. parent-session-error-does-not-fail-child: session.error on parent session does not fail child execution arbitrarily", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-parent-error";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor authentication with parent error", id: "1", sessionID, messageID: "msg-perr-1" }] }
+    );
+
+    const callID = "call-parent-err-child";
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "task",
+      sessionID,
+      callID,
+      args: { subagent_type: "reviewer" },
+    });
+
+    // Deliver session.error on parent session ID
+    await ctx.adapter.onEvent({
+      type: "session.error" as any,
+      properties: { sessionID, error: "Network timeout in UI" } as any,
+    });
+
+    const rec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callID });
+    expect(rec?.status).toBe("queued"); // Child stays queued/running
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("52. progress-state-cold-restart-roundtrip: persists noProgressCount and seen signatures across restart", async () => {
+    const ctx1 = acquireProjectRuntime(dirA);
+    const sessionID = "sess-prog-restart";
+
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "msg-pr-1" }] }
+    );
+
+    const run = await ctx1.adapter.resolveActiveRunForSession(sessionID);
+    expect(run).not.toBeNull();
+
+    // 2 repeated calls -> noProgressCount = 1
+    await ctx1.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c1", args: { file: "x.ts" } });
+    await ctx1.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c1", args: { file: "x.ts" } }, { output: "content x", metadata: {} });
+
+    await ctx1.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c2", args: { file: "x.ts" } });
+    await ctx1.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c2", args: { file: "x.ts" } }, { output: "content x", metadata: {} });
+
+    let diag1 = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag1.noProgressCount).toBe(1);
+
+    // COLD RESTART
+    await disposeProjectRuntime(dirA);
+    closeAllConnections();
+    _resetRouteState();
+
+    const ctx2 = acquireProjectRuntime(dirA);
+    let diag2 = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag2.noProgressCount).toBe(1);
+
+    // Turn 3 after restart with same content -> noProgressCount becomes 2 (not reset to 0!)
+    await ctx2.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c3", args: { file: "x.ts" } });
+    await ctx2.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c3", args: { file: "x.ts" } }, { output: "content x", metadata: {} });
+
+    diag2 = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag2.noProgressCount).toBe(2);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("53. write-with-no-diff-is-no-progress: unchanged post-write fingerprint increments unchangedDiff and does not count as progress", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-prog-unchanged-diff";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "msg-pdiff" }] }
+    );
+
+    const run = await ctx.adapter.resolveActiveRunForSession(sessionID);
+
+    // Pre and post fingerprint are identical ("same-hash")
+    const obs = ctx.runtime.progressObservationService.recordToolObservation({
+      runId: run!.id,
+      sessionId: sessionID,
+      tool: "write",
+      args: { file: "same.ts" },
+      output: "written",
+      preRepositoryHash: "same-hash",
+      postRepositoryHash: "same-hash",
+    });
+
+    expect(obs.isProgress).toBe(false);
+    expect(obs.repositoryStateDelta).toBe(0);
+    expect(obs.unchangedDiff).toBe(1);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("54. verification-fingerprint-delta: identical test results produce no delta, improved test results produce delta", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-prog-ver";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "msg-pver" }] }
+    );
+
+    const run = await ctx.adapter.resolveActiveRunForSession(sessionID);
+
+    // Run tests: 5 failing
+    ctx.runtime.progressObservationService.recordToolObservation({
+      runId: run!.id,
+      sessionId: sessionID,
+      tool: "bash",
+      args: { command: "bun test" },
+      output: "5 fail",
+      metadata: { passed: 95, failed: 5, exitCode: 1 },
+    });
+
+    // Run tests again: same 5 failing -> no verification delta
+    const obs2 = ctx.runtime.progressObservationService.recordToolObservation({
+      runId: run!.id,
+      sessionId: sessionID,
+      tool: "bash",
+      args: { command: "bun test" },
+      output: "5 fail",
+      metadata: { passed: 95, failed: 5, exitCode: 1 },
+    });
+    expect(obs2.verificationDelta).toBe(0);
+
+    // Run tests 3rd time: improved to 0 failing -> verification delta = 1 & progress!
+    const obs3 = ctx.runtime.progressObservationService.recordToolObservation({
+      runId: run!.id,
+      sessionId: sessionID,
+      tool: "bash",
+      args: { command: "bun test" },
+      output: "0 fail",
+      metadata: { passed: 100, failed: 0, exitCode: 0 },
+    });
+    expect(obs3.verificationDelta).toBe(1);
+    expect(obs3.isProgress).toBe(true);
+    expect(obs3.progressReason).toBe("verification_state_change");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("55. duplicate-child-completion-emits-progress-once: duplicate completion event does not count as duplicate progress", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-dup-comp-prog";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "msg-pdup" }] }
+    );
+
+    const callID = "call-dup-comp";
+    await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID, args: { subagent_type: "reviewer" } });
+
+    // First completion
+    await ctx.adapter.onToolExecuteAfter({ tool: "task", sessionID, callID, args: {} }, { output: "Done", metadata: {} });
+    let diag = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag.noProgressCount).toBe(0);
+
+    // Second duplicate completion
+    await ctx.adapter.onToolExecuteAfter({ tool: "task", sessionID, callID, args: {} }, { output: "Done", metadata: {} });
+    diag = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag.noProgressCount).toBe(0);
 
     await releaseProjectRuntime(dirA);
   });

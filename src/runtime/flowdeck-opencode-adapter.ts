@@ -28,15 +28,30 @@ export interface PendingFastDirectTurn {
   turnVersion: number;
 }
 
+import { statSync, existsSync } from "node:fs";
+import { join } from "node:path";
+
 export class FlowDeckLifecycleAdapter {
   private disposed = false;
   private turnVersionCounter = 0;
   private pendingFastDirectTurns = new Map<string, PendingFastDirectTurn>();
+  private preToolRepositoryFingerprints = new Map<string, string>();
 
   constructor(
     private readonly directory: string,
     private readonly runtime: ProductionOrchestrationRuntime,
   ) {}
+
+  private getPathFingerprint(relPath: string): string {
+    try {
+      const full = join(this.directory, relPath);
+      if (!existsSync(full)) return "missing";
+      const s = statSync(full);
+      return `${s.size}:${s.mtimeMs}`;
+    } catch {
+      return "err";
+    }
+  }
 
   async onChatMessage(
     input: { sessionID: string; agent?: string; messageID?: string },
@@ -314,6 +329,15 @@ export class FlowDeckLifecycleAdapter {
     input: { tool: string; sessionID: string; callID: string; args?: any }
   ) {
     if (this.disposed) return;
+
+    // Track pre-state fingerprint for mutating tools
+    if (input.tool === "write" || input.tool === "edit" || input.tool === "patch" || input.tool === "apply_patch") {
+      const targetPath = input.args?.file ?? input.args?.filePath ?? input.args?.path;
+      if (typeof targetPath === "string") {
+        this.preToolRepositoryFingerprints.set(input.callID, this.getPathFingerprint(targetPath));
+      }
+    }
+
     if (input.tool === "task" || input.tool === "subagent") {
       const normalized = normalizeTaskInvocation(
         { sessionID: input.sessionID, callID: input.callID },
@@ -349,18 +373,19 @@ export class FlowDeckLifecycleAdapter {
     }
 
     if (input.tool === "task" || input.tool === "subagent") {
-      const childRec = await this.runtime.childExecutionLifecycleService.markCompleted({
+      const trans = await this.runtime.childExecutionLifecycleService.markCompleted({
         taskCallId: input.callID,
         output: output?.output,
         title: output?.title,
         metadata: output?.metadata,
       });
-      if (childRec) {
+      if (trans && trans.changed) {
         this.runtime.progressObservationService.recordChildLifecycleObservation({
-          runId: childRec.runId,
+          runId: trans.record.runId,
           sessionId: input.sessionID,
-          assignmentId: childRec.assignmentId,
-          executionId: childRec.executionId,
+          assignmentId: trans.record.assignmentId,
+          executionId: trans.record.executionId,
+          previousState: trans.previousState,
           newState: "completed",
           result: output?.output,
         });
@@ -371,6 +396,17 @@ export class FlowDeckLifecycleAdapter {
       const childRec = this.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: input.sessionID });
       const runId = activeRun?.id ?? childRec?.runId;
       if (runId) {
+        let preHash: string | undefined;
+        let postHash: string | undefined;
+        if (input.tool === "write" || input.tool === "edit" || input.tool === "patch" || input.tool === "apply_patch") {
+          preHash = this.preToolRepositoryFingerprints.get(input.callID);
+          this.preToolRepositoryFingerprints.delete(input.callID);
+          const targetPath = input.args?.file ?? input.args?.filePath ?? input.args?.path;
+          if (typeof targetPath === "string") {
+            postHash = this.getPathFingerprint(targetPath);
+          }
+        }
+
         this.runtime.progressObservationService.recordToolObservation({
           runId,
           sessionId: input.sessionID,
@@ -378,6 +414,8 @@ export class FlowDeckLifecycleAdapter {
           args: input.args,
           output: output?.output,
           metadata: output?.metadata,
+          preRepositoryHash: preHash,
+          postRepositoryHash: postHash,
           assignmentId: childRec?.assignmentId,
           executionId: childRec?.executionId,
         });
@@ -396,14 +434,26 @@ export class FlowDeckLifecycleAdapter {
       const parentSessionId = info.parentID ?? props.parentSessionID ?? props.parentID;
       const agentId = info.agent ?? props.agent;
       if (childSessionId && parentSessionId) {
-        this.runtime.childExecutionLifecycleService.bindChildSession({
+        const bound = this.runtime.childExecutionLifecycleService.bindChildSession({
           parentSessionId,
           childSessionId,
           agentId,
         });
-        await this.runtime.childExecutionLifecycleService.markStarted({
-          childSessionId,
-        });
+        if (bound) {
+          const trans = await this.runtime.childExecutionLifecycleService.markStarted({
+            childSessionId,
+          });
+          if (trans && trans.changed) {
+            this.runtime.progressObservationService.recordChildLifecycleObservation({
+              runId: bound.runId,
+              sessionId: parentSessionId,
+              assignmentId: bound.assignmentId,
+              executionId: bound.executionId,
+              previousState: trans.previousState,
+              newState: "running",
+            });
+          }
+        }
       }
     } else if (eventType === "session.idle") {
       const sid = props.sessionID ?? props.id;
@@ -411,11 +461,34 @@ export class FlowDeckLifecycleAdapter {
         await this.onSessionIdle(sid);
       }
     } else if (eventType === "session.error") {
-      const sid = props.sessionID ?? props.id ?? "unknown";
+      const sid = props.sessionID ?? props.session_id ?? props.id ?? "unknown";
       await this.onSessionError(sid, props.error);
     } else if (eventType === "session.deleted") {
       const sid = props.info?.id ?? props.sessionID ?? props.id ?? "unknown";
       await this.onSessionDeleted(sid);
+    }
+  }
+
+  async onSessionError(sessionID: string, error: any) {
+    if (this.disposed) return;
+    // 1. Check if session.error belongs to a registered child execution
+    const childRec = this.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: sessionID });
+    if (childRec) {
+      const trans = await this.runtime.childExecutionLifecycleService.markFailed({
+        childSessionId: sessionID,
+        error: error ? String(error.message ?? error) : "Session error occurred",
+      });
+      if (trans && trans.changed) {
+        this.runtime.progressObservationService.recordChildLifecycleObservation({
+          runId: childRec.runId,
+          sessionId: sessionID,
+          assignmentId: childRec.assignmentId,
+          executionId: childRec.executionId,
+          previousState: trans.previousState,
+          newState: "failed",
+          error: trans.record.error,
+        });
+      }
     }
   }
 
@@ -425,10 +498,6 @@ export class FlowDeckLifecycleAdapter {
       this.pendingFastDirectTurns.delete(sessionID);
       markRouteInactive(sessionID);
     }
-  }
-
-  async onSessionError(_sessionID: string, _error: any) {
-    // Session error handling
   }
 
   async onSessionDeleted(sessionID: string) {
