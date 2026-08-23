@@ -64,7 +64,7 @@ pub struct PlannedCheck {
     pub selection: SelectionReason,
     /// Strength of the supporting evidence.
     pub strength: EvidenceStrength,
-    /// Multi-hop evidence path when selected via graph traversal.
+    /// Multi-hop evidence path when selected via graph traversal or mapping edge.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_path: Option<EvidencePath>,
     /// Concrete widening trigger code if selected via policy widening.
@@ -108,10 +108,45 @@ pub struct DiscoveredCheck {
     pub command_or_script: Option<String>,
 }
 
+/// Explicit test discovery issue (e.g. unreadable file, parse error, walker error).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestDiscoveryIssue {
+    pub kind: String,
+    pub path: Option<String>,
+    pub message: String,
+}
+
+/// Test discovery completeness state.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum DiscoveryState {
+    #[default]
+    Complete,
+    Incomplete {
+        issues: Vec<TestDiscoveryIssue>,
+    },
+    Failed {
+        issues: Vec<TestDiscoveryIssue>,
+    },
+}
+
+/// Bounded fallback inventory of test scopes/domains when exact test discovery is truncated or incomplete.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FallbackTestInventory {
+    pub package_test_scopes: Vec<String>,
+    pub workspace_test_scopes: Vec<String>,
+    pub config_test_scopes: Vec<String>,
+    pub directory_test_scopes: Vec<String>,
+    pub truncated: bool,
+    pub errors: Vec<String>,
+}
+
 /// Static inventory of tests and checks discovered from repo analysis.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TestInventory {
     pub tests: Vec<DiscoveredTest>,
     pub checks: Vec<DiscoveredCheck>,
+    pub fallback: FallbackTestInventory,
+    pub state: DiscoveryState,
     pub truncated: bool,
 }

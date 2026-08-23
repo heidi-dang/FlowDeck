@@ -5,7 +5,9 @@
 //!
 //! Strictly read-only: does NOT execute tests or builds.
 
+use crate::intelligence::build::discover::discover_fallback_build_inventory;
 use crate::intelligence::build::snapshot::CurrentBuildSnapshot;
+use crate::intelligence::change::explain::{render_path_explanation, EvidencePath, EvidenceStep};
 use crate::intelligence::change::traverse::{analyze_impact_v2, TraverseError};
 use crate::intelligence::change::uncertainty::{compute_result_assurance, UncertaintyReason};
 use crate::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
@@ -43,6 +45,17 @@ pub fn plan_verification(
         ));
     }
 
+    if let DiscoveryState::Incomplete { ref issues } | DiscoveryState::Failed { ref issues } =
+        inventory.state
+    {
+        for issue in issues {
+            uncertainties.push(UncertaintyReason::BuildLimitReached(format!(
+                "Test discovery {}: {}",
+                issue.kind, issue.message
+            )));
+        }
+    }
+
     // 3. Detect dynamic test configs
     let dynamic_configs = detect_dynamic_test_configs(repo_root);
     for dc in &dynamic_configs {
@@ -57,18 +70,33 @@ pub fn plan_verification(
     };
 
     let build_snapshot = CurrentBuildSnapshot::build(repo_root);
-    let mappings = resolve_test_mappings(
+    let fallback_build_inv = discover_fallback_build_inventory(repo_root);
+
+    let mapping_resolution = resolve_test_mappings(
         db_opt.as_ref().map(|d| &d.conn),
         &build_snapshot,
         &inventory,
     );
+
+    if mapping_resolution.truncated {
+        uncertainties.push(UncertaintyReason::BuildLimitReached(
+            "Test mapping edges reached maximum limit".to_string(),
+        ));
+    }
+
+    for err in &mapping_resolution.errors {
+        uncertainties.push(UncertaintyReason::GraphCorrupt(format!(
+            "Test mapping query error: {}",
+            err
+        )));
+    }
 
     // Build lookup maps
     let mut target_to_test_edges: HashMap<
         String,
         Vec<crate::intelligence::testplan::mapping::TestMappingEdge>,
     > = HashMap::new();
-    for edge in mappings {
+    for edge in mapping_resolution.mappings {
         target_to_test_edges
             .entry(edge.target_node.clone())
             .or_default()
@@ -93,6 +121,16 @@ pub fn plan_verification(
                 for p in pkgs {
                     impacted_packages.insert(p.clone());
                 }
+            } else {
+                // Fallback to M5 fallback build inventory
+                for pkg_dir in &fallback_build_inv.package_dirs {
+                    if imp.target.starts_with(pkg_dir) {
+                        impacted_packages.insert(format!(
+                            "pkg:npm:{}",
+                            if pkg_dir.is_empty() { "." } else { pkg_dir }
+                        ));
+                    }
+                }
             }
         }
     }
@@ -102,6 +140,16 @@ pub fn plan_verification(
         if let Some(pkgs) = build_snapshot.contains_file_to_packages.get(&ch.file) {
             for p in pkgs {
                 impacted_packages.insert(p.clone());
+            }
+        } else {
+            // Fallback to M5 fallback build inventory
+            for pkg_dir in &fallback_build_inv.package_dirs {
+                if ch.file.starts_with(pkg_dir) {
+                    impacted_packages.insert(format!(
+                        "pkg:npm:{}",
+                        if pkg_dir.is_empty() { "." } else { pkg_dir }
+                    ));
+                }
             }
         }
     }
@@ -118,7 +166,7 @@ pub fn plan_verification(
         }
     }
 
-    // Direct change check: if root config changed, widen to all packages
+    // Direct change check: if root config changed, widen to all packages and scopes
     let root_config_changed = impact_result.changes.iter().any(|c| {
         c.file == "tsconfig.json"
             || c.file == "package.json"
@@ -127,8 +175,22 @@ pub fn plan_verification(
     });
 
     if root_config_changed {
-        for pkg in &inventory.checks {
-            impacted_packages.insert(pkg.owning_scope_id.clone());
+        for test in &inventory.tests {
+            if let Some(ref pkg) = test.owning_package_id {
+                impacted_packages.insert(pkg.clone());
+            }
+        }
+        for check in &inventory.checks {
+            impacted_packages.insert(check.owning_scope_id.clone());
+        }
+        for pkg_dir in &fallback_build_inv.package_dirs {
+            impacted_packages.insert(format!(
+                "pkg:npm:{}",
+                if pkg_dir.is_empty() { "." } else { pkg_dir }
+            ));
+        }
+        for scope in &inventory.fallback.package_test_scopes {
+            impacted_packages.insert(scope.clone());
         }
     }
 
@@ -165,7 +227,7 @@ pub fn plan_verification(
                     let owning_scope = inventory
                         .tests
                         .iter()
-                        .find(|t| t.canonical_path == test_file)
+                        .find(|t| t.canonical_path == test_file || t.stable_id == edge.test_node)
                         .and_then(|t| t.owning_package_id.clone())
                         .unwrap_or_else(|| "repo".to_string());
 
@@ -173,6 +235,28 @@ pub fn plan_verification(
                         format!("tests impacted symbol {}::{}", ch.file, sym)
                     } else {
                         format!("tests impacted file {}", ch.file)
+                    };
+
+                    let step = EvidenceStep {
+                        from_node: edge.test_node.clone(),
+                        edge_kind: edge.kind,
+                        to_node: edge.target_node.clone(),
+                        provider: edge.provider_id.clone(),
+                        strength: edge.strength,
+                        description: Some(format!("test mapping via {}", edge.provider_id)),
+                    };
+                    let path_explanation = render_path_explanation(
+                        &edge.test_node,
+                        target_key,
+                        std::slice::from_ref(&step),
+                    );
+                    let evidence_path = EvidencePath {
+                        change_id: format!("{}:{}", ch.file, ch.symbol.as_deref().unwrap_or("")),
+                        seed_node: target_key.clone(),
+                        target_node: edge.test_node.clone(),
+                        steps: vec![step],
+                        path_strength: edge.strength,
+                        explanation: path_explanation,
                     };
 
                     let check = PlannedCheck {
@@ -183,7 +267,7 @@ pub fn plan_verification(
                         reason,
                         selection: SelectionReason::Evidence,
                         strength: edge.strength,
-                        evidence_path: None,
+                        evidence_path: Some(evidence_path),
                         widening_reason: None,
                         mandatory: false,
                     };
@@ -211,6 +295,20 @@ pub fn plan_verification(
                     format!("tests impacted by changes to {}", imp.target)
                 };
 
+                let evidence_path = imp.primary_path.clone().or_else(|| {
+                    Some(EvidencePath {
+                        change_id: imp.target.clone(),
+                        seed_node: imp.target.clone(),
+                        target_node: discovered_test.stable_id.clone(),
+                        steps: Vec::new(),
+                        path_strength: imp.strength,
+                        explanation: format!(
+                            "{} impacted by graph traversal",
+                            discovered_test.stable_id
+                        ),
+                    })
+                });
+
                 let check = PlannedCheck {
                     check_id: discovered_test.stable_id.clone(),
                     display_name: discovered_test.canonical_path.clone(),
@@ -219,8 +317,8 @@ pub fn plan_verification(
                     reason,
                     selection: SelectionReason::Evidence,
                     strength: imp.strength,
-                    evidence_path: imp.primary_path.clone(),
-                    widening_reason: imp.widening_reason.clone(),
+                    evidence_path,
+                    widening_reason: None,
                     mandatory: false,
                 };
 
@@ -245,6 +343,12 @@ pub fn plan_verification(
     let needs_package_widening = !has_fresh_scip
         || !dynamic_configs.is_empty()
         || inventory.truncated
+        || mapping_resolution.truncated
+        || !mapping_resolution.errors.is_empty()
+        || matches!(
+            inventory.state,
+            DiscoveryState::Incomplete { .. } | DiscoveryState::Failed { .. }
+        )
         || uncertainties.iter().any(|u| {
             matches!(
                 u,
@@ -252,6 +356,7 @@ pub fn plan_verification(
                     | UncertaintyReason::ProviderMissing(_)
                     | UncertaintyReason::DynamicConfigExpression(_)
                     | UncertaintyReason::BuildLimitReached(_)
+                    | UncertaintyReason::GraphCorrupt(_)
             )
         });
 
@@ -263,7 +368,14 @@ pub fn plan_verification(
                 .map(|p| impacted_packages.contains(p))
                 .unwrap_or(false);
 
-            if matches_package && !direct_tests_selected.contains(&test.stable_id) {
+            let kind_allowed = match test.kind {
+                VerificationCheckKind::UnitTest => policy.include_unit_tests,
+                VerificationCheckKind::IntegrationTest => policy.include_integration_tests,
+                VerificationCheckKind::EndToEndTest => policy.include_e2e_tests,
+                _ => true,
+            };
+
+            if matches_package && kind_allowed && !direct_tests_selected.contains(&test.stable_id) {
                 let pkg_id = test.owning_package_id.clone().unwrap_or_default();
                 selected_checks_map.insert(
                     test.stable_id.clone(),
@@ -295,8 +407,14 @@ pub fn plan_verification(
                     VerificationCheckKind::Typecheck => policy.include_typecheck,
                     VerificationCheckKind::Lint => policy.include_lint,
                     VerificationCheckKind::Build => policy.include_build,
-                    VerificationCheckKind::UnitTest | VerificationCheckKind::IntegrationTest => {
-                        needs_package_widening
+                    VerificationCheckKind::UnitTest => {
+                        policy.include_unit_tests && needs_package_widening
+                    }
+                    VerificationCheckKind::IntegrationTest => {
+                        policy.include_integration_tests && needs_package_widening
+                    }
+                    VerificationCheckKind::EndToEndTest => {
+                        policy.include_e2e_tests && needs_package_widening
                     }
                     _ => false,
                 };
@@ -310,7 +428,7 @@ pub fn plan_verification(
                             kind: check.kind,
                             scope: check.owning_scope_id.clone(),
                             reason: format!(
-                                "mandatory check for impacted scope {}",
+                                "mandatory check under policy for scope {}",
                                 check.owning_scope_id
                             ),
                             selection: SelectionReason::MandatoryCheck,
@@ -342,13 +460,70 @@ pub fn plan_verification(
     let mut sorted_checks: Vec<PlannedCheck> = selected_checks_map.into_values().collect();
     sorted_checks.sort_by(|a, b| a.check_id.cmp(&b.check_id));
 
-    // Cap selected checks by bounded limits
+    // 10. Safe output bounding: never silently truncate without retaining safe enclosing obligation
     if sorted_checks.len() > limits.max_selected_checks {
-        sorted_checks.truncate(limits.max_selected_checks);
-        uncertainties.push(UncertaintyReason::BuildLimitReached(
-            "Selected verification checks exceeded limit; truncated".to_string(),
-        ));
-        final_assurance = AssuranceLevel::Degraded;
+        // Attempt safe rollup to package-level checks
+        let mut package_checks_available: HashMap<String, PlannedCheck> = HashMap::new();
+        for check in &inventory.checks {
+            if check.kind == VerificationCheckKind::UnitTest
+                || check.kind == VerificationCheckKind::IntegrationTest
+                || check.kind == VerificationCheckKind::EndToEndTest
+            {
+                package_checks_available.insert(
+                    check.owning_scope_id.clone(),
+                    PlannedCheck {
+                        check_id: check.check_id.clone(),
+                        display_name: check.display_name.clone(),
+                        kind: check.kind,
+                        scope: check.owning_scope_id.clone(),
+                        reason: format!(
+                            "safe enclosing package test suite for {}",
+                            check.owning_scope_id
+                        ),
+                        selection: SelectionReason::MandatoryCheck,
+                        strength: EvidenceStrength::Structural,
+                        evidence_path: None,
+                        widening_reason: None,
+                        mandatory: true,
+                    },
+                );
+            }
+        }
+
+        let mut rolled_up_map: BTreeMap<String, PlannedCheck> = BTreeMap::new();
+        let mut unrepresented_omissions = false;
+
+        for check in &sorted_checks {
+            if check.check_id.starts_with("check:") {
+                rolled_up_map.insert(check.check_id.clone(), check.clone());
+            } else if let Some(pkg_check) = package_checks_available.get(&check.scope) {
+                rolled_up_map.insert(pkg_check.check_id.clone(), pkg_check.clone());
+            } else {
+                unrepresented_omissions = true;
+            }
+        }
+
+        let mut candidate_checks: Vec<PlannedCheck> = rolled_up_map.into_values().collect();
+        candidate_checks.sort_by(|a, b| a.check_id.cmp(&b.check_id));
+
+        if !unrepresented_omissions && candidate_checks.len() <= limits.max_selected_checks {
+            sorted_checks = candidate_checks;
+            uncertainties.push(UncertaintyReason::BuildLimitReached(
+                "Selected individual tests rolled up into enclosing package test suites due to output limit".to_string(),
+            ));
+            if final_assurance > AssuranceLevel::Conservative {
+                final_assurance = AssuranceLevel::Conservative;
+            }
+        } else {
+            if candidate_checks.len() > limits.max_selected_checks {
+                candidate_checks.truncate(limits.max_selected_checks);
+                sorted_checks = candidate_checks;
+            }
+            uncertainties.push(UncertaintyReason::BuildLimitReached(
+                "Selected verification checks exceeded output limit and cannot be safely represented without missing obligations".to_string(),
+            ));
+            final_assurance = AssuranceLevel::Unverified;
+        }
     }
 
     let mut sorted_uncertainties = uncertainties;
