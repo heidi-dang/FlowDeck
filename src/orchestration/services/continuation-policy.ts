@@ -147,6 +147,7 @@ export type ContinuationDispatchResult = {
     | "native_dispatch_failed"
     | "duplicate_dispatch"
     | "dispatch_in_progress"
+    | "dispatch_outcome_unknown"
     | "stale_user_turn_version"
     | "stale_run_aggregate_version"
     | "stale_state_fingerprint"
@@ -252,6 +253,10 @@ export class ContinuationDispatcher {
           return { dispatched: false, identity, reason: "dispatch_in_progress" };
         }
 
+        if (existing.status === "outcome_unknown") {
+          return { dispatched: false, identity, reason: "dispatch_outcome_unknown" };
+        }
+
         if (existing.status === "blocked") {
           return { dispatched: false, identity, reason: "native_dispatch_failed" };
         }
@@ -286,6 +291,9 @@ export class ContinuationDispatcher {
         }
         if (existing.status === "pending") {
           return { dispatched: false, identity, reason: "dispatch_in_progress" };
+        }
+        if (existing.status === "outcome_unknown" as any) {
+          return { dispatched: false, identity, reason: "dispatch_outcome_unknown" };
         }
         if (existing.status === "blocked") {
           return { dispatched: false, identity, reason: "native_dispatch_failed" };
@@ -360,6 +368,25 @@ export class ContinuationDispatcher {
         if (mem) mem.status = "failed";
       }
       return { dispatched: false, identity, reason: "native_dispatch_failed" };
+    }
+  }
+
+  /**
+   * Reconcile pending dispatches that survived process shutdown/restart without confirmed completion.
+   * Marks them 'outcome_unknown' so they do not cause deadlocks or duplicate autonomous prompts.
+   */
+  reconcilePendingDispatches(): number {
+    if (!this.db) return 0;
+    try {
+      const now = new Date().toISOString();
+      const res = this.db.query(`
+        UPDATE continuation_dispatches
+        SET status = 'outcome_unknown', error = 'dispatch_outcome_unknown_after_restart', last_attempt_at = ?
+        WHERE status = 'pending'
+      `).run(now);
+      return res.changes;
+    } catch {
+      return 0;
     }
   }
 

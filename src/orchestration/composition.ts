@@ -83,7 +83,7 @@ import { SqliteNativeChildExecutionRepository } from "./persistence/repositories
 import { ProgressObservationService } from "./services/progress-observation-service";
 import { OrchestrationSnapshotService } from "./services/orchestration-snapshot-service";
 import { RunTransitionEngine } from "./services/transition-engine";
-import { ContinuationPolicy } from "./services/continuation-policy";
+import { ContinuationPolicy, ContinuationDispatcher } from "./services/continuation-policy";
 import { TokenBudgetRuntime } from "../services/token-budget-runtime";
 import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
 import type { CommandRegistry } from "./commands/domain/command-registry";
@@ -117,6 +117,7 @@ export interface ProductionOrchestrationRuntime {
     orchestrationSnapshotService: OrchestrationSnapshotService;
     transitionEngine: RunTransitionEngine;
     continuationPolicy: ContinuationPolicy;
+    continuationDispatcher: ContinuationDispatcher;
   };
   router: ReturnType<typeof createRouterWithControllers>;
   childExecutionLifecycleService: ChildExecutionLifecycleService;
@@ -124,6 +125,7 @@ export interface ProductionOrchestrationRuntime {
   orchestrationSnapshotService: OrchestrationSnapshotService;
   transitionEngine: RunTransitionEngine;
   continuationPolicy: ContinuationPolicy;
+  continuationDispatcher: ContinuationDispatcher;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
   routingRevisionService: RoutingRevisionService;
   metrics: OrchestrationMetrics;
@@ -729,6 +731,9 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     txManager
   );
   const continuationPolicy = new ContinuationPolicy();
+  const continuationDispatcher = new ContinuationDispatcher(db);
+  // Reconcile restart-surviving pending continuation dispatches into outcome_unknown
+  continuationDispatcher.reconcilePendingDispatches();
   const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db, childExecutionLifecycleService);
   const contractService = new ContractService(contractRepo, eventBus);
   const assignmentBindingCoordinator = new AssignmentBindingCoordinator({ assignmentService, bindingRepo: assignmentBindingRepo });
@@ -759,13 +764,14 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     orchestrationSnapshotService,
     transitionEngine,
     continuationPolicy,
+    continuationDispatcher,
   };
 
   const router = createRouterWithControllers(services);
   const commands = createCoreCommandRuntime(db, txManager, {
     db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
     sessionRepo, contextItemRepo, consumerOffsetRepo, sessionTurnRepo, taskRunsRepo, services, router,
-    routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, progressObservationService, orchestrationSnapshotService, transitionEngine, continuationPolicy, metrics, executionRepository, executionScheduler,
+    routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, progressObservationService, orchestrationSnapshotService, transitionEngine, continuationPolicy, continuationDispatcher, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
     assignmentBindingCoordinator, faultHook: options.faultHook,
@@ -792,6 +798,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     orchestrationSnapshotService,
     transitionEngine,
     continuationPolicy,
+    continuationDispatcher,
     metrics,
     executionRepository,
     executionScheduler,

@@ -39,6 +39,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   private disposed = false;
   private turnVersionCounter = 0;
   private pendingFastDirectTurns = new Map<string, PendingFastDirectTurn>();
+  private pendingDeferredReplacements = new Map<string, { parentSessionId: string; oldRunId: string; agent: string; text: string; msgHash: string; correlationId?: string; decision: any }>();
   private preToolRepositoryFingerprints = new Map<string, string>();
   private inFlightAttempts = new Map<string, { runId: string; assignmentId: string; attemptNumber: number; preStateFingerprint: string; actionFingerprint: string; startedAt: string }>();
   private continuationDispatcher: ContinuationDispatcher;
@@ -185,17 +186,25 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
               return;
             }
 
-            // Material reclassification -> cancel active Run A through canonical path then start Run B
-            try {
-              await this.runtime.services.runService.cancelRun(
-                activeRun.id,
-                "Superseded by modified user goal requiring reclassification"
-              );
-            } catch (err: any) {
-              if (err?.code !== ErrorCodes.RUN_IN_TERMINAL_STATE) {
-                console.error("[FlowDeckLifecycleAdapter] cancelRun error on reclassify:", err);
-              }
+            // Material reclassification -> check shared cancellation barrier before starting new Run
+            const safety = await this.cancelAndCheckReplacementSafety(
+              activeRun.id,
+              "Superseded by modified user goal requiring reclassification"
+            );
+
+            if (safety === "TERMINATION_PENDING") {
+              this.pendingDeferredReplacements.set(input.sessionID, {
+                parentSessionId: input.sessionID,
+                oldRunId: activeRun.id,
+                agent: input.agent ?? "heidi",
+                text: modResult.effectiveGoal,
+                msgHash,
+                correlationId,
+                decision: modResult.newDecision,
+              });
+              return;
             }
+
             markRouteInactive(input.sessionID);
 
             const taskId = "task-" + randomUUID();
@@ -242,25 +251,22 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
           }
 
           case "REPLACE": {
-            // Supersede existing active run through canonical cancellation path before classifying replacement
-            try {
-              await this.runtime.services.runService.cancelRun(
-                activeRun.id,
-                "Superseded by newer user goal"
-              );
-            } catch (err: any) {
-              if (err?.code !== ErrorCodes.RUN_IN_TERMINAL_STATE) {
-                console.error("[FlowDeckLifecycleAdapter] cancelRun error on replace:", err);
-              }
-            }
-            // Check if cancelled run has unconfirmed active child executions
-            const diag = this.runtime.childExecutionLifecycleService.getDiagnosticsForRun(activeRun.id);
-            const hasUnconfirmedChild = diag.childExecutions?.some(
-              c => !c.nativeTerminationConfirmed && (c.status === "running" || c.status === "queued")
+            const safety = await this.cancelAndCheckReplacementSafety(
+              activeRun.id,
+              "Superseded by newer user goal"
             );
-            if (hasUnconfirmedChild) {
-              // Unconfirmed required/active child is still running native processes in the workspace.
-              // Block/defer replacement creation until old children confirm termination.
+
+            if (safety === "TERMINATION_PENDING") {
+              const decision = classifyTask(text, { hasExplicitDomainSignal: false });
+              this.pendingDeferredReplacements.set(input.sessionID, {
+                parentSessionId: input.sessionID,
+                oldRunId: activeRun.id,
+                agent: input.agent ?? "heidi",
+                text,
+                msgHash,
+                correlationId,
+                decision,
+              });
               return;
             }
             markRouteInactive(input.sessionID);
@@ -419,15 +425,15 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         ? `${snapshot.progress.lastRepositoryDelta}:${snapshot.childState.activeRequired}:${snapshot.childState.failedRequired}:${snapshot.workItems.filter(w => w.isSatisfied).length}`
         : "0:0:0:0";
 
-      // Boundary Enforcement: Check active strategy constraint before execution
-      const activeConstraint = this.runtime.transitionEngine.getActiveStrategyConstraint(runId, assignmentId);
-      if (activeConstraint && activeConstraint.prohibitedActionFingerprint === actionFingerprint) {
-        if (activeConstraint.stateFingerprint === preStateFingerprint) {
+      // Boundary Enforcement: Check active strategy constraint set before execution
+      const activeConstraintSet = this.runtime.transitionEngine.getActiveStrategyConstraints(runId, assignmentId);
+      if (activeConstraintSet && activeConstraintSet.prohibitedActionFingerprints.includes(actionFingerprint)) {
+        if (activeConstraintSet.stateFingerprint === preStateFingerprint) {
           throw new Error(
             `[ExecutionBoundary] REPEATED_ACTION_BLOCKED: Action '${input.tool}' with fingerprint '${actionFingerprint}' is prohibited under unchanged state '${preStateFingerprint}'. Change strategy, choose a different tool or evidence source, or replan.`
           );
         } else {
-          // State has changed; clear outdated constraint and allow execution
+          // State has changed; clear outdated constraint set and allow execution
           this.runtime.transitionEngine.clearStrategyConstraint(runId, assignmentId);
         }
       }
@@ -596,8 +602,8 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
 
   async onEvent(event: Event) {
     if (this.disposed) return;
-    const eventType = (event as any).type;
-    const props = ((event as any).properties ?? {}) as any;
+    const eventType = (event as any).type ?? (event as any).event;
+    const props = ((event as any).properties ?? (event as any).data ?? event ?? {}) as any;
 
     if (eventType === "session.created") {
       const info = props.info ?? props;
@@ -738,13 +744,89 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     }
   }
 
+  /**
+   * Shared cancellation barrier for REPLACE and material MODIFY/reclassification.
+   */
+  private async cancelAndCheckReplacementSafety(
+    runId: string,
+    reason: string
+  ): Promise<"SAFE_TO_REPLACE" | "TERMINATION_PENDING" | "TERMINAL_RACE"> {
+    try {
+      await this.runtime.services.runService.cancelRun(runId, reason);
+    } catch (err: any) {
+      if (err?.code === ErrorCodes.RUN_IN_TERMINAL_STATE) {
+        // Run already in terminal state; check children below
+      } else {
+        console.error("[FlowDeckLifecycleAdapter] cancelRun error in replacement barrier:", err);
+      }
+    }
+
+    const diag = this.runtime.childExecutionLifecycleService.getDiagnosticsForRun(runId);
+    const hasUnconfirmedChild = diag.childExecutions?.some(
+      c => !c.nativeTerminationConfirmed && (c.status === "running" || c.status === "queued")
+    );
+
+    if (hasUnconfirmedChild) {
+      return "TERMINATION_PENDING";
+    }
+
+    return "SAFE_TO_REPLACE";
+  }
+
   async onSessionDeleted(sessionID: string) {
     this.pendingFastDirectTurns.delete(sessionID);
     clearRouteDecision(sessionID);
+
+    // If deleted session belongs to a child execution where cancellation was requested / pending
+    const childRec = this.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: sessionID });
+    if (childRec) {
+      if ((childRec.cancelRequested || childRec.status === "cancelled") && !childRec.nativeTerminationConfirmed) {
+        await this.runtime.childExecutionLifecycleService.confirmNativeTermination({ childSessionId: sessionID });
+      }
+
+      // Check if this parent run has a pending deferred replacement ready to resume
+      const parentSessionId = childRec.parentSessionId;
+      const deferred = this.pendingDeferredReplacements.get(parentSessionId);
+      if (deferred && deferred.oldRunId === childRec.runId) {
+        const diag = this.runtime.childExecutionLifecycleService.getDiagnosticsForRun(childRec.runId);
+        const hasUnconfirmedRemaining = diag.childExecutions?.some(
+          c => !c.nativeTerminationConfirmed && (c.status === "running" || c.status === "queued")
+        );
+        if (!hasUnconfirmedRemaining) {
+          this.pendingDeferredReplacements.delete(parentSessionId);
+          markRouteInactive(parentSessionId);
+          const taskId = "task-" + randomUUID();
+          this.turnVersionCounter += 1;
+          const turnVersion = this.turnVersionCounter;
+          setRouteDecision(parentSessionId, taskId, deferred.decision, deferred.text, deferred.msgHash);
+
+          if (deferred.decision.executionClass === "FAST_DIRECT") {
+            this.pendingFastDirectTurns.set(parentSessionId, {
+              sessionID: parentSessionId,
+              taskId,
+              messageHash: deferred.msgHash,
+              messageID: deferred.correlationId,
+              turnVersion,
+            });
+          } else {
+            await this.syncOrchestrationRun(
+              taskId,
+              parentSessionId,
+              deferred.agent,
+              deferred.decision,
+              deferred.text,
+              deferred.msgHash,
+              deferred.correlationId ?? ("deferred-" + taskId)
+            );
+          }
+        }
+      }
+    }
   }
 
   dispose(): void {
     this.disposed = true;
     this.pendingFastDirectTurns.clear();
+    this.pendingDeferredReplacements.clear();
   }
 }

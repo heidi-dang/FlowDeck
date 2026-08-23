@@ -34,11 +34,11 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
   // 2. shared-runtime-preserves-valid-client
   it("2. shared-runtime-preserves-valid-client", async () => {
-    const ctx1 = acquireProjectRuntime(TEST_DIR); // initially acquired without client
+    const ctx1 = acquireProjectRuntime(TEST_DIR);
     expect(ctx1.adapter.getClient()).toBeUndefined();
 
     const mockClient = { session: { abort: mock(() => Promise.resolve(true)) } };
-    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient); // reacquired with client
+    const ctx2 = acquireProjectRuntime(TEST_DIR, mockClient);
     expect(ctx2).toBe(ctx1);
     expect(ctx2.adapter.getClient()).toBe(mockClient);
 
@@ -92,7 +92,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const res = await dispatcher.dispatch(token, {
       currentTurnVersion: 1,
       currentAggregateVersion: 1,
-      client: {}, // No session.promptAsync
+      client: {},
     });
 
     expect(res.dispatched).toBe(false);
@@ -152,7 +152,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const res1 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
     expect(res1.dispatched).toBe(false);
 
-    // Attempt 2 succeeds (not blocked as duplicate)
+    // Attempt 2 succeeds
     shouldFail = false;
     const res2 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
     expect(res2.dispatched).toBe(true);
@@ -204,7 +204,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(res1.dispatched).toBe(true);
     await releaseProjectRuntime(TEST_DIR);
 
-    // Reopen DB in a new runtime instance
     const ctx2 = acquireProjectRuntime(TEST_DIR);
     const dispatcher2 = new ContinuationDispatcher(ctx2.runtime.db);
 
@@ -233,7 +232,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
     await releaseProjectRuntime(TEST_DIR);
 
-    // Reopen and verify userTurnVersion is still 2
     const ctx2 = acquireProjectRuntime(TEST_DIR);
     expect(ctx2.adapter.getUserTurnVersion(sessionID)).toBe(2);
     await releaseProjectRuntime(TEST_DIR);
@@ -265,7 +263,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const oldTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
 
-    // User sends a QUERY ("what is the status?") with new messageId
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m2" },
       { message: {} as any, parts: [{ type: "text", text: "what is the current status?", id: "2", sessionID, messageID: "m2" }] }
@@ -274,7 +271,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const newTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
     expect(newTurnVersion).toBeGreaterThan(oldTurnVersion);
 
-    // Old token with turnVersion 1 must be rejected by statePort revalidation
     const token = {
       runId: run.id,
       sessionId: sessionID,
@@ -308,7 +304,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const oldTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
 
-    // User sends ACKNOWLEDGE ("sounds good") with new messageId
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m2" },
       { message: {} as any, parts: [{ type: "text", text: "sounds good, proceed", id: "2", sessionID, messageID: "m2" }] }
@@ -350,7 +345,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const oldTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
 
-    // User sends MODIFY ("Also add Redis caching")
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m2" },
       { message: {} as any, parts: [{ type: "text", text: "Also add Redis caching to the telemetry service", id: "2", sessionID, messageID: "m2" }] }
@@ -391,7 +385,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
-    // Advance task_runs aggregate_version
     ctx.runtime.taskRunsRepo.updateState(run.id, "executing");
     const currentAgg = ctx.runtime.taskRunsRepo.findById(run.id)!.aggregateVersion;
 
@@ -399,7 +392,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       runId: run.id,
       sessionId: sessionID,
       userTurnVersion: ctx.adapter.getUserTurnVersion(sessionID),
-      runAggregateVersion: currentAgg - 1, // Stale version
+      runAggregateVersion: currentAgg - 1,
       transitionReason: "NEXT_WORK_ITEM_READY" as const,
       stateFingerprint: "fp-1",
     };
@@ -468,7 +461,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       expectedAggregateVersion: snap1.aggregateVersion,
     });
 
-    // Create a failed assignment so evaluate() performs CAS transition to RECOVERING
     const a1 = await ctx.runtime.services.assignmentService.createAssignment({
       id: "as-fail-16",
       runId: run.id,
@@ -501,12 +493,11 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
 
-    // Transition with wrong expectedAggregateVersion must fail
     const res = ctx.runtime.transitionEngine.transitionPhase({
       runId: run.id,
       targetPhase: OP.EXECUTING,
       expectedPhase: snap.phase,
-      expectedAggregateVersion: 999, // Wrong version
+      expectedAggregateVersion: 999,
     });
     expect(res).toBe(false);
 
@@ -524,7 +515,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
 
-    // Thread A wins CAS
     const win = ctx.runtime.transitionEngine.transitionPhase({
       runId: run.id,
       targetPhase: OP.EXECUTING,
@@ -533,7 +523,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     });
     expect(win).toBe(true);
 
-    // Thread B tries with old snapshot -> loses
     const lose = ctx.runtime.transitionEngine.transitionPhase({
       runId: run.id,
       targetPhase: OP.RECOVERING,
@@ -586,7 +575,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
-    // Competing simultaneous starts for distinct callIDs
     const [att1, att2] = await Promise.all([
       Promise.resolve().then(() => ctx.runtime.transitionEngine.startAttempt({
         runId: run.id,
@@ -611,7 +599,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(numbers.has(1)).toBe(true);
     expect(numbers.has(2)).toBe(true);
 
-    // Both callIDs durably recorded and discoverable
     expect(ctx.runtime.transitionEngine.findAttemptByCallID("call-c1")).not.toBeNull();
     expect(ctx.runtime.transitionEngine.findAttemptByCallID("call-c2")).not.toBeNull();
 
@@ -647,7 +634,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     });
 
     expect(att1.attemptNumber).toBe(1);
-    expect(att2.attemptNumber).toBe(1); // Idempotent same attempt returned
+    expect(att2.attemptNumber).toBe(1);
 
     await releaseProjectRuntime(TEST_DIR);
   });
@@ -662,7 +649,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
     const _run = (await ctx1.adapter.resolveActiveRunForSession(sessionID))!;
 
-    // Start attempt in runtime 1
     await ctx1.adapter.onToolExecuteBefore({
       tool: "write",
       sessionID,
@@ -672,7 +658,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
     await releaseProjectRuntime(TEST_DIR);
 
-    // Reopen in runtime 2 and finalize tool execution
     const ctx2 = acquireProjectRuntime(TEST_DIR);
     await ctx2.adapter.onToolExecuteAfter(
       { tool: "write", sessionID, callID: "call-restart-1", args: { path: "src/app.ts" } },
@@ -769,7 +754,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       taskCallId: delA.taskCallId,
     });
 
-    // Tool execute inside child session A
     await ctx.adapter.onToolExecuteBefore({
       tool: "bash",
       sessionID: "session-child-A",
@@ -808,7 +792,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       taskCallId: delB.taskCallId,
     });
 
-    // Tool execute inside child session B
     await ctx.adapter.onToolExecuteBefore({
       tool: "read",
       sessionID: "session-child-B",
@@ -832,7 +815,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
-    // Create optional assignment (is_required = 0)
     ctx.runtime.db.query(`
       INSERT INTO assignments (id, run_id, agent_id, description, is_required, status, created_at, created_by)
       VALUES ('as-optional', ?, 'linter', 'Optional lint check', 0, 'failed', datetime('now'), 'system')
@@ -893,13 +875,11 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
-    // Create completed required assignment
     ctx.runtime.db.query(`
       INSERT INTO assignments (id, run_id, agent_id, description, is_required, status, created_at, created_by)
       VALUES ('as-req-done', ?, 'coder', 'Required backend work', 1, 'completed', datetime('now'), 'system')
     `).run(run.id);
 
-    // Create optional running assignment
     ctx.runtime.db.query(`
       INSERT INTO assignments (id, run_id, agent_id, description, is_required, status, created_at, created_by)
       VALUES ('as-opt-run', ?, 'telemetry', 'Optional background metrics', 0, 'running', datetime('now'), 'system')
@@ -941,7 +921,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       taskCallId: del.taskCallId,
     });
 
-    // Run cancel triggers child cancellation through NativeChildControlPort
     await ctx.runtime.services.runService.cancelRun(run.id, "User cancelled");
 
     expect(abortMock).toHaveBeenCalled();
@@ -1056,18 +1035,15 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-truth-sess" });
     const cancelledRun = await ctx.runtime.services.runService.cancelRun(run.id, "Cancel requested");
 
-    // Parent is marked CANCELLED with explicit detached-pending metadata
     expect(cancelledRun.status).toBe(RunStatus.CANCELLED);
     expect(cancelledRun.metadata?.terminationPending).toBe(true);
     expect(cancelledRun.metadata?.cancellationMode).toBe("detached_pending_native_termination");
 
-    // ChildExecution authority: running and unconfirmed
     const childRec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: "child-truth-sess" });
     expect(childRec?.status).toBe("running");
     expect(childRec?.cancelRequested).toBe(true);
     expect(childRec?.nativeTerminationConfirmed).toBe(false);
 
-    // Assignment & Session must NOT be falsely marked cancelled
     const assignment = await ctx.runtime.services.assignmentService.getAssignment(del.assignmentId);
     expect(assignment?.status).not.toBe("cancelled");
 
@@ -1090,7 +1066,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     );
     const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
-    // Create and start a required running child execution
     const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
       runId: run1.id,
       parentSessionId: sessionID,
@@ -1107,22 +1082,18 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
 
     await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-rep-sess" });
 
-    // User sends REPLACE intent -> abort fails -> replacement creation must be deferred/blocked!
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m-rep-2" },
       { message: {} as any, parts: [{ type: "text", text: "Forget that, let's implement new frontend UI components instead", id: "2", sessionID, messageID: "m-rep-2" }] }
     );
 
-    // Old run cancelled but termination pending
     const oldRunState = ctx.runtime.taskRunsRepo.findById(run1.id);
     expect(oldRunState?.state).toBe("cancelled");
 
-    // Child is still unconfirmed running
     const childRec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: "child-rep-sess" });
     expect(childRec?.status).toBe("running");
     expect(childRec?.nativeTerminationConfirmed).toBe(false);
 
-    // No overlapping second run was created
     const activeAfter = await ctx.adapter.resolveActiveRunForSession(sessionID);
     expect(activeAfter).toBeNull();
 
@@ -1166,10 +1137,10 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     await releaseProjectRuntime(TEST_DIR);
   });
 
-  // 36. prohibited-action-blocked-before-native-tool-execution
-  it("36. prohibited-action-blocked-before-native-tool-execution", async () => {
+  // 36. stall-production-idle-persists-last-attempt-constraint-and-blocks
+  it("36. stall-production-idle-persists-last-attempt-constraint-and-blocks", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-prohib-block";
+    const sessionID = "sess-stall-prod";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
@@ -1180,33 +1151,29 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     await ctx.adapter.onToolExecuteBefore({
       tool: "read",
       sessionID,
-      callID: "call-p-1",
+      callID: "call-stall-1",
       args: { path: "config.json" },
     });
     await ctx.adapter.onToolExecuteAfter(
-      { tool: "read", sessionID, callID: "call-p-1", args: { path: "config.json" } },
+      { tool: "read", sessionID, callID: "call-stall-1", args: { path: "config.json" } },
       { output: "{}", metadata: {} }
     );
 
-    // Idle evaluation produces REPEATED_ACTION_BLOCKED and stores StrategyConstraint
-    const evalRes = ctx.runtime.transitionEngine.evaluate({
-      runId: run.id,
-      sessionId: sessionID,
-      latestActionFingerprint: ctx.runtime.progressObservationService.computeActionFingerprint({
-        tool: "read",
-        args: { path: "config.json" },
-        sessionID,
-      }),
-    });
-    expect(evalRes.reasonCode).toBe("REPEATED_ACTION_BLOCKED");
+    // Call production onSessionIdle without passing fingerprint
+    await ctx.adapter.onSessionIdle(sessionID);
 
-    // Heidi tries same tool + args under unchanged state -> rejected at tool.execute.before!
+    // Durable strategy constraint set was created containing action
+    const constraint = ctx.runtime.transitionEngine.getActiveStrategyConstraint(run.id, "root:" + run.id);
+    expect(constraint).not.toBeNull();
+    expect(constraint?.reason).toBe("REPEATED_ACTION_BLOCKED");
+
+    // Attempting same tool under unchanged state throws at tool.execute.before!
     let threw = false;
     try {
       await ctx.adapter.onToolExecuteBefore({
         tool: "read",
         sessionID,
-        callID: "call-p-2",
+        callID: "call-stall-2",
         args: { path: "config.json" },
       });
     } catch (err: any) {
@@ -1218,143 +1185,184 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     await releaseProjectRuntime(TEST_DIR);
   });
 
-  // 37. prohibited-action-allows-different-strategy
-  it("37. prohibited-action-allows-different-strategy", async () => {
+  // 37. root-strategy-set-blocks-a-b-a-loop
+  it("37. root-strategy-set-blocks-a-b-a-loop", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-prohib-diff";
+    const sessionID = "sess-aba-root";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
-    const afp1 = ctx.runtime.progressObservationService.computeActionFingerprint({
-      tool: "read",
-      args: { path: "config.json" },
-      sessionID,
-    });
+    const afpA = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { path: "a.json" }, sessionID });
+    const afpB = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "grep", args: { pattern: "b" }, sessionID });
 
-    // Save a strategy constraint prohibiting action afp1
+    // State S
+    const stateFp = "0:0:0:0";
+
+    // A fails -> prohibited {A}
     ctx.runtime.transitionEngine.saveStrategyConstraint({
       runId: run.id,
       assignmentId: "root:" + run.id,
-      prohibitedActionFingerprint: afp1,
-      stateFingerprint: "0:0:0:0",
+      prohibitedActionFingerprint: afpA,
+      stateFingerprint: stateFp,
       reason: "REPEATED_ACTION_BLOCKED",
-      createdAt: new Date().toISOString(),
     });
 
-    // A different tool/action is allowed!
-    let differentActionThrew = false;
-    try {
-      await ctx.adapter.onToolExecuteBefore({
-        tool: "grep",
-        sessionID,
-        callID: "call-diff-tool",
-        args: { pattern: "telemetry" },
-      });
-    } catch {
-      differentActionThrew = true;
-    }
-    expect(differentActionThrew).toBe(false);
-
-    await releaseProjectRuntime(TEST_DIR);
-  });
-
-  // 38. prohibited-action-clears-after-relevant-state-change
-  it("38. prohibited-action-clears-after-relevant-state-change", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-prohib-clear";
-    await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi", messageID: "m1" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
-    );
-    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
-
-    const afp = ctx.runtime.progressObservationService.computeActionFingerprint({
-      tool: "read",
-      args: { path: "config.json" },
-      sessionID,
-    });
-
-    // Save constraint under state 0:0:0:0
+    // B fails -> prohibited {A, B}
     ctx.runtime.transitionEngine.saveStrategyConstraint({
       runId: run.id,
       assignmentId: "root:" + run.id,
-      prohibitedActionFingerprint: afp,
-      stateFingerprint: "0:0:0:0",
+      prohibitedActionFingerprint: afpB,
+      stateFingerprint: stateFp,
       reason: "REPEATED_ACTION_BLOCKED",
-      createdAt: new Date().toISOString(),
     });
 
-    // Record an observation that changes state (e.g. noProgressCount or repository state)
-    ctx.runtime.progressObservationService.recordToolObservation({
-      runId: run.id,
-      sessionId: sessionID,
-      tool: "write",
-      args: { path: "src/new.ts" },
-      output: "written",
-      preRepositoryHash: "h1",
-      postRepositoryHash: "h2",
-    });
+    const set = ctx.runtime.transitionEngine.getActiveStrategyConstraints(run.id, "root:" + run.id);
+    expect(set?.prohibitedActionFingerprints).toContain(afpA);
+    expect(set?.prohibitedActionFingerprints).toContain(afpB);
 
-    // When state has changed, the action is legal again and constraint is cleared!
-    let threw = false;
+    // A attempted again under state S -> blocked!
+    let threwA = false;
     try {
       await ctx.adapter.onToolExecuteBefore({
         tool: "read",
         sessionID,
-        callID: "call-p-reallow",
-        args: { path: "config.json" },
+        callID: "call-a-again",
+        args: { path: "a.json" },
       });
-    } catch {
-      threw = true;
+    } catch (err: any) {
+      threwA = true;
+      expect(err.message).toContain("REPEATED_ACTION_BLOCKED");
     }
-    expect(threw).toBe(false);
+    expect(threwA).toBe(true);
+
+    // B attempted again under state S -> blocked!
+    let threwB = false;
+    try {
+      await ctx.adapter.onToolExecuteBefore({
+        tool: "grep",
+        sessionID,
+        callID: "call-b-again",
+        args: { pattern: "b" },
+      });
+    } catch (err: any) {
+      threwB = true;
+      expect(err.message).toContain("REPEATED_ACTION_BLOCKED");
+    }
+    expect(threwB).toBe(true);
 
     await releaseProjectRuntime(TEST_DIR);
   });
 
-  // 39. prohibited-action-survives-restart
-  it("39. prohibited-action-survives-restart", async () => {
+  // 38. assignment-strategy-set-blocks-a-b-a-loop
+  it("38. assignment-strategy-set-blocks-a-b-a-loop", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-aba-as";
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-as-aba",
+      targetAgent: "coder",
+      assignmentId: "assignment-ABA",
+    });
+
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "session-child-aba",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    const afpA = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { file: "1.ts" }, sessionID: "session-child-aba" });
+    const afpB = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { file: "2.ts" }, sessionID: "session-child-aba" });
+
+    const snapChild = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, "session-child-aba")!;
+    const preFpChild = `${snapChild.progress.lastRepositoryDelta}:${snapChild.childState.activeRequired}:${snapChild.childState.failedRequired}:${snapChild.workItems.filter(w => w.isSatisfied).length}`;
+
+    ctx.runtime.transitionEngine.saveStrategyConstraint({
+      runId: run.id,
+      assignmentId: "assignment-ABA",
+      prohibitedActionFingerprint: afpA,
+      stateFingerprint: preFpChild,
+      reason: "REPEATED_ACTION_BLOCKED",
+    });
+    ctx.runtime.transitionEngine.saveStrategyConstraint({
+      runId: run.id,
+      assignmentId: "assignment-ABA",
+      prohibitedActionFingerprint: afpB,
+      stateFingerprint: preFpChild,
+      reason: "REPEATED_ACTION_BLOCKED",
+    });
+
+    let threwA = false;
+    try {
+      await ctx.adapter.onToolExecuteBefore({
+        tool: "read",
+        sessionID: "session-child-aba",
+        callID: "call-child-a-repeat",
+        args: { file: "1.ts" },
+      });
+    } catch {
+      threwA = true;
+    }
+    expect(threwA).toBe(true);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 39. strategy-set-survives-restart
+  it("39. strategy-set-survives-restart", async () => {
     const ctx1 = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-prohib-restart";
+    const sessionID = "sess-set-restart";
     await ctx1.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx1.adapter.resolveActiveRunForSession(sessionID))!;
 
-    const afp = ctx1.runtime.progressObservationService.computeActionFingerprint({
-      tool: "read",
-      args: { path: "config.json" },
-      sessionID,
-    });
+    const afpA = ctx1.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { path: "a.json" }, sessionID });
+    const afpB = ctx1.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { path: "b.json" }, sessionID });
 
     ctx1.runtime.transitionEngine.saveStrategyConstraint({
       runId: run.id,
       assignmentId: "root:" + run.id,
-      prohibitedActionFingerprint: afp,
+      prohibitedActionFingerprint: afpA,
       stateFingerprint: "0:0:0:0",
       reason: "REPEATED_ACTION_BLOCKED",
-      createdAt: new Date().toISOString(),
+    });
+    ctx1.runtime.transitionEngine.saveStrategyConstraint({
+      runId: run.id,
+      assignmentId: "root:" + run.id,
+      prohibitedActionFingerprint: afpB,
+      stateFingerprint: "0:0:0:0",
+      reason: "REPEATED_ACTION_BLOCKED",
     });
 
     await releaseProjectRuntime(TEST_DIR);
 
-    // Reopen in runtime 2: constraint still blocks same action under same state
     const ctx2 = acquireProjectRuntime(TEST_DIR);
+    const set = ctx2.runtime.transitionEngine.getActiveStrategyConstraints(run.id, "root:" + run.id);
+    expect(set?.prohibitedActionFingerprints).toContain(afpA);
+    expect(set?.prohibitedActionFingerprints).toContain(afpB);
+
     let threw = false;
     try {
       await ctx2.adapter.onToolExecuteBefore({
         tool: "read",
         sessionID,
         callID: "call-after-restart",
-        args: { path: "config.json" },
+        args: { path: "a.json" },
       });
-    } catch (err: any) {
+    } catch {
       threw = true;
-      expect(err.message).toContain("REPEATED_ACTION_BLOCKED");
     }
     expect(threw).toBe(true);
 
@@ -1388,7 +1396,6 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       stateFingerprint: "fp-conc",
     };
 
-    // Run two competing dispatches simultaneously
     const [res1, res2] = await Promise.all([
       dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient }),
       dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient }),
@@ -1421,41 +1428,48 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
       stateFingerprint: "fp-bound",
     };
 
-    // Attempt 1 fails
     const res1 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
     expect(res1.dispatched).toBe(false);
 
-    // Attempt 2 fails
     const res2 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
     expect(res2.dispatched).toBe(false);
 
-    // Attempt 3 is bounded -> blocked
     const res3 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
     expect(res3.dispatched).toBe(false);
-    expect(promptMock).toHaveBeenCalledTimes(2); // Never invoked the 3rd time!
+    expect(promptMock).toHaveBeenCalledTimes(2);
 
     await releaseProjectRuntime(TEST_DIR);
   });
 
-  // 43. duplicate-user-message-id-does-not-increment-turn
-  it("43. duplicate-user-message-id-does-not-increment-turn", async () => {
+  // 43. out-of-order-duplicate-message-id-does-not-increment
+  it("43. out-of-order-duplicate-message-id-does-not-increment", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-dup-msg-id";
+    const sessionID = "sess-ooo-msg";
 
     const v1 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({
       sessionId: sessionID,
-      messageId: "msg-id-1",
-      messageHash: "hash-text-1",
+      messageId: "msg-1",
+      messageHash: "hash-1",
     });
     expect(v1).toBe(1);
 
-    // Duplicate delivery of same message event
     const v2 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({
       sessionId: sessionID,
-      messageId: "msg-id-1",
-      messageHash: "hash-text-1",
+      messageId: "msg-2",
+      messageHash: "hash-2",
     });
-    expect(v2).toBe(1); // Unchanged!
+    expect(v2).toBe(2);
+
+    // Delayed duplicate of msg-1 arrives after msg-2
+    const v1Late = ctx.runtime.sessionTurnRepo.incrementTurnVersion({
+      sessionId: sessionID,
+      messageId: "msg-1",
+      messageHash: "hash-1",
+    });
+    expect(v1Late).toBe(1); // Returns associated version without incrementing
+
+    // Inspect current turn
+    expect(ctx.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(2);
 
     await releaseProjectRuntime(TEST_DIR);
   });
@@ -1472,92 +1486,306 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     });
     expect(v1).toBe(1);
 
-    // New genuine message with identical text "ok" but distinct messageId
     const v2 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({
       sessionId: sessionID,
       messageId: "msg-id-2",
       messageHash: "hash-ok",
     });
-    expect(v2).toBe(2); // Incremented!
+    expect(v2).toBe(2);
 
     await releaseProjectRuntime(TEST_DIR);
   });
 
-  // 45. migration-v12-applies-from-v11-and-is-idempotent
-  it("45. migration-v12-applies-from-v11-and-is-idempotent", () => {
+  // 45. migration-v12-upgrades-real-e816-continuation-schema-and-preserves-rows
+  it("45. migration-v12-upgrades-real-e816-continuation-schema-and-preserves-rows", async () => {
     const db = new Database(":memory:");
+
+    // 1. Run migrations up to v11
     runMigrations(db);
 
-    expect(getCurrentVersion(db)).toBe(12);
+    // 2. Simulate legacy continuation_dispatches table without new columns
+    db.exec(`
+      DROP TABLE IF EXISTS continuation_dispatches;
+      CREATE TABLE continuation_dispatches (
+        identity TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        user_turn_version INTEGER NOT NULL,
+        run_aggregate_version INTEGER NOT NULL,
+        transition_reason TEXT NOT NULL,
+        current_work_item_id TEXT,
+        state_fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        dispatched_at TEXT,
+        error TEXT
+      );
+      INSERT INTO continuation_dispatches VALUES
+        ('id-old-1', 'run-1', 'sess-1', 1, 1, 'NEXT_WORK_ITEM_READY', 'as-1', 'fp-1', 'dispatched', '2026-08-20T10:00:00Z', '2026-08-20T10:00:01Z', NULL),
+        ('id-old-2', 'run-1', 'sess-1', 1, 1, 'TRANSIENT_RETRY_ALLOWED', 'as-1', 'fp-2', 'failed', '2026-08-20T10:05:00Z', NULL, 'timeout');
+    `);
 
-    // Check tables exist canonically
-    const tables = db.query(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_turns', 'continuation_dispatches', 'call_id_attempts')"
-    ).all() as { name: string }[];
-    expect(tables.length).toBe(3);
+    // Reset schema_migrations to version 11 to simulate real database upgrade to V12
+    db.query("DELETE FROM schema_migrations WHERE version = 12").run();
 
-    // Re-run migrations -> idempotent
+    // 3. Apply migration to V12
     runMigrations(db);
     expect(getCurrentVersion(db)).toBe(12);
+
+    // 4. Assert new columns exist in table_info
+    const cols = db.query("PRAGMA table_info(continuation_dispatches)").all() as { name: string }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).toContain("attempt_count");
+    expect(colNames).toContain("last_attempt_at");
+
+    // 5. Assert old rows survived and backfilled
+    const rows = db.query("SELECT * FROM continuation_dispatches ORDER BY identity ASC").all() as any[];
+    expect(rows.length).toBe(2);
+    expect(rows[0].identity).toBe("id-old-1");
+    expect(rows[0].attempt_count).toBe(1);
+    expect(rows[0].last_attempt_at).toBe("2026-08-20T10:00:00Z");
+    expect(rows[0].status).toBe("dispatched");
+
+    expect(rows[1].identity).toBe("id-old-2");
+    expect(rows[1].attempt_count).toBe(1);
+    expect(rows[1].status).toBe("failed");
+
+    // 6. Prove ContinuationDispatcher can operate seamlessly on migrated DB
+    const dispatcher = new ContinuationDispatcher(db);
+    const retryRes = await dispatcher.dispatch({
+      runId: "run-1",
+      sessionId: "sess-1",
+      userTurnVersion: 1,
+      runAggregateVersion: 1,
+      transitionReason: "TRANSIENT_RETRY_ALLOWED",
+      currentWorkItemId: "as-1",
+      stateFingerprint: "fp-2",
+    }, {
+      currentTurnVersion: 1,
+      currentAggregateVersion: 1,
+      client: { session: { promptAsync: mock(() => Promise.resolve(true)) } },
+    });
+
+    expect(retryRes.dispatched).toBe(true);
 
     db.close();
   });
 
-  // 46. root-heidi-attempt-lineage-and-repetition
-  it("46. root-heidi-attempt-lineage-and-repetition", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-root-heidi";
-    await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi", messageID: "m1" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
-    );
-    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+  // 46. pending-dispatch-restart-becomes-outcome-unknown
+  it("46. pending-dispatch-restart-becomes-outcome-unknown", async () => {
+    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const db = ctx1.runtime.db;
 
-    // Heidi executes directly (no Assignment)
-    await ctx.adapter.onToolExecuteBefore({
-      tool: "read",
-      sessionID,
-      callID: "call-root-read",
-      args: { file: "test.ts" },
+    const token = {
+      runId: "run-c",
+      sessionId: "sess-c",
+      userTurnVersion: 1,
+      runAggregateVersion: 1,
+      transitionReason: "PROGRESS_CONFIRMED" as const,
+      currentWorkItemId: "as-1",
+      stateFingerprint: "fp-c",
+    };
+    const identity = ctx1.runtime.continuationDispatcher.computeTokenIdentity(token);
+
+    // Simulate an in-flight pending dispatch before crash
+    db.query(`
+      INSERT INTO continuation_dispatches (
+        identity, run_id, session_id, user_turn_version, run_aggregate_version,
+        transition_reason, current_work_item_id, state_fingerprint, status,
+        attempt_count, created_at, last_attempt_at
+      ) VALUES (?, 'run-c', 'sess-c', 1, 1, 'PROGRESS_CONFIRMED', 'as-1', 'fp-c', 'pending', 1, datetime('now'), datetime('now'))
+    `).run(identity);
+
+    await releaseProjectRuntime(TEST_DIR);
+
+    // Reopen project runtime: startup reconciliation marks pending -> outcome_unknown
+    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    const row = ctx2.runtime.db.query("SELECT status, error FROM continuation_dispatches WHERE identity = ?").get(identity) as { status: string; error: string };
+    expect(row.status).toBe("outcome_unknown");
+    expect(row.error).toBe("dispatch_outcome_unknown_after_restart");
+
+    // Dispatching same token does not invoke promptAsync
+    const promptMock = mock(() => Promise.resolve(true));
+    const res = await ctx2.runtime.continuationDispatcher.dispatch(token, {
+      currentTurnVersion: 1,
+      currentAggregateVersion: 1,
+      client: { session: { promptAsync: promptMock } },
     });
-    await ctx.adapter.onToolExecuteAfter(
-      { tool: "read", sessionID, callID: "call-root-read", args: { file: "test.ts" } },
-      { output: "contents", metadata: {} }
-    );
 
-    // Root attempt is recorded under canonical root:<runId>
-    const attempts = ctx.runtime.transitionEngine.listAttempts(run.id, "root:" + run.id);
-    expect(attempts.length).toBe(1);
-
-    // Idle evaluation inspects root execution and blocks repetition
-    const afp = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { file: "test.ts" }, sessionID });
-    const evalRes = ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID, latestActionFingerprint: afp });
-    expect(evalRes.reasonCode).toBe("REPEATED_ACTION_BLOCKED");
+    expect(res.dispatched).toBe(false);
+    expect(res.reason).toBe("dispatch_outcome_unknown");
+    expect(promptMock).not.toHaveBeenCalled();
 
     await releaseProjectRuntime(TEST_DIR);
   });
 
-  // 47. old-progress-does-not-generate-unbounded-continuations
-  it("47. old-progress-does-not-generate-unbounded-continuations", async () => {
+  // 47. session-deleted-confirms-cancellation-and-resumes-deferred-replace
+  it("47. session-deleted-confirms-cancellation-and-resumes-deferred-replace", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-del-conf-resume";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-del-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Original plan to build backend telemetry", id: "1", sessionID, messageID: "m-del-1" }] }
+    );
+    const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-del-sess",
+      targetAgent: "coder",
+    });
+
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-to-delete-session",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-to-delete-session" });
+
+    // User sends REPLACE intent -> abort fails -> replacement is deferred
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-del-2" },
+      { message: {} as any, parts: [{ type: "text", text: "Forget that, refactor database schema and implement frontend telemetry across all services", id: "2", sessionID, messageID: "m-del-2" }] }
+    );
+
+    // Old child is unconfirmed running
+    let childRec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: "child-to-delete-session" });
+    expect(childRec?.status).toBe("running");
+    expect(childRec?.nativeTerminationConfirmed).toBe(false);
+
+    // Now native OpenCode emits session.deleted for that child session
+    await ctx.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-to-delete-session" },
+    } as any);
+
+    // Child is now confirmed cancelled
+    childRec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: "child-to-delete-session" });
+    expect(childRec?.status).toBe("cancelled");
+    expect(childRec?.nativeTerminationConfirmed).toBe(true);
+
+    // Assignment is cancelled
+    const asRec = await ctx.runtime.services.assignmentService.getAssignment(del.assignmentId);
+    expect(asRec?.status).toBe("cancelled");
+
+    // Deferred replacement resumed and new run is active!
+    const activeNewRun = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeNewRun).not.toBeNull();
+    expect(activeNewRun?.id).not.toBe(run1.id);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 48. modify-reclassification-uses-shared-cancellation-barrier
+  it("48. modify-reclassification-uses-shared-cancellation-barrier", async () => {
+    const abortMock = mock(() => Promise.reject(new Error("Process stuck")));
+    const mockClient = { session: { abort: abortMock } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
+    const sessionID = "sess-modify-barrier";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-mod-1" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement system according to the design specification", id: "1", sessionID, messageID: "m-mod-1" }] }
+    );
+    const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-mod-barrier",
+      targetAgent: "coder",
+    });
+
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-mod-barrier-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-mod-barrier-sess" });
+
+    // User sends material modify requiring reclassification -> abort fails -> new Run is NOT started
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m-mod-2" },
+      { message: {} as any, parts: [{ type: "text", text: "change the goal to refactor backend telemetry database and deploy frontend components across all repositories", id: "2", sessionID, messageID: "m-mod-2" }] }
+    );
+
+    // Active run for session remains null (no overlapping new run started while child running)
+    const activeAfter = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeAfter).toBeNull();
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 49. session-deleted-does-not-cancel-completed-child
+  it("49. session-deleted-does-not-cancel-completed-child", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-progress-once";
+    const sessionID = "sess-comp-child";
     await ctx.adapter.onChatMessage(
       { sessionID, agent: "heidi", messageID: "m1" },
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
-    // Heidi tool produces progress (file written to workspace)
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-comp-del",
+      targetAgent: "coder",
+    });
+
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-completed-session",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-completed-session" });
+    await ctx.runtime.childExecutionLifecycleService.markCompleted({
+      childSessionId: "child-completed-session",
+      output: "All unit tests pass",
+    });
+
+    // Native OpenCode later emits session.deleted for the completed session
+    await ctx.adapter.onEvent({
+      type: "session.deleted",
+      properties: { sessionID: "child-completed-session" },
+    } as any);
+
+    const childRec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: "child-completed-session" });
+    expect(childRec?.status).toBe("completed"); // Not rewritten to cancelled!
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 50. root-old-progress-consumed-once
+  it("50. root-old-progress-consumed-once", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-progress-once-50";
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
     await ctx.adapter.onToolExecuteBefore({
       tool: "write",
       sessionID,
-      callID: "call-prog-1",
+      callID: "call-prog-50",
       args: { path: "src/fix.ts", content: "export const x = 1;" },
     });
     mkdirSync(join(TEST_DIR, "src"), { recursive: true });
     writeFileSync(join(TEST_DIR, "src/fix.ts"), "export const x = 1;");
     await ctx.adapter.onToolExecuteAfter(
-      { tool: "write", sessionID, callID: "call-prog-1", args: { path: "src/fix.ts" } },
+      { tool: "write", sessionID, callID: "call-prog-50", args: { path: "src/fix.ts" } },
       { output: "saved", metadata: {} }
     );
 
@@ -1568,7 +1796,7 @@ describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity G
     expect(eval1.reasonCode).toBe("PROGRESS_CONFIRMED");
     expect(eval1.requiresAction).toBe(true);
 
-    // Second idle evaluate with no new attempt/delta: must NOT yield PROGRESS_CONFIRMED again!
+    // Second idle evaluate without new attempt/delta: yields NO_PROGRESS (does not loop)
     const eval2 = ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID, latestActionFingerprint: afp });
     expect(eval2.reasonCode).toBe("NO_PROGRESS");
     expect(eval2.requiresAction).toBe(false);

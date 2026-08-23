@@ -109,6 +109,26 @@ export interface StrategyConstraint {
   clearedAt?: string;
 }
 
+export interface StrategyConstraintSet {
+  runId: string;
+  assignmentId: string;
+  stateFingerprint: string;
+  prohibitedActionFingerprints: string[];
+  reasonsByFingerprint?: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+  clearedAt?: string;
+}
+
+export interface SaveStrategyConstraintInput {
+  runId: string;
+  assignmentId: string;
+  prohibitedActionFingerprint: string;
+  stateFingerprint: string;
+  reason: string;
+  createdAt?: string;
+}
+
 export interface TransitionEvaluationResult {
   runId: string;
   currentPhase: OrchestrationPhase;
@@ -400,43 +420,100 @@ export class RunTransitionEngine {
   }
 
   /**
-   * Durable strategy constraint management in execution_metadata.
+   * Durable state-scoped strategy constraint set management in execution_metadata.
    */
-  saveStrategyConstraint(constraint: StrategyConstraint): void {
-    const key = `strategy_constraint:${constraint.runId}:${constraint.assignmentId}`;
-    const val = JSON.stringify(constraint);
+  saveStrategyConstraint(input: SaveStrategyConstraintInput | StrategyConstraint): void {
+    const key = `strategy_constraint_set:${input.runId}:${input.assignmentId}`;
+    const existing = this.getActiveStrategyConstraints(input.runId, input.assignmentId);
+    const now = new Date().toISOString();
+
+    let constraintSet: StrategyConstraintSet;
+
+    if (existing && existing.stateFingerprint === input.stateFingerprint) {
+      // Same state: accumulate into set (bounded to max 20)
+      const prohibited = Array.from(new Set([...existing.prohibitedActionFingerprints, input.prohibitedActionFingerprint]));
+      const reasons = { ...existing.reasonsByFingerprint, [input.prohibitedActionFingerprint]: input.reason };
+      constraintSet = {
+        runId: input.runId,
+        assignmentId: input.assignmentId,
+        stateFingerprint: input.stateFingerprint,
+        prohibitedActionFingerprints: prohibited.slice(-20),
+        reasonsByFingerprint: reasons,
+        createdAt: existing.createdAt,
+        updatedAt: now,
+      };
+    } else {
+      // State changed or first constraint: supersede with new set for this state
+      constraintSet = {
+        runId: input.runId,
+        assignmentId: input.assignmentId,
+        stateFingerprint: input.stateFingerprint,
+        prohibitedActionFingerprints: [input.prohibitedActionFingerprint],
+        reasonsByFingerprint: { [input.prohibitedActionFingerprint]: input.reason },
+        createdAt: input.createdAt ?? now,
+        updatedAt: now,
+      };
+    }
+
+    const val = JSON.stringify(constraintSet);
     this.db.query(
       `INSERT INTO execution_metadata (id, run_id, session_id, key, value, created_at)
        VALUES (?, ?, NULL, ?, ?, datetime('now'))
        ON CONFLICT(run_id, key) DO UPDATE SET value = excluded.value`
     ).run(
-      `meta-sc-${constraint.runId}-${constraint.assignmentId}`,
-      constraint.runId,
+      `meta-scs-${input.runId}-${input.assignmentId}`,
+      input.runId,
       key,
       val
     );
   }
 
-  getActiveStrategyConstraint(runId: string, assignmentId: string): StrategyConstraint | null {
-    const key = `strategy_constraint:${runId}:${assignmentId}`;
+  getActiveStrategyConstraints(runId: string, assignmentId: string): StrategyConstraintSet | null {
+    const key = `strategy_constraint_set:${runId}:${assignmentId}`;
     const row = this.db.query(
       "SELECT value FROM execution_metadata WHERE run_id = ? AND key = ?"
     ).get(runId, key) as { value: string } | null;
     if (!row) return null;
     try {
-      const constraint = JSON.parse(row.value) as StrategyConstraint;
-      if (constraint.clearedAt) return null;
-      return constraint;
+      const parsed = JSON.parse(row.value) as StrategyConstraintSet;
+      if (parsed.clearedAt) return null;
+      return parsed;
     } catch {
       return null;
     }
   }
 
+  getActiveStrategyConstraint(runId: string, assignmentId: string): StrategyConstraint | null {
+    const set = this.getActiveStrategyConstraints(runId, assignmentId);
+    if (!set || set.prohibitedActionFingerprints.length === 0) return null;
+    const latestFp = set.prohibitedActionFingerprints[set.prohibitedActionFingerprints.length - 1];
+    return {
+      runId: set.runId,
+      assignmentId: set.assignmentId,
+      prohibitedActionFingerprint: latestFp,
+      stateFingerprint: set.stateFingerprint,
+      reason: set.reasonsByFingerprint?.[latestFp] ?? "REPEATED_ACTION_BLOCKED",
+      createdAt: set.createdAt,
+      clearedAt: set.clearedAt,
+    };
+  }
+
   clearStrategyConstraint(runId: string, assignmentId: string): void {
-    const existing = this.getActiveStrategyConstraint(runId, assignmentId);
-    if (existing) {
-      existing.clearedAt = new Date().toISOString();
-      this.saveStrategyConstraint(existing);
+    const set = this.getActiveStrategyConstraints(runId, assignmentId);
+    if (set) {
+      set.clearedAt = new Date().toISOString();
+      const key = `strategy_constraint_set:${runId}:${assignmentId}`;
+      const val = JSON.stringify(set);
+      this.db.query(
+        `INSERT INTO execution_metadata (id, run_id, session_id, key, value, created_at)
+         VALUES (?, ?, NULL, ?, ?, datetime('now'))
+         ON CONFLICT(run_id, key) DO UPDATE SET value = excluded.value`
+      ).run(
+        `meta-scs-${runId}-${assignmentId}`,
+        runId,
+        key,
+        val
+      );
     }
   }
 
@@ -657,14 +734,17 @@ export class RunTransitionEngine {
         }
       }
 
-      if (input.latestActionFingerprint) {
+      const stalledActionFingerprint =
+        input.latestActionFingerprint ?? lastAttempt?.actionFingerprint;
+
+      if (stalledActionFingerprint) {
         const causalFp = (lastAttempt && lastAttempt.preStateFingerprint)
           ? lastAttempt.preStateFingerprint
           : `${snapshot.progress.lastRepositoryDelta}:${snapshot.childState.activeRequired}:${snapshot.childState.failedRequired}:${workItems.filter(w => w.isSatisfied).length}`;
         this.saveStrategyConstraint({
           runId: input.runId,
           assignmentId: targetItemId,
-          prohibitedActionFingerprint: input.latestActionFingerprint,
+          prohibitedActionFingerprint: stalledActionFingerprint,
           stateFingerprint: causalFp,
           reason: "STALL_DETECTED",
           createdAt: new Date().toISOString(),
@@ -680,7 +760,7 @@ export class RunTransitionEngine {
         strategyDecision: "CHANGE_STRATEGY",
         reasonCode: "STALL_DETECTED",
         requiresAction: true,
-        prohibitedActionFingerprint: input.latestActionFingerprint,
+        prohibitedActionFingerprint: stalledActionFingerprint,
       };
     }
 

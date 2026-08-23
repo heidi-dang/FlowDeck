@@ -3,7 +3,7 @@
  *
  * Ensures:
  * - Atomic read-and-increment on genuine user turns within a write transaction.
- * - Idempotent handling of duplicate native message events (messageId / event hash).
+ * - Idempotent handling of duplicate native message events (messageId / event hash), including out-of-order duplicates.
  * - Monotonic turn version survives process restarts.
  * - Old autonomous continuation tokens become invalid when the user sends a new message.
  */
@@ -41,19 +41,59 @@ export class SessionTurnRepository extends BaseRepository {
   }): number {
     return this.tx.write(() => {
       const now = new Date().toISOString();
-      const existing = this.findBySessionId(input.sessionId);
 
-      // Idempotency: duplicate delivery of the exact same message must NOT increment generation
-      if (existing) {
-        if (input.messageId && existing.lastUserMessageId === input.messageId) {
-          return existing.userTurnVersion;
+      // 1. Authoritative messageId deduplication against session_turn_messages
+      if (input.messageId) {
+        const existingMsg = this.db.query(
+          "SELECT user_turn_version FROM session_turn_messages WHERE session_id = ? AND message_id = ?"
+        ).get(input.sessionId, input.messageId) as { user_turn_version: number } | null;
+
+        if (existingMsg) {
+          return existingMsg.user_turn_version;
         }
-        if (!input.messageId && input.messageHash && existing.lastUserMessageHash === input.messageHash) {
-          return existing.userTurnVersion;
-        }
+
+        const existingTurn = this.findBySessionId(input.sessionId);
+        const nextVersion = existingTurn ? existingTurn.userTurnVersion + 1 : 1;
+
+        // Atomically record message identity and update turn version
+        this.db.query(`
+          INSERT INTO session_turn_messages (session_id, message_id, message_hash, user_turn_version, created_at)
+          VALUES (?, ?, ?, ?, ?)
+        `).run(
+          input.sessionId,
+          input.messageId,
+          input.messageHash ?? null,
+          nextVersion,
+          now
+        );
+
+        this.db.query(`
+          INSERT INTO session_turns (session_id, user_turn_version, last_user_message_id, last_user_message_hash, updated_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(session_id) DO UPDATE SET
+            user_turn_version = ?,
+            last_user_message_id = excluded.last_user_message_id,
+            last_user_message_hash = excluded.last_user_message_hash,
+            updated_at = excluded.updated_at
+        `).run(
+          input.sessionId,
+          nextVersion,
+          input.messageId,
+          input.messageHash ?? null,
+          now,
+          nextVersion
+        );
+
+        return nextVersion;
       }
 
-      const nextVersion = existing ? existing.userTurnVersion + 1 : 1;
+      // 2. Hash-only fallback when messageId is unavailable
+      const existingTurn = this.findBySessionId(input.sessionId);
+      if (existingTurn && input.messageHash && existingTurn.lastUserMessageHash === input.messageHash) {
+        return existingTurn.userTurnVersion;
+      }
+
+      const nextVersion = existingTurn ? existingTurn.userTurnVersion + 1 : 1;
 
       this.db.query(`
         INSERT INTO session_turns (session_id, user_turn_version, last_user_message_id, last_user_message_hash, updated_at)
@@ -66,7 +106,7 @@ export class SessionTurnRepository extends BaseRepository {
       `).run(
         input.sessionId,
         nextVersion,
-        input.messageId ?? null,
+        null,
         input.messageHash ?? null,
         now,
         nextVersion
