@@ -15,7 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-test-planner.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "95a0f143fdc4bdb573f401fd063be9ba55004935";
+const EXPECTED_FUNCTIONAL_SHA = "3385212921b40d9cc3f56173d723b06191afba83";
 
 function getReleaseBinaryPath() {
   if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
@@ -386,9 +386,64 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 4. stale_semantic_package_widening (persisted stale SCIP evidence fixture)
+  // 4. stale_semantic_package_widening (persisted stale SCIP evidence fixture with fresh-vs-stale causal control)
   {
-    console.log("-> Running stale_semantic_package_widening scenario...");
+    console.log("-> Running stale_semantic_package_widening scenario (fresh vs stale causal control)...");
+    
+    // First run Fresh Control on identical fixture with stale = 0
+    const freshDir = join(tmpdir(), `fdx-bench-m6-fresh-control-${Date.now()}`);
+    mkdirSync(freshDir, { recursive: true });
+    initGitRepo(freshDir);
+    const freshPkg = join(freshDir, "packages", "feat");
+    mkdirSync(join(freshPkg, "src"), { recursive: true });
+    mkdirSync(join(freshPkg, "tests"), { recursive: true });
+    writeFileSync(join(freshPkg, "package.json"), JSON.stringify({ name: "@my/feat", scripts: { test: "vitest" } }));
+    writeFileSync(join(freshPkg, "src", "a.ts"), "export function fnA() { return 1; }\nexport function fnUnrelated() { return 2; }\n");
+    writeFileSync(join(freshPkg, "tests", "a.test.ts"), "test('a', () => {});");
+    writeFileSync(join(freshPkg, "tests", "b.test.ts"), "test('b', () => {});");
+
+    const mockBin = join(freshDir, "mock-scip-ts");
+    writeFileSync(mockBin, "#!/bin/sh\nexit 0\n");
+    chmodSync(mockBin, 0o755);
+
+    gitCommitAll(freshDir, "init");
+
+    execFileSync(binaryPath, ["build", "refresh"], {
+      cwd: freshDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBin },
+      stdio: "ignore",
+    });
+
+    const freshDb = initFdxDb(freshDir, binaryPath);
+    freshDb.exec(`
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/feat/tests/a.test.ts', 'h1', 50, 100);
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/feat/src/a.ts', 'h2', 50, 100);
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/feat/tests/a.test.ts', 'file', 'packages/feat/tests/a.test.ts', 'pkg:npm:packages/feat');
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/feat/src/a.ts:fnA', 'symbol', 'packages/feat/src/a.ts', 'fnA', 'pkg:npm:packages/feat');
+      INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:a_fresh_edge', 'file:packages/feat/tests/a.test.ts', 'sym:packages/feat/src/a.ts:fnA', 'references', 'scip_ts', 'fp_stale', 4, 'packages/feat/tests/a.test.ts', 'h1', 1, 1, 0, 'scip-typescript');
+    `);
+    freshDb.close();
+    writeFileSync(join(freshPkg, "src", "a.ts"), "export function fnA() { return 42; }\nexport function fnUnrelated() { return 2; }\n");
+
+    const freshPlanRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
+      cwd: freshDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBin },
+      encoding: "utf8",
+    });
+    const freshPlan = JSON.parse(freshPlanRaw);
+    if (!freshPlan.selected_checks.some((c) => c.check_id.includes("a.test.ts"))) {
+      throw new Error("fresh control failed: a.test.ts not selected");
+    }
+    if (freshPlan.selected_checks.some((c) => c.check_id.includes("b.test.ts"))) {
+      throw new Error("fresh control failed: b.test.ts must not be selected under fresh precise SCIP");
+    }
+    if (freshPlan.assurance === "unverified") {
+      throw new Error("fresh control failed: assurance must not be unverified");
+    }
+    rmSync(freshDir, { recursive: true, force: true });
+
+    // Now run Stale Variant on identical fixture with stale = 1
     const benchDir = join(tmpdir(), `fdx-bench-m6-stale-widening-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
     initGitRepo(benchDir);
@@ -397,31 +452,57 @@ async function runBenchmark() {
     mkdirSync(join(pkgDir, "src"), { recursive: true });
     mkdirSync(join(pkgDir, "tests"), { recursive: true });
     writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "@my/feat", scripts: { test: "vitest" } }));
-    writeFileSync(join(pkgDir, "src", "a.ts"), "export const a = 1;");
+    writeFileSync(join(pkgDir, "src", "a.ts"), "export function fnA() { return 1; }\nexport function fnUnrelated() { return 2; }\n");
     writeFileSync(join(pkgDir, "tests", "a.test.ts"), "test('a', () => {});");
     writeFileSync(join(pkgDir, "tests", "b.test.ts"), "test('b', () => {});");
+
+    const staleMockBin = join(benchDir, "mock-scip-ts");
+    writeFileSync(staleMockBin, "#!/bin/sh\nexit 0\n");
+    chmodSync(staleMockBin, 0o755);
+
     gitCommitAll(benchDir, "init");
+
+    execFileSync(binaryPath, ["build", "refresh"], {
+      cwd: benchDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: staleMockBin },
+      stdio: "ignore",
+    });
 
     // Persist stale edge (stale = 1)
     const db = initFdxDb(benchDir, binaryPath);
     db.exec(`
-      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/feat/tests/a.test.ts', 'h1', 50, 100);
-      INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/feat/tests/a.test.ts', 'file', 'packages/feat/tests/a.test.ts', 'pkg:npm:packages/feat');
-      INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/feat/src/a.ts:a', 'symbol', 'packages/feat/src/a.ts', 'a', 'pkg:npm:packages/feat');
-      INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
-        VALUES ('edge:a_stale_edge', 'file:packages/feat/tests/a.test.ts', 'sym:packages/feat/src/a.ts:a', 'references', 'scip_ts', 'fp_stale', 4, 'packages/feat/tests/a.test.ts', 'h1', 1, 1, 1, 'scip-typescript');
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/feat/tests/a.test.ts', 'h1', 50, 100);
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/feat/src/a.ts', 'h2', 50, 100);
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/feat/tests/a.test.ts', 'file', 'packages/feat/tests/a.test.ts', 'pkg:npm:packages/feat');
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/feat/src/a.ts:fnA', 'symbol', 'packages/feat/src/a.ts', 'fnA', 'pkg:npm:packages/feat');
+      INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:a_stale_edge', 'file:packages/feat/tests/a.test.ts', 'sym:packages/feat/src/a.ts:fnA', 'references', 'scip_ts', 'fp_stale', 4, 'packages/feat/tests/a.test.ts', 'h1', 1, 1, 1, 'scip-typescript');
     `);
     db.close();
 
-    writeFileSync(join(pkgDir, "src", "a.ts"), "export const a = 2;");
+    writeFileSync(join(pkgDir, "src", "a.ts"), "export function fnA() { return 42; }\nexport function fnUnrelated() { return 2; }\n");
 
     const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
       cwd: benchDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: staleMockBin },
       encoding: "utf8",
     });
     const plan = JSON.parse(planRaw);
-    if (plan.selected_checks.length < 2) {
-      throw new Error("stale_semantic_package_widening failed: all package tests should be widened under stale/missing SCIP");
+    const staleATest = plan.selected_checks.find((c) => c.check_id.includes("a.test.ts"));
+    if (!staleATest) {
+      throw new Error("stale_semantic_package_widening failed: mapped a.test.ts must be retained");
+    }
+    if (!staleATest.evidence_refs || staleATest.evidence_refs.length === 0 || !staleATest.evidence_refs[0].stale) {
+      throw new Error("stale_semantic_package_widening failed: evidence_refs must preserve stale=true");
+    }
+    if (!plan.selected_checks.some((c) => c.check_id.includes("b.test.ts") || c.check_id.includes("test"))) {
+      throw new Error("stale_semantic_package_widening failed: package widening must select b.test.ts or package test suite");
+    }
+    if (!plan.uncertainty.some((u) => JSON.stringify(u).toLowerCase().includes("stale"))) {
+      throw new Error("stale_semantic_package_widening failed: ProviderStale uncertainty must be emitted");
+    }
+    if (plan.assurance === "exact") {
+      throw new Error("stale_semantic_package_widening failed: assurance must be degraded below exact");
     }
 
     const samples = [];
@@ -429,6 +510,7 @@ async function runBenchmark() {
       const t0 = performance.now();
       execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
         cwd: benchDir,
+        env: { ...process.env, SCIP_TYPESCRIPT_BIN: staleMockBin },
       });
       const t1 = performance.now();
       if (r >= warmup) samples.push(t1 - t0);
@@ -750,11 +832,19 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // Get current git hash of harness commit
-  let benchmarkHarnessSha = declaredFunctionalSha;
+  // Resolve actual committed commit that owns the benchmark harness
+  let benchmarkHarnessSha = "";
   try {
-    benchmarkHarnessSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
-  } catch {}
+    execFileSync("git", ["diff", "--quiet", "--", "scripts/benchmark-fdx-vci-m6-test-planner.mjs"], { cwd: ROOT });
+    execFileSync("git", ["diff", "--cached", "--quiet", "--", "scripts/benchmark-fdx-vci-m6-test-planner.mjs"], { cwd: ROOT });
+    benchmarkHarnessSha = execFileSync("git", ["log", "-1", "--format=%H", "--", "scripts/benchmark-fdx-vci-m6-test-planner.mjs"], { cwd: ROOT, encoding: "utf8" }).trim();
+    const currentHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: ROOT, encoding: "utf8" }).trim();
+    if (benchmarkHarnessSha !== currentHead) {
+      throw new Error(`HEAD (${currentHead}) != harness owner commit (${benchmarkHarnessSha})`);
+    }
+  } catch (err) {
+    throw new Error(`Benchmark harness SHA provenance verification failed: ${err.message}`);
+  }
 
   const report = {
     milestone: "M6",
