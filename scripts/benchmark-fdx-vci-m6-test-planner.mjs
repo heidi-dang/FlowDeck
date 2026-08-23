@@ -15,7 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-test-planner.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "300a622ddfe7e36e4f522705268cd389101d4b30";
+const EXPECTED_FUNCTIONAL_SHA = "3101e0ad419d814f336909293a60326b6bae43ee";
 
 function getReleaseBinaryPath() {
   if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
@@ -220,7 +220,7 @@ async function runBenchmark() {
       INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/web/tests/a.test.ts', 'file', 'packages/web/tests/a.test.ts', 'pkg:npm:packages/web');
       INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/web/src/a.ts:fnA', 'symbol', 'packages/web/src/a.ts', 'fnA', 'pkg:npm:packages/web');
       INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-rust', 'scip', '1.0', 'scip-rust', '0.1', '["rust"]', '.', 'packages/web', 'cfg_rust', 'in_rust', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-rust', 'scip', '1.0', 'scip-rust', '0.1', '["rust"]', '.', 'packages/web', 'cfg_rust', 'fp_rust', 'available', 'fresh', 1, 100, 100);
       INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:a_test', 'file:packages/web/tests/a.test.ts', 'sym:packages/web/src/a.ts:fnA', 'references', 'scip_rust', 'fp_rust', 4, 'packages/web/tests/a.test.ts', 'h1', 1, 1, 0, 'scip-rust');
     `);
@@ -260,7 +260,7 @@ async function runBenchmark() {
       INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/ab/tests/b.test.ts', 'file', 'packages/ab/tests/b.test.ts', 'pkg:npm:packages/ab');
       INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/ab/src/b.ts:fnB', 'symbol', 'packages/ab/src/b.ts', 'fnB', 'pkg:npm:packages/ab');
       INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-a', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', 'packages/a', NULL, 'fp_b', 'in_a', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-a', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', 'packages/a', NULL, 'cfg_a', 'fp_b', 'available', 'fresh', 1, 100, 100);
       INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:b_test', 'file:packages/ab/tests/b.test.ts', 'sym:packages/ab/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/ab/tests/b.test.ts', 'h1', 1, 1, 0, 'scip-a');
     `);
@@ -340,7 +340,7 @@ async function runBenchmark() {
       INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/pb/tests/b.test.ts', 'file', 'packages/pb/tests/b.test.ts', 'pkg:npm:packages/pb');
       INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pb/src/b.ts:fnB', 'symbol', 'packages/pb/src/b.ts', 'fnB', 'pkg:npm:packages/pb');
       INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'fp_b', 'in_pb', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'cfg_b', 'fp_b', 'available', 'fresh', 1, 100, 100);
       INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb');
     `);
@@ -402,7 +402,7 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/api/tests/user.test.ts', 'file', 'packages/api/tests/user.test.ts', 'pkg:npm:packages/api');
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/api/src/user.ts:createUser', 'symbol', 'packages/api/src/user.ts', 'createUser', 'pkg:npm:packages/api');
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-typescript', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/api', 'fp_scip_m6', 'in_api', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-typescript', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/api', 'cfg_api', 'fp_scip_m6', 'available', 'fresh', 1, 100, 100);
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:user_test_refs_createUser', 'file:packages/api/tests/user.test.ts', 'sym:packages/api/src/user.ts:createUser', 'references', 'scip_ts', 'fp_scip_m6', 4, 'packages/api/tests/user.test.ts', 'hash_test', 1, 1, 0, 'scip-typescript');
     `);
@@ -499,7 +499,7 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/core/tests/core.test.ts', 'file', 'packages/core/tests/core.test.ts', 'pkg:npm:packages/core');
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/core/src/index.ts:coreFn', 'symbol', 'packages/core/src/index.ts', 'coreFn', 'pkg:npm:packages/core');
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-core', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/core', 'cfg_core', 'in_core', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-core', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/core', 'cfg_core', 'cfg_core', 'available', 'fresh', 1, 100, 100);
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:core_test', 'file:packages/core/tests/core.test.ts', 'sym:packages/core/src/index.ts:coreFn', 'references', 'scip_ts', 'cfg_core', 4, 'packages/core/tests/core.test.ts', 'h1', 1, 1, 0, 'scip-core');
     `);
@@ -553,7 +553,7 @@ async function runBenchmark() {
       INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:tests/mod.test.ts', 'file', 'tests/mod.test.ts', 'pkg:npm:.');
       INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:src/mod.ts:oldFn', 'symbol', 'src/mod.ts', 'oldFn', 'pkg:npm:.');
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-root', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', '.', 'cfg_root', 'in_root', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-root', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', '.', 'cfg_root', 'cfg_root', 'available', 'fresh', 1, 100, 100);
       INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:mod_test_refs_oldFn', 'file:tests/mod.test.ts', 'sym:src/mod.ts:oldFn', 'references', 'scip_ts', 'cfg_root', 4, 'tests/mod.test.ts', 'h1', 1, 1, 0, 'scip-root');
     `);
@@ -620,7 +620,7 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/feat/tests/a.test.ts', 'file', 'packages/feat/tests/a.test.ts', 'pkg:npm:packages/feat');
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/feat/src/a.ts:fnA', 'symbol', 'packages/feat/src/a.ts', 'fnA', 'pkg:npm:packages/feat');
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-typescript', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/feat', 'fp_stale', 'in_feat', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-typescript', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/feat', 'cfg_stale', 'fp_stale', 'available', 'fresh', 1, 100, 100);
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:a_fresh_edge', 'file:packages/feat/tests/a.test.ts', 'sym:packages/feat/src/a.ts:fnA', 'references', 'scip_ts', 'fp_stale', 4, 'packages/feat/tests/a.test.ts', 'h1', 1, 1, 0, 'scip-typescript');
     `);
@@ -944,7 +944,7 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/pb/tests/b.test.ts', 'file', 'packages/pb/tests/b.test.ts', 'pkg:npm:packages/pb');
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pb/src/b.ts:fnB', 'symbol', 'packages/pb/src/b.ts', 'fnB', 'pkg:npm:packages/pb');
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'fp_b', 'in_pb', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'cfg_b', 'fp_b', 'available', 'fresh', 1, 100, 100);
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb');
     `);
@@ -988,7 +988,7 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pb/src/b.ts:fnB', 'symbol', 'packages/pb/src/b.ts', 'fnB', 'pkg:npm:packages/pb');
 
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'fp_b', 'in_pb', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'cfg_b', 'fp_b', 'available', 'fresh', 1, 100, 100);
 
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:stale_a', 'file:packages/pa/tests/a.test.ts', 'sym:packages/pa/src/a.ts:fnA', 'references', 'scip_ts', 'fp_a', 4, 'packages/pa/tests/a.test.ts', 'h1', 1, 1, 1, 'scip-typescript');
