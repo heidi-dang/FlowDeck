@@ -1,94 +1,94 @@
 {
   "metadata": {
     "benchmark": "benchmark-fdx-vci-m5-build-config",
-    "timestamp": "2026-08-23T03:02:12.623Z",
+    "timestamp": "2026-08-23T03:22:42.105Z",
     "platform": "linux",
     "arch": "x64",
     "functional_source_sha": "9c1a9b693f5e17aba3b8e7203807d72f274fbaae",
     "binary_source_sha": "9c1a9b693f5e17aba3b8e7203807d72f274fbaae",
-    "benchmark_harness_sha": "dd0333eaa66820d6fb97d3d15cde1e8dc49d6a33",
-    "binary_path": "/tmp/flowdeck-m5-f5/target/release/fdx"
+    "benchmark_harness_sha": "3a0ce7fb9c3b0080298136b1a278f8e23ba216f6",
+    "binary_path": "/tmp/flowdeck-m5-f5-final/target/release/fdx"
   },
   "results": {
     "fresh_build_config_aware_impact": {
       "count": 5,
-      "min": 58.6,
-      "max": 134.5,
-      "mean": 75.96,
-      "median": 59.33,
-      "p95": 134.5
+      "min": 63,
+      "max": 125.58,
+      "mean": 91.68,
+      "median": 87.03,
+      "p95": 125.58
     },
     "stale_new_dependency_snapshot_union": {
       "count": 5,
-      "min": 24.51,
-      "max": 79.68,
-      "mean": 58.14,
-      "median": 76.3,
-      "p95": 79.68
+      "min": 26.22,
+      "max": 78.3,
+      "mean": 48.95,
+      "median": 32.4,
+      "p95": 78.3
     },
     "stale_scope_isolation": {
       "count": 5,
-      "min": 69.38,
-      "max": 70.04,
-      "mean": 69.82,
-      "median": 69.93,
-      "p95": 70.04
+      "min": 58.6,
+      "max": 75.36,
+      "mean": 67.68,
+      "median": 69.52,
+      "p95": 75.36
     },
     "workspace_root_membership_change": {
       "count": 5,
-      "min": 53.35,
-      "max": 56.53,
-      "mean": 54.92,
-      "median": 54.92,
-      "p95": 56.53
+      "min": 52.88,
+      "max": 54,
+      "mean": 53.31,
+      "median": 53.13,
+      "p95": 54
     },
     "bound_safe_widening": {
       "count": 5,
-      "min": 3246.08,
-      "max": 4552.99,
-      "mean": 4058.26,
-      "median": 4352.23,
-      "p95": 4552.99
+      "min": 4442.15,
+      "max": 4879.02,
+      "mean": 4757.01,
+      "median": 4804.3,
+      "p95": 4879.02
     },
     "provider_disappearance": {
       "count": 5,
-      "min": 4.62,
-      "max": 4.72,
-      "mean": 4.68,
-      "median": 4.68,
-      "p95": 4.72
+      "min": 4.82,
+      "max": 5,
+      "mean": 4.89,
+      "median": 4.87,
+      "p95": 5
     },
-    "provider_detection_failure_preserves_evidence": {
+    "provider_ingest_failure_preserves_evidence": {
       "count": 5,
-      "min": 7.22,
-      "max": 7.35,
-      "mean": 7.27,
-      "median": 7.25,
-      "p95": 7.35
+      "min": 10.02,
+      "max": 13.39,
+      "mean": 11.73,
+      "median": 11.75,
+      "p95": 13.39
     },
     "malformed_snapshot_provider_failure": {
       "count": 5,
-      "min": 23.47,
-      "max": 24.23,
-      "mean": 23.63,
-      "median": 23.49,
-      "p95": 24.23
+      "min": 52.54,
+      "max": 53.72,
+      "mean": 53.24,
+      "median": 53.27,
+      "p95": 53.72
     },
     "malformed_package_local_control": {
       "count": 5,
-      "min": 29.96,
-      "max": 50.2,
-      "mean": 41.88,
-      "median": 43.2,
-      "p95": 50.2
+      "min": 19.45,
+      "max": 26.78,
+      "mean": 25.13,
+      "median": 26.67,
+      "p95": 26.78
     },
     "why_typed_build_path": {
       "count": 5,
-      "min": 63.41,
-      "max": 66.53,
-      "mean": 65.44,
-      "median": 65.83,
-      "p95": 66.53
+      "min": 30.36,
+      "max": 55.85,
+      "mean": 49.87,
+      "median": 55.36,
+      "p95": 55.85
     }
   }
 }
