@@ -142,7 +142,7 @@ export class RunService {
         return this.writer.updateRunState(ctx.tx, this.db, id, input, event, outboxEntry);
       }
       // No status change — just do a trivial update via the writer
-      return this.writer.updateRunState(ctx.tx, this.db, id, input, createEvent(
+      const progressEvent = createEvent(
         OrchestrationEventType.RUN_PROGRESS,
         {
           correlationId: existing.correlationId,
@@ -153,9 +153,10 @@ export class RunService {
           runId: id,
           data: { stage: input.stage, progress: input.progress },
         },
-      ), {
+      );
+      return this.writer.updateRunState(ctx.tx, this.db, id, input, progressEvent, {
         id: randomUUID(),
-        eventId: randomUUID(),
+        eventId: progressEvent.id,
         eventType: OrchestrationEventType.RUN_PROGRESS,
         status: "pending" as const,
         correlationId: existing.correlationId,

@@ -6,7 +6,6 @@
  */
 
 import type { RouterDecision } from "./heidi-fast-router"
-import { getTaskState } from "./heidi-task-state"
 
 export interface SessionRouteState {
   sessionID: string
@@ -75,9 +74,8 @@ export function isDuplicateMessage(sessionID: string, messageHash: string): bool
 }
 
 /**
- * Helper for facade consumers:
- * Only preserves route when active AND not completed/terminal.
- * FAST_DIRECT routes are turn-scoped and never preserved for non-duplicate messages.
+ * Ephemeral cache query helper:
+ * Returns true if in-memory cache has an active route for the session.
  */
 export function shouldPreserveRoute(sessionID: string, messageHash: string): {
   preserve: boolean
@@ -93,13 +91,11 @@ export function shouldPreserveRoute(sessionID: string, messageHash: string): {
     return { preserve: false, reason: "FAST_DIRECT_TURN_COMPLETE" }
   }
 
-  // If task state exists and is already completed, do not preserve
-  const taskState = getTaskState(entry.taskId)
-  if (taskState && (taskState.snapshot().currentPhase === "complete" || taskState.snapshot().verificationState === "passed")) {
-    return { preserve: false, reason: "TASK_ALREADY_COMPLETE" }
+  if (entry.lastUserMessageHash === messageHash) {
+    return { preserve: true, reason: "EXACT_MESSAGE_REPLAY" }
   }
 
-  return { preserve: true, reason: "ACTIVE_TASK_CONTINUATION" }
+  return { preserve: true, reason: "ACTIVE_ROUTE_IN_MEMORY" }
 }
 
 /** Mark a session route as inactive / completed. */

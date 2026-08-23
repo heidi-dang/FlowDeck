@@ -79,7 +79,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
         outboxEntry.eventType,
         outboxEntry.aggregateId ?? "",
         outboxData,
-        outboxEntry.correlationId,
+        outboxEntry.id,
       );
 
       return run;
@@ -131,7 +131,7 @@ export class SqliteTransactionalRunWriter implements TransactionalRunWriter {
         outboxEntry.eventType,
         outboxEntry.aggregateId ?? "",
         outboxData,
-        outboxEntry.correlationId,
+        outboxEntry.id,
       );
 
       // 4. Read back the updated run

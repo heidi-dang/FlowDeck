@@ -27,7 +27,7 @@ export interface ProjectRuntimeContext {
 const _registry = new Map<string, ProjectRuntimeContext>();
 
 /**
- * Acquire or create the production orchestration runtime for a given project directory.
+ * Acquire the production orchestration runtime for a given project directory.
  * Increments reference count for safe multi-owner lifecycle.
  */
 export function acquireProjectRuntime(directory: string): ProjectRuntimeContext {
@@ -104,7 +104,7 @@ export async function releaseProjectRuntime(directory: string): Promise<void> {
 }
 
 /**
- * Get the active project runtime context if it exists. Does NOT create one.
+ * Get the active project runtime context if it exists. Strictly read-only: does NOT acquire lease or increment refCount.
  */
 export function getProjectRuntime(directory: string): ProjectRuntimeContext | null {
   const canonicalDir = resolve(directory);
@@ -114,14 +114,14 @@ export function getProjectRuntime(directory: string): ProjectRuntimeContext | nu
 }
 
 /**
- * Compatibility alias for acquireProjectRuntime.
+ * @deprecated Use explicit acquireProjectRuntime(directory) to acquire ownership or getProjectRuntime(directory) for read-only access.
  */
 export function getOrCreateProjectRuntime(directory: string): ProjectRuntimeContext {
   return acquireProjectRuntime(directory);
 }
 
 /**
- * Force disposal of project runtime regardless of refCount.
+ * Force disposal of project runtime regardless of refCount (for test isolation/admin teardown).
  */
 export async function disposeProjectRuntime(directory: string): Promise<void> {
   const canonicalDir = resolve(directory);

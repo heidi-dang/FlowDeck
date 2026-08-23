@@ -2,7 +2,7 @@
  * Adapter between HeidiFastRouter decisions and FlowDeck authoritative RoutingDecision domain.
  *
  * Provides typed bi-directional mapping without `as any` casts and fails closed if evidence is malformed.
- * Uses real FlowDeck task assessment logic without fabricating risk/ambiguity or fake workstream paths.
+ * Uses real FlowDeck task assessment logic without fabricating risk/ambiguity, fake workstream paths, or fake model recommendations.
  */
 
 import { randomUUID } from "node:crypto";
@@ -30,8 +30,43 @@ export const VALID_EXECUTION_CLASSES: ReadonlySet<string> = new Set<ExecutionCla
   "DEEP",
 ]);
 
+export const VALID_SPECIALIST_DOMAINS: ReadonlySet<string> = new Set<SpecialistDomain>([
+  "DEBUG",
+  "SECURITY",
+  "UI",
+  "BACKEND",
+  "DEVOPS",
+  "RELEASE",
+  "REVIEW",
+  "ARCHITECTURE",
+]);
+
+/**
+ * Standard FlowDeck model recommendation constant: preserves user/global configured model.
+ */
+export const PRESERVE_CONFIGURED_MODEL = "advisory-only: preserve configured model";
+
+/**
+ * Compatibility sentinel SHA when running outside a git repository or when commit provenance is unavailable.
+ */
+export const UNKNOWN_SOURCE_SHA = "0000000000000000000000000000000000000000";
+
 export function isExecutionClass(val: unknown): val is ExecutionClass {
   return typeof val === "string" && VALID_EXECUTION_CLASSES.has(val);
+}
+
+export function isSpecialistDomain(val: unknown): val is SpecialistDomain {
+  return typeof val === "string" && VALID_SPECIALIST_DOMAINS.has(val);
+}
+
+export function isCodeModeTelemetry(val: unknown): val is CodeModeTelemetry {
+  if (!val || typeof val !== "object") return false;
+  const obj = val as Record<string, unknown>;
+  return (
+    typeof obj.codeModeConsidered === "boolean" &&
+    typeof obj.codeModeSelected === "boolean" &&
+    (obj.codeModeRejectedReason === undefined || typeof obj.codeModeRejectedReason === "string")
+  );
 }
 
 export function mapExecutionClassToStrategy(cls: ExecutionClass): ExecutionStrategy {
@@ -68,10 +103,10 @@ export function resolveSourceSha(directory?: string, fallbackSha?: string): stri
       }).trim();
       if (/^[0-9a-f]{40}$/.test(out)) return out;
     } catch {
-      // Non-git directory or git error
+      // Non-git directory or git error -> use explicit UNKNOWN_SOURCE_SHA sentinel
     }
   }
-  return "0".repeat(40);
+  return UNKNOWN_SOURCE_SHA;
 }
 
 export function buildCanonicalRoutingDecision(input: {
@@ -97,6 +132,7 @@ export function buildCanonicalRoutingDecision(input: {
     { id: `ev-msg-hash-${randomUUID().slice(0, 8)}`, kind: "hash", signal: "lastUserMessageHash", value: input.lastUserMessageHash, weight: 100 },
     { id: `ev-reason-code-${randomUUID().slice(0, 8)}`, kind: "classification", signal: "reasonCode", value: input.decision.reasonCode, weight: 100 },
     { id: `ev-confidence-${randomUUID().slice(0, 8)}`, kind: "classification", signal: "confidence", value: String(input.decision.confidence), weight: 100 },
+    { id: `ev-forced-signal-${randomUUID().slice(0, 8)}`, kind: "classification", signal: "forcedByExplicitSignal", value: String(Boolean(input.decision.forcedByExplicitSignal)), weight: 100 },
   ];
 
   if (input.decision.specialists && input.decision.specialists.length > 0) {
@@ -138,13 +174,6 @@ export function buildCanonicalRoutingDecision(input: {
 
   const combinedEvidence = [...baseAssessment.evidence, ...additionalEvidence];
 
-  const delegations = (input.decision.suggestedAgents ?? []).map((agentId, idx) => ({
-    agentId,
-    capability: input.decision.specialists?.[idx] ?? "general",
-    ownership: ["*"],
-    rationale: input.decision.reason,
-  }));
-
   const budgetRecommendation: BudgetProfile =
     input.decision.executionClass === "DEEP"
       ? "deep-audit"
@@ -161,10 +190,10 @@ export function buildCanonicalRoutingDecision(input: {
     sourceSha,
     strategy: mapExecutionClassToStrategy(input.decision.executionClass),
     delegate: input.decision.executionClass === "SPECIALIST" || input.decision.executionClass === "PARALLEL_SPECIALISTS",
-    delegations,
+    delegations: [], // No synthetic wildcard ownership invented
     workstreams: [], // No synthetic workstream paths invented
     budgetRecommendation,
-    modelRecommendation: "default",
+    modelRecommendation: PRESERVE_CONFIGURED_MODEL,
     rationale: [input.decision.reason, ...baseAssessment.evidence.map(e => `${e.signal}: ${e.value}`)].slice(0, 5),
     rejectedAlternatives: [],
     policyVersion: "2.0.0",
@@ -198,39 +227,44 @@ export function reconstructRouterDecision(decision: RoutingDecision): {
 
   const executionClassRaw = evMap.get("executionClass");
   if (!isExecutionClass(executionClassRaw)) {
-    // Fail closed: malformed or missing executionClass
     return null;
   }
 
   const goal = evMap.get("goal");
   if (!goal || typeof goal !== "string") {
-    // Fail closed: missing goal
     return null;
   }
 
   const lastUserMessageHash = evMap.get("lastUserMessageHash");
   if (!lastUserMessageHash || typeof lastUserMessageHash !== "string") {
-    // Fail closed: missing message hash
     return null;
   }
 
   const reasonCode = evMap.get("reasonCode");
   if (!reasonCode || typeof reasonCode !== "string") {
-    // Fail closed: missing reason code
     return null;
   }
 
   const confidenceStr = evMap.get("confidence");
   const confidence = confidenceStr !== undefined ? Number(confidenceStr) : NaN;
   if (!Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
-    // Fail closed: invalid confidence
     return null;
   }
+
+  const forcedByExplicitSignalRaw = evMap.get("forcedByExplicitSignal");
+  if (forcedByExplicitSignalRaw !== "true" && forcedByExplicitSignalRaw !== "false") {
+    return null;
+  }
+  const forcedByExplicitSignal = forcedByExplicitSignalRaw === "true";
 
   let specialists: SpecialistDomain[] | undefined;
   if (evMap.has("specialists")) {
     try {
-      specialists = JSON.parse(evMap.get("specialists")!);
+      const parsed = JSON.parse(evMap.get("specialists")!);
+      if (!Array.isArray(parsed) || !parsed.every(isSpecialistDomain)) {
+        return null;
+      }
+      specialists = parsed;
     } catch {
       return null;
     }
@@ -239,7 +273,11 @@ export function reconstructRouterDecision(decision: RoutingDecision): {
   let suggestedAgents: string[] | undefined;
   if (evMap.has("suggestedAgents")) {
     try {
-      suggestedAgents = JSON.parse(evMap.get("suggestedAgents")!);
+      const parsed = JSON.parse(evMap.get("suggestedAgents")!);
+      if (!Array.isArray(parsed) || !parsed.every(s => typeof s === "string" && s.length > 0)) {
+        return null;
+      }
+      suggestedAgents = parsed;
     } catch {
       return null;
     }
@@ -248,7 +286,11 @@ export function reconstructRouterDecision(decision: RoutingDecision): {
   let codeModeTelemetry: CodeModeTelemetry | undefined;
   if (evMap.has("telemetry")) {
     try {
-      codeModeTelemetry = JSON.parse(evMap.get("telemetry")!);
+      const parsed = JSON.parse(evMap.get("telemetry")!);
+      if (!isCodeModeTelemetry(parsed)) {
+        return null;
+      }
+      codeModeTelemetry = parsed;
     } catch {
       return null;
     }
@@ -261,7 +303,7 @@ export function reconstructRouterDecision(decision: RoutingDecision): {
     reason: decision.rationale[0] || "Restored from authoritative routing decision",
     reasonCode,
     confidence,
-    forcedByExplicitSignal: false,
+    forcedByExplicitSignal,
     specialists,
     suggestedAgents,
     codeModeTelemetry,

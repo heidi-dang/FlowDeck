@@ -13,11 +13,15 @@ import { getSessionMetricsDiagnostics, cleanupSessionState } from "../src/index"
 import { _resetRouteState, getRouteDecision } from "../src/services/heidi-route-state";
 import { createTaskState, getTaskState, _resetAllTaskState } from "../src/services/heidi-task-state";
 import { closeAllConnections } from "../src/orchestration/persistence/connection";
-import { RunStatus } from "../src/orchestration/types/runs";
+import { RunStatus, isTerminalRunStatus } from "../src/orchestration/types/runs";
 import {
   buildCanonicalRoutingDecision,
   reconstructRouterDecision,
+  PRESERVE_CONFIGURED_MODEL,
+  UNKNOWN_SOURCE_SHA,
+  resolveSourceSha,
 } from "../src/orchestration/routing/fast-router-adapter";
+import { classifyUserTurnIntent } from "../src/services/user-turn-intent";
 import flowDeckPlugin from "../src/index";
 
 describe("FlowDeck Orchestration Foundation Integration Tests", () => {
@@ -69,36 +73,47 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(ctx2.disposed).toBe(false);
   });
 
-  it("3. fast-direct-followed-by-new-task: FAST_DIRECT finishes on idle and allows next task to classify independently", async () => {
+  it("3. fast-direct-replaced-before-idle & late-idle-does-not-deactivate-new-durable-run", async () => {
     const ctx = acquireProjectRuntime(dirA);
     const adapter = ctx.adapter;
 
-    // 1. Send FAST_DIRECT prompt
+    // Message 1: FAST_DIRECT
     await adapter.onChatMessage(
-      { sessionID: "sess-fast-direct", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "fix typo in readme.md", id: "1", sessionID: "sess-fast-direct", messageID: "msg-1" }] }
+      { sessionID: "sess-fast-race", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "fix typo in readme.md", id: "1", sessionID: "sess-fast-race", messageID: "msg-1" }] }
     );
 
-    const firstRoute = getRouteDecision("sess-fast-direct");
+    const firstRoute = getRouteDecision("sess-fast-race");
     expect(firstRoute).not.toBeNull();
     expect(firstRoute?.decision.executionClass).toBe("FAST_DIRECT");
 
-    // FAST_DIRECT does NOT create heavy Run in SQLite
-    const sessionRow = ctx.runtime.sessionRepo.findById("sess-fast-direct");
-    expect(sessionRow).toBeUndefined();
-
-    // 2. Session reaches idle (turn completes)
-    await adapter.onEvent({ type: "session.idle", properties: { sessionID: "sess-fast-direct" } });
-
-    // 3. Next message is a heavy security audit task
+    // Message 2 arriving BEFORE idle: Security audit task
     await adapter.onChatMessage(
-      { sessionID: "sess-fast-direct", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Perform security vulnerability scan on authentication routes", id: "2", sessionID: "sess-fast-direct", messageID: "msg-2" }] }
+      { sessionID: "sess-fast-race", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Perform security vulnerability scan on authentication routes", id: "2", sessionID: "sess-fast-race", messageID: "msg-2" }] }
     );
 
-    const nextRoute = getRouteDecision("sess-fast-direct");
-    expect(nextRoute).not.toBeNull();
-    expect(nextRoute?.decision.executionClass).toBe("SPECIALIST");
+    const secondRoute = getRouteDecision("sess-fast-race");
+    expect(secondRoute).not.toBeNull();
+    expect(secondRoute?.decision.executionClass).toBe("SPECIALIST");
+    expect(secondRoute?.active).toBe(true);
+
+    const sessionRow = ctx.runtime.sessionRepo.findById("sess-fast-race");
+    expect(sessionRow).toBeDefined();
+    const runId = sessionRow!.runId;
+
+    // Deliver late session.idle from turn 1
+    await adapter.onEvent({ type: "session.idle", properties: { sessionID: "sess-fast-race" } });
+
+    // Durable route and Run must remain ACTIVE
+    const afterIdleRoute = getRouteDecision("sess-fast-race");
+    expect(afterIdleRoute).not.toBeNull();
+    expect(afterIdleRoute?.active).toBe(true);
+    expect(afterIdleRoute?.decision.executionClass).toBe("SPECIALIST");
+
+    const run = await ctx.runtime.services.runRepo.findById(runId);
+    expect(run).toBeDefined();
+    expect(isTerminalRunStatus(run!.status)).toBe(false);
   });
 
   it("4. terminal-run-new-task-without-reset: new task classifies independently after prior run completes without calling reset", async () => {
@@ -173,63 +188,144 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     }
   });
 
-  it("6. active-run-duplicate-replay: duplicate message replay is idempotent", async () => {
+  it("6. user-turn-intent-classifier: unit tests for all domain intents", () => {
+    expect(classifyUserTurnIntent({ newMessage: "x", messageHash: "h1", lastMessageHash: "h1" }).intent).toBe("REPLAY");
+    expect(classifyUserTurnIntent({ newMessage: "continue" }).intent).toBe("CONTINUE");
+    expect(classifyUserTurnIntent({ newMessage: "keep going with the implementation" }).intent).toBe("CONTINUE");
+    expect(classifyUserTurnIntent({ newMessage: "what have you completed so far?" }).intent).toBe("QUERY");
+    expect(classifyUserTurnIntent({ newMessage: "status" }).intent).toBe("QUERY");
+    expect(classifyUserTurnIntent({ newMessage: "also add pagination to /v2/users" }).intent).toBe("MODIFY");
+    expect(classifyUserTurnIntent({ newMessage: "change timeout to 5000" }).intent).toBe("MODIFY");
+    expect(classifyUserTurnIntent({ newMessage: "forget that, perform a security audit instead" }).intent).toBe("REPLACE");
+    expect(classifyUserTurnIntent({ newMessage: "new task: build GraphQL schema" }).intent).toBe("REPLACE");
+    expect(classifyUserTurnIntent({ newMessage: "cancel this task" }).intent).toBe("CANCEL");
+    expect(classifyUserTurnIntent({ newMessage: "stop execution" }).intent).toBe("CANCEL");
+  });
+
+  it("7. user-turn-intent-active-run-lifecycle: verify MODIFY, REPLACE, and CANCEL transitions against active Run", async () => {
     const ctx = acquireProjectRuntime(dirA);
     const adapter = ctx.adapter;
 
-    const msg = "Implement a new OAuth authentication flow across files";
+    // Start Run A
     await adapter.onChatMessage(
-      { sessionID: "sess-idempotent", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: msg, id: "1", sessionID: "sess-idempotent", messageID: "msg-1" }] }
+      { sessionID: "sess-intent-flow", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement REST API for accounts", id: "1", sessionID: "sess-intent-flow", messageID: "msg-1" }] }
     );
+    const sessionRow1 = ctx.runtime.sessionRepo.findById("sess-intent-flow")!;
+    const runIdA = sessionRow1.runId;
 
-    const firstSession = ctx.runtime.sessionRepo.findById("sess-idempotent");
-    const firstRunId = firstSession?.runId;
-
-    // Send identical text again
+    // 1. MODIFY: keeps same run, updates route goal and appends modification event
     await adapter.onChatMessage(
-      { sessionID: "sess-idempotent", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: msg, id: "2", sessionID: "sess-idempotent", messageID: "msg-2" }] }
+      { sessionID: "sess-intent-flow", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "also add pagination and change the endpoint to /v2/users", id: "2", sessionID: "sess-intent-flow", messageID: "msg-2" }] }
     );
+    const runAModified = await ctx.runtime.services.runRepo.findById(runIdA);
+    expect(runAModified?.id).toBe(runIdA);
+    const routeModified = getRouteDecision("sess-intent-flow");
+    expect(routeModified?.goal).toContain("Modified: also add pagination");
 
-    const secondSession = ctx.runtime.sessionRepo.findById("sess-idempotent");
-    expect(secondSession?.runId).toBe(firstRunId);
+    // 2. QUERY / CONTINUE: preserves run
+    await adapter.onChatMessage(
+      { sessionID: "sess-intent-flow", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "what have you completed so far?", id: "3", sessionID: "sess-intent-flow", messageID: "msg-3" }] }
+    );
+    const runAAfterQuery = await ctx.runtime.services.runRepo.findById(runIdA);
+    expect(isTerminalRunStatus(runAAfterQuery!.status)).toBe(false);
+
+    // 3. REPLACE: supersedes Run A, creates Run B
+    await adapter.onChatMessage(
+      { sessionID: "sess-intent-flow", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "forget that, perform a security audit instead", id: "4", sessionID: "sess-intent-flow", messageID: "msg-4" }] }
+    );
+    const runASuperseded = await ctx.runtime.services.runRepo.findById(runIdA);
+    expect(runASuperseded?.status).toBe("cancelled");
+
+    const sessionRow2 = ctx.runtime.sessionRepo.findById("sess-intent-flow")!;
+    expect(sessionRow2.runId).not.toBe(runIdA);
+    const runB = await ctx.runtime.services.runRepo.findById(sessionRow2.runId);
+    expect(isTerminalRunStatus(runB!.status)).toBe(false);
+
+    // 4. CANCEL: cancels Run B
+    await adapter.onChatMessage(
+      { sessionID: "sess-intent-flow", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "cancel this task", id: "5", sessionID: "sess-intent-flow", messageID: "msg-5" }] }
+    );
+    const runBCancelled = await ctx.runtime.services.runRepo.findById(sessionRow2.runId);
+    expect(runBCancelled?.status).toBe("cancelled");
+    expect(getRouteDecision("sess-intent-flow")?.active).toBe(false);
   });
 
-  it("7. routing-reconstruction-missing-required-evidence: fails closed when evidence is missing or malformed", () => {
+  it("8. forced-explicit-signal-roundtrip & fail-closed reconstruction", () => {
     const validDecision = buildCanonicalRoutingDecision({
-      runId: "run-valid-1",
+      runId: "run-forced-1",
       decision: {
         executionClass: "SPECIALIST",
-        specialists: ["DEBUG"],
-        suggestedAgents: ["debug-specialist"],
-        reason: "Debug test failure",
-        reasonCode: "SPECIALIST_DEBUG",
-        confidence: 0.9,
-        forcedByExplicitSignal: false,
+        specialists: ["SECURITY"],
+        suggestedAgents: ["security-auditor"],
+        reason: "Security audit",
+        reasonCode: "SPECIALIST_SECURITY",
+        confidence: 0.95,
+        forcedByExplicitSignal: true,
       },
-      goal: "Debug failure in auth",
-      lastUserMessageHash: "hash-valid-1",
+      goal: "Perform full security audit",
+      lastUserMessageHash: "hash-forced-1",
     });
 
-    const good = reconstructRouterDecision(validDecision);
-    expect(good).not.toBeNull();
-    expect(good?.decision.executionClass).toBe("SPECIALIST");
+    const reconstructed = reconstructRouterDecision(validDecision);
+    expect(reconstructed).not.toBeNull();
+    expect(reconstructed?.decision.forcedByExplicitSignal).toBe(true);
+    expect(reconstructed?.decision.executionClass).toBe("SPECIALIST");
+    expect(reconstructed?.decision.specialists).toEqual(["SECURITY"]);
 
-    // Malform by removing executionClass evidence
-    const badDecision = JSON.parse(JSON.stringify(validDecision));
-    badDecision.assessment.evidence = badDecision.assessment.evidence.filter(
-      (e: any) => e.signal !== "executionClass"
-    );
-    expect(reconstructRouterDecision(badDecision)).toBeNull();
+    // Malformed specialists -> fails closed
+    const badSpec = JSON.parse(JSON.stringify(validDecision));
+    badSpec.assessment.evidence.find((e: any) => e.signal === "specialists").value = JSON.stringify(["INVALID_SPEC"]);
+    expect(reconstructRouterDecision(badSpec)).toBeNull();
 
-    // Malform by setting invalid executionClass string
-    const invalidClassDecision = JSON.parse(JSON.stringify(validDecision));
-    invalidClassDecision.assessment.evidence.find((e: any) => e.signal === "executionClass").value = "FABRICATED_CLASS";
-    expect(reconstructRouterDecision(invalidClassDecision)).toBeNull();
+    // Malformed agents -> fails closed
+    const badAgents = JSON.parse(JSON.stringify(validDecision));
+    badAgents.assessment.evidence.find((e: any) => e.signal === "suggestedAgents").value = JSON.stringify([123]);
+    expect(reconstructRouterDecision(badAgents)).toBeNull();
+
+    // Malformed code mode telemetry -> fails closed
+    const badTelemetry = JSON.parse(JSON.stringify(validDecision));
+    badTelemetry.assessment.evidence.push({
+      id: "ev-bad-telemetry",
+      kind: "code_mode",
+      signal: "telemetry",
+      value: JSON.stringify({ codeModeConsidered: "not_a_boolean" }),
+      weight: 50,
+    });
+    expect(reconstructRouterDecision(badTelemetry)).toBeNull();
   });
 
-  it("8. cleanup-removes-task-by-taskId: clears HeidiTaskState using the actual taskId from the session route", async () => {
+  it("9. routing-model-preserves-configured-model & routing-has-no-fake-ownership", () => {
+    const decision = buildCanonicalRoutingDecision({
+      runId: "run-clean-1",
+      decision: {
+        executionClass: "STANDARD",
+        reason: "Standard feature implementation",
+        reasonCode: "STANDARD_FEATURE",
+        confidence: 0.85,
+        forcedByExplicitSignal: false,
+      },
+      goal: "Implement new service",
+      lastUserMessageHash: "hash-clean-1",
+    });
+
+    expect(decision.modelRecommendation).toBe(PRESERVE_CONFIGURED_MODEL);
+    expect(decision.delegations).toEqual([]);
+    expect(decision.workstreams).toEqual([]);
+  });
+
+  it("10. source-sha-unavailable-is-explicit", () => {
+    const nonGitDir = mkdtempSync(join(tmpdir(), "fdx-non-git-"));
+    const resolved = resolveSourceSha(nonGitDir);
+    expect(resolved).toBe(UNKNOWN_SOURCE_SHA);
+    rmSync(nonGitDir, { recursive: true, force: true });
+  });
+
+  it("11. cleanup-uses-task-id-only: clears HeidiTaskState using the actual taskId from the session route", async () => {
     const ctx = acquireProjectRuntime(dirA);
     const adapter = ctx.adapter;
 
@@ -252,7 +348,7 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(getTaskState(taskId)).toBeUndefined();
   });
 
-  it("9. diagnostics-does-not-create-runtime: reading diagnostics on uninitialized dir does not create files/DB", () => {
+  it("12. diagnostics-does-not-create-runtime & runtime-read-does-not-acquire-lease", () => {
     const uninitDir = mkdtempSync(join(tmpdir(), "fdx-uninit-"));
     const diag = getSessionMetricsDiagnostics("sess-none", uninitDir);
 
@@ -260,10 +356,22 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(existsSync(join(uninitDir, ".flowdeck"))).toBe(false);
     expect(getProjectRuntime(uninitDir)).toBeNull();
 
+    // Acquire dirA and test that getProjectRuntime does not increment refCount
+    const owner = acquireProjectRuntime(dirA);
+    expect(owner.refCount).toBe(1);
+
+    const read1 = getProjectRuntime(dirA);
+    expect(read1).toBe(owner);
+    expect(owner.refCount).toBe(1);
+
+    const read2 = getProjectRuntime(dirA);
+    expect(read2).toBe(owner);
+    expect(owner.refCount).toBe(1);
+
     rmSync(uninitDir, { recursive: true, force: true });
   });
 
-  it("10. always-approve-does-not-bypass-governance: structural invariant blocks are never bypassed by globalAlwaysApprove", async () => {
+  it("13. always-approve-does-not-bypass-governance: structural invariant blocks are never bypassed by globalAlwaysApprove", async () => {
     // Write governance mode strict in .flowdeck.json
     writeFileSync(
       join(dirA, ".flowdeck.json"),
@@ -295,7 +403,7 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     await pluginInstance.dispose();
   });
 
-  it("11. project-shared-runtime-lifecycle: refCount ensures shared runtime is kept alive until all owners release", async () => {
+  it("14. project-shared-runtime-lifecycle: refCount ensures shared runtime is kept alive until all owners release", async () => {
     const owner1 = acquireProjectRuntime(dirA);
     expect(owner1.refCount).toBe(1);
 

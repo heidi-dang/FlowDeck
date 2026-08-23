@@ -62,7 +62,6 @@ export function cleanupSessionState(sessionID: string): void {
   if (route && route.taskId) {
     clearTaskState(route.taskId);
   }
-  clearTaskState(sessionID);
   clearRouteDecision(sessionID);
 }
 

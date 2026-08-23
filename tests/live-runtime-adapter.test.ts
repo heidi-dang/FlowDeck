@@ -65,7 +65,7 @@ describe("FlowDeckLifecycleAdapter", () => {
   it("hydrates session state from database routing decision", async () => {
     const mockRuntime = {
       services: {
-        runService: { createRun: vi.fn() },
+        runService: { createRun: vi.fn(), updateRun: vi.fn() },
         runRepo: {
           findById: vi.fn().mockResolvedValue({
             id: "run-456",
@@ -105,6 +105,7 @@ describe("FlowDeckLifecycleAdapter", () => {
               { id: "ev-message-hash", kind: "hash", signal: "lastUserMessageHash", value: "hash123", weight: 100 },
               { id: "ev-reason-code", kind: "classification", signal: "reasonCode", value: "PARALLEL_DOMAIN_OVERLAP", weight: 100 },
               { id: "ev-confidence", kind: "classification", signal: "confidence", value: "0.95", weight: 100 },
+              { id: "ev-forced-signal", kind: "classification", signal: "forcedByExplicitSignal", value: "false", weight: 100 },
             ],
             classifierVersion: "2.0.0",
             policyVersion: "2.0.0",
