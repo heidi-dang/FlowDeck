@@ -158,7 +158,7 @@ export function getOrchestrationRuntime(directory?: string): ProductionOrchestra
 
 const plugin: Plugin = async ({ directory, client: _client }) => {
   setActiveProjectDir(directory)
-  const projectContext = acquireProjectRuntime(directory);
+  const projectContext = acquireProjectRuntime(directory, _client);
   const lifecycleAdapter = projectContext.adapter;
 
   let currentConfig: any = {};

@@ -6,12 +6,13 @@
  * Rules:
  * - Does NOT mutate state (RunTransitionEngine mutates state).
  * - Enforces positive allowlisted transition reason codes for CONTINUE_NOW.
- * - Idempotent dispatch via ContinuationDispatcher.
+ * - Idempotent dispatch via ContinuationDispatcher with durable SQLite state.
  * - Enforces continuation gates: Run active, matching user-turn version, matching aggregate version,
  *   no active background child, not blocked, not terminal.
  */
 
 import { createHash } from "node:crypto";
+import type { Database } from "bun:sqlite";
 import type { OrchestrationSnapshot } from "./orchestration-snapshot-service";
 import type { TransitionEvaluationResult, TransitionReasonCode } from "./transition-engine";
 import { TERMINAL_PHASES } from "./transition-engine";
@@ -76,12 +77,12 @@ export class ContinuationPolicy {
     }
 
     // 3. Child tasks running -> must wait for native child results without injecting synthetic continuation
-    if (snapshot.childState.active > 0 || transition.reasonCode === "WAITING_FOR_CHILDREN") {
+    if (snapshot.childState.activeRequired > 0 || transition.reasonCode === "WAITING_FOR_CHILDREN") {
       return { decision: "WAIT_FOR_CHILD", reason: "Active child executions in progress" };
     }
 
     // 4. Blocked conditions
-    if (transition.strategyDecision === "BLOCK" || transition.reasonCode === "BLOCKED") {
+    if (transition.strategyDecision === "BLOCK" || transition.reasonCode === "BLOCKED" || transition.reasonCode === "TRANSITION_CONFLICT") {
       return { decision: "STOP_BLOCKED", reason: transition.blockerReason ?? "Blocked on external condition" };
     }
 
@@ -99,8 +100,53 @@ export class ContinuationPolicy {
   }
 }
 
+export interface ContinuationStatePort {
+  getUserTurnVersion(sessionId: string): number;
+  getRunAggregateVersion(runId: string): number | null;
+  getRunPhase?(runId: string): string | null;
+  computeStateFingerprint?(runId: string, sessionId: string): string | null;
+}
+
+export type ContinuationDispatchResult = {
+  dispatched: boolean;
+  identity: string;
+  reason?:
+    | "native_dispatch_unavailable"
+    | "native_dispatch_failed"
+    | "duplicate_dispatch"
+    | "stale_user_turn_version"
+    | "stale_run_aggregate_version"
+    | "stale_state_fingerprint"
+    | "run_not_found";
+};
+
 export class ContinuationDispatcher {
-  private readonly dispatchedTokens = new Set<string>();
+  private readonly memoryDispatched = new Set<string>();
+
+  constructor(private readonly db?: Database) {
+    if (db) {
+      this.ensureTables(db);
+    }
+  }
+
+  private ensureTables(db: Database): void {
+    db.query(`
+      CREATE TABLE IF NOT EXISTS continuation_dispatches (
+        identity TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        user_turn_version INTEGER NOT NULL,
+        run_aggregate_version INTEGER NOT NULL,
+        transition_reason TEXT NOT NULL,
+        current_work_item_id TEXT,
+        state_fingerprint TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        dispatched_at TEXT,
+        error TEXT
+      )
+    `).run();
+  }
 
   computeTokenIdentity(token: ContinuationToken): string {
     const raw = `${token.runId}:${token.sessionId}:${token.userTurnVersion}:${token.runAggregateVersion}:${token.transitionReason}:${token.currentWorkItemId ?? ""}:${token.stateFingerprint}`;
@@ -108,53 +154,153 @@ export class ContinuationDispatcher {
   }
 
   /**
-   * Validate and dispatch exactly-once continuation.
+   * Validate and dispatch exactly-once continuation with durable SQLite tracking.
    */
   async dispatch(
     token: ContinuationToken,
     opts: {
-      currentTurnVersion: number;
-      currentAggregateVersion: number;
+      statePort?: ContinuationStatePort;
+      currentTurnVersion?: number;
+      currentAggregateVersion?: number;
       client?: any;
       promptText?: string;
     }
-  ): Promise<{ dispatched: boolean; identity: string; reason?: string }> {
-    // 1. Revalidate stale versions
-    if (token.userTurnVersion !== opts.currentTurnVersion) {
-      return { dispatched: false, identity: "", reason: "stale_user_turn_version" };
-    }
-
-    if (token.runAggregateVersion !== opts.currentAggregateVersion) {
-      return { dispatched: false, identity: "", reason: "stale_run_aggregate_version" };
-    }
-
-    // 2. Check duplicate dispatch
+  ): Promise<ContinuationDispatchResult> {
     const identity = this.computeTokenIdentity(token);
-    if (this.dispatchedTokens.has(identity)) {
-      return { dispatched: false, identity, reason: "duplicate_dispatch" };
-    }
 
-    this.dispatchedTokens.add(identity);
+    // 1. Authoritative Revalidation against live state port
+    if (opts.statePort) {
+      const currentTurn = opts.statePort.getUserTurnVersion(token.sessionId);
+      if (currentTurn !== token.userTurnVersion) {
+        return { dispatched: false, identity, reason: "stale_user_turn_version" };
+      }
 
-    // 3. Native OpenCode continuation if client session API is available
-    if (opts.client?.session?.promptAsync && token.sessionId) {
-      try {
-        await opts.client.session.promptAsync({
-          path: { id: token.sessionId },
-          body: {
-            parts: [{ type: "text", text: opts.promptText ?? "Continue with the next planned step." }],
-            agent: "heidi",
-          },
-        });
-      } catch (err) {
-        console.warn("[ContinuationDispatcher] native session.promptAsync call threw:", err);
+      const currentAgg = opts.statePort.getRunAggregateVersion(token.runId);
+      if (currentAgg === null) {
+        return { dispatched: false, identity, reason: "run_not_found" };
+      }
+      if (currentAgg !== token.runAggregateVersion) {
+        return { dispatched: false, identity, reason: "stale_run_aggregate_version" };
+      }
+
+      if (opts.statePort.computeStateFingerprint) {
+        const currentFp = opts.statePort.computeStateFingerprint(token.runId, token.sessionId);
+        if (currentFp && currentFp !== token.stateFingerprint) {
+          return { dispatched: false, identity, reason: "stale_state_fingerprint" };
+        }
+      }
+    } else {
+      // Fallback version check if statePort omitted
+      if (opts.currentTurnVersion !== undefined && token.userTurnVersion !== opts.currentTurnVersion) {
+        return { dispatched: false, identity, reason: "stale_user_turn_version" };
+      }
+      if (opts.currentAggregateVersion !== undefined && token.runAggregateVersion !== opts.currentAggregateVersion) {
+        return { dispatched: false, identity, reason: "stale_run_aggregate_version" };
       }
     }
 
-    return { dispatched: true, identity };
+    // 2. Durable Idempotency Check
+    if (this.db) {
+      const existing = this.db.query(
+        "SELECT status FROM continuation_dispatches WHERE identity = ?"
+      ).get(identity) as { status: string } | null;
+
+      if (existing && existing.status === "dispatched") {
+        return { dispatched: false, identity, reason: "duplicate_dispatch" };
+      }
+    } else if (this.memoryDispatched.has(identity)) {
+      return { dispatched: false, identity, reason: "duplicate_dispatch" };
+    }
+
+    // 3. Check native promptAsync availability
+    if (!opts.client?.session?.promptAsync) {
+      if (this.db) {
+        const now = new Date().toISOString();
+        this.db.query(`
+          INSERT INTO continuation_dispatches (identity, run_id, session_id, user_turn_version, run_aggregate_version, transition_reason, current_work_item_id, state_fingerprint, status, created_at, error)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, 'native_dispatch_unavailable')
+          ON CONFLICT(identity) DO UPDATE SET status = 'failed', error = 'native_dispatch_unavailable'
+        `).run(
+          identity,
+          token.runId,
+          token.sessionId,
+          token.userTurnVersion,
+          token.runAggregateVersion,
+          token.transitionReason,
+          token.currentWorkItemId ?? null,
+          token.stateFingerprint,
+          now
+        );
+      }
+      return { dispatched: false, identity, reason: "native_dispatch_unavailable" };
+    }
+
+    // 4. Reserve continuation as pending
+    const now = new Date().toISOString();
+    if (this.db) {
+      this.db.query(`
+        INSERT INTO continuation_dispatches (identity, run_id, session_id, user_turn_version, run_aggregate_version, transition_reason, current_work_item_id, state_fingerprint, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+        ON CONFLICT(identity) DO UPDATE SET status = 'pending', error = NULL
+      `).run(
+        identity,
+        token.runId,
+        token.sessionId,
+        token.userTurnVersion,
+        token.runAggregateVersion,
+        token.transitionReason,
+        token.currentWorkItemId ?? null,
+        token.stateFingerprint,
+        now
+      );
+    }
+
+    // 5. Invoke native OpenCode promptAsync
+    try {
+      const res = await opts.client.session.promptAsync({
+        path: { id: token.sessionId },
+        body: {
+          parts: [{ type: "text", text: opts.promptText ?? "Continue with the next planned step." }],
+          agent: "heidi",
+        },
+      });
+
+      if (res && res.error) {
+        throw new Error(String(res.error));
+      }
+
+      // Mark dispatched on verified success
+      const dispatchedAt = new Date().toISOString();
+      if (this.db) {
+        this.db.query(`
+          UPDATE continuation_dispatches
+          SET status = 'dispatched', dispatched_at = ?, error = NULL
+          WHERE identity = ?
+        `).run(dispatchedAt, identity);
+      } else {
+        this.memoryDispatched.add(identity);
+      }
+
+      return { dispatched: true, identity };
+    } catch (err: any) {
+      console.warn("[ContinuationDispatcher] native session.promptAsync call threw:", err);
+      if (this.db) {
+        this.db.query(`
+          UPDATE continuation_dispatches
+          SET status = 'failed', error = ?
+          WHERE identity = ?
+        `).run(err?.message ?? String(err), identity);
+      }
+      return { dispatched: false, identity, reason: "native_dispatch_failed" };
+    }
   }
 
   reset(): void {
-    this.dispatchedTokens.clear();
+    this.memoryDispatched.clear();
+    if (this.db) {
+      try {
+        this.db.query("DELETE FROM continuation_dispatches").run();
+      } catch {}
+    }
   }
 }

@@ -35,6 +35,9 @@ export function acquireProjectRuntime(directory: string, client?: any): ProjectR
   const existing = _registry.get(canonicalDir);
   if (existing && !existing.disposed) {
     existing.refCount += 1;
+    if (client && !existing.adapter.getClient?.()) {
+      existing.adapter.setClient(client);
+    }
     return existing;
   }
 
