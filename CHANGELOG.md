@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.4.1] - FlowDeck v2.4.1 — Security Containment & Reliability Patch
+
+### Security & Reliability
+- **Filesystem Path Containment (.codebase)**: Enforced strict repository containment for all `.codebase/` read and write operations via central containment primitive `resolveCodebasePath`, rejecting path traversals, absolute paths, prefix collisions, symlinks, and root-level symlinked `.codebase` directories.
+- **Rust FDX Daemon Jail**: Added canonical `--root <dir>` parameter to `fdx serve`, jailing daemon filesystem operations (`read`, `search`, `outline`, `impact`) to the authoritative repository root.
+- **TypeScript FDX Fallback Jail**: Applied identical containment validation to all TypeScript fallback operations (`nativeReadFallback`, `nativeSearchFallback`, `nativeLsFallback`, `nativeOutlineFallback`, `nativeImpactFallback`, `fdx-batch`).
+- **Git Read-Only Policy Hardening**: Blocked `-c`, `--config`, `--config-env`, `--exec-path`, `--output`, `--ext-diff`, `--textconv`, `--paginate`, `--no-pager`, and dangerous config overrides across TS and Rust.
+- **Heidi Code Mode Selection Policy**: Enforced declared selection boundaries (`maxLines`, `maxSourceBytes`, `maxToolCalls`, `maxParallelCalls`, `maxDependencyStages`, `maxCollectionItems`, and ambient authority prohibitions) and rejected unbounded exploration prompts.
+- **Doctor Truthfulness**: Corrected text formatter status output (`OK`, `WARN`, `INFO`, `SKIP`, `ERROR`), reconciled `autoFixAvailable` declarations with actual handlers, and updated version fallback.
+- **Package Dependency Closure**: Included `scripts/release-channel.mjs` in package file whitelist and added extracted tarball validation tests.
+- **Installer Safety**: Converted Doctor arguments in `install.sh` to validated Bash arrays and verified profile inputs.
+- **Test Hardening & Real Coverage**: Removed false-green test patterns and verified 83.64% remote / 83.85% local aggregate line coverage.
+
+
 ## [2.4.0] - FlowDeck v2.4.0 — OpenCode-Native Heidi Code Mode
 
 ### Added & Changed

@@ -237,7 +237,7 @@ cargo test --workspace --all-targets --all-features
 
 ## Release & Package Information
 
-The FlowDeck distribution is compiled into a self-contained NPM package `@heidi-dang/flowdeck`. Version `2.4.0` represents the fully-qualified OpenCode-Native Heidi Code Mode release.
+The FlowDeck distribution is compiled into a self-contained NPM package `@heidi-dang/flowdeck`. Version `v2.4.1` is a focused security and reliability patch release delivering strict filesystem jail containment across `.codebase` and FDX native/fallback paths, Git policy hardening, Code Mode selection boundary enforcement, truthful Doctor diagnostics, and dependency closure.
 
 ## Security and Trust Boundaries
 
