@@ -81,6 +81,23 @@ describe("P0 Security: .codebase path traversal & arbitrary read/write containme
       }
       expect(() => resolveCodebasePath(testWorkspace, "symlink_dir/pwned.md", { forWrite: true })).toThrow(PathTraversalError)
     })
+
+    it("rejects .codebase root itself being a symlink pointing outside workspace", () => {
+      const symlinkedWorkspace = realpathSync(mkdtempSync(join(tmpdir(), "fd-symlink-root-ws-")))
+      try {
+        const symlinkCodebase = join(symlinkedWorkspace, ".codebase")
+        try {
+          symlinkSync(outsideDir, symlinkCodebase, process.platform === "win32" ? "junction" : "dir")
+        } catch {
+          return // skip if symlink not supported
+        }
+
+        expect(() => resolveCodebasePath(symlinkedWorkspace, "STATE.md")).toThrow(PathTraversalError)
+        expect(() => resolveCodebasePath(symlinkedWorkspace, "STATE.md", { forWrite: true })).toThrow(PathTraversalError)
+      } finally {
+        try { rmSync(symlinkedWorkspace, { recursive: true, force: true }) } catch {}
+      }
+    })
   })
 
   describe("codebaseStateTool action execution", () => {
@@ -139,6 +156,38 @@ describe("P0 Security: .codebase path traversal & arbitrary read/write containme
       const res = JSON.parse(typeof resStr === "string" ? resStr : resStr.output)
       expect(res.success).toBe(false)
       expect(existsSync(join(outsideDir, "hacked.txt"))).toBe(false)
+    })
+
+    it("refuses to read or write when .codebase itself is an escaping symlink root", async () => {
+      const symlinkedWorkspace = realpathSync(mkdtempSync(join(tmpdir(), "fd-symlink-root-ws-exec-")))
+      try {
+        const symlinkCodebase = join(symlinkedWorkspace, ".codebase")
+        try {
+          symlinkSync(outsideDir, symlinkCodebase, process.platform === "win32" ? "junction" : "dir")
+        } catch {
+          return
+        }
+
+        // Test tool write
+        const writeResStr: any = await (codebaseStateTool as any).execute({
+          action: "write",
+          filename: "STATE.md",
+          content: "malicious state",
+        }, { directory: symlinkedWorkspace } as any)
+        const writeRes = JSON.parse(typeof writeResStr === "string" ? writeResStr : writeResStr.output)
+        expect(writeRes.success).toBe(false)
+        expect(existsSync(join(outsideDir, "STATE.md"))).toBe(false)
+
+        // Test tool read
+        const readResStr: any = await (codebaseStateTool as any).execute({
+          action: "read",
+          files: ["secret.txt"],
+        }, { directory: symlinkedWorkspace } as any)
+        const readRes = JSON.parse(typeof readResStr === "string" ? readResStr : readResStr.output)
+        expect(readRes["secret.txt"]).toHaveProperty("error")
+      } finally {
+        try { rmSync(symlinkedWorkspace, { recursive: true, force: true }) } catch {}
+      }
     })
 
     it("writes valid files safely inside .codebase", async () => {

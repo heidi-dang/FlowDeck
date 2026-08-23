@@ -174,6 +174,20 @@ export function resolveCodebasePath(
   const canonicalWorkspace = getCanonicalRoot(workspaceDir)
   const codebaseRoot = resolve(canonicalWorkspace, ".codebase")
 
+  // Ensure that if .codebase exists, its canonical location is strictly contained inside the canonical workspace
+  if (existsSync(codebaseRoot)) {
+    try {
+      const realCodebase = realpathSync(codebaseRoot)
+      const rel = relative(canonicalWorkspace, realCodebase)
+      if (isLexicallyEscaped(rel)) {
+        throw new PathTraversalError(`.codebase symlink root "${realCodebase}" escapes workspace jail "${canonicalWorkspace}"`)
+      }
+    } catch (err: any) {
+      if (err instanceof PathTraversalError) throw err
+      throw new PathTraversalError(`Failed to resolve real path for .codebase: ${err.message}`)
+    }
+  }
+
   // Jailed strictly within <workspace>/.codebase
   return resolveContainedPath(codebaseRoot, filename, {
     forbidAbsoluteInput: true,
