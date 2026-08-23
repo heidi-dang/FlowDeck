@@ -33,7 +33,7 @@ import {
   getMutationTargetFingerprint,
 } from "./mutation-observation-adapter";
 import type { NativeChildControlPort } from "../orchestration/services/child-execution-lifecycle-service";
-import { ContinuationDispatcher, type ContinuationToken } from "../orchestration/services/continuation-policy";
+import { ContinuationDispatcher, type ContinuationToken, getContinuationPrompt } from "../orchestration/services/continuation-policy";
 
 export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   private disposed = false;
@@ -253,6 +253,16 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
                 console.error("[FlowDeckLifecycleAdapter] cancelRun error on replace:", err);
               }
             }
+            // Check if cancelled run has unconfirmed active child executions
+            const diag = this.runtime.childExecutionLifecycleService.getDiagnosticsForRun(activeRun.id);
+            const hasUnconfirmedChild = diag.childExecutions?.some(
+              c => !c.nativeTerminationConfirmed && (c.status === "running" || c.status === "queued")
+            );
+            if (hasUnconfirmedChild) {
+              // Unconfirmed required/active child is still running native processes in the workspace.
+              // Block/defer replacement creation until old children confirm termination.
+              return;
+            }
             markRouteInactive(input.sessionID);
             break;
           }
@@ -394,7 +404,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       if (activeRun) {
         runId = activeRun.id;
         const snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(activeRun.id, input.sessionID);
-        assignmentId = snapshot?.currentWorkItemId ?? ("root-" + activeRun.id);
+        assignmentId = snapshot?.currentWorkItemId ?? ("root:" + activeRun.id);
       }
     }
 
@@ -405,7 +415,22 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         sessionID: input.sessionID,
       });
       const snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(runId, input.sessionID);
-      const preStateFingerprint = (snapshot?.progress.lastRepositoryDelta ?? 0) + ":" + (snapshot?.progress.lastEvidenceDelta ?? 0) + ":" + (snapshot?.progress.noProgressCount ?? 0);
+      const preStateFingerprint = snapshot
+        ? `${snapshot.progress.lastRepositoryDelta}:${snapshot.childState.activeRequired}:${snapshot.childState.failedRequired}:${snapshot.workItems.filter(w => w.isSatisfied).length}`
+        : "0:0:0:0";
+
+      // Boundary Enforcement: Check active strategy constraint before execution
+      const activeConstraint = this.runtime.transitionEngine.getActiveStrategyConstraint(runId, assignmentId);
+      if (activeConstraint && activeConstraint.prohibitedActionFingerprint === actionFingerprint) {
+        if (activeConstraint.stateFingerprint === preStateFingerprint) {
+          throw new Error(
+            `[ExecutionBoundary] REPEATED_ACTION_BLOCKED: Action '${input.tool}' with fingerprint '${actionFingerprint}' is prohibited under unchanged state '${preStateFingerprint}'. Change strategy, choose a different tool or evidence source, or replan.`
+          );
+        } else {
+          // State has changed; clear outdated constraint and allow execution
+          this.runtime.transitionEngine.clearStrategyConstraint(runId, assignmentId);
+        }
+      }
 
       const startedAttempt = this.runtime.transitionEngine.startAttempt({
         runId,
@@ -696,9 +721,15 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         computeStateFingerprint: (rid: string, sid: string) => this.runtime.orchestrationSnapshotService.computeStateFingerprint(rid, sid),
       };
 
+      const promptText = getContinuationPrompt(transition.reasonCode, {
+        prohibitedActionFingerprint: transition.prohibitedActionFingerprint,
+        blockerReason: transition.blockerReason,
+      });
+
       const dispatchRes = await this.continuationDispatcher.dispatch(token, {
         statePort,
         client: this.client,
+        promptText,
       });
 
       if (dispatchRes.dispatched) {

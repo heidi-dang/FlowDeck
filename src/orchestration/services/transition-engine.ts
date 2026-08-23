@@ -6,6 +6,8 @@
  * - Terminal state immutability (completed, failed, cancelled) with exclusive CompletionPolicy authority for completed.
  * - Progress-driven work-item / Assignment advancement.
  * - Durable attempt accounting and action repetition prevention with causal state linkage.
+ * - Direct Heidi / Root execution lineage participation.
+ * - Strategy constraint persistence & enforcement across restarts.
  * - Lineage-specific bounded transient retry vs change-strategy vs replan vs block.
  * - Parallel child convergence and recovery handling.
  * - Conservative default fallback (no false PROGRESS_CONFIRMED continuation).
@@ -97,6 +99,16 @@ export interface AttemptRecord {
   evidenceIds: string[];
 }
 
+export interface StrategyConstraint {
+  runId: string;
+  assignmentId: string;
+  prohibitedActionFingerprint: string;
+  stateFingerprint: string;
+  reason: string;
+  createdAt: string;
+  clearedAt?: string;
+}
+
 export interface TransitionEvaluationResult {
   runId: string;
   currentPhase: OrchestrationPhase;
@@ -130,24 +142,10 @@ export class RunTransitionEngine {
     private readonly progressService: ProgressObservationService,
     private readonly snapshotService: OrchestrationSnapshotService,
     private readonly txManager?: TransactionManager,
-  ) {
-    this.ensureTables();
-  }
-
-  private ensureTables(): void {
-    this.db.query(`
-      CREATE TABLE IF NOT EXISTS call_id_attempts (
-        call_id TEXT PRIMARY KEY,
-        run_id TEXT NOT NULL,
-        assignment_id TEXT NOT NULL,
-        attempt_number INTEGER NOT NULL,
-        created_at TEXT NOT NULL
-      )
-    `).run();
-  }
+  ) {}
 
   /**
-   * Allocate the next atomic attempt number for a work item / Assignment.
+   * Allocate the next atomic attempt number for a work item / Assignment / Root unit.
    */
   allocateNextAttemptNumber(runId: string, assignmentId: string): number {
     if (this.txManager) {
@@ -385,7 +383,7 @@ export class RunTransitionEngine {
   }
 
   /**
-   * List all attempt history for a specific work item / Assignment.
+   * List all attempt history for a specific work item / Assignment / Root unit.
    */
   listAttempts(runId: string, assignmentId: string): AttemptRecord[] {
     const rows = this.db.query(
@@ -402,49 +400,110 @@ export class RunTransitionEngine {
   }
 
   /**
-   * Check if a specific error represents a transient condition eligible for same-strategy retry.
+   * Durable strategy constraint management in execution_metadata.
    */
-  isTransientError(error?: string): boolean {
-    if (!error) return false;
-    const lower = error.toLowerCase();
-    return (
-      lower.includes("timeout") ||
-      lower.includes("timed out") ||
-      lower.includes("econnreset") ||
-      lower.includes("econnrefused") ||
-      lower.includes("rate limit") ||
-      lower.includes("429") ||
-      lower.includes("503") ||
-      lower.includes("temporarily unavailable") ||
-      lower.includes("gateway timeout")
+  saveStrategyConstraint(constraint: StrategyConstraint): void {
+    const key = `strategy_constraint:${constraint.runId}:${constraint.assignmentId}`;
+    const val = JSON.stringify(constraint);
+    this.db.query(
+      `INSERT INTO execution_metadata (id, run_id, session_id, key, value, created_at)
+       VALUES (?, ?, NULL, ?, ?, datetime('now'))
+       ON CONFLICT(run_id, key) DO UPDATE SET value = excluded.value`
+    ).run(
+      `meta-sc-${constraint.runId}-${constraint.assignmentId}`,
+      constraint.runId,
+      key,
+      val
+    );
+  }
+
+  getActiveStrategyConstraint(runId: string, assignmentId: string): StrategyConstraint | null {
+    const key = `strategy_constraint:${runId}:${assignmentId}`;
+    const row = this.db.query(
+      "SELECT value FROM execution_metadata WHERE run_id = ? AND key = ?"
+    ).get(runId, key) as { value: string } | null;
+    if (!row) return null;
+    try {
+      const constraint = JSON.parse(row.value) as StrategyConstraint;
+      if (constraint.clearedAt) return null;
+      return constraint;
+    } catch {
+      return null;
+    }
+  }
+
+  clearStrategyConstraint(runId: string, assignmentId: string): void {
+    const existing = this.getActiveStrategyConstraint(runId, assignmentId);
+    if (existing) {
+      existing.clearedAt = new Date().toISOString();
+      this.saveStrategyConstraint(existing);
+    }
+  }
+
+  getConsumedProgressAttempt(runId: string, assignmentId: string): number | null {
+    const key = `consumed_progress_attempt:${runId}:${assignmentId}`;
+    const row = this.db.query(
+      "SELECT value FROM execution_metadata WHERE run_id = ? AND key = ?"
+    ).get(runId, key) as { value: string } | null;
+    if (!row) return null;
+    try {
+      const parsed = JSON.parse(row.value);
+      return typeof parsed === "number" ? parsed : (parsed.attemptNumber ?? null);
+    } catch {
+      return null;
+    }
+  }
+
+  markConsumedProgressAttempt(runId: string, assignmentId: string, attemptNumber: number): void {
+    const key = `consumed_progress_attempt:${runId}:${assignmentId}`;
+    const val = JSON.stringify({ attemptNumber, consumedAt: new Date().toISOString() });
+    this.db.query(
+      `INSERT INTO execution_metadata (id, run_id, session_id, key, value, created_at)
+       VALUES (?, ?, NULL, ?, ?, datetime('now'))
+       ON CONFLICT(run_id, key) DO UPDATE SET value = excluded.value`
+    ).run(
+      `meta-cpa-${runId}-${assignmentId}`,
+      runId,
+      key,
+      val
     );
   }
 
   /**
-   * Transition the durable task_runs state atomically with validation against the transition table and mandatory CAS.
+   * Deterministic check for transient errors.
+   */
+  isTransientError(error?: string | Error | null): boolean {
+    if (!error) return false;
+    const msg = typeof error === "string" ? error : error.message;
+    const lower = msg.toLowerCase();
+    return (
+      lower.includes("timeout") ||
+      lower.includes("econnrefused") ||
+      lower.includes("etimedout") ||
+      lower.includes("rate limit") ||
+      lower.includes("429") ||
+      lower.includes("503") ||
+      lower.includes("temporary") ||
+      lower.includes("transient") ||
+      lower.includes("socket hang up")
+    );
+  }
+
+  /**
+   * Perform mandatory CAS phase transition.
    */
   transitionPhase(input: TransitionPhaseCasInput): boolean {
-    const runId = input.runId;
-    const targetPhase = input.targetPhase;
-    const expectedPhase = input.expectedPhase;
-    const expectedAggregateVersion = input.expectedAggregateVersion;
-    const authority = input.authority ?? "transition_engine";
-    const sha = input.sha;
+    const { runId, targetPhase, expectedPhase, expectedAggregateVersion, authority } = input;
 
-    const taskRun = this.taskRunRepo.findById(runId);
-    if (!taskRun) return false;
-
-    const currentPhase = taskRun.state as OrchestrationPhase;
-    if (currentPhase === targetPhase) return false;
-
-    if (TERMINAL_PHASES.has(currentPhase)) {
+    // 1. Invariant: terminal phases are immutable
+    if (TERMINAL_PHASES.has(expectedPhase)) {
       console.warn(
-        `[RunTransitionEngine] Phase transition rejected: run ${runId} is terminal in '${currentPhase}', cannot transition to '${targetPhase}'.`
+        `[RunTransitionEngine] Phase transition rejected: run ${runId} is terminal in '${expectedPhase}', cannot transition to '${targetPhase}'.`
       );
       return false;
     }
 
-    // COMPLETED is reserved exclusively for CompletionPolicy
+    // 2. Invariant: transition to 'completed' restricted strictly to CompletionPolicy authority
     if (targetPhase === OP.COMPLETED && authority !== "completion_policy") {
       console.warn(
         `[RunTransitionEngine] Phase transition rejected: transition to 'completed' requires authority 'completion_policy', received '${authority}'.`
@@ -452,31 +511,33 @@ export class RunTransitionEngine {
       return false;
     }
 
-    if (!isValidPhaseTransition(currentPhase, targetPhase)) {
+    // 3. Central transition table validation
+    if (!isValidPhaseTransition(expectedPhase, targetPhase)) {
       console.warn(
-        `[RunTransitionEngine] Invalid phase transition rejected: run ${runId} from '${currentPhase}' to '${targetPhase}'.`
+        `[RunTransitionEngine] Invalid phase transition rejected: run ${runId} from '${expectedPhase}' to '${targetPhase}'.`
       );
       return false;
     }
 
-    const cas = this.taskRunRepo.transitionPhaseCas({
+    // 4. Mandatory CAS update on task_runs table
+    const result = this.taskRunRepo.transitionPhaseCas({
       runId,
-      expectedPhase: expectedPhase ?? currentPhase,
-      expectedAggregateVersion,
+      expectedPhase,
       targetPhase,
-      sha,
+      expectedAggregateVersion,
+      sha: input.sha,
     });
-    return cas.success;
+
+    return result.success;
   }
 
   /**
-   * Authoritative deterministic transition evaluation.
+   * Evaluate runtime state and compute next deterministic transition decision.
    */
   evaluate(input: {
     runId: string;
     sessionId?: string;
     latestActionFingerprint?: string;
-    latestResultFingerprint?: string;
     latestTool?: string;
     latestError?: string;
     isVerification?: boolean;
@@ -560,6 +621,12 @@ export class RunTransitionEngine {
       };
     }
 
+    // Resolve target item: current work item, or first work item, or canonical root execution unit
+    const rootExecutionId = "root:" + input.runId;
+    const targetItemId = currentWorkItem?.id ?? workItems[0]?.id ?? rootExecutionId;
+    const attempts = this.listAttempts(input.runId, targetItemId);
+    const lastAttempt = attempts[attempts.length - 1];
+
     // 3. Check Stall condition from AdaptiveExecutionControl
     if (snapshot.progress.stalled) {
       let targetPhase = currentPhase;
@@ -590,6 +657,20 @@ export class RunTransitionEngine {
         }
       }
 
+      if (input.latestActionFingerprint) {
+        const causalFp = (lastAttempt && lastAttempt.preStateFingerprint)
+          ? lastAttempt.preStateFingerprint
+          : `${snapshot.progress.lastRepositoryDelta}:${snapshot.childState.activeRequired}:${snapshot.childState.failedRequired}:${workItems.filter(w => w.isSatisfied).length}`;
+        this.saveStrategyConstraint({
+          runId: input.runId,
+          assignmentId: targetItemId,
+          prohibitedActionFingerprint: input.latestActionFingerprint,
+          stateFingerprint: causalFp,
+          reason: "STALL_DETECTED",
+          createdAt: new Date().toISOString(),
+        });
+      }
+
       return {
         runId: input.runId,
         currentPhase: targetPhase,
@@ -604,13 +685,9 @@ export class RunTransitionEngine {
     }
 
     // 4. Action Repetition & Progress Check on latest attempt / state delta
-    const targetItemId = currentWorkItem?.id ?? workItems[0]?.id;
-    const attempts = targetItemId ? this.listAttempts(input.runId, targetItemId) : [];
-    const lastAttempt = attempts[attempts.length - 1];
-
-    const hasStateChange =
-      snapshot.progress.lastRepositoryDelta > 0 ||
-      (lastAttempt ? lastAttempt.progressProduced : false);
+    const hasRepositoryStateChange = snapshot.progress.lastRepositoryDelta > 0;
+    const hasAttemptProgress = lastAttempt ? lastAttempt.progressProduced : false;
+    const hasStateChange = hasRepositoryStateChange || hasAttemptProgress;
 
     // If in recovering and progress was produced, transition back to executing
     if (currentPhase === OP.RECOVERING && hasStateChange) {
@@ -622,6 +699,7 @@ export class RunTransitionEngine {
         authority: "transition_engine",
       });
       if (transitioned) {
+        this.clearStrategyConstraint(input.runId, targetItemId);
         return {
           runId: input.runId,
           currentPhase: OP.EXECUTING,
@@ -670,7 +748,17 @@ export class RunTransitionEngine {
           };
         }
 
-        // Prohibit immediate unchanged strategy repetition
+        // Prohibit immediate unchanged strategy repetition and persist StrategyConstraint
+        const causalFp = lastAttempt.preStateFingerprint ?? `${snapshot.progress.lastRepositoryDelta}:${snapshot.childState.activeRequired}:${snapshot.childState.failedRequired}:${workItems.filter(w => w.isSatisfied).length}`;
+        this.saveStrategyConstraint({
+          runId: input.runId,
+          assignmentId: targetItemId,
+          prohibitedActionFingerprint: actionFingerprint,
+          stateFingerprint: causalFp,
+          reason: "REPEATED_ACTION_BLOCKED",
+          createdAt: new Date().toISOString(),
+        });
+
         return {
           runId: input.runId,
           currentPhase: currentPhase === OP.RECOVERING ? currentPhase : OP.EXECUTING,
@@ -684,7 +772,27 @@ export class RunTransitionEngine {
         };
       }
 
-      if (lastAttempt.progressProduced || hasStateChange) {
+      if (lastAttempt.progressProduced || hasRepositoryStateChange) {
+        // Check if this attempt progress was already consumed to prevent infinite PROGRESS_CONFIRMED loops
+        const consumedNum = this.getConsumedProgressAttempt(input.runId, targetItemId);
+        if (consumedNum === lastAttempt.attemptNumber) {
+          return {
+            runId: input.runId,
+            currentPhase,
+            phaseChanged: false,
+            currentWorkItemId: targetItemId,
+            workItemChanged: false,
+            strategyDecision: "EXECUTE_CURRENT",
+            reasonCode: "NO_PROGRESS",
+            requiresAction: false,
+          };
+        }
+
+        this.markConsumedProgressAttempt(input.runId, targetItemId, lastAttempt.attemptNumber);
+
+        // Clear any previous strategy constraint on this work item when progress is produced
+        this.clearStrategyConstraint(input.runId, targetItemId);
+
         return {
           runId: input.runId,
           currentPhase,
