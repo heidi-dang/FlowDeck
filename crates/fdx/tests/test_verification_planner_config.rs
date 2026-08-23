@@ -1,5 +1,6 @@
-//! Tests for static Jest/Vitest configuration support and E2E test target widening.
+//! Tests for static Jest/Vitest configuration support, roots, testRegex, and E2E test target widening.
 
+use fdx::intelligence::testplan::discover::discover_tests_and_checks;
 use fdx::intelligence::testplan::planner::plan_verification;
 use std::fs;
 use std::path::Path;
@@ -82,6 +83,94 @@ fn test_static_vitest_config_custom_include_discovered_and_selected() {
 }
 
 #[test]
+fn test_static_jest_roots_configuration_registered_as_test_scope() {
+    let tmp = tempdir().unwrap();
+    let repo = tmp.path();
+    init_git_repo(repo);
+
+    let pkg_dir = repo.join("packages/qa-app");
+    fs::create_dir_all(pkg_dir.join("src")).unwrap();
+    fs::create_dir_all(pkg_dir.join("qa")).unwrap();
+
+    fs::write(
+        pkg_dir.join("package.json"),
+        r#"{ "name": "@my/qa-app", "scripts": { "test": "jest" } }"#,
+    )
+    .unwrap();
+
+    fs::write(
+        pkg_dir.join("jest.config.js"),
+        r#"module.exports = {
+  roots: ["<rootDir>/qa"]
+};"#,
+    )
+    .unwrap();
+
+    fs::write(pkg_dir.join("src/lib.ts"), "export const val = 1;").unwrap();
+    fs::write(pkg_dir.join("qa/foo.test.ts"), "test('qa foo', () => {});").unwrap();
+
+    let inv = discover_tests_and_checks(repo);
+
+    let has_qa_scope = inv
+        .fallback
+        .directory_test_scopes
+        .iter()
+        .any(|s| s.contains("qa-app/qa") || s.contains("packages/qa-app/qa"));
+
+    assert!(
+        has_qa_scope,
+        "Static Jest roots config '<rootDir>/qa' must be registered in fallback directory test scopes"
+    );
+}
+
+#[test]
+fn test_static_literal_test_regex_discovers_tests() {
+    let tmp = tempdir().unwrap();
+    let repo = tmp.path();
+    init_git_repo(repo);
+
+    let pkg_dir = repo.join("packages/regex-app");
+    fs::create_dir_all(pkg_dir.join("src")).unwrap();
+    fs::create_dir_all(pkg_dir.join("specs")).unwrap();
+
+    fs::write(
+        pkg_dir.join("package.json"),
+        r#"{ "name": "@my/regex-app", "scripts": { "test": "jest" } }"#,
+    )
+    .unwrap();
+
+    fs::write(
+        pkg_dir.join("jest.config.js"),
+        r#"module.exports = {
+  testRegex: "specs/.*\.spec\.ts$"
+};"#,
+    )
+    .unwrap();
+
+    fs::write(pkg_dir.join("src/lib.ts"), "export const val = 1;").unwrap();
+    fs::write(
+        pkg_dir.join("specs/my.spec.ts"),
+        "test('regex spec', () => {});",
+    )
+    .unwrap();
+
+    git_commit_all(repo, "initial");
+
+    fs::write(pkg_dir.join("src/lib.ts"), "export const val = 2;").unwrap();
+
+    let plan = plan_verification(repo, Some("HEAD"), None, None).expect("plan verification");
+
+    let has_spec = plan
+        .selected_checks
+        .iter()
+        .any(|c| c.check_id.contains("my.spec.ts"));
+    assert!(
+        has_spec,
+        "Static literal testRegex in jest.config.js must discover specs/my.spec.ts"
+    );
+}
+
+#[test]
 fn test_e2e_only_package_widening_selects_e2e_check() {
     let tmp = tempdir().unwrap();
     let repo = tmp.path();
@@ -90,7 +179,6 @@ fn test_e2e_only_package_widening_selects_e2e_check() {
     let pkg_dir = repo.join("packages/e2e-app");
     fs::create_dir_all(pkg_dir.join("src")).unwrap();
 
-    // Package only has test:e2e script
     fs::write(
         pkg_dir.join("package.json"),
         r#"{ "name": "@my/e2e-app", "scripts": { "test:e2e": "playwright test" } }"#,

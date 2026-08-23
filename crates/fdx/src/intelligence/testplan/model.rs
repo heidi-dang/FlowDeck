@@ -47,6 +47,21 @@ pub enum SelectionReason {
     MandatoryCheck,
 }
 
+/// Precise provenance of evidence that selected a check.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckEvidenceRef {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence_id: Option<String>,
+    pub provider: String,
+    pub provider_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_identity: Option<String>,
+    pub strength: EvidenceStrength,
+    pub stale: bool,
+}
+
 /// A planned verification check or test to be run by execution engines.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedCheck {
@@ -67,11 +82,25 @@ pub struct PlannedCheck {
     /// Multi-hop evidence path when selected via graph traversal or mapping edge.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence_path: Option<EvidencePath>,
+    /// Full structured evidence references preserving provenance (provider, fingerprint, evidence_id, freshness).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<CheckEvidenceRef>,
     /// Concrete widening trigger code if selected via policy widening.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub widening_reason: Option<String>,
     /// Whether this check is mandatory under static verification policy.
     pub mandatory: bool,
+}
+
+/// Explicit unresolved verification obligation when discovery or output bounds truncate without a safe enclosing suite.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnresolvedVerificationObligation {
+    /// Affected scope (package, directory, or workspace).
+    pub scope: String,
+    /// Human-readable reason why this obligation could not be fully resolved.
+    pub reason: String,
+    /// Root cause source (e.g. "discovery_limit", "output_limit", "unsupported_config").
+    pub source: String,
 }
 
 /// Complete explainable verification plan.
@@ -87,6 +116,9 @@ pub struct VerificationPlan {
     pub selected_checks: Vec<PlannedCheck>,
     /// Exhaustive list of all uncertainties that triggered widening or degraded assurance.
     pub uncertainty: Vec<UncertaintyReason>,
+    /// Explicit unresolved verification obligations when plan is unverified or degraded.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_obligations: Vec<UnresolvedVerificationObligation>,
 }
 
 /// Discovered static test file or target.
@@ -130,7 +162,7 @@ pub enum DiscoveryState {
     },
 }
 
-/// Bounded fallback inventory of test scopes/domains when exact test discovery is truncated or incomplete.
+/// Bounded fallback inventory of test scopes/domains independently discovering test domains.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FallbackTestInventory {
     pub package_test_scopes: Vec<String>,
@@ -138,7 +170,7 @@ pub struct FallbackTestInventory {
     pub config_test_scopes: Vec<String>,
     pub directory_test_scopes: Vec<String>,
     pub truncated: bool,
-    pub errors: Vec<String>,
+    pub errors: Vec<TestDiscoveryIssue>,
 }
 
 /// Static inventory of tests and checks discovered from repo analysis.

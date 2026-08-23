@@ -22,6 +22,7 @@ impl Default for TestPlanLimits {
 std::thread_local! {
     static TEST_LIMITS_STACK: std::cell::RefCell<Vec<TestPlanLimits>> = const { std::cell::RefCell::new(Vec::new()) };
     static TEST_DISCOVERY_WALKER_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static TEST_CONFIG_WALKER_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
     static TEST_MAPPING_DB_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
@@ -65,6 +66,26 @@ pub fn with_test_discovery_walker_error<R>(err: Option<String>, f: impl FnOnce()
     set_test_discovery_walker_error(err);
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     set_test_discovery_walker_error(None);
+    match res {
+        Ok(val) => val,
+        Err(err) => std::panic::resume_unwind(err),
+    }
+}
+
+pub fn get_test_config_walker_error() -> Option<String> {
+    TEST_CONFIG_WALKER_ERROR.with(|c| c.borrow().clone())
+}
+
+pub fn set_test_config_walker_error(err: Option<String>) {
+    TEST_CONFIG_WALKER_ERROR.with(|c| {
+        *c.borrow_mut() = err;
+    });
+}
+
+pub fn with_test_config_walker_error<R>(err: Option<String>, f: impl FnOnce() -> R) -> R {
+    set_test_config_walker_error(err);
+    let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    set_test_config_walker_error(None);
     match res {
         Ok(val) => val,
         Err(err) => std::panic::resume_unwind(err),

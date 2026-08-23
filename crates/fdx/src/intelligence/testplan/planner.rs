@@ -13,7 +13,7 @@ use crate::intelligence::change::uncertainty::{compute_result_assurance, Uncerta
 use crate::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use crate::intelligence::testplan::bounds::get_active_test_plan_limits;
 use crate::intelligence::testplan::discover::discover_tests_and_checks;
-use crate::intelligence::testplan::freshness::detect_dynamic_test_configs;
+// static config analysis handled in discover
 use crate::intelligence::testplan::mapping::resolve_test_mappings;
 use crate::intelligence::testplan::model::*;
 use crate::intelligence::testplan::policy::VerificationPolicy;
@@ -36,6 +36,7 @@ pub fn plan_verification(
 
     let mut uncertainties = impact_result.uncertainty;
     let mut selected_checks_map: BTreeMap<String, PlannedCheck> = BTreeMap::new();
+    let mut unresolved_obligations: Vec<UnresolvedVerificationObligation> = Vec::new();
 
     // 2. Discover static test files and verification checks
     let inventory = discover_tests_and_checks(repo_root);
@@ -49,20 +50,20 @@ pub fn plan_verification(
         inventory.state
     {
         for issue in issues {
-            uncertainties.push(UncertaintyReason::BuildLimitReached(format!(
-                "Test discovery {}: {}",
-                issue.kind, issue.message
-            )));
+            if issue.kind == "dynamic_config" {
+                uncertainties.push(UncertaintyReason::DynamicConfigExpression(
+                    issue.message.clone(),
+                ));
+            } else {
+                uncertainties.push(UncertaintyReason::BuildLimitReached(format!(
+                    "Test discovery {}: {}",
+                    issue.kind, issue.message
+                )));
+            }
         }
     }
 
-    // 3. Detect dynamic test configs
-    let dynamic_configs = detect_dynamic_test_configs(repo_root);
-    for dc in &dynamic_configs {
-        uncertainties.push(UncertaintyReason::DynamicConfigExpression(dc.clone()));
-    }
-
-    // 4. Open EvidenceDatabase in ReadOnly mode
+    // 3. Open EvidenceDatabase in ReadOnly mode
     let db_res = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly);
     let (db_opt, has_db) = match db_res {
         Ok(d) => (Some(d), true),
@@ -122,7 +123,6 @@ pub fn plan_verification(
                     impacted_packages.insert(p.clone());
                 }
             } else {
-                // Fallback to M5 fallback build inventory
                 for pkg_dir in &fallback_build_inv.package_dirs {
                     if imp.target.starts_with(pkg_dir) {
                         impacted_packages.insert(format!(
@@ -142,7 +142,6 @@ pub fn plan_verification(
                 impacted_packages.insert(p.clone());
             }
         } else {
-            // Fallback to M5 fallback build inventory
             for pkg_dir in &fallback_build_inv.package_dirs {
                 if ch.file.starts_with(pkg_dir) {
                     impacted_packages.insert(format!(
@@ -154,7 +153,7 @@ pub fn plan_verification(
         }
     }
 
-    // Transitive package dependency impact propagation (e.g. app depends on core)
+    // Transitive package dependency impact propagation
     let mut pkg_queue: VecDeque<String> = impacted_packages.iter().cloned().collect();
     while let Some(current_pkg) = pkg_queue.pop_front() {
         if let Some(dependents) = build_snapshot.depends_on_reverse.get(&current_pkg) {
@@ -166,7 +165,7 @@ pub fn plan_verification(
         }
     }
 
-    // Direct change check: if root config changed, widen to all packages and scopes
+    // Root config changes widen to all packages and scopes
     let root_config_changed = impact_result.changes.iter().any(|c| {
         c.file == "tsconfig.json"
             || c.file == "package.json"
@@ -196,7 +195,7 @@ pub fn plan_verification(
 
     let mut direct_tests_selected = HashSet::new();
 
-    // 5. Direct symbol & file test mappings (Highest precision: SCIP references, filename rules)
+    // 4. Direct symbol & file test mappings (SCIP references, filename rules)
     for ch in &impact_result.changes {
         let file_node = format!("file:{}", ch.file);
         let mut target_keys = vec![ch.file.clone(), file_node];
@@ -259,6 +258,16 @@ pub fn plan_verification(
                         explanation: path_explanation,
                     };
 
+                    let evidence_ref = CheckEvidenceRef {
+                        evidence_id: edge.evidence_id.clone(),
+                        provider: edge.provider.clone(),
+                        provider_id: edge.provider_id.clone(),
+                        provider_fingerprint: edge.provider_fingerprint.clone(),
+                        source_identity: edge.source_identity.clone(),
+                        strength: edge.strength,
+                        stale: edge.stale,
+                    };
+
                     let check = PlannedCheck {
                         check_id: check_id.clone(),
                         display_name: test_file.to_string(),
@@ -268,6 +277,7 @@ pub fn plan_verification(
                         selection: SelectionReason::Evidence,
                         strength: edge.strength,
                         evidence_path: Some(evidence_path),
+                        evidence_refs: vec![evidence_ref],
                         widening_reason: None,
                         mandatory: false,
                     };
@@ -279,7 +289,7 @@ pub fn plan_verification(
         }
     }
 
-    // 6. Select tests from impacted graph targets (Transitive callers/importers)
+    // 5. Select tests from impacted graph targets (Transitive callers/importers)
     for imp in &impact_result.impacted {
         let norm_target = imp.target.strip_prefix("file:").unwrap_or(&imp.target);
         if let Some(discovered_test) = path_to_test.get(norm_target) {
@@ -318,6 +328,15 @@ pub fn plan_verification(
                     selection: SelectionReason::Evidence,
                     strength: imp.strength,
                     evidence_path,
+                    evidence_refs: vec![CheckEvidenceRef {
+                        evidence_id: None,
+                        provider: "graph_traversal".to_string(),
+                        provider_id: "graph_traversal".to_string(),
+                        provider_fingerprint: None,
+                        source_identity: Some(imp.target.clone()),
+                        strength: imp.strength,
+                        stale: false,
+                    }],
                     widening_reason: None,
                     mandatory: false,
                 };
@@ -328,7 +347,7 @@ pub fn plan_verification(
         }
     }
 
-    // 7. Policy widening: if semantic evidence is missing, stale, or dynamic config detected, widen to package tests
+    // 6. Policy widening: if semantic evidence is missing, stale, or dynamic config detected, widen to package tests
     let has_fresh_scip = has_db
         && !uncertainties.iter().any(|u| {
             matches!(
@@ -341,7 +360,6 @@ pub fn plan_verification(
         });
 
     let needs_package_widening = !has_fresh_scip
-        || !dynamic_configs.is_empty()
         || inventory.truncated
         || mapping_resolution.truncated
         || !mapping_resolution.errors.is_empty()
@@ -388,6 +406,7 @@ pub fn plan_verification(
                         selection: SelectionReason::PolicyWidening,
                         strength: EvidenceStrength::Structural,
                         evidence_path: None,
+                        evidence_refs: Vec::new(),
                         widening_reason: Some("stale_or_incomplete_evidence".to_string()),
                         mandatory: false,
                     },
@@ -396,7 +415,7 @@ pub fn plan_verification(
         }
     }
 
-    // 8. Mandatory package checks (typecheck, lint, build, test scripts)
+    // 7. Mandatory package checks (typecheck, lint, build, test scripts)
     if policy.mandatory_package_checks {
         for check in &inventory.checks {
             let is_impacted_scope =
@@ -434,6 +453,7 @@ pub fn plan_verification(
                             selection: SelectionReason::MandatoryCheck,
                             strength: EvidenceStrength::Structural,
                             evidence_path: None,
+                            evidence_refs: Vec::new(),
                             widening_reason: None,
                             mandatory: true,
                         },
@@ -443,11 +463,33 @@ pub fn plan_verification(
         }
     }
 
+    // 8. Handle exact test discovery truncation safety (Fail-closed obligation preservation)
+    if inventory.truncated {
+        for pkg_scope in &impacted_packages {
+            let has_package_suite = inventory.checks.iter().any(|c| {
+                &c.owning_scope_id == pkg_scope
+                    && (c.kind == VerificationCheckKind::UnitTest
+                        || c.kind == VerificationCheckKind::IntegrationTest
+                        || c.kind == VerificationCheckKind::EndToEndTest)
+            });
+
+            if !has_package_suite {
+                unresolved_obligations.push(UnresolvedVerificationObligation {
+                    scope: pkg_scope.clone(),
+                    reason: "exact test discovery truncated and no package test suite script exists to enclose omitted tests".to_string(),
+                    source: "discovery_limit".to_string(),
+                });
+            }
+        }
+    }
+
     // 9. Compute final assurance level
     let mut final_assurance =
         compute_result_assurance(impact_result.assurance, &uncertainties, false);
 
-    if has_fresh_scip
+    if !unresolved_obligations.is_empty() {
+        final_assurance = AssuranceLevel::Unverified;
+    } else if has_fresh_scip
         && !needs_package_widening
         && uncertainties.is_empty()
         && impact_result.assurance == AssuranceLevel::Exact
@@ -462,7 +504,6 @@ pub fn plan_verification(
 
     // 10. Safe output bounding: never silently truncate without retaining safe enclosing obligation
     if sorted_checks.len() > limits.max_selected_checks {
-        // Attempt safe rollup to package-level checks
         let mut package_checks_available: HashMap<String, PlannedCheck> = HashMap::new();
         for check in &inventory.checks {
             if check.kind == VerificationCheckKind::UnitTest
@@ -483,6 +524,7 @@ pub fn plan_verification(
                         selection: SelectionReason::MandatoryCheck,
                         strength: EvidenceStrength::Structural,
                         evidence_path: None,
+                        evidence_refs: Vec::new(),
                         widening_reason: None,
                         mandatory: true,
                     },
@@ -500,6 +542,14 @@ pub fn plan_verification(
                 rolled_up_map.insert(pkg_check.check_id.clone(), pkg_check.clone());
             } else {
                 unrepresented_omissions = true;
+                unresolved_obligations.push(UnresolvedVerificationObligation {
+                    scope: check.scope.clone(),
+                    reason: format!(
+                        "output limit exceeded for {} without enclosing suite script",
+                        check.scope
+                    ),
+                    source: "output_limit".to_string(),
+                });
             }
         }
 
@@ -530,11 +580,15 @@ pub fn plan_verification(
     sorted_uncertainties.sort_by(|a, b| a.code().cmp(b.code()));
     sorted_uncertainties.dedup();
 
+    unresolved_obligations.sort_by(|a, b| a.scope.cmp(&b.scope));
+    unresolved_obligations.dedup();
+
     Ok(VerificationPlan {
         assurance: final_assurance,
         changed: impact_result.changes,
         impacted_targets: impact_result.impacted,
         selected_checks: sorted_checks,
         uncertainty: sorted_uncertainties,
+        unresolved_obligations,
     })
 }
