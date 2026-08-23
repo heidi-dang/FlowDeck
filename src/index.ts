@@ -6,6 +6,10 @@ import { loadFlowDeckConfig, resolveAgentModels } from "./config/index"
 import { invalidateFdxCache } from "./tools/fdx-shared"
 import { buildFlowDeckMcpsWithMeta } from "./mcp/index"
 
+import { join } from "node:path"
+import { initializeDatabase } from "./orchestration/persistence"
+import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
+import { FlowDeckLifecycleAdapter } from "./runtime/flowdeck-opencode-adapter"
 import { doctorTool } from "./tools/doctor"
 import { fdxValidateTool } from "./tools/fdx-validate"
 import { fdxWorktreeTool } from "./tools/fdx-worktree"
@@ -29,7 +33,9 @@ import { heidiAgentsTool } from "./tools/heidi-agents"
 
 // Minimal exports required by tests / runtime
 export { AGENT_NAMES, createAgent } from "./agents/index"
-export { validateDelegationDepth, evaluateGovernanceToolCheck } from "./services/governance-wiring"
+export { validateDelegationDepth } from "./services/governance-wiring"
+import { evaluateGovernanceToolCheck } from "./services/governance-wiring"
+export { evaluateGovernanceToolCheck }
 export type { ValidateDelegationDepthOptions } from "./services/governance-wiring"
 export { acquireLock, releaseLock } from "./services/async-lock"
 export { runDoctor, formatReport, formatJSON } from "./doctor/doctor"
@@ -47,15 +53,38 @@ export function cleanupSessionState(_sessionID: string): void {
 }
 
 export function getSessionMetricsDiagnostics(_sessionID: string): any {
-  return { toolCalls: 0, retries: 0, delegations: 0, blocks: 0, warnings: 0, startTime: undefined, filesChangedCount: 0 }
+  if (!activeRuntime) return { toolCalls: 0, retries: 0, delegations: 0, blocks: 0, warnings: 0, startTime: undefined, filesChangedCount: 0 };
+  const metrics = activeRuntime.metrics;
+  if (!metrics) return { toolCalls: 0, retries: 0, delegations: 0, blocks: 0, warnings: 0, startTime: undefined, filesChangedCount: 0 };
+  
+  // Real active runtime diagnostics
+  return {
+    toolCalls: metrics.executionPlans.get(),
+    retries: metrics.executionStalls.get(),
+    delegations: metrics.workstreamsStarted.get(),
+    blocks: metrics.executionTerminations.get(),
+    warnings: 0,
+    startTime: undefined,
+    filesChangedCount: 0
+  };
 }
 
-export function getOrchestrationRuntime(): any {
-  return null
+let activeRuntime: ProductionOrchestrationRuntime | null = null;
+let lifecycleAdapter: FlowDeckLifecycleAdapter | null = null;
+
+export function getOrchestrationRuntime(): ProductionOrchestrationRuntime | null {
+  return activeRuntime
 }
 
 const plugin: Plugin = async ({ directory, client: _client }) => {
   setActiveProjectDir(directory)
+
+  if (!activeRuntime) {
+    const dbPath = join(directory, ".flowdeck", "flowdeck.db");
+    const initResult = initializeDatabase({ path: dbPath });
+    activeRuntime = createProductionOrchestrationRuntime(initResult.db);
+    lifecycleAdapter = new FlowDeckLifecycleAdapter(directory, activeRuntime);
+  }
 
   let currentConfig: any = {};
 
@@ -90,7 +119,27 @@ const plugin: Plugin = async ({ directory, client: _client }) => {
       if (isHeidiSession && currentConfig?.heidi?.globalAlwaysApprove === true) {
         return { status: "allow" }
       }
+      if (ctx.tool) {
+        const check = evaluateGovernanceToolCheck({ directory, sessionID: ctx.sessionID, tool: ctx.tool, args: ctx.args, agent: ctx.agent?.name ?? "heidi" });
+        if (check.action === "block") return { status: "deny", message: check.reason };
+      }
       return undefined;
+    },
+
+    "chat.message": async (input: any, output: any) => {
+      if (lifecycleAdapter) await lifecycleAdapter.onChatMessage(input, output);
+    },
+
+    "tool.execute.before": async (input: any, _output: any) => {
+      if (lifecycleAdapter) await lifecycleAdapter.onToolExecuteBefore(input);
+    },
+
+    "tool.execute.after": async (input: any, output: any) => {
+      if (lifecycleAdapter) await lifecycleAdapter.onToolExecuteAfter(input, output);
+    },
+
+    event: async (input: { event: any }) => {
+      if (lifecycleAdapter) await lifecycleAdapter.onEvent(input.event);
     },
 
     tool: {
@@ -116,6 +165,12 @@ const plugin: Plugin = async ({ directory, client: _client }) => {
     },
 
     dispose: async () => {
+      if (activeRuntime) {
+        // Safe disposal of outbox workers etc
+        if ((activeRuntime as any).outboxWorker && typeof (activeRuntime as any).outboxWorker.stop === 'function') {
+           (activeRuntime as any).outboxWorker.stop();
+        }
+      }
       configureFdxNextRuntime()
     },
   }
