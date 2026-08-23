@@ -2,7 +2,7 @@
  * RunTransitionEngine — Authoritative deterministic transition engine for FlowDeck runs.
  *
  * Enforces:
- * - Legal Run phase transitions via central transition table and CAS with aggregate versioning.
+ * - Legal Run phase transitions via central transition table and mandatory CAS with aggregate versioning.
  * - Terminal state immutability (completed, failed, cancelled) with exclusive CompletionPolicy authority for completed.
  * - Progress-driven work-item / Assignment advancement.
  * - Durable attempt accounting and action repetition prevention with causal state linkage.
@@ -72,7 +72,8 @@ export type TransitionReasonCode =
   | "WAITING_FOR_CHILDREN"
   | "USER_CANCELLED"
   | "SUPERSEDED"
-  | "BLOCKED";
+  | "BLOCKED"
+  | "TRANSITION_CONFLICT";
 
 export interface AttemptRecord {
   runId: string;
@@ -111,6 +112,15 @@ export interface TransitionEvaluationResult {
   blockerReason?: string;
 }
 
+export interface TransitionPhaseCasInput {
+  runId: string;
+  targetPhase: OrchestrationPhase;
+  expectedPhase: OrchestrationPhase;
+  expectedAggregateVersion: number;
+  authority?: "transition_engine" | "completion_policy" | "run_service";
+  sha?: string;
+}
+
 export class RunTransitionEngine {
   constructor(
     private readonly db: Database,
@@ -120,7 +130,21 @@ export class RunTransitionEngine {
     private readonly progressService: ProgressObservationService,
     private readonly snapshotService: OrchestrationSnapshotService,
     private readonly txManager?: TransactionManager,
-  ) {}
+  ) {
+    this.ensureTables();
+  }
+
+  private ensureTables(): void {
+    this.db.query(`
+      CREATE TABLE IF NOT EXISTS call_id_attempts (
+        call_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        assignment_id TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      )
+    `).run();
+  }
 
   /**
    * Allocate the next atomic attempt number for a work item / Assignment.
@@ -139,6 +163,120 @@ export class RunTransitionEngine {
       if (a.attemptNumber > max) max = a.attemptNumber;
     }
     return max + 1;
+  }
+
+  /**
+   * Atomically start and reserve an attempt record in SQLite.
+   */
+  startAttempt(input: {
+    runId: string;
+    assignmentId: string;
+    callID: string;
+    tool: string;
+    actionFingerprint: string;
+    preStateFingerprint: string;
+    startedAt?: string;
+  }): AttemptRecord {
+    const fn = () => {
+      // 1. Check if callID is already registered (idempotency check)
+      const existingCall = this.db.query(
+        "SELECT * FROM call_id_attempts WHERE call_id = ?"
+      ).get(input.callID) as { run_id: string; assignment_id: string; attempt_number: number } | null;
+
+      if (existingCall) {
+        const existingAttempt = this.getAttempt(existingCall.run_id, existingCall.assignment_id, existingCall.attempt_number);
+        if (existingAttempt) return existingAttempt;
+      }
+
+      // 2. Determine next atomic attempt number
+      const attemptNumber = this._allocateNextAttemptNumberInner(input.runId, input.assignmentId);
+      const startedAt = input.startedAt ?? new Date().toISOString();
+
+      const attemptRecord: AttemptRecord = {
+        runId: input.runId,
+        assignmentId: input.assignmentId,
+        attemptNumber,
+        callID: input.callID,
+        tool: input.tool,
+        actionFingerprint: input.actionFingerprint,
+        preStateFingerprint: input.preStateFingerprint,
+        startedAt,
+        progressProduced: false,
+        repositoryDelta: 0,
+        evidenceDelta: 0,
+        verificationDelta: 0,
+        childStateDelta: 0,
+        evidenceIds: [],
+      };
+
+      const key = `attempt:${input.runId}:${input.assignmentId}:${attemptNumber}`;
+      const val = JSON.stringify(attemptRecord);
+
+      // Insert without upsert: fails if attempt key already exists
+      this.db.query(
+        `INSERT INTO execution_metadata (id, run_id, session_id, key, value, created_at)
+         VALUES (?, ?, NULL, ?, ?, datetime('now'))`
+      ).run(
+        `meta-att-${input.runId}-${input.assignmentId}-${attemptNumber}`,
+        input.runId,
+        key,
+        val
+      );
+
+      // Register callID correlation
+      this.db.query(
+        `INSERT INTO call_id_attempts (call_id, run_id, assignment_id, attempt_number, created_at)
+         VALUES (?, ?, ?, ?, datetime('now'))`
+      ).run(
+        input.callID,
+        input.runId,
+        input.assignmentId,
+        attemptNumber
+      );
+
+      return attemptRecord;
+    };
+
+    if (this.txManager) {
+      return this.txManager.write(fn);
+    }
+    return fn();
+  }
+
+  /**
+   * Find an unfinished or finished attempt durably by callID.
+   */
+  findAttemptByCallID(callID: string): AttemptRecord | null {
+    const fn = () => {
+      const row = this.db.query(
+        "SELECT * FROM call_id_attempts WHERE call_id = ?"
+      ).get(callID) as { run_id: string; assignment_id: string; attempt_number: number } | null;
+
+      if (!row) return null;
+      return this.getAttempt(row.run_id, row.assignment_id, row.attempt_number);
+    };
+
+    if (this.txManager) {
+      return this.txManager.read(fn);
+    }
+    return fn();
+  }
+
+  /**
+   * Get an attempt record by (runId, assignmentId, attemptNumber).
+   */
+  getAttempt(runId: string, assignmentId: string, attemptNumber: number): AttemptRecord | null {
+    const key = `attempt:${runId}:${assignmentId}:${attemptNumber}`;
+    const row = this.db.query(
+      "SELECT value FROM execution_metadata WHERE run_id = ? AND key = ?"
+    ).get(runId, key) as { value: string } | null;
+
+    if (!row) return null;
+    try {
+      return JSON.parse(row.value);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -173,6 +311,18 @@ export class RunTransitionEngine {
     preStateFingerprint: string;
     startedAt?: string;
   }): AttemptRecord {
+    if (attempt.callID) {
+      return this.startAttempt({
+        runId: attempt.runId,
+        assignmentId: attempt.assignmentId,
+        callID: attempt.callID,
+        tool: attempt.tool,
+        actionFingerprint: attempt.actionFingerprint,
+        preStateFingerprint: attempt.preStateFingerprint,
+        startedAt: attempt.startedAt,
+      });
+    }
+
     const full: AttemptRecord = {
       runId: attempt.runId,
       assignmentId: attempt.assignmentId,
@@ -271,22 +421,15 @@ export class RunTransitionEngine {
   }
 
   /**
-   * Transition the durable task_runs state atomically with validation against the transition table and CAS.
+   * Transition the durable task_runs state atomically with validation against the transition table and mandatory CAS.
    */
-  transitionPhase(input: {
-    runId: string;
-    targetPhase: OrchestrationPhase;
-    expectedPhase?: OrchestrationPhase;
-    expectedAggregateVersion?: number;
-    authority?: "transition_engine" | "completion_policy" | "run_service";
-    sha?: string;
-  } | string, targetPhaseArg?: OrchestrationPhase): boolean {
-    const runId = typeof input === "string" ? input : input.runId;
-    const targetPhase = typeof input === "string" ? (targetPhaseArg as OrchestrationPhase) : input.targetPhase;
-    const expectedPhase = typeof input === "object" ? input.expectedPhase : undefined;
-    const expectedAggregateVersion = typeof input === "object" ? input.expectedAggregateVersion : undefined;
-    const authority = typeof input === "object" ? input.authority : "transition_engine";
-    const sha = typeof input === "object" ? input.sha : undefined;
+  transitionPhase(input: TransitionPhaseCasInput): boolean {
+    const runId = input.runId;
+    const targetPhase = input.targetPhase;
+    const expectedPhase = input.expectedPhase;
+    const expectedAggregateVersion = input.expectedAggregateVersion;
+    const authority = input.authority ?? "transition_engine";
+    const sha = input.sha;
 
     const taskRun = this.taskRunRepo.findById(runId);
     if (!taskRun) return false;
@@ -304,7 +447,7 @@ export class RunTransitionEngine {
     // COMPLETED is reserved exclusively for CompletionPolicy
     if (targetPhase === OP.COMPLETED && authority !== "completion_policy") {
       console.warn(
-        `[RunTransitionEngine] Phase transition rejected: transition to 'completed' requires authority 'completion_policy', received '${authority ?? "unauthorized"}'.`
+        `[RunTransitionEngine] Phase transition rejected: transition to 'completed' requires authority 'completion_policy', received '${authority}'.`
       );
       return false;
     }
@@ -316,23 +459,18 @@ export class RunTransitionEngine {
       return false;
     }
 
-    if (expectedAggregateVersion !== undefined) {
-      const cas = this.taskRunRepo.transitionPhaseCas({
-        runId,
-        expectedPhase: expectedPhase ?? currentPhase,
-        expectedAggregateVersion,
-        targetPhase,
-        sha,
-      });
-      return cas.success;
-    }
-
-    return this.taskRunRepo.updateState(runId, targetPhase, sha);
+    const cas = this.taskRunRepo.transitionPhaseCas({
+      runId,
+      expectedPhase: expectedPhase ?? currentPhase,
+      expectedAggregateVersion,
+      targetPhase,
+      sha,
+    });
+    return cas.success;
   }
 
   /**
    * Authoritative deterministic transition evaluation.
-   * Answers: "What state is this Run in, what work item is current, did previous action advance it, and what is the legal next transition?"
    */
   evaluate(input: {
     runId: string;
@@ -357,7 +495,7 @@ export class RunTransitionEngine {
       };
     }
 
-    let currentPhase = snapshot.phase;
+    const currentPhase = snapshot.phase;
 
     // 1. Terminal invariant: no transitions from terminal phases
     if (TERMINAL_PHASES.has(currentPhase)) {
@@ -373,26 +511,40 @@ export class RunTransitionEngine {
     }
 
     const workItems = snapshot.workItems;
-    let currentWorkItem = workItems.find(w => w.id === snapshot.currentWorkItemId);
+    const currentWorkItem = workItems.find(w => w.id === snapshot.currentWorkItemId);
 
-    // 2. Explicit Failed Child / Assignment Recovery
+    // 2. Explicit Failed Child / Assignment Recovery (Required-aware)
     const failedWorkItems = workItems.filter(w => w.status === "failed" && w.isRequired);
-    const failedChildren = snapshot.childState.failed;
+    const failedRequiredChildren = snapshot.childState.failedRequired;
 
-    if (failedWorkItems.length > 0 || failedChildren > 0) {
+    if (failedWorkItems.length > 0 || failedRequiredChildren > 0) {
       let targetPhase = currentPhase;
       let phaseChanged = false;
       if (currentPhase === OP.EXECUTING || currentPhase === OP.DELEGATING) {
         if (isValidPhaseTransition(currentPhase, OP.RECOVERING)) {
-          this.transitionPhase({
+          const transitioned = this.transitionPhase({
             runId: input.runId,
             targetPhase: OP.RECOVERING,
             expectedPhase: currentPhase,
             expectedAggregateVersion: snapshot.aggregateVersion,
             authority: "transition_engine",
           });
-          targetPhase = OP.RECOVERING;
-          phaseChanged = true;
+          if (transitioned) {
+            targetPhase = OP.RECOVERING;
+            phaseChanged = true;
+          } else {
+            return {
+              runId: input.runId,
+              currentPhase,
+              phaseChanged: false,
+              currentWorkItemId: currentWorkItem?.id,
+              workItemChanged: false,
+              strategyDecision: "BLOCK",
+              reasonCode: "TRANSITION_CONFLICT",
+              requiresAction: false,
+              blockerReason: "CAS transition conflict entering RECOVERING",
+            };
+          }
         }
       }
 
@@ -403,35 +555,38 @@ export class RunTransitionEngine {
         currentWorkItemId: currentWorkItem?.id,
         workItemChanged: false,
         strategyDecision: "CHANGE_STRATEGY",
-        reasonCode: failedChildren > 0 ? "CHILD_FAILED" : "ASSIGNMENT_FAILED",
+        reasonCode: failedRequiredChildren > 0 ? "CHILD_FAILED" : "ASSIGNMENT_FAILED",
         requiresAction: true,
       };
     }
 
     // 3. Check Stall condition from AdaptiveExecutionControl
     if (snapshot.progress.stalled) {
-      if (currentPhase === OP.CREATED || currentPhase === OP.PLANNING) {
-        this.transitionPhase({
-          runId: input.runId,
-          targetPhase: OP.EXECUTING,
-          authority: "transition_engine",
-        });
-        currentPhase = OP.EXECUTING;
-      }
-
       let targetPhase = currentPhase;
       let phaseChanged = false;
-      if (currentPhase !== OP.RECOVERING) {
-        if (isValidPhaseTransition(currentPhase, OP.RECOVERING)) {
-          this.transitionPhase({
-            runId: input.runId,
-            targetPhase: OP.RECOVERING,
-            expectedPhase: currentPhase,
-            expectedAggregateVersion: snapshot.aggregateVersion,
-            authority: "transition_engine",
-          });
+      if (currentPhase !== OP.RECOVERING && isValidPhaseTransition(currentPhase, OP.RECOVERING)) {
+        const transitioned = this.transitionPhase({
+          runId: input.runId,
+          targetPhase: OP.RECOVERING,
+          expectedPhase: currentPhase,
+          expectedAggregateVersion: snapshot.aggregateVersion,
+          authority: "transition_engine",
+        });
+        if (transitioned) {
           targetPhase = OP.RECOVERING;
           phaseChanged = true;
+        } else {
+          return {
+            runId: input.runId,
+            currentPhase,
+            phaseChanged: false,
+            currentWorkItemId: currentWorkItem?.id,
+            workItemChanged: false,
+            strategyDecision: "BLOCK",
+            reasonCode: "TRANSITION_CONFLICT",
+            requiresAction: false,
+            blockerReason: "CAS transition conflict entering RECOVERING on stall",
+          };
         }
       }
 
@@ -459,21 +614,37 @@ export class RunTransitionEngine {
 
     // If in recovering and progress was produced, transition back to executing
     if (currentPhase === OP.RECOVERING && hasStateChange) {
-      this.transitionPhase({
+      const transitioned = this.transitionPhase({
         runId: input.runId,
         targetPhase: OP.EXECUTING,
+        expectedPhase: currentPhase,
+        expectedAggregateVersion: snapshot.aggregateVersion,
         authority: "transition_engine",
       });
-      return {
-        runId: input.runId,
-        currentPhase: OP.EXECUTING,
-        phaseChanged: true,
-        currentWorkItemId: targetItemId,
-        workItemChanged: false,
-        strategyDecision: "EXECUTE_CURRENT",
-        reasonCode: "RECOVERY_PROGRESS",
-        requiresAction: true,
-      };
+      if (transitioned) {
+        return {
+          runId: input.runId,
+          currentPhase: OP.EXECUTING,
+          phaseChanged: true,
+          currentWorkItemId: targetItemId,
+          workItemChanged: false,
+          strategyDecision: "EXECUTE_CURRENT",
+          reasonCode: "RECOVERY_PROGRESS",
+          requiresAction: true,
+        };
+      } else {
+        return {
+          runId: input.runId,
+          currentPhase,
+          phaseChanged: false,
+          currentWorkItemId: targetItemId,
+          workItemChanged: false,
+          strategyDecision: "BLOCK",
+          reasonCode: "TRANSITION_CONFLICT",
+          requiresAction: false,
+          blockerReason: "CAS transition conflict exiting RECOVERING",
+        };
+      }
     }
 
     const actionFingerprint = input.latestActionFingerprint ?? lastAttempt?.actionFingerprint;
@@ -527,9 +698,9 @@ export class RunTransitionEngine {
       }
     }
 
-    // 5. If child tasks are actively running in the background, must wait
-    const activeChildren = snapshot.childState.active;
-    if (activeChildren > 0) {
+    // 5. If child tasks are actively running in the background, must wait (Required-aware)
+    const activeRequiredChildren = snapshot.childState.activeRequired;
+    if (activeRequiredChildren > 0) {
       return {
         runId: input.runId,
         currentPhase,
@@ -546,29 +717,31 @@ export class RunTransitionEngine {
     const requiredWorkItems = workItems.filter(w => w.isRequired);
     const allRequiredSatisfied = requiredWorkItems.length > 0 && requiredWorkItems.every(w => w.isSatisfied);
 
-    if (allRequiredSatisfied && activeChildren === 0 && failedChildren === 0) {
-      // If run was in created/planning, transition through executing to verifying
-      if (currentPhase === OP.CREATED || currentPhase === OP.PLANNING) {
-        this.transitionPhase({
-          runId: input.runId,
-          targetPhase: OP.EXECUTING,
-          authority: "transition_engine",
-        });
-        currentPhase = OP.EXECUTING;
-      }
-
-      // Transition to VERIFYING (not COMPLETED yet)
+    if (allRequiredSatisfied && activeRequiredChildren === 0 && failedRequiredChildren === 0) {
       let targetPhase = currentPhase;
       let phaseChanged = false;
-      if (currentPhase !== OP.VERIFYING) {
-        if (isValidPhaseTransition(currentPhase, OP.VERIFYING)) {
-          this.transitionPhase({
-            runId: input.runId,
-            targetPhase: OP.VERIFYING,
-            authority: "transition_engine",
-          });
+      if (currentPhase !== OP.VERIFYING && isValidPhaseTransition(currentPhase, OP.VERIFYING)) {
+        const transitioned = this.transitionPhase({
+          runId: input.runId,
+          targetPhase: OP.VERIFYING,
+          expectedPhase: currentPhase,
+          expectedAggregateVersion: snapshot.aggregateVersion,
+          authority: "transition_engine",
+        });
+        if (transitioned) {
           targetPhase = OP.VERIFYING;
           phaseChanged = true;
+        } else {
+          return {
+            runId: input.runId,
+            currentPhase,
+            phaseChanged: false,
+            workItemChanged: false,
+            strategyDecision: "BLOCK",
+            reasonCode: "TRANSITION_CONFLICT",
+            requiresAction: false,
+            blockerReason: "CAS transition conflict entering VERIFYING",
+          };
         }
       }
 

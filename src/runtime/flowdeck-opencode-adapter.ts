@@ -40,16 +40,26 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   private turnVersionCounter = 0;
   private pendingFastDirectTurns = new Map<string, PendingFastDirectTurn>();
   private preToolRepositoryFingerprints = new Map<string, string>();
-  private userTurnVersionBySession = new Map<string, number>();
   private inFlightAttempts = new Map<string, { runId: string; assignmentId: string; attemptNumber: number; preStateFingerprint: string; actionFingerprint: string; startedAt: string }>();
-  private continuationDispatcher = new ContinuationDispatcher();
+  private continuationDispatcher: ContinuationDispatcher;
 
   constructor(
     private readonly directory: string,
     private readonly runtime: ProductionOrchestrationRuntime,
-    private readonly client?: any,
+    private client?: any,
   ) {
+    this.continuationDispatcher = new ContinuationDispatcher(this.runtime.db);
     this.runtime.childExecutionLifecycleService.setControlPort(this);
+  }
+
+  getClient(): any {
+    return this.client;
+  }
+
+  setClient(client: any): void {
+    if (client) {
+      this.client = client;
+    }
   }
 
   async abortSession(sessionId: string, directory?: string): Promise<{ aborted: boolean; error?: string }> {
@@ -71,7 +81,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   }
 
   getUserTurnVersion(sessionId: string): number {
-    return this.userTurnVersionBySession.get(sessionId) ?? 1;
+    return this.runtime.sessionTurnRepo.getTurnVersion(sessionId);
   }
 
   private getPathFingerprint(relPath: string): string {
@@ -91,10 +101,13 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
 
       if (!text.trim()) return;
 
-      const currentTurn = (this.userTurnVersionBySession.get(input.sessionID) ?? 0) + 1;
-      this.userTurnVersionBySession.set(input.sessionID, currentTurn);
-
       const msgHash = stableHash(text);
+      const _currentTurn = this.runtime.sessionTurnRepo.incrementTurnVersion({
+        sessionId: input.sessionID,
+        messageId: input.messageID,
+        messageHash: msgHash,
+      });
+
       const correlationId = input.messageID || randomUUID();
 
       // 1. Resolve durable active Run from SQLite
@@ -367,49 +380,62 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       );
     }
 
-    const activeRun = await this.resolveActiveRunForSession(input.sessionID);
-    const snapshot = activeRun ? this.runtime.orchestrationSnapshotService.getSnapshot(activeRun.id, input.sessionID) : null;
-    const workItemId = snapshot?.currentWorkItemId;
+    // Resolve assignment and run for tool attempt tracking
+    // 1. Child session tool attribution check
+    const childRec = this.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: input.sessionID });
+    let runId: string | undefined;
+    let assignmentId: string | undefined;
 
-    if (activeRun && workItemId) {
+    if (childRec) {
+      runId = childRec.runId;
+      assignmentId = childRec.assignmentId;
+    } else {
+      const activeRun = await this.resolveActiveRunForSession(input.sessionID);
+      if (activeRun) {
+        runId = activeRun.id;
+        const snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(activeRun.id, input.sessionID);
+        assignmentId = snapshot?.currentWorkItemId ?? ("root-" + activeRun.id);
+      }
+    }
+
+    if (runId && assignmentId) {
       const actionFingerprint = this.runtime.progressObservationService.computeActionFingerprint({
         tool: input.tool,
         args: input.args,
         sessionID: input.sessionID,
       });
-      const preStateFingerprint = `${snapshot?.progress.lastRepositoryDelta ?? 0}:${snapshot?.progress.lastEvidenceDelta ?? 0}:${snapshot?.progress.noProgressCount ?? 0}`;
-      const attemptNumber = this.runtime.transitionEngine.allocateNextAttemptNumber(activeRun.id, workItemId);
-      const startedAt = new Date().toISOString();
+      const snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(runId, input.sessionID);
+      const preStateFingerprint = (snapshot?.progress.lastRepositoryDelta ?? 0) + ":" + (snapshot?.progress.lastEvidenceDelta ?? 0) + ":" + (snapshot?.progress.noProgressCount ?? 0);
 
-      this.runtime.transitionEngine.recordAttemptStart({
-        runId: activeRun.id,
-        assignmentId: workItemId,
-        attemptNumber,
+      const startedAttempt = this.runtime.transitionEngine.startAttempt({
+        runId,
+        assignmentId,
         callID: input.callID,
         tool: input.tool,
         actionFingerprint,
         preStateFingerprint,
-        startedAt,
       });
 
       this.inFlightAttempts.set(input.callID, {
-        runId: activeRun.id,
-        assignmentId: workItemId,
-        attemptNumber,
+        runId,
+        assignmentId,
+        attemptNumber: startedAttempt.attemptNumber,
         preStateFingerprint,
         actionFingerprint,
-        startedAt,
+        startedAt: startedAttempt.startedAt,
       });
     }
 
     if (input.tool === "task" || input.tool === "subagent") {
+      const activeRun = childRec ? null : await this.resolveActiveRunForSession(input.sessionID);
+      const effectiveRunId = childRec?.runId ?? activeRun?.id;
       const normalized = normalizeTaskInvocation(
         { sessionID: input.sessionID, callID: input.callID },
         input.args ?? {}
       );
-      if (activeRun) {
+      if (effectiveRunId) {
         await this.runtime.childExecutionLifecycleService.registerDelegation({
-          runId: activeRun.id,
+          runId: effectiveRunId,
           parentSessionId: input.sessionID,
           taskCallId: input.callID,
           targetAgent: normalized.targetAgent,
@@ -435,6 +461,12 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
       }
     }
 
+    // 1. Resolve attempt (in-memory cache or durable fallback by callID)
+    const inFlight = this.inFlightAttempts.get(input.callID) ?? this.runtime.transitionEngine.findAttemptByCallID(input.callID);
+    if (this.inFlightAttempts.has(input.callID)) {
+      this.inFlightAttempts.delete(input.callID);
+    }
+
     if (input.tool === "task" || input.tool === "subagent") {
       const trans = await this.runtime.childExecutionLifecycleService.markCompleted({
         taskCallId: input.callID,
@@ -453,11 +485,36 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
           result: output?.output,
         });
       }
+
+      // Finalize the task/subagent tool attempt as well
+      if (inFlight) {
+        const resultFingerprint = this.runtime.progressObservationService.computeResultFingerprint({
+          tool: input.tool,
+          output: output?.output,
+          metadata: output?.metadata,
+          error: output?.metadata?.error,
+        });
+        const isProgress = trans ? trans.changed : false;
+        this.runtime.transitionEngine.finalizeAttempt({
+          runId: inFlight.runId,
+          assignmentId: inFlight.assignmentId,
+          attemptNumber: inFlight.attemptNumber,
+          resultFingerprint,
+          postStateFingerprint: trans?.record.executionId ? "child:" + trans.record.executionId + ":completed" : undefined,
+          finishedAt: new Date().toISOString(),
+          progressProduced: isProgress,
+          repositoryDelta: 0,
+          evidenceDelta: isProgress ? 1 : 0,
+          verificationDelta: 0,
+          childStateDelta: isProgress ? 1 : 0,
+          evidenceIds: trans?.record.executionId ? ["child_res:" + trans.record.executionId] : [],
+        });
+      }
     } else {
       // Ordinary tool execution observation inside session or child session
-      const activeRun = await this.resolveActiveRunForSession(input.sessionID);
       const childRec = this.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: input.sessionID });
-      const runId = activeRun?.id ?? childRec?.runId;
+      const activeRun = childRec ? null : await this.resolveActiveRunForSession(input.sessionID);
+      const runId = childRec?.runId ?? activeRun?.id;
       if (runId) {
         let preHash: string | undefined;
         let postHash: string | undefined;
@@ -482,9 +539,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
           executionId: childRec?.executionId,
         });
 
-        const inFlight = this.inFlightAttempts.get(input.callID);
         if (inFlight) {
-          this.inFlightAttempts.delete(input.callID);
           const resultFingerprint = this.runtime.progressObservationService.computeResultFingerprint({
             tool: input.tool,
             output: output?.output,
@@ -499,7 +554,7 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
             assignmentId: inFlight.assignmentId,
             attemptNumber: inFlight.attemptNumber,
             resultFingerprint,
-            postStateFingerprint: `${obs.repositoryStateDelta}:${obs.evidenceDelta}`,
+            postStateFingerprint: obs.repositoryStateDelta + ":" + obs.evidenceDelta,
             finishedAt: new Date().toISOString(),
             progressProduced: isProgress,
             repositoryDelta: obs.repositoryStateDelta,
@@ -596,14 +651,21 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
     const activeRun = await this.resolveActiveRunForSession(sessionID);
     if (!activeRun) return;
 
-    const snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(activeRun.id, sessionID);
+    let snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(activeRun.id, sessionID);
     if (!snapshot) return;
 
-    const currentTurnVersion = this.userTurnVersionBySession.get(sessionID) ?? 1;
     const transition = this.runtime.transitionEngine.evaluate({
       runId: activeRun.id,
       sessionId: sessionID,
     });
+
+    // If evaluation changed the phase, refresh the snapshot so continuation token has post-transition state!
+    if (transition.phaseChanged) {
+      const refreshed = this.runtime.orchestrationSnapshotService.getSnapshot(activeRun.id, sessionID);
+      if (refreshed) {
+        snapshot = refreshed;
+      }
+    }
 
     const continuation = this.runtime.continuationPolicy.evaluate({
       snapshot,
@@ -614,6 +676,10 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
 
     // session.idle is a trigger to evaluate state, not evidence of work completion
     if (continuation.decision === "CONTINUE_NOW") {
+      const currentTurnVersion = this.runtime.sessionTurnRepo.getTurnVersion(sessionID);
+      const stateFingerprint = this.runtime.orchestrationSnapshotService.computeStateFingerprint(activeRun.id, sessionID) ??
+        (snapshot.aggregateVersion + ":" + snapshot.phase + ":" + (snapshot.currentWorkItemId ?? ""));
+
       const token: ContinuationToken = {
         runId: activeRun.id,
         sessionId: sessionID,
@@ -621,12 +687,17 @@ export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
         runAggregateVersion: snapshot.aggregateVersion,
         transitionReason: transition.reasonCode,
         currentWorkItemId: snapshot.currentWorkItemId,
-        stateFingerprint: `${snapshot.aggregateVersion}:${snapshot.phase}:${snapshot.currentWorkItemId ?? ""}`,
+        stateFingerprint,
+      };
+
+      const statePort = {
+        getUserTurnVersion: (sid: string) => this.runtime.sessionTurnRepo.getTurnVersion(sid),
+        getRunAggregateVersion: (rid: string) => this.runtime.taskRunsRepo.findById(rid)?.aggregateVersion ?? null,
+        computeStateFingerprint: (rid: string, sid: string) => this.runtime.orchestrationSnapshotService.computeStateFingerprint(rid, sid),
       };
 
       const dispatchRes = await this.continuationDispatcher.dispatch(token, {
-        currentTurnVersion,
-        currentAggregateVersion: snapshot.aggregateVersion,
+        statePort,
         client: this.client,
       });
 

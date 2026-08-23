@@ -381,12 +381,14 @@ describe("Deterministic Transition Engine & Policy Tests (34 Scenarios)", () => 
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m12" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
-    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING });
-    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.RECOVERING });
+    let snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING, expectedPhase: snap.phase, expectedAggregateVersion: snap.aggregateVersion });
+    snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.RECOVERING, expectedPhase: snap.phase, expectedAggregateVersion: snap.aggregateVersion });
 
     await ctx.adapter.onToolExecuteBefore({ tool: "write", sessionID, callID: "c-rec-1", args: { file: "fix.ts" } });
-    const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
-    expect(snap.phase).toBe(OP.RECOVERING);
+    const finalSnap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    expect(finalSnap.phase).toBe(OP.RECOVERING);
 
     await releaseProjectRuntime(projectDir);
   });
@@ -399,12 +401,14 @@ describe("Deterministic Transition Engine & Policy Tests (34 Scenarios)", () => 
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m13" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
-    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING });
-    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.VERIFYING });
+    let snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING, expectedPhase: snap.phase, expectedAggregateVersion: snap.aggregateVersion });
+    snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.VERIFYING, expectedPhase: snap.phase, expectedAggregateVersion: snap.aggregateVersion });
 
     await ctx.adapter.onToolExecuteBefore({ tool: "bash", sessionID, callID: "c-test-1", args: { command: "bun test" } });
-    const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
-    expect(snap.phase).toBe(OP.VERIFYING);
+    const finalSnap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    expect(finalSnap.phase).toBe(OP.VERIFYING);
 
     await releaseProjectRuntime(projectDir);
   });
@@ -417,7 +421,8 @@ describe("Deterministic Transition Engine & Policy Tests (34 Scenarios)", () => 
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m14" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
-    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING });
+    const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING, expectedPhase: snap.phase, expectedAggregateVersion: snap.aggregateVersion });
 
     await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID: "c-fail-child", args: { subagent_type: "coder" } });
     await ctx.runtime.childExecutionLifecycleService.markFailed({ taskCallId: "c-fail-child", error: "Fatal subagent crash" });
@@ -438,7 +443,8 @@ describe("Deterministic Transition Engine & Policy Tests (34 Scenarios)", () => 
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m15" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
-    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING });
+    const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING, expectedPhase: snap.phase, expectedAggregateVersion: snap.aggregateVersion });
 
     const a1 = await ctx.runtime.services.assignmentService.createAssignment({
       id: "as-req-fail",
@@ -511,6 +517,9 @@ describe("Deterministic Transition Engine & Policy Tests (34 Scenarios)", () => 
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m18" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+    const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING, expectedPhase: snap.phase, expectedAggregateVersion: snap.aggregateVersion });
+
     const a1 = await ctx.runtime.services.assignmentService.createAssignment({
       id: "as-req-comp",
       runId: run.id,
@@ -574,7 +583,7 @@ describe("Deterministic Transition Engine & Policy Tests (34 Scenarios)", () => 
     const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
 
     // Mutate to bump version
-    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING });
+    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING, expectedPhase: snap.phase, expectedAggregateVersion: snap.aggregateVersion });
 
     // Stale version CAS fails
     const s2 = ctx.runtime.transitionEngine.transitionPhase({
@@ -603,6 +612,8 @@ describe("Deterministic Transition Engine & Policy Tests (34 Scenarios)", () => 
     const res = ctx.runtime.transitionEngine.transitionPhase({
       runId: run.id,
       targetPhase: OP.COMPLETED,
+      expectedPhase: snapBefore.phase,
+      expectedAggregateVersion: snapBefore.aggregateVersion,
       authority: "transition_engine",
     });
     expect(res).toBe(false);
@@ -747,10 +758,11 @@ describe("Deterministic Transition Engine & Policy Tests (34 Scenarios)", () => 
       stateFingerprint: "fp-dup",
     };
 
-    const d1 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 2 });
+    const mockClient = { session: { promptAsync: async () => true } };
+    const d1 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 2, client: mockClient });
     expect(d1.dispatched).toBe(true);
 
-    const d2 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 2 });
+    const d2 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 2, client: mockClient });
     expect(d2.dispatched).toBe(false);
     expect(d2.reason).toBe("duplicate_dispatch");
   });
@@ -956,11 +968,15 @@ describe("Deterministic Transition Engine & Policy Tests (34 Scenarios)", () => 
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m34" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
-    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING });
+    let snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
+    ctx.runtime.transitionEngine.transitionPhase({ runId: run.id, targetPhase: OP.EXECUTING, expectedPhase: snap.phase, expectedAggregateVersion: snap.aggregateVersion });
+    snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
 
     const success = ctx.runtime.transitionEngine.transitionPhase({
       runId: run.id,
       targetPhase: OP.COMPLETED,
+      expectedPhase: snap.phase,
+      expectedAggregateVersion: snap.aggregateVersion,
       authority: "transition_engine",
     });
     expect(success).toBe(false);

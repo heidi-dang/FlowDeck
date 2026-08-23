@@ -536,12 +536,13 @@ export class ChildExecutionLifecycleService {
       record.nativeTerminationConfirmed = false;
       record.error = reason;
       this.nativeChildRepo.save(record);
+      this.executionRegistry.resolveExecution(record.executionId);
 
       return {
         record,
         changed: true,
         previousState: record.status,
-        newState: record.status, // Preserves running / queued state until native termination confirmed
+        newState: record.status, // Preserves running / queued state truthfully until native termination confirmed
       };
     }
   }
@@ -596,12 +597,13 @@ export class ChildExecutionLifecycleService {
     );
 
     for (const record of records) {
-      // Mark cancelled truthfully (confirmed if queued or via client abort)
-      const isQueued = record.status === "queued";
+      // If childSessionId is bound, invoke native abort through markCancelled
+      // If childSessionId is not bound and queued, stop is immediate
+      const isUnboundQueued = record.status === "queued" && !record.childSessionId;
       await this.markCancelled({
         taskCallId: record.taskCallId,
         reason: reason ?? "Parent run cancelled",
-        confirmed: isQueued, // Queued tasks never spawned native processes, so stop is immediate
+        confirmed: isUnboundQueued,
         client,
       });
       // Explicitly signal and cancel child ExecutionRegistry handle

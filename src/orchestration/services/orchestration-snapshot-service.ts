@@ -10,6 +10,7 @@
  * - verification state
  */
 
+import { createHash } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import type { TaskRunsRepository } from "../persistence/repositories/task-run";
 import type { SqliteRoutingDecisionRepository } from "../routing/sqlite-store";
@@ -55,8 +56,12 @@ export interface OrchestrationSnapshot {
   };
   childState: {
     active: number;
+    activeRequired: number;
+    activeOptional: number;
     completed: number;
     failed: number;
+    failedRequired: number;
+    failedOptional: number;
     cancelRequested: number;
   };
   verificationState?: {
@@ -78,6 +83,13 @@ export class OrchestrationSnapshotService {
     private readonly progressService: ProgressObservationService,
     private readonly sessionRepo: SqliteSessionRepository,
   ) {}
+
+  computeStateFingerprint(runId: string, sessionId?: string): string | null {
+    const snap = this.getSnapshot(runId, sessionId);
+    if (!snap) return null;
+    const raw = `${snap.runId}:${snap.aggregateVersion}:${snap.phase}:${snap.currentWorkItemId ?? ""}:${snap.childState.activeRequired}:${snap.childState.failedRequired}:${snap.progress.noProgressCount}:${snap.progress.lastRepositoryDelta}:${snap.progress.lastEvidenceDelta}`;
+    return createHash("sha256").update(raw).digest("hex").slice(0, 16);
+  }
 
   getSnapshot(runId: string, sessionId?: string): OrchestrationSnapshot | null {
     const taskRun = this.taskRunRepo.findById(runId);
@@ -146,16 +158,30 @@ export class OrchestrationSnapshotService {
 
     const currentChild = currentWorkItem ? childByAssignment.get(currentWorkItem.id) : undefined;
 
-    // 5. Child Execution State Counts
+    // 5. Child Execution State Counts (Required vs Optional aware)
+    const assignmentMap = new Map(assignmentRows.map(a => [String(a.id), (a.is_required as number | undefined) !== 0]));
     let childActive = 0;
+    let childActiveRequired = 0;
+    let childActiveOptional = 0;
     let childCompleted = 0;
     let childFailed = 0;
+    let childFailedRequired = 0;
+    let childFailedOptional = 0;
     let childCancelRequested = 0;
 
     for (const c of childRecords) {
-      if (c.status === "queued" || c.status === "running") childActive += 1;
-      else if (c.status === "completed") childCompleted += 1;
-      else if (c.status === "failed" || c.status === "timed_out") childFailed += 1;
+      const isReq = assignmentMap.get(c.assignmentId) ?? true;
+      if (c.status === "queued" || c.status === "running") {
+        childActive += 1;
+        if (isReq) childActiveRequired += 1;
+        else childActiveOptional += 1;
+      } else if (c.status === "completed") {
+        childCompleted += 1;
+      } else if (c.status === "failed" || c.status === "timed_out") {
+        childFailed += 1;
+        if (isReq) childFailedRequired += 1;
+        else childFailedOptional += 1;
+      }
 
       if (c.cancelRequested && !c.nativeTerminationConfirmed) childCancelRequested += 1;
     }
@@ -188,8 +214,12 @@ export class OrchestrationSnapshotService {
       },
       childState: {
         active: childActive,
+        activeRequired: childActiveRequired,
+        activeOptional: childActiveOptional,
         completed: childCompleted,
         failed: childFailed,
+        failedRequired: childFailedRequired,
+        failedOptional: childFailedOptional,
         cancelRequested: childCancelRequested,
       },
       verificationState: {

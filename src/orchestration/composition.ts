@@ -42,6 +42,7 @@ import {
   SqliteSessionRepository,
   SqliteContextItemRepository,
   SqliteConsumerOffsetRepository,
+  SessionTurnRepository,
   TaskRunsRepository,
 } from "./persistence/repositories";
 import type {
@@ -99,6 +100,8 @@ export interface ProductionOrchestrationRuntime {
   sessionRepo: SqliteSessionRepository;
   contextItemRepo: SqliteContextItemRepository;
   consumerOffsetRepo: SqliteConsumerOffsetRepository;
+  sessionTurnRepo: SessionTurnRepository;
+  taskRunsRepo: TaskRunsRepository;
   services: {
     runService: RunService;
     contractService: ContractService;
@@ -670,6 +673,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const sessionRepo = new SqliteSessionRepository(db, txManager);
   const contextItemRepo = new SqliteContextItemRepository(db, txManager);
   const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
+  const sessionTurnRepo = new SessionTurnRepository(db, txManager);
   const routingDecisionRepository = new SqliteRoutingDecisionRepository(db, txManager);
   const routingRevisionService = new RoutingRevisionService(routingDecisionRepository);
   const metrics = new OrchestrationMetrics();
@@ -760,7 +764,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const router = createRouterWithControllers(services);
   const commands = createCoreCommandRuntime(db, txManager, {
     db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
-    sessionRepo, contextItemRepo, consumerOffsetRepo, services, router,
+    sessionRepo, contextItemRepo, consumerOffsetRepo, sessionTurnRepo, taskRunsRepo, services, router,
     routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, progressObservationService, orchestrationSnapshotService, transitionEngine, continuationPolicy, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
@@ -777,6 +781,8 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     sessionRepo,
     contextItemRepo,
     consumerOffsetRepo,
+    sessionTurnRepo,
+    taskRunsRepo,
     services,
     router,
     routingDecisionRepository,
