@@ -145,4 +145,31 @@ describe("HeidiFastRouter — Milestone B", () => {
       expect(d.reason.length).toBeGreaterThan(0)
     }
   })
-})
+
+  it("classifies 'build a new settings UI and the backend API for it in parallel' as PARALLEL_SPECIALISTS", () => {
+    const d = classifyTask("build a new settings UI and the backend API for it in parallel")
+    expect(d.executionClass).toBe("PARALLEL_SPECIALISTS")
+  })
+
+  it("classifies 'create the API and UI at the same time' as PARALLEL_SPECIALISTS", () => {
+    const d = classifyTask("create the API and UI at the same time")
+    expect(d.executionClass).toBe("PARALLEL_SPECIALISTS")
+  })
+
+  it("classifies 'build the frontend and backend concurrently' as PARALLEL_SPECIALISTS", () => {
+    const d = classifyTask("build the frontend and backend concurrently")
+    expect(d.executionClass).toBe("PARALLEL_SPECIALISTS")
+  })
+
+  it("classifies 'first define the API schema, then build the UI' as non-parallel dependent", () => {
+    const d = classifyTask("first define the API schema, then build the UI")
+    expect(d.executionClass).not.toBe("PARALLEL_SPECIALISTS")
+  })
+
+  it("classifies 'review the UI documentation' as non-parallel and no frontend implementation", () => {
+    const d = classifyTask("review the UI documentation")
+    expect(d.executionClass).not.toBe("PARALLEL_SPECIALISTS")
+    expect(d.specialists ?? []).not.toContain("UI")
+  })
+
+});
