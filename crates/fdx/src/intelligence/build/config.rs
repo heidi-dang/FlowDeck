@@ -13,7 +13,7 @@ use crate::protocol::{
     canonicalize_repo_path, AssuranceLevel, EdgeKind, EvidenceStrength, NodeKind,
 };
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub const TSCONFIG_PROVIDER_ID: &str = "builtin-tsconfig";
@@ -163,10 +163,10 @@ impl BuildConfigProvider for TsConfigProvider {
 
     fn ingest(&self, repo_root: &Path) -> Result<BuildIngestResult, String> {
         let files = discover_build_files(repo_root);
-        let fingerprint = hash_files(repo_root, &files.tsconfigs, TSCONFIG_PROVIDER_VERSION);
+        let global_fingerprint = hash_files(repo_root, &files.tsconfigs, TSCONFIG_PROVIDER_VERSION);
 
         let mut res = BuildIngestResult {
-            fingerprint: fingerprint.clone(),
+            fingerprint: global_fingerprint.clone(),
             ..Default::default()
         };
 
@@ -186,9 +186,24 @@ impl BuildConfigProvider for TsConfigProvider {
 
         let mut extends_map: Vec<(String, String)> = Vec::new();
         let mut references_map: Vec<(String, String)> = Vec::new();
+        let mut config_fingerprints: HashMap<String, String> = HashMap::new();
+
+        for config_path in &files.tsconfigs {
+            let scope_fp = hash_files(
+                repo_root,
+                std::slice::from_ref(config_path),
+                TSCONFIG_PROVIDER_VERSION,
+            );
+            config_fingerprints.insert(config_path.clone(), scope_fp);
+        }
 
         for config_path in &files.tsconfigs {
             let full = repo_root.join(config_path);
+            let scope_fp = config_fingerprints
+                .get(config_path)
+                .cloned()
+                .unwrap_or_else(|| global_fingerprint.clone());
+
             let raw_content = match std::fs::read_to_string(&full) {
                 Ok(c) => c,
                 Err(e) => {
@@ -230,6 +245,19 @@ impl BuildConfigProvider for TsConfigProvider {
                 {
                     extends_target = Some(format!("config:{}", resolved));
                     extends_map.push((config_path.clone(), resolved));
+                } else {
+                    // Blocker 7: Unsupported / non-relative tsconfig extends form
+                    res.uncertainties.push(BuildUncertainty::new(
+                        "dynamic_config_expression",
+                        UncertaintyScope::Config(config_path.clone()),
+                        TSCONFIG_PROVIDER_ID,
+                        format!(
+                            "Unsupported or non-relative tsconfig extends '{}' in {}",
+                            ext_val, config_path
+                        ),
+                        AssuranceLevel::Degraded,
+                        true,
+                    ));
                 }
             }
 
@@ -243,7 +271,28 @@ impl BuildConfigProvider for TsConfigProvider {
                             let ref_target = format!("config:{}", resolved);
                             refs.push(ref_target);
                             references_map.push((config_path.clone(), resolved));
+                        } else {
+                            res.uncertainties.push(BuildUncertainty::new(
+                                "dynamic_config_expression",
+                                UncertaintyScope::Config(config_path.clone()),
+                                TSCONFIG_PROVIDER_ID,
+                                format!(
+                                    "Unsupported or unresolvable project reference '{}' in {}",
+                                    path_str, config_path
+                                ),
+                                AssuranceLevel::Degraded,
+                                true,
+                            ));
                         }
+                    } else {
+                        res.uncertainties.push(BuildUncertainty::new(
+                            "malformed_config",
+                            UncertaintyScope::Config(config_path.clone()),
+                            TSCONFIG_PROVIDER_ID,
+                            format!("Malformed project reference item in {}", config_path),
+                            AssuranceLevel::Degraded,
+                            true,
+                        ));
                     }
                 }
             }
@@ -281,7 +330,7 @@ impl BuildConfigProvider for TsConfigProvider {
                             kind: EdgeKind::Generates,
                             provider: "build_native".to_string(),
                             provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                            provider_fingerprint: fingerprint.clone(),
+                            provider_fingerprint: scope_fp.clone(),
                             strength: EvidenceStrength::Structural,
                             metadata: None,
                         });
@@ -328,7 +377,7 @@ impl BuildConfigProvider for TsConfigProvider {
                 kind: EdgeKind::Defines,
                 provider: "build_native".to_string(),
                 provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                provider_fingerprint: fingerprint.clone(),
+                provider_fingerprint: scope_fp.clone(),
                 strength: EvidenceStrength::Structural,
                 metadata: None,
             });
@@ -357,7 +406,7 @@ impl BuildConfigProvider for TsConfigProvider {
                 kind: EdgeKind::Configures,
                 provider: "build_native".to_string(),
                 provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                provider_fingerprint: fingerprint.clone(),
+                provider_fingerprint: scope_fp.clone(),
                 strength: EvidenceStrength::Structural,
                 metadata: None,
             });
@@ -377,6 +426,11 @@ impl BuildConfigProvider for TsConfigProvider {
             let from_node = format!("config:{}", from_cfg);
             let to_node = format!("config:{}", to_cfg);
             let edge_id = format!("edge:extends:{}:{}", from_node, to_node);
+            let scope_fp = config_fingerprints
+                .get(from_cfg)
+                .cloned()
+                .unwrap_or_else(|| global_fingerprint.clone());
+
             if res.edges.len() < MAX_DISCOVERED_EDGES {
                 res.edges.push(BuildEdge {
                     stable_id: edge_id,
@@ -385,7 +439,7 @@ impl BuildConfigProvider for TsConfigProvider {
                     kind: EdgeKind::Extends,
                     provider: "build_native".to_string(),
                     provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                    provider_fingerprint: fingerprint.clone(),
+                    provider_fingerprint: scope_fp,
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 });
@@ -397,6 +451,11 @@ impl BuildConfigProvider for TsConfigProvider {
             let from_node = format!("config:{}", from_cfg);
             let to_node = format!("config:{}", to_cfg);
             let edge_id = format!("edge:references:{}:{}", from_node, to_node);
+            let scope_fp = config_fingerprints
+                .get(from_cfg)
+                .cloned()
+                .unwrap_or_else(|| global_fingerprint.clone());
+
             if res.edges.len() < MAX_DISCOVERED_EDGES {
                 res.edges.push(BuildEdge {
                     stable_id: edge_id,
@@ -405,7 +464,7 @@ impl BuildConfigProvider for TsConfigProvider {
                     kind: EdgeKind::References,
                     provider: "build_native".to_string(),
                     provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                    provider_fingerprint: fingerprint.clone(),
+                    provider_fingerprint: scope_fp,
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 });

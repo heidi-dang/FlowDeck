@@ -9,5 +9,6 @@ pub mod model;
 pub mod package;
 pub mod provider;
 pub mod scope;
+pub mod snapshot;
 pub mod target;
 pub mod uncertainty;

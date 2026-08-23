@@ -4,12 +4,12 @@ use fdx::protocol::{EdgeKind, EvidenceStrength, NodeKind};
 #[test]
 fn test_build_graph_node_and_edge_creation() {
     let ws_node = BuildNode {
-        stable_id: "workspace:.".to_string(),
+        stable_id: "workspace:npm:.".to_string(),
         kind: NodeKind::Workspace,
         canonical_path: Some(".".to_string()),
         metadata: None,
     };
-    assert_eq!(ws_node.stable_id, "workspace:.");
+    assert_eq!(ws_node.stable_id, "workspace:npm:.");
     assert_eq!(ws_node.kind, NodeKind::Workspace);
 
     let pkg_node = BuildNode {
@@ -30,8 +30,8 @@ fn test_build_graph_node_and_edge_creation() {
     assert_eq!(target_node.kind, NodeKind::BuildTarget);
 
     let edge = BuildEdge {
-        stable_id: "edge:contains:workspace:.:pkg:npm:packages/web".to_string(),
-        from_node: "workspace:.".to_string(),
+        stable_id: "edge:contains:workspace:npm:.:pkg:npm:packages/web".to_string(),
+        from_node: "workspace:npm:.".to_string(),
         to_node: "pkg:npm:packages/web".to_string(),
         kind: EdgeKind::Contains,
         provider: "build_native".to_string(),

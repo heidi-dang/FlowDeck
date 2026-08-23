@@ -327,10 +327,10 @@ impl BuildConfigProvider for CargoProvider {
         all_manifests.sort();
         all_manifests.dedup();
 
-        let fingerprint = hash_files(repo_root, &all_manifests, CARGO_PROVIDER_VERSION);
+        let global_fingerprint = hash_files(repo_root, &all_manifests, CARGO_PROVIDER_VERSION);
 
         let mut res = BuildIngestResult {
-            fingerprint: fingerprint.clone(),
+            fingerprint: global_fingerprint.clone(),
             ..Default::default()
         };
 
@@ -351,7 +351,7 @@ impl BuildConfigProvider for CargoProvider {
             ));
         }
 
-        let ws_stable_id = "workspace:.".to_string();
+        let ws_stable_id = "workspace:cargo:.".to_string();
         let mut root_workspace_members = Vec::new();
         let mut root_workspace_exclude = Vec::new();
         let mut root_workspace_deps = HashMap::new();
@@ -398,10 +398,35 @@ impl BuildConfigProvider for CargoProvider {
             ),
         });
 
+        // Edge: root Cargo.toml DEFINES Cargo workspace
+        if files.cargo_tomls.contains(&"Cargo.toml".to_string()) {
+            let root_file_node = "file:Cargo.toml".to_string();
+            if !res.nodes.iter().any(|n| n.stable_id == root_file_node) {
+                res.nodes.push(BuildNode {
+                    stable_id: root_file_node.clone(),
+                    kind: NodeKind::File,
+                    canonical_path: Some("Cargo.toml".to_string()),
+                    metadata: None,
+                });
+            }
+            res.edges.push(BuildEdge {
+                stable_id: format!("edge:defines:{}:{}", root_file_node, ws_stable_id),
+                from_node: root_file_node,
+                to_node: ws_stable_id.clone(),
+                kind: EdgeKind::Defines,
+                provider: "build_native".to_string(),
+                provider_id: CARGO_PROVIDER_ID.to_string(),
+                provider_fingerprint: global_fingerprint.clone(),
+                strength: EvidenceStrength::Structural,
+                metadata: None,
+            });
+        }
+
         let mut dir_to_package_id: HashMap<String, String> = HashMap::new();
         let mut name_to_package_id: HashMap<String, String> = HashMap::new();
         let mut parsed_crates: Vec<(String, String, ParsedCargoToml)> = Vec::new();
         let mut crate_dirs: Vec<String> = Vec::new();
+        let mut crate_fingerprints: HashMap<String, String> = HashMap::new();
 
         for cargo_path in &files.cargo_tomls {
             let dir = Path::new(cargo_path)
@@ -409,6 +434,18 @@ impl BuildConfigProvider for CargoProvider {
                 .and_then(|p| p.to_str())
                 .unwrap_or(".");
             let dir_str = if dir.is_empty() { "." } else { dir }.to_string();
+
+            let mut manifest_group = vec![cargo_path.clone()];
+            let candidate_build_rs = if dir_str == "." {
+                "build.rs".to_string()
+            } else {
+                format!("{}/build.rs", dir_str)
+            };
+            if files.build_rss.contains(&candidate_build_rs) {
+                manifest_group.push(candidate_build_rs);
+            }
+            let scope_fp = hash_files(repo_root, &manifest_group, CARGO_PROVIDER_VERSION);
+            crate_fingerprints.insert(dir_str.clone(), scope_fp);
 
             let full = repo_root.join(cargo_path);
             let content = match std::fs::read_to_string(&full) {
@@ -460,6 +497,10 @@ impl BuildConfigProvider for CargoProvider {
         for (dir_str, cargo_path, parsed) in parsed_crates {
             let config_node_id = format!("config:{}", cargo_path);
             let file_node_id = format!("file:{}", cargo_path);
+            let scope_fp = crate_fingerprints
+                .get(&dir_str)
+                .cloned()
+                .unwrap_or_else(|| global_fingerprint.clone());
 
             // Node for Cargo.toml config
             res.nodes.push(BuildNode {
@@ -485,7 +526,7 @@ impl BuildConfigProvider for CargoProvider {
                 kind: EdgeKind::Defines,
                 provider: "build_native".to_string(),
                 provider_id: CARGO_PROVIDER_ID.to_string(),
-                provider_fingerprint: fingerprint.clone(),
+                provider_fingerprint: scope_fp.clone(),
                 strength: EvidenceStrength::Structural,
                 metadata: None,
             });
@@ -513,7 +554,7 @@ impl BuildConfigProvider for CargoProvider {
                 kind: EdgeKind::Configures,
                 provider: "build_native".to_string(),
                 provider_id: CARGO_PROVIDER_ID.to_string(),
-                provider_fingerprint: fingerprint.clone(),
+                provider_fingerprint: scope_fp.clone(),
                 strength: EvidenceStrength::Structural,
                 metadata: None,
             });
@@ -547,7 +588,7 @@ impl BuildConfigProvider for CargoProvider {
                     Err(e) => {
                         res.uncertainties.push(BuildUncertainty::new(
                             "unknown_workspace_membership",
-                            UncertaintyScope::Workspace(".".to_string()),
+                            UncertaintyScope::Workspace(ws_stable_id.clone()),
                             CARGO_PROVIDER_ID,
                             format!("Failed to match Cargo workspace for {}: {}", dir_str, e),
                             AssuranceLevel::Degraded,
@@ -567,7 +608,7 @@ impl BuildConfigProvider for CargoProvider {
                     kind: EdgeKind::Contains,
                     provider: "build_native".to_string(),
                     provider_id: CARGO_PROVIDER_ID.to_string(),
-                    provider_fingerprint: fingerprint.clone(),
+                    provider_fingerprint: scope_fp.clone(),
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 });
@@ -603,7 +644,7 @@ impl BuildConfigProvider for CargoProvider {
                             kind: EdgeKind::Contains,
                             provider: "build_native".to_string(),
                             provider_id: CARGO_PROVIDER_ID.to_string(),
-                            provider_fingerprint: fingerprint.clone(),
+                            provider_fingerprint: scope_fp.clone(),
                             strength: EvidenceStrength::Structural,
                             metadata: None,
                         });
@@ -656,7 +697,7 @@ impl BuildConfigProvider for CargoProvider {
                     kind: EdgeKind::BelongsTo,
                     provider: "build_native".to_string(),
                     provider_id: CARGO_PROVIDER_ID.to_string(),
-                    provider_fingerprint: fingerprint.clone(),
+                    provider_fingerprint: scope_fp.clone(),
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 });
@@ -713,7 +754,7 @@ impl BuildConfigProvider for CargoProvider {
                     kind: EdgeKind::BelongsTo,
                     provider: "build_native".to_string(),
                     provider_id: CARGO_PROVIDER_ID.to_string(),
-                    provider_fingerprint: fingerprint.clone(),
+                    provider_fingerprint: scope_fp.clone(),
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 });
@@ -772,7 +813,7 @@ impl BuildConfigProvider for CargoProvider {
                     kind: EdgeKind::BelongsTo,
                     provider: "build_native".to_string(),
                     provider_id: CARGO_PROVIDER_ID.to_string(),
-                    provider_fingerprint: fingerprint.clone(),
+                    provider_fingerprint: scope_fp.clone(),
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 });
@@ -799,7 +840,7 @@ impl BuildConfigProvider for CargoProvider {
                             &pkg_stable_id,
                             ws_ref_name,
                             spec.version.as_deref(),
-                            &fingerprint,
+                            &scope_fp,
                         );
                     }
                 }
@@ -839,7 +880,7 @@ impl BuildConfigProvider for CargoProvider {
                         kind: EdgeKind::DependsOn,
                         provider: "build_native".to_string(),
                         provider_id: CARGO_PROVIDER_ID.to_string(),
-                        provider_fingerprint: fingerprint.clone(),
+                        provider_fingerprint: scope_fp.clone(),
                         strength: EvidenceStrength::Structural,
                         metadata: None,
                     });
@@ -853,7 +894,7 @@ impl BuildConfigProvider for CargoProvider {
                     &pkg_stable_id,
                     ext_name,
                     ver_opt.as_deref(),
-                    &fingerprint,
+                    &scope_fp,
                 );
             }
 
@@ -878,7 +919,7 @@ fn parsed_crates_external_deps_push(
     res: &mut BuildIngestResult,
     pkg_stable_id: &str,
     ext_name: &str,
-    ver_opt: Option<&str>,
+    version_opt: Option<&str>,
     fingerprint: &str,
 ) {
     let ext_id = format!("ext:cargo:{}", ext_name);
@@ -891,7 +932,7 @@ fn parsed_crates_external_deps_push(
             stable_id: ext_id.clone(),
             ecosystem: PackageEcosystem::Cargo,
             name: ext_name.to_string(),
-            version: ver_opt.map(String::from),
+            version: version_opt.map(String::from),
         });
         res.nodes.push(BuildNode {
             stable_id: ext_id.clone(),

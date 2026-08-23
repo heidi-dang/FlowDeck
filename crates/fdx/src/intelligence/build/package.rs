@@ -34,37 +34,26 @@ impl Default for PackageJsonProvider {
     }
 }
 
-fn parse_pnpm_workspace_packages(content: &str) -> Vec<String> {
-    let mut in_packages_section = false;
-    let mut patterns = Vec::new();
+pub fn parse_pnpm_workspace_packages(content: &str) -> Result<Vec<String>, String> {
+    let val: serde_yaml::Value = serde_yaml::from_str(content)
+        .map_err(|e| format!("pnpm-workspace.yaml parse error: {}", e))?;
 
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with('#') || trimmed.is_empty() {
-            continue;
-        }
-        if trimmed.starts_with("packages:") {
-            in_packages_section = true;
-            continue;
-        }
-        if in_packages_section {
-            if !line.starts_with(' ') && !line.starts_with('\t') && !trimmed.starts_with('-') {
-                in_packages_section = false;
-                continue;
-            }
-            if let Some(stripped) = trimmed.strip_prefix('-') {
-                let pat = stripped.trim().trim_matches('\'').trim_matches('"');
-                if !pat.is_empty() {
-                    patterns.push(pat.to_string());
+    let mut patterns = Vec::new();
+    if let Some(pkgs) = val.get("packages") {
+        if let Some(seq) = pkgs.as_sequence() {
+            for item in seq {
+                if let Some(s) = item.as_str() {
+                    patterns.push(s.to_string());
                 }
             }
+        } else {
+            return Err("packages field in pnpm-workspace.yaml is not a sequence".to_string());
         }
     }
-
-    patterns
+    Ok(patterns)
 }
 
-fn matches_workspace_pattern(dir: &str, patterns: &[String]) -> Result<bool, String> {
+pub fn matches_workspace_pattern(dir: &str, patterns: &[String]) -> Result<bool, String> {
     if patterns.is_empty() {
         return Ok(false);
     }
@@ -93,7 +82,6 @@ fn find_package_owned_files(
         map.insert(d.clone(), Vec::new());
     }
 
-    // Sort package dirs longest first so nearest boundary matches first
     let mut sorted_dirs = package_dirs.to_vec();
     sorted_dirs.sort_by_key(|d| std::cmp::Reverse(d.len()));
 
@@ -112,7 +100,6 @@ fn find_package_owned_files(
             continue;
         };
 
-        // Find nearest package directory
         for pdir in &sorted_dirs {
             let is_match = pdir == "."
                 || canon == *pdir
@@ -169,10 +156,11 @@ impl BuildConfigProvider for PackageJsonProvider {
         manifest_files.sort();
         manifest_files.dedup();
 
-        let fingerprint = hash_files(repo_root, &manifest_files, PACKAGE_JSON_PROVIDER_VERSION);
+        let global_fingerprint =
+            hash_files(repo_root, &manifest_files, PACKAGE_JSON_PROVIDER_VERSION);
 
         let mut res = BuildIngestResult {
-            fingerprint: fingerprint.clone(),
+            fingerprint: global_fingerprint.clone(),
             ..Default::default()
         };
 
@@ -195,13 +183,38 @@ impl BuildConfigProvider for PackageJsonProvider {
 
         // Check root workspace
         let mut workspace_patterns: Vec<String> = Vec::new();
+        let mut root_workspace_manifests: Vec<String> = Vec::new();
 
         // 1. Check pnpm-workspace.yaml
         for pnpm_file in &files.pnpm_workspaces {
             let full = repo_root.join(pnpm_file);
-            if let Ok(content) = std::fs::read_to_string(&full) {
-                let pats = parse_pnpm_workspace_packages(&content);
-                workspace_patterns.extend(pats);
+            match std::fs::read_to_string(&full) {
+                Ok(content) => match parse_pnpm_workspace_packages(&content) {
+                    Ok(pats) => {
+                        workspace_patterns.extend(pats);
+                        root_workspace_manifests.push(pnpm_file.clone());
+                    }
+                    Err(e) => {
+                        res.uncertainties.push(BuildUncertainty::new(
+                            "malformed_config",
+                            UncertaintyScope::Workspace("workspace:npm:.".to_string()),
+                            PACKAGE_JSON_PROVIDER_ID,
+                            format!("Malformed {}: {}", pnpm_file, e),
+                            AssuranceLevel::Degraded,
+                            true,
+                        ));
+                    }
+                },
+                Err(e) => {
+                    res.uncertainties.push(BuildUncertainty::new(
+                        "package_read_error",
+                        UncertaintyScope::Workspace("workspace:npm:.".to_string()),
+                        PACKAGE_JSON_PROVIDER_ID,
+                        format!("Failed to read {}: {}", pnpm_file, e),
+                        AssuranceLevel::Degraded,
+                        true,
+                    ));
+                }
             }
         }
 
@@ -212,6 +225,7 @@ impl BuildConfigProvider for PackageJsonProvider {
             if let Ok(content) = std::fs::read_to_string(&full) {
                 if let Ok(val) = serde_json::from_str::<Value>(&content) {
                     if let Some(ws) = val.get("workspaces") {
+                        root_workspace_manifests.push(root_pkg_path.to_string());
                         if let Some(arr) = ws.as_array() {
                             for item in arr {
                                 if let Some(s) = item.as_str() {
@@ -233,7 +247,7 @@ impl BuildConfigProvider for PackageJsonProvider {
         }
 
         let is_monorepo = !workspace_patterns.is_empty();
-        let ws_stable_id = "workspace:.".to_string();
+        let ws_stable_id = "workspace:npm:.".to_string();
 
         res.workspaces.push(Workspace {
             stable_id: ws_stable_id.clone(),
@@ -256,10 +270,35 @@ impl BuildConfigProvider for PackageJsonProvider {
             ),
         });
 
+        // Explicit edge: root manifest -> workspace node
+        for rmf in &root_workspace_manifests {
+            let fnode = format!("file:{}", rmf);
+            if !res.nodes.iter().any(|n| n.stable_id == fnode) {
+                res.nodes.push(BuildNode {
+                    stable_id: fnode.clone(),
+                    kind: NodeKind::File,
+                    canonical_path: Some(rmf.clone()),
+                    metadata: None,
+                });
+            }
+            res.edges.push(BuildEdge {
+                stable_id: format!("edge:defines:{}:{}", fnode, ws_stable_id),
+                from_node: fnode,
+                to_node: ws_stable_id.clone(),
+                kind: EdgeKind::Defines,
+                provider: "build_native".to_string(),
+                provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
+                provider_fingerprint: global_fingerprint.clone(),
+                strength: EvidenceStrength::Structural,
+                metadata: None,
+            });
+        }
+
         // Parse individual packages
         let mut name_to_package_id: HashMap<String, String> = HashMap::new();
         let mut parsed_packages: Vec<Package> = Vec::new();
         let mut package_dirs: Vec<String> = Vec::new();
+        let mut pkg_fingerprints: HashMap<String, String> = HashMap::new();
 
         for pkg_json_path in &files.package_jsons {
             let dir = Path::new(pkg_json_path)
@@ -303,7 +342,6 @@ impl BuildConfigProvider for PackageJsonProvider {
             };
 
             if is_monorepo && dir_str == "." && val.get("workspaces").is_some() {
-                // Root monorepo manifest defines the workspace, not a member package
                 continue;
             }
 
@@ -317,6 +355,13 @@ impl BuildConfigProvider for PackageJsonProvider {
                 .and_then(|v| v.as_str())
                 .map(String::from);
             let pkg_stable_id = format!("pkg:npm:{}", dir_str);
+
+            let scope_fp = hash_files(
+                repo_root,
+                std::slice::from_ref(pkg_json_path),
+                PACKAGE_JSON_PROVIDER_VERSION,
+            );
+            pkg_fingerprints.insert(dir_str.clone(), scope_fp.clone());
 
             name_to_package_id.insert(pkg_name.clone(), pkg_stable_id.clone());
             package_dirs.push(dir_str.clone());
@@ -404,7 +449,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                         kind: EdgeKind::BelongsTo,
                         provider: "build_native".to_string(),
                         provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                        provider_fingerprint: fingerprint.clone(),
+                        provider_fingerprint: scope_fp.clone(),
                         strength: EvidenceStrength::Structural,
                         metadata: None,
                     });
@@ -428,7 +473,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                 kind: EdgeKind::Defines,
                 provider: "build_native".to_string(),
                 provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                provider_fingerprint: fingerprint.clone(),
+                provider_fingerprint: scope_fp.clone(),
                 strength: EvidenceStrength::Structural,
                 metadata: None,
             });
@@ -458,7 +503,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                     Err(e) => {
                         res.uncertainties.push(BuildUncertainty::new(
                             "unknown_workspace_membership",
-                            UncertaintyScope::Workspace(".".to_string()),
+                            UncertaintyScope::Workspace(ws_stable_id.clone()),
                             PACKAGE_JSON_PROVIDER_ID,
                             format!("Failed to match workspace pattern for {}: {}", dir_str, e),
                             AssuranceLevel::Degraded,
@@ -493,7 +538,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                     kind: EdgeKind::Contains,
                     provider: "build_native".to_string(),
                     provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                    provider_fingerprint: fingerprint.clone(),
+                    provider_fingerprint: scope_fp.clone(),
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 });
@@ -516,6 +561,11 @@ impl BuildConfigProvider for PackageJsonProvider {
         let owned_files_map = find_package_owned_files(repo_root, &package_dirs);
         for (pkg_dir, files_list) in owned_files_map {
             let pkg_id = format!("pkg:npm:{}", pkg_dir);
+            let scope_fp = pkg_fingerprints
+                .get(&pkg_dir)
+                .cloned()
+                .unwrap_or_else(|| global_fingerprint.clone());
+
             for file_path in files_list {
                 let file_node_id = format!("file:{}", file_path);
                 if !res.nodes.iter().any(|n| n.stable_id == file_node_id) {
@@ -537,7 +587,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                             kind: EdgeKind::Contains,
                             provider: "build_native".to_string(),
                             provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                            provider_fingerprint: fingerprint.clone(),
+                            provider_fingerprint: scope_fp.clone(),
                             strength: EvidenceStrength::Structural,
                             metadata: None,
                         });
@@ -558,6 +608,11 @@ impl BuildConfigProvider for PackageJsonProvider {
 
         // Resolve package dependencies and create dependency / external edges
         for mut pkg in parsed_packages {
+            let scope_fp = pkg_fingerprints
+                .get(&pkg.directory)
+                .cloned()
+                .unwrap_or_else(|| global_fingerprint.clone());
+
             for dep in &mut pkg.dependencies {
                 if let Some(target_pkg_id) = name_to_package_id.get(&dep.name) {
                     dep.target_package_id = Some(target_pkg_id.clone());
@@ -573,7 +628,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                             kind: EdgeKind::DependsOn,
                             provider: "build_native".to_string(),
                             provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                            provider_fingerprint: fingerprint.clone(),
+                            provider_fingerprint: scope_fp.clone(),
                             strength: EvidenceStrength::Structural,
                             metadata: None,
                         });
@@ -616,7 +671,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                             kind: EdgeKind::Uses,
                             provider: "build_native".to_string(),
                             provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                            provider_fingerprint: fingerprint.clone(),
+                            provider_fingerprint: scope_fp.clone(),
                             strength: EvidenceStrength::Structural,
                             metadata: None,
                         });
