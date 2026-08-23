@@ -96,7 +96,7 @@ impl ExecutionAction {
                 pkg_dir,
                 test_file_rel,
                 package_manager,
-                runner: _runner,
+                runner,
             } => {
                 let cwd = if pkg_dir.as_os_str().is_empty() || pkg_dir == Path::new(".") {
                     repo_root.to_path_buf()
@@ -106,13 +106,22 @@ impl ExecutionAction {
                     repo_root.join(pkg_dir)
                 };
 
-                // Invoke package test runner with positional target argument
-                let argv = vec![
-                    "run".to_string(),
-                    "test".to_string(),
-                    "--".to_string(),
-                    test_file_rel.clone(),
-                ];
+                // Manager-specific argument forwarding for known runners
+                let argv = match (package_manager.as_str(), runner) {
+                    ("yarn", _) => vec![
+                        "run".to_string(),
+                        "test".to_string(),
+                        "--".to_string(),
+                        test_file_rel.clone(),
+                    ],
+                    _ => vec![
+                        "run".to_string(),
+                        "test".to_string(),
+                        "--".to_string(),
+                        test_file_rel.clone(),
+                    ],
+                };
+
                 Ok(ConcreteInvocation {
                     program: package_manager.clone(),
                     argv,

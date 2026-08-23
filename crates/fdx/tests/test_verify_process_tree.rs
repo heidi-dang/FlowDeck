@@ -22,6 +22,7 @@ fn test_timeout_cleans_up_process_tree_and_descendants() {
     let pkg_json = dir.path().join("package.json");
     let pkg_val = serde_json::json!({
         "name": "tree-pkg",
+        "packageManager": "npm@10.0.0",
         "scripts": {
             "test": format!("node -e \"{}\"", node_script)
         }
@@ -100,6 +101,7 @@ fn test_output_overflow_cleans_up_process_tree_and_descendants() {
     let pkg_json = dir.path().join("package.json");
     let pkg_val = serde_json::json!({
         "name": "overflow-tree-pkg",
+        "packageManager": "npm@10.0.0",
         "scripts": {
             "test": format!("node -e \"{}\"", node_script)
         }

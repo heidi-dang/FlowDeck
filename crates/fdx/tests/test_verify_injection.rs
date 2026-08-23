@@ -12,7 +12,8 @@ fn test_verification_injection_safely_passes_arguments_without_shell() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "inject-pkg", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
+        r#"{"name": "inject-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
     )
     .unwrap();
 

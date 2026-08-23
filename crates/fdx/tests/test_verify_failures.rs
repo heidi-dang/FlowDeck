@@ -12,7 +12,8 @@ fn test_verification_failure_records_failed_status_and_exit_code() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "fail-pkg", "scripts": {"test": "node -e 'process.exit(42)'"}}"#,
+        r#"{"name": "fail-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"test": "node -e 'process.exit(42)'"}}"#,
     )
     .unwrap();
 

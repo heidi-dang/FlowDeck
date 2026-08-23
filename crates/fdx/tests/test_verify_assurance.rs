@@ -12,7 +12,8 @@ fn test_verification_assurance_never_upgrades_plan_assurance() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "pass-pkg", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
+        r#"{"name": "pass-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
     )
     .unwrap();
 
@@ -52,7 +53,8 @@ fn test_verification_assurance_unverified_plan_remains_unverified() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "pass-pkg", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
+        r#"{"name": "pass-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
     )
     .unwrap();
 

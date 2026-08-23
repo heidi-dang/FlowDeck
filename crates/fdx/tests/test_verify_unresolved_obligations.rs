@@ -39,7 +39,8 @@ fn test_unresolved_obligations_with_passing_checks_is_incomplete() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "pass-pkg", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
+        r#"{"name": "pass-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
     )
     .unwrap();
 

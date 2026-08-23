@@ -8,19 +8,22 @@
 //! - Bounded stdout/stderr streaming buffers and accurate digest bounds.
 //! - Strict CWD path containment.
 //! - Typed runner capability targeting and single-execution suite rollup.
+//! - Shared execution identity and explicit reuse tracking.
+//! - Unique collision-resistant run identity.
+//! - Invariant matching of returned and persisted VerificationRun artifacts.
 //! - Fail-closed handling of unresolved M6 obligations and persistence failures.
 //! - Never installs dependencies or modifies source files.
 
 use crate::intelligence::change::uncertainty::UncertaintyReason;
-use crate::intelligence::semantic::provider::sha256_hex;
 use crate::intelligence::testplan::model::{PlannedCheck, VerificationPlan};
 use crate::intelligence::verify::action::ExecutionAction;
 use crate::intelligence::verify::aggregate::{aggregate_outcome, propagate_assurance};
+use crate::intelligence::verify::identity::generate_unique_run_id;
 use crate::intelligence::verify::model::{
     CheckExecutionResult, CheckExecutionStatus, PersistenceStatus, VerificationOutcome,
     VerificationRun,
 };
-use crate::intelligence::verify::persist::persist_verification_run;
+use crate::intelligence::verify::persist::{persist_verification_run, run_artifact_path};
 use crate::intelligence::verify::process::{
     execute_bounded_command, ProcessBounds, RawProcessOutcome,
 };
@@ -65,10 +68,8 @@ pub fn execute_verification_plan(
         .as_millis() as u64;
     let start_instant = Instant::now();
 
-    // Generate unique run identifier combining timestamp and plan content digest
-    let plan_repr = serde_json::to_string(&plan).unwrap_or_default();
-    let plan_hash = sha256_hex(plan_repr.as_bytes());
-    let run_id = format!("run_{}_{}", start_wall, &plan_hash[..12]);
+    // Generate unique, collision-resistant run identifier
+    let run_id = generate_unique_run_id(plan, Some(start_wall));
 
     // Handle check deduplication and detect conflicting planned checks
     let mut seen_checks: HashMap<&str, &PlannedCheck> = HashMap::new();
@@ -118,6 +119,8 @@ pub fn execute_verification_plan(
                 check_id: check.check_id.clone(),
                 kind: check.kind,
                 status: CheckExecutionStatus::Skipped,
+                execution_id: format!("skipped:{}", check.check_id),
+                reused_execution: false,
                 command: vec![],
                 cwd: ".".to_string(),
                 exit_code: None,
@@ -146,6 +149,8 @@ pub fn execute_verification_plan(
                 check_id: check.check_id.clone(),
                 kind: check.kind,
                 status: CheckExecutionStatus::Unsupported,
+                execution_id: format!("conflict:{}", check.check_id),
+                reused_execution: false,
                 command: vec![],
                 cwd: ".".to_string(),
                 exit_code: None,
@@ -178,6 +183,8 @@ pub fn execute_verification_plan(
                     check_id: check.check_id.clone(),
                     kind: check.kind,
                     status: CheckExecutionStatus::Unsupported,
+                    execution_id: format!("unsupported:{}", check.check_id),
+                    reused_execution: false,
                     command: vec![],
                     cwd: ".".to_string(),
                     exit_code: None,
@@ -204,8 +211,8 @@ pub fn execute_verification_plan(
             concrete_action => match concrete_action.to_invocation(repo_root) {
                 Ok(inv) => {
                     let cache_key = (inv.program.clone(), inv.argv.clone(), inv.cwd.clone());
-                    let raw_outcome = match invocation_cache.get(&cache_key) {
-                        Some(cached) => cached.clone(),
+                    let (raw_outcome, reused) = match invocation_cache.get(&cache_key) {
+                        Some(cached) => (cached.clone(), true),
                         None => {
                             let outcome = execute_bounded_command(
                                 &inv.program,
@@ -214,7 +221,7 @@ pub fn execute_verification_plan(
                                 &options.bounds,
                             );
                             invocation_cache.insert(cache_key, outcome.clone());
-                            outcome
+                            (outcome, false)
                         }
                     };
 
@@ -240,6 +247,8 @@ pub fn execute_verification_plan(
                         check_id: check.check_id.clone(),
                         kind: check.kind,
                         status: raw_outcome.status,
+                        execution_id: raw_outcome.execution_id.clone(),
+                        reused_execution: reused,
                         command: full_cmd,
                         cwd: display_cwd,
                         exit_code: raw_outcome.exit_code,
@@ -266,6 +275,8 @@ pub fn execute_verification_plan(
                         check_id: check.check_id.clone(),
                         kind: check.kind,
                         status: CheckExecutionStatus::Unsupported,
+                        execution_id: format!("unsupported:{}", check.check_id),
+                        reused_execution: false,
                         command: vec![],
                         cwd: ".".to_string(),
                         exit_code: None,
@@ -298,8 +309,10 @@ pub fn execute_verification_plan(
         propagate_assurance(plan, &results, &dedup_uncertainties);
     let duration_ms = start_instant.elapsed().as_millis() as u64;
 
+    let target_path = run_artifact_path(repo_root, &run_id);
+
     let mut verification_run = VerificationRun {
-        run_id,
+        run_id: run_id.clone(),
         plan: plan.clone(),
         outcome: initial_outcome,
         assurance: initial_assurance,
@@ -307,33 +320,32 @@ pub fn execute_verification_plan(
         uncertainty: uncertainties,
         base: options.base.clone(),
         head: options.head.clone(),
-        persistence_status: PersistenceStatus::NotRequested,
+        persistence_status: if options.persist {
+            PersistenceStatus::Persisted {
+                path: target_path.to_string_lossy().into_owned(),
+            }
+        } else {
+            PersistenceStatus::NotRequested
+        },
         executed_at_ms: start_wall,
         duration_ms,
     };
 
     if options.persist {
-        match persist_verification_run(repo_root, &verification_run) {
-            Ok(path) => {
-                verification_run.persistence_status = PersistenceStatus::Persisted {
-                    path: path.to_string_lossy().into_owned(),
-                };
+        if let Err(e) = persist_verification_run(repo_root, &verification_run) {
+            verification_run.persistence_status = PersistenceStatus::Failed {
+                reason: format!("failed to persist verification run: {}", e),
+            };
+            if verification_run.outcome == VerificationOutcome::Passed {
+                verification_run.outcome = VerificationOutcome::Incomplete;
             }
-            Err(e) => {
-                verification_run.persistence_status = PersistenceStatus::Failed {
-                    reason: format!("failed to persist verification run: {}", e),
-                };
-                if verification_run.outcome == VerificationOutcome::Passed {
-                    verification_run.outcome = VerificationOutcome::Incomplete;
-                }
-                verification_run.assurance = AssuranceLevel::Unverified;
-                verification_run
-                    .uncertainty
-                    .push(UncertaintyReason::BuildProviderFailed(format!(
-                        "verification run persistence failed: {}",
-                        e
-                    )));
-            }
+            verification_run.assurance = AssuranceLevel::Unverified;
+            verification_run
+                .uncertainty
+                .push(UncertaintyReason::BuildProviderFailed(format!(
+                    "verification run persistence failed: {}",
+                    e
+                )));
         }
     }
 

@@ -12,6 +12,7 @@ fn test_verification_redaction_before_persistence() {
     let pkg_json = dir.path().join("package.json");
     let pkg_val = serde_json::json!({
         "name": "secret-pkg",
+        "packageManager": "npm@10.0.0",
         "scripts": {
             "test": "node -e \"console.log('SECRET: OPENAI_API_KEY=sk-1234567890abcdefghijklmnopqrstuvwxyz and Bearer supersecrettokenhere123')\""
         }

@@ -14,6 +14,7 @@ fn test_verification_output_bounds_truncates_large_output_and_marks_incomplete()
     let pkg_json = dir.path().join("package.json");
     let pkg_val = serde_json::json!({
         "name": "flood-pkg",
+        "packageManager": "npm@10.0.0",
         "scripts": {
             "test": "node -e \"process.stdout.write('X'.repeat(50000))\""
         }

@@ -12,7 +12,8 @@ fn test_verify_npm_package_and_test_file_suite_rollup() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "npm-pkg", "scripts": {"test": "node -e 'process.exit(0)'", "typecheck": "node -e 'process.exit(0)'"}}"#,
+        r#"{"name": "npm-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"test": "node -e 'process.exit(0)'", "typecheck": "node -e 'process.exit(0)'"}}"#,
     )
     .unwrap();
 
@@ -72,7 +73,8 @@ fn test_verify_npm_known_runner_individual_targeting() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "npm-vitest-pkg", "scripts": {"test": "vitest run"}}"#,
+        r#"{"name": "npm-vitest-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"test": "vitest run"}}"#,
     )
     .unwrap();
     std::fs::write(dir.path().join("vitest.config.ts"), "export default {};").unwrap();
@@ -117,7 +119,8 @@ fn test_verify_npm_unknown_runner_without_test_script_is_unsupported() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "no-test-script-pkg", "scripts": {"build": "node -e 'process.exit(0)'"}}"#,
+        r#"{"name": "no-test-script-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"build": "node -e 'process.exit(0)'"}}"#,
     )
     .unwrap();
 
