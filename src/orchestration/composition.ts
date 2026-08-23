@@ -77,6 +77,7 @@ import { RuntimeSnapshotService } from "./services/runtime-snapshot";
 import { AuthoritativeRoutingService } from "./routing/authoritative";
 import { RoutingRevisionService } from "./routing/routing-revision-service";
 import { ChildExecutionLifecycleService } from "./services/child-execution-lifecycle-service";
+import { ProgressObservationService } from "./services/progress-observation-service";
 import { TokenBudgetRuntime } from "../services/token-budget-runtime";
 import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
 import type { CommandRegistry } from "./commands/domain/command-registry";
@@ -104,9 +105,11 @@ export interface ProductionOrchestrationRuntime {
     healthService: HealthService;
     runRepo: IRunRepository;
     childExecutionLifecycleService: ChildExecutionLifecycleService;
+    progressObservationService: ProgressObservationService;
   };
   router: ReturnType<typeof createRouterWithControllers>;
   childExecutionLifecycleService: ChildExecutionLifecycleService;
+  progressObservationService: ProgressObservationService;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
   routingRevisionService: RoutingRevisionService;
   metrics: OrchestrationMetrics;
@@ -689,6 +692,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
 
   const assignmentService = new AssignmentService(assignmentRepo, eventBus);
   const childExecutionLifecycleService = new ChildExecutionLifecycleService(db, assignmentService, sessionRepo, executionRegistry, eventBus);
+  const progressObservationService = new ProgressObservationService(db);
   const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db, childExecutionLifecycleService);
   const contractService = new ContractService(contractRepo, eventBus);
   const assignmentBindingCoordinator = new AssignmentBindingCoordinator({ assignmentService, bindingRepo: assignmentBindingRepo });
@@ -715,13 +719,14 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     snapshotService,
     runRepo,
     childExecutionLifecycleService,
+    progressObservationService,
   };
 
   const router = createRouterWithControllers(services);
   const commands = createCoreCommandRuntime(db, txManager, {
     db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
     sessionRepo, contextItemRepo, consumerOffsetRepo, services, router,
-    routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, metrics, executionRepository, executionScheduler,
+    routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, progressObservationService, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
     assignmentBindingCoordinator, faultHook: options.faultHook,
@@ -742,6 +747,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     routingDecisionRepository,
     routingRevisionService,
     childExecutionLifecycleService,
+    progressObservationService,
     metrics,
     executionRepository,
     executionScheduler,

@@ -84,6 +84,11 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
   activeChildExecutions?: number;
   completedChildExecutions?: number;
   failedChildExecutions?: number;
+  lastProgressAt?: string;
+  noProgressCount?: number;
+  lastProgressReason?: string;
+  stallReason?: string;
+  isStalled?: boolean;
   childExecutions?: Array<{
     assignmentId: string;
     executionId: string;
@@ -109,6 +114,10 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
     ? projectCtx.runtime.childExecutionLifecycleService.getDiagnosticsForRun(sessionRow.runId)
     : undefined;
 
+  const progDiag = sessionRow.runId
+    ? projectCtx.runtime.progressObservationService.getDiagnosticsForRun(sessionRow.runId)
+    : undefined;
+
   return {
     sessionID: sessionRow.id,
     runID: sessionRow.runId,
@@ -124,6 +133,11 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
     activeChildExecutions: childDiag?.activeChildExecutions,
     completedChildExecutions: childDiag?.completedChildExecutions,
     failedChildExecutions: childDiag?.failedChildExecutions,
+    lastProgressAt: progDiag?.lastProgressAt,
+    noProgressCount: progDiag?.noProgressCount,
+    lastProgressReason: progDiag?.lastProgressReason,
+    stallReason: progDiag?.stallReason,
+    isStalled: progDiag?.isStalled,
     childExecutions: childDiag?.childExecutions,
   };
 }

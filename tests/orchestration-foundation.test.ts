@@ -1386,4 +1386,164 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     await releaseProjectRuntime(dirA);
   });
 
+  it("44. same-action-same-result-no-progress: repeated read with unchanged content produces no evidence delta and increments no-progress count", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-prog-same";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "msg-p1" }] }
+    );
+
+    const run = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(run).not.toBeNull();
+
+    // Turn 1: read file
+    await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c1", args: { file: "config.json" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c1", args: { file: "config.json" } }, { output: JSON.stringify({ port: 8080 }), metadata: {} });
+
+    let diag = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag.noProgressCount).toBe(0);
+    expect(diag.lastProgressReason).toBe("novel_evidence_acquired");
+
+    // Turn 2: read same file with same content
+    await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c2", args: { file: "config.json" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c2", args: { file: "config.json" } }, { output: JSON.stringify({ port: 8080 }), metadata: {} });
+
+    diag = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag.noProgressCount).toBe(1);
+
+    // Turn 3: read same file again
+    await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c3", args: { file: "config.json" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c3", args: { file: "config.json" } }, { output: JSON.stringify({ port: 8080 }), metadata: {} });
+
+    diag = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag.noProgressCount).toBe(2);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("45. same-action-new-evidence-is-progress: same tool with different output content resets no-progress counter", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-prog-diff";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "msg-p2" }] }
+    );
+
+    // Turn 1: read file A
+    await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c1", args: { file: "a.txt" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c1", args: { file: "a.txt" } }, { output: "Content A", metadata: {} });
+
+    // Turn 2: read file B (novel content)
+    await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c2", args: { file: "b.txt" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c2", args: { file: "b.txt" } }, { output: "Content B", metadata: {} });
+
+    const diag = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag.noProgressCount).toBe(0);
+    expect(diag.lastProgressReason).toBe("novel_evidence_acquired");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("46. repository-delta-is-progress: file modification with new repo state resets no-progress counter", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-prog-repo";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "msg-p3" }] }
+    );
+
+    const run = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    const obs = ctx.runtime.progressObservationService.recordToolObservation({
+      runId: run!.id,
+      sessionId: sessionID,
+      tool: "write",
+      args: { file: "main.ts" },
+      output: "written",
+      repositoryHash: "sha-repo-v2",
+    });
+
+    expect(obs.isProgress).toBe(true);
+    expect(obs.progressReason).toBe("repository_mutation");
+    expect(obs.repositoryStateDelta).toBe(1);
+
+    const diag = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag.noProgressCount).toBe(0);
+    expect(diag.lastProgressReason).toBe("repository_mutation");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("47. child-completion-is-progress: specialist task completion emits progress and state deltas", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-prog-child";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "msg-p4" }] }
+    );
+
+    const callID = "call-child-prog-1";
+    await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID, args: { subagent_type: "reviewer" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "task", sessionID, callID, args: {} }, { output: "Review passed", metadata: {} });
+
+    const diag = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag.noProgressCount).toBe(0);
+    expect(diag.lastProgressReason).toBe("child_execution_completed");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("48. first-child-failure-is-progress-and-repeat-is-stalled: novel failure is progress, repeated failure increments stall counter", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-prog-fail";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "msg-p5" }] }
+    );
+
+    const run = await ctx.adapter.resolveActiveRunForSession(sessionID);
+
+    // Failure 1 (novel): progress because new diagnostic info arrived
+    const obs1 = ctx.runtime.progressObservationService.recordChildLifecycleObservation({
+      runId: run!.id,
+      sessionId: sessionID,
+      assignmentId: "a1",
+      executionId: "e1",
+      newState: "failed",
+      error: "Syntax error on line 40",
+    });
+    expect(obs1.isProgress).toBe(true);
+    expect(obs1.progressReason).toBe("child_failure_evidence_acquired");
+
+    // Failure 2 (identical repeated): no progress
+    const obs2 = ctx.runtime.progressObservationService.recordChildLifecycleObservation({
+      runId: run!.id,
+      sessionId: sessionID,
+      assignmentId: "a1",
+      executionId: "e1",
+      newState: "failed",
+      error: "Syntax error on line 40",
+    });
+    expect(obs2.isProgress).toBe(false);
+    expect(obs2.repeatedFailure).toBe(1);
+
+    // Failure 3 (identical repeated): repeatedFailure reaches 2
+    const obs3 = ctx.runtime.progressObservationService.recordChildLifecycleObservation({
+      runId: run!.id,
+      sessionId: sessionID,
+      assignmentId: "a1",
+      executionId: "e1",
+      newState: "failed",
+      error: "Syntax error on line 40",
+    });
+    expect(obs3.repeatedFailure).toBe(2);
+
+    await releaseProjectRuntime(dirA);
+  });
+
 });

@@ -349,12 +349,39 @@ export class FlowDeckLifecycleAdapter {
     }
 
     if (input.tool === "task" || input.tool === "subagent") {
-      await this.runtime.childExecutionLifecycleService.markCompleted({
+      const childRec = await this.runtime.childExecutionLifecycleService.markCompleted({
         taskCallId: input.callID,
         output: output?.output,
         title: output?.title,
         metadata: output?.metadata,
       });
+      if (childRec) {
+        this.runtime.progressObservationService.recordChildLifecycleObservation({
+          runId: childRec.runId,
+          sessionId: input.sessionID,
+          assignmentId: childRec.assignmentId,
+          executionId: childRec.executionId,
+          newState: "completed",
+          result: output?.output,
+        });
+      }
+    } else {
+      // Ordinary tool execution observation inside session or child session
+      const activeRun = await this.resolveActiveRunForSession(input.sessionID);
+      const childRec = this.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: input.sessionID });
+      const runId = activeRun?.id ?? childRec?.runId;
+      if (runId) {
+        this.runtime.progressObservationService.recordToolObservation({
+          runId,
+          sessionId: input.sessionID,
+          tool: input.tool,
+          args: input.args,
+          output: output?.output,
+          metadata: output?.metadata,
+          assignmentId: childRec?.assignmentId,
+          executionId: childRec?.executionId,
+        });
+      }
     }
   }
 

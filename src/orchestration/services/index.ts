@@ -11,5 +11,7 @@ export { CommandDispatcher } from "./command-dispatcher";
 export { QueryService } from "./query-service";
 export { ChildExecutionLifecycleService } from "./child-execution-lifecycle-service";
 export type * from "./child-execution-lifecycle-service";
+export { ProgressObservationService } from "./progress-observation-service";
+export type * from "./progress-observation-service";
 export type * from "./ports";
 export type { PaginatedResult } from "./ports";
