@@ -487,6 +487,31 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+
+    /// Bounded verification plan execution (Milestone 7)
+    ///
+    /// Example: fdx verify --base HEAD~1 --format json
+    Verify {
+        /// Base Git ref (e.g. HEAD, HEAD~1, main)
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Head Git ref (defaults to working tree)
+        #[arg(long)]
+        head: Option<String>,
+
+        /// Stop execution immediately upon the first failure
+        #[arg(long)]
+        fail_fast: bool,
+
+        /// Do not persist execution run artifact to .fdx/runs/
+        #[arg(long)]
+        no_persist: bool,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 fn main() {
@@ -1550,6 +1575,64 @@ fn main() {
                 },
                 Err(e) => {
                     eprintln!("Error creating verification plan: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::Verify {
+            base,
+            head,
+            fail_fast,
+            no_persist,
+            format,
+        } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+            let format = parse_format(&format);
+
+            let plan = match fdx::intelligence::testplan::planner::plan_verification(
+                &repo_root,
+                base.as_deref(),
+                head.as_deref(),
+                None,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Error creating verification plan: {}", e);
+                    process::exit(1);
+                }
+            };
+
+            let options = fdx::intelligence::verify::VerificationExecutorOptions {
+                bounds: fdx::intelligence::verify::ProcessBounds::default(),
+                fail_fast,
+                persist: !no_persist,
+                base: base.clone(),
+                head: head.clone(),
+            };
+
+            match fdx::intelligence::verify::execute_verification_plan(&repo_root, &plan, &options)
+            {
+                Ok(run) => {
+                    match format {
+                        OutputFormat::Json => {
+                            if let Ok(json_str) = serde_json::to_string_pretty(&run) {
+                                println!("{}", json_str);
+                            }
+                        }
+                        OutputFormat::Text => {
+                            let text =
+                                fdx::intelligence::verify::format_verification_run_text(&run);
+                            print!("{}", text);
+                        }
+                    }
+                    if run.outcome != fdx::intelligence::verify::VerificationOutcome::Passed {
+                        process::exit(1);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error executing verification plan: {}", e);
                     process::exit(1);
                 }
             }

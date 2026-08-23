@@ -57,7 +57,9 @@ fn create_mock_provider(dir: &Path, witness_path: Option<&Path>) -> PathBuf {
     if let Some(w) = witness_path {
         script.push_str(&format!("touch \"{}\"\n", w.display()));
     }
-    script.push_str("if [ \"$1\" = \"--version\" ]; then echo \"scip-typescript 1.0.0\"; exit 0; fi\n");
+    script.push_str(
+        "if [ \"$1\" = \"--version\" ]; then echo \"scip-typescript 1.0.0\"; exit 0; fi\n",
+    );
     script.push_str("exit 0\n");
     fs::write(&bin, script).unwrap();
     #[cfg(unix)]
@@ -107,7 +109,9 @@ fn test_persisted_fresh_and_unchanged_passive_fingerprint_narrows_control() {
 
     // Compute passive fingerprint against current repo and mock binary
     let ts_provider = ScipTypescriptProvider::new();
-    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     // Persist provider state with matching fingerprint in SQLite DB
     {
@@ -222,7 +226,9 @@ fn test_persisted_fresh_and_changed_config_fingerprint_widens_conservatively() {
 
     // Compute passive fingerprint against original state
     let ts_provider = ScipTypescriptProvider::new();
-    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     // Persist provider state as Fresh with original fingerprint
     {
@@ -302,7 +308,11 @@ fn test_persisted_fresh_and_changed_config_fingerprint_widens_conservatively() {
     );
 
     // Assurance must not be Exact
-    assert_ne!(plan.assurance, AssuranceLevel::Exact, "Assurance must degrade on effective provider staleness");
+    assert_ne!(
+        plan.assurance,
+        AssuranceLevel::Exact,
+        "Assurance must degrade on effective provider staleness"
+    );
 
     std::env::remove_var("SCIP_TYPESCRIPT_BIN");
 }
@@ -341,7 +351,9 @@ fn test_persisted_fresh_and_changed_executable_fingerprint_widens() {
 
     // Compute passive fingerprint against initial executable
     let ts_provider = ScipTypescriptProvider::new();
-    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     // Persist provider state as Fresh with original fingerprint
     {
@@ -450,7 +462,9 @@ fn test_persisted_fresh_and_provider_disappears_widens() {
     std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
 
     let ts_provider = ScipTypescriptProvider::new();
-    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     {
         let db = EvidenceDatabase::open(repo, DatabaseOpenMode::ReadWrite).unwrap();
@@ -554,7 +568,9 @@ fn test_plan_is_strictly_read_only_and_does_not_execute_providers() {
     std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
 
     let ts_provider = ScipTypescriptProvider::new();
-    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     let db_path = repo.join(".fdx/index.sqlite");
     {

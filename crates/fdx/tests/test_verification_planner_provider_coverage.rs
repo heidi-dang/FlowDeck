@@ -94,11 +94,14 @@ export function fnOther() { return 2; }
     .unwrap();
 
     let bin_dir = tempdir().unwrap();
-    let mock_rust = create_mock_provider(bin_dir.path(), "mock-rust-analyzer", "rust-analyzer 1.0.0");
+    let mock_rust =
+        create_mock_provider(bin_dir.path(), "mock-rust-analyzer", "rust-analyzer 1.0.0");
     std::env::set_var("SCIP_RUST_BIN", &mock_rust);
 
     let rust_provider = ScipRustProvider::new();
-    let fp_rust = rust_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp_rust = rust_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     // Persist a fresh RUST provider covering packages/web, and a direct mapping edge for a.test.ts
     {
@@ -198,25 +201,26 @@ fn test_multi_language_package_requires_coverage_for_all_relevant_languages() {
         "export function fnA() { return 1; }",
     )
     .unwrap();
-    fs::write(
-        pkg_dir.join("src/b.rs"),
-        "pub fn fn_b() -> i32 { 2 }",
-    )
-    .unwrap();
+    fs::write(pkg_dir.join("src/b.rs"), "pub fn fn_b() -> i32 { 2 }").unwrap();
     fs::write(pkg_dir.join("tests/a.test.ts"), "test('a', () => {});").unwrap();
     fs::write(pkg_dir.join("tests/b_test.rs"), "#[test] fn test_b() {}").unwrap();
     fs::write(pkg_dir.join("tests/c.test.ts"), "test('c', () => {});").unwrap();
 
     let bin_dir = tempdir().unwrap();
     let mock_ts = create_mock_provider(bin_dir.path(), "mock-scip-ts", "scip-typescript 1.0.0");
-    let mock_rust = create_mock_provider(bin_dir.path(), "mock-rust-analyzer", "rust-analyzer 1.0.0");
+    let mock_rust =
+        create_mock_provider(bin_dir.path(), "mock-rust-analyzer", "rust-analyzer 1.0.0");
     std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_ts);
     std::env::set_var("SCIP_RUST_BIN", &mock_rust);
 
     let ts_provider = ScipTypescriptProvider::new();
-    let fp_ts = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp_ts = ts_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
     let rust_provider = ScipRustProvider::new();
-    let fp_rust = rust_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp_rust = rust_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     // 1. Only TypeScript provider exists
     {

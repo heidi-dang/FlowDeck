@@ -84,11 +84,7 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
     )
     .unwrap();
 
-    fs::write(
-        pa.join("src/a.ts"),
-        "export function fnA() { return 1; }",
-    )
-    .unwrap();
+    fs::write(pa.join("src/a.ts"), "export function fnA() { return 1; }").unwrap();
     fs::write(pa.join("tests/a.test.ts"), "test('a', () => {});").unwrap();
     fs::write(
         pa.join("tests/a_other.test.ts"),
@@ -96,11 +92,7 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
     )
     .unwrap();
 
-    fs::write(
-        pb.join("src/b.ts"),
-        "export function fnB() { return 1; }",
-    )
-    .unwrap();
+    fs::write(pb.join("src/b.ts"), "export function fnB() { return 1; }").unwrap();
     fs::write(pb.join("tests/b.test.ts"), "test('b', () => {});").unwrap();
     fs::write(
         pb.join("tests/b_other.test.ts"),
@@ -113,7 +105,9 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
     std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
 
     let ts_provider = ScipTypescriptProvider::new();
-    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     // Package A has stale provider / edge (stale = 1)
     // Package B has fresh provider and fresh edge (stale = 0)
@@ -294,7 +288,9 @@ fn test_scoped_dynamic_config_in_package_a_does_not_widen_fresh_package_b() {
     std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
 
     let ts_provider = ScipTypescriptProvider::new();
-    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     // Persist fresh provider for package B
     {

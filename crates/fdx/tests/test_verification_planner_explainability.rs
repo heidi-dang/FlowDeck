@@ -92,7 +92,9 @@ fn test_every_selected_check_satisfies_explainability_contract() {
     std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
 
     let ts_provider = ScipTypescriptProvider::new();
-    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     // Persist exact SCIP edge in DB
     {

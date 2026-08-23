@@ -88,7 +88,9 @@ fn test_persisted_scip_edge_provenance_preserved_in_planned_check() {
     std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
 
     let ts_provider = ScipTypescriptProvider::new();
-    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+    let fp = ts_provider
+        .passive_fingerprint(repo, Some("1.0.0"))
+        .unwrap();
 
     {
         let db = EvidenceDatabase::open(repo, DatabaseOpenMode::ReadWrite).unwrap();
@@ -159,7 +161,10 @@ fn test_persisted_scip_edge_provenance_preserved_in_planned_check() {
         Some("edge:calc_test_to_add")
     );
     assert_eq!(ref_item.provider_id, "scip-typescript");
-    assert_eq!(ref_item.provider_fingerprint.as_deref(), Some(fp.digest.as_str()));
+    assert_eq!(
+        ref_item.provider_fingerprint.as_deref(),
+        Some(fp.digest.as_str())
+    );
     assert_eq!(ref_item.strength, EvidenceStrength::Precise);
     assert!(!ref_item.stale);
 
