@@ -1,70 +1,70 @@
 {
   "milestone": "M7",
   "title": "Milestone 7 Verification Executor Benchmark Report",
-  "functional_source_sha": "b729679a945f2a217a4eebd28a5d82c6e75d579e",
-  "binary_source_sha": "b729679a945f2a217a4eebd28a5d82c6e75d579e",
-  "binary_sha256": "d6a05a0fe209444f2ed1f981b978bf019e1075a60ac5d51f60fe8e7730cc5ebb",
-  "benchmark_harness_sha": "03d9e6e4d52b81bc7a238786d34e2666de9d09af",
+  "functional_source_sha": "be22a7950cace14c319bbf68c85bad00e8fd34c6",
+  "binary_source_sha": "be22a7950cace14c319bbf68c85bad00e8fd34c6",
+  "binary_sha256": "5bd6200852724acf6055e7bc36730a443c1bec475dcf648fbfaa2a804f0f20f7",
+  "benchmark_harness_sha": "00f5802d967a4d8149399946f671446e0700109e",
   "platform": "linux",
   "arch": "x64",
   "node_version": "v24.19.0",
-  "timestamp": "2026-08-23T14:12:22.885Z",
+  "timestamp": "2026-08-23T15:06:52.549Z",
   "scenarios": {
     "verify_passing_unit_test_package": {
       "count": 10,
-      "min": 119.09,
-      "max": 130.56,
-      "mean": 123.64,
-      "median": 120.14,
-      "p95": 130.56
+      "min": 118.68,
+      "max": 123.27,
+      "mean": 119.29,
+      "median": 118.89,
+      "p95": 123.27
     },
     "verify_failing_unit_test_package": {
       "count": 10,
-      "min": 119.19,
-      "max": 129.56,
-      "mean": 121.4,
-      "median": 119.45,
-      "p95": 129.56
+      "min": 118.75,
+      "max": 119.21,
+      "mean": 118.95,
+      "median": 118.92,
+      "p95": 119.21
     },
     "verify_multi_check_package_suite": {
       "count": 10,
-      "min": 342.01,
-      "max": 352.18,
-      "mean": 346.07,
-      "median": 342.15,
-      "p95": 352.18
+      "min": 341.34,
+      "max": 361.84,
+      "mean": 346.69,
+      "median": 341.83,
+      "p95": 361.84
     },
     "verify_fail_fast_short_circuit": {
       "count": 10,
-      "min": 119.22,
-      "max": 129.75,
-      "mean": 121.48,
-      "median": 119.3,
-      "p95": 129.75
+      "min": 118.61,
+      "max": 119.21,
+      "mean": 118.85,
+      "median": 118.84,
+      "p95": 119.21
     },
     "verify_output_bound_and_redaction": {
       "count": 10,
-      "min": 119.23,
-      "max": 129.92,
-      "mean": 123.45,
-      "median": 119.92,
-      "p95": 129.92
+      "min": 118.68,
+      "max": 129.07,
+      "mean": 122.97,
+      "median": 119.43,
+      "p95": 129.07
     },
     "verify_run_persistence_and_retrieval": {
       "count": 10,
-      "min": 119.2,
-      "max": 122.99,
-      "mean": 119.78,
-      "median": 119.28,
-      "p95": 122.99
+      "min": 118.8,
+      "max": 179.71,
+      "mean": 125.1,
+      "median": 119.01,
+      "p95": 179.71
     },
     "verify_dirty_worktree_execution": {
       "count": 10,
-      "min": 119.16,
-      "max": 129.34,
-      "mean": 120.37,
-      "median": 119.45,
-      "p95": 129.34
+      "min": 118.51,
+      "max": 119.78,
+      "mean": 118.93,
+      "median": 118.91,
+      "p95": 119.78
     }
   }
 }
