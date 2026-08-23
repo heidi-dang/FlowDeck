@@ -19,7 +19,7 @@ use crate::intelligence::testplan::bounds::get_active_test_plan_limits;
 use crate::intelligence::testplan::discover::{
     discover_tests_and_checks, fallback_scope_ids_for_dir,
 };
-use crate::intelligence::testplan::mapping::resolve_test_mappings;
+use crate::intelligence::testplan::mapping::{resolve_test_mappings, TestMappingEdge};
 use crate::intelligence::testplan::model::*;
 use crate::intelligence::testplan::policy::VerificationPolicy;
 use crate::protocol::{AssuranceLevel, EvidenceStrength};
@@ -33,6 +33,78 @@ pub enum MappingScopeState {
     Missing(String),
     Failed(String),
     Truncated,
+}
+
+/// Detailed outcome of evaluating evidence edge compatibility against provider state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceCompatibility {
+    Compatible,
+    MissingProvider,
+    ProviderUnavailable,
+    ProviderStale,
+    ScopeMismatch,
+    LanguageMismatch,
+    EdgeStale,
+    FingerprintMissing,
+    FingerprintMismatch,
+}
+
+impl EvidenceCompatibility {
+    pub fn is_compatible(self) -> bool {
+        matches!(self, EvidenceCompatibility::Compatible)
+    }
+}
+
+/// Helper to evaluate evidence edge compatibility against M3 provider state.
+pub fn evaluate_edge_compatibility(
+    edge: &TestMappingEdge,
+    provider: Option<&ProviderState>,
+    owning_scope: &str,
+    relevant_language: Option<LanguageId>,
+) -> EvidenceCompatibility {
+    let p = match provider {
+        Some(p) => p,
+        None => return EvidenceCompatibility::MissingProvider,
+    };
+
+    if p.provider_id() != edge.provider_id && p.identity.provider_id != edge.provider_id {
+        return EvidenceCompatibility::MissingProvider;
+    }
+
+    if p.health != ProviderHealth::Available {
+        return EvidenceCompatibility::ProviderUnavailable;
+    }
+
+    if p.freshness != ProviderFreshness::Fresh {
+        return EvidenceCompatibility::ProviderStale;
+    }
+
+    if !provider_covers_package(p, owning_scope) {
+        return EvidenceCompatibility::ScopeMismatch;
+    }
+
+    if let Some(lang) = relevant_language {
+        if !p.scope.languages.contains(&lang) {
+            return EvidenceCompatibility::LanguageMismatch;
+        }
+    }
+
+    if edge.stale {
+        return EvidenceCompatibility::EdgeStale;
+    }
+
+    let edge_fp = match edge.provider_fingerprint.as_deref() {
+        Some(fp) if !fp.is_empty() => fp,
+        _ => return EvidenceCompatibility::FingerprintMissing,
+    };
+
+    // Authoritative M3 rule: exact match against fingerprint digest only.
+    // No fallback equality against provider_id, executable_identity, or config_fingerprint.
+    if edge_fp == p.fingerprint.digest.as_str() {
+        EvidenceCompatibility::Compatible
+    } else {
+        EvidenceCompatibility::FingerprintMismatch
+    }
 }
 
 /// Check if a provider scope root path contains a candidate package/directory path with strict path boundary semantics.
@@ -50,17 +122,25 @@ pub fn scope_contains_path(scope_root: &str, candidate_path: &str) -> bool {
 
 /// Check if a ProviderState covers a package scope with path-boundary correctness.
 pub fn provider_covers_package(provider: &ProviderState, package_scope: &str) -> bool {
+    let pkg_has_scheme = package_scope.starts_with("pkg:");
     let pkg_clean = package_scope
         .strip_prefix("pkg:npm:")
         .or_else(|| package_scope.strip_prefix("pkg:cargo:"))
         .unwrap_or(package_scope);
 
     if let Some(ref p_pkg) = provider.scope.package {
+        let p_pkg_has_scheme = p_pkg.starts_with("pkg:");
+        if p_pkg_has_scheme && pkg_has_scheme {
+            return p_pkg == package_scope;
+        }
         let p_pkg_clean = p_pkg
             .strip_prefix("pkg:npm:")
             .or_else(|| p_pkg.strip_prefix("pkg:cargo:"))
             .unwrap_or(p_pkg);
-        p_pkg == package_scope || p_pkg_clean == pkg_clean || p_pkg == pkg_clean
+        p_pkg == package_scope
+            || p_pkg_clean == pkg_clean
+            || p_pkg == pkg_clean
+            || p_pkg_clean == package_scope
     } else {
         scope_contains_path(&provider.scope.workspace_root, pkg_clean)
     }
@@ -510,108 +590,173 @@ pub fn plan_verification(
                     .and_then(|t| t.owning_package_id.clone())
                     .unwrap_or_else(|| "repo".to_string());
 
+                let relevant_lang = if test_file.ends_with(".rs") {
+                    Some(LanguageId::Rust)
+                } else if test_file.ends_with(".ts")
+                    || test_file.ends_with(".tsx")
+                    || test_file.ends_with(".mts")
+                    || test_file.ends_with(".cts")
+                {
+                    Some(LanguageId::TypeScript)
+                } else if test_file.ends_with(".js")
+                    || test_file.ends_with(".jsx")
+                    || test_file.ends_with(".mjs")
+                    || test_file.ends_with(".cjs")
+                {
+                    Some(LanguageId::JavaScript)
+                } else if target_key.ends_with(".rs") {
+                    Some(LanguageId::Rust)
+                } else if target_key.ends_with(".ts")
+                    || target_key.ends_with(".tsx")
+                    || target_key.ends_with(".mts")
+                    || target_key.ends_with(".cts")
+                {
+                    Some(LanguageId::TypeScript)
+                } else if target_key.ends_with(".js")
+                    || target_key.ends_with(".jsx")
+                    || target_key.ends_with(".mjs")
+                    || target_key.ends_with(".cjs")
+                {
+                    Some(LanguageId::JavaScript)
+                } else {
+                    None
+                };
+
                 // Validate evidence edge compatibility with persisted provider state
                 let matching_provider = persisted_providers.iter().find(|p| {
                     p.provider_id() == edge.provider_id
                         || p.identity.provider_id == edge.provider_id
                 });
 
-                let is_edge_compatible = match matching_provider {
-                    Some(p) => {
-                        let mut ok = true;
-                        if p.health != ProviderHealth::Available {
-                            package_stale_mapping.insert(
-                                owning_scope.clone(),
-                                format!(
-                                    "Provider {} for edge in scope {} is {:?}",
-                                    p.provider_id(),
-                                    owning_scope,
-                                    p.health
-                                ),
-                            );
-                            uncertainties.push(UncertaintyReason::ProviderFailed(format!(
-                                "Provider {} for edge in scope {} failed",
-                                p.provider_id(),
-                                owning_scope
-                            )));
-                            ok = false;
-                        } else if p.freshness != ProviderFreshness::Fresh {
-                            package_stale_mapping.insert(
-                                owning_scope.clone(),
-                                format!(
-                                    "Provider {} for edge in scope {} is {:?}",
-                                    p.provider_id(),
-                                    owning_scope,
-                                    p.freshness
-                                ),
-                            );
-                            uncertainties.push(UncertaintyReason::ProviderStale(format!(
-                                "Provider {} for edge in scope {} is stale",
-                                p.provider_id(),
-                                owning_scope
-                            )));
-                            ok = false;
-                        } else if !provider_covers_package(p, &owning_scope) {
-                            package_stale_mapping.insert(
-                                owning_scope.clone(),
-                                format!(
-                                    "Provider {} scope does not cover {}",
-                                    p.provider_id(),
-                                    owning_scope
-                                ),
-                            );
-                            uncertainties.push(UncertaintyReason::ProviderStale(format!(
-                                "Provider {} scope does not cover {}",
-                                p.provider_id(),
-                                owning_scope
-                            )));
-                            ok = false;
-                        } else if edge.stale {
-                            package_stale_mapping.insert(
-                                owning_scope.clone(),
-                                format!(
-                                    "Test mapping edge {} for {} is stale",
-                                    edge.provider_id, target_key
-                                ),
-                            );
-                            uncertainties.push(UncertaintyReason::ProviderStale(format!(
-                                "Test mapping edge {} for {} in scope {} is stale",
-                                edge.provider_id, target_key, owning_scope
-                            )));
-                            ok = false;
-                        } else {
-                            // Fingerprint compatibility check against M3 digest/config/input
-                            let fp_opt = edge.provider_fingerprint.as_deref();
-                            let fp_match = fp_opt == Some(p.fingerprint.digest.as_str())
-                                || fp_opt == Some(p.fingerprint.config_fingerprint.as_str())
-                                || fp_opt == Some(p.fingerprint.executable_identity.as_str())
-                                || fp_opt == Some(p.identity.provider_id.as_str())
-                                || fp_opt == Some(p.identity.executable_identity.as_str())
-                                || fp_opt == Some(p.fingerprint.provider_version.as_str());
-                            if !fp_match {
-                                package_stale_mapping.insert(
-                                    owning_scope.clone(),
-                                    format!(
-                                        "Fingerprint mismatch on edge {} (edge fp: {:?}, provider fp: {})",
-                                        edge.provider_id, edge.provider_fingerprint, p.fingerprint.digest
-                                    ),
-                                );
-                                uncertainties.push(UncertaintyReason::ProviderStale(format!(
-                                    "Provider {} fingerprint mismatch on edge in scope {}",
-                                    edge.provider_id, owning_scope
-                                )));
-                                ok = false;
-                            }
-                        }
-                        ok
-                    }
-                    None => {
+                let compat = evaluate_edge_compatibility(
+                    edge,
+                    matching_provider,
+                    &owning_scope,
+                    relevant_lang,
+                );
+
+                let is_edge_compatible = match compat {
+                    EvidenceCompatibility::Compatible => true,
+                    EvidenceCompatibility::MissingProvider => {
                         package_stale_mapping.insert(
                             owning_scope.clone(),
                             format!("Missing provider state for edge {}", edge.provider_id),
                         );
                         uncertainties.push(UncertaintyReason::ProviderMissing(format!(
                             "Provider {} not found in state for edge in scope {}",
+                            edge.provider_id, owning_scope
+                        )));
+                        false
+                    }
+                    EvidenceCompatibility::ProviderUnavailable => {
+                        let p = matching_provider.unwrap();
+                        package_stale_mapping.insert(
+                            owning_scope.clone(),
+                            format!(
+                                "Provider {} for edge in scope {} is {:?}",
+                                p.provider_id(),
+                                owning_scope,
+                                p.health
+                            ),
+                        );
+                        uncertainties.push(UncertaintyReason::ProviderFailed(format!(
+                            "Provider {} for edge in scope {} failed",
+                            p.provider_id(),
+                            owning_scope
+                        )));
+                        false
+                    }
+                    EvidenceCompatibility::ProviderStale => {
+                        let p = matching_provider.unwrap();
+                        package_stale_mapping.insert(
+                            owning_scope.clone(),
+                            format!(
+                                "Provider {} for edge in scope {} is {:?}",
+                                p.provider_id(),
+                                owning_scope,
+                                p.freshness
+                            ),
+                        );
+                        uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                            "Provider {} for edge in scope {} is stale",
+                            p.provider_id(),
+                            owning_scope
+                        )));
+                        false
+                    }
+                    EvidenceCompatibility::ScopeMismatch => {
+                        let p = matching_provider.unwrap();
+                        package_stale_mapping.insert(
+                            owning_scope.clone(),
+                            format!(
+                                "Provider {} scope does not cover {}",
+                                p.provider_id(),
+                                owning_scope
+                            ),
+                        );
+                        uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                            "Provider {} scope does not cover {}",
+                            p.provider_id(),
+                            owning_scope
+                        )));
+                        false
+                    }
+                    EvidenceCompatibility::LanguageMismatch => {
+                        let p = matching_provider.unwrap();
+                        package_stale_mapping.insert(
+                            owning_scope.clone(),
+                            format!(
+                                "Provider {} does not cover language for scope {}",
+                                p.provider_id(),
+                                owning_scope
+                            ),
+                        );
+                        uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                            "Provider {} does not cover language in scope {}",
+                            p.provider_id(),
+                            owning_scope
+                        )));
+                        false
+                    }
+                    EvidenceCompatibility::EdgeStale => {
+                        package_stale_mapping.insert(
+                            owning_scope.clone(),
+                            format!(
+                                "Test mapping edge {} for {} is stale",
+                                edge.provider_id, target_key
+                            ),
+                        );
+                        uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                            "Test mapping edge {} for {} in scope {} is stale",
+                            edge.provider_id, target_key, owning_scope
+                        )));
+                        false
+                    }
+                    EvidenceCompatibility::FingerprintMissing => {
+                        package_stale_mapping.insert(
+                            owning_scope.clone(),
+                            format!(
+                                "Missing fingerprint on edge {} for {}",
+                                edge.provider_id, target_key
+                            ),
+                        );
+                        uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                            "Provider {} missing fingerprint on edge in scope {}",
+                            edge.provider_id, owning_scope
+                        )));
+                        false
+                    }
+                    EvidenceCompatibility::FingerprintMismatch => {
+                        let p = matching_provider.unwrap();
+                        package_stale_mapping.insert(
+                            owning_scope.clone(),
+                            format!(
+                                "Fingerprint mismatch on edge {} (edge fp: {:?}, provider fp: {})",
+                                edge.provider_id, edge.provider_fingerprint, p.fingerprint.digest
+                            ),
+                        );
+                        uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                            "Provider {} fingerprint mismatch on edge in scope {}",
                             edge.provider_id, owning_scope
                         )));
                         false

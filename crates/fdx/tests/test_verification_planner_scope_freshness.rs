@@ -150,7 +150,7 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
         // Fresh edge in package B
         db.conn
             .execute(
-                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'cfg_pb', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb')",
+                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'in_pb', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb')",
                 [],
             )
             .unwrap();

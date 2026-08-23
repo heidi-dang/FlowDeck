@@ -199,7 +199,7 @@ fn test_multi_language_package_requires_coverage_for_all_relevant_languages() {
         db.conn
             .execute(
                 r#"INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-                   VALUES ('scip-ts', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/poly', 'fp_ts', 'in_ts', 'available', 'fresh', 1, 100, 100)"#,
+                   VALUES ('scip-ts', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/poly', 'cfg_ts', 'fp_ts', 'available', 'fresh', 1, 100, 100)"#,
                 [],
             )
             .unwrap();
