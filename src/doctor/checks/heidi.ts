@@ -34,11 +34,10 @@ export async function runHeidiChecks(_directory: string): Promise<CheckResult[]>
         status: "error",
         detected: "Heidi primary agent failed to resolve from registry",
         expected: "Heidi primary agent active",
-        recommendation: "Run `flowdeck doctor fix` to repair canonical agent registry",
-        autoFixAvailable: true,
+        recommendation: "Reinstall FlowDeck to restore canonical agent registry",
+        autoFixAvailable: false,
         affectsRuntime: true,
-        repairability: "automatic",
-        repairAction: "repair_agent_registry",
+        repairability: "manual",
       })
     }
 
@@ -85,11 +84,10 @@ export async function runHeidiChecks(_directory: string): Promise<CheckResult[]>
       status: "error",
       detected: `Heidi registry load failure: ${err}`,
       expected: "Heidi registry loaded",
-      recommendation: "Run `flowdeck doctor fix` to rebuild agent index",
-      autoFixAvailable: true,
+      recommendation: "Reinstall FlowDeck to rebuild agent index",
+      autoFixAvailable: false,
       affectsRuntime: true,
-      repairability: "automatic",
-      repairAction: "repair_agent_registry",
+      repairability: "manual",
     })
   }
 

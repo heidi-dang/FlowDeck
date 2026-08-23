@@ -2,8 +2,8 @@
 
 ## Prerequisites
 
-- [OpenCode](https://opencode.ai) installed and configured
-- Node.js 18+ (for npx installation)
+- [OpenCode](https://opencode.ai) installed and configured (>= 1.18.18, qualified: 1.18.20)
+- Node.js >= 20.0.0 (matches package.json requirement)
 - Git (for curl installation)
 
 ## Install Methods

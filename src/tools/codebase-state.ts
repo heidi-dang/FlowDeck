@@ -1,7 +1,8 @@
 import { tool, type ToolDefinition } from "@opencode-ai/plugin"
 import { writeFileSync, existsSync, readdirSync, mkdirSync } from "fs"
 import { readFile, stat } from "fs/promises"
-import { join } from "path"
+import { join, dirname } from "path"
+import { resolveCodebasePath } from "./path-jail"
 
 const CODEBASE_DIR = ".codebase"
 
@@ -9,8 +10,8 @@ export function codebaseDir(directory: string): string {
   return join(directory, CODEBASE_DIR)
 }
 
-function codebaseFilePath(directory: string, filename: string): string {
-  return join(codebaseDir(directory), filename)
+function codebaseFilePath(directory: string, filename: string, forWrite: boolean = false): string {
+  return resolveCodebasePath(directory, filename, { forWrite })
 }
 
 function listCodebaseFiles(directory: string): string[] {
@@ -23,8 +24,8 @@ async function readCodebaseContext(dir: string, files: string[]): Promise<Record
   const results: Record<string, string | { error: string }> = {}
   await Promise.all(
     files.map(async (file) => {
-      const filePath = codebaseFilePath(dir, file)
       try {
+        const filePath = codebaseFilePath(dir, file, false)
         const fileStat = await stat(filePath)
         if (fileStat.isDirectory()) {
           results[file] = { error: `Is a directory: ${file}` }
@@ -44,11 +45,11 @@ async function readCodebaseContext(dir: string, files: string[]): Promise<Record
 }
 
 async function updateCodebaseFile(dir: string, filename: string, content: string): Promise<Record<string, unknown>> {
-  const base = codebaseDir(dir)
-  if (!existsSync(base)) {
-    mkdirSync(base, { recursive: true })
+  const filePath = codebaseFilePath(dir, filename, true)
+  const targetDir = dirname(filePath)
+  if (!existsSync(targetDir)) {
+    mkdirSync(targetDir, { recursive: true })
   }
-  const filePath = codebaseFilePath(dir, filename)
   writeFileSync(filePath, content, "utf-8")
   return { success: true, file: filename, written_at: new Date().toISOString() }
 }
@@ -73,16 +74,24 @@ export const codebaseStateTool: ToolDefinition = tool({
   async execute(args, context): Promise<string> {
     const dir = context.directory ?? process.cwd()
     let result: unknown
-    switch (args.action) {
-      case "read":
-        result = await readCodebaseContext(dir, args.files ?? [])
-        break
-      case "write":
-        result = await updateCodebaseFile(dir, args.filename!, args.content!)
-        break
-      case "exists":
-        result = await codebaseExists(dir)
-        break
+    try {
+      switch (args.action) {
+        case "read":
+          result = await readCodebaseContext(dir, args.files ?? [])
+          break
+        case "write":
+          if (!args.filename) {
+            result = { error: "Filename is required for write action", success: false }
+          } else {
+            result = await updateCodebaseFile(dir, args.filename, args.content ?? "")
+          }
+          break
+        case "exists":
+          result = await codebaseExists(dir)
+          break
+      }
+    } catch (err: any) {
+      result = { error: err.message, success: false }
     }
     return JSON.stringify(result)
   },

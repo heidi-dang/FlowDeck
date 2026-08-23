@@ -69,11 +69,10 @@ export async function runBrowserChecks(directory: string): Promise<CheckResult[]
       status: "warning",
       detected: "No local Chrome / Chromium binary found",
       expected: "Chrome or Chromium browser installed",
-      recommendation: "Run `flowdeck doctor fix` to install Chrome for Testing or set CHROME_BIN",
-      autoFixAvailable: true,
+      recommendation: "Install Chrome/Chromium or set CHROME_BIN environment variable",
+      autoFixAvailable: false,
       affectsRuntime: true,
-      repairability: "automatic",
-      repairAction: "install_chrome_for_testing",
+      repairability: "manual",
     })
   }
 

@@ -28,6 +28,8 @@ const REJECTED_ARG_PREFIXES: &[&str] = &[
     "--no-pager",
     "--pager",
     "-c",
+    "--config",
+    "--config-env",
 ];
 
 pub fn validate_git_policy(subcommand: &str, args: &[&str]) -> Result<()> {
@@ -44,24 +46,33 @@ pub fn validate_git_policy(subcommand: &str, args: &[&str]) -> Result<()> {
     for arg in args {
         let trimmed = arg.trim();
         for prefix in REJECTED_ARG_PREFIXES {
-            if trimmed == *prefix || trimmed.starts_with(&format!("{}=", prefix)) {
+            if trimmed == *prefix
+                || trimmed.starts_with(&format!("{prefix}="))
+                || trimmed.starts_with(&format!("{prefix} "))
+            {
                 anyhow::bail!(
                     "[FDX Git Policy] Argument \"{}\" is prohibited under read-only policy.",
                     trimmed
                 );
             }
         }
-        // Reject pager/editor config overrides passed as git -c key=value
-        if trimmed.starts_with("-c ") || trimmed.starts_with("-c=") {
-            let val = trimmed.trim_start_matches("-c ").trim_start_matches("-c=");
-            if val.contains("pager")
-                || val.contains("editor")
-                || val.contains("interactive")
-                || val.contains("alias")
-                || val.contains("diff.external")
-            {
+        if trimmed.starts_with("-c") || trimmed.starts_with("--config") {
+            anyhow::bail!(
+                "[FDX Git Policy] Config override \"{}\" is prohibited under read-only policy.",
+                trimmed
+            );
+        }
+        for pat in &[
+            "core.pager",
+            "sequence.editor",
+            "core.editor",
+            "diff.external",
+            "interactive",
+            "alias",
+        ] {
+            if trimmed.contains(pat) {
                 anyhow::bail!(
-                    "[FDX Git Policy] Config override \"{}\" could spawn external commands.",
+                    "[FDX Git Policy] Dangerous config option \"{}\" could spawn external commands.",
                     trimmed
                 );
             }

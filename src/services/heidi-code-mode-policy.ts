@@ -53,3 +53,17 @@ export interface CodeModeTelemetry {
   actualResultBytes?: number
   terminalStatus?: "success" | "error" | "timeout"
 }
+
+export function resolveCodeModeCapability(options: {
+  featureEnabled: boolean
+  hasNativeSupport: boolean
+  hasExecuteTool?: boolean
+}): CodeModeCapability {
+  if (!options.featureEnabled || !options.hasNativeSupport) {
+    return "UNAVAILABLE"
+  }
+  if (options.hasExecuteTool === true) {
+    return "AVAILABLE"
+  }
+  return "UNKNOWN"
+}

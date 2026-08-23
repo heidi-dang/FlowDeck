@@ -12,6 +12,7 @@ import { execFileSync, execFile } from "node:child_process"
 import { existsSync, readFileSync, readdirSync, statSync, promises as fsPromises } from "fs"
 import { dirname, join, resolve } from "path"
 import { fileURLToPath } from "node:url"
+import { resolveContainedPath, isPathContained, getCanonicalRoot } from "./path-jail"
 import {
   topicContextPath,
   topicDecisionsPath,
@@ -125,18 +126,39 @@ export function validateGitPolicy(subcommand: string, args: string[] = []): void
   }
 
   for (const arg of args) {
-    if (arg === "-c" || arg.startsWith("-c=") || arg.startsWith("-c ") || arg.startsWith("--config")) {
-      for (const pat of ["core.pager", "sequence.editor", "core.editor", "alias", "diff.external"]) {
-        if (arg.includes(pat)) {
-          throw new Error(`[FDX Git Policy] Blocked config override "${arg}" under read-only policy.`)
-        }
-      }
+    const trimmed = arg.trim()
+    if (
+      trimmed === "-c" ||
+      trimmed.startsWith("-c=") ||
+      trimmed.startsWith("-c ") ||
+      trimmed.startsWith("-c") ||
+      trimmed === "--config" ||
+      trimmed.startsWith("--config=") ||
+      trimmed.startsWith("--config ") ||
+      trimmed === "--config-env" ||
+      trimmed.startsWith("--config-env=") ||
+      trimmed.startsWith("--config-env ")
+    ) {
+      throw new Error(`[FDX Git Policy] Prohibited config override "${arg}" under read-only policy.`)
     }
-    if (arg === "--exec-path" || arg.startsWith("--exec-path=")) {
+    if (trimmed === "--exec-path" || trimmed.startsWith("--exec-path=") || trimmed.startsWith("--exec-path ")) {
       throw new Error(`[FDX Git Policy] Blocked exec-path override "${arg}" under read-only policy.`)
     }
-    if (arg === "--output" || arg.startsWith("--output=") || arg === "--ext-diff" || arg === "--textconv") {
-      throw new Error(`[FDX Git Policy] Mutating/prohibited diff flag "${arg}" is prohibited under read-only policy.`)
+    if (
+      trimmed === "--output" ||
+      trimmed.startsWith("--output=") ||
+      trimmed === "--ext-diff" ||
+      trimmed === "--textconv" ||
+      trimmed === "--paginate" ||
+      trimmed === "--no-pager" ||
+      trimmed === "--pager"
+    ) {
+      throw new Error(`[FDX Git Policy] Mutating/prohibited diff/execution flag "${arg}" is prohibited under read-only policy.`)
+    }
+    for (const pat of ["core.pager", "sequence.editor", "core.editor", "alias", "diff.external", "interactive"]) {
+      if (trimmed.includes(pat)) {
+        throw new Error(`[FDX Git Policy] Dangerous config option "${arg}" is prohibited under read-only policy.`)
+      }
     }
   }
 
@@ -554,12 +576,17 @@ export function setNativeReadFallbackListenerForTest(
 }
 
 export function nativeReadFallback(file: string, limit?: number, offset?: number, cwd?: string): string {
+  const effectiveDir = cwd || activeProjectDir || process.cwd()
+  let resolvedPath: string
+  try {
+    resolvedPath = resolveContainedPath(effectiveDir, file, { mustExist: true })
+  } catch (err: any) {
+    return `[FDX Fallback] Read error: ${err.message}`
+  }
   if (_nativeReadFallbackListener) {
-    _nativeReadFallbackListener(file, limit, offset, cwd)
+    _nativeReadFallbackListener(resolvedPath, limit, offset, cwd)
   }
   try {
-    const resolvedPath = resolve(cwd || activeProjectDir || process.cwd(), file)
-    if (!existsSync(resolvedPath)) return `[FDX Fallback] Error: File not found "${file}"`
     const content = readFileSync(resolvedPath, "utf-8")
     const lines = content.split("\n")
     const start = offset && offset > 0 ? offset - 1 : 0
@@ -614,8 +641,17 @@ export function nativeSearchFallback(
   const maxFiles = opts?.maxFiles ?? 20_000
   let filesScanned = 0
 
+  const effectiveDir = cwd || activeProjectDir || process.cwd()
+  let root: string
   try {
-    const root = resolve(cwd || activeProjectDir || process.cwd(), searchPath)
+    root = resolveContainedPath(effectiveDir, searchPath, { mustExist: false })
+  } catch (err: any) {
+    return `[FDX Fallback] Search error: ${err.message}`
+  }
+  const canonicalEffectiveRoot = getCanonicalRoot(effectiveDir)
+
+  try {
+    if (!existsSync(root)) return `[FDX Native Fallback] No matches found for "${query}"`
     const isIgnored = loadGitignorePatterns(root)
     const results: string[] = []
 
@@ -635,6 +671,8 @@ export function nativeSearchFallback(
         if (isIgnored(full)) continue
         try {
           const st = statSync(full)
+          if (!isPathContained(canonicalEffectiveRoot, full)) continue
+
           if (st.isDirectory()) {
             walk(full)
           } else if (st.isFile()) {
@@ -686,8 +724,8 @@ export function nativeGitFallback(args: string[], cwd?: string): string {
 
 export function nativeLsFallback(targetPath: string = ".", cwd?: string): string {
   try {
-    const p = resolve(cwd || activeProjectDir || process.cwd(), targetPath)
-    if (!existsSync(p)) return `[FDX Fallback] Path not found: ${targetPath}`
+    const effectiveDir = cwd || activeProjectDir || process.cwd()
+    const p = resolveContainedPath(effectiveDir, targetPath, { mustExist: true })
     const items = readdirSync(p)
     return `[FDX Native Fallback: ${targetPath}]\n` + items.join("\n")
   } catch (err: any) {
@@ -711,18 +749,21 @@ export function nativeOutlineFallback(
   let filesScanned = 0
 
   const effectiveDir = cwd || activeProjectDir || process.cwd()
+  const canonicalEffectiveRoot = getCanonicalRoot(effectiveDir)
   const results: string[] = []
   for (const p of paths) {
     if (opts?.signal?.aborted) throw new Error("FDX_OUTLINE_ABORTED")
     if (Date.now() - startTime > deadlineMs) throw new Error("FDX_TOOL_DEADLINE")
-    const resolved = resolve(effectiveDir, p)
-    if (!existsSync(resolved)) {
+    let resolved: string
+    try {
+      resolved = resolveContainedPath(effectiveDir, p, { mustExist: true })
+    } catch {
       results.push(`[FDX Fallback] Path not found: ${p}`)
       continue
     }
     const st = statSync(resolved)
     if (st.isDirectory()) {
-      results.push(nativeOutlineDir(resolved, startTime, deadlineMs, maxFiles, filesScanned, opts?.signal))
+      results.push(nativeOutlineDir(resolved, startTime, deadlineMs, maxFiles, filesScanned, canonicalEffectiveRoot, opts?.signal))
     } else if (st.isFile()) {
       filesScanned++
       results.push(nativeOutlineFile(resolved))
@@ -737,6 +778,7 @@ function nativeOutlineDir(
   deadlineMs: number,
   maxFiles: number,
   filesScanned: number,
+  canonicalRoot: string,
   signal?: AbortSignal
 ): string {
   const lines: string[] = [`[FDX Native Fallback] Outline of ${dir}`]
@@ -749,6 +791,7 @@ function nativeOutlineDir(
       if (Date.now() - startTime > deadlineMs) throw new Error("FDX_TOOL_DEADLINE")
       if (ALWAYS_EXCLUDED.includes(item)) continue
       const full = join(d, item)
+      if (!isPathContained(canonicalRoot, full)) continue
       try {
         const st = statSync(full)
         if (st.isDirectory()) {
@@ -840,17 +883,31 @@ export async function nativeImpactFallback(
   const maxFiles = options.maxFiles ?? 100_000
   const maxBytesScanned = options.maxBytesScanned ?? 200 * 1024 * 1024
 
+  const throwIfAborted = (): void => {
+    if (signal?.aborted) throw new Error("FDX_IMPACT_ABORTED")
+  }
+  throwIfAborted()
+
+  const resolvedRoot = resolve(effectiveDir, root)
+  let canonicalEffectiveRoot: string
+  try {
+    canonicalEffectiveRoot = getCanonicalRoot(resolvedRoot)
+  } catch {
+    return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
+  }
+
+  for (const f of files) {
+    if (!isPathContained(canonicalEffectiveRoot, f)) {
+      return `[FDX Impact Native Fallback]\nPath escapes repository jail: ${f}`
+    }
+  }
+
   const targetNames = new Set(files.map(f => {
-    const base = f.split(/[/\\]/).pop() ?? f
+    const base = f.split(/[/\\\\]/).pop() ?? f
     return base.replace(/\.(ts|tsx|js|jsx)$/, "")
   }))
 
   const results: Array<{ file: string; matches: string[] }> = []
-  const resolvedRoot = resolve(effectiveDir, root)
-
-  const throwIfAborted = (): void => {
-    if (signal?.aborted) throw new Error("FDX_IMPACT_ABORTED")
-  }
 
   try {
     const rootStat = await fsPromises.stat(resolvedRoot)
@@ -858,16 +915,13 @@ export async function nativeImpactFallback(
       return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
     }
   } catch {
-    if (signal?.aborted) throw new Error("FDX_IMPACT_ABORTED")
+    throwIfAborted()
     return `[FDX Impact Native Fallback]\nNo dependents found for: ${files.join(", ")}`
   }
 
   const rootCanonical = await fsPromises.realpath(resolvedRoot)
   const isContainedInRoot = (target: string): boolean => {
-    if (target === rootCanonical) return true
-    const sep = target.includes("\\") || rootCanonical.includes("\\") ? "\\" : "/"
-    const prefix = rootCanonical.endsWith(sep) ? rootCanonical : rootCanonical + sep
-    return target.startsWith(prefix)
+    return isPathContained(rootCanonical, target)
   }
   const startTime = Date.now()
   const visitedDirs = new Set<string>()

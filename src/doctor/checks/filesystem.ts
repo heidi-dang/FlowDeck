@@ -17,11 +17,10 @@ export async function runFilesystemChecks(directory: string): Promise<CheckResul
       status: "warning",
       detected: "State directory .flowdeck does not exist",
       expected: ".flowdeck directory created",
-      recommendation: "Run `flowdeck doctor fix` to pre-create state directories",
-      autoFixAvailable: true,
+      recommendation: "Create .flowdeck directory or run FlowDeck",
+      autoFixAvailable: false,
       affectsRuntime: true,
-      repairability: "automatic",
-      repairAction: "create_state_directories",
+      repairability: "manual",
     })
   } else {
     // Check write permissions in state dir
@@ -53,11 +52,10 @@ export async function runFilesystemChecks(directory: string): Promise<CheckResul
         status: "error",
         detected: `State directory ${flowdeckStateDir} is not writable`,
         expected: "State directory writable",
-        recommendation: "Run `flowdeck doctor fix` to fix permissions or check directory ownership",
-        autoFixAvailable: true,
+        recommendation: "Fix filesystem permissions or directory ownership for .flowdeck",
+        autoFixAvailable: false,
         affectsRuntime: true,
-        repairability: "automatic",
-        repairAction: "fix_file_permissions",
+        repairability: "manual",
       })
     }
   }

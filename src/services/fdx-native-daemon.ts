@@ -289,7 +289,11 @@ export class FdxNativeDaemon {
   private spawn(): void {
     if (this.stopping) return;
     const bin = this.resolveBinary();
-    const child = spawn(bin, ["serve"], {
+    const args = ["serve"];
+    if (this.repo) {
+      args.push("--root", this.repo);
+    }
+    const child = spawn(bin, args, {
       stdio: ["pipe", "pipe", "pipe"],
       cwd: this.repo,
       shell: false,

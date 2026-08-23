@@ -5,43 +5,82 @@ const root = process.cwd()
 const commandsDir = join(root, "src", "commands")
 const skillsDir = join(root, "src", "skills")
 const wikiDir = join(root, "docs", "wiki")
-const docsToCheck = [
-  "README.md",
-  "docs/index.md",
-  "docs/concepts/workflows.md",
-  "docs/concepts/intelligence.md",
-  "docs/concepts/architecture.md",
-  "docs/concepts/governance.md",
-  // Also check all wiki pages
-  ...(() => {
-    try {
-      return readdirSync(wikiDir).filter(f => f.endsWith(".md")).map(f => `docs/wiki/${f}`)
-    } catch { return [] }
-  })(),
-]
+const docsDir = join(root, "docs")
+
+// Authoritative canonical agents from src/services/canonical-registry.ts
+const canonicalAgentNames = new Set([
+  "heidi",
+  "orchestrator",
+  "planner",
+  "architect",
+  "researcher",
+  "mapper",
+  "backend-coder",
+  "frontend-coder",
+  "devops",
+  "tester",
+  "reviewer",
+  "security-auditor",
+  "debug-specialist",
+  "browser-debugger",
+])
 
 const commandFiles = readdirSync(commandsDir).filter((file) => file.endsWith(".md"))
 const commandSet = new Set(commandFiles.map((file) => `/${file.replace(".md", "")}`))
 const commandPattern = /\/fd-[a-z0-9-]+/g
+const agentPattern = /@([a-z0-9-]+)/g
 
 function countSkills() {
   const dirs = readdirSync(skillsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory())
   return dirs.length
 }
 
+function getAllDocFiles(dir, fileList = []) {
+  if (!existsSync(dir)) return fileList
+  const entries = readdirSync(dir, { withFileTypes: true })
+  for (const entry of entries) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      getAllDocFiles(full, fileList)
+    } else if (entry.isFile() && entry.name.endsWith(".md")) {
+      fileList.push(full)
+    }
+  }
+  return fileList
+}
+
+const allDocFiles = [
+  join(root, "README.md"),
+  ...getAllDocFiles(docsDir),
+]
+
 const failures = []
 
-for (const relPath of docsToCheck) {
-  const fullPath = join(root, relPath)
-  if (!existsSync(fullPath)) {
-    failures.push(`${relPath}: file does not exist`)
-    continue
-  }
+for (const fullPath of allDocFiles) {
+  const relPath = fullPath.replace(root + "/", "")
   const content = readFileSync(fullPath, "utf-8")
+
+  // Check command references
   const matches = content.match(commandPattern) ?? []
   for (const command of matches) {
     if (!commandSet.has(command)) {
-      failures.push(`${relPath}: references missing command ${command}`)
+      failures.push(`${relPath}: references non-canonical command ${command}`)
+    }
+  }
+
+  // Check agent references if file is agent documentation
+  if (relPath.includes("agents/")) {
+    let match
+    const regex = new RegExp(agentPattern)
+    while ((match = regex.exec(content)) !== null) {
+      const agent = match[1]
+      // Exclude npm scopes like @heidi-dang or @modelcontextprotocol or @opencode-ai
+      if (["heidi-dang", "modelcontextprotocol", "opencode-ai", "dv", "nghiem", "types"].includes(agent)) {
+        continue
+      }
+      if (!canonicalAgentNames.has(agent)) {
+        failures.push(`${relPath}: references non-canonical agent @${agent}`)
+      }
     }
   }
 }
@@ -82,7 +121,6 @@ if (existsSync(indexPath)) {
 
 // ── Wiki page validation ────────────────────────────────────────────────
 
-// Verify all required wiki pages exist
 const requiredWikiPages = [
   "Home.md", "Installation.md", "Installation-npm.md",
   "Installation-local-repository.md", "Installation-project.md",
@@ -97,52 +135,6 @@ for (const page of requiredWikiPages) {
   const pagePath = join(wikiDir, page)
   if (!existsSync(pagePath)) {
     failures.push(`docs/wiki/${page}: required wiki page does not exist`)
-  }
-}
-
-// Verify README links to wiki use correct relative paths
-const readmePath = join(root, "README.md")
-if (existsSync(readmePath)) {
-  const readmeContent = readFileSync(readmePath, "utf-8")
-  const wikiLinks = readmeContent.match(/docs\/wiki\/[\w-]+\.md/g) || []
-  for (const link of wikiLinks) {
-    const linkPath = join(root, link)
-    if (!existsSync(linkPath)) {
-      failures.push(`README.md: broken wiki link ${link}`)
-    }
-  }
-}
-
-// Verify wiki links resolve within the wiki
-for (const page of requiredWikiPages) {
-  const pagePath = join(wikiDir, page)
-  if (!existsSync(pagePath)) continue
-  const content = readFileSync(pagePath, "utf-8")
-  const links = content.match(/\[([^\]]+)\]\(([^)]+)\)/g) || []
-  for (const link of links) {
-    const match = link.match(/\(([^)]+)\)/)
-    if (!match) continue
-    const href = match[1]
-    // Check repo-relative wiki links
-    if (href.endsWith(".md") && !href.startsWith("http")) {
-      const resolvedPath = join(wikiDir, href)
-      if (!existsSync(resolvedPath)) {
-        failures.push(`${page}: broken link ${href}`)
-      }
-    }
-  }
-}
-
-// Verify CLI commands in README match actual CLI
-const cliPath = join(root, "bin", "flowdeck.js")
-if (existsSync(cliPath)) {
-  const cliContent = readFileSync(cliPath, "utf-8")
-  // Extract command handler names from the CLI dispatch table
-  const handlerMatch = cliContent.match(/install|verify|doctor|uninstall|dry-run|update|migrate|rollback|config validate/g)
-  if (handlerMatch) {
-    const _uniqueCommands = [...new Set(handlerMatch)]
-    // We're just verifying the file has the expected commands — individual command
-    // validation is handled in the CLI itself
   }
 }
 

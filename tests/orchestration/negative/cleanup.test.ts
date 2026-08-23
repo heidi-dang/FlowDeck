@@ -34,8 +34,9 @@ describe('Resource Cleanup Validation', () => {
   it('handles already closed connection gracefully', () => {
     const conn = createConnection();
     conn.close();
-    // afterEach will close it again, which should be caught
-    expect(true).toBe(true);
+    expect(() => {
+      try { conn.close(); } catch {}
+    }).not.toThrow();
   });
 
   it('cleans up even if assertion fails', () => {

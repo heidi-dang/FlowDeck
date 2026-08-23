@@ -5,7 +5,7 @@ FlowDeck is an OpenCode-native development intelligence layer built around Heidi
 [![npm version](https://img.shields.io/npm/v/@heidi-dang/flowdeck.svg)](https://www.npmjs.com/package/@heidi-dang/flowdeck)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
-**89 skills**
+**14 registered agents** | **11 specialized subagents** | **89 validated skills** | **15 registered commands**
 
 ## Overview
 
@@ -141,7 +141,10 @@ FlowDeck includes a comprehensive diagnostic suite (`flowdeck doctor`) to evalua
 ## Installation
 
 ```bash
-# Install via npm
+# Automated install (recommended)
+curl -fsSL https://raw.githubusercontent.com/heidi-dang/flowdeck/main/install.sh | bash
+
+# Or install via npm
 npm install -g @heidi-dang/flowdeck
 
 # Register the plugin with OpenCode

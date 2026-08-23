@@ -208,7 +208,7 @@ export function backgroundSubagentCapabilityCheck(opencodeVersion: string | null
       status = "warning"
       severity = "medium"
       recommendation = "Set OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true in the environment that launches OpenCode, then restart OpenCode"
-      autoFixAvailable = true
+      autoFixAvailable = false
       repairability = "manual"
     }
   }

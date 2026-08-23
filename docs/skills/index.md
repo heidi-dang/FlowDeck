@@ -6,7 +6,7 @@ Skills are reusable workflow patterns that encode FlowDeck's best practices into
 
 Skills activate in two ways:
 
-- **Slash command**: Type `/<skill-name>` (e.g., `/fd-plan`, `/fd-code-review`)
+- **Slash command**: Invoked via FlowDeck workflow commands (e.g., `/fd-task`, `/fd-review`, `/fd-execute`)
 - **Auto-trigger**: FlowDeck hooks can invoke skills automatically based on context (e.g., `code-review` triggers after every code write, `deploy-check` before any deploy)
 
 ## Skill Taxonomy

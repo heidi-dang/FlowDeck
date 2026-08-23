@@ -80,11 +80,10 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
       status: "warning",
       detected: "Native FDX binary missing or not executable (TS fallback active)",
       expected: "Native FDX binary executable",
-      recommendation: "Run `flowdeck doctor fix` to restore or build native FDX binary",
-      autoFixAvailable: true,
+      recommendation: "Build native FDX binary via `cargo build --manifest-path crates/fdx/Cargo.toml` or reinstall",
+      autoFixAvailable: false,
       affectsRuntime: true,
-      repairability: "automatic",
-      repairAction: "restore_fdx_binary",
+      repairability: "manual",
     })
   } else {
     checks.push({
@@ -96,10 +95,9 @@ export async function runFdxChecks(directory: string): Promise<CheckResult[]> {
       detected: "Neither native FDX binary nor TS fallback found",
       expected: "FDX native binary or TS fallback available",
       recommendation: "Reinstall FlowDeck or build native FDX binary",
-      autoFixAvailable: true,
+      autoFixAvailable: false,
       affectsRuntime: true,
-      repairability: "automatic",
-      repairAction: "restore_fdx_binary",
+      repairability: "manual",
     })
   }
 

@@ -301,10 +301,10 @@ function buildFallbackReport(report, verbose) {
 
   if (report.checks) {
     for (const c of report.checks) {
-      const icon = c.status === "pass" ? "OK" : c.status === "warning" ? "WARN" : "ERROR"
-      lines.push(`  ${icon}  ${c.title || c.name}: ${c.detected || c.message || ""}`)
+      const icon = c.status === "pass" ? "OK" : c.status === "warning" ? "WARN" : c.status === "info" ? "INFO" : c.status === "skipped" ? "SKIP" : "ERROR"
+      lines.push(`  ${icon.padEnd(5)}  ${c.title || c.name}: ${c.detected || c.message || ""}`)
       if (verbose && c.recommendation) {
-        lines.push(`       ${c.recommendation}`)
+        lines.push(`         ${c.recommendation}`)
       }
     }
     lines.push("")

@@ -1,7 +1,6 @@
 import { describe, it, expect } from "bun:test"
-import { HEIDI_CODE_MODE_POLICY } from "../src/services/heidi-code-mode-policy"
+import { HEIDI_CODE_MODE_POLICY, resolveCodeModeCapability } from "../src/services/heidi-code-mode-policy"
 import { buildTaskSpecificPromptSections } from "../src/agents/orchestrator"
-
 import { evaluateCodeModeEligibility } from "../src/services/heidi-code-mode-evaluator"
 
 describe("Heidi Code Mode Policy", () => {
@@ -11,10 +10,19 @@ describe("Heidi Code Mode Policy", () => {
     expect(res.rejectionReason).toBe("NOT_MCP_COMPOSITION")
   })
 
-  it("rejects when workflow is too complex", () => {
-    const res = evaluateCodeModeEligibility("Continuously investigate all GitHub issues, keep iterating until every issue has a root cause.", true)
-    expect(res.isEligible).toBe(false)
-    expect(res.rejectionReason).toBe("TOO_COMPLEX")
+  it("rejects when workflow is too complex or open-ended", () => {
+    const phrases = [
+      "Continuously investigate all GitHub issues, keep iterating until every issue has a root cause.",
+      "Comprehensively search all pages across everything until all results are found.",
+      "Exhaustively crawl all repositories and keep exploring.",
+      "Paginate through all records indefinitely.",
+    ]
+    for (const phrase of phrases) {
+      const res = evaluateCodeModeEligibility(phrase, true)
+      expect(res.isEligible).toBe(false)
+      expect(["TOO_COMPLEX", "TOO_MANY_TOOL_CALLS"]).toContain(res.rejectionReason!)
+      expect(res.telemetry.codeModeSelected).toBe(false)
+    }
   })
 
   it("rejects when retry is required", () => {
@@ -41,6 +49,28 @@ describe("Heidi Code Mode Policy", () => {
     expect(res.rejectionReason).toBe("REQUIRES_FILESYSTEM")
   })
 
+  it("rejects when direct network calls are requested", () => {
+    const res = evaluateCodeModeEligibility("Get issues and call fetch() directly to send webhook.", true)
+    expect(res.isEligible).toBe(false)
+    expect(res.rejectionReason).toBe("REQUIRES_DIRECT_NETWORK")
+  })
+
+  it("rejects recursion and nested execute", () => {
+    const res1 = evaluateCodeModeEligibility("Write a recursive function to fetch comments.", true)
+    expect(res1.isEligible).toBe(false)
+    expect(res1.rejectionReason).toBe("TOO_COMPLEX")
+
+    const res2 = evaluateCodeModeEligibility("Use nested execute tool call inside script.", true)
+    expect(res2.isEligible).toBe(false)
+    expect(res2.rejectionReason).toBe("TOO_COMPLEX")
+  })
+
+  it("rejects when collection item count is too large", () => {
+    const res = evaluateCodeModeEligibility("Fetch top 100 issues from GitHub.", true)
+    expect(res.isEligible).toBe(false)
+    expect(res.rejectionReason).toBe("COLLECTION_TOO_LARGE")
+  })
+
   it("rejects when too many tool calls are estimated", () => {
     const res = evaluateCodeModeEligibility("List all issues and every pull request and aggregate them.", true)
     expect(res.isEligible).toBe(false)
@@ -54,6 +84,14 @@ describe("Heidi Code Mode Policy", () => {
     expect(res.telemetry.estimatedToolCalls).toBeLessThanOrEqual(10)
     expect(res.telemetry.estimatedParallelWidth).toBeLessThanOrEqual(4)
     expect(res.telemetry.estimatedDependencyStages).toBeLessThanOrEqual(3)
+  })
+
+  it("truthfully resolves capability: UNAVAILABLE when disabled, UNKNOWN when enabled but unproven, AVAILABLE when execute tool present", () => {
+    expect(resolveCodeModeCapability({ featureEnabled: false, hasNativeSupport: true })).toBe("UNAVAILABLE")
+    expect(resolveCodeModeCapability({ featureEnabled: true, hasNativeSupport: false })).toBe("UNAVAILABLE")
+    expect(resolveCodeModeCapability({ featureEnabled: true, hasNativeSupport: true })).toBe("UNKNOWN")
+    expect(resolveCodeModeCapability({ featureEnabled: true, hasNativeSupport: true, hasExecuteTool: false })).toBe("UNKNOWN")
+    expect(resolveCodeModeCapability({ featureEnabled: true, hasNativeSupport: true, hasExecuteTool: true })).toBe("AVAILABLE")
   })
 
   it("defines bounded execution limits", () => {
