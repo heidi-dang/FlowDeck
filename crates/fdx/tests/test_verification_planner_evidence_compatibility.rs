@@ -4,8 +4,33 @@ use fdx::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use fdx::intelligence::semantic::health::{ProviderFreshness, ProviderHealth};
 use fdx::intelligence::semantic::provider::{
     ProviderFingerprint, ProviderIdentity, ProviderScope, ProviderState, ProviderType,
+    SemanticProvider,
 };
+use fdx::intelligence::semantic::scip::ts::ScipTypescriptProvider;
 use fdx::intelligence::semantic::LanguageId;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    match ENV_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn create_mock_provider(dir: &Path) -> PathBuf {
+    let bin = dir.join("mock-scip-ts");
+    let script = "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"scip-typescript 1.0.0\"; exit 0; fi\nexit 0\n";
+    fs::write(&bin, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    bin
+}
 use fdx::intelligence::testplan::mapping::TestMappingEdge;
 use fdx::intelligence::testplan::model::SelectionReason;
 use fdx::intelligence::testplan::planner::{
@@ -559,6 +584,7 @@ fn test_config_only_fingerprint_is_incompatible_and_widens() {
 
 #[test]
 fn test_exact_digest_control_is_compatible_and_narrows_precisely() {
+    let _lock = lock_env();
     let tmp = tempdir().unwrap();
     let repo = tmp.path();
     init_git_repo(repo);
@@ -584,7 +610,14 @@ fn test_exact_digest_control_is_compatible_and_narrows_precisely() {
     )
     .unwrap();
 
-    // Provider has digest = FULL_DIGEST_CURRENT_12345, edge has provider_fingerprint = FULL_DIGEST_CURRENT_12345, stale = false
+    let bin_dir = tempdir().unwrap();
+    let mock_bin = create_mock_provider(bin_dir.path());
+    std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
+
+    let ts_provider = ScipTypescriptProvider::new();
+    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+
+    // Provider has exact computed digest, edge has matching provider_fingerprint, stale = false
     {
         let db = EvidenceDatabase::open(repo, DatabaseOpenMode::ReadWrite).unwrap();
         db.conn
@@ -615,15 +648,15 @@ fn test_exact_digest_control_is_compatible_and_narrows_precisely() {
         db.conn
             .execute(
                 r#"INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-                   VALUES ('scip-ts', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pa', 'cfg123', 'FULL_DIGEST_CURRENT_12345', 'available', 'fresh', 1, 100, 100)"#,
-                [],
+                   VALUES ('scip-typescript', 'scip', '1.0.0', ?1, '0.1', '["typescript"]', '.', 'packages/pa', ?2, ?3, 'available', 'fresh', 1, 100, 100)"#,
+                [&fp.executable_identity, &fp.config_fingerprint, &fp.digest],
             )
             .unwrap();
 
         db.conn
             .execute(
-                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:a_test', 'file:packages/pa/tests/a.test.ts', 'sym:packages/pa/src/a.ts:fnA', 'references', 'scip_ts', 'FULL_DIGEST_CURRENT_12345', 4, 'packages/pa/tests/a.test.ts', 'h1', 1, 1, 0, 'scip-ts')",
-                [],
+                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:a_test', 'file:packages/pa/tests/a.test.ts', 'sym:packages/pa/src/a.ts:fnA', 'references', 'scip_ts', ?1, 4, 'packages/pa/tests/a.test.ts', 'h1', 1, 1, 0, 'scip-typescript')",
+                [&fp.digest],
             )
             .unwrap();
     }
@@ -637,6 +670,7 @@ fn test_exact_digest_control_is_compatible_and_narrows_precisely() {
     .unwrap();
 
     let plan = plan_verification(repo, Some("HEAD"), None, None).expect("plan verification");
+    std::env::remove_var("SCIP_TYPESCRIPT_BIN");
 
     // a.test.ts must be selected precisely
     let a_test = plan

@@ -13,7 +13,8 @@ use crate::intelligence::change::uncertainty::{compute_result_assurance, Uncerta
 use crate::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use crate::intelligence::semantic::health::{ProviderFreshness, ProviderHealth};
 use crate::intelligence::semantic::provider::{ProviderState, ProviderType};
-use crate::intelligence::semantic::state::load_provider_states;
+use crate::intelligence::semantic::registry::ProviderRegistry;
+use crate::intelligence::semantic::state::{evaluate_effective_states, load_provider_states};
 use crate::intelligence::semantic::LanguageId;
 use crate::intelligence::testplan::bounds::get_active_test_plan_limits;
 use crate::intelligence::testplan::discover::{
@@ -392,10 +393,13 @@ pub fn plan_verification(
         _ => (None, false),
     };
 
+    let provider_registry = ProviderRegistry::new();
     let persisted_providers = db_opt
         .as_ref()
         .and_then(|d| load_provider_states(d).ok())
         .unwrap_or_default();
+    let effective_providers =
+        evaluate_effective_states(repo_root, &provider_registry, persisted_providers);
 
     let mapping_resolution = resolve_test_mappings(
         db_opt.as_ref().map(|d| &d.conn),
@@ -622,8 +626,8 @@ pub fn plan_verification(
                     None
                 };
 
-                // Validate evidence edge compatibility with persisted provider state
-                let matching_provider = persisted_providers.iter().find(|p| {
+                // Validate evidence edge compatibility with effective provider state
+                let matching_provider = effective_providers.iter().find(|p| {
                     p.provider_id() == edge.provider_id
                         || p.identity.provider_id == edge.provider_id
                 });
@@ -906,7 +910,7 @@ pub fn plan_verification(
         );
 
         let scope_state =
-            evaluate_mapping_scope(pkg_scope, &relevant_languages, &persisted_providers);
+            evaluate_mapping_scope(pkg_scope, &relevant_languages, &effective_providers);
 
         package_scope_states.insert(pkg_scope.clone(), scope_state);
     }
