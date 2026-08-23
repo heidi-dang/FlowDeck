@@ -4,6 +4,7 @@
 pub struct VerificationPolicy {
     pub include_unit_tests: bool,
     pub include_integration_tests: bool,
+    pub include_e2e_tests: bool,
     pub include_typecheck: bool,
     pub include_lint: bool,
     pub include_build: bool,
@@ -15,6 +16,7 @@ impl Default for VerificationPolicy {
         Self {
             include_unit_tests: true,
             include_integration_tests: true,
+            include_e2e_tests: true,
             include_typecheck: true,
             include_lint: true,
             include_build: true,
