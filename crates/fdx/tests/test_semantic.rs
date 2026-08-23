@@ -514,6 +514,25 @@ fn successful_refresh_replaces_old_generation() {
         .unwrap();
     assert_eq!(state.semantic_generation, 2);
     assert!(edge_count(&db) >= 5);
+
+    // Assert that every ingested semantic edge stores provider_fingerprint == provider_state.fingerprint.digest
+    let mut stmt = db
+        .conn
+        .prepare("SELECT provider_fingerprint FROM edges WHERE provider_id = 'scip-typescript'")
+        .unwrap();
+    let edge_fps: Vec<String> = stmt
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(!edge_fps.is_empty(), "Must have ingested semantic edges");
+    for edge_fp in edge_fps {
+        assert_eq!(
+            edge_fp, state.fingerprint.digest,
+            "Ingested edge provider_fingerprint must match provider_state.fingerprint.digest"
+        );
+    }
+
     let _ = _pd;
 }
 #[test]
