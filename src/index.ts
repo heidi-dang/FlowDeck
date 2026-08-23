@@ -88,6 +88,8 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
   noProgressCount?: number;
   lastProgressReason?: string;
   stallReason?: string;
+  lastEvidenceDelta?: number;
+  lastRepositoryDelta?: number;
   isStalled?: boolean;
   childExecutions?: Array<{
     assignmentId: string;
@@ -137,6 +139,8 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
     noProgressCount: progDiag?.noProgressCount,
     lastProgressReason: progDiag?.lastProgressReason,
     stallReason: progDiag?.stallReason,
+    lastEvidenceDelta: progDiag?.lastEvidenceDelta,
+    lastRepositoryDelta: progDiag?.lastRepositoryDelta,
     isStalled: progDiag?.isStalled,
     childExecutions: childDiag?.childExecutions,
   };

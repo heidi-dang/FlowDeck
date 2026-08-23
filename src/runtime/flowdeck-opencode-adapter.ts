@@ -28,8 +28,10 @@ export interface PendingFastDirectTurn {
   turnVersion: number;
 }
 
-import { statSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import {
+  extractMutationTargets,
+  getMutationTargetFingerprint,
+} from "./mutation-observation-adapter";
 
 export class FlowDeckLifecycleAdapter {
   private disposed = false;
@@ -43,14 +45,7 @@ export class FlowDeckLifecycleAdapter {
   ) {}
 
   private getPathFingerprint(relPath: string): string {
-    try {
-      const full = join(this.directory, relPath);
-      if (!existsSync(full)) return "missing";
-      const s = statSync(full);
-      return `${s.size}:${s.mtimeMs}`;
-    } catch {
-      return "err";
-    }
+    return getMutationTargetFingerprint(this.directory, [relPath]);
   }
 
   async onChatMessage(
@@ -330,12 +325,13 @@ export class FlowDeckLifecycleAdapter {
   ) {
     if (this.disposed) return;
 
-    // Track pre-state fingerprint for mutating tools
-    if (input.tool === "write" || input.tool === "edit" || input.tool === "patch" || input.tool === "apply_patch") {
-      const targetPath = input.args?.file ?? input.args?.filePath ?? input.args?.path;
-      if (typeof targetPath === "string") {
-        this.preToolRepositoryFingerprints.set(input.callID, this.getPathFingerprint(targetPath));
-      }
+    // Track pre-state fingerprint for mutating tools using normalized mutation target extraction
+    const mutationTargets = extractMutationTargets(input.tool, input.args);
+    if (mutationTargets.canFingerprintPrecisely) {
+      this.preToolRepositoryFingerprints.set(
+        input.callID,
+        getMutationTargetFingerprint(this.directory, mutationTargets.targetPaths)
+      );
     }
 
     if (input.tool === "task" || input.tool === "subagent") {
@@ -398,13 +394,11 @@ export class FlowDeckLifecycleAdapter {
       if (runId) {
         let preHash: string | undefined;
         let postHash: string | undefined;
-        if (input.tool === "write" || input.tool === "edit" || input.tool === "patch" || input.tool === "apply_patch") {
+        const postTargets = extractMutationTargets(input.tool, input.args);
+        if (postTargets.canFingerprintPrecisely) {
           preHash = this.preToolRepositoryFingerprints.get(input.callID);
           this.preToolRepositoryFingerprints.delete(input.callID);
-          const targetPath = input.args?.file ?? input.args?.filePath ?? input.args?.path;
-          if (typeof targetPath === "string") {
-            postHash = this.getPathFingerprint(targetPath);
-          }
+          postHash = getMutationTargetFingerprint(this.directory, postTargets.targetPaths);
         }
 
         this.runtime.progressObservationService.recordToolObservation({
