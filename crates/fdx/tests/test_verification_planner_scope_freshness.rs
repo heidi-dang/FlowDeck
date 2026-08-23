@@ -1,13 +1,37 @@
-//! Tests for scoped semantic mapping freshness: stale package A does NOT widen simultaneously changed fresh package B.
+//! Tests for scoped freshness isolation across packages in the verification planner.
 
 use fdx::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
+use fdx::intelligence::semantic::provider::SemanticProvider;
+use fdx::intelligence::semantic::scip::ts::ScipTypescriptProvider;
 use fdx::intelligence::testplan::model::SelectionReason;
 use fdx::intelligence::testplan::planner::plan_verification;
 use fdx::protocol::EvidenceStrength;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
 use tempfile::tempdir;
+
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+    match ENV_LOCK.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn create_mock_provider(dir: &Path) -> PathBuf {
+    let bin = dir.join("mock-scip-ts");
+    let script = "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"scip-typescript 1.0.0\"; exit 0; fi\nexit 0\n";
+    fs::write(&bin, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    bin
+}
 
 fn init_git_repo(path: &Path) {
     let _ = Command::new("git")
@@ -37,6 +61,7 @@ fn git_commit_all(path: &Path, msg: &str) {
 
 #[test]
 fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
+    let _lock = lock_env();
     let tmp = tempdir().unwrap();
     let repo = tmp.path();
     init_git_repo(repo);
@@ -59,7 +84,11 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
     )
     .unwrap();
 
-    fs::write(pa.join("src/a.ts"), "export function fnA() { return 1; }").unwrap();
+    fs::write(
+        pa.join("src/a.ts"),
+        "export function fnA() { return 1; }",
+    )
+    .unwrap();
     fs::write(pa.join("tests/a.test.ts"), "test('a', () => {});").unwrap();
     fs::write(
         pa.join("tests/a_other.test.ts"),
@@ -67,7 +96,11 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
     )
     .unwrap();
 
-    fs::write(pb.join("src/b.ts"), "export function fnB() { return 1; }").unwrap();
+    fs::write(
+        pb.join("src/b.ts"),
+        "export function fnB() { return 1; }",
+    )
+    .unwrap();
     fs::write(pb.join("tests/b.test.ts"), "test('b', () => {});").unwrap();
     fs::write(
         pb.join("tests/b_other.test.ts"),
@@ -75,8 +108,14 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
     )
     .unwrap();
 
-    // Persist provider state and mapping edges:
-    // Package A has stale edge (stale = 1)
+    let bin_dir = tempdir().unwrap();
+    let mock_bin = create_mock_provider(bin_dir.path());
+    std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
+
+    let ts_provider = ScipTypescriptProvider::new();
+    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+
+    // Package A has stale provider / edge (stale = 1)
     // Package B has fresh provider and fresh edge (stale = 0)
     {
         let db = EvidenceDatabase::open(repo, DatabaseOpenMode::ReadWrite).unwrap();
@@ -134,8 +173,8 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
         // Fresh provider covering packages/pb
         db.conn
             .execute(
-                r#"INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at) VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'cfg_pb', 'in_pb', 'available', 'fresh', 1, 100, 100)"#,
-                [],
+                r#"INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at) VALUES ('scip-typescript', 'scip', '1.0.0', ?1, '0.1', '["typescript"]', '.', 'packages/pb', ?2, ?3, 'available', 'fresh', 1, 100, 100)"#,
+                [&fp.executable_identity, &fp.config_fingerprint, &fp.digest],
             )
             .unwrap();
 
@@ -150,8 +189,8 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
         // Fresh edge in package B
         db.conn
             .execute(
-                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'in_pb', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb')",
-                [],
+                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', ?1, 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-typescript')",
+                [&fp.digest],
             )
             .unwrap();
     }
@@ -198,10 +237,13 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
         b_other_test.is_none(),
         "b_other.test.ts must NOT be selected because fresh package B is not widened"
     );
+
+    std::env::remove_var("SCIP_TYPESCRIPT_BIN");
 }
 
 #[test]
 fn test_scoped_dynamic_config_in_package_a_does_not_widen_fresh_package_b() {
+    let _lock = lock_env();
     let tmp = tempdir().unwrap();
     let repo = tmp.path();
     init_git_repo(repo);
@@ -247,6 +289,13 @@ fn test_scoped_dynamic_config_in_package_a_does_not_widen_fresh_package_b() {
     )
     .unwrap();
 
+    let bin_dir = tempdir().unwrap();
+    let mock_bin = create_mock_provider(bin_dir.path());
+    std::env::set_var("SCIP_TYPESCRIPT_BIN", &mock_bin);
+
+    let ts_provider = ScipTypescriptProvider::new();
+    let fp = ts_provider.passive_fingerprint(repo, Some("1.0.0")).unwrap();
+
     // Persist fresh provider for package B
     {
         let db = EvidenceDatabase::open(repo, DatabaseOpenMode::ReadWrite).unwrap();
@@ -277,14 +326,14 @@ fn test_scoped_dynamic_config_in_package_a_does_not_widen_fresh_package_b() {
         db.conn
             .execute(
                 r#"INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-                   VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'cfg_pb', 'in_pb', 'available', 'fresh', 1, 100, 100)"#,
-                [],
+                   VALUES ('scip-typescript', 'scip', '1.0.0', ?1, '0.1', '["typescript"]', '.', 'packages/pb', ?2, ?3, 'available', 'fresh', 1, 100, 100)"#,
+                [&fp.executable_identity, &fp.config_fingerprint, &fp.digest],
             )
             .unwrap();
         db.conn
             .execute(
-                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'in_pb', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb')",
-                [],
+                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', ?1, 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-typescript')",
+                [&fp.digest],
             )
             .unwrap();
     }
@@ -323,4 +372,6 @@ fn test_scoped_dynamic_config_in_package_a_does_not_widen_fresh_package_b() {
         b_other_test.is_none(),
         "Package B must NOT be widened because dynamic config in package A is scoped"
     );
+
+    std::env::remove_var("SCIP_TYPESCRIPT_BIN");
 }
