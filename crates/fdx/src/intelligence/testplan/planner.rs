@@ -11,6 +11,8 @@ use crate::intelligence::change::explain::{render_path_explanation, EvidencePath
 use crate::intelligence::change::traverse::{analyze_impact_v2, TraverseError};
 use crate::intelligence::change::uncertainty::{compute_result_assurance, UncertaintyReason};
 use crate::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
+use crate::intelligence::semantic::health::{ProviderFreshness, ProviderHealth};
+use crate::intelligence::semantic::state::load_provider_states;
 use crate::intelligence::testplan::bounds::get_active_test_plan_limits;
 use crate::intelligence::testplan::discover::{
     discover_tests_and_checks, fallback_scope_ids_for_dir,
@@ -21,6 +23,15 @@ use crate::intelligence::testplan::policy::VerificationPolicy;
 use crate::protocol::{AssuranceLevel, EvidenceStrength};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::Path;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MappingScopeState {
+    FreshComplete,
+    Stale(String),
+    Missing(String),
+    Failed(String),
+    Truncated,
+}
 
 /// Generate an explainable, deterministic verification plan given git base/head refs and verification policy.
 pub fn plan_verification(
@@ -69,12 +80,17 @@ pub fn plan_verification(
         }
     }
 
-    // 3. Open EvidenceDatabase in ReadOnly mode
+    // 3. Open EvidenceDatabase in ReadOnly mode and inspect provider states
     let db_res = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly);
-    let (db_opt, has_db) = match db_res {
+    let (db_opt, _has_db) = match db_res {
         Ok(d) => (Some(d), true),
         _ => (None, false),
     };
+
+    let persisted_providers = db_opt
+        .as_ref()
+        .and_then(|d| load_provider_states(d).ok())
+        .unwrap_or_default();
 
     let build_snapshot = CurrentBuildSnapshot::build(repo_root);
     let fallback_build_inv = discover_fallback_build_inventory(repo_root);
@@ -118,21 +134,31 @@ pub fn plan_verification(
     // Track all impacted packages and files
     let mut impacted_packages: HashSet<String> = HashSet::new();
     let mut impacted_files: HashSet<String> = HashSet::new();
+    let mut package_to_impact_path: HashMap<String, EvidencePath> = HashMap::new();
 
     for imp in &impact_result.impacted {
         if imp.target.starts_with("pkg:") {
             impacted_packages.insert(imp.target.clone());
+            if let Some(ref p) = imp.primary_path {
+                package_to_impact_path.insert(imp.target.clone(), p.clone());
+            }
         } else {
             impacted_files.insert(imp.target.clone());
             if let Some(pkgs) = build_snapshot.contains_file_to_packages.get(&imp.target) {
                 for p in pkgs {
                     impacted_packages.insert(p.clone());
+                    if let Some(ref path) = imp.primary_path {
+                        package_to_impact_path.insert(p.clone(), path.clone());
+                    }
                 }
             } else {
                 for pkg_dir in &fallback_build_inv.package_dirs {
                     if imp.target.starts_with(pkg_dir) {
                         for scope_id in fallback_scope_ids_for_dir(repo_root, pkg_dir) {
-                            impacted_packages.insert(scope_id);
+                            impacted_packages.insert(scope_id.clone());
+                            if let Some(ref path) = imp.primary_path {
+                                package_to_impact_path.insert(scope_id, path.clone());
+                            }
                         }
                     }
                 }
@@ -164,6 +190,30 @@ pub fn plan_verification(
             for dep in dependents {
                 if impacted_packages.insert(dep.clone()) {
                     pkg_queue.push_back(dep.clone());
+                    if !package_to_impact_path.contains_key(dep) {
+                        let step = EvidenceStep {
+                            from_node: current_pkg.clone(),
+                            edge_kind: crate::protocol::EdgeKind::DependsOn,
+                            to_node: dep.clone(),
+                            provider: "build_native".to_string(),
+                            strength: EvidenceStrength::Structural,
+                            description: Some(format!(
+                                "package dependency {} -> {}",
+                                dep, current_pkg
+                            )),
+                        };
+                        package_to_impact_path.insert(
+                            dep.clone(),
+                            EvidencePath {
+                                change_id: current_pkg.clone(),
+                                seed_node: current_pkg.clone(),
+                                target_node: dep.clone(),
+                                steps: vec![step],
+                                path_strength: EvidenceStrength::Structural,
+                                explanation: format!("{} depends on {}", dep, current_pkg),
+                            },
+                        );
+                    }
                 }
             }
         }
@@ -196,108 +246,121 @@ pub fn plan_verification(
         }
     }
 
-    let mut direct_tests_selected = HashSet::new();
-    let mut relevant_stale_mapping_detected = false;
-
-    // 4. Direct symbol & file test mappings (SCIP references, filename rules)
+    // Build domain of affected targets for relevant mapping lookup
+    let mut affected_target_keys: HashSet<String> = HashSet::new();
     for ch in &impact_result.changes {
-        let file_node = format!("file:{}", ch.file);
-        let mut target_keys = vec![ch.file.clone(), file_node];
+        affected_target_keys.insert(ch.file.clone());
+        affected_target_keys.insert(format!("file:{}", ch.file));
         if let Some(ref sym) = ch.symbol {
-            target_keys.push(format!("sym:{}:{}", ch.file, sym));
-            target_keys.push(format!("{}:{}", ch.file, sym));
+            affected_target_keys.insert(format!("sym:{}:{}", ch.file, sym));
+            affected_target_keys.insert(format!("{}:{}", ch.file, sym));
         }
+    }
+    for imp in &impact_result.impacted {
+        affected_target_keys.insert(imp.target.clone());
+        let norm = imp.target.strip_prefix("file:").unwrap_or(&imp.target);
+        affected_target_keys.insert(norm.to_string());
+    }
 
-        for target_key in &target_keys {
-            if let Some(edges) = target_to_test_edges.get(target_key.as_str()) {
-                for edge in edges {
-                    if edge.stale {
-                        relevant_stale_mapping_detected = true;
-                        uncertainties.push(UncertaintyReason::ProviderStale(format!(
+    let mut direct_tests_selected = HashSet::new();
+    let mut direct_tests_selected_per_package: HashMap<String, usize> = HashMap::new();
+    let mut package_stale_mapping: HashMap<String, String> = HashMap::new();
+
+    // 4. Direct symbol & file test mappings across affected targets
+    for target_key in &affected_target_keys {
+        if let Some(edges) = target_to_test_edges.get(target_key.as_str()) {
+            for edge in edges {
+                let test_file = edge
+                    .test_node
+                    .strip_prefix("file:")
+                    .unwrap_or(&edge.test_node);
+                let check_id = if edge.test_node.starts_with("test:") {
+                    edge.test_node.clone()
+                } else {
+                    let is_rs = test_file.ends_with(".rs");
+                    format!("test:{}:{}", if is_rs { "cargo" } else { "npm" }, test_file)
+                };
+
+                let owning_scope = inventory
+                    .tests
+                    .iter()
+                    .find(|t| t.canonical_path == test_file || t.stable_id == edge.test_node)
+                    .and_then(|t| t.owning_package_id.clone())
+                    .unwrap_or_else(|| "repo".to_string());
+
+                if edge.stale {
+                    package_stale_mapping.insert(
+                        owning_scope.clone(),
+                        format!(
                             "Test mapping edge {} for {} is stale",
-                            edge.provider_id, ch.file
-                        )));
-                    }
-
-                    let test_file = edge
-                        .test_node
-                        .strip_prefix("file:")
-                        .unwrap_or(&edge.test_node);
-                    let check_id = if edge.test_node.starts_with("test:") {
-                        edge.test_node.clone()
-                    } else {
-                        let is_rs = test_file.ends_with(".rs");
-                        format!("test:{}:{}", if is_rs { "cargo" } else { "npm" }, test_file)
-                    };
-
-                    let kind = if test_file.contains("/tests/") || test_file.contains("tests/") {
-                        VerificationCheckKind::IntegrationTest
-                    } else {
-                        VerificationCheckKind::UnitTest
-                    };
-
-                    let owning_scope = inventory
-                        .tests
-                        .iter()
-                        .find(|t| t.canonical_path == test_file || t.stable_id == edge.test_node)
-                        .and_then(|t| t.owning_package_id.clone())
-                        .unwrap_or_else(|| "repo".to_string());
-
-                    let reason = if let Some(ref sym) = ch.symbol {
-                        format!("tests impacted symbol {}::{}", ch.file, sym)
-                    } else {
-                        format!("tests impacted file {}", ch.file)
-                    };
-
-                    let step = EvidenceStep {
-                        from_node: edge.test_node.clone(),
-                        edge_kind: edge.kind,
-                        to_node: edge.target_node.clone(),
-                        provider: edge.provider_id.clone(),
-                        strength: edge.strength,
-                        description: Some(format!("test mapping via {}", edge.provider_id)),
-                    };
-                    let path_explanation = render_path_explanation(
-                        &edge.test_node,
-                        target_key,
-                        std::slice::from_ref(&step),
+                            edge.provider_id, target_key
+                        ),
                     );
-                    let evidence_path = EvidencePath {
-                        change_id: format!("{}:{}", ch.file, ch.symbol.as_deref().unwrap_or("")),
-                        seed_node: target_key.clone(),
-                        target_node: edge.test_node.clone(),
-                        steps: vec![step],
-                        path_strength: edge.strength,
-                        explanation: path_explanation,
-                    };
-
-                    let evidence_ref = CheckEvidenceRef {
-                        evidence_id: edge.evidence_id.clone(),
-                        provider: edge.provider.clone(),
-                        provider_id: edge.provider_id.clone(),
-                        provider_fingerprint: edge.provider_fingerprint.clone(),
-                        source_identity: edge.source_identity.clone(),
-                        strength: edge.strength,
-                        stale: edge.stale,
-                    };
-
-                    let check = PlannedCheck {
-                        check_id: check_id.clone(),
-                        display_name: test_file.to_string(),
-                        kind,
-                        scope: owning_scope,
-                        reason,
-                        selection: SelectionReason::Evidence,
-                        strength: edge.strength,
-                        evidence_path: Some(evidence_path),
-                        evidence_refs: vec![evidence_ref],
-                        widening_reason: None,
-                        mandatory: false,
-                    };
-
-                    direct_tests_selected.insert(check_id.clone());
-                    selected_checks_map.insert(check_id, check);
+                    uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                        "Test mapping edge {} for {} in scope {} is stale",
+                        edge.provider_id, target_key, owning_scope
+                    )));
                 }
+
+                let kind = if test_file.contains("/tests/") || test_file.contains("tests/") {
+                    VerificationCheckKind::IntegrationTest
+                } else {
+                    VerificationCheckKind::UnitTest
+                };
+
+                let reason = format!("tests impacted target {}", target_key);
+
+                let step = EvidenceStep {
+                    from_node: edge.test_node.clone(),
+                    edge_kind: edge.kind,
+                    to_node: edge.target_node.clone(),
+                    provider: edge.provider_id.clone(),
+                    strength: edge.strength,
+                    description: Some(format!("test mapping via {}", edge.provider_id)),
+                };
+                let path_explanation = render_path_explanation(
+                    &edge.test_node,
+                    target_key,
+                    std::slice::from_ref(&step),
+                );
+                let evidence_path = EvidencePath {
+                    change_id: target_key.clone(),
+                    seed_node: target_key.clone(),
+                    target_node: edge.test_node.clone(),
+                    steps: vec![step],
+                    path_strength: edge.strength,
+                    explanation: path_explanation,
+                };
+
+                let evidence_ref = CheckEvidenceRef {
+                    evidence_id: edge.evidence_id.clone(),
+                    provider: edge.provider.clone(),
+                    provider_id: edge.provider_id.clone(),
+                    provider_fingerprint: edge.provider_fingerprint.clone(),
+                    source_identity: edge.source_identity.clone(),
+                    strength: edge.strength,
+                    stale: edge.stale,
+                };
+
+                let check = PlannedCheck {
+                    check_id: check_id.clone(),
+                    display_name: test_file.to_string(),
+                    kind,
+                    scope: owning_scope.clone(),
+                    reason,
+                    selection: SelectionReason::Evidence,
+                    strength: edge.strength,
+                    evidence_path: Some(evidence_path),
+                    evidence_refs: vec![evidence_ref],
+                    widening_reason: None,
+                    mandatory: false,
+                };
+
+                direct_tests_selected.insert(check_id.clone());
+                *direct_tests_selected_per_package
+                    .entry(owning_scope)
+                    .or_default() += 1;
+                selected_checks_map.insert(check_id, check);
             }
         }
     }
@@ -336,7 +399,7 @@ pub fn plan_verification(
                     check_id: discovered_test.stable_id.clone(),
                     display_name: discovered_test.canonical_path.clone(),
                     kind: discovered_test.kind,
-                    scope: owning_scope,
+                    scope: owning_scope.clone(),
                     reason,
                     selection: SelectionReason::Evidence,
                     strength: imp.strength,
@@ -355,26 +418,62 @@ pub fn plan_verification(
                 };
 
                 direct_tests_selected.insert(discovered_test.stable_id.clone());
+                *direct_tests_selected_per_package
+                    .entry(owning_scope)
+                    .or_default() += 1;
                 selected_checks_map.insert(discovered_test.stable_id.clone(), check);
             }
         }
     }
 
-    // 6. Policy widening: if semantic evidence is missing, stale, or dynamic config detected, widen to package tests
-    let has_fresh_scip = has_db
-        && !relevant_stale_mapping_detected
-        && !uncertainties.iter().any(|u| {
-            matches!(
-                u,
-                UncertaintyReason::ProviderStale(_)
-                    | UncertaintyReason::ProviderMissing(_)
-                    | UncertaintyReason::GraphAbsent(_)
-                    | UncertaintyReason::GraphCorrupt(_)
-            )
+    // 6. Compute per-scope MappingScopeState
+    let mut package_scope_states: HashMap<String, MappingScopeState> = HashMap::new();
+    for pkg_scope in &impacted_packages {
+        let pkg_clean = pkg_scope
+            .strip_prefix("pkg:npm:")
+            .or_else(|| pkg_scope.strip_prefix("pkg:cargo:"))
+            .unwrap_or(pkg_scope);
+
+        if let Some(reason) = package_stale_mapping.get(pkg_scope) {
+            package_scope_states
+                .insert(pkg_scope.clone(), MappingScopeState::Stale(reason.clone()));
+            continue;
+        }
+
+        let covering_provider = persisted_providers.iter().find(|p| {
+            if let Some(ref p_pkg) = p.scope.package {
+                p_pkg == pkg_clean || p_pkg == pkg_scope
+            } else if p.scope.workspace_root == "." || p.scope.workspace_root.is_empty() {
+                true
+            } else {
+                pkg_clean.starts_with(&p.scope.workspace_root)
+            }
         });
 
-    let needs_package_widening = !has_fresh_scip
-        || relevant_stale_mapping_detected
+        let scope_state = match covering_provider {
+            Some(p) => {
+                if p.health != ProviderHealth::Available {
+                    MappingScopeState::Failed(format!(
+                        "provider {} is {:?}",
+                        p.identity.provider_id, p.health
+                    ))
+                } else if p.freshness != ProviderFreshness::Fresh {
+                    MappingScopeState::Stale(format!(
+                        "provider {} is {:?}",
+                        p.identity.provider_id, p.freshness
+                    ))
+                } else {
+                    MappingScopeState::FreshComplete
+                }
+            }
+            None => MappingScopeState::Missing(format!("no provider covers scope {}", pkg_scope)),
+        };
+
+        package_scope_states.insert(pkg_scope.clone(), scope_state);
+    }
+
+    // 7. Policy widening: compute packages requiring conservative widening
+    let global_failure = root_config_changed
         || inventory.truncated
         || inventory.fallback.truncated
         || mapping_resolution.truncated
@@ -386,75 +485,126 @@ pub fn plan_verification(
         || uncertainties.iter().any(|u| {
             matches!(
                 u,
-                UncertaintyReason::ProviderStale(_)
-                    | UncertaintyReason::ProviderMissing(_)
-                    | UncertaintyReason::DynamicConfigExpression(_)
-                    | UncertaintyReason::BuildLimitReached(_)
+                UncertaintyReason::BuildLimitReached(_)
                     | UncertaintyReason::GraphCorrupt(_)
+                    | UncertaintyReason::DynamicConfigExpression(_)
             )
         });
 
-    if needs_package_widening {
-        for test in &inventory.tests {
-            let matches_package = test
-                .owning_package_id
-                .as_ref()
-                .map(|p| impacted_packages.contains(p))
-                .unwrap_or(false);
+    let mut packages_requiring_widening: HashMap<String, String> = HashMap::new();
+    for pkg_scope in &impacted_packages {
+        if global_failure {
+            packages_requiring_widening.insert(
+                pkg_scope.clone(),
+                "global_failure_or_root_change".to_string(),
+            );
+        } else {
+            let state = package_scope_states
+                .get(pkg_scope)
+                .cloned()
+                .unwrap_or_else(|| MappingScopeState::Missing("unknown".to_string()));
 
-            let kind_allowed = match test.kind {
-                VerificationCheckKind::UnitTest => policy.include_unit_tests,
-                VerificationCheckKind::IntegrationTest => policy.include_integration_tests,
-                VerificationCheckKind::EndToEndTest => policy.include_e2e_tests,
-                _ => true,
-            };
-
-            if matches_package && kind_allowed && !direct_tests_selected.contains(&test.stable_id) {
-                let pkg_id = test.owning_package_id.clone().unwrap_or_default();
-                selected_checks_map.insert(
-                    test.stable_id.clone(),
-                    PlannedCheck {
-                        check_id: test.stable_id.clone(),
-                        display_name: test.canonical_path.clone(),
-                        kind: test.kind,
-                        scope: pkg_id,
-                        reason: "conservative package widening due to incomplete/stale semantic evidence".to_string(),
-                        selection: SelectionReason::PolicyWidening,
-                        strength: EvidenceStrength::Structural,
-                        evidence_path: None,
-                        evidence_refs: Vec::new(),
-                        widening_reason: Some("stale_or_incomplete_evidence".to_string()),
-                        mandatory: false,
-                    },
-                );
+            match state {
+                MappingScopeState::FreshComplete => {
+                    // If build-transitively impacted and NO direct tests were selected, it requires widening
+                    let direct_tests_count = direct_tests_selected_per_package
+                        .get(pkg_scope)
+                        .copied()
+                        .unwrap_or(0);
+                    if direct_tests_count == 0 {
+                        packages_requiring_widening.insert(
+                            pkg_scope.clone(),
+                            "build_transitive_package_impact".to_string(),
+                        );
+                    }
+                }
+                MappingScopeState::Stale(r) => {
+                    packages_requiring_widening
+                        .insert(pkg_scope.clone(), format!("stale_evidence: {}", r));
+                }
+                MappingScopeState::Missing(r) => {
+                    packages_requiring_widening
+                        .insert(pkg_scope.clone(), format!("missing_evidence: {}", r));
+                }
+                MappingScopeState::Failed(r) => {
+                    packages_requiring_widening
+                        .insert(pkg_scope.clone(), format!("failed_evidence: {}", r));
+                }
+                MappingScopeState::Truncated => {
+                    packages_requiring_widening
+                        .insert(pkg_scope.clone(), "truncated_evidence".to_string());
+                }
             }
         }
     }
 
-    // 7. Mandatory package checks (typecheck, lint, build, test scripts)
+    // Apply widening only to packages in packages_requiring_widening
+    for (pkg_scope, widen_reason) in &packages_requiring_widening {
+        for test in &inventory.tests {
+            if test.owning_package_id.as_deref() == Some(pkg_scope) {
+                let kind_allowed = match test.kind {
+                    VerificationCheckKind::UnitTest => policy.include_unit_tests,
+                    VerificationCheckKind::IntegrationTest => policy.include_integration_tests,
+                    VerificationCheckKind::EndToEndTest => policy.include_e2e_tests,
+                    _ => true,
+                };
+
+                if kind_allowed && !direct_tests_selected.contains(&test.stable_id) {
+                    selected_checks_map.insert(
+                        test.stable_id.clone(),
+                        PlannedCheck {
+                            check_id: test.stable_id.clone(),
+                            display_name: test.canonical_path.clone(),
+                            kind: test.kind,
+                            scope: pkg_scope.clone(),
+                            reason: format!("package widening for {}: {}", pkg_scope, widen_reason),
+                            selection: SelectionReason::PolicyWidening,
+                            strength: EvidenceStrength::Structural,
+                            evidence_path: None,
+                            evidence_refs: Vec::new(),
+                            widening_reason: Some(widen_reason.clone()),
+                            mandatory: false,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    // 8. Mandatory package checks (typecheck, lint, build, test scripts)
     if policy.mandatory_package_checks {
         for check in &inventory.checks {
             let is_impacted_scope =
                 impacted_packages.contains(&check.owning_scope_id) || root_config_changed;
 
             if is_impacted_scope {
+                let is_widened = packages_requiring_widening.contains_key(&check.owning_scope_id);
                 let should_include = match check.kind {
                     VerificationCheckKind::Typecheck => policy.include_typecheck,
                     VerificationCheckKind::Lint => policy.include_lint,
                     VerificationCheckKind::Build => policy.include_build,
-                    VerificationCheckKind::UnitTest => {
-                        policy.include_unit_tests && needs_package_widening
-                    }
+                    VerificationCheckKind::UnitTest => policy.include_unit_tests && is_widened,
                     VerificationCheckKind::IntegrationTest => {
-                        policy.include_integration_tests && needs_package_widening
+                        policy.include_integration_tests && is_widened
                     }
-                    VerificationCheckKind::EndToEndTest => {
-                        policy.include_e2e_tests && needs_package_widening
-                    }
+                    VerificationCheckKind::EndToEndTest => policy.include_e2e_tests && is_widened,
                     _ => false,
                 };
 
                 if should_include && !selected_checks_map.contains_key(&check.check_id) {
+                    let reason =
+                        if let Some(path) = package_to_impact_path.get(&check.owning_scope_id) {
+                            format!(
+                                "mandatory check for {} impacted via {}",
+                                check.owning_scope_id, path.explanation
+                            )
+                        } else {
+                            format!(
+                                "mandatory check under policy for scope {}",
+                                check.owning_scope_id
+                            )
+                        };
+
                     selected_checks_map.insert(
                         check.check_id.clone(),
                         PlannedCheck {
@@ -462,10 +612,7 @@ pub fn plan_verification(
                             display_name: check.display_name.clone(),
                             kind: check.kind,
                             scope: check.owning_scope_id.clone(),
-                            reason: format!(
-                                "mandatory check under policy for scope {}",
-                                check.owning_scope_id
-                            ),
+                            reason,
                             selection: SelectionReason::MandatoryCheck,
                             strength: EvidenceStrength::Structural,
                             evidence_path: None,
@@ -479,10 +626,7 @@ pub fn plan_verification(
         }
     }
 
-    // 8. General fail-closed handling of incomplete verification domains
-    // If any discovery truncation, walker error, read error, or unparseable/dynamic config
-    // can hide test domain membership without an enclosing executable test suite script,
-    // generate typed UnresolvedVerificationObligation and force UNVERIFIED.
+    // 9. General fail-closed handling of incomplete verification domains
     let mut incomplete_scopes: HashSet<(String, String, String)> = HashSet::new();
 
     if inventory.truncated {
@@ -544,7 +688,6 @@ pub fn plan_verification(
                     }
                 }
             } else {
-                // Global issue without specific path (e.g. walker_error)
                 for pkg_scope in &impacted_packages {
                     incomplete_scopes.insert((
                         pkg_scope.clone(),
@@ -580,26 +723,26 @@ pub fn plan_verification(
         }
     }
 
-    // 9. Compute final assurance level
+    // 10. Compute final assurance level
+    let any_package_widened = !packages_requiring_widening.is_empty();
     let mut final_assurance =
         compute_result_assurance(impact_result.assurance, &uncertainties, false);
 
     if !unresolved_obligations.is_empty() {
         final_assurance = AssuranceLevel::Unverified;
-    } else if has_fresh_scip
-        && !needs_package_widening
+    } else if !any_package_widened
         && uncertainties.is_empty()
         && impact_result.assurance == AssuranceLevel::Exact
     {
         final_assurance = AssuranceLevel::Exact;
-    } else if final_assurance > AssuranceLevel::Conservative && needs_package_widening {
+    } else if final_assurance > AssuranceLevel::Conservative && any_package_widened {
         final_assurance = AssuranceLevel::Conservative;
     }
 
     let mut sorted_checks: Vec<PlannedCheck> = selected_checks_map.into_values().collect();
     sorted_checks.sort_by(|a, b| a.check_id.cmp(&b.check_id));
 
-    // 10. Safe output bounding: never silently truncate without retaining safe enclosing obligation
+    // 11. Safe output bounding: never silently truncate without retaining safe enclosing obligation
     if sorted_checks.len() > limits.max_selected_checks {
         let mut package_checks_available: HashMap<String, PlannedCheck> = HashMap::new();
         for check in &inventory.checks {
