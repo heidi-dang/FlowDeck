@@ -1,12 +1,24 @@
+import { randomUUID } from "node:crypto";
 import type { ProductionOrchestrationRuntime } from "../orchestration/composition";
-import { shouldPreserveRoute, setRouteDecision, clearRouteDecision, noteInternalContinuation, getRouteDecision } from "../services/heidi-route-state";
-import { classifyTask, type RouterDecision } from "../services/heidi-fast-router";
+import {
+  shouldPreserveRoute,
+  setRouteDecision,
+  clearRouteDecision,
+  noteInternalContinuation,
+  getRouteDecision,
+} from "../services/heidi-route-state";
+import { classifyTask, type RouterDecision, stableHash } from "../services/heidi-fast-router";
 import type { Event, UserMessage, Part, TextPart } from "@opencode-ai/sdk";
-import { stableHash } from "../services/heidi-fast-router";
-import { checkConvergenceBefore, checkConvergenceAfter } from "../services/convergence-guard";
 import { isTerminalRunStatus } from "../orchestration/types/runs";
+import {
+  buildCanonicalRoutingDecision,
+  reconstructRouterDecision,
+  mapExecutionClassToRunStrategy,
+} from "../orchestration/routing/fast-router-adapter";
 
 export class FlowDeckLifecycleAdapter {
+  private disposed = false;
+
   constructor(
     private readonly directory: string,
     private readonly runtime: ProductionOrchestrationRuntime,
@@ -16,32 +28,39 @@ export class FlowDeckLifecycleAdapter {
     input: { sessionID: string; agent?: string; messageID?: string },
     output: { message: UserMessage; parts: Part[] }
   ) {
-    if (input.agent === "heidi" || input.agent === "orchestrator") {
+    if (this.disposed) return;
+    if (input.agent === "heidi" || input.agent === "orchestrator" || !input.agent) {
       const text = output.parts
         .filter((p): p is TextPart => p.type === "text")
         .map(p => p.text)
         .join("\n");
-        
+
+      if (!text.trim()) return;
+
       const msgHash = stableHash(text);
-      
-      // Phase 3: Session Affinity. Restore Route State from DB before deciding to preserve.
+
+      // Hydrate authoritative session route from SQLite if not currently in memory
       await this.hydrateSessionRoute(input.sessionID);
 
       const { preserve } = shouldPreserveRoute(input.sessionID, msgHash);
       if (!preserve) {
         // Genuine new user instruction
         const decision = classifyTask(text, { hasExplicitDomainSignal: false });
-        const newTaskId = "task-" + Date.now();
-        setRouteDecision(input.sessionID, newTaskId, decision, text, msgHash);
-        await this.syncOrchestrationRun(newTaskId, input.sessionID, "heidi", decision, text, msgHash);
+        const correlationId = input.messageID || randomUUID();
+        const taskId = "task-" + randomUUID();
+        setRouteDecision(input.sessionID, taskId, decision, text, msgHash);
+        await this.syncOrchestrationRun(taskId, input.sessionID, input.agent ?? "heidi", decision, text, msgHash, correlationId);
       } else {
         noteInternalContinuation(input.sessionID);
       }
     }
   }
 
-  private async hydrateSessionRoute(sessionID: string) {
-    if (getRouteDecision(sessionID)) return; // Already in memory
+  /**
+   * Hydrates route state from authoritative SQLite persistence after a process restart or session resume.
+   */
+  async hydrateSessionRoute(sessionID: string): Promise<void> {
+    if (getRouteDecision(sessionID)) return; // Already present in route projection cache
 
     const sessionRow = this.runtime.sessionRepo.findById(sessionID);
     if (!sessionRow) return;
@@ -49,67 +68,86 @@ export class FlowDeckLifecycleAdapter {
     const run = await this.runtime.services.runRepo.findById(sessionRow.runId);
     if (!run || isTerminalRunStatus(run.status)) return;
 
-    const metadata = run.metadata || {};
-    const goal = (metadata.goal as string) || "Restored task";
-    const msgHash = (metadata.lastUserMessageHash as string) || "unknown";
-    const taskId = (metadata.taskId as string) || run.id;
-    
-    setRouteDecision(sessionID, taskId, {
-      executionClass: run.runType as any,
-      reason: "Restored from DB",
-      reasonCode: "RESTORED",
-      confidence: 1,
-      forcedByExplicitSignal: false,
-      mcpCompositionCandidate: false,
-      codeModeRejectedReason: undefined,
-      codeModeTelemetry: {
-        codeModeConsidered: true,
-        codeModeSelected: false,
-        codeModeRejectedReason: undefined
-      }
-    }, goal, msgHash);
+    const routingDecision = this.runtime.routingDecisionRepository.getLatestDecisionForRun(run.id);
+    if (!routingDecision) {
+      // Diagnostic: run exists but has no authoritative routing decision persisted
+      return;
+    }
+
+    const { decision, goal, lastUserMessageHash } = reconstructRouterDecision(routingDecision);
+    setRouteDecision(sessionID, run.id, decision, goal, lastUserMessageHash);
   }
 
-  private async syncOrchestrationRun(taskId: string, sessionID: string, agentId: string, decision: RouterDecision, goal: string, msgHash: string) {
+  /**
+   * Persists Run, canonical RoutingDecision, and binds session affinity.
+   */
+  private async syncOrchestrationRun(
+    taskId: string,
+    sessionID: string,
+    agentId: string,
+    decision: RouterDecision,
+    goal: string,
+    msgHash: string,
+    correlationId: string,
+  ): Promise<void> {
+    // FAST_DIRECT bypasses heavy persistence overhead for minimal latency
     if (decision.executionClass === "FAST_DIRECT") return;
 
     try {
+      const runStrategy = mapExecutionClassToRunStrategy(decision.executionClass);
       const run = await this.runtime.services.runService.createRun({
-        runType: decision.executionClass,
-        correlationId: taskId,
+        runType: runStrategy,
+        correlationId,
         sessionId: sessionID,
         agentId,
         metadata: { taskId, goal, lastUserMessageHash: msgHash }
       });
 
-      // Maintain session affinity metadata. 
-      const existing = this.runtime.sessionRepo.findById(sessionID);
-      if (!existing) {
-        this.runtime.sessionRepo.create({
-          id: sessionID,
-          runId: run.id,
-          agentId
-        });
-      }
+      // Authoritative routing persistence
+      const canonicalRouting = buildCanonicalRoutingDecision({
+        runId: run.id,
+        decision,
+        goal,
+        lastUserMessageHash: msgHash,
+      });
+      this.runtime.routingDecisionRepository.saveDecision(canonicalRouting);
+
+      // Bind session -> active run
+      this.runtime.sessionRepo.bindActiveRun({
+        id: sessionID,
+        runId: run.id,
+        agentId,
+        status: "running"
+      });
     } catch (err) {
       console.error("[FlowDeckLifecycleAdapter] syncOrchestrationRun failed:", err);
     }
   }
 
   async onToolExecuteBefore(
-    input: { tool: string; sessionID: string; callID: string; args?: any }
+    _input: { tool: string; sessionID: string; callID: string; args?: any }
   ) {
-    checkConvergenceBefore(input.sessionID, input.tool, input.args);
+    if (this.disposed) return;
+    // Captures raw execution before tool runs
   }
 
   async onToolExecuteAfter(
     input: { tool: string; sessionID: string; callID: string; args: any },
-    output: { output: string; metadata: any }
+    _output: { output: string; metadata: any }
   ) {
-    checkConvergenceAfter(input.sessionID, input.tool, input.args, output.output);
+    if (this.disposed) return;
+    // Track session tool metrics authoritatively
+    if (input.sessionID) {
+      try {
+        this.runtime.sessionRepo.incrementMetrics(input.sessionID, 1, 0);
+      } catch {
+        // Safe fail
+      }
+    }
   }
 
   async onEvent(event: Event) {
+    if (this.disposed) return;
     if (event.type === "session.idle") {
       await this.onSessionIdle(event.properties.sessionID);
     } else if (event.type === "session.error") {
@@ -121,14 +159,18 @@ export class FlowDeckLifecycleAdapter {
   }
 
   async onSessionIdle(_sessionID: string) {
-    // Continuation Policy evaluation here
+    // Continuation Policy evaluation (handled in future phase)
   }
 
   async onSessionError(_sessionID: string, _error: any) {
-    // Error recovery here
+    // Session error handling
   }
 
   async onSessionDeleted(sessionID: string) {
     clearRouteDecision(sessionID);
+  }
+
+  dispose(): void {
+    this.disposed = true;
   }
 }

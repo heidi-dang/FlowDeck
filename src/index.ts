@@ -6,10 +6,14 @@ import { loadFlowDeckConfig, resolveAgentModels } from "./config/index"
 import { invalidateFdxCache } from "./tools/fdx-shared"
 import { buildFlowDeckMcpsWithMeta } from "./mcp/index"
 
-import { join } from "node:path"
-import { initializeDatabase } from "./orchestration/persistence"
-import { createProductionOrchestrationRuntime, type ProductionOrchestrationRuntime } from "./orchestration/composition"
-import { FlowDeckLifecycleAdapter } from "./runtime/flowdeck-opencode-adapter"
+import type { ProductionOrchestrationRuntime } from "./orchestration/composition"
+import {
+  getOrCreateProjectRuntime,
+  getProjectRuntime,
+  disposeProjectRuntime,
+} from "./runtime/project-registry"
+import { clearRouteDecision } from "./services/heidi-route-state"
+import { clearTaskState } from "./services/heidi-task-state"
 import { doctorTool } from "./tools/doctor"
 import { fdxValidateTool } from "./tools/fdx-validate"
 import { fdxWorktreeTool } from "./tools/fdx-worktree"
@@ -49,42 +53,67 @@ export {
 } from "./services/runtime-identity"
 export type { FlowDeckRuntimeIdentity } from "./services/runtime-identity"
 
-export function cleanupSessionState(_sessionID: string): void {
+/**
+ * Cleans up ephemeral in-memory state for a session while preserving durable database history.
+ */
+export function cleanupSessionState(sessionID: string): void {
+  clearRouteDecision(sessionID);
+  clearTaskState(sessionID);
 }
 
-export function getSessionMetricsDiagnostics(_sessionID: string): any {
-  if (!activeRuntime) return { toolCalls: 0, retries: 0, delegations: 0, blocks: 0, warnings: 0, startTime: undefined, filesChangedCount: 0 };
-  const metrics = activeRuntime.metrics;
-  if (!metrics) return { toolCalls: 0, retries: 0, delegations: 0, blocks: 0, warnings: 0, startTime: undefined, filesChangedCount: 0 };
-  
-  // Real active runtime diagnostics
+/**
+ * Returns session execution diagnostics backed by authoritative database rows.
+ */
+export function getSessionMetricsDiagnostics(sessionID: string, directory?: string): {
+  sessionID: string;
+  runID?: string;
+  toolCalls: number;
+  delegations: number;
+  status?: string;
+  startTime?: string;
+  completedAt?: string | null;
+  errorMessage?: string | null;
+} {
+  let projectCtx = directory ? getProjectRuntime(directory) : null;
+  if (!projectCtx) {
+    // If directory not explicitly passed, check first available runtime for tests
+    const defaultCtx = getOrCreateProjectRuntime(process.cwd());
+    projectCtx = defaultCtx;
+  }
+
+  if (!projectCtx || !projectCtx.runtime) {
+    return { sessionID, toolCalls: 0, delegations: 0 };
+  }
+
+  const sessionRow = projectCtx.runtime.sessionRepo.findById(sessionID);
+  if (!sessionRow) {
+    return { sessionID, toolCalls: 0, delegations: 0 };
+  }
+
   return {
-    toolCalls: metrics.executionPlans.get(),
-    retries: metrics.executionStalls.get(),
-    delegations: metrics.workstreamsStarted.get(),
-    blocks: metrics.executionTerminations.get(),
-    warnings: 0,
-    startTime: undefined,
-    filesChangedCount: 0
+    sessionID: sessionRow.id,
+    runID: sessionRow.runId,
+    toolCalls: sessionRow.toolCalls,
+    delegations: sessionRow.delegations,
+    status: sessionRow.status,
+    startTime: sessionRow.startedAt,
+    completedAt: sessionRow.completedAt,
+    errorMessage: sessionRow.errorMessage,
   };
 }
 
-let activeRuntime: ProductionOrchestrationRuntime | null = null;
-let lifecycleAdapter: FlowDeckLifecycleAdapter | null = null;
-
-export function getOrchestrationRuntime(): ProductionOrchestrationRuntime | null {
-  return activeRuntime
+/**
+ * Get active ProductionOrchestrationRuntime for a directory, or cwd by default.
+ */
+export function getOrchestrationRuntime(directory?: string): ProductionOrchestrationRuntime | null {
+  const ctx = getProjectRuntime(directory ?? process.cwd());
+  return ctx ? ctx.runtime : null;
 }
 
 const plugin: Plugin = async ({ directory, client: _client }) => {
   setActiveProjectDir(directory)
-
-  if (!activeRuntime) {
-    const dbPath = join(directory, ".flowdeck", "flowdeck.db");
-    const initResult = initializeDatabase({ path: dbPath });
-    activeRuntime = createProductionOrchestrationRuntime(initResult.db);
-    lifecycleAdapter = new FlowDeckLifecycleAdapter(directory, activeRuntime);
-  }
+  const projectContext = getOrCreateProjectRuntime(directory);
+  const lifecycleAdapter = projectContext.adapter;
 
   let currentConfig: any = {};
 
@@ -165,12 +194,7 @@ const plugin: Plugin = async ({ directory, client: _client }) => {
     },
 
     dispose: async () => {
-      if (activeRuntime) {
-        // Safe disposal of outbox workers etc
-        if ((activeRuntime as any).outboxWorker && typeof (activeRuntime as any).outboxWorker.stop === 'function') {
-           (activeRuntime as any).outboxWorker.stop();
-        }
-      }
+      await disposeProjectRuntime(directory);
       configureFdxNextRuntime()
     },
   }

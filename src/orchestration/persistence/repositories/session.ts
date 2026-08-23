@@ -55,6 +55,31 @@ export class SqliteSessionRepository extends BaseRepository {
     })
   }
 
+  /**
+   * Bind an OpenCode session to a new active Run.
+   * If the session already exists, updates the active run_id and resets active status.
+   * If not, inserts a new agent_session row.
+   */
+  bindActiveRun(input: CreateAgentSessionInput): AgentSessionRow {
+    return this.tx.write(() => {
+      const existing = this.findById(input.id);
+      if (existing) {
+        this.db.query(
+          `UPDATE agent_sessions
+           SET run_id = ?, agent_id = ?, status = ?, completed_at = NULL, error_message = NULL
+           WHERE id = ?`
+        ).run(
+          input.runId,
+          input.agentId,
+          input.status ?? "running",
+          input.id
+        );
+        return this.findById(input.id)!;
+      }
+      return this.create(input);
+    });
+  }
+
   findById(id: string): AgentSessionRow | undefined {
     const row = this.db.query("SELECT * FROM agent_sessions WHERE id = ?").get(id) as Record<string, unknown> | undefined
     return row ? mapSessionRow(row) : undefined
@@ -69,8 +94,8 @@ export class SqliteSessionRepository extends BaseRepository {
     return this.tx.write(() => {
       const res = errorMessage !== undefined || status === "completed" || status === "failed"
         ? this.db.query(
-            `UPDATE agent_sessions 
-             SET status = ?, duration_ms = ?, completed_at = datetime('now'), error_message = ? 
+            `UPDATE agent_sessions
+             SET status = ?, duration_ms = ?, completed_at = datetime('now'), error_message = ?
              WHERE id = ?`
           ).run(status, durationMs ?? null, errorMessage ?? null, id)
         : this.db.query(
@@ -83,8 +108,8 @@ export class SqliteSessionRepository extends BaseRepository {
   incrementMetrics(id: string, toolCallsDelta: number = 0, delegationsDelta: number = 0): boolean {
     return this.tx.write(() => {
       const res = this.db.query(
-        `UPDATE agent_sessions 
-         SET tool_calls = tool_calls + ?, delegations = delegations + ? 
+        `UPDATE agent_sessions
+         SET tool_calls = tool_calls + ?, delegations = delegations + ?
          WHERE id = ?`
       ).run(toolCallsDelta, delegationsDelta, id)
       return res.changes > 0

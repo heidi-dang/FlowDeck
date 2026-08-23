@@ -5,19 +5,23 @@ import * as router from "../src/services/heidi-fast-router";
 import * as routeState from "../src/services/heidi-route-state";
 
 describe("FlowDeckLifecycleAdapter", () => {
-  it("creates a Run and maintains session affinity", async () => {
+  it("creates a Run, canonical RoutingDecision, and binds session affinity", async () => {
     const mockCreateRun = vi.fn().mockResolvedValue({ id: "run-123" });
-    const mockFindById = vi.fn().mockReturnValue(null);
-    const mockCreateSession = vi.fn();
+    const mockBindActiveRun = vi.fn();
+    const mockSaveDecision = vi.fn();
     
     const mockRuntime = {
       services: {
         runService: { createRun: mockCreateRun },
         runRepo: { findById: vi.fn() }
       },
+      routingDecisionRepository: {
+        saveDecision: mockSaveDecision,
+        getLatestDecisionForRun: vi.fn()
+      },
       sessionRepo: {
-        findById: mockFindById,
-        create: mockCreateSession
+        findById: vi.fn().mockReturnValue(null),
+        bindActiveRun: mockBindActiveRun
       }
     } as unknown as ProductionOrchestrationRuntime;
 
@@ -45,40 +49,73 @@ describe("FlowDeckLifecycleAdapter", () => {
 
     expect(mockCreateRun).toHaveBeenCalled();
     const args = mockCreateRun.mock.calls[0][0];
-    expect(args.runType).toBe("STANDARD");
+    expect(args.runType).toBe("planned");
     expect(args.sessionId).toBe("sess-affinity-1");
     expect(args.metadata.goal).toBe("do a huge refactor");
 
-    expect(mockCreateSession).toHaveBeenCalledWith({
+    expect(mockSaveDecision).toHaveBeenCalled();
+    expect(mockBindActiveRun).toHaveBeenCalledWith({
       id: "sess-affinity-1",
       runId: "run-123",
-      agentId: "heidi"
+      agentId: "heidi",
+      status: "running"
     });
   });
 
-  it("hydrates session state from database if missing in memory", async () => {
+  it("hydrates session state from database routing decision", async () => {
     const mockRuntime = {
       services: {
         runService: { createRun: vi.fn() },
         runRepo: {
           findById: vi.fn().mockResolvedValue({
             id: "run-456",
-            runType: "PARALLEL_SPECIALISTS",
+            runType: "delegated",
             status: "running",
-            metadata: {
-              goal: "hydrated goal",
-              lastUserMessageHash: "hash123",
-              taskId: "task-456"
-            }
           })
         }
+      },
+      routingDecisionRepository: {
+        getLatestDecisionForRun: vi.fn().mockReturnValue({
+          routingDecisionId: "rd-456",
+          runId: "run-456",
+          decisionVersion: 1,
+          sourceSha: "0000000000000000000000000000000000000000",
+          strategy: "parallel_implementation",
+          delegate: true,
+          delegations: [],
+          workstreams: [],
+          budgetRecommendation: "normal",
+          modelRecommendation: "default",
+          rationale: ["Parallel UI and Backend required"],
+          rejectedAlternatives: [],
+          policyVersion: "2.0.0",
+          createdAt: new Date().toISOString(),
+          finalized: true,
+          assessment: {
+            assessmentId: "assess-456",
+            runId: "run-456",
+            taskClass: "feature",
+            complexity: { score: 88, evidence: [{ id: "ev1", kind: "score", signal: "primary", value: "0.88", weight: 100 }] },
+            ambiguity: { score: 10, evidence: [{ id: "ev2", kind: "score", signal: "primary", value: "0.1", weight: 100 }] },
+            risk: { score: 10, evidence: [{ id: "ev3", kind: "score", signal: "primary", value: "0.1", weight: 100 }] },
+            parallelism: "high",
+            evidence: [
+              { id: "ev-execution-class", kind: "classification", signal: "executionClass", value: "PARALLEL_SPECIALISTS", weight: 100 },
+              { id: "ev-user-goal", kind: "goal", signal: "goal", value: "hydrated goal", weight: 100 },
+              { id: "ev-message-hash", kind: "hash", signal: "lastUserMessageHash", value: "hash123", weight: 100 },
+            ],
+            classifierVersion: "2.0.0",
+            policyVersion: "2.0.0",
+            createdAt: new Date().toISOString(),
+          }
+        })
       },
       sessionRepo: {
         findById: vi.fn().mockReturnValue({
           id: "sess-hydrate-1",
           runId: "run-456"
         }),
-        create: vi.fn()
+        bindActiveRun: vi.fn()
       }
     } as unknown as ProductionOrchestrationRuntime;
 
