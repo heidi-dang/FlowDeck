@@ -461,7 +461,10 @@ impl BuildConfigProvider for PackageJsonProvider {
                             &mut res.edges,
                             &mut res.uncertainties,
                             BuildEdge {
-                                stable_id: format!("edge:belongs_to:{}:{}", target_id, pkg_stable_id),
+                                stable_id: format!(
+                                    "edge:belongs_to:{}:{}",
+                                    target_id, pkg_stable_id
+                                ),
                                 from_node: target_id,
                                 to_node: pkg_stable_id.clone(),
                                 kind: EdgeKind::BelongsTo,

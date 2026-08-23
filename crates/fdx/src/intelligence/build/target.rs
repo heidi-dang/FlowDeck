@@ -746,7 +746,8 @@ impl BuildConfigProvider for CargoProvider {
                         kind: NodeKind::BuildTarget,
                         canonical_path: Some(lib_file),
                         metadata: Some(
-                            serde_json::json!({ "target_kind": "lib", "name": pkg_name }).to_string(),
+                            serde_json::json!({ "target_kind": "lib", "name": pkg_name })
+                                .to_string(),
                         ),
                     });
                     bounds.push_bounded_edge(
@@ -818,7 +819,8 @@ impl BuildConfigProvider for CargoProvider {
                         kind: NodeKind::BuildTarget,
                         canonical_path: Some(main_file.clone()),
                         metadata: Some(
-                            serde_json::json!({ "target_kind": "bin", "name": bin_name }).to_string(),
+                            serde_json::json!({ "target_kind": "bin", "name": bin_name })
+                                .to_string(),
                         ),
                     });
                     bounds.push_bounded_edge(

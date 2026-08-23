@@ -164,7 +164,7 @@ pub fn load_provider_states(
     db: &EvidenceDatabase,
 ) -> Result<Vec<ProviderState>, crate::intelligence::db::DatabaseError> {
     let mut stmt = db.conn.prepare(&format!(
-        "SELECT {} FROM semantic_providers",
+        "SELECT {} FROM semantic_providers WHERE provider_type = 'scip'",
         PROVIDER_COLUMNS
     ))?;
     let rows = stmt.query_map([], row_to_state)?;

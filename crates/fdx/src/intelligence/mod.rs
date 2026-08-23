@@ -11,3 +11,4 @@ pub mod schema;
 pub mod semantic;
 pub mod snapshot;
 pub mod status;
+pub mod testplan;
