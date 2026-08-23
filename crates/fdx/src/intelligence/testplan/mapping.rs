@@ -61,13 +61,28 @@ pub fn resolve_test_mappings(
     if let Some(conn) = conn_opt {
         // Fetch all persisted test nodes to validate test:* origins
         let mut persisted_test_nodes: HashSet<String> = HashSet::new();
-        if let Ok(mut stmt) = conn
+        match conn
             .prepare("SELECT stable_id FROM nodes WHERE kind = 'test' OR stable_id LIKE 'test:%'")
         {
-            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
-                for r in rows.flatten() {
-                    persisted_test_nodes.insert(r);
+            Ok(mut stmt) => match stmt.query_map([], |row| row.get::<_, String>(0)) {
+                Ok(rows) => {
+                    for item_res in rows {
+                        match item_res {
+                            Ok(r) => {
+                                persisted_test_nodes.insert(r);
+                            }
+                            Err(err) => {
+                                resolution.errors.push(err.to_string());
+                            }
+                        }
+                    }
                 }
+                Err(err) => {
+                    resolution.errors.push(err.to_string());
+                }
+            },
+            Err(err) => {
+                resolution.errors.push(err.to_string());
             }
         }
 
@@ -75,16 +90,16 @@ pub fn resolve_test_mappings(
         match conn.prepare(query_sql) {
             Ok(mut stmt) => {
                 match stmt.query_map([], |row| {
-                    let stable_id: Option<String> = row.get(0).ok();
+                    let stable_id: Option<String> = row.get(0)?;
                     let from_n: String = row.get(1)?;
                     let to_n: String = row.get(2)?;
                     let kstr: String = row.get(3)?;
                     let prov: String = row.get(4)?;
-                    let prov_id: Option<String> = row.get(5).ok();
-                    let prov_fp: Option<String> = row.get(6).ok();
+                    let prov_id: Option<String> = row.get(5)?;
+                    let prov_fp: Option<String> = row.get(6)?;
                     let str_val: i64 = row.get(7)?;
-                    let src_id: Option<String> = row.get(8).ok();
-                    let stale: bool = row.get(9).unwrap_or(false);
+                    let src_id: Option<String> = row.get(8)?;
+                    let stale: bool = row.get(9)?;
                     Ok((
                         stable_id, from_n, to_n, kstr, prov, prov_id, prov_fp, str_val, src_id,
                         stale,
