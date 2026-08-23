@@ -75,6 +75,7 @@ import { SqlitePerformanceRepository } from "./performance";
 import { PerformanceProjection } from "./services/performance-projection";
 import { RuntimeSnapshotService } from "./services/runtime-snapshot";
 import { AuthoritativeRoutingService } from "./routing/authoritative";
+import { RoutingRevisionService } from "./routing/routing-revision-service";
 import { TokenBudgetRuntime } from "../services/token-budget-runtime";
 import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
 import type { CommandRegistry } from "./commands/domain/command-registry";
@@ -104,6 +105,7 @@ export interface ProductionOrchestrationRuntime {
   };
   router: ReturnType<typeof createRouterWithControllers>;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
+  routingRevisionService: RoutingRevisionService;
   metrics: OrchestrationMetrics;
   executionRepository: SqliteExecutionRepository;
   executionScheduler: ExecutionScheduler;
@@ -652,6 +654,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const contextItemRepo = new SqliteContextItemRepository(db, txManager);
   const consumerOffsetRepo = new SqliteConsumerOffsetRepository(db, txManager);
   const routingDecisionRepository = new SqliteRoutingDecisionRepository(db, txManager);
+  const routingRevisionService = new RoutingRevisionService(routingDecisionRepository);
   const metrics = new OrchestrationMetrics();
   const executionRepository = new SqliteExecutionRepository(db, txManager, metrics);
   executionRepository.reconcileIntegratedAttempts();
@@ -713,7 +716,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const commands = createCoreCommandRuntime(db, txManager, {
     db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
     sessionRepo, contextItemRepo, consumerOffsetRepo, services, router,
-    routingDecisionRepository, metrics, executionRepository, executionScheduler,
+    routingDecisionRepository, routingRevisionService, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
     assignmentBindingCoordinator, faultHook: options.faultHook,
@@ -732,6 +735,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     services,
     router,
     routingDecisionRepository,
+    routingRevisionService,
     metrics,
     executionRepository,
     executionScheduler,

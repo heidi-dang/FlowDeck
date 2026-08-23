@@ -7,6 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { z } from "zod";
 import {
   routingDecisionSchema,
   type RoutingDecision,
@@ -20,7 +21,11 @@ import {
   type ExecutionClass,
   type SpecialistDomain,
 } from "../../services/heidi-fast-router";
-import type { CodeModeTelemetry } from "../../services/heidi-code-mode-policy";
+import {
+  CODE_MODE_REJECTION_REASONS,
+  type CodeModeRejectionReason,
+  type CodeModeTelemetry,
+} from "../../services/heidi-code-mode-policy";
 
 export const VALID_EXECUTION_CLASSES: ReadonlySet<string> = new Set<ExecutionClass>([
   "FAST_DIRECT",
@@ -41,14 +46,10 @@ export const VALID_SPECIALIST_DOMAINS: ReadonlySet<string> = new Set<SpecialistD
   "ARCHITECTURE",
 ]);
 
-/**
- * Standard FlowDeck model recommendation constant: preserves user/global configured model.
- */
+/** Standard FlowDeck model recommendation constant: preserves user/global configured model. */
 export const PRESERVE_CONFIGURED_MODEL = "advisory-only: preserve configured model";
 
-/**
- * Compatibility sentinel SHA when running outside a git repository or when commit provenance is unavailable.
- */
+/** Compatibility sentinel SHA when running outside a git repository or when commit provenance is unavailable. */
 export const UNKNOWN_SOURCE_SHA = "0000000000000000000000000000000000000000";
 
 export function isExecutionClass(val: unknown): val is ExecutionClass {
@@ -59,14 +60,21 @@ export function isSpecialistDomain(val: unknown): val is SpecialistDomain {
   return typeof val === "string" && VALID_SPECIALIST_DOMAINS.has(val);
 }
 
+export const codeModeTelemetrySchema = z.object({
+  codeModeConsidered: z.boolean(),
+  codeModeSelected: z.boolean(),
+  codeModeRejectedReason: z.enum(CODE_MODE_REJECTION_REASONS).optional(),
+  estimatedToolCalls: z.number().int().nonnegative().optional(),
+  estimatedParallelWidth: z.number().int().nonnegative().optional(),
+  estimatedDependencyStages: z.number().int().nonnegative().optional(),
+  actualToolCalls: z.number().int().nonnegative().optional(),
+  actualDurationMs: z.number().nonnegative().optional(),
+  actualResultBytes: z.number().int().nonnegative().optional(),
+  terminalStatus: z.enum(["success", "error", "timeout"]).optional(),
+}).strict();
+
 export function isCodeModeTelemetry(val: unknown): val is CodeModeTelemetry {
-  if (!val || typeof val !== "object") return false;
-  const obj = val as Record<string, unknown>;
-  return (
-    typeof obj.codeModeConsidered === "boolean" &&
-    typeof obj.codeModeSelected === "boolean" &&
-    (obj.codeModeRejectedReason === undefined || typeof obj.codeModeRejectedReason === "string")
-  );
+  return codeModeTelemetrySchema.safeParse(val).success;
 }
 
 export function mapExecutionClassToStrategy(cls: ExecutionClass): ExecutionStrategy {
@@ -188,6 +196,7 @@ export function buildCanonicalRoutingDecision(input: {
     runId: input.runId,
     decisionVersion: 1,
     sourceSha,
+    routingMode: "recommendation" as const,
     strategy: mapExecutionClassToStrategy(input.decision.executionClass),
     delegate: input.decision.executionClass === "SPECIALIST" || input.decision.executionClass === "PARALLEL_SPECIALISTS",
     delegations: [], // No synthetic wildcard ownership invented
@@ -296,7 +305,14 @@ export function reconstructRouterDecision(decision: RoutingDecision): {
     }
   }
 
-  const codeModeRejectedReason = evMap.get("rejected_reason");
+  let codeModeRejectedReason: CodeModeRejectionReason | undefined;
+  if (evMap.has("rejected_reason")) {
+    const rawReason = evMap.get("rejected_reason")!;
+    if (!CODE_MODE_REJECTION_REASONS.includes(rawReason as CodeModeRejectionReason)) {
+      return null;
+    }
+    codeModeRejectedReason = rawReason as CodeModeRejectionReason;
+  }
 
   const routerDecision: RouterDecision = {
     executionClass: executionClassRaw,

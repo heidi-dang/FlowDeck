@@ -42,8 +42,12 @@ export const workstreamSchema = z.object({ id: z.string().min(1), ownership: z.a
 export interface DelegationRecommendation { agentId: string; capability: string; ownership: string[]; rationale: string }
 export const delegationSchema = z.object({ agentId: z.string().min(1), capability: z.string().min(1), ownership: z.array(z.string().min(1)).min(1), rationale: z.string().min(1) }).strict()
 
+export const ROUTING_MODES = ["recommendation", "ownership_resolved", "enforceable"] as const
+export type RoutingAuthorityMode = typeof ROUTING_MODES[number]
+
 export const routingDecisionSchema = z.object({
   routingDecisionId: z.string().min(1), runId: z.string().min(1), decisionVersion: z.number().int().positive(), sourceSha: z.string().regex(/^[0-9a-f]{40}$/),
+  routingMode: z.enum(ROUTING_MODES).optional(),
   assessment: taskAssessmentSchema, strategy: z.enum(STRATEGIES), delegate: z.boolean(),
   delegations: z.array(delegationSchema), workstreams: z.array(workstreamSchema),
   budgetRecommendation: z.enum(BUDGET_PROFILES), modelRecommendation: z.string().min(1),

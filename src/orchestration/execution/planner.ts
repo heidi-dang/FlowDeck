@@ -2,6 +2,15 @@ import type { RoutingDecision } from "../routing/contracts/task-intelligence"
 import { analyzeDependencies, executionPlanSchema, type ExecutionPlan } from "./contracts"
 
 export function executionPlanFromRouting(decision: RoutingDecision): ExecutionPlan {
+  if (decision.routingMode === "recommendation") {
+    throw new Error("ROUTING_DECISION_RECOMMENDATION_ONLY")
+  }
+  if (decision.delegate && decision.delegations.length === 0) {
+    throw new Error("ROUTING_DELEGATION_OWNERSHIP_UNRESOLVED")
+  }
+  if (decision.strategy === "parallel_implementation" && decision.workstreams.length === 0) {
+    throw new Error("ROUTING_PARALLEL_WORKSTREAMS_UNRESOLVED")
+  }
   const delegations = new Map(decision.delegations.map(d => [d.ownership[0], d]))
   const source = decision.workstreams.length ? decision.workstreams : [{ id: "direct", ownership: ["**"], dependsOn: [], rationale: "Primary execution remains authoritative" }]
   const workstreams = source.map(w => {

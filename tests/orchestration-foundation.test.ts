@@ -20,9 +20,23 @@ import {
   PRESERVE_CONFIGURED_MODEL,
   UNKNOWN_SOURCE_SHA,
   resolveSourceSha,
+  isCodeModeTelemetry,
 } from "../src/orchestration/routing/fast-router-adapter";
 import { classifyUserTurnIntent } from "../src/services/user-turn-intent";
+import { AuthoritativeRoutingService } from "../src/orchestration/routing/authoritative";
 import flowDeckPlugin from "../src/index";
+
+const dummyActivationEvidence = {
+  milestone1: true,
+  executionPlanner: true,
+  adaptiveBudget: true,
+  performanceIntelligence: true,
+  determinism: true,
+  safety: true,
+  modelAuthority: true,
+  budgetAuthority: true,
+  completionAuthority: true,
+};
 
 describe("FlowDeck Orchestration Foundation Integration Tests", () => {
   let dirA: string;
@@ -200,6 +214,14 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(classifyUserTurnIntent({ newMessage: "new task: build GraphQL schema" }).intent).toBe("REPLACE");
     expect(classifyUserTurnIntent({ newMessage: "cancel this task" }).intent).toBe("CANCEL");
     expect(classifyUserTurnIntent({ newMessage: "stop execution" }).intent).toBe("CANCEL");
+    expect(classifyUserTurnIntent({ newMessage: "thanks" }).intent).toBe("ACKNOWLEDGE");
+    expect(classifyUserTurnIntent({ newMessage: "okay" }).intent).toBe("ACKNOWLEDGE");
+    expect(classifyUserTurnIntent({ newMessage: "ok" }).intent).toBe("ACKNOWLEDGE");
+    expect(classifyUserTurnIntent({ newMessage: "sounds good" }).intent).toBe("ACKNOWLEDGE");
+    expect(classifyUserTurnIntent({ newMessage: "got it" }).intent).toBe("ACKNOWLEDGE");
+    expect(classifyUserTurnIntent({ newMessage: "great" }).intent).toBe("ACKNOWLEDGE");
+    expect(classifyUserTurnIntent({ newMessage: "yes" }).intent).toBe("ACKNOWLEDGE");
+    expect(classifyUserTurnIntent({ newMessage: "understood" }).intent).toBe("ACKNOWLEDGE");
   });
 
   it("7. user-turn-intent-active-run-lifecycle: verify MODIFY, REPLACE, and CANCEL transitions against active Run", async () => {
@@ -343,7 +365,6 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(getTaskState(taskId)).toBeDefined();
 
     cleanupSessionState("sess-cleanup-task");
-
     expect(getRouteDecision("sess-cleanup-task")).toBeNull();
     expect(getTaskState(taskId)).toBeUndefined();
   });
@@ -372,7 +393,6 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
   });
 
   it("13. always-approve-does-not-bypass-governance: structural invariant blocks are never bypassed by globalAlwaysApprove", async () => {
-    // Write governance mode strict in .flowdeck.json
     writeFileSync(
       join(dirA, ".flowdeck.json"),
       JSON.stringify({ governance: { mode: "strict" }, heidi: { globalAlwaysApprove: true } })
@@ -388,7 +408,6 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
       governance: { mode: "strict" },
     });
 
-    // Researcher agent attempting to use write (forbidden in its contract)
     const res = await pluginInstance.permission({
       sessionID: "sess-gov",
       agent: { name: "researcher" },
@@ -396,7 +415,6 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
       args: {},
     });
 
-    // Must be blocked because researcher cannot run write under strict governance
     expect(res).toBeDefined();
     expect(res.status).toBe("deny");
 
@@ -411,14 +429,474 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(owner2.runtime).toBe(owner1.runtime);
     expect(owner1.refCount).toBe(2);
 
-    // Release 1st owner
     await releaseProjectRuntime(dirA);
     expect(getProjectRuntime(dirA)).not.toBeNull();
     expect(owner1.disposed).toBe(false);
 
-    // Release 2nd owner
     await releaseProjectRuntime(dirA);
     expect(getProjectRuntime(dirA)).toBeNull();
     expect(owner1.disposed).toBe(true);
+  });
+
+  it("15. modify-survives-cold-restart: full runtime destruction, reopen, and assert modified goal/hash/version", async () => {
+    const sessionID = "sess-modify-restart";
+    const ctx1 = acquireProjectRuntime(dirA);
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement REST API for accounts", id: "1", sessionID, messageID: "msg-1" }] }
+    );
+
+    const sessionRow1 = ctx1.runtime.sessionRepo.findById(sessionID);
+    expect(sessionRow1).toBeDefined();
+    const runId = sessionRow1!.runId;
+
+    // User modifies task
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "also add pagination", id: "2", sessionID, messageID: "msg-2" }] }
+    );
+
+    // Verify in-memory state updated
+    const memRoute = getRouteDecision(sessionID);
+    expect(memRoute?.goal).toBe("Implement REST API for accounts (Modified: also add pagination)");
+
+    // CRITICAL PERSISTENCE TEST: Full cold restart destruction
+    await disposeProjectRuntime(dirA);
+    _resetRouteState();
+    _resetAllTaskState();
+    closeAllConnections();
+
+    expect(getRouteDecision(sessionID)).toBeNull();
+
+    // Reopen project runtime from scratch
+    const ctx2 = acquireProjectRuntime(dirA);
+    await ctx2.adapter.hydrateSessionRoute(sessionID);
+
+    // Assert restored route state in memory
+    const restoredRoute = getRouteDecision(sessionID);
+    expect(restoredRoute).not.toBeNull();
+    expect(restoredRoute?.goal).toBe("Implement REST API for accounts (Modified: also add pagination)");
+
+    // Assert authoritative SQLite events persistence
+    const latestDecision = ctx2.runtime.routingDecisionRepository.getLatestDecisionForRun(runId);
+    expect(latestDecision).not.toBeNull();
+    expect(latestDecision?.decisionVersion).toBe(2);
+    const reconstructed = reconstructRouterDecision(latestDecision!);
+    expect(reconstructed?.goal).toBe("Implement REST API for accounts (Modified: also add pagination)");
+    expect(reconstructed?.lastUserMessageHash).toBe(restoredRoute?.lastUserMessageHash);
+
+    // Assert historical v1 remains available
+    const allDecisions = ctx2.runtime.routingDecisionRepository.listDecisionsForRun(runId);
+    expect(allDecisions.length).toBe(2);
+    expect(allDecisions[0].decisionVersion).toBe(1);
+    expect(reconstructRouterDecision(allDecisions[0])?.goal).toBe("Implement REST API for accounts");
+    expect(allDecisions[1].decisionVersion).toBe(2);
+    expect(reconstructRouterDecision(allDecisions[1])?.goal).toBe("Implement REST API for accounts (Modified: also add pagination)");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("16. multiple-modifications-restore-latest-version: v1 -> v2 -> v3 preserves base goal without recursive nesting and restores v3 on restart", async () => {
+    const sessionID = "sess-multi-modify";
+    const ctx1 = acquireProjectRuntime(dirA);
+
+    // v1
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement API", id: "1", sessionID, messageID: "msg-1" }] }
+    );
+    const runId = ctx1.runtime.sessionRepo.findById(sessionID)!.runId;
+
+    // v2
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "also add pagination", id: "2", sessionID, messageID: "msg-2" }] }
+    );
+
+    // v3
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "change page size to 50", id: "3", sessionID, messageID: "msg-3" }] }
+    );
+
+    // Cold restart
+    await disposeProjectRuntime(dirA);
+    _resetRouteState();
+    closeAllConnections();
+
+    const ctx2 = acquireProjectRuntime(dirA);
+    await ctx2.adapter.hydrateSessionRoute(sessionID);
+
+    const latest = ctx2.runtime.routingDecisionRepository.getLatestDecisionForRun(runId);
+    expect(latest).not.toBeNull();
+    expect(latest?.decisionVersion).toBe(3);
+    const rec = reconstructRouterDecision(latest!);
+    expect(rec?.goal).toBe("Implement API (Modified: also add pagination; change page size to 50)");
+
+    const all = ctx2.runtime.routingDecisionRepository.listDecisionsForRun(runId);
+    expect(all.map(d => d.decisionVersion)).toEqual([1, 2, 3]);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("17. modified-message-replay-after-restart: replay of latest modified message after restart is detected as REPLAY without appending version", async () => {
+    const sessionID = "sess-replay-test";
+    const ctx1 = acquireProjectRuntime(dirA);
+
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement API for orders", id: "1", sessionID, messageID: "msg-1" }] }
+    );
+    const runId = ctx1.runtime.sessionRepo.findById(sessionID)!.runId;
+
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "also add pagination", id: "2", sessionID, messageID: "msg-2" }] }
+    );
+
+    // Cold restart
+    await disposeProjectRuntime(dirA);
+    _resetRouteState();
+    closeAllConnections();
+
+    const ctx2 = acquireProjectRuntime(dirA);
+    await ctx2.adapter.hydrateSessionRoute(sessionID);
+
+    // Re-send exact same modification message
+    await ctx2.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "also add pagination", id: "3", sessionID, messageID: "msg-3" }] }
+    );
+
+    // Must NOT create a 3rd version because intent was REPLAY
+    const latest = ctx2.runtime.routingDecisionRepository.getLatestDecisionForRun(runId);
+    expect(latest?.decisionVersion).toBe(2);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("18. modify-material-route-change-policy: material execution class change supersedes run via canonical cancellation and starts new run", async () => {
+    const sessionID = "sess-material-change";
+    const ctx = acquireProjectRuntime(dirA);
+
+    // Initial: small endpoint (STANDARD)
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement new feature endpoint for products", id: "1", sessionID, messageID: "msg-1" }] }
+    );
+    const runIdA = ctx.runtime.sessionRepo.findById(sessionID)!.runId;
+    const initialRun = await ctx.runtime.services.runRepo.findById(runIdA);
+    expect(initialRun?.runType).toBe("planned");
+
+    // Modification that materially changes complexity/domain to parallel multi-domain execution
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "change plan to rebuild frontend UI in react and backend in node simultaneously", id: "2", sessionID, messageID: "msg-2" }] }
+    );
+
+    // Old run must be cancelled/superseded
+    const oldRun = await ctx.runtime.services.runRepo.findById(runIdA);
+    expect(oldRun?.status).toBe("cancelled");
+
+    // New run B must be active and bound to session
+    const newSessionRow = ctx.runtime.sessionRepo.findById(sessionID)!;
+    expect(newSessionRow.runId).not.toBe(runIdA);
+    const newRun = await ctx.runtime.services.runRepo.findById(newSessionRow.runId);
+    expect(newRun?.status).toBe("pending");
+    expect(newRun?.runType).toBe("delegated");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("19. cancel-uses-run-service-cleanup: cancelRun invokes ExecutionRegistry cleanup callbacks and unregisters run", async () => {
+    const sessionID = "sess-cancel-cleanup";
+    const ctx = acquireProjectRuntime(dirA);
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement inventory management system", id: "1", sessionID, messageID: "msg-1" }] }
+    );
+    const runId = ctx.runtime.sessionRepo.findById(sessionID)!.runId;
+
+    // Register active execution with cleanup callback in ExecutionRegistry
+    let cleanupInvoked = false;
+    const handle = ctx.runtime.executionRegistry.registerRun(runId, new AbortController(), () => {
+      cleanupInvoked = true;
+    });
+    // Mark execution stopped so cleanup proceeds
+    handle.resolveExecution?.();
+
+    expect(ctx.runtime.executionRegistry.hasActiveRun(runId)).toBe(true);
+
+    // Send cancel turn
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "cancel this task", id: "2", sessionID, messageID: "msg-2" }] }
+    );
+
+    expect(cleanupInvoked).toBe(true);
+    expect(ctx.runtime.executionRegistry.hasActiveRun(runId)).toBe(false);
+    const run = await ctx.runtime.services.runRepo.findById(runId);
+    expect(run?.status).toBe("cancelled");
+    expect(getRouteDecision(sessionID)?.active).toBe(false);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("20. replace-uses-run-service-cleanup: REPLACE invokes canonical cancelRun cleanup on old run before starting replacement run", async () => {
+    const sessionID = "sess-replace-cleanup";
+    const ctx = acquireProjectRuntime(dirA);
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement payment gateway integration across checkout routes and backend services", id: "1", sessionID, messageID: "msg-1" }] }
+    );
+    const runIdA = ctx.runtime.sessionRepo.findById(sessionID)!.runId;
+
+    let runACleanedUp = false;
+    const handle = ctx.runtime.executionRegistry.registerRun(runIdA, new AbortController(), () => {
+      runACleanedUp = true;
+    });
+    handle.resolveExecution?.();
+
+    // User replaces task with a security audit
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "stop that and perform a security audit instead", id: "2", sessionID, messageID: "msg-2" }] }
+    );
+
+    expect(runACleanedUp).toBe(true);
+    expect(ctx.runtime.executionRegistry.hasActiveRun(runIdA)).toBe(false);
+    const runA = await ctx.runtime.services.runRepo.findById(runIdA);
+    expect(runA?.status).toBe("cancelled");
+
+    const sessionRowB = ctx.runtime.sessionRepo.findById(sessionID)!;
+    expect(sessionRowB.runId).not.toBe(runIdA);
+    const runB = await ctx.runtime.services.runRepo.findById(sessionRowB.runId);
+    expect(runB?.status).toBe("pending");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("21. replace-pattern-wins-over-generic-stop: replacement phrases with stop/cancel words match REPLACE instead of CANCEL", () => {
+    expect(classifyUserTurnIntent({ newMessage: "stop" }).intent).toBe("CANCEL");
+    expect(classifyUserTurnIntent({ newMessage: "stop this task" }).intent).toBe("CANCEL");
+    expect(classifyUserTurnIntent({ newMessage: "stop that and perform security audit" }).intent).toBe("REPLACE");
+    expect(classifyUserTurnIntent({ newMessage: "cancel that and instead build X" }).intent).toBe("REPLACE");
+    expect(classifyUserTurnIntent({ newMessage: "forget that, audit security" }).intent).toBe("REPLACE");
+  });
+
+  it("22. acknowledgement-does-not-modify-goal: conversational acknowledgements preserve active run and do not mutate goal", async () => {
+    const sessionID = "sess-ack-test";
+    const ctx = acquireProjectRuntime(dirA);
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement user authentication", id: "1", sessionID, messageID: "msg-1" }] }
+    );
+    const runId = ctx.runtime.sessionRepo.findById(sessionID)!.runId;
+    const initialDecision = ctx.runtime.routingDecisionRepository.getLatestDecisionForRun(runId);
+
+    const acks = ["thanks", "okay", "ok", "sounds good", "got it", "great", "yes", "understood"];
+    for (const ack of acks) {
+      await ctx.adapter.onChatMessage(
+        { sessionID, agent: "heidi" },
+        { message: {} as any, parts: [{ type: "text", text: ack, id: "ack", sessionID, messageID: `msg-ack-${ack}` }] }
+      );
+      // Goal must remain unmodified
+      const route = getRouteDecision(sessionID);
+      expect(route?.goal).toBe("Implement user authentication");
+      // Decision version must remain 1
+      const latest = ctx.runtime.routingDecisionRepository.getLatestDecisionForRun(runId);
+      expect(latest?.decisionVersion).toBe(initialDecision?.decisionVersion);
+    }
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("23. ambiguous-message-does-not-modify-goal: ambiguous non-instructional messages do not mutate durable task state", async () => {
+    const sessionID = "sess-ambiguous-test";
+    const ctx = acquireProjectRuntime(dirA);
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement billing invoice export", id: "1", sessionID, messageID: "msg-1" }] }
+    );
+    const runId = ctx.runtime.sessionRepo.findById(sessionID)!.runId;
+
+    // Ambiguous message without modification/replace/cancel keywords
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Let me check the logs on my machine first", id: "2", sessionID, messageID: "msg-2" }] }
+    );
+
+    const route = getRouteDecision(sessionID);
+    expect(route?.goal).toBe("Implement billing invoice export");
+    const latest = ctx.runtime.routingDecisionRepository.getLatestDecisionForRun(runId);
+    expect(latest?.decisionVersion).toBe(1);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("24. complete-code-mode-telemetry-validation: valid full CodeModeTelemetry is accepted", () => {
+    const valid = {
+      codeModeConsidered: true,
+      codeModeSelected: true,
+      codeModeRejectedReason: "NOT_MCP_COMPOSITION" as const,
+      estimatedToolCalls: 5,
+      estimatedParallelWidth: 2,
+      estimatedDependencyStages: 1,
+      actualToolCalls: 4,
+      actualDurationMs: 120.5,
+      actualResultBytes: 1024,
+      terminalStatus: "success" as const,
+    };
+    expect(isCodeModeTelemetry(valid)).toBe(true);
+  });
+
+  it("25. malformed-code-mode-numeric-field-rejected: string numeric fields in CodeModeTelemetry are rejected", () => {
+    const invalid = {
+      codeModeConsidered: true,
+      codeModeSelected: true,
+      estimatedToolCalls: "10",
+    };
+    expect(isCodeModeTelemetry(invalid)).toBe(false);
+  });
+
+  it("26. invalid-code-mode-terminal-status-rejected: non-standard terminalStatus is rejected", () => {
+    const invalid = {
+      codeModeConsidered: true,
+      codeModeSelected: true,
+      terminalStatus: "finished",
+    };
+    expect(isCodeModeTelemetry(invalid)).toBe(false);
+  });
+
+  it("27. invalid-code-mode-rejection-reason-rejected: invalid codeModeRejectedReason is rejected", () => {
+    const invalid = {
+      codeModeConsidered: true,
+      codeModeSelected: false,
+      codeModeRejectedReason: "INVALID_REASON",
+    };
+    expect(isCodeModeTelemetry(invalid)).toBe(false);
+  });
+
+  it("28. recommendation-only-specialist-routing-cannot-activate: recommendation-only SPECIALIST routing fails closed on activation", () => {
+    const decision = buildCanonicalRoutingDecision({
+      runId: "run-spec-rec",
+      decision: {
+        executionClass: "SPECIALIST",
+        specialists: ["SECURITY"],
+        reason: "Security audit recommendation",
+        reasonCode: "SPECIALIST_SECURITY",
+        confidence: 0.9,
+        forcedByExplicitSignal: false,
+      },
+      goal: "Run security audit",
+      lastUserMessageHash: "hash-spec",
+    });
+    expect(decision.routingMode).toBe("recommendation");
+
+    const service = new AuthoritativeRoutingService({ savePlan: () => { throw new Error("must not persist") } } as never);
+    const result = service.activate(decision, decision.sourceSha, dummyActivationEvidence);
+    expect(result.fallback).toBe(true);
+    expect((result as { reason: string }).reason).toContain("RECOMMENDATION_ONLY");
+  });
+
+  it("29. recommendation-only-parallel-routing-cannot-activate: recommendation-only PARALLEL_SPECIALISTS routing fails closed on activation", () => {
+    const decision = buildCanonicalRoutingDecision({
+      runId: "run-par-rec",
+      decision: {
+        executionClass: "PARALLEL_SPECIALISTS",
+        specialists: ["UI", "BACKEND"],
+        reason: "Parallel components",
+        reasonCode: "PARALLEL_SPECIALISTS_DISJOINT",
+        confidence: 0.9,
+        forcedByExplicitSignal: false,
+      },
+      goal: "Build frontend and backend",
+      lastUserMessageHash: "hash-par",
+    });
+    expect(decision.routingMode).toBe("recommendation");
+
+    const service = new AuthoritativeRoutingService({ savePlan: () => { throw new Error("must not persist") } } as never);
+    const result = service.activate(decision, decision.sourceSha, dummyActivationEvidence);
+    expect(result.fallback).toBe(true);
+    expect((result as { reason: string }).reason).toContain("RECOMMENDATION_ONLY");
+  });
+
+  it("30. routing-decision-version-increments-atomically: multiple decisions on same run have monotonically increasing versions", () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const repo = ctx.runtime.routingDecisionRepository;
+    const runId = "run-version-atomic";
+
+    const d1 = buildCanonicalRoutingDecision({ runId, decision: { executionClass: "STANDARD", reason: "r1", reasonCode: "rc1", confidence: 0.8, forcedByExplicitSignal: false }, goal: "g1", lastUserMessageHash: "h1" });
+    const p1 = repo.saveDecision(d1);
+    expect(p1.decisionVersion).toBe(1);
+
+    const d2 = buildCanonicalRoutingDecision({ runId, decision: { executionClass: "STANDARD", reason: "r2", reasonCode: "rc2", confidence: 0.8, forcedByExplicitSignal: false }, goal: "g2", lastUserMessageHash: "h2" });
+    const p2 = repo.saveDecision(d2);
+    expect(p2.decisionVersion).toBe(2);
+
+    const d3 = buildCanonicalRoutingDecision({ runId, decision: { executionClass: "STANDARD", reason: "r3", reasonCode: "rc3", confidence: 0.8, forcedByExplicitSignal: false }, goal: "g3", lastUserMessageHash: "h3" });
+    const p3 = repo.saveDecision(d3);
+    expect(p3.decisionVersion).toBe(3);
+
+    const all = repo.listDecisionsForRun(runId);
+    expect(all.map(d => d.decisionVersion)).toEqual([1, 2, 3]);
+  });
+
+  it("31. latest-routing-version-selected-after-restart: latest version is deterministically selected after DB reopen", async () => {
+    const ctx1 = acquireProjectRuntime(dirA);
+    const runId = "run-version-restart";
+
+    ctx1.runtime.routingDecisionRepository.saveDecision(
+      buildCanonicalRoutingDecision({ runId, decision: { executionClass: "STANDARD", reason: "r1", reasonCode: "rc1", confidence: 0.8, forcedByExplicitSignal: false }, goal: "task v1", lastUserMessageHash: "h1" })
+    );
+    ctx1.runtime.routingDecisionRepository.saveDecision(
+      buildCanonicalRoutingDecision({ runId, decision: { executionClass: "STANDARD", reason: "r2", reasonCode: "rc2", confidence: 0.8, forcedByExplicitSignal: false }, goal: "task v2", lastUserMessageHash: "h2" })
+    );
+    ctx1.runtime.routingDecisionRepository.saveDecision(
+      buildCanonicalRoutingDecision({ runId, decision: { executionClass: "STANDARD", reason: "r3", reasonCode: "rc3", confidence: 0.8, forcedByExplicitSignal: false }, goal: "task v3", lastUserMessageHash: "h3" })
+    );
+
+    await disposeProjectRuntime(dirA);
+    closeAllConnections();
+
+    const ctx2 = acquireProjectRuntime(dirA);
+    const latest = ctx2.runtime.routingDecisionRepository.getLatestDecisionForRun(runId);
+    expect(latest).not.toBeNull();
+    expect(latest?.decisionVersion).toBe(3);
+    expect(reconstructRouterDecision(latest!)?.goal).toBe("task v3");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("32. cancel-vs-completion-race: RunService.cancelRun preserves COMPLETED terminal state when race occurs", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const run = await ctx.runtime.services.runService.createRun({
+      runType: "simple",
+      sessionId: "sess-race",
+      agentId: "heidi",
+      correlationId: "corr-race-1",
+    });
+
+    // Simulate run completing before cancellation proceeds
+    await ctx.runtime.services.runService.updateRun(run.id, {
+      status: RunStatus.COMPLETED,
+      stage: "completed",
+    });
+
+    // Attempt to cancel already-completed run
+    try {
+      await ctx.runtime.services.runService.cancelRun(run.id, "Late cancel");
+    } catch (err: any) {
+      expect(err.code).toBe("RUN_IN_TERMINAL_STATE");
+    }
+
+    const finalState = await ctx.runtime.services.runRepo.findById(run.id);
+    expect(finalState?.status).toBe("completed");
+
+    await releaseProjectRuntime(dirA);
   });
 });

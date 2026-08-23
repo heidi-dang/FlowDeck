@@ -10,7 +10,8 @@ import {
 } from "../services/heidi-route-state";
 import { classifyTask, type RouterDecision, stableHash } from "../services/heidi-fast-router";
 import type { Event, UserMessage, Part, TextPart } from "@opencode-ai/sdk";
-import { isTerminalRunStatus, RunStatus } from "../orchestration/types/runs";
+import { isTerminalRunStatus } from "../orchestration/types/runs";
+import { ErrorCodes } from "../orchestration/types/errors";
 import {
   buildCanonicalRoutingDecision,
   reconstructRouterDecision,
@@ -56,13 +57,34 @@ export class FlowDeckLifecycleAdapter {
       const activeRun = await this.resolveActiveRunForSession(input.sessionID);
 
       if (activeRun) {
-        // Active non-terminal Run in SQLite -> classify user turn intent
+        let currentRoute = getRouteDecision(input.sessionID);
+        if (!currentRoute) {
+          const latestDecision = this.runtime.routingDecisionRepository.getLatestDecisionForRun(activeRun.id);
+          if (latestDecision) {
+            const reconstructed = reconstructRouterDecision(latestDecision);
+            if (reconstructed) {
+              setRouteDecision(
+                input.sessionID,
+                activeRun.id,
+                reconstructed.decision,
+                reconstructed.goal,
+                reconstructed.lastUserMessageHash
+              );
+              currentRoute = getRouteDecision(input.sessionID);
+            }
+          }
+        }
+
         const lastHash =
-          (activeRun.metadata?.lastUserMessageHash as string | undefined) ??
-          getRouteDecision(input.sessionID)?.lastUserMessageHash;
+          currentRoute?.lastUserMessageHash ??
+          (activeRun.metadata?.lastUserMessageHash as string | undefined);
+
+        const currentGoal =
+          currentRoute?.goal ??
+          (activeRun.metadata?.goal as string | undefined);
 
         const intentResult = classifyUserTurnIntent({
-          currentGoal: activeRun.metadata?.goal as string | undefined,
+          currentGoal,
           newMessage: text,
           activeRunStatus: activeRun.status,
           messageHash: msgHash,
@@ -72,46 +94,108 @@ export class FlowDeckLifecycleAdapter {
         switch (intentResult.intent) {
           case "REPLAY":
           case "CONTINUE":
-          case "QUERY": {
+          case "QUERY":
+          case "ACKNOWLEDGE": {
             noteInternalContinuation(input.sessionID);
             return;
           }
 
           case "MODIFY": {
-            const prevGoal = (activeRun.metadata?.goal as string | undefined) || text;
-            const updatedGoal = `${prevGoal} (Modified: ${text})`;
-            await this.runtime.services.runService.updateRun(activeRun.id, {
-              metadata: {
-                ...activeRun.metadata,
-                goal: updatedGoal,
-                lastModifiedInstruction: text,
-                lastUserMessageHash: msgHash,
-              },
+            const modResult = this.runtime.routingRevisionService.applyModification({
+              runId: activeRun.id,
+              sessionID: input.sessionID,
+              modificationText: text,
+              newMessageHash: msgHash,
+              directory: this.directory,
             });
-            const currentRoute = getRouteDecision(input.sessionID);
-            if (currentRoute) {
-              currentRoute.goal = updatedGoal;
-              currentRoute.lastUserMessageHash = msgHash;
-              noteInternalContinuation(input.sessionID);
+
+            if (modResult.outcome === "modified") {
+              const route = getRouteDecision(input.sessionID);
+              if (route) {
+                route.goal = modResult.effectiveGoal;
+                route.lastUserMessageHash = msgHash;
+                const rec = reconstructRouterDecision(modResult.decision);
+                if (rec) {
+                  route.decision = rec.decision;
+                }
+                noteInternalContinuation(input.sessionID);
+              }
+              // Record progress event without mutating/relying on ephemeral Run.metadata
+              await this.runtime.services.runService.updateRun(activeRun.id, {
+                progress: activeRun.progressPercent,
+                stage: activeRun.stage,
+              });
+              return;
+            }
+
+            // Material reclassification -> cancel active Run A through canonical path then start Run B
+            try {
+              await this.runtime.services.runService.cancelRun(
+                activeRun.id,
+                "Superseded by modified user goal requiring reclassification"
+              );
+            } catch (err: any) {
+              if (err?.code !== ErrorCodes.RUN_IN_TERMINAL_STATE) {
+                console.error("[FlowDeckLifecycleAdapter] cancelRun error on reclassify:", err);
+              }
+            }
+            markRouteInactive(input.sessionID);
+
+            const taskId = "task-" + randomUUID();
+            this.turnVersionCounter += 1;
+            const turnVersion = this.turnVersionCounter;
+
+            setRouteDecision(input.sessionID, taskId, modResult.newDecision, modResult.effectiveGoal, msgHash);
+
+            if (modResult.newDecision.executionClass === "FAST_DIRECT") {
+              this.pendingFastDirectTurns.set(input.sessionID, {
+                sessionID: input.sessionID,
+                taskId,
+                messageHash: msgHash,
+                messageID: correlationId,
+                turnVersion,
+              });
+            } else {
+              await this.syncOrchestrationRun(
+                taskId,
+                input.sessionID,
+                input.agent ?? "heidi",
+                modResult.newDecision,
+                modResult.effectiveGoal,
+                msgHash,
+                correlationId
+              );
             }
             return;
           }
 
           case "CANCEL": {
-            await this.runtime.services.runService.updateRun(activeRun.id, {
-              status: RunStatus.CANCELLED,
-              stage: "cancelled",
-            });
+            try {
+              await this.runtime.services.runService.cancelRun(
+                activeRun.id,
+                "Cancelled by user instruction"
+              );
+            } catch (err: any) {
+              if (err?.code !== ErrorCodes.RUN_IN_TERMINAL_STATE) {
+                console.error("[FlowDeckLifecycleAdapter] cancelRun error:", err);
+              }
+            }
             markRouteInactive(input.sessionID);
             return;
           }
 
           case "REPLACE": {
-            // Supersede existing active run and fall through to classify replacement
-            await this.runtime.services.runService.updateRun(activeRun.id, {
-              status: RunStatus.CANCELLED,
-              stage: "superseded",
-            });
+            // Supersede existing active run through canonical cancellation path before classifying replacement
+            try {
+              await this.runtime.services.runService.cancelRun(
+                activeRun.id,
+                "Superseded by newer user goal"
+              );
+            } catch (err: any) {
+              if (err?.code !== ErrorCodes.RUN_IN_TERMINAL_STATE) {
+                console.error("[FlowDeckLifecycleAdapter] cancelRun error on replace:", err);
+              }
+            }
             markRouteInactive(input.sessionID);
             break;
           }
@@ -149,10 +233,7 @@ export class FlowDeckLifecycleAdapter {
     }
   }
 
-  /**
-   * Resolves whether the session has an active non-terminal Run in SQLite.
-   * Also hydrates route state if found.
-   */
+  /** Resolves whether the session has an active non-terminal Run in SQLite. Also hydrates route state if found. */
   async resolveActiveRunForSession(sessionID: string) {
     const sessionRow = this.runtime.sessionRepo.findById(sessionID);
     if (!sessionRow) {
@@ -179,16 +260,12 @@ export class FlowDeckLifecycleAdapter {
     return run;
   }
 
-  /**
-   * Hydrates route state from authoritative SQLite persistence after a process restart or session resume.
-   */
+  /** Hydrates route state from authoritative SQLite persistence after a process restart or session resume. */
   async hydrateSessionRoute(sessionID: string): Promise<void> {
     await this.resolveActiveRunForSession(sessionID);
   }
 
-  /**
-   * Persists Run, canonical RoutingDecision with real assessment, and binds session affinity.
-   */
+  /** Persists Run, canonical RoutingDecision with real assessment, and binds session affinity. */
   private async syncOrchestrationRun(
     taskId: string,
     sessionID: string,

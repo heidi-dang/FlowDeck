@@ -3,11 +3,12 @@
  *
  * Distinguishes user intent on active/incoming turns:
  * - REPLAY: Exact duplicate prompt delivery
+ * - REPLACE: Goal abandonment in favor of a new task (takes precedence over generic cancellation)
+ * - CANCEL: Explicit cancellation of current work
  * - CONTINUE: Explicit continuation of in-flight work
  * - QUERY: Status inquiry or inspection question without goal mutation
  * - MODIFY: Requirement refinement or goal update for current active task
- * - REPLACE: Goal abandonment in favor of a new task
- * - CANCEL: Explicit cancellation of current work
+ * - ACKNOWLEDGE: Conversational non-mutating acknowledgement (ok, thanks, got it)
  */
 
 export type UserTurnIntent =
@@ -16,7 +17,8 @@ export type UserTurnIntent =
   | "MODIFY"
   | "REPLACE"
   | "CANCEL"
-  | "QUERY";
+  | "QUERY"
+  | "ACKNOWLEDGE";
 
 export interface UserTurnIntentInput {
   currentGoal?: string;
@@ -32,6 +34,36 @@ export interface UserTurnIntentResult {
   confidence: number;
 }
 
+const REPLACE_PATTERNS = [
+  /^new task\b/i,
+  /^stop (?:this|that) and\b/i,
+  /^cancel (?:this|that) and\b/i,
+  /^abort (?:this|that) and\b/i,
+  /^forget (?:this|that),?\s+/i,
+  /^forget that\b/i,
+  /^instead of (?:this|that)\b/i,
+  /^instead,\s*/i,
+  /^switch to\b/i,
+  /^scrap that\b/i,
+  /^start over with\b/i,
+  /^ignore (?:this|that) and\b/i,
+  /^do something else\b/i,
+  /^nevermind,?\s+(?:do|let's|can you)\b/i,
+];
+
+const CANCEL_PATTERNS = [
+  /^cancel this task\b/i,
+  /^stop this task\b/i,
+  /^abort this task\b/i,
+  /^forget this task\b/i,
+  /^stop execution\b/i,
+  /^terminate task\b/i,
+  /^kill task\b/i,
+  /^cancel\b/i,
+  /^stop\b/i,
+  /^abort\b/i,
+];
+
 const CONTINUE_PATTERNS = [
   /^continue\b/i,
   /^keep going\b/i,
@@ -44,33 +76,6 @@ const CONTINUE_PATTERNS = [
   /^next\b/i,
   /^ok continue\b/i,
   /^yes continue\b/i,
-];
-
-const CANCEL_PATTERNS = [
-  /^cancel\b/i,
-  /^stop\b/i,
-  /^abort\b/i,
-  /^stop this task\b/i,
-  /^forget this task\b/i,
-  /^cancel this task\b/i,
-  /^abort this task\b/i,
-  /^stop execution\b/i,
-  /^terminate task\b/i,
-  /^kill task\b/i,
-];
-
-const REPLACE_PATTERNS = [
-  /^new task\b/i,
-  /^forget that\b/i,
-  /^stop that and\b/i,
-  /^instead of that\b/i,
-  /^instead,\s*/i,
-  /^switch to\b/i,
-  /^scrap that\b/i,
-  /^start over with\b/i,
-  /^ignore that and\b/i,
-  /^do something else\b/i,
-  /^nevermind,?\s+(?:do|let's|can you)\b/i,
 ];
 
 const QUERY_PATTERNS = [
@@ -106,6 +111,10 @@ const MODIFY_PATTERNS = [
   /\bupdate .* to\b/i,
 ];
 
+const ACKNOWLEDGE_PATTERNS = [
+  /^(?:thanks|thank you|thx|okay|ok|sounds good|got it|great|yes|understood|cool|perfect|k|sure|alright|all right|noted|acknowledged|nice)[.!]?$/i,
+];
+
 export function classifyUserTurnIntent(input: UserTurnIntentInput): UserTurnIntentResult {
   // 1. REPLAY check (exact message hash match)
   if (input.messageHash && input.lastMessageHash && input.messageHash === input.lastMessageHash) {
@@ -118,24 +127,24 @@ export function classifyUserTurnIntent(input: UserTurnIntentInput): UserTurnInte
 
   const trimmed = input.newMessage.trim();
 
-  // 2. CANCEL check
+  // 2. REPLACE check (specific replacement signals win over generic cancel/stop)
+  for (const pattern of REPLACE_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return {
+        intent: "REPLACE",
+        reasonCode: "EXPLICIT_REPLACE_SIGNAL",
+        confidence: 0.95,
+      };
+    }
+  }
+
+  // 3. CANCEL check
   for (const pattern of CANCEL_PATTERNS) {
     if (pattern.test(trimmed)) {
       return {
         intent: "CANCEL",
         reasonCode: "EXPLICIT_CANCEL_SIGNAL",
         confidence: 0.95,
-      };
-    }
-  }
-
-  // 3. REPLACE check
-  for (const pattern of REPLACE_PATTERNS) {
-    if (pattern.test(trimmed)) {
-      return {
-        intent: "REPLACE",
-        reasonCode: "EXPLICIT_REPLACE_SIGNAL",
-        confidence: 0.9,
       };
     }
   }
@@ -173,8 +182,19 @@ export function classifyUserTurnIntent(input: UserTurnIntentInput): UserTurnInte
     }
   }
 
-  // 7. Fallback heuristics for active runs
-  if (trimmed.endsWith("?") || /^(why|how|what|where|who|is|are|can|could)\b/i.test(trimmed)) {
+  // 7. ACKNOWLEDGE check
+  for (const pattern of ACKNOWLEDGE_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return {
+        intent: "ACKNOWLEDGE",
+        reasonCode: "CONVERSATIONAL_ACKNOWLEDGEMENT",
+        confidence: 0.95,
+      };
+    }
+  }
+
+  // 8. Question fallback heuristics for active runs
+  if (trimmed.endsWith("?") || /^(why|how|what|where|who|is|are|can|could|would|should|which)\b/i.test(trimmed)) {
     return {
       intent: "QUERY",
       reasonCode: "AMBIGUOUS_QUERY_FALLBACK",
@@ -182,10 +202,10 @@ export function classifyUserTurnIntent(input: UserTurnIntentInput): UserTurnInte
     };
   }
 
-  // Active in-flight instruction refinement
+  // 9. Conservative ambiguous fallback (non-mutating CONTINUE without rewriting durable task goal)
   return {
-    intent: "MODIFY",
-    reasonCode: "ACTIVE_RUN_INSTRUCTION_FALLBACK",
-    confidence: 0.7,
+    intent: "CONTINUE",
+    reasonCode: "CONSERVATIVE_CONTINUE_FALLBACK",
+    confidence: 0.5,
   };
 }
