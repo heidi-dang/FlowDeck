@@ -1,93 +1,93 @@
 {
   "milestone": "M6",
   "title": "Milestone 6 Test Mapping & Verification Planner Benchmark Report",
-  "functional_source_sha": "3385212921b40d9cc3f56173d723b06191afba83",
-  "binary_source_sha": "3385212921b40d9cc3f56173d723b06191afba83",
-  "benchmark_harness_sha": "c59a2e13aba0be6324c0ee76b32f8c1c1be2e4e9",
+  "functional_source_sha": "3a530035b08db7d0767a95df88063e910c37fb94",
+  "binary_source_sha": "3a530035b08db7d0767a95df88063e910c37fb94",
+  "benchmark_harness_sha": "3f144241ea42619278a059c80b009d1c55f1d5d0",
   "platform": "linux",
   "arch": "x64",
   "node_version": "v24.19.0",
-  "timestamp": "2026-08-23T09:10:51.401Z",
+  "timestamp": "2026-08-23T09:46:24.104Z",
   "scenarios": {
     "precise_semantic_test_mapping": {
       "count": 10,
-      "min": 22.63,
-      "max": 25.26,
-      "mean": 23.54,
-      "median": 23.35,
-      "p95": 25.26
+      "min": 19.02,
+      "max": 20.92,
+      "mean": 19.71,
+      "median": 19.66,
+      "p95": 20.92
     },
     "build_transitive_test_mapping": {
       "count": 10,
-      "min": 17.02,
-      "max": 24.09,
-      "mean": 21.38,
-      "median": 23.03,
-      "p95": 24.09
+      "min": 22.88,
+      "max": 25.11,
+      "mean": 23.91,
+      "median": 24.17,
+      "p95": 25.11
     },
     "deleted_symbol_old_current_union": {
       "count": 10,
-      "min": 16.41,
-      "max": 19.46,
-      "mean": 17.46,
-      "median": 17.43,
-      "p95": 19.46
+      "min": 16.35,
+      "max": 19.53,
+      "mean": 17.21,
+      "median": 16.97,
+      "p95": 19.53
     },
     "stale_semantic_package_widening": {
       "count": 10,
-      "min": 16.36,
-      "max": 23.97,
-      "mean": 17.91,
-      "median": 16.73,
-      "p95": 23.97
+      "min": 18.18,
+      "max": 20.04,
+      "mean": 19.16,
+      "median": 19.27,
+      "p95": 20.04
     },
     "root_config_workspace_widening": {
       "count": 10,
-      "min": 18.85,
-      "max": 39.2,
-      "mean": 31.86,
-      "median": 35.5,
-      "p95": 39.2
+      "min": 18.62,
+      "max": 26.17,
+      "mean": 21.57,
+      "median": 21.58,
+      "p95": 26.17
     },
     "dynamic_test_config_fallback": {
       "count": 10,
-      "min": 13.72,
-      "max": 16.87,
-      "mean": 14.92,
-      "median": 14.97,
-      "p95": 16.87
+      "min": 15.45,
+      "max": 18.42,
+      "mean": 16.34,
+      "median": 16.24,
+      "p95": 18.42
     },
     "selected_check_bound_safe_rollup": {
       "count": 10,
-      "min": 2674.33,
-      "max": 3467.86,
-      "mean": 2865.39,
-      "median": 2812.08,
-      "p95": 3467.86
+      "min": 2724.33,
+      "max": 2937.84,
+      "mean": 2797.85,
+      "median": 2786.44,
+      "p95": 2937.84
     },
     "mapping_failure_widens_safely": {
       "count": 10,
-      "min": 14.97,
-      "max": 15.7,
-      "mean": 15.41,
-      "median": 15.47,
-      "p95": 15.7
+      "min": 16.39,
+      "max": 17.9,
+      "mean": 17.06,
+      "median": 17.06,
+      "p95": 17.9
     },
     "disconnected_scope_isolation": {
       "count": 10,
-      "min": 23.47,
-      "max": 30.8,
-      "mean": 27.95,
-      "median": 29.97,
-      "p95": 30.8
+      "min": 25.19,
+      "max": 26.82,
+      "mean": 25.98,
+      "median": 26.08,
+      "p95": 26.82
     },
     "planner_why_explanation": {
       "count": 10,
-      "min": 27.33,
-      "max": 29.8,
-      "mean": 29.27,
-      "median": 29.54,
-      "p95": 29.8
+      "min": 13.2,
+      "max": 14.31,
+      "mean": 13.64,
+      "median": 13.67,
+      "p95": 14.31
     }
   }
 }
