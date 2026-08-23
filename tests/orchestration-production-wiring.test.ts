@@ -1,17 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
-import { rmSync, mkdirSync, existsSync } from "fs";
+import { rmSync, mkdirSync, existsSync, writeFileSync } from "fs";
 import { join } from "path";
+import { Database } from "bun:sqlite";
 import {
   acquireProjectRuntime,
   releaseProjectRuntime,
 } from "../src/runtime/project-registry";
 import { OrchestrationPhase as OP } from "../src/orchestration/types/runs";
-import { ContinuationDispatcher } from "../src/orchestration/services/continuation-policy";
+import { ContinuationDispatcher, getContinuationPrompt } from "../src/orchestration/services/continuation-policy";
 import { RunStatus } from "../src/orchestration/types/runs";
+import { runMigrations, getCurrentVersion } from "../src/orchestration/persistence/migrations/migration-runner";
 
 const TEST_DIR = join(import.meta.dir, ".tmp-production-wiring-test");
 
-describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () => {
+describe("Production Wiring & Concurrency Integrity Suite (Execution Integrity Guarantees)", () => {
   beforeEach(() => {
     if (existsSync(TEST_DIR)) rmSync(TEST_DIR, { recursive: true, force: true });
     mkdirSync(TEST_DIR, { recursive: true });
@@ -200,10 +202,9 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
 
     const res1 = await dispatcher1.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
     expect(res1.dispatched).toBe(true);
-
     await releaseProjectRuntime(TEST_DIR);
 
-    // Reopen from disk
+    // Reopen DB in a new runtime instance
     const ctx2 = acquireProjectRuntime(TEST_DIR);
     const dispatcher2 = new ContinuationDispatcher(ctx2.runtime.db);
 
@@ -218,29 +219,35 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
   it("9. user-turn-version-survives-restart", async () => {
     const ctx1 = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-turn-restart";
-    for (let i = 0; i < 7; i++) {
-      ctx1.runtime.sessionTurnRepo.incrementTurnVersion({ sessionId: sessionID, messageId: "m-" + i });
-    }
-    expect(ctx1.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(7);
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Task 1 description", id: "1", sessionID, messageID: "m1" }] }
+    );
+    expect(ctx1.adapter.getUserTurnVersion(sessionID)).toBe(1);
+
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m2" },
+      { message: {} as any, parts: [{ type: "text", text: "Task 2 modification", id: "2", sessionID, messageID: "m2" }] }
+    );
+    expect(ctx1.adapter.getUserTurnVersion(sessionID)).toBe(2);
 
     await releaseProjectRuntime(TEST_DIR);
 
+    // Reopen and verify userTurnVersion is still 2
     const ctx2 = acquireProjectRuntime(TEST_DIR);
-    expect(ctx2.runtime.sessionTurnRepo.getTurnVersion(sessionID)).toBe(7);
-
-    const next = ctx2.runtime.sessionTurnRepo.incrementTurnVersion({ sessionId: sessionID, messageId: "m-8" });
-    expect(next).toBe(8);
-
+    expect(ctx2.adapter.getUserTurnVersion(sessionID)).toBe(2);
     await releaseProjectRuntime(TEST_DIR);
   });
 
   // 10. user-turn-version-increments-atomically
   it("10. user-turn-version-increments-atomically", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-atomic-turn";
-    const v1 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({ sessionId: sessionID });
-    const v2 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({ sessionId: sessionID });
-    const v3 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({ sessionId: sessionID });
+    const sessionID = "sess-turn-atomic";
+
+    const v1 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({ sessionId: sessionID, messageId: "m1" });
+    const v2 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({ sessionId: sessionID, messageId: "m2" });
+    const v3 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({ sessionId: sessionID, messageId: "m3" });
+
     expect(v1).toBe(1);
     expect(v2).toBe(2);
     expect(v3).toBe(3);
@@ -250,27 +257,31 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
   // 11. query-user-turn-invalidates-old-token
   it("11. query-user-turn-invalidates-old-token", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-query-inv";
+    const sessionID = "sess-query-inval";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-q-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
-    const tokenTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
+    const oldTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
 
-    // User sends QUERY message
+    // User sends a QUERY ("what is the status?") with new messageId
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "What is the status?", id: "2", sessionID, messageID: "m-q-2" }] }
+      { sessionID, agent: "heidi", messageID: "m2" },
+      { message: {} as any, parts: [{ type: "text", text: "what is the current status?", id: "2", sessionID, messageID: "m2" }] }
     );
 
+    const newTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
+    expect(newTurnVersion).toBeGreaterThan(oldTurnVersion);
+
+    // Old token with turnVersion 1 must be rejected by statePort revalidation
     const token = {
       runId: run.id,
       sessionId: sessionID,
-      userTurnVersion: tokenTurnVersion, // Stale token
+      userTurnVersion: oldTurnVersion,
       runAggregateVersion: 1,
       transitionReason: "NEXT_WORK_ITEM_READY" as const,
-      stateFingerprint: "fp",
+      stateFingerprint: "fp-old",
     };
 
     const statePort = {
@@ -289,27 +300,30 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
   // 12. acknowledge-user-turn-invalidates-old-token
   it("12. acknowledge-user-turn-invalidates-old-token", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-ack-inv";
+    const sessionID = "sess-ack-inval";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-a-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
-    const tokenTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
+    const oldTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
 
-    // User sends ACKNOWLEDGE
+    // User sends ACKNOWLEDGE ("sounds good") with new messageId
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "ok sounds good", id: "2", sessionID, messageID: "m-a-2" }] }
+      { sessionID, agent: "heidi", messageID: "m2" },
+      { message: {} as any, parts: [{ type: "text", text: "sounds good, proceed", id: "2", sessionID, messageID: "m2" }] }
     );
+
+    const newTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
+    expect(newTurnVersion).toBeGreaterThan(oldTurnVersion);
 
     const token = {
       runId: run.id,
       sessionId: sessionID,
-      userTurnVersion: tokenTurnVersion,
+      userTurnVersion: oldTurnVersion,
       runAggregateVersion: 1,
       transitionReason: "NEXT_WORK_ITEM_READY" as const,
-      stateFingerprint: "fp",
+      stateFingerprint: "fp-old",
     };
 
     const statePort = {
@@ -328,49 +342,66 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
   // 13. modify-user-turn-invalidates-old-token
   it("13. modify-user-turn-invalidates-old-token", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-mod-inv";
+    const sessionID = "sess-mod-inval";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-m-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
-    const _run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const oldTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
 
+    // User sends MODIFY ("Also add Redis caching")
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Please also update docs/telemetry.md", id: "2", sessionID, messageID: "m-m-2" }] }
+      { sessionID, agent: "heidi", messageID: "m2" },
+      { message: {} as any, parts: [{ type: "text", text: "Also add Redis caching to the telemetry service", id: "2", sessionID, messageID: "m2" }] }
     );
 
-    expect(ctx.adapter.getUserTurnVersion(sessionID)).toBeGreaterThan(oldTurnVersion);
+    const newTurnVersion = ctx.adapter.getUserTurnVersion(sessionID);
+    expect(newTurnVersion).toBeGreaterThan(oldTurnVersion);
+
+    const token = {
+      runId: run.id,
+      sessionId: sessionID,
+      userTurnVersion: oldTurnVersion,
+      runAggregateVersion: 1,
+      transitionReason: "NEXT_WORK_ITEM_READY" as const,
+      stateFingerprint: "fp-old",
+    };
+
+    const statePort = {
+      getUserTurnVersion: (sid: string) => ctx.adapter.getUserTurnVersion(sid),
+      getRunAggregateVersion: (_rid: string) => 1,
+    };
+
+    const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
+    const res = await dispatcher.dispatch(token, { statePort, client: { session: { promptAsync: mock(() => Promise.resolve(true)) } } });
+    expect(res.dispatched).toBe(false);
+    expect(res.reason).toBe("stale_user_turn_version");
+
     await releaseProjectRuntime(TEST_DIR);
   });
 
   // 14. stale-run-version-rejected-from-live-db
   it("14. stale-run-version-rejected-from-live-db", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-stale-run-v";
+    const sessionID = "sess-stale-run-agg";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-s-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
-    const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
 
-    // Mutate Run in DB
-    ctx.runtime.transitionEngine.transitionPhase({
-      runId: run.id,
-      targetPhase: OP.EXECUTING,
-      expectedPhase: snap.phase,
-      expectedAggregateVersion: snap.aggregateVersion,
-    });
+    // Advance task_runs aggregate_version
+    ctx.runtime.taskRunsRepo.updateState(run.id, "executing");
+    const currentAgg = ctx.runtime.taskRunsRepo.findById(run.id)!.aggregateVersion;
 
     const token = {
       runId: run.id,
       sessionId: sessionID,
       userTurnVersion: ctx.adapter.getUserTurnVersion(sessionID),
-      runAggregateVersion: snap.aggregateVersion, // Stale version
+      runAggregateVersion: currentAgg - 1, // Stale version
       transitionReason: "NEXT_WORK_ITEM_READY" as const,
-      stateFingerprint: "fp",
+      stateFingerprint: "fp-1",
     };
 
     const statePort = {
@@ -391,8 +422,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-stale-fp";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-fp-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
@@ -425,8 +456,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-post-trans-snap";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-pt-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const snap1 = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
@@ -464,8 +495,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-cas-mandatory";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-cas-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
@@ -487,8 +518,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-cas-conflict";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-cc-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
@@ -519,8 +550,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-multistep-ver";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-ms-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -545,36 +576,44 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     await releaseProjectRuntime(TEST_DIR);
   });
 
-  // 20. atomic-attempt-start-concurrent-unique
-  it("20. atomic-attempt-start-concurrent-unique", async () => {
+  // 20. real-concurrent-attempt-reservation-unique
+  it("20. real-concurrent-attempt-reservation-unique", async () => {
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-att-unique";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-au-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
-    const att1 = ctx.runtime.transitionEngine.startAttempt({
-      runId: run.id,
-      assignmentId: "as-1",
-      callID: "call-1",
-      tool: "write",
-      actionFingerprint: "afp-1",
-      preStateFingerprint: "pre-1",
-    });
+    // Competing simultaneous starts for distinct callIDs
+    const [att1, att2] = await Promise.all([
+      Promise.resolve().then(() => ctx.runtime.transitionEngine.startAttempt({
+        runId: run.id,
+        assignmentId: "as-1",
+        callID: "call-c1",
+        tool: "write",
+        actionFingerprint: "afp-1",
+        preStateFingerprint: "pre-1",
+      })),
+      Promise.resolve().then(() => ctx.runtime.transitionEngine.startAttempt({
+        runId: run.id,
+        assignmentId: "as-1",
+        callID: "call-c2",
+        tool: "write",
+        actionFingerprint: "afp-2",
+        preStateFingerprint: "pre-2",
+      })),
+    ]);
 
-    const att2 = ctx.runtime.transitionEngine.startAttempt({
-      runId: run.id,
-      assignmentId: "as-1",
-      callID: "call-2",
-      tool: "write",
-      actionFingerprint: "afp-2",
-      preStateFingerprint: "pre-2",
-    });
+    expect(att1.attemptNumber).not.toBe(att2.attemptNumber);
+    const numbers = new Set([att1.attemptNumber, att2.attemptNumber]);
+    expect(numbers.has(1)).toBe(true);
+    expect(numbers.has(2)).toBe(true);
 
-    expect(att1.attemptNumber).toBe(1);
-    expect(att2.attemptNumber).toBe(2);
+    // Both callIDs durably recorded and discoverable
+    expect(ctx.runtime.transitionEngine.findAttemptByCallID("call-c1")).not.toBeNull();
+    expect(ctx.runtime.transitionEngine.findAttemptByCallID("call-c2")).not.toBeNull();
 
     await releaseProjectRuntime(TEST_DIR);
   });
@@ -584,8 +623,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-dup-callid";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-dc-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -607,8 +646,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
       preStateFingerprint: "pre-1",
     });
 
-    expect(att1.attemptNumber).toBe(att2.attemptNumber);
-    expect(att1.callID).toBe("call-same");
+    expect(att1.attemptNumber).toBe(1);
+    expect(att2.attemptNumber).toBe(1); // Idempotent same attempt returned
 
     await releaseProjectRuntime(TEST_DIR);
   });
@@ -616,35 +655,33 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
   // 22. durable-call-id-finalizes-after-restart
   it("22. durable-call-id-finalizes-after-restart", async () => {
     const ctx1 = acquireProjectRuntime(TEST_DIR);
-    const sessionID = "sess-restart-final";
+    const sessionID = "sess-durable-call";
     await ctx1.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-rf-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
-    const run = (await ctx1.adapter.resolveActiveRunForSession(sessionID))!;
+    const _run = (await ctx1.adapter.resolveActiveRunForSession(sessionID))!;
 
+    // Start attempt in runtime 1
     await ctx1.adapter.onToolExecuteBefore({
-      tool: "edit",
+      tool: "write",
       sessionID,
-      callID: "call-durable-final",
-      args: { path: "src/app.ts" },
+      callID: "call-restart-1",
+      args: { path: "src/app.ts", content: "export const x = 1;" },
     });
 
     await releaseProjectRuntime(TEST_DIR);
 
-    // Reopen after restart
+    // Reopen in runtime 2 and finalize tool execution
     const ctx2 = acquireProjectRuntime(TEST_DIR);
-    const foundAttempt = ctx2.runtime.transitionEngine.findAttemptByCallID("call-durable-final");
-    expect(foundAttempt).not.toBeNull();
-    expect(foundAttempt!.callID).toBe("call-durable-final");
-
     await ctx2.adapter.onToolExecuteAfter(
-      { tool: "edit", sessionID, callID: "call-durable-final", args: { path: "src/app.ts" } },
-      { output: "file updated", metadata: {} }
+      { tool: "write", sessionID, callID: "call-restart-1", args: { path: "src/app.ts" } },
+      { output: "written", metadata: {} }
     );
 
-    const finalized = ctx2.runtime.transitionEngine.getAttempt(run.id, foundAttempt!.assignmentId, foundAttempt!.attemptNumber);
-    expect(finalized?.finishedAt).toBeDefined();
+    const attempt = ctx2.runtime.transitionEngine.findAttemptByCallID("call-restart-1");
+    expect(attempt).not.toBeNull();
+    expect(attempt?.finishedAt).toBeDefined();
 
     await releaseProjectRuntime(TEST_DIR);
   });
@@ -654,8 +691,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-task-att-fin";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-ta-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const _run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -683,8 +720,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-sub-att-fin";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-sa-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const _run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -712,8 +749,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-child-a-main";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-ca-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -751,8 +788,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-child-b-main";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-cb-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -790,8 +827,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-opt-fail";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-of-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -816,8 +853,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-req-fail-28";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-rf-28" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
     const snap = ctx.runtime.orchestrationSnapshotService.getSnapshot(run.id, sessionID)!;
@@ -851,8 +888,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-opt-active";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-oa-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -885,8 +922,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const sessionID = "sess-cancel-abort";
 
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-ca-30" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -920,8 +957,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const sessionID = "sess-abort-conf";
 
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-ac-31" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -958,8 +995,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const sessionID = "sess-abort-unconf";
 
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-au-32" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -997,8 +1034,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const sessionID = "sess-truthful-cancel";
 
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-tc-33" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -1019,31 +1056,75 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-truth-sess" });
     const cancelledRun = await ctx.runtime.services.runService.cancelRun(run.id, "Cancel requested");
 
+    // Parent is marked CANCELLED with explicit detached-pending metadata
     expect(cancelledRun.status).toBe(RunStatus.CANCELLED);
-    const diag = ctx.runtime.childExecutionLifecycleService.getDiagnosticsForRun(run.id);
-    expect(diag.childExecutions?.some(c => c.status === "running")).toBe(true);
+    expect(cancelledRun.metadata?.terminationPending).toBe(true);
+    expect(cancelledRun.metadata?.cancellationMode).toBe("detached_pending_native_termination");
+
+    // ChildExecution authority: running and unconfirmed
+    const childRec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: "child-truth-sess" });
+    expect(childRec?.status).toBe("running");
+    expect(childRec?.cancelRequested).toBe(true);
+    expect(childRec?.nativeTerminationConfirmed).toBe(false);
+
+    // Assignment & Session must NOT be falsely marked cancelled
+    const assignment = await ctx.runtime.services.assignmentService.getAssignment(del.assignmentId);
+    expect(assignment?.status).not.toBe("cancelled");
+
+    const session = ctx.runtime.sessionRepo.findById("child-truth-sess");
+    expect(session?.status).not.toBe("cancelled");
 
     await releaseProjectRuntime(TEST_DIR);
   });
 
   // 34. replace-does-not-overlap-unconfirmed-old-run
   it("34. replace-does-not-overlap-unconfirmed-old-run", async () => {
-    const ctx = acquireProjectRuntime(TEST_DIR);
+    const abortMock = mock(() => Promise.reject(new Error("Native process stuck")));
+    const mockClient = { session: { abort: abortMock, promptAsync: mock(() => Promise.resolve(true)) } };
+    const ctx = acquireProjectRuntime(TEST_DIR, mockClient);
     const sessionID = "sess-replace-no-overlap";
+
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
+      { sessionID, agent: "heidi", messageID: "m-rep-1" },
       { message: {} as any, parts: [{ type: "text", text: "Initial architecture design for database storage", id: "1", sessionID, messageID: "m-rep-1" }] }
     );
     const run1 = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
-    // User sends REPLACE intent
+    // Create and start a required running child execution
+    const del = await ctx.runtime.childExecutionLifecycleService.registerDelegation({
+      runId: run1.id,
+      parentSessionId: sessionID,
+      taskCallId: "call-rep-del",
+      targetAgent: "coder",
+    });
+
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "child-rep-sess",
+      agentId: "coder",
+      taskCallId: del.taskCallId,
+    });
+
+    await ctx.runtime.childExecutionLifecycleService.markStarted({ childSessionId: "child-rep-sess" });
+
+    // User sends REPLACE intent -> abort fails -> replacement creation must be deferred/blocked!
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
+      { sessionID, agent: "heidi", messageID: "m-rep-2" },
       { message: {} as any, parts: [{ type: "text", text: "Forget that, let's implement new frontend UI components instead", id: "2", sessionID, messageID: "m-rep-2" }] }
     );
 
+    // Old run cancelled but termination pending
     const oldRunState = ctx.runtime.taskRunsRepo.findById(run1.id);
     expect(oldRunState?.state).toBe("cancelled");
+
+    // Child is still unconfirmed running
+    const childRec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId: "child-rep-sess" });
+    expect(childRec?.status).toBe("running");
+    expect(childRec?.nativeTerminationConfirmed).toBe(false);
+
+    // No overlapping second run was created
+    const activeAfter = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(activeAfter).toBeNull();
 
     await releaseProjectRuntime(TEST_DIR);
   });
@@ -1053,8 +1134,8 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     const ctx = acquireProjectRuntime(TEST_DIR);
     const sessionID = "sess-info-read";
     await ctx.adapter.onChatMessage(
-      { sessionID, agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m-ir-1" }] }
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
     );
     const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
 
@@ -1081,6 +1162,416 @@ describe("Production Wiring & Concurrency Integrity Suite (35 Guarantees)", () =
     expect(obs2.isProgress).toBe(false);
     progDiag = ctx.runtime.progressObservationService.getDiagnosticsForRun(run.id);
     expect(progDiag.noProgressCount).toBe(2);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 36. prohibited-action-blocked-before-native-tool-execution
+  it("36. prohibited-action-blocked-before-native-tool-execution", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-prohib-block";
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    // Heidi tool attempt 1 produces no progress
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "read",
+      sessionID,
+      callID: "call-p-1",
+      args: { path: "config.json" },
+    });
+    await ctx.adapter.onToolExecuteAfter(
+      { tool: "read", sessionID, callID: "call-p-1", args: { path: "config.json" } },
+      { output: "{}", metadata: {} }
+    );
+
+    // Idle evaluation produces REPEATED_ACTION_BLOCKED and stores StrategyConstraint
+    const evalRes = ctx.runtime.transitionEngine.evaluate({
+      runId: run.id,
+      sessionId: sessionID,
+      latestActionFingerprint: ctx.runtime.progressObservationService.computeActionFingerprint({
+        tool: "read",
+        args: { path: "config.json" },
+        sessionID,
+      }),
+    });
+    expect(evalRes.reasonCode).toBe("REPEATED_ACTION_BLOCKED");
+
+    // Heidi tries same tool + args under unchanged state -> rejected at tool.execute.before!
+    let threw = false;
+    try {
+      await ctx.adapter.onToolExecuteBefore({
+        tool: "read",
+        sessionID,
+        callID: "call-p-2",
+        args: { path: "config.json" },
+      });
+    } catch (err: any) {
+      threw = true;
+      expect(err.message).toContain("REPEATED_ACTION_BLOCKED");
+    }
+    expect(threw).toBe(true);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 37. prohibited-action-allows-different-strategy
+  it("37. prohibited-action-allows-different-strategy", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-prohib-diff";
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const afp1 = ctx.runtime.progressObservationService.computeActionFingerprint({
+      tool: "read",
+      args: { path: "config.json" },
+      sessionID,
+    });
+
+    // Save a strategy constraint prohibiting action afp1
+    ctx.runtime.transitionEngine.saveStrategyConstraint({
+      runId: run.id,
+      assignmentId: "root:" + run.id,
+      prohibitedActionFingerprint: afp1,
+      stateFingerprint: "0:0:0:0",
+      reason: "REPEATED_ACTION_BLOCKED",
+      createdAt: new Date().toISOString(),
+    });
+
+    // A different tool/action is allowed!
+    let differentActionThrew = false;
+    try {
+      await ctx.adapter.onToolExecuteBefore({
+        tool: "grep",
+        sessionID,
+        callID: "call-diff-tool",
+        args: { pattern: "telemetry" },
+      });
+    } catch {
+      differentActionThrew = true;
+    }
+    expect(differentActionThrew).toBe(false);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 38. prohibited-action-clears-after-relevant-state-change
+  it("38. prohibited-action-clears-after-relevant-state-change", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-prohib-clear";
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const afp = ctx.runtime.progressObservationService.computeActionFingerprint({
+      tool: "read",
+      args: { path: "config.json" },
+      sessionID,
+    });
+
+    // Save constraint under state 0:0:0:0
+    ctx.runtime.transitionEngine.saveStrategyConstraint({
+      runId: run.id,
+      assignmentId: "root:" + run.id,
+      prohibitedActionFingerprint: afp,
+      stateFingerprint: "0:0:0:0",
+      reason: "REPEATED_ACTION_BLOCKED",
+      createdAt: new Date().toISOString(),
+    });
+
+    // Record an observation that changes state (e.g. noProgressCount or repository state)
+    ctx.runtime.progressObservationService.recordToolObservation({
+      runId: run.id,
+      sessionId: sessionID,
+      tool: "write",
+      args: { path: "src/new.ts" },
+      output: "written",
+      preRepositoryHash: "h1",
+      postRepositoryHash: "h2",
+    });
+
+    // When state has changed, the action is legal again and constraint is cleared!
+    let threw = false;
+    try {
+      await ctx.adapter.onToolExecuteBefore({
+        tool: "read",
+        sessionID,
+        callID: "call-p-reallow",
+        args: { path: "config.json" },
+      });
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(false);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 39. prohibited-action-survives-restart
+  it("39. prohibited-action-survives-restart", async () => {
+    const ctx1 = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-prohib-restart";
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx1.adapter.resolveActiveRunForSession(sessionID))!;
+
+    const afp = ctx1.runtime.progressObservationService.computeActionFingerprint({
+      tool: "read",
+      args: { path: "config.json" },
+      sessionID,
+    });
+
+    ctx1.runtime.transitionEngine.saveStrategyConstraint({
+      runId: run.id,
+      assignmentId: "root:" + run.id,
+      prohibitedActionFingerprint: afp,
+      stateFingerprint: "0:0:0:0",
+      reason: "REPEATED_ACTION_BLOCKED",
+      createdAt: new Date().toISOString(),
+    });
+
+    await releaseProjectRuntime(TEST_DIR);
+
+    // Reopen in runtime 2: constraint still blocks same action under same state
+    const ctx2 = acquireProjectRuntime(TEST_DIR);
+    let threw = false;
+    try {
+      await ctx2.adapter.onToolExecuteBefore({
+        tool: "read",
+        sessionID,
+        callID: "call-after-restart",
+        args: { path: "config.json" },
+      });
+    } catch (err: any) {
+      threw = true;
+      expect(err.message).toContain("REPEATED_ACTION_BLOCKED");
+    }
+    expect(threw).toBe(true);
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 40. change-strategy-continuation-carries-deterministic-constraint
+  it("40. change-strategy-continuation-carries-deterministic-constraint", async () => {
+    const prompt = getContinuationPrompt("REPEATED_ACTION_BLOCKED", { prohibitedActionFingerprint: "afp-test-123" });
+    expect(prompt).toContain("afp-test-123");
+    expect(prompt).toContain("Change strategy");
+
+    const stallPrompt = getContinuationPrompt("STALL_DETECTED");
+    expect(stallPrompt).toContain("Execution stall detected");
+  });
+
+  // 41. concurrent-identical-continuation-dispatches-once
+  it("41. concurrent-identical-continuation-dispatches-once", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const promptAsyncMock = mock(() => Promise.resolve(true));
+    const mockClient = { session: { promptAsync: promptAsyncMock } };
+    const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
+
+    const token = {
+      runId: "run-conc-dispatch",
+      sessionId: "sess-conc-dispatch",
+      userTurnVersion: 1,
+      runAggregateVersion: 1,
+      transitionReason: "NEXT_WORK_ITEM_READY" as const,
+      currentWorkItemId: "as-conc",
+      stateFingerprint: "fp-conc",
+    };
+
+    // Run two competing dispatches simultaneously
+    const [res1, res2] = await Promise.all([
+      dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient }),
+      dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient }),
+    ]);
+
+    expect(promptAsyncMock).toHaveBeenCalledTimes(1);
+    const dispatchedCount = (res1.dispatched ? 1 : 0) + (res2.dispatched ? 1 : 0);
+    expect(dispatchedCount).toBe(1);
+
+    const loser = res1.dispatched ? res2 : res1;
+    expect(["dispatch_in_progress", "duplicate_dispatch"]).toContain(loser.reason ?? "");
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 42. failed-continuation-retry-bounded
+  it("42. failed-continuation-retry-bounded", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const promptMock = mock(() => Promise.reject(new Error("RPC failure")));
+    const mockClient = { session: { promptAsync: promptMock } };
+    const dispatcher = new ContinuationDispatcher(ctx.runtime.db);
+
+    const token = {
+      runId: "run-retry-bounded",
+      sessionId: "sess-retry-bounded",
+      userTurnVersion: 1,
+      runAggregateVersion: 1,
+      transitionReason: "TRANSIENT_RETRY_ALLOWED" as const,
+      currentWorkItemId: "as-bound",
+      stateFingerprint: "fp-bound",
+    };
+
+    // Attempt 1 fails
+    const res1 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
+    expect(res1.dispatched).toBe(false);
+
+    // Attempt 2 fails
+    const res2 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
+    expect(res2.dispatched).toBe(false);
+
+    // Attempt 3 is bounded -> blocked
+    const res3 = await dispatcher.dispatch(token, { currentTurnVersion: 1, currentAggregateVersion: 1, client: mockClient });
+    expect(res3.dispatched).toBe(false);
+    expect(promptMock).toHaveBeenCalledTimes(2); // Never invoked the 3rd time!
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 43. duplicate-user-message-id-does-not-increment-turn
+  it("43. duplicate-user-message-id-does-not-increment-turn", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-dup-msg-id";
+
+    const v1 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({
+      sessionId: sessionID,
+      messageId: "msg-id-1",
+      messageHash: "hash-text-1",
+    });
+    expect(v1).toBe(1);
+
+    // Duplicate delivery of same message event
+    const v2 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({
+      sessionId: sessionID,
+      messageId: "msg-id-1",
+      messageHash: "hash-text-1",
+    });
+    expect(v2).toBe(1); // Unchanged!
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 44. identical-text-different-message-id-increments-turn
+  it("44. identical-text-different-message-id-increments-turn", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-diff-msg-id";
+
+    const v1 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({
+      sessionId: sessionID,
+      messageId: "msg-id-1",
+      messageHash: "hash-ok",
+    });
+    expect(v1).toBe(1);
+
+    // New genuine message with identical text "ok" but distinct messageId
+    const v2 = ctx.runtime.sessionTurnRepo.incrementTurnVersion({
+      sessionId: sessionID,
+      messageId: "msg-id-2",
+      messageHash: "hash-ok",
+    });
+    expect(v2).toBe(2); // Incremented!
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 45. migration-v12-applies-from-v11-and-is-idempotent
+  it("45. migration-v12-applies-from-v11-and-is-idempotent", () => {
+    const db = new Database(":memory:");
+    runMigrations(db);
+
+    expect(getCurrentVersion(db)).toBe(12);
+
+    // Check tables exist canonically
+    const tables = db.query(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('session_turns', 'continuation_dispatches', 'call_id_attempts')"
+    ).all() as { name: string }[];
+    expect(tables.length).toBe(3);
+
+    // Re-run migrations -> idempotent
+    runMigrations(db);
+    expect(getCurrentVersion(db)).toBe(12);
+
+    db.close();
+  });
+
+  // 46. root-heidi-attempt-lineage-and-repetition
+  it("46. root-heidi-attempt-lineage-and-repetition", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-root-heidi";
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    // Heidi executes directly (no Assignment)
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "read",
+      sessionID,
+      callID: "call-root-read",
+      args: { file: "test.ts" },
+    });
+    await ctx.adapter.onToolExecuteAfter(
+      { tool: "read", sessionID, callID: "call-root-read", args: { file: "test.ts" } },
+      { output: "contents", metadata: {} }
+    );
+
+    // Root attempt is recorded under canonical root:<runId>
+    const attempts = ctx.runtime.transitionEngine.listAttempts(run.id, "root:" + run.id);
+    expect(attempts.length).toBe(1);
+
+    // Idle evaluation inspects root execution and blocks repetition
+    const afp = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "read", args: { file: "test.ts" }, sessionID });
+    const evalRes = ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID, latestActionFingerprint: afp });
+    expect(evalRes.reasonCode).toBe("REPEATED_ACTION_BLOCKED");
+
+    await releaseProjectRuntime(TEST_DIR);
+  });
+
+  // 47. old-progress-does-not-generate-unbounded-continuations
+  it("47. old-progress-does-not-generate-unbounded-continuations", async () => {
+    const ctx = acquireProjectRuntime(TEST_DIR);
+    const sessionID = "sess-progress-once";
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi", messageID: "m1" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "m1" }] }
+    );
+    const run = (await ctx.adapter.resolveActiveRunForSession(sessionID))!;
+
+    // Heidi tool produces progress (file written to workspace)
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "write",
+      sessionID,
+      callID: "call-prog-1",
+      args: { path: "src/fix.ts", content: "export const x = 1;" },
+    });
+    mkdirSync(join(TEST_DIR, "src"), { recursive: true });
+    writeFileSync(join(TEST_DIR, "src/fix.ts"), "export const x = 1;");
+    await ctx.adapter.onToolExecuteAfter(
+      { tool: "write", sessionID, callID: "call-prog-1", args: { path: "src/fix.ts" } },
+      { output: "saved", metadata: {} }
+    );
+
+    const afp = ctx.runtime.progressObservationService.computeActionFingerprint({ tool: "write", args: { path: "src/fix.ts" }, sessionID });
+
+    // First idle evaluate: consumes attempt and yields PROGRESS_CONFIRMED
+    const eval1 = ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID, latestActionFingerprint: afp });
+    expect(eval1.reasonCode).toBe("PROGRESS_CONFIRMED");
+    expect(eval1.requiresAction).toBe(true);
+
+    // Second idle evaluate with no new attempt/delta: must NOT yield PROGRESS_CONFIRMED again!
+    const eval2 = ctx.runtime.transitionEngine.evaluate({ runId: run.id, sessionId: sessionID, latestActionFingerprint: afp });
+    expect(eval2.reasonCode).toBe("NO_PROGRESS");
+    expect(eval2.requiresAction).toBe(false);
 
     await releaseProjectRuntime(TEST_DIR);
   });

@@ -611,18 +611,24 @@ export class ChildExecutionLifecycleService {
       count += 1;
     }
 
-    // Cross-check sessionRepo for any orphan child sessions
+    // Cross-check sessionRepo for orphan child sessions without fabricating termination truth
     try {
       const sessions = this.sessionRepo.findByRunId(runId);
       for (const s of sessions) {
         if (s.depth > 0 && s.status !== "completed" && s.status !== "cancelled" && s.status !== "failed") {
-          this.sessionRepo.updateStatus(s.id, "cancelled", undefined, reason ?? "Parent run cancelled");
-          if (s.assignmentId) {
-            try {
-              await this.assignmentService.cancelAssignment(s.assignmentId);
-            } catch {}
+          const childRec = this.getChildExecution({ childSessionId: s.id });
+          if (childRec) {
+            // Respect ChildExecution termination truth
+            if (childRec.nativeTerminationConfirmed) {
+              this.sessionRepo.updateStatus(s.id, "cancelled", undefined, reason ?? "Parent run cancelled");
+              if (s.assignmentId) {
+                try {
+                  await this.assignmentService.cancelAssignment(s.assignmentId);
+                } catch {}
+              }
+              count += 1;
+            }
           }
-          count += 1;
         }
       }
     } catch {}

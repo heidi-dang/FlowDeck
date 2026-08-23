@@ -228,12 +228,26 @@ export class RunService {
       return latest;
     }
 
-    // 3. Update status to CANCELLED atomically — this goes through updateRun which uses the writer
+    // 3. Evaluate truthful native child cancellation convergence
+    const diag = this.childLifecycleService ? this.childLifecycleService.getDiagnosticsForRun(id) : null;
+    const unconfirmedChildExecutionIds = diag?.childExecutions
+      ?.filter(c => !c.nativeTerminationConfirmed && (c.status === "running" || c.status === "queued"))
+      .map(c => c.executionId) ?? [];
+    const terminationPending = unconfirmedChildExecutionIds.length > 0;
+    const cancellationMode = terminationPending ? "detached_pending_native_termination" : "converged";
+
+    // 4. Update status to CANCELLED atomically — this goes through updateRun which uses the writer
     const cancelledRun = await this.updateRun(id, {
       status: RunStatus.CANCELLED,
       stage: "cancelled",
       errorMessage: reason,
-      metadata: { cancelledAt: new Date().toISOString(), reason },
+      metadata: {
+        cancelledAt: new Date().toISOString(),
+        reason,
+        terminationPending,
+        unconfirmedChildExecutionIds,
+        cancellationMode,
+      },
     });
 
     this.executionRegistry.unregisterRun(id);
