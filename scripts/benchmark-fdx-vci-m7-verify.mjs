@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * benchmark-fdx-vci-m7-verify.mjs — Milestone 7 Verification Executor Benchmarks
- * Hardened H17 benchmark suite asserting complete semantic verification invariants before timing across execution scenarios.
+ * Hardened H18 benchmark suite asserting non-vacuous semantic verification invariants before timing across execution scenarios.
  */
 
 import { execFileSync } from "node:child_process";
@@ -15,20 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m7-verify.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m7-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "b729679a945f2a217a4eebd28a5d82c6e75d579e";
-
-function getReleaseBinaryPath() {
-  if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
-    console.log("Using pre-built FDX binary: " + process.env.FDX_BINARY_PATH);
-    return process.env.FDX_BINARY_PATH;
-  }
-  const binaryName = process.platform === "win32" ? "fdx.exe" : "fdx";
-  const candidate = join(ROOT, "target", "release", binaryName);
-
-  console.log("Building FDX binary for M7 benchmark (release profile)...");
-  execFileSync("cargo", ["build", "-p", "fdx", "--release"], { cwd: ROOT, stdio: "inherit" });
-  return candidate;
-}
+const EXPECTED_FUNCTIONAL_SHA = "be22a7950cace14c319bbf68c85bad00e8fd34c6";
 
 function computeStats(samples) {
   if (!samples || samples.length === 0) return null;
@@ -78,7 +65,7 @@ function invokeFdxVerify(bin, repo, args = []) {
 }
 
 async function runPreflights(bin) {
-  console.log("-> Running M7 execution and safety preflights...");
+  console.log("-> Running non-vacuous M7 execution and safety preflights...");
 
   // 1. Basic pass
   {
@@ -86,6 +73,7 @@ async function runPreflights(bin) {
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
       name: "pass-pkg",
+      packageManager: "npm@10.0.0",
       scripts: { test: "node -e 'process.exit(0)'" }
     }));
     gitInitAndCommitAll(repo);
@@ -98,12 +86,13 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 2. Real failure
+  // 2. Real failure (exit 42)
   {
     const repo = join(tmpdir(), "fdx-m7-preflight-fail-" + Date.now() + "-" + Math.random().toString(36).slice(2));
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
       name: "fail-pkg",
+      packageManager: "npm@10.0.0",
       scripts: { test: "node -e 'process.exit(42)'" }
     }));
     gitInitAndCommitAll(repo);
@@ -122,6 +111,7 @@ async function runPreflights(bin) {
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
       name: "secret-pkg",
+      packageManager: "npm@10.0.0",
       scripts: { test: "node -e \"console.log('sk-1234567890abcdefghijklmnopqrstuvwxyz and Bearer myauthtoken123456')\"" }
     }));
     gitInitAndCommitAll(repo);
@@ -136,113 +126,126 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 4. Package manager ambiguity fails closed
+  // 4. Package manager missing fails closed (no packageManager field, no lockfile)
   {
-    const repo = join(tmpdir(), "fdx-m7-preflight-pm-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    const repo = join(tmpdir(), "fdx-m7-preflight-pm-missing-" + Date.now() + "-" + Math.random().toString(36).slice(2));
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
-      name: "ambig-pkg",
+      name: "no-pm-pkg",
       scripts: { test: "node -e 'process.exit(0)'" }
     }));
-    writeFileSync(join(repo, "pnpm-lock.yaml"), "");
-    writeFileSync(join(repo, "yarn.lock"), "");
     gitInitAndCommitAll(repo);
     writeFileSync(join(repo, "src.js"), "module.exports = 4;");
 
     const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
     if (res.data?.outcome === "passed") {
-      throw new Error("Preflight 4 failed: ambiguous package manager must not pass");
+      throw new Error("Preflight 4 failed: package without package manager evidence must not pass");
     }
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 5. Dirty worktree execution
+  // 5. Package manager contradiction fails closed
   {
-    const repo = join(tmpdir(), "fdx-m7-preflight-dirty-" + Date.now() + "-" + Math.random().toString(36).slice(2));
+    const repo = join(tmpdir(), "fdx-m7-preflight-pm-conflict-" + Date.now() + "-" + Math.random().toString(36).slice(2));
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
-      name: "dirty-pkg",
+      name: "conflict-pm-pkg",
+      packageManager: "pnpm@8.0.0",
       scripts: { test: "node -e 'process.exit(0)'" }
     }));
+    writeFileSync(join(repo, "package-lock.json"), "{}");
     gitInitAndCommitAll(repo);
-    writeFileSync(join(repo, "dirty.js"), "console.log('uncommitted');");
+    writeFileSync(join(repo, "src.js"), "module.exports = 5;");
 
     const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
-    if (res.exitCode !== 0 || res.data?.outcome !== "passed") {
-      throw new Error("Preflight 5 failed: verification against dirty worktree must succeed");
+    if (res.data?.outcome === "passed") {
+      throw new Error("Preflight 5 failed: contradictory package manager must not pass");
     }
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 6. Unknown JS test runner does not false pass individual test file
+  // 6. Unknown JS test runner rolls up to package suite without false individual pass
   {
     const repo = join(tmpdir(), "fdx-m7-preflight-unknown-runner-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-    mkdirSync(repo, { recursive: true });
+    mkdirSync(join(repo, "tests"), { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
       name: "unknown-runner-pkg",
-      scripts: { test: "node -e 'process.exit(0)'" }
+      packageManager: "npm@10.0.0",
+      scripts: { test: "node -e 'process.exit(0)'" },
+      devDependencies: { vitest: "^1.0.0" }
     }));
-    gitInitAndCommitAll(repo);
-    mkdirSync(join(repo, "tests"), { recursive: true });
     writeFileSync(join(repo, "tests", "unit.test.js"), "module.exports = 1;");
+    gitInitAndCommitAll(repo);
+    writeFileSync(join(repo, "tests", "unit.test.js"), "module.exports = 2;");
 
     const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
-    if (res.data) {
-      const individualCheck = res.data.checks?.find(c => c.check_id.startsWith("test:npm:"));
-      if (individualCheck && individualCheck.command.includes("--")) {
-        throw new Error("Preflight 6 failed: unknown runner must not generate positional file target args");
+    if (!res.data || !Array.isArray(res.data.checks)) {
+      throw new Error("Preflight 6 failed: missing checks array");
+    }
+    for (const check of res.data.checks) {
+      if (check.check_id.startsWith("test:npm:") && check.command.includes("--")) {
+        throw new Error("Preflight 6 failed: unproven runner must not forward positional file arguments");
       }
     }
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 7. Known Vitest individual target
+  // 7. Known Vitest runner targeting reaches actual runner
   {
     const repo = join(tmpdir(), "fdx-m7-preflight-vitest-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-    mkdirSync(repo, { recursive: true });
+    mkdirSync(join(repo, "tests"), { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
       name: "vitest-runner-pkg",
+      packageManager: "npm@10.0.0",
       scripts: { test: "vitest run" }
     }));
-    writeFileSync(join(repo, "vitest.config.ts"), "export default {};");
-    gitInitAndCommitAll(repo);
-    mkdirSync(join(repo, "tests"), { recursive: true });
     writeFileSync(join(repo, "tests", "a.test.ts"), "test('a', () => {});");
+    gitInitAndCommitAll(repo);
+    writeFileSync(join(repo, "tests", "a.test.ts"), "test('a updated', () => {});");
 
     const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
-    if (res.data) {
-      const testCheck = res.data.checks?.find(c => c.check_id.startsWith("test:npm:"));
-      if (testCheck && !testCheck.command.some(arg => arg.includes("tests/a.test.ts"))) {
-        throw new Error("Preflight 7 failed: known vitest runner must target individual file");
+    if (!res.data) throw new Error("Preflight 7 failed: missing verification data");
+    const testChecks = res.data.checks?.filter(c => c.check_id.startsWith("test:npm:"));
+    if (testChecks && testChecks.length > 0) {
+      for (const c of testChecks) {
+        if (!c.command.includes("--") || !c.command.some(arg => arg.includes("tests/a.test.ts"))) {
+          throw new Error("Preflight 7 failed: proven vitest runner must forward test file target");
+        }
       }
     }
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 8. Output limit is incomplete
+  // 8. Output limit exceeded is classified as Incomplete + Unverified
   {
     const repo = join(tmpdir(), "fdx-m7-preflight-outbound-" + Date.now() + "-" + Math.random().toString(36).slice(2));
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
       name: "outbound-pkg",
+      packageManager: "npm@10.0.0",
       scripts: { test: "node -e \"process.stdout.write('X'.repeat(5000000))\"" }
     }));
     gitInitAndCommitAll(repo);
     writeFileSync(join(repo, "src.js"), "1");
 
     const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
-    if (res.data?.outcome === "passed") {
-      throw new Error("Preflight 8 failed: output limit exceeded must not pass");
+    if (!res.data || res.data.outcome !== "incomplete" || res.data.assurance !== "UNVERIFIED") {
+      throw new Error("Preflight 8 failed: output limit exceeded must be outcome incomplete and assurance UNVERIFIED");
+    }
+    const outCheck = res.data.checks?.[0];
+    if (!outCheck || outCheck.status !== "output_limit_exceeded") {
+      throw new Error("Preflight 8 failed: check status must be output_limit_exceeded");
     }
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 9. Atomic persistence success
+  // 9. Atomic persistence equality: loaded == returned
   {
     const repo = join(tmpdir(), "fdx-m7-preflight-persist-atomic-" + Date.now() + "-" + Math.random().toString(36).slice(2));
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
       name: "persist-atomic-pkg",
+      packageManager: "npm@10.0.0",
       scripts: { test: "node -e 'process.exit(0)'" }
     }));
     gitInitAndCommitAll(repo);
@@ -256,19 +259,23 @@ async function runPreflights(bin) {
     if (!existsSync(runFile)) {
       throw new Error("Preflight 9 failed: artifact must exist at " + runFile);
     }
-    const parsed = JSON.parse(readFileSync(runFile, "utf8"));
-    if (parsed.run_id !== res.data.run_id) {
-      throw new Error("Preflight 9 failed: persisted file corrupted or mismatch");
+    const loaded = JSON.parse(readFileSync(runFile, "utf8"));
+    if (JSON.stringify(loaded) !== JSON.stringify(res.data)) {
+      throw new Error("Preflight 9 failed: loaded artifact must strictly equal returned run");
+    }
+    if (loaded.persistence_status?.status !== "persisted") {
+      throw new Error("Preflight 9 failed: persistence_status must be persisted");
     }
     rmSync(repo, { recursive: true, force: true });
   }
 
-  // 10. Persistence failure is incomplete
+  // 10. Persistence failure degrades to Incomplete and preserves check evidence
   {
     const repo = join(tmpdir(), "fdx-m7-preflight-persist-fail-" + Date.now() + "-" + Math.random().toString(36).slice(2));
     mkdirSync(repo, { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
       name: "persist-fail-pkg",
+      packageManager: "npm@10.0.0",
       scripts: { test: "node -e 'process.exit(0)'" }
     }));
     mkdirSync(join(repo, ".fdx"), { recursive: true });
@@ -277,8 +284,11 @@ async function runPreflights(bin) {
     writeFileSync(join(repo, "src.js"), "1");
 
     const res = invokeFdxVerify(bin, repo);
-    if (res.data?.outcome === "passed") {
-      throw new Error("Preflight 10 failed: persistence failure must not yield Passed outcome");
+    if (!res.data || res.data.outcome !== "incomplete" || res.data.assurance !== "UNVERIFIED") {
+      throw new Error("Preflight 10 failed: persistence failure must yield outcome incomplete and assurance UNVERIFIED");
+    }
+    if (res.data.persistence_status?.status !== "failed") {
+      throw new Error("Preflight 10 failed: persistence_status must be failed");
     }
     rmSync(repo, { recursive: true, force: true });
   }
@@ -291,6 +301,7 @@ async function runPreflights(bin) {
     mkdirSync(outside, { recursive: true });
     writeFileSync(join(repo, "package.json"), JSON.stringify({
       name: "symlink-pkg",
+      packageManager: "npm@10.0.0",
       scripts: { test: "node -e 'process.exit(0)'" }
     }));
     try { symlinkSync(outside, join(repo, "symlinked_pkg")); } catch {}
@@ -302,13 +313,14 @@ async function runPreflights(bin) {
     rmSync(outside, { recursive: true, force: true });
   }
 
-  // 12. Shell argv injection resistance
+  // 12. Shell injection resistance
   {
     const repo = join(tmpdir(), "fdx-m7-preflight-injection-" + Date.now() + "-" + Math.random().toString(36).slice(2));
     mkdirSync(repo, { recursive: true });
     const evilFile = join(repo, "pwned.txt");
     writeFileSync(join(repo, "package.json"), JSON.stringify({
       name: "injection-pkg",
+      packageManager: "npm@10.0.0",
       scripts: { test: "node -e 'process.exit(0)'" }
     }));
     gitInitAndCommitAll(repo);
@@ -320,27 +332,38 @@ async function runPreflights(bin) {
     }
     rmSync(repo, { recursive: true, force: true });
   }
-
-  // 13. Cargo test package execution
-  {
-    const repo = join(tmpdir(), "fdx-m7-preflight-cargo-" + Date.now() + "-" + Math.random().toString(36).slice(2));
-    mkdirSync(repo, { recursive: true });
-    writeFileSync(join(repo, "Cargo.toml"), `[package]
-name = "cargo-preflight"
-version = "0.1.0"
-edition = "2021"
-`);
-    mkdirSync(join(repo, "src"), { recursive: true });
-    writeFileSync(join(repo, "src", "lib.rs"), "#[test] fn t() {}");
-    gitInitAndCommitAll(repo);
-
-    invokeFdxVerify(bin, repo, ["--no-persist"]);
-    rmSync(repo, { recursive: true, force: true });
-  }
 }
 
 async function runBenchmark() {
-  console.log("=== Running FDX VCI Milestone 7 Verification Executor Benchmark (H17) ===");
+  console.log("=== Running FDX VCI Milestone 7 Verification Executor Benchmark (H18) ===");
+
+  // Mandatory environment and provenance validation
+  const functionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA;
+  const binaryPath = process.env.FDX_BINARY_PATH;
+  const expectedBinarySha256 = process.env.FDX_BINARY_SHA256;
+
+  if (!functionalSha || !binaryPath || !expectedBinarySha256) {
+    throw new Error(
+      "Mandatory environment missing. Must provide: FDX_BENCHMARK_FUNCTIONAL_SHA, FDX_BINARY_PATH, FDX_BINARY_SHA256"
+    );
+  }
+
+  if (functionalSha !== EXPECTED_FUNCTIONAL_SHA) {
+    throw new Error(
+      `Functional SHA mismatch. Expected: ${EXPECTED_FUNCTIONAL_SHA}, Received: ${functionalSha}`
+    );
+  }
+
+  if (!existsSync(binaryPath)) {
+    throw new Error(`Binary does not exist at FDX_BINARY_PATH: ${binaryPath}`);
+  }
+
+  const actualBinarySha256 = createHash("sha256").update(readFileSync(binaryPath)).digest("hex");
+  if (actualBinarySha256 !== expectedBinarySha256) {
+    throw new Error(
+      `Binary SHA256 mismatch! Provided: ${expectedBinarySha256}, Actual: ${actualBinarySha256}`
+    );
+  }
 
   const harnessStatus = execFileSync("git", ["status", "--porcelain", "--", "scripts/benchmark-fdx-vci-m7-verify.mjs"], {
     cwd: ROOT,
@@ -355,16 +378,7 @@ async function runBenchmark() {
     encoding: "utf8"
   }).trim();
 
-  const bin = getReleaseBinaryPath();
-  const actualBinarySha256 = createHash("sha256").update(readFileSync(bin)).digest("hex");
-
-  if (process.env.FDX_BINARY_SHA256 && actualBinarySha256 !== process.env.FDX_BINARY_SHA256) {
-    throw new Error(
-      `Binary SHA256 mismatch! Provided: ${process.env.FDX_BINARY_SHA256}, Actual: ${actualBinarySha256}`
-    );
-  }
-
-  await runPreflights(bin);
+  await runPreflights(binaryPath);
 
   const iterations = 10;
   const timings = {};
@@ -378,13 +392,14 @@ async function runBenchmark() {
       mkdirSync(repo, { recursive: true });
       writeFileSync(join(repo, "package.json"), JSON.stringify({
         name: "bench-pass-pkg",
+        packageManager: "npm@10.0.0",
         scripts: { test: "node -e 'process.exit(0)'" }
       }));
       gitInitAndCommitAll(repo);
       writeFileSync(join(repo, "src.js"), "module.exports = 1;");
 
       const t0 = performance.now();
-      const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
+      const res = invokeFdxVerify(binaryPath, repo, ["--no-persist"]);
       const t1 = performance.now();
       if (res.exitCode !== 0 || res.data?.outcome !== "passed") {
         throw new Error("verify_passing_unit_test_package failed");
@@ -404,13 +419,14 @@ async function runBenchmark() {
       mkdirSync(repo, { recursive: true });
       writeFileSync(join(repo, "package.json"), JSON.stringify({
         name: "bench-fail-pkg",
+        packageManager: "npm@10.0.0",
         scripts: { test: "node -e 'process.exit(1)'" }
       }));
       gitInitAndCommitAll(repo);
       writeFileSync(join(repo, "src.js"), "module.exports = 1;");
 
       const t0 = performance.now();
-      const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
+      const res = invokeFdxVerify(binaryPath, repo, ["--no-persist"]);
       const t1 = performance.now();
       if (res.exitCode !== 1 || res.data?.outcome !== "failed") {
         throw new Error("verify_failing_unit_test_package failed");
@@ -430,6 +446,7 @@ async function runBenchmark() {
       mkdirSync(repo, { recursive: true });
       writeFileSync(join(repo, "package.json"), JSON.stringify({
         name: "bench-multi-pkg",
+        packageManager: "npm@10.0.0",
         scripts: {
           test: "node -e 'process.exit(0)'",
           typecheck: "node -e 'process.exit(0)'",
@@ -440,7 +457,7 @@ async function runBenchmark() {
       writeFileSync(join(repo, "src.js"), "module.exports = 1;");
 
       const t0 = performance.now();
-      const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
+      const res = invokeFdxVerify(binaryPath, repo, ["--no-persist"]);
       const t1 = performance.now();
       if (res.exitCode !== 0 || res.data?.outcome !== "passed") {
         throw new Error("verify_multi_check_package_suite failed");
@@ -460,6 +477,7 @@ async function runBenchmark() {
       mkdirSync(repo, { recursive: true });
       writeFileSync(join(repo, "package.json"), JSON.stringify({
         name: "bench-ff-pkg",
+        packageManager: "npm@10.0.0",
         scripts: {
           test: "node -e 'process.exit(1)'",
           typecheck: "node -e 'setTimeout(() => {}, 5000)'"
@@ -469,7 +487,7 @@ async function runBenchmark() {
       writeFileSync(join(repo, "src.js"), "module.exports = 1;");
 
       const t0 = performance.now();
-      const res = invokeFdxVerify(bin, repo, ["--fail-fast", "--no-persist"]);
+      const res = invokeFdxVerify(binaryPath, repo, ["--fail-fast", "--no-persist"]);
       const t1 = performance.now();
       if (res.exitCode !== 1 || res.data?.outcome !== "failed") {
         throw new Error("verify_fail_fast_short_circuit failed");
@@ -489,6 +507,7 @@ async function runBenchmark() {
       mkdirSync(repo, { recursive: true });
       writeFileSync(join(repo, "package.json"), JSON.stringify({
         name: "bench-redact-pkg",
+        packageManager: "npm@10.0.0",
         scripts: {
           test: "node -e \"console.log('sk-1234567890abcdefghijklmnopqrstuvwxyz'.repeat(100))\""
         }
@@ -497,7 +516,7 @@ async function runBenchmark() {
       writeFileSync(join(repo, "src.js"), "module.exports = 1;");
 
       const t0 = performance.now();
-      const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
+      const res = invokeFdxVerify(binaryPath, repo, ["--no-persist"]);
       const t1 = performance.now();
       if (res.exitCode !== 0 || res.data?.outcome !== "passed") {
         throw new Error("verify_output_bound_and_redaction failed");
@@ -517,13 +536,14 @@ async function runBenchmark() {
       mkdirSync(repo, { recursive: true });
       writeFileSync(join(repo, "package.json"), JSON.stringify({
         name: "bench-persist-pkg",
+        packageManager: "npm@10.0.0",
         scripts: { test: "node -e 'process.exit(0)'" }
       }));
       gitInitAndCommitAll(repo);
       writeFileSync(join(repo, "src.js"), "module.exports = 1;");
 
       const t0 = performance.now();
-      const res = invokeFdxVerify(bin, repo);
+      const res = invokeFdxVerify(binaryPath, repo);
       const t1 = performance.now();
       if (res.exitCode !== 0 || !res.data?.run_id) {
         throw new Error("verify_run_persistence_and_retrieval failed");
@@ -547,13 +567,14 @@ async function runBenchmark() {
       mkdirSync(repo, { recursive: true });
       writeFileSync(join(repo, "package.json"), JSON.stringify({
         name: "bench-dirty-pkg",
+        packageManager: "npm@10.0.0",
         scripts: { test: "node -e 'process.exit(0)'" }
       }));
       gitInitAndCommitAll(repo);
       writeFileSync(join(repo, "uncommitted.js"), "module.exports = 'dirty';");
 
       const t0 = performance.now();
-      const res = invokeFdxVerify(bin, repo, ["--no-persist"]);
+      const res = invokeFdxVerify(binaryPath, repo, ["--no-persist"]);
       const t1 = performance.now();
       if (res.exitCode !== 0 || res.data?.outcome !== "passed") {
         throw new Error("verify_dirty_worktree_execution failed");
@@ -565,16 +586,13 @@ async function runBenchmark() {
   }
 
   const timestamp = new Date().toISOString();
-  const functionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA || EXPECTED_FUNCTIONAL_SHA;
-  const binarySha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA || EXPECTED_FUNCTIONAL_SHA;
-  const binarySha256 = actualBinarySha256;
 
   const reportJson = {
     milestone: "M7",
     title: "Milestone 7 Verification Executor Benchmark Report",
     functional_source_sha: functionalSha,
-    binary_source_sha: binarySha,
-    binary_sha256: binarySha256,
+    binary_source_sha: functionalSha,
+    binary_sha256: actualBinarySha256,
     benchmark_harness_sha: HARNESS_SHA,
     platform: process.platform,
     arch: process.arch,
@@ -588,8 +606,8 @@ async function runBenchmark() {
 
   let md = "# Milestone 7 Verification Executor Benchmark Report\n\n";
   md += `**Functional Source SHA:** ${functionalSha}\n`;
-  md += `**Binary Source SHA:** ${binarySha}\n`;
-  md += `**Binary SHA-256:** ${binarySha256}\n`;
+  md += `**Binary Source SHA:** ${functionalSha}\n`;
+  md += `**Binary SHA-256:** ${actualBinarySha256}\n`;
   md += `**Benchmark Harness SHA:** ${HARNESS_SHA}\n`;
   md += `**Timestamp:** ${timestamp}\n\n`;
   md += "## Performance Benchmark Timing Table\n\n";
@@ -608,5 +626,5 @@ async function runBenchmark() {
 
 runBenchmark().catch((err) => {
   console.error("Benchmark failed:", err);
-  process.exit(1)
+  process.exit(1);
 });
