@@ -1,0 +1,93 @@
+{
+  "milestone": "M6",
+  "title": "Milestone 6 Test Mapping & Verification Planner Benchmark Report",
+  "functional_source_sha": "f151a9de7fb1776b705d04c5fdcda2662c51f238",
+  "binary_source_sha": "f151a9de7fb1776b705d04c5fdcda2662c51f238",
+  "benchmark_harness_sha": "2e5cfe8e19742e8e99ca20414740396087129f79",
+  "platform": "linux",
+  "arch": "x64",
+  "node_version": "v24.19.0",
+  "timestamp": "2026-08-23T04:15:05.319Z",
+  "scenarios": {
+    "precise_semantic_test_mapping": {
+      "count": 10,
+      "min": 16.53,
+      "max": 19.09,
+      "mean": 18.47,
+      "median": 18.96,
+      "p95": 19.09
+    },
+    "build_transitive_test_mapping": {
+      "count": 10,
+      "min": 57.96,
+      "max": 63.7,
+      "mean": 60.98,
+      "median": 63.15,
+      "p95": 63.7
+    },
+    "deleted_symbol_old_current_union": {
+      "count": 10,
+      "min": 49.69,
+      "max": 51.14,
+      "mean": 50.11,
+      "median": 50.05,
+      "p95": 51.14
+    },
+    "stale_semantic_package_widening": {
+      "count": 10,
+      "min": 56.99,
+      "max": 59.08,
+      "mean": 57.4,
+      "median": 57.23,
+      "p95": 59.08
+    },
+    "root_config_workspace_widening": {
+      "count": 10,
+      "min": 18.43,
+      "max": 64.49,
+      "mean": 46.96,
+      "median": 63.71,
+      "p95": 64.49
+    },
+    "dynamic_test_config_fallback": {
+      "count": 10,
+      "min": 32.49,
+      "max": 57.99,
+      "mean": 47.67,
+      "median": 57.18,
+      "p95": 57.99
+    },
+    "mapping_bound_safe_widening": {
+      "count": 10,
+      "min": 65.31,
+      "max": 72.08,
+      "mean": 69.4,
+      "median": 70.92,
+      "p95": 72.08
+    },
+    "mapping_failure_preserves_last_good": {
+      "count": 10,
+      "min": 49.8,
+      "max": 51.53,
+      "mean": 50.52,
+      "median": 50.31,
+      "p95": 51.53
+    },
+    "disconnected_scope_isolation": {
+      "count": 10,
+      "min": 63.28,
+      "max": 70.04,
+      "mean": 68.32,
+      "median": 69.29,
+      "p95": 70.04
+    },
+    "planner_why_explanation": {
+      "count": 10,
+      "min": 14.48,
+      "max": 51.29,
+      "mean": 42.21,
+      "median": 50.17,
+      "p95": 51.29
+    }
+  }
+}
