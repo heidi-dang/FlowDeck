@@ -1,10 +1,7 @@
 //! Static parser and provider for package.json and npm/pnpm/yarn/bun workspaces.
 
-use crate::intelligence::build::bounds::BuildBoundsCollector;
-use crate::intelligence::build::discover::{
-    discover_build_files, MAX_DISCOVERED_EDGES, MAX_DISCOVERED_PACKAGES, MAX_DISCOVERED_TARGETS,
-    MAX_WORKSPACE_MEMBERS,
-};
+use crate::intelligence::build::bounds::{get_active_build_limits, BuildBoundsCollector};
+use crate::intelligence::build::discover::discover_build_files;
 use crate::intelligence::build::model::*;
 use crate::intelligence::build::provider::{
     hash_files, BuildConfigProvider, BuildIngestResult, BuildProviderScope, ProviderDetection,
@@ -161,6 +158,7 @@ impl BuildConfigProvider for PackageJsonProvider {
     }
 
     fn ingest(&self, repo_root: &Path) -> Result<BuildIngestResult, String> {
+        let limits = get_active_build_limits();
         let files = discover_build_files(repo_root);
         let mut bounds = BuildBoundsCollector::default();
 
@@ -187,7 +185,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                 PACKAGE_JSON_PROVIDER_ID,
                 format!(
                     "Discovery limits reached or walker errors encountered (package.json limit {}, pnpm limit {})",
-                    MAX_DISCOVERED_PACKAGES, MAX_DISCOVERED_PACKAGES
+                    limits.packages, limits.workspace_members
                 ),
                 AssuranceLevel::Degraded,
                 true,
@@ -308,7 +306,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 },
-                MAX_DISCOVERED_EDGES,
+                limits.edges,
                 PACKAGE_JSON_PROVIDER_ID,
                 UncertaintyScope::Workspace(ws_stable_id.clone()),
             );
@@ -439,7 +437,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                             generates_artifacts: Vec::new(),
                             depends_on_targets: Vec::new(),
                         },
-                        MAX_DISCOVERED_TARGETS,
+                        limits.targets,
                         PACKAGE_JSON_PROVIDER_ID,
                         UncertaintyScope::Package(dir_str.clone()),
                     );
@@ -472,7 +470,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                             strength: EvidenceStrength::Structural,
                             metadata: None,
                         },
-                        MAX_DISCOVERED_EDGES,
+                        limits.edges,
                         PACKAGE_JSON_PROVIDER_ID,
                         UncertaintyScope::Package(dir_str.clone()),
                     );
@@ -503,7 +501,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 },
-                MAX_DISCOVERED_EDGES,
+                limits.edges,
                 PACKAGE_JSON_PROVIDER_ID,
                 UncertaintyScope::Package(dir_str.clone()),
             );
@@ -550,7 +548,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                         &mut ws.members,
                         &mut res.uncertainties,
                         pkg_stable_id.clone(),
-                        MAX_WORKSPACE_MEMBERS,
+                        limits.workspace_members,
                         PACKAGE_JSON_PROVIDER_ID,
                         UncertaintyScope::Workspace(ws_stable_id.clone()),
                     );
@@ -571,7 +569,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                         strength: EvidenceStrength::Structural,
                         metadata: None,
                     },
-                    MAX_DISCOVERED_EDGES,
+                    limits.edges,
                     PACKAGE_JSON_PROVIDER_ID,
                     UncertaintyScope::Workspace(ws_stable_id.clone()),
                 );
@@ -626,7 +624,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                             strength: EvidenceStrength::Structural,
                             metadata: None,
                         },
-                        MAX_DISCOVERED_EDGES,
+                        limits.edges,
                         PACKAGE_JSON_PROVIDER_ID,
                         UncertaintyScope::Package(pkg_dir.clone()),
                     );
@@ -662,7 +660,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                             strength: EvidenceStrength::Structural,
                             metadata: None,
                         },
-                        MAX_DISCOVERED_EDGES,
+                        limits.edges,
                         PACKAGE_JSON_PROVIDER_ID,
                         UncertaintyScope::Package(pkg.directory.clone()),
                     );
@@ -710,7 +708,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                             strength: EvidenceStrength::Structural,
                             metadata: None,
                         },
-                        MAX_DISCOVERED_EDGES,
+                        limits.edges,
                         PACKAGE_JSON_PROVIDER_ID,
                         UncertaintyScope::Package(pkg.directory.clone()),
                     );

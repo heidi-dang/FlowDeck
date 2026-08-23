@@ -1361,11 +1361,22 @@ pub fn analyze_impact_v2(
                                 }
                             }
                         }
-                        for fallback_pkg in
+                        let fallback =
                             crate::intelligence::build::discover::discover_fallback_build_inventory(
                                 repo_root,
-                            )
-                        {
+                            );
+                        if fallback.truncated {
+                            uncertainties.push(UncertaintyReason::BuildLimitReached(
+                                "Fallback build inventory limit reached during conservative widening; full repository scope may not be enumerated".to_string(),
+                            ));
+                        }
+                        for err in &fallback.walker_errors {
+                            uncertainties.push(UncertaintyReason::BuildLimitReached(format!(
+                                "Fallback build inventory walker error: {}",
+                                err
+                            )));
+                        }
+                        for fallback_pkg in fallback.package_dirs {
                             if !impacted_map.contains_key(&fallback_pkg) {
                                 impacted_map.insert(
                                     fallback_pkg.clone(),
@@ -1407,11 +1418,22 @@ pub fn analyze_impact_v2(
                             }
                         }
                     }
-                    for fallback_pkg in
+                    let fallback =
                         crate::intelligence::build::discover::discover_fallback_build_inventory(
                             repo_root,
-                        )
-                    {
+                        );
+                    if fallback.truncated {
+                        uncertainties.push(UncertaintyReason::BuildLimitReached(
+                            "Fallback build inventory limit reached during conservative widening; full repository scope may not be enumerated".to_string(),
+                        ));
+                    }
+                    for err in &fallback.walker_errors {
+                        uncertainties.push(UncertaintyReason::BuildLimitReached(format!(
+                            "Fallback build inventory walker error: {}",
+                            err
+                        )));
+                    }
+                    for fallback_pkg in fallback.package_dirs {
                         if !impacted_map.contains_key(&fallback_pkg) {
                             impacted_map.insert(
                                 fallback_pkg.clone(),
@@ -1432,6 +1454,27 @@ pub fn analyze_impact_v2(
                 _ => {}
             }
         }
+    }
+
+    // Fail closed if both exact topology AND fallback inventory are incomplete
+    let has_exact_bound_uncertainty = scoped_build_uncertainties.iter().any(|u| {
+        u.should_widen
+            && (u.code == "build_limit_reached"
+                || u.code == "provider_ingest_failed"
+                || u.code == "provider_detection_failed")
+    });
+    let fallback_has_issues = uncertainties.iter().any(|u| match u {
+        UncertaintyReason::BuildLimitReached(d) => {
+            d.contains("Fallback build inventory limit reached")
+                || d.contains("Fallback build inventory walker error")
+        }
+        _ => false,
+    });
+    let terminal_unverified = has_exact_bound_uncertainty && fallback_has_issues;
+    if terminal_unverified {
+        uncertainties.push(UncertaintyReason::GraphUnavailable(
+            "Exact build topology and fallback build inventory are both incomplete; impacted set cannot be verified".to_string(),
+        ));
     }
 
     for unk in unknown_kinds {

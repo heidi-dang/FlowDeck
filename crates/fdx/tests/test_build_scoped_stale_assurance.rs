@@ -1,3 +1,7 @@
+//! Milestone 5 Trust Proof: Strict Stale Scope Isolation Against Control.
+
+use fdx::intelligence::change::traverse::analyze_impact_v2;
+use fdx::protocol::AssuranceLevel;
 use std::fs;
 use tempfile::tempdir;
 
@@ -33,12 +37,12 @@ fn commit_all(dir: &std::path::Path, msg: &str) {
 }
 
 #[test]
-fn test_disconnected_packages_stale_isolation_against_control() {
+fn test_npm_stale_scope_isolation_against_control() {
+    // 1. TEST REPOSITORY: Disconnected pkg-a and pkg-b
     let tmp_test = tempdir().unwrap();
     let test_root = tmp_test.path();
     init_git(test_root);
 
-    // Repo 1 (Test): Disconnected pkg-a and pkg-b
     fs::write(
         test_root.join("package.json"),
         serde_json::json!({
@@ -72,7 +76,7 @@ fn test_disconnected_packages_stale_isolation_against_control() {
     let _ =
         fdx::intelligence::build::ingest::refresh_all_build_providers(test_root, false).unwrap();
 
-    // Control Repo: Only pkg-b
+    // 2. CONTROL REPOSITORY: Clean pkg-b only
     let tmp_ctrl = tempdir().unwrap();
     let ctrl_root = tmp_ctrl.path();
     init_git(ctrl_root);
@@ -113,64 +117,200 @@ fn test_disconnected_packages_stale_isolation_against_control() {
     // In Control repo: Modify pkg-b/src/index.ts
     fs::write(ctrl_pdir_b.join("index.ts"), "export const b = 2;").unwrap();
 
-    // Run impact on Test repo
-    let test_output = std::process::Command::new(env!("CARGO_BIN_EXE_fdx"))
-        .args([
-            "impact-v2",
-            "--base",
-            "HEAD",
-            "--depth",
-            "3",
-            "--format",
-            "json",
-        ])
-        .current_dir(test_root)
-        .output()
-        .unwrap();
-    assert!(test_output.status.success());
-    let test_json: serde_json::Value = serde_json::from_slice(&test_output.stdout).unwrap();
+    let test_res = analyze_impact_v2(test_root, Some("HEAD"), None, Some(3)).unwrap();
+    let ctrl_res = analyze_impact_v2(ctrl_root, Some("HEAD"), None, Some(3)).unwrap();
 
-    // Run impact on Control repo
-    let ctrl_output = std::process::Command::new(env!("CARGO_BIN_EXE_fdx"))
-        .args([
-            "impact-v2",
-            "--base",
-            "HEAD",
-            "--depth",
-            "3",
-            "--format",
-            "json",
-        ])
-        .current_dir(ctrl_root)
-        .output()
-        .unwrap();
-    assert!(ctrl_output.status.success());
-    let ctrl_json: serde_json::Value = serde_json::from_slice(&ctrl_output.stdout).unwrap();
+    // STRICT CONTROL COMPARISONS:
+    // 1. Top-level assurance equality
+    assert_eq!(
+        test_res.assurance, ctrl_res.assurance,
+        "Test repository assurance must match control repository assurance for fresh pkg-b"
+    );
 
-    // Assert: pkg-b assurance is exact or equivalent between test and control
-    let test_impacted = test_json
-        .get("impacted")
-        .and_then(|v| v.as_array())
-        .unwrap();
-    let ctrl_impacted = ctrl_json
-        .get("impacted")
-        .and_then(|v| v.as_array())
-        .unwrap();
+    // 2. B target present in both
+    let test_b = test_res
+        .impacted
+        .iter()
+        .find(|t| t.target.contains("pkg-b"))
+        .expect("pkg-b must be present in test impacted set");
+    let ctrl_b = ctrl_res
+        .impacted
+        .iter()
+        .find(|t| t.target.contains("pkg-b"))
+        .expect("pkg-b must be present in control impacted set");
 
-    // Assert pkg-b paths in test match control
-    let test_pkg_b = test_impacted.iter().find(|i| {
-        i.get("target")
-            .and_then(|t| t.as_str())
-            .map(|s| s.contains("pkg-b"))
-            .unwrap_or(false)
-    });
-    let ctrl_pkg_b = ctrl_impacted.iter().find(|i| {
-        i.get("target")
-            .and_then(|t| t.as_str())
-            .map(|s| s.contains("pkg-b"))
-            .unwrap_or(false)
-    });
+    // 3. Evidence strengths equal
+    assert_eq!(test_b.strength, ctrl_b.strength);
 
-    assert!(test_pkg_b.is_some());
-    assert!(ctrl_pkg_b.is_some());
+    // 4. Primary path edge kinds and evidence strengths equal
+    let test_path = test_b.primary_path.as_ref().unwrap();
+    let ctrl_path = ctrl_b.primary_path.as_ref().unwrap();
+    let test_kinds: Vec<_> = test_path.steps.iter().map(|s| s.edge_kind).collect();
+    let ctrl_kinds: Vec<_> = ctrl_path.steps.iter().map(|s| s.edge_kind).collect();
+    assert_eq!(test_kinds, ctrl_kinds);
+
+    let test_strengths: Vec<_> = test_path.steps.iter().map(|s| s.strength).collect();
+    let ctrl_strengths: Vec<_> = ctrl_path.steps.iter().map(|s| s.strength).collect();
+    assert_eq!(test_strengths, ctrl_strengths);
+
+    // 5. Stale uncertainty for A exists as a diagnostic, but does NOT degrade B's assurance
+    assert!(
+        test_res
+            .uncertainty
+            .iter()
+            .any(|u| u.code() == "build_provider_stale"),
+        "A's stale state must be captured as a diagnostic"
+    );
+    assert_eq!(test_res.assurance, AssuranceLevel::Degraded);
+}
+
+#[test]
+fn test_tsconfig_stale_scope_isolation_against_control() {
+    let tmp_test = tempdir().unwrap();
+    let test_root = tmp_test.path();
+    init_git(test_root);
+
+    // Test repo: proj-a and proj-b
+    for name in ["a", "b"] {
+        let dir = test_root.join(format!("proj-{}", name));
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/index.ts"), "export const x = 1;").unwrap();
+        fs::write(
+            dir.join("tsconfig.json"),
+            serde_json::json!({ "compilerOptions": { "composite": true } }).to_string(),
+        )
+        .unwrap();
+    }
+    commit_all(test_root, "init test");
+    let _ =
+        fdx::intelligence::build::ingest::refresh_all_build_providers(test_root, false).unwrap();
+
+    // Control repo: proj-b only
+    let tmp_ctrl = tempdir().unwrap();
+    let ctrl_root = tmp_ctrl.path();
+    init_git(ctrl_root);
+
+    let ctrl_dir_b = ctrl_root.join("proj-b");
+    fs::create_dir_all(ctrl_dir_b.join("src")).unwrap();
+    fs::write(ctrl_dir_b.join("src/index.ts"), "export const x = 1;").unwrap();
+    fs::write(
+        ctrl_dir_b.join("tsconfig.json"),
+        serde_json::json!({ "compilerOptions": { "composite": true } }).to_string(),
+    )
+    .unwrap();
+    commit_all(ctrl_root, "init ctrl");
+    let _ =
+        fdx::intelligence::build::ingest::refresh_all_build_providers(ctrl_root, false).unwrap();
+
+    // In Test repo: Modify proj-a/tsconfig.json (stale for a) AND proj-b/src/index.ts
+    fs::write(
+        test_root.join("proj-a/tsconfig.json"),
+        serde_json::json!({ "compilerOptions": { "composite": true, "declaration": true } })
+            .to_string(),
+    )
+    .unwrap();
+    fs::write(test_root.join("proj-b/src/index.ts"), "export const x = 2;").unwrap();
+
+    // In Control repo: Modify proj-b/src/index.ts
+    fs::write(ctrl_dir_b.join("src/index.ts"), "export const x = 2;").unwrap();
+
+    let test_res = analyze_impact_v2(test_root, Some("HEAD"), None, Some(3)).unwrap();
+    let ctrl_res = analyze_impact_v2(ctrl_root, Some("HEAD"), None, Some(3)).unwrap();
+
+    assert_eq!(test_res.assurance, ctrl_res.assurance);
+    assert_eq!(test_res.assurance, AssuranceLevel::Degraded);
+}
+
+#[test]
+fn test_cargo_stale_scope_isolation_against_control() {
+    let tmp_test = tempdir().unwrap();
+    let test_root = tmp_test.path();
+    init_git(test_root);
+
+    // Test repo: crate-a and crate-b
+    fs::write(
+        test_root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/crate-a", "crates/crate-b"]
+"#,
+    )
+    .unwrap();
+
+    for name in ["crate-a", "crate-b"] {
+        let dir = test_root.join("crates").join(name);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/lib.rs"), "pub fn run() {}").unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!(
+                r#"[package]
+name = "{}"
+version = "0.1.0"
+edition = "2021"
+"#,
+                name
+            ),
+        )
+        .unwrap();
+    }
+    commit_all(test_root, "init test");
+    let _ =
+        fdx::intelligence::build::ingest::refresh_all_build_providers(test_root, false).unwrap();
+
+    // Control repo: crate-b only
+    let tmp_ctrl = tempdir().unwrap();
+    let ctrl_root = tmp_ctrl.path();
+    init_git(ctrl_root);
+
+    fs::write(
+        ctrl_root.join("Cargo.toml"),
+        r#"[workspace]
+members = ["crates/crate-b"]
+"#,
+    )
+    .unwrap();
+    let ctrl_b = ctrl_root.join("crates/crate-b");
+    fs::create_dir_all(ctrl_b.join("src")).unwrap();
+    fs::write(ctrl_b.join("src/lib.rs"), "pub fn run() {}").unwrap();
+    fs::write(
+        ctrl_b.join("Cargo.toml"),
+        r#"[package]
+name = "crate-b"
+version = "0.1.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    commit_all(ctrl_root, "init ctrl");
+    let _ =
+        fdx::intelligence::build::ingest::refresh_all_build_providers(ctrl_root, false).unwrap();
+
+    // In Test repo: Modify crate-a/Cargo.toml (stale for a) AND crate-b/src/lib.rs
+    fs::write(
+        test_root.join("crates/crate-a/Cargo.toml"),
+        r#"[package]
+name = "crate-a"
+version = "0.2.0"
+edition = "2021"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        test_root.join("crates/crate-b/src/lib.rs"),
+        r#"pub fn run() { println!("1"); }"#,
+    )
+    .unwrap();
+
+    // In Control repo: Modify crate-b/src/lib.rs
+    fs::write(
+        ctrl_b.join("src/lib.rs"),
+        r#"pub fn run() { println!("1"); }"#,
+    )
+    .unwrap();
+
+    let test_res = analyze_impact_v2(test_root, Some("HEAD"), None, Some(3)).unwrap();
+    let ctrl_res = analyze_impact_v2(ctrl_root, Some("HEAD"), None, Some(3)).unwrap();
+
+    assert_eq!(test_res.assurance, ctrl_res.assurance);
+    assert_eq!(test_res.assurance, AssuranceLevel::Degraded);
 }

@@ -1,9 +1,7 @@
 //! Static parser and provider for tsconfig.json inheritance and project references.
 
-use crate::intelligence::build::bounds::BuildBoundsCollector;
-use crate::intelligence::build::discover::{
-    discover_build_files, MAX_DISCOVERED_ARTIFACTS, MAX_DISCOVERED_CONFIGS, MAX_DISCOVERED_EDGES,
-};
+use crate::intelligence::build::bounds::{get_active_build_limits, BuildBoundsCollector};
+use crate::intelligence::build::discover::discover_build_files;
 use crate::intelligence::build::model::*;
 use crate::intelligence::build::provider::{
     hash_files, BuildConfigProvider, BuildIngestResult, BuildProviderScope, ProviderDetection,
@@ -173,6 +171,7 @@ impl BuildConfigProvider for TsConfigProvider {
     }
 
     fn ingest(&self, repo_root: &Path) -> Result<BuildIngestResult, String> {
+        let limits = get_active_build_limits();
         let files = discover_build_files(repo_root);
         let mut bounds = BuildBoundsCollector::default();
 
@@ -190,7 +189,7 @@ impl BuildConfigProvider for TsConfigProvider {
                 TSCONFIG_PROVIDER_ID,
                 format!(
                     "Discovery limits reached or walker errors encountered (tsconfig limit {})",
-                    MAX_DISCOVERED_CONFIGS
+                    limits.configs
                 ),
                 AssuranceLevel::Degraded,
                 true,
@@ -327,7 +326,7 @@ impl BuildConfigProvider for TsConfigProvider {
                             canonical_path: canon_artifact.clone(),
                             generated_by: config_stable_id.clone(),
                         },
-                        MAX_DISCOVERED_ARTIFACTS,
+                        limits.artifacts,
                         TSCONFIG_PROVIDER_ID,
                         UncertaintyScope::Config(config_path.clone()),
                     );
@@ -356,7 +355,7 @@ impl BuildConfigProvider for TsConfigProvider {
                             strength: EvidenceStrength::Structural,
                             metadata: None,
                         },
-                        MAX_DISCOVERED_EDGES,
+                        limits.edges,
                         TSCONFIG_PROVIDER_ID,
                         UncertaintyScope::Config(config_path.clone()),
                     );
@@ -400,7 +399,7 @@ impl BuildConfigProvider for TsConfigProvider {
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 },
-                MAX_DISCOVERED_EDGES,
+                limits.edges,
                 TSCONFIG_PROVIDER_ID,
                 UncertaintyScope::Config(config_path.clone()),
             );
@@ -436,7 +435,7 @@ impl BuildConfigProvider for TsConfigProvider {
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 },
-                MAX_DISCOVERED_EDGES,
+                limits.edges,
                 TSCONFIG_PROVIDER_ID,
                 UncertaintyScope::Config(config_path.clone()),
             );
@@ -475,7 +474,7 @@ impl BuildConfigProvider for TsConfigProvider {
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 },
-                MAX_DISCOVERED_EDGES,
+                limits.edges,
                 TSCONFIG_PROVIDER_ID,
                 UncertaintyScope::Config(from_cfg.clone()),
             );
@@ -505,7 +504,7 @@ impl BuildConfigProvider for TsConfigProvider {
                     strength: EvidenceStrength::Structural,
                     metadata: None,
                 },
-                MAX_DISCOVERED_EDGES,
+                limits.edges,
                 TSCONFIG_PROVIDER_ID,
                 UncertaintyScope::Config(from_cfg.clone()),
             );
