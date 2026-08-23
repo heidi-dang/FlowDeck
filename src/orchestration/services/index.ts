@@ -13,5 +13,11 @@ export { ChildExecutionLifecycleService } from "./child-execution-lifecycle-serv
 export type * from "./child-execution-lifecycle-service";
 export { ProgressObservationService } from "./progress-observation-service";
 export type * from "./progress-observation-service";
+export { OrchestrationSnapshotService } from "./orchestration-snapshot-service";
+export type * from "./orchestration-snapshot-service";
+export { RunTransitionEngine } from "./transition-engine";
+export type * from "./transition-engine";
+export { ContinuationPolicy } from "./continuation-policy";
+export type * from "./continuation-policy";
 export type * from "./ports";
 export type { PaginatedResult } from "./ports";

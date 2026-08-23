@@ -42,6 +42,7 @@ import {
   SqliteSessionRepository,
   SqliteContextItemRepository,
   SqliteConsumerOffsetRepository,
+  TaskRunsRepository,
 } from "./persistence/repositories";
 import type {
   IRunRepository,
@@ -79,6 +80,9 @@ import { RoutingRevisionService } from "./routing/routing-revision-service";
 import { ChildExecutionLifecycleService } from "./services/child-execution-lifecycle-service";
 import { SqliteNativeChildExecutionRepository } from "./persistence/repositories/native-child-execution";
 import { ProgressObservationService } from "./services/progress-observation-service";
+import { OrchestrationSnapshotService } from "./services/orchestration-snapshot-service";
+import { RunTransitionEngine } from "./services/transition-engine";
+import { ContinuationPolicy } from "./services/continuation-policy";
 import { TokenBudgetRuntime } from "../services/token-budget-runtime";
 import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
 import type { CommandRegistry } from "./commands/domain/command-registry";
@@ -107,10 +111,16 @@ export interface ProductionOrchestrationRuntime {
     runRepo: IRunRepository;
     childExecutionLifecycleService: ChildExecutionLifecycleService;
     progressObservationService: ProgressObservationService;
+    orchestrationSnapshotService: OrchestrationSnapshotService;
+    transitionEngine: RunTransitionEngine;
+    continuationPolicy: ContinuationPolicy;
   };
   router: ReturnType<typeof createRouterWithControllers>;
   childExecutionLifecycleService: ChildExecutionLifecycleService;
   progressObservationService: ProgressObservationService;
+  orchestrationSnapshotService: OrchestrationSnapshotService;
+  transitionEngine: RunTransitionEngine;
+  continuationPolicy: ContinuationPolicy;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
   routingRevisionService: RoutingRevisionService;
   metrics: OrchestrationMetrics;
@@ -695,6 +705,26 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
   const nativeChildRepo = new SqliteNativeChildExecutionRepository(db, txManager);
   const childExecutionLifecycleService = new ChildExecutionLifecycleService(db, assignmentService, sessionRepo, executionRegistry, eventBus, nativeChildRepo, txManager);
   const progressObservationService = new ProgressObservationService(db);
+  const taskRunsRepo = new TaskRunsRepository(db, txManager);
+  const orchestrationSnapshotService = new OrchestrationSnapshotService(
+    db,
+    taskRunsRepo,
+    routingDecisionRepository,
+    assignmentRepo,
+    nativeChildRepo,
+    progressObservationService,
+    sessionRepo
+  );
+  const transitionEngine = new RunTransitionEngine(
+    db,
+    taskRunsRepo,
+    assignmentRepo,
+    nativeChildRepo,
+    progressObservationService,
+    orchestrationSnapshotService,
+    txManager
+  );
+  const continuationPolicy = new ContinuationPolicy();
   const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db, childExecutionLifecycleService);
   const contractService = new ContractService(contractRepo, eventBus);
   const assignmentBindingCoordinator = new AssignmentBindingCoordinator({ assignmentService, bindingRepo: assignmentBindingRepo });
@@ -722,13 +752,16 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     runRepo,
     childExecutionLifecycleService,
     progressObservationService,
+    orchestrationSnapshotService,
+    transitionEngine,
+    continuationPolicy,
   };
 
   const router = createRouterWithControllers(services);
   const commands = createCoreCommandRuntime(db, txManager, {
     db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
     sessionRepo, contextItemRepo, consumerOffsetRepo, services, router,
-    routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, progressObservationService, metrics, executionRepository, executionScheduler,
+    routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, progressObservationService, orchestrationSnapshotService, transitionEngine, continuationPolicy, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
     assignmentBindingCoordinator, faultHook: options.faultHook,
@@ -750,6 +783,9 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     routingRevisionService,
     childExecutionLifecycleService,
     progressObservationService,
+    orchestrationSnapshotService,
+    transitionEngine,
+    continuationPolicy,
     metrics,
     executionRepository,
     executionScheduler,
