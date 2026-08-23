@@ -61,13 +61,82 @@ function gitCommitAll(dir, msg) {
   execFileSync("git", ["commit", "-m", msg, "--allow-empty"], { cwd: dir });
 }
 
-function initFdxDb(dir, binaryPath) {
-  // Run status to initialize .fdx directory and DB
-  try {
-    execFileSync(binaryPath, ["status"], { cwd: dir, stdio: "ignore" });
-  } catch {}
-  const dbPath = join(dir, ".fdx", "intelligence.db");
-  return new DatabaseSync(dbPath);
+function initFdxDb(dir, _binaryPath) {
+  const fdxDir = join(dir, ".fdx");
+  mkdirSync(fdxDir, { recursive: true });
+  const dbPath = join(fdxDir, "intelligence.db");
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    PRAGMA user_version = 5;
+    CREATE TABLE IF NOT EXISTS schema_metadata (version INTEGER PRIMARY KEY);
+    INSERT OR IGNORE INTO schema_metadata (version) VALUES (5);
+    CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS files (
+      canonical_path TEXT PRIMARY KEY,
+      content_hash TEXT NOT NULL,
+      size INTEGER NOT NULL,
+      mtime_ms INTEGER,
+      language TEXT,
+      indexed_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS nodes (
+      stable_id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      canonical_path TEXT,
+      symbol_identity TEXT,
+      package_identity TEXT,
+      metadata TEXT,
+      provider TEXT,
+      provider_fingerprint TEXT,
+      generation INTEGER,
+      source_hash TEXT,
+      stale BOOLEAN NOT NULL DEFAULT 0,
+      source_identity TEXT
+    );
+    CREATE TABLE IF NOT EXISTS edges (
+      stable_id TEXT PRIMARY KEY,
+      from_node TEXT NOT NULL,
+      to_node TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      provider_fingerprint TEXT NOT NULL,
+      strength INTEGER NOT NULL,
+      source_identity TEXT,
+      source_hash TEXT,
+      created_revision INTEGER NOT NULL,
+      updated_revision INTEGER NOT NULL,
+      stale BOOLEAN NOT NULL DEFAULT 0,
+      generation INTEGER,
+      metadata TEXT,
+      provider_id TEXT
+    );
+    CREATE TABLE IF NOT EXISTS provider_state (
+      provider TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      compatibility_data TEXT
+    );
+    CREATE TABLE IF NOT EXISTS semantic_providers (
+      provider_id TEXT PRIMARY KEY,
+      provider_type TEXT NOT NULL,
+      provider_version TEXT NOT NULL,
+      executable_identity TEXT NOT NULL,
+      scip_schema_version TEXT NOT NULL,
+      languages TEXT NOT NULL,
+      workspace_root TEXT NOT NULL,
+      package TEXT,
+      config_fingerprint TEXT NOT NULL,
+      input_fingerprint TEXT NOT NULL,
+      last_successful_run INTEGER,
+      health TEXT NOT NULL,
+      freshness TEXT NOT NULL,
+      output_digest TEXT,
+      failure_reason TEXT,
+      semantic_generation INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+  return db;
 }
 
 async function runBenchmark() {
