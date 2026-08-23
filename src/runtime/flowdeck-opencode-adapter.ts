@@ -334,12 +334,16 @@ export class FlowDeckLifecycleAdapter {
       );
     }
 
+    const activeRun = await this.resolveActiveRunForSession(input.sessionID);
+    if (activeRun) {
+      this.runtime.transitionEngine.transitionPhase(activeRun.id, "executing");
+    }
+
     if (input.tool === "task" || input.tool === "subagent") {
       const normalized = normalizeTaskInvocation(
         { sessionID: input.sessionID, callID: input.callID },
         input.args ?? {}
       );
-      const activeRun = await this.resolveActiveRunForSession(input.sessionID);
       if (activeRun) {
         await this.runtime.childExecutionLifecycleService.registerDelegation({
           runId: activeRun.id,
@@ -487,10 +491,36 @@ export class FlowDeckLifecycleAdapter {
   }
 
   async onSessionIdle(sessionID: string) {
-    // Only retire the route if this session is currently in an active FAST_DIRECT turn token
+    if (this.disposed) return;
+    // 1. Only retire the route if this session is currently in an active FAST_DIRECT turn token
     if (sessionID && this.pendingFastDirectTurns.has(sessionID)) {
       this.pendingFastDirectTurns.delete(sessionID);
       markRouteInactive(sessionID);
+      return;
+    }
+
+    // 2. Authoritative Run evaluation on idle
+    const activeRun = await this.resolveActiveRunForSession(sessionID);
+    if (!activeRun) return;
+
+    const snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(activeRun.id, sessionID);
+    if (!snapshot) return;
+
+    const transition = this.runtime.transitionEngine.evaluate({
+      runId: activeRun.id,
+      sessionId: sessionID,
+    });
+
+    const continuation = this.runtime.continuationPolicy.evaluate({
+      snapshot,
+      transition,
+      hasActiveUserTurn: false,
+      isStaleEvent: false,
+    });
+
+    // session.idle is a trigger to evaluate state, not evidence of work completion
+    if (continuation.decision === "CONTINUE_NOW") {
+      noteInternalContinuation(sessionID);
     }
   }
 
