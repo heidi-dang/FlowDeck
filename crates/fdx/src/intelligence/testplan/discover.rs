@@ -20,6 +20,29 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+/// Derive ecosystem-aware fallback scope IDs for a relative directory.
+pub fn fallback_scope_ids_for_dir(repo_root: &Path, dir: &str) -> Vec<String> {
+    let clean_dir = if dir == "." { "" } else { dir };
+    let path = if clean_dir.is_empty() {
+        repo_root.to_path_buf()
+    } else {
+        repo_root.join(clean_dir)
+    };
+
+    let display_dir = if clean_dir.is_empty() { "." } else { clean_dir };
+    let mut ids = Vec::new();
+    if path.join("Cargo.toml").exists() {
+        ids.push(format!("pkg:cargo:{}", display_dir));
+    }
+    if path.join("package.json").exists() {
+        ids.push(format!("pkg:npm:{}", display_dir));
+    }
+    if ids.is_empty() {
+        ids.push(format!("pkg:npm:{}", display_dir));
+    }
+    ids
+}
+
 fn is_js_ts_test_file(path: &Path) -> bool {
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if file_name.ends_with(".test.ts")
@@ -70,8 +93,16 @@ fn resolve_owning_package_id(
     repo_root: &Path,
     build_snapshot: &CurrentBuildSnapshot,
     fallback_package_dirs: &[String],
+    is_rust: bool,
 ) -> Option<String> {
     if let Some(pkgs) = build_snapshot.contains_file_to_packages.get(canon_path) {
+        if is_rust {
+            if let Some(cargo_pkg) = pkgs.iter().find(|p| p.starts_with("pkg:cargo:")) {
+                return Some(cargo_pkg.clone());
+            }
+        } else if let Some(npm_pkg) = pkgs.iter().find(|p| p.starts_with("pkg:npm:")) {
+            return Some(npm_pkg.clone());
+        }
         if let Some(first) = pkgs.first() {
             return Some(first.clone());
         }
@@ -99,7 +130,17 @@ fn resolve_owning_package_id(
     }
 
     if let Some(d) = best_match {
-        return Some(format!("pkg:npm:{}", if d.is_empty() { "." } else { d }));
+        let scopes = fallback_scope_ids_for_dir(repo_root, d);
+        if is_rust {
+            if let Some(cargo_scope) = scopes.iter().find(|s| s.starts_with("pkg:cargo:")) {
+                return Some(cargo_scope.clone());
+            }
+        } else if let Some(npm_scope) = scopes.iter().find(|s| s.starts_with("pkg:npm:")) {
+            return Some(npm_scope.clone());
+        }
+        if let Some(first) = scopes.first() {
+            return Some(first.clone());
+        }
     }
 
     // Check enclosing directories for package.json / Cargo.toml
@@ -108,6 +149,12 @@ fn resolve_owning_package_id(
         let parent_str = parent.to_string_lossy().to_string();
         if parent_str.is_empty() {
             break;
+        }
+        if is_rust && repo_root.join(parent).join("Cargo.toml").exists() {
+            return Some(format!("pkg:cargo:{}", parent_str));
+        }
+        if !is_rust && repo_root.join(parent).join("package.json").exists() {
+            return Some(format!("pkg:npm:{}", parent_str));
         }
         if repo_root.join(parent).join("package.json").exists() {
             return Some(format!("pkg:npm:{}", parent_str));
@@ -523,6 +570,7 @@ pub fn discover_tests_and_checks(repo_root: &Path) -> TestInventory {
                 repo_root,
                 &build_snapshot,
                 &fallback_build_inv.package_dirs,
+                is_rs_test,
             );
 
             // Independent fallback collection (does NOT stop when exact test enumeration truncates)

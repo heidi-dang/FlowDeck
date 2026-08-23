@@ -37,49 +37,70 @@ fn git_commit_all(path: &Path, msg: &str) {
 }
 
 #[test]
-fn test_discovery_walker_error_recorded_and_fails_closed() {
+fn test_discovery_walker_error_without_suite_yields_unverified_with_unresolved_obligation() {
     let temp = TempDir::new().unwrap();
     let root = temp.path();
     init_git_repo(root);
 
-    fs::create_dir_all(root.join("src")).unwrap();
-    fs::create_dir_all(root.join("tests")).unwrap();
-    fs::write(
-        root.join("package.json"),
-        r#"{"name": "test-pkg", "scripts": {"test": "vitest"}}"#,
-    )
-    .unwrap();
-    fs::write(root.join("src/index.ts"), "export const a = 1;").unwrap();
-    fs::write(root.join("tests/index.test.ts"), "test('a', () => {});").unwrap();
+    let pkg_dir = root.join("packages/nosuite");
+    fs::create_dir_all(pkg_dir.join("src")).unwrap();
+    fs::create_dir_all(pkg_dir.join("tests")).unwrap();
+
+    // No test script
+    fs::write(pkg_dir.join("package.json"), r#"{"name": "@my/nosuite"}"#).unwrap();
+    fs::write(pkg_dir.join("src/index.ts"), "export const a = 1;").unwrap();
+    fs::write(pkg_dir.join("tests/index.test.ts"), "test('a', () => {});").unwrap();
     git_commit_all(root, "initial");
 
-    // 1. Direct discovery with walker error
-    let inv =
-        with_test_discovery_walker_error(Some("Injected I/O walker failure".to_string()), || {
-            discover_tests_and_checks(root)
-        });
+    fs::write(pkg_dir.join("src/index.ts"), "export const a = 2;").unwrap();
 
-    match inv.state {
-        DiscoveryState::Incomplete { issues } => {
-            assert!(issues
-                .iter()
-                .any(|i| i.kind == "walker_error"
-                    && i.message.contains("Injected I/O walker failure")));
-        }
-        _ => panic!("Expected DiscoveryState::Incomplete on walker error"),
-    }
-
-    // 2. Planner under walker error emits uncertainty and degrades assurance safely
     let plan =
         with_test_discovery_walker_error(Some("Injected I/O walker failure".to_string()), || {
-            plan_verification(root, None, None, None).unwrap()
+            plan_verification(root, Some("HEAD"), None, None).unwrap()
+        });
+
+    assert_eq!(
+        plan.assurance,
+        AssuranceLevel::Unverified,
+        "Must be UNVERIFIED when discovery fails without enclosing suite"
+    );
+    assert!(
+        !plan.unresolved_obligations.is_empty(),
+        "Must record unresolved verification obligation"
+    );
+}
+
+#[test]
+fn test_discovery_walker_error_with_suite_retains_suite_check() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path();
+    init_git_repo(root);
+
+    let pkg_dir = root.join("packages/withsuite");
+    fs::create_dir_all(pkg_dir.join("src")).unwrap();
+    fs::create_dir_all(pkg_dir.join("tests")).unwrap();
+
+    fs::write(
+        pkg_dir.join("package.json"),
+        r#"{"name": "@my/withsuite", "scripts": {"test": "vitest"}}"#,
+    )
+    .unwrap();
+    fs::write(pkg_dir.join("src/index.ts"), "export const a = 1;").unwrap();
+    fs::write(pkg_dir.join("tests/index.test.ts"), "test('a', () => {});").unwrap();
+    git_commit_all(root, "initial");
+
+    fs::write(pkg_dir.join("src/index.ts"), "export const a = 2;").unwrap();
+
+    let plan =
+        with_test_discovery_walker_error(Some("Injected I/O walker failure".to_string()), || {
+            plan_verification(root, Some("HEAD"), None, None).unwrap()
         });
 
     assert!(plan
-        .uncertainty
+        .selected_checks
         .iter()
-        .any(|u| u.code() == "build_limit_reached" || u.code().contains("limit")));
-    assert_ne!(plan.assurance, AssuranceLevel::Exact);
+        .any(|c| c.check_id == "check:pkg:npm:packages/withsuite:test"));
+    assert!(plan.unresolved_obligations.is_empty());
 }
 
 #[test]

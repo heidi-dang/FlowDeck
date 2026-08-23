@@ -12,8 +12,9 @@ use crate::intelligence::change::traverse::{analyze_impact_v2, TraverseError};
 use crate::intelligence::change::uncertainty::{compute_result_assurance, UncertaintyReason};
 use crate::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use crate::intelligence::testplan::bounds::get_active_test_plan_limits;
-use crate::intelligence::testplan::discover::discover_tests_and_checks;
-// static config analysis handled in discover
+use crate::intelligence::testplan::discover::{
+    discover_tests_and_checks, fallback_scope_ids_for_dir,
+};
 use crate::intelligence::testplan::mapping::resolve_test_mappings;
 use crate::intelligence::testplan::model::*;
 use crate::intelligence::testplan::policy::VerificationPolicy;
@@ -43,6 +44,11 @@ pub fn plan_verification(
     if inventory.truncated {
         uncertainties.push(UncertaintyReason::BuildLimitReached(
             "Test discovery reached maximum bounded test limit".to_string(),
+        ));
+    }
+    if inventory.fallback.truncated {
+        uncertainties.push(UncertaintyReason::BuildLimitReached(
+            "Fallback test inventory reached maximum boundary limit".to_string(),
         ));
     }
 
@@ -125,10 +131,9 @@ pub fn plan_verification(
             } else {
                 for pkg_dir in &fallback_build_inv.package_dirs {
                     if imp.target.starts_with(pkg_dir) {
-                        impacted_packages.insert(format!(
-                            "pkg:npm:{}",
-                            if pkg_dir.is_empty() { "." } else { pkg_dir }
-                        ));
+                        for scope_id in fallback_scope_ids_for_dir(repo_root, pkg_dir) {
+                            impacted_packages.insert(scope_id);
+                        }
                     }
                 }
             }
@@ -144,10 +149,9 @@ pub fn plan_verification(
         } else {
             for pkg_dir in &fallback_build_inv.package_dirs {
                 if ch.file.starts_with(pkg_dir) {
-                    impacted_packages.insert(format!(
-                        "pkg:npm:{}",
-                        if pkg_dir.is_empty() { "." } else { pkg_dir }
-                    ));
+                    for scope_id in fallback_scope_ids_for_dir(repo_root, pkg_dir) {
+                        impacted_packages.insert(scope_id);
+                    }
                 }
             }
         }
@@ -183,10 +187,9 @@ pub fn plan_verification(
             impacted_packages.insert(check.owning_scope_id.clone());
         }
         for pkg_dir in &fallback_build_inv.package_dirs {
-            impacted_packages.insert(format!(
-                "pkg:npm:{}",
-                if pkg_dir.is_empty() { "." } else { pkg_dir }
-            ));
+            for scope_id in fallback_scope_ids_for_dir(repo_root, pkg_dir) {
+                impacted_packages.insert(scope_id);
+            }
         }
         for scope in &inventory.fallback.package_test_scopes {
             impacted_packages.insert(scope.clone());
@@ -194,6 +197,7 @@ pub fn plan_verification(
     }
 
     let mut direct_tests_selected = HashSet::new();
+    let mut relevant_stale_mapping_detected = false;
 
     // 4. Direct symbol & file test mappings (SCIP references, filename rules)
     for ch in &impact_result.changes {
@@ -207,6 +211,14 @@ pub fn plan_verification(
         for target_key in &target_keys {
             if let Some(edges) = target_to_test_edges.get(target_key.as_str()) {
                 for edge in edges {
+                    if edge.stale {
+                        relevant_stale_mapping_detected = true;
+                        uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                            "Test mapping edge {} for {} is stale",
+                            edge.provider_id, ch.file
+                        )));
+                    }
+
                     let test_file = edge
                         .test_node
                         .strip_prefix("file:")
@@ -214,7 +226,8 @@ pub fn plan_verification(
                     let check_id = if edge.test_node.starts_with("test:") {
                         edge.test_node.clone()
                     } else {
-                        format!("test:npm:{}", test_file)
+                        let is_rs = test_file.ends_with(".rs");
+                        format!("test:{}:{}", if is_rs { "cargo" } else { "npm" }, test_file)
                     };
 
                     let kind = if test_file.contains("/tests/") || test_file.contains("tests/") {
@@ -349,6 +362,7 @@ pub fn plan_verification(
 
     // 6. Policy widening: if semantic evidence is missing, stale, or dynamic config detected, widen to package tests
     let has_fresh_scip = has_db
+        && !relevant_stale_mapping_detected
         && !uncertainties.iter().any(|u| {
             matches!(
                 u,
@@ -360,7 +374,9 @@ pub fn plan_verification(
         });
 
     let needs_package_widening = !has_fresh_scip
+        || relevant_stale_mapping_detected
         || inventory.truncated
+        || inventory.fallback.truncated
         || mapping_resolution.truncated
         || !mapping_resolution.errors.is_empty()
         || matches!(
@@ -463,23 +479,104 @@ pub fn plan_verification(
         }
     }
 
-    // 8. Handle exact test discovery truncation safety (Fail-closed obligation preservation)
+    // 8. General fail-closed handling of incomplete verification domains
+    // If any discovery truncation, walker error, read error, or unparseable/dynamic config
+    // can hide test domain membership without an enclosing executable test suite script,
+    // generate typed UnresolvedVerificationObligation and force UNVERIFIED.
+    let mut incomplete_scopes: HashSet<(String, String, String)> = HashSet::new();
+
     if inventory.truncated {
         for pkg_scope in &impacted_packages {
-            let has_package_suite = inventory.checks.iter().any(|c| {
-                &c.owning_scope_id == pkg_scope
-                    && (c.kind == VerificationCheckKind::UnitTest
-                        || c.kind == VerificationCheckKind::IntegrationTest
-                        || c.kind == VerificationCheckKind::EndToEndTest)
-            });
+            incomplete_scopes.insert((
+                pkg_scope.clone(),
+                "exact test discovery truncated and no package test suite script exists to enclose omitted tests".to_string(),
+                "discovery_limit".to_string(),
+            ));
+        }
+    }
 
-            if !has_package_suite {
-                unresolved_obligations.push(UnresolvedVerificationObligation {
-                    scope: pkg_scope.clone(),
-                    reason: "exact test discovery truncated and no package test suite script exists to enclose omitted tests".to_string(),
-                    source: "discovery_limit".to_string(),
-                });
+    if inventory.fallback.truncated {
+        for pkg_scope in &impacted_packages {
+            incomplete_scopes.insert((
+                pkg_scope.clone(),
+                "fallback test boundary inventory truncated without enclosing suite".to_string(),
+                "fallback_limit".to_string(),
+            ));
+        }
+    }
+
+    if let DiscoveryState::Incomplete { ref issues } | DiscoveryState::Failed { ref issues } =
+        inventory.state
+    {
+        for issue in issues {
+            if let Some(ref p) = issue.path {
+                let matching_scopes =
+                    if let Some(pkgs) = build_snapshot.contains_file_to_packages.get(p) {
+                        pkgs.clone()
+                    } else {
+                        let mut scs = Vec::new();
+                        for pkg_dir in &fallback_build_inv.package_dirs {
+                            if p.starts_with(pkg_dir) {
+                                scs.extend(fallback_scope_ids_for_dir(repo_root, pkg_dir));
+                            }
+                        }
+                        if scs.is_empty() {
+                            if let Some(parent) = Path::new(p).parent() {
+                                let p_str = parent.to_string_lossy();
+                                if !p_str.is_empty() {
+                                    scs.extend(fallback_scope_ids_for_dir(repo_root, &p_str));
+                                }
+                            }
+                        }
+                        scs
+                    };
+
+                for sc in matching_scopes {
+                    if impacted_packages.contains(&sc) || root_config_changed {
+                        incomplete_scopes.insert((
+                            sc,
+                            format!(
+                                "test discovery {} at {} may hide required tests",
+                                issue.kind, p
+                            ),
+                            issue.kind.clone(),
+                        ));
+                    }
+                }
+            } else {
+                // Global issue without specific path (e.g. walker_error)
+                for pkg_scope in &impacted_packages {
+                    incomplete_scopes.insert((
+                        pkg_scope.clone(),
+                        format!("global test discovery {}: {}", issue.kind, issue.message),
+                        issue.kind.clone(),
+                    ));
+                }
+                if impacted_packages.is_empty() {
+                    incomplete_scopes.insert((
+                        "workspace:root".to_string(),
+                        format!("global test discovery {}: {}", issue.kind, issue.message),
+                        issue.kind.clone(),
+                    ));
+                }
             }
+        }
+    }
+
+    for (scope, reason, source) in incomplete_scopes {
+        let has_enclosing_suite = inventory.checks.iter().any(|c| {
+            c.owning_scope_id == scope
+                && (c.kind == VerificationCheckKind::UnitTest
+                    || c.kind == VerificationCheckKind::IntegrationTest
+                    || c.kind == VerificationCheckKind::EndToEndTest)
+        });
+
+        if !has_enclosing_suite {
+            unresolved_obligations.push(UnresolvedVerificationObligation {
+                scope,
+                reason,
+                source,
+            });
         }
     }
 
