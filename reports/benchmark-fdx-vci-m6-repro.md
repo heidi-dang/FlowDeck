@@ -1,21 +1,21 @@
 # Milestone 6 Verification Planner Benchmark Report
 
-**Functional Source SHA:** f151a9de7fb1776b705d04c5fdcda2662c51f238
-**Binary Source SHA:** f151a9de7fb1776b705d04c5fdcda2662c51f238
-**Benchmark Harness SHA:** 2e5cfe8e19742e8e99ca20414740396087129f79
-**Timestamp:** 2026-08-23T04:15:05.319Z
+**Functional Source SHA:** 8b6ebba9b01b1d452229019c9a04f3ab18216049
+**Binary Source SHA:** 8b6ebba9b01b1d452229019c9a04f3ab18216049
+**Benchmark Harness SHA:** 042d034cb322ac6faa3dde6f9c5f203eb2c37b34
+**Timestamp:** 2026-08-23T08:06:12.678Z
 
 ## Performance Benchmark Timing Table
 
 | Scenario | Count | Min (ms) | Median (ms) | P95 (ms) | Max (ms) | Mean (ms) |
 |:---|:---:|:---:|:---:|:---:|:---:|:---:|
-| precise_semantic_test_mapping | 10 | 16.53 | 18.96 | 19.09 | 19.09 | 18.47 |
-| build_transitive_test_mapping | 10 | 57.96 | 63.15 | 63.7 | 63.7 | 60.98 |
-| deleted_symbol_old_current_union | 10 | 49.69 | 50.05 | 51.14 | 51.14 | 50.11 |
-| stale_semantic_package_widening | 10 | 56.99 | 57.23 | 59.08 | 59.08 | 57.4 |
-| root_config_workspace_widening | 10 | 18.43 | 63.71 | 64.49 | 64.49 | 46.96 |
-| dynamic_test_config_fallback | 10 | 32.49 | 57.18 | 57.99 | 57.99 | 47.67 |
-| mapping_bound_safe_widening | 10 | 65.31 | 70.92 | 72.08 | 72.08 | 69.4 |
-| mapping_failure_preserves_last_good | 10 | 49.8 | 50.31 | 51.53 | 51.53 | 50.52 |
-| disconnected_scope_isolation | 10 | 63.28 | 69.29 | 70.04 | 70.04 | 68.32 |
-| planner_why_explanation | 10 | 14.48 | 50.17 | 51.29 | 51.29 | 42.21 |
+| precise_semantic_test_mapping | 10 | 13.56 | 14.95 | 27.64 | 27.64 | 16.72 |
+| build_transitive_test_mapping | 10 | 66.09 | 66.98 | 69.06 | 69.06 | 67.11 |
+| deleted_symbol_old_current_union | 10 | 26.11 | 27.39 | 45.24 | 45.24 | 30.2 |
+| stale_semantic_package_widening | 10 | 13.72 | 15.63 | 25.03 | 25.03 | 17.89 |
+| root_config_workspace_widening | 10 | 19.41 | 33.22 | 63.95 | 63.95 | 37.12 |
+| dynamic_test_config_fallback | 10 | 18.43 | 29.14 | 44.71 | 44.71 | 29.97 |
+| mapping_bound_safe_widening | 10 | 22.32 | 28.11 | 56.35 | 56.35 | 35.4 |
+| mapping_failure_preserves_last_good | 10 | 37.78 | 40.26 | 41.44 | 41.44 | 40.08 |
+| disconnected_scope_isolation | 10 | 23.91 | 28.84 | 44.73 | 44.73 | 32.49 |
+| planner_why_explanation | 10 | 31.05 | 31.26 | 31.68 | 31.68 | 31.31 |
