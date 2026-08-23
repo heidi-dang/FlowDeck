@@ -1,8 +1,6 @@
 //! Static read-only workspace and configuration discovery.
 
-use crate::intelligence::build::bounds::{
-    get_active_build_limits, get_test_walker_error, BuildLimits,
-};
+use crate::intelligence::build::bounds::{get_active_build_limits, get_test_walker_error, BuildLimits};
 use crate::protocol::canonicalize_repo_path;
 use ignore::WalkBuilder;
 use std::path::Path;
@@ -50,6 +48,7 @@ pub fn discover_build_files_with_limits(repo_root: &Path, limits: &BuildLimits) 
         .hidden(true)
         .git_ignore(true)
         .require_git(false)
+        .sort_by_file_path(|a, b| a.cmp(b))
         .build();
 
     for res in walker {
@@ -121,6 +120,8 @@ pub fn discover_build_files_with_limits(repo_root: &Path, limits: &BuildLimits) 
 #[derive(Debug, Clone, Default)]
 pub struct FallbackBuildInventory {
     pub package_dirs: Vec<String>,
+    pub config_dirs: Vec<String>,
+    pub config_paths: Vec<String>,
     pub truncated: bool,
     pub walker_errors: Vec<String>,
 }
@@ -147,6 +148,7 @@ pub fn discover_fallback_build_inventory_with_limits(
         .hidden(true)
         .git_ignore(true)
         .require_git(false)
+        .sort_by_file_path(|a, b| a.cmp(b))
         .build();
 
     for res in walker {
@@ -172,7 +174,8 @@ pub fn discover_fallback_build_inventory_with_limits(
                         .unwrap_or(".");
                     let dir_str = if dir.is_empty() { "." } else { dir }.to_string();
                     if !inventory.package_dirs.contains(&dir_str) {
-                        if inventory.package_dirs.len() < limits.fallback_inventory_entries {
+                        let total_entries = inventory.package_dirs.len() + inventory.config_paths.len();
+                        if total_entries < limits.fallback_inventory_entries {
                             inventory.package_dirs.push(dir_str);
                         } else {
                             inventory.truncated = true;
@@ -187,9 +190,42 @@ pub fn discover_fallback_build_inventory_with_limits(
                     ));
                 }
             }
+        } else if file_name == "tsconfig.json"
+            || (file_name.starts_with("tsconfig.") && file_name.ends_with(".json"))
+            || (file_name.starts_with("tsconfig-") && file_name.ends_with(".json"))
+        {
+            match canonicalize_repo_path(path, repo_root) {
+                Ok(canon) => {
+                    let dir = Path::new(&canon)
+                        .parent()
+                        .and_then(|p| p.to_str())
+                        .unwrap_or(".");
+                    let dir_str = if dir.is_empty() { "." } else { dir }.to_string();
+                    let total_entries = inventory.package_dirs.len() + inventory.config_paths.len();
+                    if total_entries < limits.fallback_inventory_entries {
+                        if !inventory.config_paths.contains(&canon) {
+                            inventory.config_paths.push(canon);
+                        }
+                        if !inventory.config_dirs.contains(&dir_str) {
+                            inventory.config_dirs.push(dir_str);
+                        }
+                    } else {
+                        inventory.truncated = true;
+                    }
+                }
+                Err(e) => {
+                    inventory.walker_errors.push(format!(
+                        "Canonicalization failed for {}: {}",
+                        path.display(),
+                        e
+                    ));
+                }
+            }
         }
     }
 
     inventory.package_dirs.sort();
+    inventory.config_dirs.sort();
+    inventory.config_paths.sort();
     inventory
 }

@@ -1395,17 +1395,41 @@ pub fn analyze_impact_v2(
                         }
                     }
                 }
+                UncertaintyScope::Config(cfg_path) => {
+                    let is_affected = affected_identities
+                        .iter()
+                        .any(|id| id == cfg_path || id.contains(cfg_path) || id.starts_with("config:"));
+                    if is_affected {
+                        let parent_dir = Path::new(cfg_path).parent().and_then(|p| p.to_str()).unwrap_or("");
+                        let parent_dir_str = if parent_dir.is_empty() { ".".to_string() } else { parent_dir.to_string() };
+                        if !impacted_map.contains_key(&parent_dir_str) {
+                            impacted_map.insert(
+                                parent_dir_str.clone(),
+                                ImpactedTarget {
+                                    target: parent_dir_str,
+                                    target_kind: NodeKind::Config,
+                                    depth: 1,
+                                    strength: EvidenceStrength::Heuristic,
+                                    primary_path: None,
+                                    alternate_paths: Vec::new(),
+                                    alternate_path_count: 0,
+                                    widening_reason: Some(unc.code.clone()),
+                                },
+                            );
+                        }
+                    }
+                }
                 UncertaintyScope::Repository => {
-                    // Widen to all known packages in snapshot AND fallback inventory
+                    // Widen to all known packages and configs in snapshot AND fallback inventory
                     for node in current_build_snapshot.nodes.values() {
-                        if node.kind == NodeKind::Package {
+                        if node.kind == NodeKind::Package || node.kind == NodeKind::Config {
                             if let Some(ref cpath) = node.canonical_path {
                                 if !impacted_map.contains_key(cpath) {
                                     impacted_map.insert(
                                         cpath.clone(),
                                         ImpactedTarget {
                                             target: cpath.clone(),
-                                            target_kind: NodeKind::Package,
+                                            target_kind: node.kind,
                                             depth: 1,
                                             strength: EvidenceStrength::Heuristic,
                                             primary_path: None,
@@ -1440,6 +1464,23 @@ pub fn analyze_impact_v2(
                                 ImpactedTarget {
                                     target: fallback_pkg,
                                     target_kind: NodeKind::Package,
+                                    depth: 1,
+                                    strength: EvidenceStrength::Heuristic,
+                                    primary_path: None,
+                                    alternate_paths: Vec::new(),
+                                    alternate_path_count: 0,
+                                    widening_reason: Some(unc.code.clone()),
+                                },
+                            );
+                        }
+                    }
+                    for fallback_cfg in fallback.config_dirs {
+                        if !impacted_map.contains_key(&fallback_cfg) {
+                            impacted_map.insert(
+                                fallback_cfg.clone(),
+                                ImpactedTarget {
+                                    target: fallback_cfg,
+                                    target_kind: NodeKind::Config,
                                     depth: 1,
                                     strength: EvidenceStrength::Heuristic,
                                     primary_path: None,

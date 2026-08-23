@@ -631,32 +631,36 @@ impl BuildConfigProvider for CargoProvider {
             };
 
             if is_member {
-                // Edge: workspace CONTAINS package
-                bounds.push_bounded_edge(
-                    &mut res.edges,
-                    &mut res.uncertainties,
-                    BuildEdge {
-                        stable_id: format!("edge:contains:{}:{}", ws_stable_id, pkg_stable_id),
-                        from_node: ws_stable_id.clone(),
-                        to_node: pkg_stable_id.clone(),
-                        kind: EdgeKind::Contains,
-                        provider: "build_native".to_string(),
-                        provider_id: CARGO_PROVIDER_ID.to_string(),
-                        provider_fingerprint: scope_fp.clone(),
-                        strength: EvidenceStrength::Structural,
-                        metadata: None,
-                    },
-                    limits.edges,
-                    CARGO_PROVIDER_ID,
-                    UncertaintyScope::Workspace(ws_stable_id.clone()),
-                );
-
-                if let Some(ws) = res.workspaces.first_mut() {
+                let member_admitted = if let Some(ws) = res.workspaces.first_mut() {
                     bounds.push_bounded_workspace_member(
                         &mut ws.members,
                         &mut res.uncertainties,
                         pkg_stable_id.clone(),
                         limits.workspace_members,
+                        CARGO_PROVIDER_ID,
+                        UncertaintyScope::Workspace(ws_stable_id.clone()),
+                    )
+                } else {
+                    false
+                };
+
+                if member_admitted {
+                    // Edge: workspace CONTAINS package
+                    bounds.push_bounded_edge(
+                        &mut res.edges,
+                        &mut res.uncertainties,
+                        BuildEdge {
+                            stable_id: format!("edge:contains:{}:{}", ws_stable_id, pkg_stable_id),
+                            from_node: ws_stable_id.clone(),
+                            to_node: pkg_stable_id.clone(),
+                            kind: EdgeKind::Contains,
+                            provider: "build_native".to_string(),
+                            provider_id: CARGO_PROVIDER_ID.to_string(),
+                            provider_fingerprint: scope_fp.clone(),
+                            strength: EvidenceStrength::Structural,
+                            metadata: None,
+                        },
+                        limits.edges,
                         CARGO_PROVIDER_ID,
                         UncertaintyScope::Workspace(ws_stable_id.clone()),
                     );
@@ -718,7 +722,7 @@ impl BuildConfigProvider for CargoProvider {
             if parsed.has_lib || repo_root.join(&lib_file).exists() {
                 let lib_id = format!("build:{}:lib:{}", pkg_stable_id, pkg_name);
                 target_ids.push(lib_id.clone());
-                bounds.push_bounded_target(
+                let admitted = bounds.push_bounded_target(
                     &mut res.targets,
                     &mut res.uncertainties,
                     BuildTarget {
@@ -736,32 +740,34 @@ impl BuildConfigProvider for CargoProvider {
                     UncertaintyScope::Package(dir_str.clone()),
                 );
 
-                res.nodes.push(BuildNode {
-                    stable_id: lib_id.clone(),
-                    kind: NodeKind::BuildTarget,
-                    canonical_path: Some(lib_file),
-                    metadata: Some(
-                        serde_json::json!({ "target_kind": "lib", "name": pkg_name }).to_string(),
-                    ),
-                });
-                bounds.push_bounded_edge(
-                    &mut res.edges,
-                    &mut res.uncertainties,
-                    BuildEdge {
-                        stable_id: format!("edge:belongs_to:{}:{}", lib_id, pkg_stable_id),
-                        from_node: lib_id,
-                        to_node: pkg_stable_id.clone(),
-                        kind: EdgeKind::BelongsTo,
-                        provider: "build_native".to_string(),
-                        provider_id: CARGO_PROVIDER_ID.to_string(),
-                        provider_fingerprint: scope_fp.clone(),
-                        strength: EvidenceStrength::Structural,
-                        metadata: None,
-                    },
-                    limits.edges,
-                    CARGO_PROVIDER_ID,
-                    UncertaintyScope::Package(dir_str.clone()),
-                );
+                if admitted {
+                    res.nodes.push(BuildNode {
+                        stable_id: lib_id.clone(),
+                        kind: NodeKind::BuildTarget,
+                        canonical_path: Some(lib_file),
+                        metadata: Some(
+                            serde_json::json!({ "target_kind": "lib", "name": pkg_name }).to_string(),
+                        ),
+                    });
+                    bounds.push_bounded_edge(
+                        &mut res.edges,
+                        &mut res.uncertainties,
+                        BuildEdge {
+                            stable_id: format!("edge:belongs_to:{}:{}", lib_id, pkg_stable_id),
+                            from_node: lib_id,
+                            to_node: pkg_stable_id.clone(),
+                            kind: EdgeKind::BelongsTo,
+                            provider: "build_native".to_string(),
+                            provider_id: CARGO_PROVIDER_ID.to_string(),
+                            provider_fingerprint: scope_fp.clone(),
+                            strength: EvidenceStrength::Structural,
+                            metadata: None,
+                        },
+                        limits.edges,
+                        CARGO_PROVIDER_ID,
+                        UncertaintyScope::Package(dir_str.clone()),
+                    );
+                }
             }
 
             // Binary targets
@@ -788,7 +794,7 @@ impl BuildConfigProvider for CargoProvider {
 
                 let bin_id = format!("build:{}:bin:{}", pkg_stable_id, bin_name);
                 target_ids.push(bin_id.clone());
-                bounds.push_bounded_target(
+                let admitted = bounds.push_bounded_target(
                     &mut res.targets,
                     &mut res.uncertainties,
                     BuildTarget {
@@ -806,32 +812,34 @@ impl BuildConfigProvider for CargoProvider {
                     UncertaintyScope::Package(dir_str.clone()),
                 );
 
-                res.nodes.push(BuildNode {
-                    stable_id: bin_id.clone(),
-                    kind: NodeKind::BuildTarget,
-                    canonical_path: Some(main_file.clone()),
-                    metadata: Some(
-                        serde_json::json!({ "target_kind": "bin", "name": bin_name }).to_string(),
-                    ),
-                });
-                bounds.push_bounded_edge(
-                    &mut res.edges,
-                    &mut res.uncertainties,
-                    BuildEdge {
-                        stable_id: format!("edge:belongs_to:{}:{}", bin_id, pkg_stable_id),
-                        from_node: bin_id,
-                        to_node: pkg_stable_id.clone(),
-                        kind: EdgeKind::BelongsTo,
-                        provider: "build_native".to_string(),
-                        provider_id: CARGO_PROVIDER_ID.to_string(),
-                        provider_fingerprint: scope_fp.clone(),
-                        strength: EvidenceStrength::Structural,
-                        metadata: None,
-                    },
-                    limits.edges,
-                    CARGO_PROVIDER_ID,
-                    UncertaintyScope::Package(dir_str.clone()),
-                );
+                if admitted {
+                    res.nodes.push(BuildNode {
+                        stable_id: bin_id.clone(),
+                        kind: NodeKind::BuildTarget,
+                        canonical_path: Some(main_file.clone()),
+                        metadata: Some(
+                            serde_json::json!({ "target_kind": "bin", "name": bin_name }).to_string(),
+                        ),
+                    });
+                    bounds.push_bounded_edge(
+                        &mut res.edges,
+                        &mut res.uncertainties,
+                        BuildEdge {
+                            stable_id: format!("edge:belongs_to:{}:{}", bin_id, pkg_stable_id),
+                            from_node: bin_id,
+                            to_node: pkg_stable_id.clone(),
+                            kind: EdgeKind::BelongsTo,
+                            provider: "build_native".to_string(),
+                            provider_id: CARGO_PROVIDER_ID.to_string(),
+                            provider_fingerprint: scope_fp.clone(),
+                            strength: EvidenceStrength::Structural,
+                            metadata: None,
+                        },
+                        limits.edges,
+                        CARGO_PROVIDER_ID,
+                        UncertaintyScope::Package(dir_str.clone()),
+                    );
+                }
             }
 
             // Build script target
@@ -859,7 +867,7 @@ impl BuildConfigProvider for CargoProvider {
                 };
                 let build_rs_id = format!("build:{}:custom:build_rs", pkg_stable_id);
                 target_ids.push(build_rs_id.clone());
-                bounds.push_bounded_target(
+                let admitted = bounds.push_bounded_target(
                     &mut res.targets,
                     &mut res.uncertainties,
                     BuildTarget {
@@ -877,33 +885,35 @@ impl BuildConfigProvider for CargoProvider {
                     UncertaintyScope::Package(dir_str.clone()),
                 );
 
-                res.nodes.push(BuildNode {
-                    stable_id: build_rs_id.clone(),
-                    kind: NodeKind::BuildTarget,
-                    canonical_path: Some(build_rs_file.clone()),
-                    metadata: Some(
-                        serde_json::json!({ "target_kind": "custom", "name": "build_rs" })
-                            .to_string(),
-                    ),
-                });
-                bounds.push_bounded_edge(
-                    &mut res.edges,
-                    &mut res.uncertainties,
-                    BuildEdge {
-                        stable_id: format!("edge:belongs_to:{}:{}", build_rs_id, pkg_stable_id),
-                        from_node: build_rs_id,
-                        to_node: pkg_stable_id.clone(),
-                        kind: EdgeKind::BelongsTo,
-                        provider: "build_native".to_string(),
-                        provider_id: CARGO_PROVIDER_ID.to_string(),
-                        provider_fingerprint: scope_fp.clone(),
-                        strength: EvidenceStrength::Structural,
-                        metadata: None,
-                    },
-                    limits.edges,
-                    CARGO_PROVIDER_ID,
-                    UncertaintyScope::Package(dir_str.clone()),
-                );
+                if admitted {
+                    res.nodes.push(BuildNode {
+                        stable_id: build_rs_id.clone(),
+                        kind: NodeKind::BuildTarget,
+                        canonical_path: Some(build_rs_file.clone()),
+                        metadata: Some(
+                            serde_json::json!({ "target_kind": "custom", "name": "build_rs" })
+                                .to_string(),
+                        ),
+                    });
+                    bounds.push_bounded_edge(
+                        &mut res.edges,
+                        &mut res.uncertainties,
+                        BuildEdge {
+                            stable_id: format!("edge:belongs_to:{}:{}", build_rs_id, pkg_stable_id),
+                            from_node: build_rs_id,
+                            to_node: pkg_stable_id.clone(),
+                            kind: EdgeKind::BelongsTo,
+                            provider: "build_native".to_string(),
+                            provider_id: CARGO_PROVIDER_ID.to_string(),
+                            provider_fingerprint: scope_fp.clone(),
+                            strength: EvidenceStrength::Structural,
+                            metadata: None,
+                        },
+                        limits.edges,
+                        CARGO_PROVIDER_ID,
+                        UncertaintyScope::Package(dir_str.clone()),
+                    );
+                }
             }
 
             // Path dependencies (direct and via workspace.dependencies)
