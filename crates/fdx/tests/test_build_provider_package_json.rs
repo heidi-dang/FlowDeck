@@ -62,7 +62,7 @@ fn test_package_json_workspace_and_dependencies() {
 
     // Workspaces
     assert_eq!(result.workspaces.len(), 1);
-    assert_eq!(result.workspaces[0].stable_id, "workspace:.");
+    assert_eq!(result.workspaces[0].stable_id, "workspace:npm:.");
 
     // Packages
     assert_eq!(result.packages.len(), 2);

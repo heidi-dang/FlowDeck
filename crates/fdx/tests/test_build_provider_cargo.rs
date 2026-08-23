@@ -66,7 +66,7 @@ core = { path = "../core" }
 
     // Workspace
     assert_eq!(result.workspaces.len(), 1);
-    assert_eq!(result.workspaces[0].stable_id, "workspace:.");
+    assert_eq!(result.workspaces[0].stable_id, "workspace:cargo:.");
 
     // Packages
     assert_eq!(result.packages.len(), 2);

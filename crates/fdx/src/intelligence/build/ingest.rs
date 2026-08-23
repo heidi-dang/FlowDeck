@@ -29,11 +29,46 @@ pub fn refresh_all_build_providers(
     let mut reports = Vec::new();
 
     for prov in providers {
-        if !prov.detect(repo_root) {
+        let pid = prov.id();
+        let detected = prov.detect(repo_root);
+
+        if !detected {
+            // Blocker 5: Provider disappearance retirement
+            // Check if persisted evidence exists for this provider
+            let has_persisted: bool = db
+                .conn
+                .query_row(
+                    "SELECT 1 FROM semantic_providers WHERE provider_id = ?1",
+                    rusqlite::params![pid],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+
+            if has_persisted {
+                match retire_provider_evidence(&mut db, pid) {
+                    Ok(gen) => {
+                        reports.push(BuildIngestReport {
+                            provider_id: pid.to_string(),
+                            nodes: 0,
+                            edges: 0,
+                            generation: gen,
+                            failure_reason: None,
+                        });
+                    }
+                    Err(e) => {
+                        reports.push(BuildIngestReport {
+                            provider_id: pid.to_string(),
+                            nodes: 0,
+                            edges: 0,
+                            generation: 0,
+                            failure_reason: Some(e),
+                        });
+                    }
+                }
+            }
             continue;
         }
 
-        let pid = prov.id();
         let ingest_res = prov.ingest(repo_root);
 
         let report = match ingest_res {
@@ -66,6 +101,60 @@ pub fn refresh_all_build_providers(
     }
 
     Ok(reports)
+}
+
+fn retire_provider_evidence(db: &mut EvidenceDatabase, provider_id: &str) -> Result<u64, String> {
+    let tx = TransactionalGraph::new(&mut db.conn).map_err(|e| e.to_string())?;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+
+    let prev_gen: i64 = tx
+        .tx
+        .query_row(
+            "SELECT semantic_generation FROM semantic_providers WHERE provider_id = ?1",
+            rusqlite::params![provider_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let next_gen = (prev_gen + 1) as u64;
+
+    // 1. Delete all provider-owned edges
+    tx.tx
+        .execute(
+            "DELETE FROM edges WHERE provider_id = ?1 OR (provider = 'build_native' AND source_identity = ?1)",
+            rusqlite::params![provider_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+    // 2. Delete all provider-owned nodes
+    tx.tx
+        .execute(
+            "DELETE FROM nodes WHERE provider = 'build_native' AND source_identity = ?1",
+            rusqlite::params![provider_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+    // 3. Mark provider as retired / absent in semantic_providers
+    tx.tx
+        .execute(
+            "UPDATE semantic_providers SET
+                health = 'misconfigured',
+                freshness = 'stale',
+                failure_reason = 'provider retired: manifests no longer detected',
+                input_fingerprint = '__RETIRED__',
+                config_fingerprint = '__RETIRED__',
+                semantic_generation = ?1,
+                updated_at = ?2
+             WHERE provider_id = ?3",
+            rusqlite::params![next_gen as i64, now, provider_id],
+        )
+        .map_err(|e| e.to_string())?;
+
+    tx.tx.commit().map_err(|e| e.to_string())?;
+    Ok(next_gen)
 }
 
 fn publish_provider_evidence(

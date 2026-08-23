@@ -78,7 +78,7 @@ fn test_npm_non_member_package_excluded_from_workspace_contains_edges() {
     let member_contains: i64 = db
         .conn
         .query_row(
-            "SELECT count(*) FROM edges WHERE from_node = 'workspace:.' AND to_node = 'pkg:npm:packages/member' AND kind = 'contains'",
+            "SELECT count(*) FROM edges WHERE from_node = 'workspace:npm:.' AND to_node = 'pkg:npm:packages/member' AND kind = 'contains'",
             [],
             |r| r.get(0),
         )
@@ -89,7 +89,7 @@ fn test_npm_non_member_package_excluded_from_workspace_contains_edges() {
     let non_member_contains: i64 = db
         .conn
         .query_row(
-            "SELECT count(*) FROM edges WHERE from_node = 'workspace:.' AND to_node = 'pkg:npm:examples/demo' AND kind = 'contains'",
+            "SELECT count(*) FROM edges WHERE from_node = 'workspace:npm:.' AND to_node = 'pkg:npm:examples/demo' AND kind = 'contains'",
             [],
             |r| r.get(0),
         )
@@ -151,7 +151,7 @@ edition = "2021"
     let active_contains: i64 = db
         .conn
         .query_row(
-            "SELECT count(*) FROM edges WHERE from_node = 'workspace:.' AND to_node = 'pkg:cargo:crates/active' AND kind = 'contains'",
+            "SELECT count(*) FROM edges WHERE from_node = 'workspace:cargo:.' AND to_node = 'pkg:cargo:crates/active' AND kind = 'contains'",
             [],
             |r| r.get(0),
         )
@@ -161,7 +161,7 @@ edition = "2021"
     let ignored_contains: i64 = db
         .conn
         .query_row(
-            "SELECT count(*) FROM edges WHERE from_node = 'workspace:.' AND to_node = 'pkg:cargo:crates/ignored' AND kind = 'contains'",
+            "SELECT count(*) FROM edges WHERE from_node = 'workspace:cargo:.' AND to_node = 'pkg:cargo:crates/ignored' AND kind = 'contains'",
             [],
             |r| r.get(0),
         )
