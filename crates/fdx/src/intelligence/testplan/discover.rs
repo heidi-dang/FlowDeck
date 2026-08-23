@@ -7,13 +7,14 @@ use crate::intelligence::build::discover::{
 };
 use crate::intelligence::build::snapshot::CurrentBuildSnapshot;
 use crate::intelligence::testplan::bounds::{
-    get_active_test_plan_limits, get_test_discovery_walker_error,
+    get_active_test_plan_limits, get_test_config_walker_error, get_test_discovery_walker_error,
 };
 use crate::intelligence::testplan::freshness::{analyze_test_config, TestConfigAnalysis};
 use crate::intelligence::testplan::model::*;
 use crate::protocol::canonicalize_repo_path;
 use glob::Pattern;
 use ignore::WalkBuilder;
+use regex::Regex;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
@@ -59,12 +60,11 @@ fn is_rust_test_or_bench(path: &Path, content: &str) -> (bool, bool) {
         return (true, is_bench);
     }
 
-    // Check for inline #[cfg(test)] statically without executing rustc
     let has_cfg_test = content.contains("#[cfg(test)]");
     (has_cfg_test, false)
 }
 
-/// Find owning package for a canonical path, checking build snapshot first, fallback package directories, then filesystem manifests.
+/// Find owning package for a canonical path.
 fn resolve_owning_package_id(
     canon_path: &str,
     repo_root: &Path,
@@ -121,7 +121,7 @@ fn resolve_owning_package_id(
     None
 }
 
-/// Discover tests and checks across the repository.
+/// Single-pass static discovery of tests, checks, configs, and fallback boundaries.
 pub fn discover_tests_and_checks(repo_root: &Path) -> TestInventory {
     let limits = get_active_test_plan_limits();
     let mut inventory = TestInventory::default();
@@ -136,12 +136,22 @@ pub fn discover_tests_and_checks(repo_root: &Path) -> TestInventory {
             message: err,
         });
     }
+    if let Some(err) = get_test_config_walker_error() {
+        issues.push(TestDiscoveryIssue {
+            kind: "config_walker_error".to_string(),
+            path: None,
+            message: err,
+        });
+    }
 
     let build_snapshot = CurrentBuildSnapshot::build(repo_root);
     let fallback_build_inv = discover_fallback_build_inventory(repo_root);
 
-    // 1. Discover static Jest/Vitest config patterns
+    // 1. Single unified config discovery pass
     let mut static_custom_patterns: Vec<(String, Pattern)> = Vec::new();
+    let mut static_custom_regexes: Vec<(String, Regex)> = Vec::new();
+    let mut configured_roots: Vec<(String, String)> = Vec::new();
+
     let config_file_candidates = [
         "vitest.config.ts",
         "vitest.config.js",
@@ -164,14 +174,36 @@ pub fn discover_tests_and_checks(repo_root: &Path) -> TestInventory {
         .build();
 
     for res in config_walker {
-        let Ok(entry) = res else { continue };
+        let entry = match res {
+            Ok(e) => e,
+            Err(err) => {
+                issues.push(TestDiscoveryIssue {
+                    kind: "config_walker_error".to_string(),
+                    path: None,
+                    message: err.to_string(),
+                });
+                continue;
+            }
+        };
+        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            continue;
+        }
         let path = entry.path();
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if config_file_candidates.contains(&file_name) {
-            let Ok(canon) = canonicalize_repo_path(path, repo_root) else {
-                continue;
+            let canon = match canonicalize_repo_path(path, repo_root) {
+                Ok(c) => c,
+                Err(err) => {
+                    issues.push(TestDiscoveryIssue {
+                        kind: "config_canonicalization_error".to_string(),
+                        path: Some(path.to_string_lossy().to_string()),
+                        message: err.to_string(),
+                    });
+                    continue;
+                }
             };
+
             match fs::read_to_string(path) {
                 Ok(content) => match analyze_test_config(path, &content) {
                     TestConfigAnalysis::Static(cfg) => {
@@ -179,6 +211,17 @@ pub fn discover_tests_and_checks(repo_root: &Path) -> TestInventory {
                             .parent()
                             .map(|p| p.to_string_lossy().to_string())
                             .unwrap_or_default();
+
+                        for root_str in cfg.test_roots {
+                            let clean_root = root_str.trim_start_matches("<rootDir>/");
+                            let combined = if cfg_dir.is_empty() || cfg_dir == "." {
+                                clean_root.to_string()
+                            } else {
+                                format!("{}/{}", cfg_dir, clean_root)
+                            };
+                            configured_roots.push((canon.clone(), combined));
+                        }
+
                         for pat_str in cfg.include_patterns {
                             let clean_pat = pat_str.trim_start_matches("<rootDir>/");
                             if let Ok(glob_pat) = Pattern::new(clean_pat) {
@@ -191,10 +234,23 @@ pub fn discover_tests_and_checks(repo_root: &Path) -> TestInventory {
                                 }
                             }
                         }
+
+                        for reg_str in cfg.test_regex_patterns {
+                            if let Ok(re) = Regex::new(&reg_str) {
+                                static_custom_regexes.push((cfg_dir.clone(), re));
+                            }
+                        }
                     }
                     TestConfigAnalysis::Dynamic { reason, .. } => {
                         issues.push(TestDiscoveryIssue {
                             kind: "dynamic_config".to_string(),
+                            path: Some(canon.clone()),
+                            message: reason,
+                        });
+                    }
+                    TestConfigAnalysis::Unsupported { reason, .. } => {
+                        issues.push(TestDiscoveryIssue {
+                            kind: "unsupported_config".to_string(),
                             path: Some(canon.clone()),
                             message: reason,
                         });
@@ -209,7 +265,7 @@ pub fn discover_tests_and_checks(repo_root: &Path) -> TestInventory {
                 },
                 Err(err) => {
                     issues.push(TestDiscoveryIssue {
-                        kind: "read_error".to_string(),
+                        kind: "config_read_error".to_string(),
                         path: Some(canon.clone()),
                         message: err.to_string(),
                     });
@@ -218,130 +274,7 @@ pub fn discover_tests_and_checks(repo_root: &Path) -> TestInventory {
         }
     }
 
-    // 2. Walk directory tree for test files
-    let walker = WalkBuilder::new(repo_root)
-        .hidden(true)
-        .git_ignore(true)
-        .require_git(false)
-        .sort_by_file_path(|a, b| a.cmp(b))
-        .build();
-
-    for res in walker {
-        let entry = match res {
-            Ok(e) => e,
-            Err(err) => {
-                issues.push(TestDiscoveryIssue {
-                    kind: "walker_error".to_string(),
-                    path: None,
-                    message: err.to_string(),
-                });
-                continue;
-            }
-        };
-        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-            continue;
-        }
-        let path = entry.path();
-        let canon = match canonicalize_repo_path(path, repo_root) {
-            Ok(c) => c,
-            Err(err) => {
-                issues.push(TestDiscoveryIssue {
-                    kind: "canonicalization_error".to_string(),
-                    path: Some(path.to_string_lossy().to_string()),
-                    message: err.to_string(),
-                });
-                continue;
-            }
-        };
-
-        if canon.starts_with(".git/")
-            || canon.starts_with(".fdx/")
-            || canon.starts_with("node_modules/")
-            || canon.starts_with("target/")
-        {
-            continue;
-        }
-
-        let mut is_jsts_test = is_js_ts_test_file(path);
-        if !is_jsts_test {
-            for (cfg_dir, pat) in &static_custom_patterns {
-                if pat.matches(&canon) {
-                    is_jsts_test = true;
-                    break;
-                }
-                if !cfg_dir.is_empty() && cfg_dir != "." {
-                    if let Some(rel) = canon.strip_prefix(cfg_dir.as_str()) {
-                        let rel_clean = rel.trim_start_matches('/');
-                        if pat.matches(rel_clean) {
-                            is_jsts_test = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut is_rs_test = false;
-        let mut is_bench = false;
-
-        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-            match fs::read_to_string(path) {
-                Ok(content) => {
-                    let (rs_test, rs_bench) = is_rust_test_or_bench(path, &content);
-                    is_rs_test = rs_test;
-                    is_bench = rs_bench;
-                }
-                Err(err) => {
-                    issues.push(TestDiscoveryIssue {
-                        kind: "read_error".to_string(),
-                        path: Some(canon.clone()),
-                        message: err.to_string(),
-                    });
-                }
-            }
-        }
-
-        if is_jsts_test || is_rs_test {
-            if inventory.tests.len() >= limits.max_discovered_tests {
-                inventory.truncated = true;
-                break;
-            }
-
-            let owning_package_id = resolve_owning_package_id(
-                &canon,
-                repo_root,
-                &build_snapshot,
-                &fallback_build_inv.package_dirs,
-            );
-
-            let ecosystem = if is_rs_test { "cargo" } else { "npm" };
-            let stable_id = format!("test:{}:{}", ecosystem, canon);
-
-            if seen_tests.insert(stable_id.clone()) {
-                let kind = if is_bench {
-                    VerificationCheckKind::Custom
-                } else if canon.contains("/e2e/")
-                    || canon.contains("/e2e.")
-                    || canon.contains(".e2e.")
-                {
-                    VerificationCheckKind::EndToEndTest
-                } else if canon.contains("/tests/") || canon.contains("tests/") {
-                    VerificationCheckKind::IntegrationTest
-                } else {
-                    VerificationCheckKind::UnitTest
-                };
-
-                inventory.tests.push(DiscoveredTest {
-                    stable_id,
-                    canonical_path: canon,
-                    owning_package_id,
-                    kind,
-                });
-            }
-        }
-    }
-
-    // 3. Discover package checks from package.json & Cargo.toml
+    // 2. Discover package checks from manifests
     let build_files = discover_build_files(repo_root);
 
     for pkg_json_path in &build_files.package_jsons {
@@ -452,7 +385,7 @@ pub fn discover_tests_and_checks(repo_root: &Path) -> TestInventory {
         }
     }
 
-    // 4. Build independent bounded FallbackTestInventory
+    // 3. Walk directory tree for concrete test files AND independent fallback boundaries in parallel
     let mut fallback = FallbackTestInventory::default();
     let mut fallback_seen = HashSet::new();
 
@@ -473,45 +406,190 @@ pub fn discover_tests_and_checks(repo_root: &Path) -> TestInventory {
         }
     }
 
-    for test in &inventory.tests {
-        if let Some(ref pkg) = test.owning_package_id {
-            if fallback.package_test_scopes.len() < limits.max_fallback_boundaries {
-                if fallback_seen.insert(pkg.clone()) {
-                    fallback.package_test_scopes.push(pkg.clone());
+    for (_, root_dir) in &configured_roots {
+        let root_scope = format!("dir:{}", root_dir);
+        if fallback.directory_test_scopes.len() < limits.max_fallback_boundaries {
+            if fallback_seen.insert(root_scope.clone()) {
+                fallback.directory_test_scopes.push(root_scope);
+            }
+        } else {
+            fallback.truncated = true;
+        }
+    }
+
+    let walker = WalkBuilder::new(repo_root)
+        .hidden(true)
+        .git_ignore(true)
+        .require_git(false)
+        .sort_by_file_path(|a, b| a.cmp(b))
+        .build();
+
+    for res in walker {
+        let entry = match res {
+            Ok(e) => e,
+            Err(err) => {
+                issues.push(TestDiscoveryIssue {
+                    kind: "walker_error".to_string(),
+                    path: None,
+                    message: err.to_string(),
+                });
+                continue;
+            }
+        };
+        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        let canon = match canonicalize_repo_path(path, repo_root) {
+            Ok(c) => c,
+            Err(err) => {
+                issues.push(TestDiscoveryIssue {
+                    kind: "canonicalization_error".to_string(),
+                    path: Some(path.to_string_lossy().to_string()),
+                    message: err.to_string(),
+                });
+                continue;
+            }
+        };
+
+        if canon.starts_with(".git/")
+            || canon.starts_with(".fdx/")
+            || canon.starts_with("node_modules/")
+            || canon.starts_with("target/")
+        {
+            continue;
+        }
+
+        // Test file detection
+        let mut is_jsts_test = is_js_ts_test_file(path);
+        if !is_jsts_test {
+            for (cfg_dir, pat) in &static_custom_patterns {
+                if pat.matches(&canon) {
+                    is_jsts_test = true;
+                    break;
+                }
+                if !cfg_dir.is_empty() && cfg_dir != "." {
+                    if let Some(rel) = canon.strip_prefix(cfg_dir.as_str()) {
+                        let rel_clean = rel.trim_start_matches('/');
+                        if pat.matches(rel_clean) {
+                            is_jsts_test = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if !is_jsts_test {
+            for (cfg_dir, re) in &static_custom_regexes {
+                if re.is_match(&canon) {
+                    is_jsts_test = true;
+                    break;
+                }
+                if !cfg_dir.is_empty() && cfg_dir != "." {
+                    if let Some(rel) = canon.strip_prefix(cfg_dir.as_str()) {
+                        let rel_clean = rel.trim_start_matches('/');
+                        if re.is_match(rel_clean) {
+                            is_jsts_test = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut is_rs_test = false;
+        let mut is_bench = false;
+
+        if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+            match fs::read_to_string(path) {
+                Ok(content) => {
+                    let (rs_test, rs_bench) = is_rust_test_or_bench(path, &content);
+                    is_rs_test = rs_test;
+                    is_bench = rs_bench;
+                }
+                Err(err) => {
+                    issues.push(TestDiscoveryIssue {
+                        kind: "read_error".to_string(),
+                        path: Some(canon.clone()),
+                        message: err.to_string(),
+                    });
+                }
+            }
+        }
+
+        if is_jsts_test || is_rs_test {
+            let owning_package_id = resolve_owning_package_id(
+                &canon,
+                repo_root,
+                &build_snapshot,
+                &fallback_build_inv.package_dirs,
+            );
+
+            // Independent fallback collection (does NOT stop when exact test enumeration truncates)
+            if let Some(ref pkg_id) = owning_package_id {
+                if fallback.package_test_scopes.len() < limits.max_fallback_boundaries {
+                    if fallback_seen.insert(pkg_id.clone()) {
+                        fallback.package_test_scopes.push(pkg_id.clone());
+                    }
+                } else {
+                    fallback.truncated = true;
+                }
+            }
+
+            if let Some(parent) = Path::new(&canon).parent() {
+                let parent_str = parent.to_string_lossy().to_string();
+                if !parent_str.is_empty() {
+                    let dir_scope = format!("dir:{}", parent_str);
+                    if fallback.directory_test_scopes.len() < limits.max_fallback_boundaries {
+                        if fallback_seen.insert(dir_scope.clone()) {
+                            fallback.directory_test_scopes.push(dir_scope);
+                        }
+                    } else {
+                        fallback.truncated = true;
+                    }
+                }
+            }
+
+            // Exact test enumeration (bounded by max_discovered_tests)
+            if inventory.tests.len() < limits.max_discovered_tests {
+                let ecosystem = if is_rs_test { "cargo" } else { "npm" };
+                let stable_id = format!("test:{}:{}", ecosystem, canon);
+
+                if seen_tests.insert(stable_id.clone()) {
+                    let kind = if is_bench {
+                        VerificationCheckKind::Custom
+                    } else if canon.contains("/e2e/")
+                        || canon.contains("/e2e.")
+                        || canon.contains(".e2e.")
+                    {
+                        VerificationCheckKind::EndToEndTest
+                    } else if canon.contains("/tests/") || canon.contains("tests/") {
+                        VerificationCheckKind::IntegrationTest
+                    } else {
+                        VerificationCheckKind::UnitTest
+                    };
+
+                    inventory.tests.push(DiscoveredTest {
+                        stable_id,
+                        canonical_path: canon,
+                        owning_package_id,
+                        kind,
+                    });
                 }
             } else {
-                fallback.truncated = true;
+                inventory.truncated = true;
             }
         }
     }
 
-    for pkg_dir in &fallback_build_inv.package_dirs {
-        let pkg_scope = format!("pkg:npm:{}", if pkg_dir.is_empty() { "." } else { pkg_dir });
-        if fallback.package_test_scopes.len() < limits.max_fallback_boundaries {
-            if fallback_seen.insert(pkg_scope.clone()) {
-                fallback.package_test_scopes.push(pkg_scope);
-            }
-        } else {
-            fallback.truncated = true;
-        }
-    }
-
-    for (cfg_file, _) in &static_custom_patterns {
-        if fallback.config_test_scopes.len() < limits.max_fallback_boundaries {
-            if fallback_seen.insert(cfg_file.clone()) {
-                fallback.config_test_scopes.push(cfg_file.clone());
-            }
-        } else {
-            fallback.truncated = true;
-        }
-    }
+    fallback.errors = issues.clone();
+    inventory.fallback = fallback;
 
     if issues.is_empty() {
         inventory.state = DiscoveryState::Complete;
     } else {
         inventory.state = DiscoveryState::Incomplete { issues };
     }
-    inventory.fallback = fallback;
 
     inventory
 }

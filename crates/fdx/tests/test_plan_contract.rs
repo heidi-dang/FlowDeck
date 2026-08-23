@@ -14,6 +14,15 @@ fn test_verification_plan_contract_and_serialization() {
         selection: SelectionReason::Evidence,
         strength: EvidenceStrength::Precise,
         evidence_path: None,
+        evidence_refs: vec![CheckEvidenceRef {
+            evidence_id: Some("edge_1".to_string()),
+            provider: "scip_ts".to_string(),
+            provider_id: "scip-typescript".to_string(),
+            provider_fingerprint: Some("fp123".to_string()),
+            source_identity: Some("packages/api/tests/user.test.ts".to_string()),
+            strength: EvidenceStrength::Precise,
+            stale: false,
+        }],
         widening_reason: None,
         mandatory: false,
     };
@@ -24,6 +33,7 @@ fn test_verification_plan_contract_and_serialization() {
         impacted_targets: Vec::new(),
         selected_checks: vec![check],
         uncertainty: Vec::new(),
+        unresolved_obligations: Vec::new(),
     };
 
     let json_str = serde_json::to_string_pretty(&plan).expect("serialize plan");
@@ -46,6 +56,11 @@ fn test_verification_plan_contract_and_serialization() {
     assert_eq!(
         deserialized.selected_checks[0].strength,
         EvidenceStrength::Precise
+    );
+    assert_eq!(deserialized.selected_checks[0].evidence_refs.len(), 1);
+    assert_eq!(
+        deserialized.selected_checks[0].evidence_refs[0].provider_id,
+        "scip-typescript"
     );
 }
 

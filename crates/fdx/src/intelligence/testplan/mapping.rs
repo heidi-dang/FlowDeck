@@ -44,7 +44,7 @@ pub fn resolve_test_mappings(
         resolution.errors.push(err);
     }
 
-    // Set of valid test canonical paths from discovered inventory
+    // Valid test paths and IDs from discovered inventory
     let discovered_test_paths: HashSet<&str> = inventory
         .tests
         .iter()
@@ -59,6 +59,18 @@ pub fn resolve_test_mappings(
 
     // 1. From database (SCIP references, explicit test relationships)
     if let Some(conn) = conn_opt {
+        // Fetch all persisted test nodes to validate test:* origins
+        let mut persisted_test_nodes: HashSet<String> = HashSet::new();
+        if let Ok(mut stmt) = conn
+            .prepare("SELECT stable_id FROM nodes WHERE kind = 'test' OR stable_id LIKE 'test:%'")
+        {
+            if let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0)) {
+                for r in rows.flatten() {
+                    persisted_test_nodes.insert(r);
+                }
+            }
+        }
+
         let query_sql = "SELECT stable_id, from_node, to_node, kind, provider, provider_id, provider_fingerprint, strength, source_identity, stale FROM edges WHERE from_node LIKE 'file:%' OR from_node LIKE 'test:%'";
         match conn.prepare(query_sql) {
             Ok(mut stmt) => {
@@ -100,9 +112,17 @@ pub fn resolve_test_mappings(
                                 stale,
                             ) = item;
 
-                            // Restrict mapping edges to actual discovered test identities
+                            // Restrict mapping edges to actual discovered test identities or valid persisted test nodes
                             let is_valid_test = if from_n.starts_with("test:") {
-                                true
+                                discovered_test_ids.contains(from_n.as_str())
+                                    || persisted_test_nodes.contains(&from_n)
+                                    || if let Some(sub) = from_n.strip_prefix("test:npm:") {
+                                        discovered_test_paths.contains(sub)
+                                    } else if let Some(sub) = from_n.strip_prefix("test:cargo:") {
+                                        discovered_test_paths.contains(sub)
+                                    } else {
+                                        false
+                                    }
                             } else if let Some(stripped) = from_n.strip_prefix("file:") {
                                 discovered_test_paths.contains(stripped)
                                     || discovered_test_ids.contains(from_n.as_str())

@@ -3,6 +3,7 @@
 use fdx::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use fdx::intelligence::testplan::model::SelectionReason;
 use fdx::intelligence::testplan::planner::plan_verification;
+use fdx::protocol::EvidenceStrength;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -92,7 +93,7 @@ fn test_every_selected_check_satisfies_explainability_contract() {
 
         db.conn
             .execute(
-                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('test_edge_1', 'file:packages/api/tests/user.test.ts', 'sym:packages/api/src/user.ts:getUser', 'references', 'scip_ts', 'fp123', 4, 'packages/api/tests/user.test.ts', 'hash1', 1, 1, 0, 'scip-typescript')",
+                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:user_test_refs_getUser', 'file:packages/api/tests/user.test.ts', 'sym:packages/api/src/user.ts:getUser', 'references', 'scip_ts', 'fp123', 4, 'packages/api/tests/user.test.ts', 'hash1', 1, 1, 0, 'scip-typescript')",
                 [],
             )
             .unwrap();
@@ -120,6 +121,21 @@ fn test_every_selected_check_satisfies_explainability_contract() {
                 );
                 let path = check.evidence_path.as_ref().unwrap();
                 assert!(!path.steps.is_empty() || !path.explanation.is_empty());
+
+                assert!(
+                    !check.evidence_refs.is_empty(),
+                    "Check {} with SelectionReason::Evidence must have evidence_refs",
+                    check.check_id
+                );
+                let ev = &check.evidence_refs[0];
+                assert_eq!(ev.provider_id, "scip-typescript");
+                assert_eq!(ev.provider_fingerprint.as_deref(), Some("fp123"));
+                assert_eq!(
+                    ev.evidence_id.as_deref(),
+                    Some("edge:user_test_refs_getUser")
+                );
+                assert_eq!(ev.strength, EvidenceStrength::Precise);
+                assert!(!ev.stale);
             }
             SelectionReason::PolicyWidening => {
                 assert!(

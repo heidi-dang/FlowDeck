@@ -35,7 +35,8 @@ fn git_commit_all(path: &Path, msg: &str) {
 }
 
 #[test]
-fn test_discovery_bound_truncation_escalates_and_widens() {
+fn test_discovery_bound_truncation_without_suite_script_yields_unverified_with_unresolved_obligation(
+) {
     let tmp = tempdir().unwrap();
     let repo = tmp.path();
     init_git_repo(repo);
@@ -43,14 +44,15 @@ fn test_discovery_bound_truncation_escalates_and_widens() {
     fs::create_dir_all(repo.join("packages/pkg/src")).unwrap();
     fs::create_dir_all(repo.join("packages/pkg/tests")).unwrap();
 
+    // No test script in package.json
     fs::write(
         repo.join("packages/pkg/package.json"),
-        r#"{ "name": "@my/pkg", "scripts": { "test": "vitest" } }"#,
+        r#"{ "name": "@my/pkg" }"#,
     )
     .unwrap();
 
     fs::write(repo.join("packages/pkg/src/a.ts"), "export const a = 1;").unwrap();
-    for i in 0..10 {
+    for i in 0..6 {
         fs::write(
             repo.join(format!("packages/pkg/tests/test_{}.test.ts", i)),
             "test('t', () => {});",
@@ -72,16 +74,62 @@ fn test_discovery_bound_truncation_escalates_and_widens() {
 
     let plan = plan_verification(repo, Some("HEAD"), None, None).expect("plan verification");
 
-    assert!(
-        plan.assurance <= AssuranceLevel::Degraded,
-        "Assurance must be <= Degraded when discovery is truncated"
+    assert_eq!(
+        plan.assurance,
+        AssuranceLevel::Unverified,
+        "Assurance must be Unverified when discovery truncates without enclosing suite script"
     );
     assert!(
-        plan.uncertainty
-            .iter()
-            .any(|u| u.code().contains("limit") || u.code().contains("truncat")),
-        "Must report limit/truncation uncertainty"
+        !plan.unresolved_obligations.is_empty(),
+        "Must record typed unresolved obligation for truncated package"
     );
+    assert_eq!(plan.unresolved_obligations[0].scope, "pkg:npm:packages/pkg");
+}
+
+#[test]
+fn test_discovery_bound_truncation_with_package_script_retains_package_suite_obligation() {
+    let tmp = tempdir().unwrap();
+    let repo = tmp.path();
+    init_git_repo(repo);
+
+    fs::create_dir_all(repo.join("packages/pkg/src")).unwrap();
+    fs::create_dir_all(repo.join("packages/pkg/tests")).unwrap();
+
+    fs::write(
+        repo.join("packages/pkg/package.json"),
+        r#"{ "name": "@my/pkg", "scripts": { "test": "vitest" } }"#,
+    )
+    .unwrap();
+
+    fs::write(repo.join("packages/pkg/src/a.ts"), "export const a = 1;").unwrap();
+    for i in 0..6 {
+        fs::write(
+            repo.join(format!("packages/pkg/tests/test_{}.test.ts", i)),
+            "test('t', () => {});",
+        )
+        .unwrap();
+    }
+
+    git_commit_all(repo, "initial");
+
+    fs::write(repo.join("packages/pkg/src/a.ts"), "export const a = 2;").unwrap();
+
+    // Set max_discovered_tests = 2
+    let _guard = set_test_limits_override(TestPlanLimits {
+        max_discovered_tests: 2,
+        max_mapping_edges: 50,
+        max_selected_checks: 100,
+        max_fallback_boundaries: 50,
+    });
+
+    let plan = plan_verification(repo, Some("HEAD"), None, None).expect("plan verification");
+
+    // Must include package test suite check
+    assert!(plan
+        .selected_checks
+        .iter()
+        .any(|c| c.check_id == "check:pkg:npm:packages/pkg:test"));
+    assert!(plan.unresolved_obligations.is_empty());
 }
 
 #[test]
@@ -124,12 +172,7 @@ fn test_selected_checks_bound_with_no_enclosing_package_script_yields_unverified
 
     // Output cap exceeded and no package script to safely represent individual tests -> must be UNVERIFIED
     assert_eq!(plan.assurance, AssuranceLevel::Unverified);
-    assert!(
-        plan.uncertainty
-            .iter()
-            .any(|u| u.code().contains("limit") || u.code().contains("truncat")),
-        "Must report unresolved verification obligation uncertainty"
-    );
+    assert!(!plan.unresolved_obligations.is_empty());
 }
 
 #[test]
