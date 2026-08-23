@@ -3,6 +3,7 @@
  *
  * Ensures:
  * - Atomic read-and-increment on genuine user turns within a write transaction.
+ * - Idempotent handling of duplicate native message events (messageId / event hash).
  * - Monotonic turn version survives process restarts.
  * - Old autonomous continuation tokens become invalid when the user sends a new message.
  */
@@ -22,19 +23,6 @@ export interface SessionTurnRow {
 export class SessionTurnRepository extends BaseRepository {
   constructor(db: Database, tx: TransactionManager) {
     super(db, tx);
-    this.ensureTable();
-  }
-
-  private ensureTable(): void {
-    this.db.query(`
-      CREATE TABLE IF NOT EXISTS session_turns (
-        session_id TEXT PRIMARY KEY,
-        user_turn_version INTEGER NOT NULL DEFAULT 1,
-        last_user_message_id TEXT,
-        last_user_message_hash TEXT,
-        updated_at TEXT NOT NULL
-      )
-    `).run();
   }
 
   getTurnVersion(sessionId: string): number {
@@ -53,11 +41,19 @@ export class SessionTurnRepository extends BaseRepository {
   }): number {
     return this.tx.write(() => {
       const now = new Date().toISOString();
-      const existing = this.db.query(
-        "SELECT user_turn_version FROM session_turns WHERE session_id = ?"
-      ).get(input.sessionId) as { user_turn_version: number } | null;
+      const existing = this.findBySessionId(input.sessionId);
 
-      const nextVersion = existing ? existing.user_turn_version + 1 : 1;
+      // Idempotency: duplicate delivery of the exact same message must NOT increment generation
+      if (existing) {
+        if (input.messageId && existing.lastUserMessageId === input.messageId) {
+          return existing.userTurnVersion;
+        }
+        if (!input.messageId && input.messageHash && existing.lastUserMessageHash === input.messageHash) {
+          return existing.userTurnVersion;
+        }
+      }
+
+      const nextVersion = existing ? existing.userTurnVersion + 1 : 1;
 
       this.db.query(`
         INSERT INTO session_turns (session_id, user_turn_version, last_user_message_id, last_user_message_hash, updated_at)
