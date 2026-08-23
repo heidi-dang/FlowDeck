@@ -404,10 +404,6 @@ export class ProgressObservationService {
     } else if (isNovelDiagnostic) {
       isProgress = true;
       progressReason = "novel_diagnostic_acquired";
-    } else if (evidenceKind === "informational" && evidenceDelta > 0) {
-      // Legacy compatibility: initial novel evidence discovery
-      isProgress = true;
-      progressReason = "novel_evidence_acquired";
     }
 
     if (isProgress) {

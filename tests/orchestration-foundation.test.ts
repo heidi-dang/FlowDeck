@@ -1393,27 +1393,26 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     const run = await ctx.adapter.resolveActiveRunForSession(sessionID);
     expect(run).not.toBeNull();
 
-    // Turn 1: read file
+    // Turn 1: read file (informational read does not reset noProgressCount)
     await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c1", args: { file: "config.json" } });
     await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c1", args: { file: "config.json" } }, { output: JSON.stringify({ port: 8080 }), metadata: {} });
 
     let diag = getSessionMetricsDiagnostics(sessionID, dirA);
-    expect(diag.noProgressCount).toBe(0);
-    expect(diag.lastProgressReason).toBe("novel_evidence_acquired");
+    expect(diag.noProgressCount).toBe(1);
 
     // Turn 2: read same file with same content
     await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c2", args: { file: "config.json" } });
     await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c2", args: { file: "config.json" } }, { output: JSON.stringify({ port: 8080 }), metadata: {} });
 
     diag = getSessionMetricsDiagnostics(sessionID, dirA);
-    expect(diag.noProgressCount).toBe(1);
+    expect(diag.noProgressCount).toBe(2);
 
     // Turn 3: read same file again
     await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c3", args: { file: "config.json" } });
     await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c3", args: { file: "config.json" } }, { output: JSON.stringify({ port: 8080 }), metadata: {} });
 
     diag = getSessionMetricsDiagnostics(sessionID, dirA);
-    expect(diag.noProgressCount).toBe(2);
+    expect(diag.noProgressCount).toBe(3);
 
     await releaseProjectRuntime(dirA);
   });
@@ -1427,17 +1426,17 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
       { message: {} as any, parts: [{ type: "text", text: "Refactor backend telemetry services across repos", id: "1", sessionID, messageID: "msg-p2" }] }
     );
 
-    // Turn 1: read file A
-    await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c1", args: { file: "a.txt" } });
-    await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c1", args: { file: "a.txt" } }, { output: "Content A", metadata: {} });
+    // Turn 1: tool with diagnostic error A
+    await ctx.adapter.onToolExecuteBefore({ tool: "bash", sessionID, callID: "c1", args: { command: "test:auth" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "bash", sessionID, callID: "c1", args: { command: "test:auth" } }, { output: "", metadata: { error: "AuthError: invalid token" } });
 
-    // Turn 2: read file B (novel content)
-    await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c2", args: { file: "b.txt" } });
-    await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c2", args: { file: "b.txt" } }, { output: "Content B", metadata: {} });
+    // Turn 2: tool with novel diagnostic error B
+    await ctx.adapter.onToolExecuteBefore({ tool: "bash", sessionID, callID: "c2", args: { command: "test:users" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "bash", sessionID, callID: "c2", args: { command: "test:users" } }, { output: "", metadata: { error: "UserError: missing record" } });
 
     const diag = getSessionMetricsDiagnostics(sessionID, dirA);
     expect(diag.noProgressCount).toBe(0);
-    expect(diag.lastProgressReason).toBe("novel_evidence_acquired");
+    expect(diag.lastProgressReason).toBe("novel_diagnostic_acquired");
 
     await releaseProjectRuntime(dirA);
   });
@@ -1669,7 +1668,7 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     const run = await ctx1.adapter.resolveActiveRunForSession(sessionID);
     expect(run).not.toBeNull();
 
-    // 2 repeated calls -> noProgressCount = 1
+    // 2 repeated calls -> noProgressCount = 2 (informational reads)
     await ctx1.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c1", args: { file: "x.ts" } });
     await ctx1.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c1", args: { file: "x.ts" } }, { output: "content x", metadata: {} });
 
@@ -1677,7 +1676,7 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     await ctx1.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c2", args: { file: "x.ts" } }, { output: "content x", metadata: {} });
 
     let diag1 = getSessionMetricsDiagnostics(sessionID, dirA);
-    expect(diag1.noProgressCount).toBe(1);
+    expect(diag1.noProgressCount).toBe(2);
 
     // COLD RESTART
     await disposeProjectRuntime(dirA);
@@ -1686,14 +1685,14 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
 
     const ctx2 = acquireProjectRuntime(dirA);
     let diag2 = getSessionMetricsDiagnostics(sessionID, dirA);
-    expect(diag2.noProgressCount).toBe(1);
+    expect(diag2.noProgressCount).toBe(2);
 
-    // Turn 3 after restart with same content -> noProgressCount becomes 2 (not reset to 0!)
+    // Turn 3 after restart with same content -> noProgressCount becomes 3 (not reset to 0!)
     await ctx2.adapter.onToolExecuteBefore({ tool: "read", sessionID, callID: "c3", args: { file: "x.ts" } });
     await ctx2.adapter.onToolExecuteAfter({ tool: "read", sessionID, callID: "c3", args: { file: "x.ts" } }, { output: "content x", metadata: {} });
 
     diag2 = getSessionMetricsDiagnostics(sessionID, dirA);
-    expect(diag2.noProgressCount).toBe(2);
+    expect(diag2.noProgressCount).toBe(3);
 
     await releaseProjectRuntime(dirA);
   });

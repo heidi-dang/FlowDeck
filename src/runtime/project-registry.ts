@@ -30,7 +30,7 @@ const _registry = new Map<string, ProjectRuntimeContext>();
  * Acquire the production orchestration runtime for a given project directory.
  * Increments reference count for safe multi-owner lifecycle.
  */
-export function acquireProjectRuntime(directory: string): ProjectRuntimeContext {
+export function acquireProjectRuntime(directory: string, client?: any): ProjectRuntimeContext {
   const canonicalDir = resolve(directory);
   const existing = _registry.get(canonicalDir);
   if (existing && !existing.disposed) {
@@ -48,7 +48,7 @@ export function acquireProjectRuntime(directory: string): ProjectRuntimeContext 
   const dbPath = join(dotFlowDeck, "flowdeck.db");
   const initResult = initializeDatabase({ path: dbPath });
   const runtime = createProductionOrchestrationRuntime(initResult.db);
-  const adapter = new FlowDeckLifecycleAdapter(canonicalDir, runtime);
+  const adapter = new FlowDeckLifecycleAdapter(canonicalDir, runtime, client);
 
   const context: ProjectRuntimeContext = {
     projectDir: canonicalDir,

@@ -25,6 +25,10 @@ import {
 
 export { type ChildExecutionRecord, type ChildExecutionState };
 
+export interface NativeChildControlPort {
+  abortSession(sessionId: string, directory?: string): Promise<{ aborted: boolean; error?: string }>;
+}
+
 export const TERMINAL_CHILD_STATES: ReadonlySet<ChildExecutionState> = new Set([
   "completed",
   "failed",
@@ -90,6 +94,7 @@ export class ChildExecutionLifecycleService {
   private readonly recordsByAssignment = new Map<string, ChildExecutionRecord>();
   private readonly delegationRuntime: HeidiDelegationRuntime;
   private readonly nativeChildRepo: SqliteNativeChildExecutionRepository;
+  private controlPort?: NativeChildControlPort;
 
   constructor(
     private readonly db: Database,
@@ -99,7 +104,9 @@ export class ChildExecutionLifecycleService {
     private readonly eventBus: IEventBus,
     nativeChildRepo?: SqliteNativeChildExecutionRepository,
     private readonly txManager?: TransactionManager,
+    controlPort?: NativeChildControlPort,
   ) {
+    this.controlPort = controlPort;
     this.delegationRuntime = new HeidiDelegationRuntime(db);
     this.nativeChildRepo = nativeChildRepo ?? new SqliteNativeChildExecutionRepository(db, {
       write: <T>(fn: () => T): T => {
@@ -109,6 +116,10 @@ export class ChildExecutionLifecycleService {
     } as any);
 
     this.reconcileAfterRestart();
+  }
+
+  setControlPort(port: NativeChildControlPort): void {
+    this.controlPort = port;
   }
 
   /**
@@ -458,19 +469,31 @@ export class ChildExecutionLifecycleService {
     const reason = input.reason ?? "Child task cancelled";
     let isConfirmed = input.confirmed === true;
 
-    // If native client is provided, attempt native session abort
-    if (!isConfirmed && input.client && record.childSessionId) {
-      try {
-        const res = await input.client.session?.abort?.({
-          path: { id: record.childSessionId },
-          query: input.workspace ? { directory: input.workspace } : undefined,
-        });
-        if (res === true || res?.data === true || (res && !res.error)) {
-          isConfirmed = true;
+    // If native client or NativeChildControlPort is available, attempt native session abort
+    if (!isConfirmed && record.childSessionId) {
+      if (input.client) {
+        try {
+          const res = await input.client.session?.abort?.({
+            path: { id: record.childSessionId },
+            query: input.workspace ? { directory: input.workspace } : undefined,
+          });
+          if (res === true || res?.data === true || (res && !res.error)) {
+            isConfirmed = true;
+          }
+        } catch (err) {
+          console.warn(`[ChildExecutionLifecycleService] native session abort for ${record.childSessionId} threw:`, err);
+          isConfirmed = false;
         }
-      } catch (err) {
-        console.warn(`[ChildExecutionLifecycleService] native session abort for ${record.childSessionId} threw:`, err);
-        isConfirmed = false;
+      } else if (this.controlPort) {
+        try {
+          const portRes = await this.controlPort.abortSession(record.childSessionId, input.workspace);
+          if (portRes.aborted) {
+            isConfirmed = true;
+          }
+        } catch (err) {
+          console.warn(`[ChildExecutionLifecycleService] controlPort abortSession for ${record.childSessionId} threw:`, err);
+          isConfirmed = false;
+        }
       }
     }
 

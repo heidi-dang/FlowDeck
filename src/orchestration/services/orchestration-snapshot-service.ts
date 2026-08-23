@@ -2,9 +2,9 @@
  * OrchestrationSnapshotService — Read-only projection over authoritative FlowDeck repositories.
  *
  * Assembles a point-in-time snapshot for a Run by composing:
- * - task_runs (durable phase, aggregate version, strategy)
+ * - task_runs (durable phase, aggregateVersion, strategy)
  * - routing_decision (executionClass, goal)
- * - assignments (work items, status, attempt counts)
+ * - assignments (work items, status, isRequired, isSatisfied, attempt counts)
  * - native child executions (active, completed, failed, cancelRequested)
  * - progress_observations (noProgressCount, stall results, evidence/repository deltas)
  * - verification state
@@ -25,6 +25,8 @@ export interface WorkItemSnapshot {
   role: string;
   agentId: string;
   status: AssignmentStatus;
+  isRequired: boolean;
+  isSatisfied: boolean;
   attempts: number;
   evidenceIds: string[];
   lastActionFingerprint?: string;
@@ -37,6 +39,7 @@ export interface OrchestrationSnapshot {
   sessionId: string;
   executionClass?: string;
   phase: OrchestrationPhase;
+  aggregateVersion: number;
   currentWorkItemId?: string;
   currentAssignmentId?: string;
   currentExecutionId?: string;
@@ -116,12 +119,17 @@ export class OrchestrationSnapshotService {
       const child = childByAssignment.get(id);
       const attempts = attemptsByAssignment.get(id) ?? [];
       const latestAttempt = attempts[attempts.length - 1];
+      const isRequired = (row.is_required as number | undefined) !== 0;
+      const status = (row.status === "running" ? "in_progress" : String(row.status)) as AssignmentStatus;
+      const isSatisfied = status === "completed" || (status === "skipped" && !isRequired);
 
       return {
         id,
         role: String(row.description ?? ""),
         agentId: String(row.agent_id ?? ""),
-        status: (row.status === "running" ? "in_progress" : String(row.status)) as AssignmentStatus,
+        status,
+        isRequired,
+        isSatisfied,
         attempts: Math.max(attempts.length, row.status === "in_progress" || row.status === "running" ? 1 : 0),
         evidenceIds: child?.result ? [`child_res:${child.executionId}`] : [],
         lastActionFingerprint: latestAttempt?.actionFingerprint,
@@ -131,7 +139,6 @@ export class OrchestrationSnapshotService {
     });
 
     // 4. Identify Current Work Item
-    // In sequential execution: first active/in_progress/running item, or first pending item if none active.
     let currentWorkItem = workItems.find(w => w.status === "in_progress" || (w.status as string) === "running" || w.status === "assigned");
     if (!currentWorkItem) {
       currentWorkItem = workItems.find(w => w.status === "pending");
@@ -165,6 +172,7 @@ export class OrchestrationSnapshotService {
       sessionId: resolvedSessionId,
       executionClass,
       phase,
+      aggregateVersion: taskRun.aggregateVersion,
       currentWorkItemId: currentWorkItem?.id,
       currentAssignmentId: currentWorkItem?.id,
       currentExecutionId: currentChild?.executionId,

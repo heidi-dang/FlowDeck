@@ -2,12 +2,13 @@
  * RunTransitionEngine — Authoritative deterministic transition engine for FlowDeck runs.
  *
  * Enforces:
- * - Legal Run phase transitions via central transition table.
- * - Terminal state immutability (completed, failed, cancelled).
+ * - Legal Run phase transitions via central transition table and CAS with aggregate versioning.
+ * - Terminal state immutability (completed, failed, cancelled) with exclusive CompletionPolicy authority for completed.
  * - Progress-driven work-item / Assignment advancement.
- * - Durable attempt accounting and action repetition prevention.
- * - ChangeStrategy / Retry classification (transient retry vs change-strategy vs replan vs block).
+ * - Durable attempt accounting and action repetition prevention with causal state linkage.
+ * - Lineage-specific bounded transient retry vs change-strategy vs replan vs block.
  * - Parallel child convergence and recovery handling.
+ * - Conservative default fallback (no false PROGRESS_CONFIRMED continuation).
  */
 
 import type { Database } from "bun:sqlite";
@@ -59,6 +60,7 @@ export type TransitionReasonCode =
   | "ASSIGNMENT_COMPLETED"
   | "ASSIGNMENT_FAILED"
   | "PROGRESS_CONFIRMED"
+  | "NEXT_WORK_ITEM_READY"
   | "NO_PROGRESS"
   | "REPEATED_ACTION_BLOCKED"
   | "TRANSIENT_RETRY_ALLOWED"
@@ -76,12 +78,19 @@ export interface AttemptRecord {
   runId: string;
   assignmentId: string;
   attemptNumber: number;
-  actionFingerprint: string;
-  resultFingerprint: string;
+  callID?: string;
   tool: string;
+  actionFingerprint: string;
+  resultFingerprint?: string;
+  preStateFingerprint: string;
+  postStateFingerprint?: string;
   startedAt: string;
-  finishedAt: string;
+  finishedAt?: string;
   progressProduced: boolean;
+  repositoryDelta: number;
+  evidenceDelta: number;
+  verificationDelta: number;
+  childStateDelta: number;
   isTransientError?: boolean;
   failureReason?: string;
   evidenceIds: string[];
@@ -114,6 +123,25 @@ export class RunTransitionEngine {
   ) {}
 
   /**
+   * Allocate the next atomic attempt number for a work item / Assignment.
+   */
+  allocateNextAttemptNumber(runId: string, assignmentId: string): number {
+    if (this.txManager) {
+      return this.txManager.write(() => this._allocateNextAttemptNumberInner(runId, assignmentId));
+    }
+    return this._allocateNextAttemptNumberInner(runId, assignmentId);
+  }
+
+  private _allocateNextAttemptNumberInner(runId: string, assignmentId: string): number {
+    const attempts = this.listAttempts(runId, assignmentId);
+    let max = 0;
+    for (const a of attempts) {
+      if (a.attemptNumber > max) max = a.attemptNumber;
+    }
+    return max + 1;
+  }
+
+  /**
    * Authoritative attempt recording. Persists attempt history durably in execution_metadata.
    */
   recordAttempt(attempt: AttemptRecord): void {
@@ -130,6 +158,80 @@ export class RunTransitionEngine {
       key,
       val
     );
+  }
+
+  /**
+   * Record attempt start state at tool.execute.before.
+   */
+  recordAttemptStart(attempt: {
+    runId: string;
+    assignmentId: string;
+    attemptNumber: number;
+    callID?: string;
+    tool: string;
+    actionFingerprint: string;
+    preStateFingerprint: string;
+    startedAt?: string;
+  }): AttemptRecord {
+    const full: AttemptRecord = {
+      runId: attempt.runId,
+      assignmentId: attempt.assignmentId,
+      attemptNumber: attempt.attemptNumber,
+      callID: attempt.callID,
+      tool: attempt.tool,
+      actionFingerprint: attempt.actionFingerprint,
+      preStateFingerprint: attempt.preStateFingerprint,
+      startedAt: attempt.startedAt ?? new Date().toISOString(),
+      progressProduced: false,
+      repositoryDelta: 0,
+      evidenceDelta: 0,
+      verificationDelta: 0,
+      childStateDelta: 0,
+      evidenceIds: [],
+    };
+    this.recordAttempt(full);
+    return full;
+  }
+
+  /**
+   * Finalize attempt state at tool.execute.after.
+   */
+  finalizeAttempt(input: {
+    runId: string;
+    assignmentId: string;
+    attemptNumber: number;
+    resultFingerprint?: string;
+    postStateFingerprint?: string;
+    finishedAt?: string;
+    progressProduced: boolean;
+    repositoryDelta?: number;
+    evidenceDelta?: number;
+    verificationDelta?: number;
+    childStateDelta?: number;
+    isTransientError?: boolean;
+    failureReason?: string;
+    evidenceIds?: string[];
+  }): AttemptRecord | null {
+    const attempts = this.listAttempts(input.runId, input.assignmentId);
+    const existing = attempts.find(a => a.attemptNumber === input.attemptNumber);
+    if (!existing) return null;
+
+    const updated: AttemptRecord = {
+      ...existing,
+      resultFingerprint: input.resultFingerprint ?? existing.resultFingerprint,
+      postStateFingerprint: input.postStateFingerprint ?? existing.postStateFingerprint,
+      finishedAt: input.finishedAt ?? new Date().toISOString(),
+      progressProduced: input.progressProduced,
+      repositoryDelta: input.repositoryDelta ?? existing.repositoryDelta,
+      evidenceDelta: input.evidenceDelta ?? existing.evidenceDelta,
+      verificationDelta: input.verificationDelta ?? existing.verificationDelta,
+      childStateDelta: input.childStateDelta ?? existing.childStateDelta,
+      isTransientError: input.isTransientError ?? existing.isTransientError,
+      failureReason: input.failureReason ?? existing.failureReason,
+      evidenceIds: input.evidenceIds ?? existing.evidenceIds,
+    };
+    this.recordAttempt(updated);
+    return updated;
   }
 
   /**
@@ -169,9 +271,23 @@ export class RunTransitionEngine {
   }
 
   /**
-   * Transition the durable task_runs state atomically with validation against the transition table.
+   * Transition the durable task_runs state atomically with validation against the transition table and CAS.
    */
-  transitionPhase(runId: string, targetPhase: OrchestrationPhase): boolean {
+  transitionPhase(input: {
+    runId: string;
+    targetPhase: OrchestrationPhase;
+    expectedPhase?: OrchestrationPhase;
+    expectedAggregateVersion?: number;
+    authority?: "transition_engine" | "completion_policy" | "run_service";
+    sha?: string;
+  } | string, targetPhaseArg?: OrchestrationPhase): boolean {
+    const runId = typeof input === "string" ? input : input.runId;
+    const targetPhase = typeof input === "string" ? (targetPhaseArg as OrchestrationPhase) : input.targetPhase;
+    const expectedPhase = typeof input === "object" ? input.expectedPhase : undefined;
+    const expectedAggregateVersion = typeof input === "object" ? input.expectedAggregateVersion : undefined;
+    const authority = typeof input === "object" ? input.authority : "transition_engine";
+    const sha = typeof input === "object" ? input.sha : undefined;
+
     const taskRun = this.taskRunRepo.findById(runId);
     if (!taskRun) return false;
 
@@ -185,6 +301,14 @@ export class RunTransitionEngine {
       return false;
     }
 
+    // COMPLETED is reserved exclusively for CompletionPolicy
+    if (targetPhase === OP.COMPLETED && authority !== "completion_policy") {
+      console.warn(
+        `[RunTransitionEngine] Phase transition rejected: transition to 'completed' requires authority 'completion_policy', received '${authority ?? "unauthorized"}'.`
+      );
+      return false;
+    }
+
     if (!isValidPhaseTransition(currentPhase, targetPhase)) {
       console.warn(
         `[RunTransitionEngine] Invalid phase transition rejected: run ${runId} from '${currentPhase}' to '${targetPhase}'.`
@@ -192,7 +316,18 @@ export class RunTransitionEngine {
       return false;
     }
 
-    return this.taskRunRepo.updateState(runId, targetPhase);
+    if (expectedAggregateVersion !== undefined) {
+      const cas = this.taskRunRepo.transitionPhaseCas({
+        runId,
+        expectedPhase: expectedPhase ?? currentPhase,
+        expectedAggregateVersion,
+        targetPhase,
+        sha,
+      });
+      return cas.success;
+    }
+
+    return this.taskRunRepo.updateState(runId, targetPhase, sha);
   }
 
   /**
@@ -224,7 +359,7 @@ export class RunTransitionEngine {
 
     let currentPhase = snapshot.phase;
 
-    // Terminal invariant: no transitions from terminal phases
+    // 1. Terminal invariant: no transitions from terminal phases
     if (TERMINAL_PHASES.has(currentPhase)) {
       return {
         runId: input.runId,
@@ -240,10 +375,47 @@ export class RunTransitionEngine {
     const workItems = snapshot.workItems;
     let currentWorkItem = workItems.find(w => w.id === snapshot.currentWorkItemId);
 
-    // 1. Check Stall condition from AdaptiveExecutionControl
+    // 2. Explicit Failed Child / Assignment Recovery
+    const failedWorkItems = workItems.filter(w => w.status === "failed" && w.isRequired);
+    const failedChildren = snapshot.childState.failed;
+
+    if (failedWorkItems.length > 0 || failedChildren > 0) {
+      let targetPhase = currentPhase;
+      let phaseChanged = false;
+      if (currentPhase === OP.EXECUTING || currentPhase === OP.DELEGATING) {
+        if (isValidPhaseTransition(currentPhase, OP.RECOVERING)) {
+          this.transitionPhase({
+            runId: input.runId,
+            targetPhase: OP.RECOVERING,
+            expectedPhase: currentPhase,
+            expectedAggregateVersion: snapshot.aggregateVersion,
+            authority: "transition_engine",
+          });
+          targetPhase = OP.RECOVERING;
+          phaseChanged = true;
+        }
+      }
+
+      return {
+        runId: input.runId,
+        currentPhase: targetPhase,
+        phaseChanged,
+        currentWorkItemId: currentWorkItem?.id,
+        workItemChanged: false,
+        strategyDecision: "CHANGE_STRATEGY",
+        reasonCode: failedChildren > 0 ? "CHILD_FAILED" : "ASSIGNMENT_FAILED",
+        requiresAction: true,
+      };
+    }
+
+    // 3. Check Stall condition from AdaptiveExecutionControl
     if (snapshot.progress.stalled) {
       if (currentPhase === OP.CREATED || currentPhase === OP.PLANNING) {
-        this.transitionPhase(input.runId, OP.EXECUTING);
+        this.transitionPhase({
+          runId: input.runId,
+          targetPhase: OP.EXECUTING,
+          authority: "transition_engine",
+        });
         currentPhase = OP.EXECUTING;
       }
 
@@ -251,7 +423,13 @@ export class RunTransitionEngine {
       let phaseChanged = false;
       if (currentPhase !== OP.RECOVERING) {
         if (isValidPhaseTransition(currentPhase, OP.RECOVERING)) {
-          this.transitionPhase(input.runId, OP.RECOVERING);
+          this.transitionPhase({
+            runId: input.runId,
+            targetPhase: OP.RECOVERING,
+            expectedPhase: currentPhase,
+            expectedAggregateVersion: snapshot.aggregateVersion,
+            authority: "transition_engine",
+          });
           targetPhase = OP.RECOVERING;
           phaseChanged = true;
         }
@@ -270,20 +448,45 @@ export class RunTransitionEngine {
       };
     }
 
-    // 2. Action Repetition & Progress Check for the current work item
-    if (input.latestActionFingerprint) {
-      const targetItemId = currentWorkItem?.id ?? workItems[0]?.id;
-      const attempts = targetItemId ? this.listAttempts(input.runId, targetItemId) : [];
-      const lastAttempt = attempts[attempts.length - 1];
+    // 4. Action Repetition & Progress Check on latest attempt / state delta
+    const targetItemId = currentWorkItem?.id ?? workItems[0]?.id;
+    const attempts = targetItemId ? this.listAttempts(input.runId, targetItemId) : [];
+    const lastAttempt = attempts[attempts.length - 1];
 
-      const hasStateChange =
-        snapshot.progress.lastRepositoryDelta > 0 ||
-        snapshot.progress.lastEvidenceDelta > 0;
+    const hasStateChange =
+      snapshot.progress.lastRepositoryDelta > 0 ||
+      (lastAttempt ? lastAttempt.progressProduced : false);
 
-      // Check if identical action is being repeated without state change
-      if (lastAttempt && lastAttempt.actionFingerprint === input.latestActionFingerprint && !hasStateChange) {
-        // Check if transient error retry is allowed
-        if (input.latestError && this.isTransientError(input.latestError) && attempts.length <= 2) {
+    // If in recovering and progress was produced, transition back to executing
+    if (currentPhase === OP.RECOVERING && hasStateChange) {
+      this.transitionPhase({
+        runId: input.runId,
+        targetPhase: OP.EXECUTING,
+        authority: "transition_engine",
+      });
+      return {
+        runId: input.runId,
+        currentPhase: OP.EXECUTING,
+        phaseChanged: true,
+        currentWorkItemId: targetItemId,
+        workItemChanged: false,
+        strategyDecision: "EXECUTE_CURRENT",
+        reasonCode: "RECOVERY_PROGRESS",
+        requiresAction: true,
+      };
+    }
+
+    const actionFingerprint = input.latestActionFingerprint ?? lastAttempt?.actionFingerprint;
+
+    if (actionFingerprint && lastAttempt) {
+      // Causal repeat check
+      if (lastAttempt.actionFingerprint === actionFingerprint && !lastAttempt.progressProduced && !hasStateChange) {
+        // Count consecutive transient attempts of this exact action lineage
+        const matchingLineage = attempts.filter(a => a.actionFingerprint === actionFingerprint);
+        const transientCount = matchingLineage.filter(a => a.isTransientError).length;
+        const isCurrentTransient = (input.latestError && this.isTransientError(input.latestError)) || lastAttempt.isTransientError;
+
+        if (isCurrentTransient && transientCount <= 2) {
           return {
             runId: input.runId,
             currentPhase,
@@ -306,26 +509,11 @@ export class RunTransitionEngine {
           strategyDecision: "CHANGE_STRATEGY",
           reasonCode: "REPEATED_ACTION_BLOCKED",
           requiresAction: true,
-          prohibitedActionFingerprint: input.latestActionFingerprint,
+          prohibitedActionFingerprint: actionFingerprint,
         };
       }
 
-      // If action is evaluated after state change or recovery progress
-      if (currentPhase === OP.RECOVERING && hasStateChange) {
-        this.transitionPhase(input.runId, OP.EXECUTING);
-        return {
-          runId: input.runId,
-          currentPhase: OP.EXECUTING,
-          phaseChanged: true,
-          currentWorkItemId: targetItemId,
-          workItemChanged: false,
-          strategyDecision: "EXECUTE_CURRENT",
-          reasonCode: "RECOVERY_PROGRESS",
-          requiresAction: true,
-        };
-      }
-
-      if (hasStateChange) {
+      if (lastAttempt.progressProduced || hasStateChange) {
         return {
           runId: input.runId,
           currentPhase,
@@ -339,7 +527,7 @@ export class RunTransitionEngine {
       }
     }
 
-    // 3. If child tasks are actively running in the background, must wait
+    // 5. If child tasks are actively running in the background, must wait
     const activeChildren = snapshot.childState.active;
     if (activeChildren > 0) {
       return {
@@ -354,24 +542,31 @@ export class RunTransitionEngine {
       };
     }
 
-    // 4. Check if all work items are completed
-    const activeWorkItems = workItems.filter(w => w.status === "in_progress" || (w.status as string) === "running" || w.status === "assigned");
-    const pendingWorkItems = workItems.filter(w => w.status === "pending");
-    const failedWorkItems = workItems.filter(w => w.status === "failed");
+    // 6. Check if all required work items are satisfied
+    const requiredWorkItems = workItems.filter(w => w.isRequired);
+    const allRequiredSatisfied = requiredWorkItems.length > 0 && requiredWorkItems.every(w => w.isSatisfied);
 
-    if (workItems.length > 0 && activeWorkItems.length === 0 && pendingWorkItems.length === 0 && failedWorkItems.length === 0) {
+    if (allRequiredSatisfied && activeChildren === 0 && failedChildren === 0) {
       // If run was in created/planning, transition through executing to verifying
       if (currentPhase === OP.CREATED || currentPhase === OP.PLANNING) {
-        this.transitionPhase(input.runId, OP.EXECUTING);
+        this.transitionPhase({
+          runId: input.runId,
+          targetPhase: OP.EXECUTING,
+          authority: "transition_engine",
+        });
         currentPhase = OP.EXECUTING;
       }
 
-      // All implementation work items completed -> transition to VERIFYING (not COMPLETED yet)
+      // Transition to VERIFYING (not COMPLETED yet)
       let targetPhase = currentPhase;
       let phaseChanged = false;
       if (currentPhase !== OP.VERIFYING) {
         if (isValidPhaseTransition(currentPhase, OP.VERIFYING)) {
-          this.transitionPhase(input.runId, OP.VERIFYING);
+          this.transitionPhase({
+            runId: input.runId,
+            targetPhase: OP.VERIFYING,
+            authority: "transition_engine",
+          });
           targetPhase = OP.VERIFYING;
           phaseChanged = true;
         }
@@ -388,22 +583,21 @@ export class RunTransitionEngine {
       };
     }
 
-    // 5. If currently in RECOVERING and positive progress occurred, transition back to EXECUTING
-    if (currentPhase === OP.RECOVERING && (snapshot.progress.lastRepositoryDelta > 0 || snapshot.progress.lastEvidenceDelta > 0)) {
-      this.transitionPhase(input.runId, OP.EXECUTING);
+    // 7. Check if next work item is ready
+    if (currentWorkItem && currentWorkItem.status === "pending") {
       return {
         runId: input.runId,
-        currentPhase: OP.EXECUTING,
-        phaseChanged: true,
-        currentWorkItemId: currentWorkItem?.id,
+        currentPhase,
+        phaseChanged: false,
+        currentWorkItemId: currentWorkItem.id,
         workItemChanged: false,
         strategyDecision: "EXECUTE_CURRENT",
-        reasonCode: "RECOVERY_PROGRESS",
+        reasonCode: "NEXT_WORK_ITEM_READY",
         requiresAction: true,
       };
     }
 
-    // 6. Default active execution progression
+    // 8. Conservative fallback: no authoritative delta -> NO_PROGRESS, no autonomous continuation
     return {
       runId: input.runId,
       currentPhase,
@@ -411,8 +605,8 @@ export class RunTransitionEngine {
       currentWorkItemId: currentWorkItem?.id,
       workItemChanged: false,
       strategyDecision: "EXECUTE_CURRENT",
-      reasonCode: "PROGRESS_CONFIRMED",
-      requiresAction: true,
+      reasonCode: "NO_PROGRESS",
+      requiresAction: false,
     };
   }
 }

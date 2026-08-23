@@ -32,17 +32,47 @@ import {
   extractMutationTargets,
   getMutationTargetFingerprint,
 } from "./mutation-observation-adapter";
+import type { NativeChildControlPort } from "../orchestration/services/child-execution-lifecycle-service";
+import { ContinuationDispatcher, type ContinuationToken } from "../orchestration/services/continuation-policy";
 
-export class FlowDeckLifecycleAdapter {
+export class FlowDeckLifecycleAdapter implements NativeChildControlPort {
   private disposed = false;
   private turnVersionCounter = 0;
   private pendingFastDirectTurns = new Map<string, PendingFastDirectTurn>();
   private preToolRepositoryFingerprints = new Map<string, string>();
+  private userTurnVersionBySession = new Map<string, number>();
+  private inFlightAttempts = new Map<string, { runId: string; assignmentId: string; attemptNumber: number; preStateFingerprint: string; actionFingerprint: string; startedAt: string }>();
+  private continuationDispatcher = new ContinuationDispatcher();
 
   constructor(
     private readonly directory: string,
     private readonly runtime: ProductionOrchestrationRuntime,
-  ) {}
+    private readonly client?: any,
+  ) {
+    this.runtime.childExecutionLifecycleService.setControlPort(this);
+  }
+
+  async abortSession(sessionId: string, directory?: string): Promise<{ aborted: boolean; error?: string }> {
+    if (!this.client?.session?.abort) {
+      return { aborted: false, error: "Native client session.abort not available" };
+    }
+    try {
+      const res = await this.client.session.abort({
+        path: { id: sessionId },
+        query: directory ? { directory } : undefined,
+      });
+      if (res === true || res?.data === true || (res && !res.error)) {
+        return { aborted: true };
+      }
+      return { aborted: false, error: res?.error ? String(res.error) : "Abort rejected" };
+    } catch (err: any) {
+      return { aborted: false, error: err?.message ?? String(err) };
+    }
+  }
+
+  getUserTurnVersion(sessionId: string): number {
+    return this.userTurnVersionBySession.get(sessionId) ?? 1;
+  }
 
   private getPathFingerprint(relPath: string): string {
     return getMutationTargetFingerprint(this.directory, [relPath]);
@@ -60,6 +90,9 @@ export class FlowDeckLifecycleAdapter {
         .join("\n");
 
       if (!text.trim()) return;
+
+      const currentTurn = (this.userTurnVersionBySession.get(input.sessionID) ?? 0) + 1;
+      this.userTurnVersionBySession.set(input.sessionID, currentTurn);
 
       const msgHash = stableHash(text);
       const correlationId = input.messageID || randomUUID();
@@ -335,8 +368,38 @@ export class FlowDeckLifecycleAdapter {
     }
 
     const activeRun = await this.resolveActiveRunForSession(input.sessionID);
-    if (activeRun) {
-      this.runtime.transitionEngine.transitionPhase(activeRun.id, "executing");
+    const snapshot = activeRun ? this.runtime.orchestrationSnapshotService.getSnapshot(activeRun.id, input.sessionID) : null;
+    const workItemId = snapshot?.currentWorkItemId;
+
+    if (activeRun && workItemId) {
+      const actionFingerprint = this.runtime.progressObservationService.computeActionFingerprint({
+        tool: input.tool,
+        args: input.args,
+        sessionID: input.sessionID,
+      });
+      const preStateFingerprint = `${snapshot?.progress.lastRepositoryDelta ?? 0}:${snapshot?.progress.lastEvidenceDelta ?? 0}:${snapshot?.progress.noProgressCount ?? 0}`;
+      const attemptNumber = this.runtime.transitionEngine.allocateNextAttemptNumber(activeRun.id, workItemId);
+      const startedAt = new Date().toISOString();
+
+      this.runtime.transitionEngine.recordAttemptStart({
+        runId: activeRun.id,
+        assignmentId: workItemId,
+        attemptNumber,
+        callID: input.callID,
+        tool: input.tool,
+        actionFingerprint,
+        preStateFingerprint,
+        startedAt,
+      });
+
+      this.inFlightAttempts.set(input.callID, {
+        runId: activeRun.id,
+        assignmentId: workItemId,
+        attemptNumber,
+        preStateFingerprint,
+        actionFingerprint,
+        startedAt,
+      });
     }
 
     if (input.tool === "task" || input.tool === "subagent") {
@@ -405,18 +468,48 @@ export class FlowDeckLifecycleAdapter {
           postHash = getMutationTargetFingerprint(this.directory, postTargets.targetPaths);
         }
 
-        this.runtime.progressObservationService.recordToolObservation({
+        const obs = this.runtime.progressObservationService.recordToolObservation({
           runId,
           sessionId: input.sessionID,
           tool: input.tool,
           args: input.args,
           output: output?.output,
           metadata: output?.metadata,
+          error: output?.metadata?.error ? String(output.metadata.error) : undefined,
           preRepositoryHash: preHash,
           postRepositoryHash: postHash,
           assignmentId: childRec?.assignmentId,
           executionId: childRec?.executionId,
         });
+
+        const inFlight = this.inFlightAttempts.get(input.callID);
+        if (inFlight) {
+          this.inFlightAttempts.delete(input.callID);
+          const resultFingerprint = this.runtime.progressObservationService.computeResultFingerprint({
+            tool: input.tool,
+            output: output?.output,
+            metadata: output?.metadata,
+            error: output?.metadata?.error,
+          });
+          const isTransient = this.runtime.transitionEngine.isTransientError(output?.metadata?.error);
+          const isProgress = (obs.evidenceDelta > 0 && obs.evidenceKind !== "informational") || obs.repositoryStateDelta > 0 || obs.verificationDelta > 0;
+
+          this.runtime.transitionEngine.finalizeAttempt({
+            runId: inFlight.runId,
+            assignmentId: inFlight.assignmentId,
+            attemptNumber: inFlight.attemptNumber,
+            resultFingerprint,
+            postStateFingerprint: `${obs.repositoryStateDelta}:${obs.evidenceDelta}`,
+            finishedAt: new Date().toISOString(),
+            progressProduced: isProgress,
+            repositoryDelta: obs.repositoryStateDelta,
+            evidenceDelta: obs.evidenceDelta,
+            verificationDelta: obs.verificationDelta,
+            childStateDelta: obs.executionStateDelta,
+            isTransientError: isTransient,
+            failureReason: output?.metadata?.error ? String(output.metadata.error) : undefined,
+          });
+        }
       }
     }
   }
@@ -506,6 +599,7 @@ export class FlowDeckLifecycleAdapter {
     const snapshot = this.runtime.orchestrationSnapshotService.getSnapshot(activeRun.id, sessionID);
     if (!snapshot) return;
 
+    const currentTurnVersion = this.userTurnVersionBySession.get(sessionID) ?? 1;
     const transition = this.runtime.transitionEngine.evaluate({
       runId: activeRun.id,
       sessionId: sessionID,
@@ -520,7 +614,25 @@ export class FlowDeckLifecycleAdapter {
 
     // session.idle is a trigger to evaluate state, not evidence of work completion
     if (continuation.decision === "CONTINUE_NOW") {
-      noteInternalContinuation(sessionID);
+      const token: ContinuationToken = {
+        runId: activeRun.id,
+        sessionId: sessionID,
+        userTurnVersion: currentTurnVersion,
+        runAggregateVersion: snapshot.aggregateVersion,
+        transitionReason: transition.reasonCode,
+        currentWorkItemId: snapshot.currentWorkItemId,
+        stateFingerprint: `${snapshot.aggregateVersion}:${snapshot.phase}:${snapshot.currentWorkItemId ?? ""}`,
+      };
+
+      const dispatchRes = await this.continuationDispatcher.dispatch(token, {
+        currentTurnVersion,
+        currentAggregateVersion: snapshot.aggregateVersion,
+        client: this.client,
+      });
+
+      if (dispatchRes.dispatched) {
+        noteInternalContinuation(sessionID);
+      }
     }
   }
 
