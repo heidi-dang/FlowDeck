@@ -367,9 +367,9 @@ refs/heads/feature-b CCC CCC refs/heads/feature-b DDD
       expect(testPaths).toContain("tests/config/")
     })
 
-    it("maps src/index.ts to tests/index.test.ts", () => {
+    it("maps src/index.ts to tests/plugin-orchestration-wiring.test.ts", () => {
       const { testPaths } = routeFastChecks(["src/index.ts"])
-      expect(testPaths).toContain("tests/index.test.ts")
+      expect(testPaths).toContain("tests/plugin-orchestration-wiring.test.ts")
     })
 
     it("maps scripts/check-coverage.mjs to tests/check-coverage.test.ts", () => {

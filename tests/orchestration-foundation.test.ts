@@ -899,4 +899,491 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
 
     await releaseProjectRuntime(dirA);
   });
+
+  it("33. native-task-single-specialist: tool.execute.before creates assignment, session.created binds child session, tool.execute.after marks completed", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-single-spec";
+
+    // 1. Create active Run via user message
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor auth layer across backend", id: "1", sessionID, messageID: "msg-single-1" }] }
+    );
+
+    const sessionRow = ctx.runtime.sessionRepo.findById(sessionID);
+    expect(sessionRow).toBeDefined();
+    const runId = sessionRow!.runId;
+
+    // 2. Heidi initiates Task call to specialist
+    const callID = "call-reviewer-1";
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "task",
+      sessionID,
+      callID,
+      args: {
+        subagent_type: "reviewer",
+        prompt: "Review token auth implementation",
+        description: "Security and design review",
+        background: false,
+      },
+    });
+
+    // Verify ChildExecutionRecord and Assignment created
+    const record = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callID });
+    expect(record).not.toBeNull();
+    expect(record?.agentId).toBe("reviewer");
+    expect(record?.status).toBe("queued");
+    expect(record?.runId).toBe(runId);
+
+    const assignment = await ctx.runtime.services.assignmentService.getAssignment(record!.assignmentId);
+    expect(assignment).toBeDefined();
+    expect(assignment.status).toBe("pending");
+
+    // 3. OpenCode emits session.created for spawned child session
+    const childSessionId = "sess-child-reviewer-1";
+    await ctx.adapter.onEvent({
+      type: "session.created" as any,
+      properties: {
+        info: {
+          id: childSessionId,
+          parentID: sessionID,
+          agent: "reviewer",
+        },
+      } as any,
+    });
+
+    const boundRecord = ctx.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId });
+    expect(boundRecord).not.toBeNull();
+    expect(boundRecord?.taskCallId).toBe(callID);
+    expect(boundRecord?.status).toBe("running");
+
+    const runningAssignment = await ctx.runtime.services.assignmentService.getAssignment(record!.assignmentId);
+    expect(runningAssignment.status).toBe("running");
+
+    // 4. Specialist finishes, OpenCode emits tool.execute.after
+    await ctx.adapter.onToolExecuteAfter(
+      {
+        tool: "task",
+        sessionID,
+        callID,
+        args: { subagent_type: "reviewer" },
+      },
+      {
+        output: "Audit complete. No vulnerabilities found.",
+        title: "Security Review",
+        metadata: { findings: 0 },
+      }
+    );
+
+    const completedRecord = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callID });
+    expect(completedRecord?.status).toBe("completed");
+    expect(completedRecord?.result).toBe("Audit complete. No vulnerabilities found.");
+
+    const completedAssignment = await ctx.runtime.services.assignmentService.getAssignment(record!.assignmentId);
+    expect(completedAssignment.status).toBe("completed");
+
+    // Check diagnostics surface
+    const diag = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diag.activeChildExecutions).toBe(0);
+    expect(diag.completedChildExecutions).toBe(1);
+    expect(diag.delegations).toBe(1);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("34. native-task-parallel-background: handles multiple concurrent background specialists with independent lifecycles", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-parallel-bg";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor database and auth schemas across multiple services", id: "1", sessionID, messageID: "msg-pbg-1" }] }
+    );
+
+    // Launch task 1 (mapper)
+    const call1 = "call-bg-mapper-1";
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "task",
+      sessionID,
+      callID: call1,
+      args: { subagent_type: "mapper", prompt: "Map all routes", background: true },
+    });
+
+    // Launch task 2 (security)
+    const call2 = "call-bg-security-1";
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "task",
+      sessionID,
+      callID: call2,
+      args: { subagent_type: "security-auditor", prompt: "Audit SQL queries", background: true },
+    });
+
+    // Bind sessions
+    await ctx.adapter.onEvent({
+      type: "session.created" as any,
+      properties: { info: { id: "sess-bg-1", parentID: sessionID, agent: "mapper" } } as any,
+    });
+    await ctx.adapter.onEvent({
+      type: "session.created" as any,
+      properties: { info: { id: "sess-bg-2", parentID: sessionID, agent: "security-auditor" } } as any,
+    });
+
+    const diagMid = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diagMid.activeChildExecutions).toBe(2);
+    expect(diagMid.completedChildExecutions).toBe(0);
+
+    // Complete task 1
+    await ctx.adapter.onToolExecuteAfter(
+      { tool: "task", sessionID, callID: call1, args: { subagent_type: "mapper" } },
+      { output: "Routes mapped", metadata: {} }
+    );
+
+    // Complete task 2
+    await ctx.adapter.onToolExecuteAfter(
+      { tool: "task", sessionID, callID: call2, args: { subagent_type: "security-auditor" } },
+      { output: "No SQL injection flaws", metadata: {} }
+    );
+
+    const diagEnd = getSessionMetricsDiagnostics(sessionID, dirA);
+    expect(diagEnd.activeChildExecutions).toBe(0);
+    expect(diagEnd.completedChildExecutions).toBe(2);
+    expect(diagEnd.delegations).toBe(2);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("35. native-task-same-agent-concurrency-reverse-order: preserves exact correlation when 2 identical specialists complete in reverse order", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-same-agent";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor frontend widgets across multiple modules", id: "1", sessionID, messageID: "msg-same-1" }] }
+    );
+
+    const callA = "call-coder-a";
+    const callB = "call-coder-b";
+
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "task",
+      sessionID,
+      callID: callA,
+      args: { subagent_type: "backend-coder", prompt: "Build Widget A", description: "Widget A" },
+    });
+
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "task",
+      sessionID,
+      callID: callB,
+      args: { subagent_type: "backend-coder", prompt: "Build Widget B", description: "Widget B" },
+    });
+
+    // Session bindings
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "sess-coder-a",
+      taskCallId: callA,
+      agentId: "backend-coder",
+    });
+
+    ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "sess-coder-b",
+      taskCallId: callB,
+      agentId: "backend-coder",
+    });
+
+    // Reverse order completion: Call B completes FIRST
+    await ctx.adapter.onToolExecuteAfter(
+      { tool: "task", sessionID, callID: callB, args: {} },
+      { output: "Result for Widget B", metadata: {} }
+    );
+
+    const recB = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callB });
+    const recA = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callA });
+
+    expect(recB?.status).toBe("completed");
+    expect(recB?.result).toBe("Result for Widget B");
+    expect(recA?.status).toBe("queued");
+
+    // Call A completes SECOND
+    await ctx.adapter.onToolExecuteAfter(
+      { tool: "task", sessionID, callID: callA, args: {} },
+      { output: "Result for Widget A", metadata: {} }
+    );
+
+    const recAFinal = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callA });
+    expect(recAFinal?.status).toBe("completed");
+    expect(recAFinal?.result).toBe("Result for Widget A");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("36. duplicate-event-idempotency: multiple duplicate hook invocations do not corrupt state or throw", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-idemp";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor task calls and idempotency across modules", id: "1", sessionID, messageID: "msg-idemp-1" }] }
+    );
+
+    const callID = "call-idemp-1";
+    // Duplicate tool.execute.before
+    await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID, args: { subagent_type: "reviewer" } });
+    await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID, args: { subagent_type: "reviewer" } });
+
+    // Duplicate session.created
+    await ctx.adapter.onEvent({ type: "session.created" as any, properties: { info: { id: "sess-idemp-child", parentID: sessionID, agent: "reviewer" } } as any });
+    await ctx.adapter.onEvent({ type: "session.created" as any, properties: { info: { id: "sess-idemp-child", parentID: sessionID, agent: "reviewer" } } as any });
+
+    // Duplicate tool.execute.after
+    await ctx.adapter.onToolExecuteAfter({ tool: "task", sessionID, callID, args: {} }, { output: "Output 1", metadata: {} });
+    await ctx.adapter.onToolExecuteAfter({ tool: "task", sessionID, callID, args: {} }, { output: "Output 2", metadata: {} });
+
+    const rec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callID });
+    expect(rec?.status).toBe("completed");
+    expect(rec?.result).toBe("Output 1");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("37. stale-failure-event-protection: late failure/error event cannot regress COMPLETED child execution", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-stale-err";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor stale event protection across subsystem", id: "1", sessionID, messageID: "msg-stale-1" }] }
+    );
+
+    const callID = "call-stale-1";
+    await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID, args: { subagent_type: "reviewer" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "task", sessionID, callID, args: {} }, { output: "Completed successfully", metadata: {} });
+
+    const rec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callID });
+    expect(rec?.status).toBe("completed");
+
+    // Deliver late markFailed / markCancelled
+    await ctx.runtime.childExecutionLifecycleService.markFailed({ taskCallId: callID, error: "Stale network crash" });
+    await ctx.runtime.childExecutionLifecycleService.markCancelled({ taskCallId: callID, reason: "Stale timeout" });
+
+    const finalRec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callID });
+    expect(finalRec?.status).toBe("completed");
+    expect(finalRec?.result).toBe("Completed successfully");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("38. canonical-cancellation-propagation: parent Run cancellation cancels active child executions and assignments", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-propagate-cancel";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Long-running cluster deployment", id: "1", sessionID, messageID: "msg-canc-1" }] }
+    );
+
+    const sessionRow = ctx.runtime.sessionRepo.findById(sessionID);
+    const runId = sessionRow!.runId;
+
+    // Start 2 children
+    const call1 = "call-canc-1";
+    const call2 = "call-canc-2";
+    await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID: call1, args: { subagent_type: "backend-coder" } });
+    await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID: call2, args: { subagent_type: "security-auditor" } });
+
+    // Cancel parent run through RunService
+    await ctx.runtime.services.runService.cancelRun(runId, "Parent user stopped run");
+
+    const rec1 = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: call1 });
+    const rec2 = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: call2 });
+
+    expect(rec1?.status).toBe("cancelled");
+    expect(rec2?.status).toBe("cancelled");
+
+    const a1 = await ctx.runtime.services.assignmentService.getAssignment(rec1!.assignmentId);
+    const a2 = await ctx.runtime.services.assignmentService.getAssignment(rec2!.assignmentId);
+
+    expect(a1.status).toBe("cancelled");
+    expect(a2.status).toBe("cancelled");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("39. cold-restart-reconciliation: reloads non-terminal child execution state from SQLite without fabricating success", async () => {
+    const ctx1 = acquireProjectRuntime(dirA);
+    const sessionID = "sess-restart-child";
+
+    await ctx1.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor codebase during system reboot across packages", id: "1", sessionID, messageID: "msg-reb-1" }] }
+    );
+
+    const call1 = "call-reb-1";
+    await ctx1.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID: call1, args: { subagent_type: "mapper" } });
+    const childSessionId = "sess-child-reb-1";
+    await ctx1.adapter.onEvent({
+      type: "session.created" as any,
+      properties: { info: { id: childSessionId, parentID: sessionID, agent: "mapper" } } as any,
+    });
+
+    const initialRec = ctx1.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: call1 });
+    expect(initialRec?.status).toBe("running");
+
+    // Cold restart
+    await disposeProjectRuntime(dirA);
+    closeAllConnections();
+    _resetRouteState();
+
+    const ctx2 = acquireProjectRuntime(dirA);
+    // Reconcile from SQLite
+    ctx2.runtime.childExecutionLifecycleService.reconcileAfterRestart();
+
+    const recoveredRec = ctx2.runtime.childExecutionLifecycleService.getChildExecution({ childSessionId });
+    expect(recoveredRec).not.toBeNull();
+    expect(recoveredRec?.status).toBe("running");
+    expect(recoveredRec?.agentId).toBe("mapper");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("40. fast-direct-bypass: FAST_DIRECT task does not register child execution or create assignment rows", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-fast-bypass";
+
+    // Fast-direct user query (starts with "how to", "what is", etc.)
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "what is the current time?", id: "1", sessionID, messageID: "msg-fast-1" }] }
+    );
+
+    const sessionRow = ctx.runtime.sessionRepo.findById(sessionID);
+    expect(sessionRow).toBeUndefined();
+
+    const childRecs = ctx.runtime.childExecutionLifecycleService.listChildExecutionsForRun("any-run");
+    expect(childRecs.length).toBe(0);
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("41. ordinary-child-tool-does-not-complete-execution: sub-tools (read, bash, grep) inside child session do not complete child execution", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-tool-no-complete";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor backend caching architecture", id: "1", sessionID, messageID: "msg-tool-1" }] }
+    );
+
+    const callID = "call-backend-sub";
+    await ctx.adapter.onToolExecuteBefore({
+      tool: "task",
+      sessionID,
+      callID,
+      args: { subagent_type: "backend-coder", prompt: "Inspect and update cache" },
+    });
+
+    const childSessionId = "sess-child-backend";
+    await ctx.adapter.onEvent({
+      type: "session.created" as any,
+      properties: { info: { id: childSessionId, parentID: sessionID, agent: "backend-coder" } } as any,
+    });
+
+    // Execute ordinary child tools (read, grep, bash, write) inside child session
+    await ctx.adapter.onToolExecuteBefore({ tool: "read", sessionID: childSessionId, callID: "call-read-1", args: { file: "cache.ts" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "read", sessionID: childSessionId, callID: "call-read-1", args: { file: "cache.ts" } }, { output: "file contents", metadata: {} });
+
+    await ctx.adapter.onToolExecuteBefore({ tool: "bash", sessionID: childSessionId, callID: "call-bash-1", args: { command: "ls" } });
+    await ctx.adapter.onToolExecuteAfter({ tool: "bash", sessionID: childSessionId, callID: "call-bash-1", args: { command: "ls" } }, { output: "files", metadata: {} });
+
+    // Verify child execution and assignment are STILL running, not marked completed
+    const rec = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callID });
+    expect(rec?.status).toBe("running");
+    expect(rec?.completedAt).toBeNull();
+
+    const assignment = await ctx.runtime.services.assignmentService.getAssignment(rec!.assignmentId);
+    expect(assignment.status).toBe("running");
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("42. conflicting-child-session-binding-fails-closed: late binding rejects session already owned by another execution", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-conflict-bind";
+
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor dual security pipelines", id: "1", sessionID, messageID: "msg-conf-1" }] }
+    );
+
+    const call1 = "call-sec-1";
+    const call2 = "call-sec-2";
+    await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID: call1, args: { subagent_type: "security-auditor" } });
+    await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID: call2, args: { subagent_type: "security-auditor" } });
+
+    // Bind session to call1
+    const bound1 = ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "sess-child-shared",
+      taskCallId: call1,
+    });
+    expect(bound1).not.toBeNull();
+    expect(bound1?.taskCallId).toBe(call1);
+
+    // Attempt to bind same session to call2 -> must fail closed
+    const bound2 = ctx.runtime.childExecutionLifecycleService.bindChildSession({
+      parentSessionId: sessionID,
+      childSessionId: "sess-child-shared",
+      taskCallId: call2,
+    });
+    expect(bound2).toBeNull();
+
+    // Call 2 remains unbound
+    const rec2 = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: call2 });
+    expect(rec2?.childSessionId).toBeUndefined();
+
+    await releaseProjectRuntime(dirA);
+  });
+
+  it("43. replacement-cleans-child-before-new-run: REPLACE turn cancels active children of Run A before Run B is initialized", async () => {
+    const ctx = acquireProjectRuntime(dirA);
+    const sessionID = "sess-replace-child";
+
+    // Run A
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Refactor legacy telemetry pipeline", id: "1", sessionID, messageID: "msg-rep-1" }] }
+    );
+
+    const runA = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(runA).not.toBeNull();
+
+    const callA = "call-telemetry-worker";
+    await ctx.adapter.onToolExecuteBefore({ tool: "task", sessionID, callID: callA, args: { subagent_type: "backend-coder" } });
+
+    const recA = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callA });
+    expect(recA?.status).toBe("queued");
+
+    // REPLACE intent: "scratch that, instead ..."
+    await ctx.adapter.onChatMessage(
+      { sessionID, agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "scratch that, instead build a new GraphQL API from scratch", id: "2", sessionID, messageID: "msg-rep-2" }] }
+    );
+
+    // Child of Run A must now be cancelled
+    const recACancelled = ctx.runtime.childExecutionLifecycleService.getChildExecution({ taskCallId: callA });
+    expect(recACancelled?.status).toBe("cancelled");
+
+    const assignA = await ctx.runtime.services.assignmentService.getAssignment(recA!.assignmentId);
+    expect(assignA.status).toBe("cancelled");
+
+    // New active Run B created
+    const runB = await ctx.adapter.resolveActiveRunForSession(sessionID);
+    expect(runB).not.toBeNull();
+    expect(runB?.id).not.toBe(runA?.id);
+
+    await releaseProjectRuntime(dirA);
+  });
+
 });

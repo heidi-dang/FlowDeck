@@ -11,7 +11,11 @@ import type { ExecutionRegistry } from "./execution-registry";
 import type { UnitOfWork } from "../persistence/unit-of-work";
 import type { TransactionalRunWriter } from "../persistence/transactional-run-writer";
 
+import type { ChildExecutionLifecycleService } from "./child-execution-lifecycle-service";
+
 export class RunService {
+  private childLifecycleService?: ChildExecutionLifecycleService;
+
   constructor(
     private readonly runRepo: IRunRepository,
     private readonly eventBus: IEventBus,
@@ -19,7 +23,14 @@ export class RunService {
     private readonly unitOfWork: UnitOfWork,
     private readonly writer: TransactionalRunWriter,
     private readonly db: Database,
-  ) {}
+    childLifecycleService?: ChildExecutionLifecycleService,
+  ) {
+    this.childLifecycleService = childLifecycleService;
+  }
+
+  setChildLifecycleService(service: ChildExecutionLifecycleService): void {
+    this.childLifecycleService = service;
+  }
 
   async createRun(input: CreateRunInput, correlationId?: string): Promise<Run> {
     const now = new Date().toISOString();
@@ -207,6 +218,9 @@ export class RunService {
 
     // 1. Signal cancellation to active child execution & execute registered cleanup callbacks within bounded timeout
     await this.executionRegistry.cancelRunExecution(id, reason);
+    if (this.childLifecycleService) {
+      await this.childLifecycleService.cancelChildrenForRun(id, reason);
+    }
 
     // 2. Re-check status for completion-versus-cancellation races
     const latest = await this.runRepo.findById(id);

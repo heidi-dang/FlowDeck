@@ -76,6 +76,7 @@ import { PerformanceProjection } from "./services/performance-projection";
 import { RuntimeSnapshotService } from "./services/runtime-snapshot";
 import { AuthoritativeRoutingService } from "./routing/authoritative";
 import { RoutingRevisionService } from "./routing/routing-revision-service";
+import { ChildExecutionLifecycleService } from "./services/child-execution-lifecycle-service";
 import { TokenBudgetRuntime } from "../services/token-budget-runtime";
 import type { IsolatedWorkstreamExecutor } from "./execution/worktree-executor";
 import type { CommandRegistry } from "./commands/domain/command-registry";
@@ -102,8 +103,10 @@ export interface ProductionOrchestrationRuntime {
     eventService: EventService;
     healthService: HealthService;
     runRepo: IRunRepository;
+    childExecutionLifecycleService: ChildExecutionLifecycleService;
   };
   router: ReturnType<typeof createRouterWithControllers>;
+  childExecutionLifecycleService: ChildExecutionLifecycleService;
   routingDecisionRepository: SqliteRoutingDecisionRepository;
   routingRevisionService: RoutingRevisionService;
   metrics: OrchestrationMetrics;
@@ -684,9 +687,10 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
 
   const transactionalRunWriter = new SqliteTransactionalRunWriter();
 
-  const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db);
-  const contractService = new ContractService(contractRepo, eventBus);
   const assignmentService = new AssignmentService(assignmentRepo, eventBus);
+  const childExecutionLifecycleService = new ChildExecutionLifecycleService(db, assignmentService, sessionRepo, executionRegistry, eventBus);
+  const runService = new RunService(runRepo, eventBus, executionRegistry, unitOfWork, transactionalRunWriter, db, childExecutionLifecycleService);
+  const contractService = new ContractService(contractRepo, eventBus);
   const assignmentBindingCoordinator = new AssignmentBindingCoordinator({ assignmentService, bindingRepo: assignmentBindingRepo });
   const verificationService = new VerificationService(verificationRepo, eventBus);
   const completionService = new CompletionService(completionRepo, eventBus);
@@ -710,13 +714,14 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     performanceProjection: new PerformanceProjection(performanceRepository),
     snapshotService,
     runRepo,
+    childExecutionLifecycleService,
   };
 
   const router = createRouterWithControllers(services);
   const commands = createCoreCommandRuntime(db, txManager, {
     db, executionRegistry, unitOfWork, eventBus, deliverySink, outboxWorker,
     sessionRepo, contextItemRepo, consumerOffsetRepo, services, router,
-    routingDecisionRepository, routingRevisionService, metrics, executionRepository, executionScheduler,
+    routingDecisionRepository, routingRevisionService, childExecutionLifecycleService, metrics, executionRepository, executionScheduler,
     worktreeExecutionService, performanceRepository, authoritativeRouting,
     worktreeManager, integrationService, agentExecutor: options.agentExecutor,
     assignmentBindingCoordinator, faultHook: options.faultHook,
@@ -736,6 +741,7 @@ export function createProductionOrchestrationRuntime(db: Database, options: { re
     router,
     routingDecisionRepository,
     routingRevisionService,
+    childExecutionLifecycleService,
     metrics,
     executionRepository,
     executionScheduler,

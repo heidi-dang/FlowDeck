@@ -18,6 +18,7 @@ import {
   mapExecutionClassToRunStrategy,
 } from "../orchestration/routing/fast-router-adapter";
 import { classifyUserTurnIntent } from "../services/user-turn-intent";
+import { normalizeTaskInvocation } from "../services/task-invocation-adapter";
 
 export interface PendingFastDirectTurn {
   sessionID: string;
@@ -310,33 +311,83 @@ export class FlowDeckLifecycleAdapter {
   }
 
   async onToolExecuteBefore(
-    _input: { tool: string; sessionID: string; callID: string; args?: any }
+    input: { tool: string; sessionID: string; callID: string; args?: any }
   ) {
     if (this.disposed) return;
+    if (input.tool === "task" || input.tool === "subagent") {
+      const normalized = normalizeTaskInvocation(
+        { sessionID: input.sessionID, callID: input.callID },
+        input.args ?? {}
+      );
+      const activeRun = await this.resolveActiveRunForSession(input.sessionID);
+      if (activeRun) {
+        await this.runtime.childExecutionLifecycleService.registerDelegation({
+          runId: activeRun.id,
+          parentSessionId: input.sessionID,
+          taskCallId: input.callID,
+          targetAgent: normalized.targetAgent,
+          prompt: normalized.prompt,
+          description: normalized.description,
+          background: normalized.background,
+        });
+      }
+    }
   }
 
   async onToolExecuteAfter(
     input: { tool: string; sessionID: string; callID: string; args: any },
-    _output: { output: string; metadata: any }
+    output: { output: string; metadata: any; title?: string }
   ) {
     if (this.disposed) return;
     if (input.sessionID) {
       try {
-        this.runtime.sessionRepo.incrementMetrics(input.sessionID, 1, 0);
+        const isDelegation = input.tool === "task" || input.tool === "subagent";
+        this.runtime.sessionRepo.incrementMetrics(input.sessionID, 1, isDelegation ? 1 : 0);
       } catch {
         // Safe fail
       }
+    }
+
+    if (input.tool === "task" || input.tool === "subagent") {
+      await this.runtime.childExecutionLifecycleService.markCompleted({
+        taskCallId: input.callID,
+        output: output?.output,
+        title: output?.title,
+        metadata: output?.metadata,
+      });
     }
   }
 
   async onEvent(event: Event) {
     if (this.disposed) return;
-    if (event.type === "session.idle") {
-      await this.onSessionIdle(event.properties.sessionID);
-    } else if (event.type === "session.error") {
-      await this.onSessionError(event.properties.sessionID || "unknown", (event.properties as any).error);
-    } else if (event.type === "session.deleted") {
-      const sid = (event.properties as any).info?.id || (event.properties as any).sessionID || "unknown";
+    const eventType = (event as any).type;
+    const props = ((event as any).properties ?? {}) as any;
+
+    if (eventType === "session.created") {
+      const info = props.info ?? props;
+      const childSessionId = info.id ?? props.sessionID;
+      const parentSessionId = info.parentID ?? props.parentSessionID ?? props.parentID;
+      const agentId = info.agent ?? props.agent;
+      if (childSessionId && parentSessionId) {
+        this.runtime.childExecutionLifecycleService.bindChildSession({
+          parentSessionId,
+          childSessionId,
+          agentId,
+        });
+        await this.runtime.childExecutionLifecycleService.markStarted({
+          childSessionId,
+        });
+      }
+    } else if (eventType === "session.idle") {
+      const sid = props.sessionID ?? props.id;
+      if (sid) {
+        await this.onSessionIdle(sid);
+      }
+    } else if (eventType === "session.error") {
+      const sid = props.sessionID ?? props.id ?? "unknown";
+      await this.onSessionError(sid, props.error);
+    } else if (eventType === "session.deleted") {
+      const sid = props.info?.id ?? props.sessionID ?? props.id ?? "unknown";
       await this.onSessionDeleted(sid);
     }
   }

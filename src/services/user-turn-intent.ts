@@ -45,6 +45,7 @@ const REPLACE_PATTERNS = [
   /^instead,\s*/i,
   /^switch to\b/i,
   /^scrap that\b/i,
+  /^scratch that\b/i,
   /^start over with\b/i,
   /^ignore (?:this|that) and\b/i,
   /^do something else\b/i,

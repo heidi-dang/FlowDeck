@@ -376,7 +376,9 @@ const SRC_TEST_MAP = [
   { match: (f) => f.startsWith("src/hooks/"), testPath: "tests/hooks/" },
   { match: (f) => f.startsWith("src/services/"), testPath: "tests/services/" },
   { match: (f) => f.startsWith("src/config/"), testPath: "tests/config/" },
-  { match: (f) => f === "src/index.ts", testPath: "tests/index.test.ts" },
+  { match: (f) => f === "src/index.ts", testPath: "tests/plugin-orchestration-wiring.test.ts" },
+  { match: (f) => f.startsWith("src/orchestration/"), testPath: "tests/orchestration-foundation.test.ts" },
+  { match: (f) => f.startsWith("src/runtime/"), testPath: "tests/orchestration-foundation.test.ts" },
   { match: (f) => f === "scripts/check-coverage.mjs", testPath: "tests/check-coverage.test.ts" },
   { match: (f) => f === "scripts/pre-push.mjs", testPath: "tests/pre-push.test.ts" },
 ]

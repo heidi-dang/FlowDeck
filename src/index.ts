@@ -78,6 +78,22 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
   startTime?: string;
   completedAt?: string | null;
   errorMessage?: string | null;
+  activeAssignments?: number;
+  completedAssignments?: number;
+  failedAssignments?: number;
+  activeChildExecutions?: number;
+  completedChildExecutions?: number;
+  failedChildExecutions?: number;
+  childExecutions?: Array<{
+    assignmentId: string;
+    executionId: string;
+    agentId: string;
+    taskCallId: string;
+    childSessionId?: string;
+    status: string;
+    startedAt?: string;
+    completedAt?: string | null;
+  }>;
 } {
   const projectCtx = directory ? getProjectRuntime(directory) : null;
   if (!projectCtx || !projectCtx.runtime) {
@@ -89,6 +105,10 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
     return { sessionID, toolCalls: 0, delegations: 0 };
   }
 
+  const childDiag = sessionRow.runId
+    ? projectCtx.runtime.childExecutionLifecycleService.getDiagnosticsForRun(sessionRow.runId)
+    : undefined;
+
   return {
     sessionID: sessionRow.id,
     runID: sessionRow.runId,
@@ -98,6 +118,13 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
     startTime: sessionRow.startedAt,
     completedAt: sessionRow.completedAt,
     errorMessage: sessionRow.errorMessage,
+    activeAssignments: childDiag?.activeAssignments,
+    completedAssignments: childDiag?.completedAssignments,
+    failedAssignments: childDiag?.failedAssignments,
+    activeChildExecutions: childDiag?.activeChildExecutions,
+    completedChildExecutions: childDiag?.completedChildExecutions,
+    failedChildExecutions: childDiag?.failedChildExecutions,
+    childExecutions: childDiag?.childExecutions,
   };
 }
 
