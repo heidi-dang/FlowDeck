@@ -47,6 +47,29 @@ fn test_package_manager_ambiguity_fails_closed() {
 }
 
 #[test]
+fn test_package_manager_nested_contradiction_fails_closed() {
+    use fdx::intelligence::verify::resolve::detect_package_manager_for_pkg;
+    let dir = tempdir().unwrap();
+    let nested_pkg = dir.path().join("packages").join("sub");
+    std::fs::create_dir_all(&nested_pkg).unwrap();
+    std::fs::write(
+        dir.path().join("package.json"),
+        r#"{"packageManager": "pnpm@8.0.0"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        nested_pkg.join("package.json"),
+        r#"{"packageManager": "yarn@1.22.0"}"#,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        detect_package_manager_for_pkg(dir.path(), &nested_pkg),
+        PackageManagerResolution::Ambiguous(_)
+    ));
+}
+
+#[test]
 fn test_resolve_cargo_check() {
     let dir = tempdir().unwrap();
     let pkg_dir = dir.path().join("crates").join("my_crate");

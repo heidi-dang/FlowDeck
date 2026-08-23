@@ -1,7 +1,7 @@
 //! Bounded, safe child process runner for verification actions.
 //!
 //! Direct Command execution only: no shell invocation, no string interpolation.
-//! Process group management ensures all subprocesses are reaped on timeout.
+//! Process group management ensures all subprocesses and descendants are reaped on timeout or output bounds.
 
 use crate::intelligence::verify::model::CheckExecutionStatus;
 use crate::intelligence::verify::redact::redact_secrets;
@@ -42,6 +42,8 @@ pub struct RawProcessOutcome {
     pub stderr_digest: Option<String>,
     pub stdout_excerpt: Option<String>,
     pub stderr_excerpt: Option<String>,
+    pub stdout_captured_bytes: u64,
+    pub stderr_captured_bytes: u64,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
     pub started_at_ms: u64,
@@ -74,12 +76,13 @@ fn append_bounded_tail(tail: &mut Vec<u8>, new_bytes: &[u8], tail_limit: usize) 
     tail.extend_from_slice(new_bytes);
 }
 
-/// Kill the child process and its process group.
+/// Kill the child process and its entire process tree.
 fn kill_child_group(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
+        let pid = child.id() as i32;
         unsafe {
-            libc::killpg(child.id() as i32, libc::SIGKILL);
+            libc::killpg(pid, libc::SIGKILL);
         }
     }
     #[cfg(not(unix))]
@@ -131,10 +134,15 @@ pub fn execute_bounded_command(
                 stderr_digest: None,
                 stdout_excerpt: None,
                 stderr_excerpt: None,
+                stdout_captured_bytes: 0,
+                stderr_captured_bytes: 0,
                 stdout_truncated: false,
                 stderr_truncated: false,
                 started_at_ms,
-                reason: Some(format!("failed to spawn '{}': {}", program, e)),
+                reason: Some(redact_secrets(&format!(
+                    "failed to spawn '{}': {}",
+                    program, e
+                ))),
             };
         }
     };
@@ -237,10 +245,12 @@ pub fn execute_bounded_command(
                     stderr_digest: None,
                     stdout_excerpt: None,
                     stderr_excerpt: None,
+                    stdout_captured_bytes: 0,
+                    stderr_captured_bytes: 0,
                     stdout_truncated: false,
                     stderr_truncated: false,
                     started_at_ms,
-                    reason: Some(format!("wait error: {}", e)),
+                    reason: Some(redact_secrets(&format!("wait error: {}", e))),
                 };
             }
         }
@@ -282,6 +292,8 @@ pub fn execute_bounded_command(
 
     let stdout_truncated = out_guard.truncated || out_guard.bytes >= bounds.max_stdout_bytes;
     let stderr_truncated = err_guard.truncated || err_guard.bytes >= bounds.max_stderr_bytes;
+    let stdout_captured_bytes = out_guard.bytes;
+    let stderr_captured_bytes = err_guard.bytes;
 
     let (status, reason) = if timed_out {
         (
@@ -292,21 +304,10 @@ pub fn execute_bounded_command(
             )),
         )
     } else if overflowed || stdout_truncated || stderr_truncated {
-        if let Some(code) = exit_code {
-            if code == 0 {
-                (CheckExecutionStatus::Passed, None)
-            } else {
-                (
-                    CheckExecutionStatus::Failed,
-                    Some(format!("command exited with status {}", code)),
-                )
-            }
-        } else {
-            (
-                CheckExecutionStatus::Failed,
-                Some("output exceeded maximum byte cap".to_string()),
-            )
-        }
+        (
+            CheckExecutionStatus::OutputLimitExceeded,
+            Some("output exceeded maximum byte cap".to_string()),
+        )
     } else if let Some(code) = exit_code {
         if code == 0 {
             (CheckExecutionStatus::Passed, None)
@@ -337,6 +338,8 @@ pub fn execute_bounded_command(
         stderr_digest: Some(err_digest),
         stdout_excerpt,
         stderr_excerpt,
+        stdout_captured_bytes,
+        stderr_captured_bytes,
         stdout_truncated,
         stderr_truncated,
         started_at_ms,

@@ -2,7 +2,7 @@
 //!
 //! Enforces the M7 assurance contract:
 //! 1. execution_assurance <= plan.assurance (never upgrades M6 assurance).
-//! 2. If any required check was incomplete (TimedOut, SpawnFailed, Unsupported, Cancelled, Skipped), assurance degrades to Unverified.
+//! 2. If any required check was incomplete (TimedOut, OutputLimitExceeded, SpawnFailed, Unsupported, Cancelled, Skipped) or unresolved obligations remain, assurance degrades to Unverified.
 //! 3. Outcome precedence: Failed > Incomplete > Passed.
 //! 4. Conclusive test failures are valid execution evidence, not uncertainties by themselves.
 
@@ -13,12 +13,11 @@ use crate::intelligence::verify::model::{
 };
 use crate::protocol::AssuranceLevel;
 
-/// Compute overall verification outcome from individual check results.
-pub fn aggregate_outcome(checks: &[CheckExecutionResult]) -> VerificationOutcome {
-    if checks.is_empty() {
-        return VerificationOutcome::Passed;
-    }
-
+/// Compute overall verification outcome from the plan and individual check results.
+pub fn aggregate_outcome(
+    plan: &VerificationPlan,
+    checks: &[CheckExecutionResult],
+) -> VerificationOutcome {
     let mut has_failure = false;
     let mut has_incomplete = false;
 
@@ -28,17 +27,22 @@ pub fn aggregate_outcome(checks: &[CheckExecutionResult]) -> VerificationOutcome
                 has_failure = true;
             }
             CheckExecutionStatus::TimedOut
+            | CheckExecutionStatus::OutputLimitExceeded
             | CheckExecutionStatus::SpawnFailed
             | CheckExecutionStatus::Unsupported
             | CheckExecutionStatus::Skipped
-            | CheckExecutionStatus::Cancelled => {
+            | CheckExecutionStatus::Cancelled
+            | CheckExecutionStatus::Pending
+            | CheckExecutionStatus::Running => {
                 has_incomplete = true;
             }
             CheckExecutionStatus::Passed => {}
-            CheckExecutionStatus::Pending | CheckExecutionStatus::Running => {
-                has_incomplete = true;
-            }
         }
+    }
+
+    // Unresolved obligations from M6 plan prevent Passed outcome
+    if !plan.unresolved_obligations.is_empty() {
+        has_incomplete = true;
     }
 
     // Precedence: Failed takes precedence for outcome reporting, while retaining incompleteness in assurance/diagnostics.
@@ -70,6 +74,16 @@ pub fn propagate_assurance(
                     check.check_id, reason
                 )));
             }
+        }
+    }
+
+    if !plan.unresolved_obligations.is_empty() {
+        any_incomplete = true;
+        for uo in &plan.unresolved_obligations {
+            uncertainties.push(UncertaintyReason::BuildProviderFailed(format!(
+                "unresolved obligation in scope '{}': {} (source: {})",
+                uo.scope, uo.reason, uo.source
+            )));
         }
     }
 

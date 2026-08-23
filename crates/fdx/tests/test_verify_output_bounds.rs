@@ -1,6 +1,7 @@
 use fdx::intelligence::testplan::model::{
     PlannedCheck, SelectionReason, VerificationCheckKind, VerificationPlan,
 };
+use fdx::intelligence::verify::model::{CheckExecutionStatus, VerificationOutcome};
 use fdx::intelligence::verify::process::ProcessBounds;
 use fdx::intelligence::verify::{execute_verification_plan, VerificationExecutorOptions};
 use fdx::protocol::{AssuranceLevel, EvidenceStrength};
@@ -8,7 +9,7 @@ use std::time::Duration;
 use tempfile::tempdir;
 
 #[test]
-fn test_verification_output_bounds_truncates_large_output() {
+fn test_verification_output_bounds_truncates_large_output_and_marks_incomplete() {
     let dir = tempdir().unwrap();
     let pkg_json = dir.path().join("package.json");
     let pkg_val = serde_json::json!({
@@ -52,10 +53,19 @@ fn test_verification_output_bounds_truncates_large_output() {
     };
 
     let run = execute_verification_plan(dir.path(), &plan, &options).unwrap();
+    assert_eq!(run.outcome, VerificationOutcome::Incomplete);
+    assert_eq!(run.assurance, AssuranceLevel::Unverified);
     assert_eq!(run.checks.len(), 1);
     let check_res = &run.checks[0];
+    assert_eq!(check_res.status, CheckExecutionStatus::OutputLimitExceeded);
     assert!(check_res.stdout_truncated);
     assert!(check_res.stdout_digest.is_some());
+    assert!(check_res.stdout_captured_bytes >= 4096);
+    assert!(check_res
+        .reason
+        .as_ref()
+        .unwrap()
+        .contains("output exceeded maximum byte cap"));
     if let Some(ref excerpt) = check_res.stdout_excerpt {
         assert!(excerpt.len() <= 1024);
     }

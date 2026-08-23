@@ -3,7 +3,16 @@
 //! Converts abstract planned checks into strictly bounded, argument-safe executable commands.
 //! Never executes arbitrary planner display strings or user shell templates.
 
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+/// Known JS/TS test runner with statically verified command-line file targeting semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnownJsTestRunner {
+    Vitest,
+    Jest,
+}
 
 /// Strongly-typed verification action.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,11 +23,12 @@ pub enum ExecutionAction {
         script_name: String,
         package_manager: String,
     },
-    /// Execute a specific test file via the package test command.
+    /// Execute a specific test file via a positively known runner.
     NpmRunTestFile {
         pkg_dir: PathBuf,
         test_file_rel: String,
         package_manager: String,
+        runner: KnownJsTestRunner,
     },
     /// Execute Cargo package tests.
     CargoTestPackage {
@@ -51,7 +61,7 @@ pub enum ExecutionAction {
 }
 
 /// Resolved concrete execution invocation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ConcreteInvocation {
     pub program: String,
     pub argv: Vec<String>,
@@ -86,6 +96,7 @@ impl ExecutionAction {
                 pkg_dir,
                 test_file_rel,
                 package_manager,
+                runner: _runner,
             } => {
                 let cwd = if pkg_dir.as_os_str().is_empty() || pkg_dir == Path::new(".") {
                     repo_root.to_path_buf()

@@ -4,9 +4,10 @@
 //! 1. Deterministic package manager detection (fails closed on ambiguity).
 //! 2. Strict CWD repository containment (rejects directory escapes and symlink escapes).
 //! 3. Static verification action validation (never executes arbitrary display strings).
+//! 4. Typed runner capability model for individual test targeting with safe rollup.
 
 use crate::intelligence::testplan::model::PlannedCheck;
-use crate::intelligence::verify::action::ExecutionAction;
+use crate::intelligence::verify::action::{ExecutionAction, KnownJsTestRunner};
 use std::path::{Path, PathBuf};
 
 /// Package manager detection outcome.
@@ -17,41 +18,81 @@ pub enum PackageManagerResolution {
     Missing,
 }
 
-/// Detect the active Node/JS package manager from static repository evidence.
-pub fn detect_package_manager(repo_root: &Path) -> PackageManagerResolution {
-    // 1. Check package.json packageManager field in root
-    let root_pkg_json = repo_root.join("package.json");
-    if root_pkg_json.exists() {
-        if let Ok(content) = std::fs::read_to_string(&root_pkg_json) {
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(pm_field) = val.get("packageManager").and_then(|v| v.as_str()) {
-                    let pm_name = pm_field.split('@').next().unwrap_or("").trim();
-                    if ["npm", "pnpm", "yarn", "bun"].contains(&pm_name) {
-                        return PackageManagerResolution::Resolved(pm_name.to_string());
+/// Detect the active Node/JS package manager for a given package directory within repository root.
+pub fn detect_package_manager_for_pkg(
+    repo_root: &Path,
+    pkg_dir: &Path,
+) -> PackageManagerResolution {
+    let abs_pkg_dir = if pkg_dir == Path::new(".") || pkg_dir.as_os_str().is_empty() {
+        repo_root.to_path_buf()
+    } else if pkg_dir.is_absolute() {
+        pkg_dir.to_path_buf()
+    } else {
+        repo_root.join(pkg_dir)
+    };
+
+    // 1. Check packageManager fields in package.json (package dir and repo root)
+    let mut pkg_pms = Vec::new();
+
+    let check_pkg_json = |path: &Path| -> Option<String> {
+        if path.exists() {
+            if let Ok(content) = std::fs::read_to_string(path) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(pm_field) = val.get("packageManager").and_then(|v| v.as_str()) {
+                        let pm_name = pm_field.split('@').next().unwrap_or("").trim();
+                        if ["npm", "pnpm", "yarn", "bun"].contains(&pm_name) {
+                            return Some(pm_name.to_string());
+                        }
                     }
                 }
             }
         }
+        None
+    };
+
+    if abs_pkg_dir != repo_root {
+        if let Some(pm) = check_pkg_json(&abs_pkg_dir.join("package.json")) {
+            pkg_pms.push(pm);
+        }
+    }
+    if let Some(pm) = check_pkg_json(&repo_root.join("package.json")) {
+        if !pkg_pms.contains(&pm) {
+            pkg_pms.push(pm);
+        }
     }
 
-    // 2. Inspect lockfiles
+    if pkg_pms.len() > 1 {
+        return PackageManagerResolution::Ambiguous(pkg_pms);
+    }
+    if pkg_pms.len() == 1 {
+        return PackageManagerResolution::Resolved(pkg_pms.pop().unwrap());
+    }
+
+    // 2. Inspect lockfiles across package directory and repo root
     let mut detected = Vec::new();
-    if repo_root.join("pnpm-lock.yaml").exists() {
-        detected.push("pnpm".to_string());
-    }
-    if repo_root.join("yarn.lock").exists() {
-        detected.push("yarn".to_string());
-    }
-    if repo_root.join("bun.lock").exists() || repo_root.join("bun.lockb").exists() {
-        detected.push("bun".to_string());
-    }
-    if repo_root.join("package-lock.json").exists() {
-        detected.push("npm".to_string());
+    let lockfile_candidates = [
+        ("pnpm-lock.yaml", "pnpm"),
+        ("yarn.lock", "yarn"),
+        ("bun.lock", "bun"),
+        ("bun.lockb", "bun"),
+        ("package-lock.json", "npm"),
+    ];
+
+    for (lockfile, pm) in &lockfile_candidates {
+        let in_pkg = abs_pkg_dir.join(lockfile).exists();
+        let in_root = repo_root.join(lockfile).exists();
+        if in_pkg || in_root {
+            let pm_str = pm.to_string();
+            if !detected.contains(&pm_str) {
+                detected.push(pm_str);
+            }
+        }
     }
 
     match detected.len() {
         0 => {
-            if root_pkg_json.exists() {
+            if abs_pkg_dir.join("package.json").exists() || repo_root.join("package.json").exists()
+            {
                 PackageManagerResolution::Resolved("npm".to_string())
             } else {
                 PackageManagerResolution::Missing
@@ -60,6 +101,134 @@ pub fn detect_package_manager(repo_root: &Path) -> PackageManagerResolution {
         1 => PackageManagerResolution::Resolved(detected.pop().unwrap()),
         _ => PackageManagerResolution::Ambiguous(detected),
     }
+}
+
+/// Detect the active Node/JS package manager from static repository evidence.
+pub fn detect_package_manager(repo_root: &Path) -> PackageManagerResolution {
+    detect_package_manager_for_pkg(repo_root, Path::new("."))
+}
+
+/// Statically detect if a package has a known JS test runner (Vitest or Jest).
+pub fn detect_known_runner(repo_root: &Path, abs_pkg_dir: &Path) -> Option<KnownJsTestRunner> {
+    let check_configs = |dir: &Path| -> Option<KnownJsTestRunner> {
+        let vitest_configs = [
+            "vitest.config.ts",
+            "vitest.config.js",
+            "vitest.config.mts",
+            "vitest.config.mjs",
+            "vitest.config.cjs",
+            "vite.config.ts",
+            "vite.config.js",
+            "vite.config.mts",
+            "vite.config.mjs",
+            "vite.config.cjs",
+        ];
+        for f in &vitest_configs {
+            if dir.join(f).exists() {
+                return Some(KnownJsTestRunner::Vitest);
+            }
+        }
+
+        let jest_configs = [
+            "jest.config.ts",
+            "jest.config.js",
+            "jest.config.json",
+            "jest.config.mjs",
+            "jest.config.cjs",
+        ];
+        for f in &jest_configs {
+            if dir.join(f).exists() {
+                return Some(KnownJsTestRunner::Jest);
+            }
+        }
+        None
+    };
+
+    if let Some(runner) = check_configs(abs_pkg_dir) {
+        return Some(runner);
+    }
+    if abs_pkg_dir != repo_root {
+        if let Some(runner) = check_configs(repo_root) {
+            return Some(runner);
+        }
+    }
+
+    // Inspect package.json
+    let check_pkg_json = |dir: &Path| -> Option<KnownJsTestRunner> {
+        let pkg_json_path = dir.join("package.json");
+        if !pkg_json_path.exists() {
+            return None;
+        }
+        let content = std::fs::read_to_string(&pkg_json_path).ok()?;
+        let val = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+
+        // Check scripts.test
+        if let Some(test_script) = val
+            .get("scripts")
+            .and_then(|s| s.get("test"))
+            .and_then(|t| t.as_str())
+        {
+            if test_script.contains("vitest") {
+                return Some(KnownJsTestRunner::Vitest);
+            }
+            if test_script.contains("jest") {
+                return Some(KnownJsTestRunner::Jest);
+            }
+        }
+
+        // Check jest config key
+        if val.get("jest").is_some() {
+            return Some(KnownJsTestRunner::Jest);
+        }
+
+        // Check dependencies & devDependencies
+        let has_dep = |name: &str| -> bool {
+            val.get("dependencies").and_then(|d| d.get(name)).is_some()
+                || val
+                    .get("devDependencies")
+                    .and_then(|d| d.get(name))
+                    .is_some()
+        };
+
+        let has_vitest = has_dep("vitest");
+        let has_jest = has_dep("jest");
+
+        if has_vitest && !has_jest {
+            return Some(KnownJsTestRunner::Vitest);
+        }
+        if has_jest && !has_vitest {
+            return Some(KnownJsTestRunner::Jest);
+        }
+
+        None
+    };
+
+    if let Some(runner) = check_pkg_json(abs_pkg_dir) {
+        return Some(runner);
+    }
+    if abs_pkg_dir != repo_root {
+        if let Some(runner) = check_pkg_json(repo_root) {
+            return Some(runner);
+        }
+    }
+
+    None
+}
+
+/// Check whether a package.json contains an executable "test" script.
+fn has_package_test_script(abs_pkg_dir: &Path) -> bool {
+    let pkg_json = abs_pkg_dir.join("package.json");
+    if let Ok(content) = std::fs::read_to_string(&pkg_json) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+            return val
+                .get("scripts")
+                .and_then(|s| s.get("test"))
+                .and_then(|t| t.as_str())
+                .map(|s| !s.trim().is_empty())
+                .unwrap_or(false);
+        }
+    }
+    false
 }
 
 /// Validate that a path is strictly contained within the canonical repository root.
@@ -154,7 +323,7 @@ pub fn resolve_check_action(repo_root: &Path, check: &PlannedCheck) -> Execution
                 };
             }
 
-            match detect_package_manager(repo_root) {
+            match detect_package_manager_for_pkg(repo_root, &pkg_dir) {
                 PackageManagerResolution::Resolved(pm) => ExecutionAction::NpmRunScript {
                     pkg_dir,
                     script_name: script_name.to_string(),
@@ -261,12 +430,35 @@ pub fn resolve_check_action(repo_root: &Path, check: &PlannedCheck) -> Execution
             };
         }
 
-        match detect_package_manager(repo_root) {
-            PackageManagerResolution::Resolved(pm) => ExecutionAction::NpmRunTestFile {
-                pkg_dir,
-                test_file_rel: rel_path.to_string(),
-                package_manager: pm,
-            },
+        let abs_pkg_dir = if pkg_dir == Path::new(".") {
+            repo_root.to_path_buf()
+        } else {
+            repo_root.join(&pkg_dir)
+        };
+
+        match detect_package_manager_for_pkg(repo_root, &pkg_dir) {
+            PackageManagerResolution::Resolved(pm) => {
+                if let Some(runner) = detect_known_runner(repo_root, &abs_pkg_dir) {
+                    ExecutionAction::NpmRunTestFile {
+                        pkg_dir,
+                        test_file_rel: rel_path.to_string(),
+                        package_manager: pm,
+                        runner,
+                    }
+                } else if has_package_test_script(&abs_pkg_dir) {
+                    // Unknown runner: safely roll up to package test suite
+                    ExecutionAction::NpmRunScript {
+                        pkg_dir,
+                        script_name: "test".to_string(),
+                        package_manager: pm,
+                    }
+                } else {
+                    ExecutionAction::Unsupported {
+                        check_id: check_id.clone(),
+                        reason: "unknown test runner and no enclosing package test script found for rollup".to_string(),
+                    }
+                }
+            }
             PackageManagerResolution::Ambiguous(pms) => ExecutionAction::Unsupported {
                 check_id: check_id.clone(),
                 reason: format!("ambiguous package manager detection: {:?}", pms),
