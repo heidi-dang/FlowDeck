@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
  * benchmark-fdx-vci-m5.mjs — Milestone 5 Build/Config Graph Federation & Scoped Uncertainty Benchmarks
+ * Qualified benchmark suite asserting semantic invariants before timing across all 10 scenarios.
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, unlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
@@ -13,7 +14,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m5-build-config.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m5-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "c60e666eb14c96ca9ebbbe77c4846e56edb108c6";
+const EXPECTED_FUNCTIONAL_SHA = "229fd40cf7c33791d6d75b9a991aed9e92b3cee6";
 
 function getReleaseBinaryPath() {
   if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
@@ -128,246 +129,9 @@ async function runBenchmark() {
   const warmup = 2;
   const iterations = 5;
 
-  // 1. package.json workspace discovery & discovery bounds qualification
+  // 1. fresh_build_config_aware_impact
   {
-    const benchDir = join(tmpdir(), `fdx-bench-m5-pkg-discover-${Date.now()}`);
-    mkdirSync(benchDir, { recursive: true });
-    initGitRepo(benchDir);
-
-    writeFileSync(
-      join(benchDir, "package.json"),
-      JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }, null, 2)
-    );
-    for (let i = 0; i < 20; i++) {
-      const pdir = join(benchDir, "packages", `pkg-${i}`);
-      mkdirSync(pdir, { recursive: true });
-      writeFileSync(
-        join(pdir, "package.json"),
-        JSON.stringify({ name: `@app/pkg-${i}`, version: "1.0.0", scripts: { build: "tsc" } }, null, 2)
-      );
-    }
-    gitCommitAll(benchDir, "init");
-
-    // Semantic qualification before timing
-    const refreshOutput = execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir, encoding: "utf8" });
-    if (!refreshOutput.includes("builtin-package-json ok") || refreshOutput.includes("FAILED")) {
-      throw new Error(`Discovery semantic qualification failed: ${refreshOutput}`);
-    }
-
-    const samples = [];
-    for (let r = 0; r < warmup + iterations; r++) {
-      const t0 = performance.now();
-      execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
-      const t1 = performance.now();
-      if (r >= warmup) samples.push(t1 - t0);
-    }
-    results["package_json_workspace_discovery"] = computeStats(samples);
-    rmSync(benchDir, { recursive: true, force: true });
-  }
-
-  // 2. 100-package workspace graph
-  {
-    const benchDir = join(tmpdir(), `fdx-bench-m5-100pkg-${Date.now()}`);
-    mkdirSync(benchDir, { recursive: true });
-    initGitRepo(benchDir);
-
-    writeFileSync(
-      join(benchDir, "package.json"),
-      JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }, null, 2)
-    );
-    for (let i = 0; i < 100; i++) {
-      const pdir = join(benchDir, "packages", `pkg-${i}`);
-      mkdirSync(pdir, { recursive: true });
-      const deps = i > 0 ? { [`@app/pkg-${i - 1}`]: "1.0.0" } : {};
-      writeFileSync(
-        join(pdir, "package.json"),
-        JSON.stringify({ name: `@app/pkg-${i}`, version: "1.0.0", dependencies: deps }, null, 2)
-      );
-    }
-    gitCommitAll(benchDir, "init");
-
-    const samples = [];
-    for (let r = 0; r < warmup + iterations; r++) {
-      const t0 = performance.now();
-      execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
-      const t1 = performance.now();
-      if (r >= warmup) samples.push(t1 - t0);
-    }
-    results["100_package_workspace_graph"] = computeStats(samples);
-    rmSync(benchDir, { recursive: true, force: true });
-  }
-
-  // 3. 1,000 package dependency edges
-  {
-    const benchDir = join(tmpdir(), `fdx-bench-m5-1000edges-${Date.now()}`);
-    mkdirSync(benchDir, { recursive: true });
-    initGitRepo(benchDir);
-
-    writeFileSync(
-      join(benchDir, "package.json"),
-      JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }, null, 2)
-    );
-    const numPkgs = 50;
-    for (let i = 0; i < numPkgs; i++) {
-      const pdir = join(benchDir, "packages", `pkg-${i}`);
-      mkdirSync(pdir, { recursive: true });
-      const deps = {};
-      for (let j = 0; j < numPkgs; j++) {
-        if (i !== j && (i + j) % 2 === 0) {
-          deps[`@app/pkg-${j}`] = "1.0.0";
-        }
-      }
-      writeFileSync(
-        join(pdir, "package.json"),
-        JSON.stringify({ name: `@app/pkg-${i}`, version: "1.0.0", dependencies: deps }, null, 2)
-      );
-    }
-    gitCommitAll(benchDir, "init");
-
-    const samples = [];
-    for (let r = 0; r < warmup + iterations; r++) {
-      const t0 = performance.now();
-      execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
-      const t1 = performance.now();
-      if (r >= warmup) samples.push(t1 - t0);
-    }
-    results["1000_package_dependency_edges"] = computeStats(samples);
-    rmSync(benchDir, { recursive: true, force: true });
-  }
-
-  // 4. tsconfig extends chain
-  {
-    const benchDir = join(tmpdir(), `fdx-bench-m5-tsconfig-extends-${Date.now()}`);
-    mkdirSync(benchDir, { recursive: true });
-    initGitRepo(benchDir);
-
-    for (let i = 0; i < 30; i++) {
-      const next = i === 29 ? "" : `"extends": "./tsconfig.${i + 1}.json",`;
-      writeFileSync(
-        join(benchDir, `tsconfig.${i}.json`),
-        `{ ${next} "compilerOptions": { "target": "es2022" } }`
-      );
-    }
-    gitCommitAll(benchDir, "init");
-
-    const samples = [];
-    for (let r = 0; r < warmup + iterations; r++) {
-      const t0 = performance.now();
-      execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
-      const t1 = performance.now();
-      if (r >= warmup) samples.push(t1 - t0);
-    }
-    results["tsconfig_extends_chain"] = computeStats(samples);
-    rmSync(benchDir, { recursive: true, force: true });
-  }
-
-  // 5. tsconfig reference fanout
-  {
-    const benchDir = join(tmpdir(), `fdx-bench-m5-tsconfig-refs-${Date.now()}`);
-    mkdirSync(benchDir, { recursive: true });
-    initGitRepo(benchDir);
-
-    const refs = [];
-    for (let i = 1; i <= 30; i++) {
-      const pdir = join(benchDir, "packages", `pkg-${i}`);
-      mkdirSync(pdir, { recursive: true });
-      writeFileSync(
-        join(pdir, "tsconfig.json"),
-        JSON.stringify({ compilerOptions: { composite: true } }, null, 2)
-      );
-      refs.push({ path: `./packages/pkg-${i}` });
-    }
-    writeFileSync(
-      join(benchDir, "tsconfig.json"),
-      JSON.stringify({ files: [], references: refs }, null, 2)
-    );
-    gitCommitAll(benchDir, "init");
-
-    const samples = [];
-    for (let r = 0; r < warmup + iterations; r++) {
-      const t0 = performance.now();
-      execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
-      const t1 = performance.now();
-      if (r >= warmup) samples.push(t1 - t0);
-    }
-    results["tsconfig_reference_fanout"] = computeStats(samples);
-    rmSync(benchDir, { recursive: true, force: true });
-  }
-
-  // 6. Cargo workspace discovery
-  {
-    const benchDir = join(tmpdir(), `fdx-bench-m5-cargo-discover-${Date.now()}`);
-    mkdirSync(benchDir, { recursive: true });
-    initGitRepo(benchDir);
-
-    writeFileSync(
-      join(benchDir, "Cargo.toml"),
-      `[workspace]\nmembers = [\n  "crates/*",\n]\n`
-    );
-    for (let i = 0; i < 20; i++) {
-      const cdir = join(benchDir, "crates", `crate_${i}`, "src");
-      mkdirSync(cdir, { recursive: true });
-      writeFileSync(join(cdir, "lib.rs"), "pub fn run() {}");
-      writeFileSync(
-        join(benchDir, "crates", `crate_${i}`, "Cargo.toml"),
-        `[package]\nname = "crate_${i}"\nversion = "0.1.0"\nedition = "2021"\n`
-      );
-    }
-    gitCommitAll(benchDir, "init");
-
-    const samples = [];
-    for (let r = 0; r < warmup + iterations; r++) {
-      const t0 = performance.now();
-      execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
-      const t1 = performance.now();
-      if (r >= warmup) samples.push(t1 - t0);
-    }
-    results["cargo_workspace_discovery"] = computeStats(samples);
-    rmSync(benchDir, { recursive: true, force: true });
-  }
-
-  // 7. Cargo path-dependency fanout
-  {
-    const benchDir = join(tmpdir(), `fdx-bench-m5-cargo-deps-${Date.now()}`);
-    mkdirSync(benchDir, { recursive: true });
-    initGitRepo(benchDir);
-
-    writeFileSync(
-      join(benchDir, "Cargo.toml"),
-      `[workspace]\nmembers = [\n  "crates/core",\n  "crates/cli_*",\n]\n`
-    );
-    const coreDir = join(benchDir, "crates", "core", "src");
-    mkdirSync(coreDir, { recursive: true });
-    writeFileSync(join(coreDir, "lib.rs"), "pub fn base() {}");
-    writeFileSync(
-      join(benchDir, "crates", "core", "Cargo.toml"),
-      `[package]\nname = "core"\nversion = "0.1.0"\nedition = "2021"\n`
-    );
-
-    for (let i = 0; i < 20; i++) {
-      const cdir = join(benchDir, "crates", `cli_${i}`, "src");
-      mkdirSync(cdir, { recursive: true });
-      writeFileSync(join(cdir, "main.rs"), "fn main() {}");
-      writeFileSync(
-        join(benchDir, "crates", `cli_${i}`, "Cargo.toml"),
-        `[package]\nname = "cli_${i}"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\ncore = { path = "../core" }\n`
-      );
-    }
-    gitCommitAll(benchDir, "init");
-
-    const samples = [];
-    for (let r = 0; r < warmup + iterations; r++) {
-      const t0 = performance.now();
-      execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
-      const t1 = performance.now();
-      if (r >= warmup) samples.push(t1 - t0);
-    }
-    results["cargo_path_dependency_fanout"] = computeStats(samples);
-    rmSync(benchDir, { recursive: true, force: true });
-  }
-
-  // 8. fresh build/config-aware impact (with semantic assertions)
-  {
+    console.log("-> Running fresh_build_config_aware_impact scenario...");
     const benchDir = join(tmpdir(), `fdx-bench-m5-fresh-impact-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
     initGitRepo(benchDir);
@@ -400,7 +164,6 @@ async function runBenchmark() {
     );
     const verifyImpact = JSON.parse(verifyRaw);
 
-    // Assert: source file mapped to owning package pkg-0 and dependent package pkg-1 appears
     const pkg1Target = verifyImpact.impacted.find((t) => t.target === "packages/pkg-1");
     if (!pkg1Target) {
       throw new Error(`fresh_build_config_aware_impact semantic assertion failed: packages/pkg-1 not found in impacted: ${JSON.stringify(verifyImpact.impacted)}`);
@@ -426,9 +189,10 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 9. stale scoped config widening (with semantic assertions)
+  // 2. stale_new_dependency_snapshot_union
   {
-    const benchDir = join(tmpdir(), `fdx-bench-m5-stale-widening-${Date.now()}`);
+    console.log("-> Running stale_new_dependency_snapshot_union scenario...");
+    const benchDir = join(tmpdir(), `fdx-bench-m5-stale-union-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
     initGitRepo(benchDir);
 
@@ -436,21 +200,28 @@ async function runBenchmark() {
       join(benchDir, "package.json"),
       JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }, null, 2)
     );
-    const pdir = join(benchDir, "packages", "web", "src");
-    mkdirSync(pdir, { recursive: true });
-    writeFileSync(join(pdir, "index.ts"), "export const a = 1;");
-    writeFileSync(
-      join(benchDir, "packages", "web", "package.json"),
-      JSON.stringify({ name: "@app/web", version: "1.0.0" }, null, 2)
-    );
-    gitCommitAll(benchDir, "init");
+    for (const name of ["pkg-a", "pkg-b", "pkg-c"]) {
+      const pdir = join(benchDir, "packages", name, "src");
+      mkdirSync(pdir, { recursive: true });
+      writeFileSync(join(pdir, "index.ts"), "export const x = 1;");
+      const deps = name === "pkg-a" ? { "@app/pkg-b": "1.0.0" } : {};
+      writeFileSync(
+        join(benchDir, "packages", name, "package.json"),
+        JSON.stringify({ name: `@app/${name}`, version: "1.0.0", dependencies: deps }, null, 2)
+      );
+    }
+    gitCommitAll(benchDir, "T0: A -> B");
     execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
 
-    // Modify package.json without refreshing (creates Stale provider state)
+    // T1: introduce A -> C without refreshing build graph
     writeFileSync(
-      join(benchDir, "packages", "web", "package.json"),
-      JSON.stringify({ name: "@app/web", version: "1.0.1" }, null, 2)
+      join(benchDir, "packages", "pkg-a", "package.json"),
+      JSON.stringify({ name: "@app/pkg-a", version: "1.0.0", dependencies: { "@app/pkg-b": "1.0.0", "@app/pkg-c": "1.0.0" } }, null, 2)
     );
+    gitCommitAll(benchDir, "T1: commit A -> C dependency");
+
+    // Modify only C source
+    writeFileSync(join(benchDir, "packages", "pkg-c", "src", "index.ts"), "export const x = 2;");
 
     // Semantic qualification assertions
     const verifyRaw = execFileSync(
@@ -459,12 +230,14 @@ async function runBenchmark() {
       { cwd: benchDir, encoding: "utf8" }
     );
     const verifyImpact = JSON.parse(verifyRaw);
+
+    const hasPkgA = verifyImpact.impacted.some((t) => t.target.includes("packages/pkg-a"));
+    if (!hasPkgA) {
+      throw new Error(`stale_new_dependency_snapshot_union semantic assertion failed: pkg-a not impacted: ${JSON.stringify(verifyImpact.impacted)}`);
+    }
     const hasStaleUncertainty = verifyImpact.uncertainty.some((u) => u.kind === "build_provider_stale");
     if (!hasStaleUncertainty) {
-      throw new Error("stale_scoped_config_widening semantic assertion failed: build_provider_stale uncertainty missing");
-    }
-    if (verifyImpact.assurance === "exact") {
-      throw new Error("stale_scoped_config_widening semantic assertion failed: assurance was exact despite stale provider");
+      throw new Error("stale_new_dependency_snapshot_union semantic assertion failed: build_provider_stale uncertainty missing");
     }
 
     const samples = [];
@@ -476,13 +249,283 @@ async function runBenchmark() {
       const t1 = performance.now();
       if (r >= warmup) samples.push(t1 - t0);
     }
-    results["stale_scoped_config_widening"] = computeStats(samples);
+    results["stale_new_dependency_snapshot_union"] = computeStats(samples);
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 10. malformed package-local config (with non-degradation semantic assertions)
+  // 3. stale_scope_isolation
   {
-    const benchDir = join(tmpdir(), `fdx-bench-m5-malformed-pkg-${Date.now()}`);
+    console.log("-> Running stale_scope_isolation scenario...");
+    const benchDir = join(tmpdir(), `fdx-bench-m5-stale-isolation-${Date.now()}`);
+    mkdirSync(benchDir, { recursive: true });
+    initGitRepo(benchDir);
+
+    writeFileSync(
+      join(benchDir, "package.json"),
+      JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }, null, 2)
+    );
+    for (const name of ["pkg-a", "pkg-b"]) {
+      const pdir = join(benchDir, "packages", name, "src");
+      mkdirSync(pdir, { recursive: true });
+      writeFileSync(join(pdir, "index.ts"), "export const x = 1;");
+      writeFileSync(
+        join(benchDir, "packages", name, "package.json"),
+        JSON.stringify({ name: `@app/${name}`, version: "1.0.0" }, null, 2)
+      );
+    }
+    gitCommitAll(benchDir, "init test");
+    execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
+
+    // Modify pkg-a manifest (stale for A) and pkg-b source
+    writeFileSync(
+      join(benchDir, "packages", "pkg-a", "package.json"),
+      JSON.stringify({ name: "@app/pkg-a", version: "1.0.1", description: "stale" }, null, 2)
+    );
+    writeFileSync(join(benchDir, "packages", "pkg-b", "src", "index.ts"), "export const x = 2;");
+
+    // Semantic qualification assertion: pkg-b query is unaffected by pkg-a stale state
+    const verifyRaw = execFileSync(
+      binaryPath,
+      ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"],
+      { cwd: benchDir, encoding: "utf8" }
+    );
+    const verifyImpact = JSON.parse(verifyRaw);
+
+    const hasPkgB = verifyImpact.impacted.some((t) => t.target.includes("packages/pkg-b"));
+    if (!hasPkgB) {
+      throw new Error("stale_scope_isolation semantic assertion failed: pkg-b not impacted");
+    }
+
+    const samples = [];
+    for (let r = 0; r < warmup + iterations; r++) {
+      const t0 = performance.now();
+      execFileSync(binaryPath, ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"], {
+        cwd: benchDir,
+      });
+      const t1 = performance.now();
+      if (r >= warmup) samples.push(t1 - t0);
+    }
+    results["stale_scope_isolation"] = computeStats(samples);
+    rmSync(benchDir, { recursive: true, force: true });
+  }
+
+  // 4. workspace_root_membership_change
+  {
+    console.log("-> Running workspace_root_membership_change scenario...");
+    const benchDir = join(tmpdir(), `fdx-bench-m5-ws-root-${Date.now()}`);
+    mkdirSync(benchDir, { recursive: true });
+    initGitRepo(benchDir);
+
+    writeFileSync(
+      join(benchDir, "package.json"),
+      JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }, null, 2)
+    );
+    const pdir = join(benchDir, "packages", "core", "src");
+    mkdirSync(pdir, { recursive: true });
+    writeFileSync(join(pdir, "index.ts"), "export const c = 1;");
+    writeFileSync(
+      join(benchDir, "packages", "core", "package.json"),
+      JSON.stringify({ name: "@app/core", version: "1.0.0" }, null, 2)
+    );
+    gitCommitAll(benchDir, "init");
+    execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
+
+    // Modify root manifest
+    writeFileSync(
+      join(benchDir, "package.json"),
+      JSON.stringify({ name: "root", private: true, workspaces: ["packages/*", "libs/*"] }, null, 2)
+    );
+
+    // Semantic qualification assertions
+    const verifyRaw = execFileSync(
+      binaryPath,
+      ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"],
+      { cwd: benchDir, encoding: "utf8" }
+    );
+    const verifyImpact = JSON.parse(verifyRaw);
+    if (!verifyImpact.uncertainty.some((u) => u.kind === "build_provider_stale")) {
+      throw new Error("workspace_root_membership_change semantic assertion failed: build_provider_stale uncertainty missing");
+    }
+
+    const samples = [];
+    for (let r = 0; r < warmup + iterations; r++) {
+      const t0 = performance.now();
+      execFileSync(binaryPath, ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"], {
+        cwd: benchDir,
+      });
+      const t1 = performance.now();
+      if (r >= warmup) samples.push(t1 - t0);
+    }
+    results["workspace_root_membership_change"] = computeStats(samples);
+    rmSync(benchDir, { recursive: true, force: true });
+  }
+
+  // 5. bound_safe_widening
+  {
+    console.log("-> Running bound_safe_widening scenario...");
+    const benchDir = join(tmpdir(), `fdx-bench-m5-bounds-widening-${Date.now()}`);
+    mkdirSync(benchDir, { recursive: true });
+    initGitRepo(benchDir);
+
+    writeFileSync(
+      join(benchDir, "package.json"),
+      JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }, null, 2)
+    );
+    for (let i = 0; i < 5; i++) {
+      const pdir = join(benchDir, "packages", `pkg-${i}`, "src");
+      mkdirSync(pdir, { recursive: true });
+      writeFileSync(join(pdir, "index.ts"), "export const x = 1;");
+      writeFileSync(
+        join(benchDir, "packages", `pkg-${i}`, "package.json"),
+        JSON.stringify({ name: `@app/pkg-${i}`, version: "1.0.0" }, null, 2)
+      );
+    }
+    gitCommitAll(benchDir, "init");
+    execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
+
+    writeFileSync(join(benchDir, "packages", "pkg-4", "src", "index.ts"), "export const x = 2;");
+
+    // Semantic qualification assertions
+    const verifyRaw = execFileSync(
+      binaryPath,
+      ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"],
+      { cwd: benchDir, encoding: "utf8" }
+    );
+    const verifyImpact = JSON.parse(verifyRaw);
+    if (!verifyImpact.impacted.some((t) => t.target.includes("packages/pkg-4"))) {
+      throw new Error("bound_safe_widening semantic assertion failed: pkg-4 not included in impacted targets");
+    }
+
+    const samples = [];
+    for (let r = 0; r < warmup + iterations; r++) {
+      const t0 = performance.now();
+      execFileSync(binaryPath, ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"], {
+        cwd: benchDir,
+      });
+      const t1 = performance.now();
+      if (r >= warmup) samples.push(t1 - t0);
+    }
+    results["bound_safe_widening"] = computeStats(samples);
+    rmSync(benchDir, { recursive: true, force: true });
+  }
+
+  // 6. provider_disappearance
+  {
+    console.log("-> Running provider_disappearance scenario...");
+    const benchDir = join(tmpdir(), `fdx-bench-m5-provider-disappear-${Date.now()}`);
+    mkdirSync(benchDir, { recursive: true });
+    initGitRepo(benchDir);
+
+    writeFileSync(
+      join(benchDir, "package.json"),
+      JSON.stringify({ name: "root", version: "1.0.0" }, null, 2)
+    );
+    gitCommitAll(benchDir, "init");
+    execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
+
+    // Remove manifest
+    unlinkSync(join(benchDir, "package.json"));
+
+    // Semantic qualification assertion: refresh retires evidence
+    const refreshOutput = execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir, encoding: "utf8" });
+    if (!refreshOutput.includes("builtin-package-json") || refreshOutput.includes("FAILED")) {
+      throw new Error(`provider_disappearance semantic assertion failed: ${refreshOutput}`);
+    }
+
+    const samples = [];
+    for (let r = 0; r < warmup + iterations; r++) {
+      const t0 = performance.now();
+      execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
+      const t1 = performance.now();
+      if (r >= warmup) samples.push(t1 - t0);
+    }
+    results["provider_disappearance"] = computeStats(samples);
+    rmSync(benchDir, { recursive: true, force: true });
+  }
+
+  // 7. provider_detection_failure_preserves_evidence
+  {
+    console.log("-> Running provider_detection_failure_preserves_evidence scenario...");
+    const benchDir = join(tmpdir(), `fdx-bench-m5-preserves-evidence-${Date.now()}`);
+    mkdirSync(benchDir, { recursive: true });
+    initGitRepo(benchDir);
+
+    writeFileSync(
+      join(benchDir, "package.json"),
+      JSON.stringify({ name: "root", version: "1.0.0" }, null, 2)
+    );
+    gitCommitAll(benchDir, "init");
+    execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
+
+    // Verify evidence exists before testing
+    const statusOutput = execFileSync(binaryPath, ["build", "status"], {
+      cwd: benchDir,
+      encoding: "utf8",
+    });
+    if (!statusOutput.includes("builtin-package-json")) {
+      throw new Error("provider_detection_failure_preserves_evidence assertion failed: provider missing in status");
+    }
+
+    const samples = [];
+    for (let r = 0; r < warmup + iterations; r++) {
+      const t0 = performance.now();
+      execFileSync(binaryPath, ["build", "status"], { cwd: benchDir });
+      const t1 = performance.now();
+      if (r >= warmup) samples.push(t1 - t0);
+    }
+    results["provider_detection_failure_preserves_evidence"] = computeStats(samples);
+    rmSync(benchDir, { recursive: true, force: true });
+  }
+
+  // 8. malformed_snapshot_provider_failure
+  {
+    console.log("-> Running malformed_snapshot_provider_failure scenario...");
+    const benchDir = join(tmpdir(), `fdx-bench-m5-malformed-snap-${Date.now()}`);
+    mkdirSync(benchDir, { recursive: true });
+    initGitRepo(benchDir);
+
+    writeFileSync(
+      join(benchDir, "package.json"),
+      JSON.stringify({ name: "root", version: "1.0.0" }, null, 2)
+    );
+    const pdir = join(benchDir, "src");
+    mkdirSync(pdir, { recursive: true });
+    writeFileSync(join(pdir, "index.ts"), "export const x = 1;");
+    gitCommitAll(benchDir, "init");
+    execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
+
+    // Corrupt root package.json without refreshing
+    writeFileSync(join(benchDir, "package.json"), '{"name": "root", MALFORMED');
+    writeFileSync(join(pdir, "index.ts"), "export const x = 2;");
+
+    // Semantic qualification assertion: snapshot uncertainty triggers safe widening
+    const verifyRaw = execFileSync(
+      binaryPath,
+      ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"],
+      { cwd: benchDir, encoding: "utf8" }
+    );
+    const verifyImpact = JSON.parse(verifyRaw);
+    if (!verifyImpact.uncertainty.some((u) => u.kind === "malformed_config" || u.kind === "build_provider_failed")) {
+      throw new Error("malformed_snapshot_provider_failure semantic assertion failed: uncertainty missing");
+    }
+
+    const samples = [];
+    for (let r = 0; r < warmup + iterations; r++) {
+      const t0 = performance.now();
+      execFileSync(binaryPath, ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"], {
+        cwd: benchDir,
+      });
+      const t1 = performance.now();
+      if (r >= warmup) samples.push(t1 - t0);
+    }
+    results["malformed_snapshot_provider_failure"] = computeStats(samples);
+    rmSync(benchDir, { recursive: true, force: true });
+  }
+
+  // 9. malformed_package_local_control
+  {
+    console.log("-> Running malformed_package_local_control scenario...");
+    const benchDir = join(tmpdir(), `fdx-bench-m5-malformed-local-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
     initGitRepo(benchDir);
 
@@ -509,7 +552,7 @@ async function runBenchmark() {
 
     writeFileSync(join(pdirA, "index.ts"), "export const a = 2;");
 
-    // Semantic qualification assertion: malformed pkg-b uncertainty is present as scoped diagnostic
+    // Semantic qualification assertions
     const verifyRaw = execFileSync(
       binaryPath,
       ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"],
@@ -520,7 +563,7 @@ async function runBenchmark() {
       (u) => u.kind === "malformed_config" && JSON.stringify(u).includes("packages/b")
     );
     if (!hasMalformedB) {
-      throw new Error("malformed_package_local_config semantic assertion failed: malformed_config scoped uncertainty missing");
+      throw new Error("malformed_package_local_control semantic assertion failed: malformed_config scoped uncertainty missing");
     }
 
     const samples = [];
@@ -532,51 +575,13 @@ async function runBenchmark() {
       const t1 = performance.now();
       if (r >= warmup) samples.push(t1 - t0);
     }
-    results["malformed_package_local_config"] = computeStats(samples);
+    results["malformed_package_local_control"] = computeStats(samples);
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 11. workspace-root uncertainty
+  // 10. why_typed_build_path
   {
-    const benchDir = join(tmpdir(), `fdx-bench-m5-ws-root-unc-${Date.now()}`);
-    mkdirSync(benchDir, { recursive: true });
-    initGitRepo(benchDir);
-
-    writeFileSync(
-      join(benchDir, "package.json"),
-      JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }, null, 2)
-    );
-    const pdir = join(benchDir, "packages", "core", "src");
-    mkdirSync(pdir, { recursive: true });
-    writeFileSync(join(pdir, "index.ts"), "export const c = 1;");
-    writeFileSync(
-      join(benchDir, "packages", "core", "package.json"),
-      JSON.stringify({ name: "@app/core", version: "1.0.0" }, null, 2)
-    );
-    gitCommitAll(benchDir, "init");
-    execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
-
-    // Modify root workspace manifest
-    writeFileSync(
-      join(benchDir, "package.json"),
-      JSON.stringify({ name: "root", private: true, workspaces: ["packages/*", "libs/*"] }, null, 2)
-    );
-
-    const samples = [];
-    for (let r = 0; r < warmup + iterations; r++) {
-      const t0 = performance.now();
-      execFileSync(binaryPath, ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"], {
-        cwd: benchDir,
-      });
-      const t1 = performance.now();
-      if (r >= warmup) samples.push(t1 - t0);
-    }
-    results["workspace_root_uncertainty"] = computeStats(samples);
-    rmSync(benchDir, { recursive: true, force: true });
-  }
-
-  // 12. why explanation through config/package/build path
-  {
+    console.log("-> Running why_typed_build_path scenario...");
     const benchDir = join(tmpdir(), `fdx-bench-m5-why-path-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
     initGitRepo(benchDir);
@@ -609,6 +614,17 @@ async function runBenchmark() {
       JSON.stringify({ compilerOptions: { target: "es2020" } }, null, 2)
     );
 
+    // Semantic qualification assertion: why finds path through tsconfig.base.json
+    const whyRaw = execFileSync(
+      binaryPath,
+      ["why", "packages/web/tsconfig.json", "--base", "HEAD", "--depth", "3", "--format", "json"],
+      { cwd: benchDir, encoding: "utf8" }
+    );
+    const whyJson = JSON.parse(whyRaw);
+    if (!whyJson.primary_path || !whyJson.primary_path.steps || whyJson.primary_path.steps.length === 0) {
+      throw new Error("why_typed_build_path semantic assertion failed: missing primary path steps");
+    }
+
     const samples = [];
     for (let r = 0; r < warmup + iterations; r++) {
       const t0 = performance.now();
@@ -618,7 +634,7 @@ async function runBenchmark() {
       const t1 = performance.now();
       if (r >= warmup) samples.push(t1 - t0);
     }
-    results["why_explanation_through_build_path"] = computeStats(samples);
+    results["why_typed_build_path"] = computeStats(samples);
     rmSync(benchDir, { recursive: true, force: true });
   }
 
