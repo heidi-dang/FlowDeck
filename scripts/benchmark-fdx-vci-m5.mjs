@@ -14,7 +14,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m5-build-config.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m5-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "6265ffa8c05ccb7cc03c199cce4a276307ea1044";
+const EXPECTED_FUNCTIONAL_SHA = "9c1a9b693f5e17aba3b8e7203807d72f274fbaae";
 
 function getReleaseBinaryPath() {
   if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
