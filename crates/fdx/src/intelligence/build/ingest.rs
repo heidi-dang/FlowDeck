@@ -1,10 +1,10 @@
 //! Transactional publication of build and configuration evidence.
 
 use crate::intelligence::build::freshness::get_build_providers;
-use crate::intelligence::build::provider::BuildIngestResult;
+use crate::intelligence::build::provider::{BuildIngestResult, ProviderDetection};
 use crate::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use crate::intelligence::index::TransactionalGraph;
-use crate::intelligence::model::{GraphEdge, IndexedFile};
+use crate::intelligence::model::{GraphEdge, IndexedFile, SemanticNode};
 use crate::protocol::EvidenceProviderKind;
 use std::path::Path;
 
@@ -30,43 +30,72 @@ pub fn refresh_all_build_providers(
 
     for prov in providers {
         let pid = prov.id();
-        let detected = prov.detect(repo_root);
+        let detection = prov.detect_state(repo_root);
 
-        if !detected {
-            // Blocker 5: Provider disappearance retirement
-            // Check if persisted evidence exists for this provider
-            let has_persisted: bool = db
-                .conn
-                .query_row(
-                    "SELECT 1 FROM semantic_providers WHERE provider_id = ?1",
-                    rusqlite::params![pid],
-                    |_| Ok(true),
-                )
-                .unwrap_or(false);
+        match detection {
+            ProviderDetection::Absent => {
+                // Invariant 2: Only proven provider absence may retire provider evidence.
+                let has_persisted: bool = db
+                    .conn
+                    .query_row(
+                        "SELECT 1 FROM semantic_providers WHERE provider_id = ?1",
+                        rusqlite::params![pid],
+                        |_| Ok(true),
+                    )
+                    .unwrap_or(false);
 
-            if has_persisted {
-                match retire_provider_evidence(&mut db, pid) {
-                    Ok(gen) => {
-                        reports.push(BuildIngestReport {
-                            provider_id: pid.to_string(),
-                            nodes: 0,
-                            edges: 0,
-                            generation: gen,
-                            failure_reason: None,
-                        });
-                    }
-                    Err(e) => {
-                        reports.push(BuildIngestReport {
-                            provider_id: pid.to_string(),
-                            nodes: 0,
-                            edges: 0,
-                            generation: 0,
-                            failure_reason: Some(e),
-                        });
+                if has_persisted {
+                    match retire_provider_evidence(&mut db, pid) {
+                        Ok(gen) => {
+                            reports.push(BuildIngestReport {
+                                provider_id: pid.to_string(),
+                                nodes: 0,
+                                edges: 0,
+                                generation: gen,
+                                failure_reason: None,
+                            });
+                        }
+                        Err(e) => {
+                            reports.push(BuildIngestReport {
+                                provider_id: pid.to_string(),
+                                nodes: 0,
+                                edges: 0,
+                                generation: 0,
+                                failure_reason: Some(e),
+                            });
+                        }
                     }
                 }
+                continue;
             }
-            continue;
+            ProviderDetection::Indeterminate(err) => {
+                // Discovery failure is uncertainty, not absence.
+                // DO NOT retire; preserve last good generation and mark provider failed/stale.
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+
+                let _ = db.conn.execute(
+                    "UPDATE semantic_providers SET
+                        health = 'failed',
+                        freshness = 'stale',
+                        failure_reason = ?1,
+                        updated_at = ?2
+                     WHERE provider_id = ?3",
+                    rusqlite::params![err, now, pid],
+                );
+
+                reports.push(BuildIngestReport {
+                    provider_id: pid.to_string(),
+                    nodes: 0,
+                    edges: 0,
+                    generation: 0,
+                    failure_reason: Some(err),
+                });
+                continue;
+            }
+            ProviderDetection::Present => {}
         }
 
         let ingest_res = prov.ingest(repo_root);
@@ -188,7 +217,7 @@ fn publish_provider_evidence(
         )
         .map_err(|e| e.to_string())?;
 
-    // 2. Delete previous nodes owned by this provider (Blocker 5)
+    // 2. Delete previous nodes owned by this provider
     tx.tx
         .execute(
             "DELETE FROM nodes WHERE provider = 'build_native' AND source_identity = ?1",
@@ -213,7 +242,7 @@ fn publish_provider_evidence(
 
     // 4. Insert provider-owned build nodes with explicit generation and source_identity
     for node in &result.nodes {
-        let snode = crate::intelligence::model::SemanticNode {
+        let snode = SemanticNode {
             stable_id: node.stable_id.clone(),
             kind: node.kind,
             canonical_path: node.canonical_path.clone(),
@@ -231,14 +260,18 @@ fn publish_provider_evidence(
 
     // 5. Ensure any external target nodes referenced by edges exist
     for edge in &result.edges {
-        tx.tx.execute(
-            "INSERT OR IGNORE INTO nodes (stable_id, kind, canonical_path) VALUES (?1, 'package', NULL)",
-            rusqlite::params![edge.from_node],
-        ).map_err(|e| e.to_string())?;
-        tx.tx.execute(
-            "INSERT OR IGNORE INTO nodes (stable_id, kind, canonical_path) VALUES (?1, 'package', NULL)",
-            rusqlite::params![edge.to_node],
-        ).map_err(|e| e.to_string())?;
+        tx.tx
+            .execute(
+                "INSERT OR IGNORE INTO nodes (stable_id, kind, canonical_path) VALUES (?1, 'package', NULL)",
+                rusqlite::params![edge.from_node],
+            )
+            .map_err(|e| e.to_string())?;
+        tx.tx
+            .execute(
+                "INSERT OR IGNORE INTO nodes (stable_id, kind, canonical_path) VALUES (?1, 'package', NULL)",
+                rusqlite::params![edge.to_node],
+            )
+            .map_err(|e| e.to_string())?;
     }
 
     // 6. Insert edges
@@ -262,31 +295,33 @@ fn publish_provider_evidence(
     }
 
     // 7. Update provider state in semantic_providers
-    tx.tx.execute(
-        "INSERT INTO semantic_providers (
-            provider_id, provider_type, provider_version, executable_identity,
-            scip_schema_version, languages, workspace_root, package,
-            config_fingerprint, input_fingerprint, last_successful_run, health,
-            freshness, output_digest, failure_reason, semantic_generation,
-            created_at, updated_at,
-            last_attempt_fingerprint, last_attempt_at, last_attempt_health, last_attempt_failure_reason
-         ) VALUES (?1, 'build_native', '1.0.0', 'builtin', 'n/a', '[]', '.', NULL,
-                   ?2, ?2, ?3, 'available', 'fresh', NULL, NULL, ?4, ?3, ?3, ?2, ?3, 'available', NULL)
-         ON CONFLICT(provider_id) DO UPDATE SET
-            input_fingerprint = excluded.input_fingerprint,
-            config_fingerprint = excluded.config_fingerprint,
-            last_successful_run = excluded.last_successful_run,
-            health = 'available',
-            freshness = 'fresh',
-            failure_reason = NULL,
-            semantic_generation = excluded.semantic_generation,
-            updated_at = excluded.updated_at,
-            last_attempt_fingerprint = excluded.last_attempt_fingerprint,
-            last_attempt_at = excluded.last_attempt_at,
-            last_attempt_health = excluded.last_attempt_health,
-            last_attempt_failure_reason = NULL",
-        rusqlite::params![provider_id, result.fingerprint, now, next_gen as i64],
-    ).map_err(|e| e.to_string())?;
+    tx.tx
+        .execute(
+            "INSERT INTO semantic_providers (
+                provider_id, provider_type, provider_version, executable_identity,
+                scip_schema_version, languages, workspace_root, package,
+                config_fingerprint, input_fingerprint, last_successful_run, health,
+                freshness, output_digest, failure_reason, semantic_generation,
+                created_at, updated_at,
+                last_attempt_fingerprint, last_attempt_at, last_attempt_health, last_attempt_failure_reason
+             ) VALUES (?1, 'build_native', '1.0.0', 'builtin', 'n/a', '[]', '.', NULL,
+                       ?2, ?2, ?3, 'available', 'fresh', NULL, NULL, ?4, ?3, ?3, ?2, ?3, 'available', NULL)
+             ON CONFLICT(provider_id) DO UPDATE SET
+                input_fingerprint = excluded.input_fingerprint,
+                config_fingerprint = excluded.config_fingerprint,
+                last_successful_run = excluded.last_successful_run,
+                health = 'available',
+                freshness = 'fresh',
+                failure_reason = NULL,
+                semantic_generation = excluded.semantic_generation,
+                updated_at = excluded.updated_at,
+                last_attempt_fingerprint = excluded.last_attempt_fingerprint,
+                last_attempt_at = excluded.last_attempt_at,
+                last_attempt_health = excluded.last_attempt_health,
+                last_attempt_failure_reason = NULL",
+            rusqlite::params![provider_id, result.fingerprint, now, next_gen as i64],
+        )
+        .map_err(|e| e.to_string())?;
 
     tx.tx.commit().map_err(|e| e.to_string())?;
 

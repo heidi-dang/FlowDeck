@@ -1,11 +1,12 @@
 //! Static parser and provider for tsconfig.json inheritance and project references.
 
+use crate::intelligence::build::bounds::BuildBoundsCollector;
 use crate::intelligence::build::discover::{
     discover_build_files, MAX_DISCOVERED_ARTIFACTS, MAX_DISCOVERED_CONFIGS, MAX_DISCOVERED_EDGES,
 };
 use crate::intelligence::build::model::*;
 use crate::intelligence::build::provider::{
-    hash_files, BuildConfigProvider, BuildIngestResult, BuildProviderScope,
+    hash_files, BuildConfigProvider, BuildIngestResult, BuildProviderScope, ProviderDetection,
 };
 use crate::intelligence::build::scope::UncertaintyScope;
 use crate::intelligence::build::uncertainty::BuildUncertainty;
@@ -139,9 +140,19 @@ impl BuildConfigProvider for TsConfigProvider {
         TSCONFIG_PROVIDER_ID
     }
 
-    fn detect(&self, repo_root: &Path) -> bool {
+    fn detect_state(&self, repo_root: &Path) -> ProviderDetection {
         let files = discover_build_files(repo_root);
-        !files.tsconfigs.is_empty()
+        if !files.walker_errors.is_empty() {
+            return ProviderDetection::Indeterminate(format!(
+                "Discovery walker errors: {}",
+                files.walker_errors.join("; ")
+            ));
+        }
+        if !files.tsconfigs.is_empty() {
+            ProviderDetection::Present
+        } else {
+            ProviderDetection::Absent
+        }
     }
 
     fn scope(&self, repo_root: &Path) -> BuildProviderScope {
@@ -163,6 +174,8 @@ impl BuildConfigProvider for TsConfigProvider {
 
     fn ingest(&self, repo_root: &Path) -> Result<BuildIngestResult, String> {
         let files = discover_build_files(repo_root);
+        let mut bounds = BuildBoundsCollector::default();
+
         let global_fingerprint = hash_files(repo_root, &files.tsconfigs, TSCONFIG_PROVIDER_VERSION);
 
         let mut res = BuildIngestResult {
@@ -246,7 +259,6 @@ impl BuildConfigProvider for TsConfigProvider {
                     extends_target = Some(format!("config:{}", resolved));
                     extends_map.push((config_path.clone(), resolved));
                 } else {
-                    // Blocker 7: Unsupported / non-relative tsconfig extends form
                     res.uncertainties.push(BuildUncertainty::new(
                         "dynamic_config_expression",
                         UncertaintyScope::Config(config_path.clone()),
@@ -307,20 +319,30 @@ impl BuildConfigProvider for TsConfigProvider {
                 let artifact_dir = parent_dir.join(out_dir);
                 if let Ok(canon_artifact) = canonicalize_repo_path(&artifact_dir, Path::new("")) {
                     let artifact_id = format!("artifact:{}", canon_artifact);
-                    if res.artifacts.len() < MAX_DISCOVERED_ARTIFACTS {
-                        res.artifacts.push(GeneratedArtifact {
+                    bounds.push_bounded_artifact(
+                        &mut res.artifacts,
+                        &mut res.uncertainties,
+                        GeneratedArtifact {
                             stable_id: artifact_id.clone(),
                             canonical_path: canon_artifact.clone(),
                             generated_by: config_stable_id.clone(),
-                        });
-                        res.nodes.push(BuildNode {
-                            stable_id: artifact_id.clone(),
-                            kind: NodeKind::GeneratedArtifact,
-                            canonical_path: Some(canon_artifact),
-                            metadata: None,
-                        });
-                        // Config / target GENERATES artifact
-                        res.edges.push(BuildEdge {
+                        },
+                        MAX_DISCOVERED_ARTIFACTS,
+                        TSCONFIG_PROVIDER_ID,
+                        UncertaintyScope::Config(config_path.clone()),
+                    );
+
+                    res.nodes.push(BuildNode {
+                        stable_id: artifact_id.clone(),
+                        kind: NodeKind::GeneratedArtifact,
+                        canonical_path: Some(canon_artifact),
+                        metadata: None,
+                    });
+                    // Config / target GENERATES artifact
+                    bounds.push_bounded_edge(
+                        &mut res.edges,
+                        &mut res.uncertainties,
+                        BuildEdge {
                             stable_id: format!(
                                 "edge:generates:{}:{}",
                                 config_stable_id, artifact_id
@@ -333,17 +355,11 @@ impl BuildConfigProvider for TsConfigProvider {
                             provider_fingerprint: scope_fp.clone(),
                             strength: EvidenceStrength::Structural,
                             metadata: None,
-                        });
-                    } else {
-                        res.uncertainties.push(BuildUncertainty::new(
-                            "build_limit_reached",
-                            UncertaintyScope::Repository,
-                            TSCONFIG_PROVIDER_ID,
-                            format!("Artifact limit {} reached", MAX_DISCOVERED_ARTIFACTS),
-                            AssuranceLevel::Degraded,
-                            true,
-                        ));
-                    }
+                        },
+                        MAX_DISCOVERED_EDGES,
+                        TSCONFIG_PROVIDER_ID,
+                        UncertaintyScope::Config(config_path.clone()),
+                    );
                 }
             }
 
@@ -370,17 +386,24 @@ impl BuildConfigProvider for TsConfigProvider {
             });
 
             // Edge: file DEFINES config
-            res.edges.push(BuildEdge {
-                stable_id: format!("edge:defines:{}:{}", file_stable_id, config_stable_id),
-                from_node: file_stable_id,
-                to_node: config_stable_id.clone(),
-                kind: EdgeKind::Defines,
-                provider: "build_native".to_string(),
-                provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                provider_fingerprint: scope_fp.clone(),
-                strength: EvidenceStrength::Structural,
-                metadata: None,
-            });
+            bounds.push_bounded_edge(
+                &mut res.edges,
+                &mut res.uncertainties,
+                BuildEdge {
+                    stable_id: format!("edge:defines:{}:{}", file_stable_id, config_stable_id),
+                    from_node: file_stable_id,
+                    to_node: config_stable_id.clone(),
+                    kind: EdgeKind::Defines,
+                    provider: "build_native".to_string(),
+                    provider_id: TSCONFIG_PROVIDER_ID.to_string(),
+                    provider_fingerprint: scope_fp.clone(),
+                    strength: EvidenceStrength::Structural,
+                    metadata: None,
+                },
+                MAX_DISCOVERED_EDGES,
+                TSCONFIG_PROVIDER_ID,
+                UncertaintyScope::Config(config_path.clone()),
+            );
 
             // Link config to owning package
             let dir = Path::new(config_path)
@@ -399,17 +422,24 @@ impl BuildConfigProvider for TsConfigProvider {
             });
 
             // Edge: config CONFIGURES package
-            res.edges.push(BuildEdge {
-                stable_id: format!("edge:configures:{}:{}", config_stable_id, pkg_stable_id),
-                from_node: config_stable_id.clone(),
-                to_node: pkg_stable_id.clone(),
-                kind: EdgeKind::Configures,
-                provider: "build_native".to_string(),
-                provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                provider_fingerprint: scope_fp.clone(),
-                strength: EvidenceStrength::Structural,
-                metadata: None,
-            });
+            bounds.push_bounded_edge(
+                &mut res.edges,
+                &mut res.uncertainties,
+                BuildEdge {
+                    stable_id: format!("edge:configures:{}:{}", config_stable_id, pkg_stable_id),
+                    from_node: config_stable_id.clone(),
+                    to_node: pkg_stable_id.clone(),
+                    kind: EdgeKind::Configures,
+                    provider: "build_native".to_string(),
+                    provider_id: TSCONFIG_PROVIDER_ID.to_string(),
+                    provider_fingerprint: scope_fp.clone(),
+                    strength: EvidenceStrength::Structural,
+                    metadata: None,
+                },
+                MAX_DISCOVERED_EDGES,
+                TSCONFIG_PROVIDER_ID,
+                UncertaintyScope::Config(config_path.clone()),
+            );
 
             res.configs.push(ConfigFile {
                 stable_id: config_stable_id,
@@ -431,8 +461,10 @@ impl BuildConfigProvider for TsConfigProvider {
                 .cloned()
                 .unwrap_or_else(|| global_fingerprint.clone());
 
-            if res.edges.len() < MAX_DISCOVERED_EDGES {
-                res.edges.push(BuildEdge {
+            bounds.push_bounded_edge(
+                &mut res.edges,
+                &mut res.uncertainties,
+                BuildEdge {
                     stable_id: edge_id,
                     from_node,
                     to_node,
@@ -442,8 +474,11 @@ impl BuildConfigProvider for TsConfigProvider {
                     provider_fingerprint: scope_fp,
                     strength: EvidenceStrength::Structural,
                     metadata: None,
-                });
-            }
+                },
+                MAX_DISCOVERED_EDGES,
+                TSCONFIG_PROVIDER_ID,
+                UncertaintyScope::Config(from_cfg.clone()),
+            );
         }
 
         // Add references edges
@@ -456,8 +491,10 @@ impl BuildConfigProvider for TsConfigProvider {
                 .cloned()
                 .unwrap_or_else(|| global_fingerprint.clone());
 
-            if res.edges.len() < MAX_DISCOVERED_EDGES {
-                res.edges.push(BuildEdge {
+            bounds.push_bounded_edge(
+                &mut res.edges,
+                &mut res.uncertainties,
+                BuildEdge {
                     stable_id: edge_id,
                     from_node,
                     to_node,
@@ -467,8 +504,11 @@ impl BuildConfigProvider for TsConfigProvider {
                     provider_fingerprint: scope_fp,
                     strength: EvidenceStrength::Structural,
                     metadata: None,
-                });
-            }
+                },
+                MAX_DISCOVERED_EDGES,
+                TSCONFIG_PROVIDER_ID,
+                UncertaintyScope::Config(from_cfg.clone()),
+            );
         }
 
         // Check for cycles in extends / references

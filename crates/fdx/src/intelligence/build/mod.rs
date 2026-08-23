@@ -1,5 +1,6 @@
 //! Milestone 5: Build/config graph federation and scoped uncertainty.
 
+pub mod bounds;
 pub mod config;
 pub mod discover;
 pub mod explain;

@@ -1,12 +1,13 @@
 //! Static parser and provider for package.json and npm/pnpm/yarn/bun workspaces.
 
+use crate::intelligence::build::bounds::BuildBoundsCollector;
 use crate::intelligence::build::discover::{
     discover_build_files, MAX_DISCOVERED_EDGES, MAX_DISCOVERED_PACKAGES, MAX_DISCOVERED_TARGETS,
     MAX_WORKSPACE_MEMBERS,
 };
 use crate::intelligence::build::model::*;
 use crate::intelligence::build::provider::{
-    hash_files, BuildConfigProvider, BuildIngestResult, BuildProviderScope,
+    hash_files, BuildConfigProvider, BuildIngestResult, BuildProviderScope, ProviderDetection,
 };
 use crate::intelligence::build::scope::UncertaintyScope;
 use crate::intelligence::build::uncertainty::BuildUncertainty;
@@ -122,9 +123,19 @@ impl BuildConfigProvider for PackageJsonProvider {
         PACKAGE_JSON_PROVIDER_ID
     }
 
-    fn detect(&self, repo_root: &Path) -> bool {
+    fn detect_state(&self, repo_root: &Path) -> ProviderDetection {
         let files = discover_build_files(repo_root);
-        !files.package_jsons.is_empty() || !files.pnpm_workspaces.is_empty()
+        if !files.walker_errors.is_empty() {
+            return ProviderDetection::Indeterminate(format!(
+                "Discovery walker errors: {}",
+                files.walker_errors.join("; ")
+            ));
+        }
+        if !files.package_jsons.is_empty() || !files.pnpm_workspaces.is_empty() {
+            ProviderDetection::Present
+        } else {
+            ProviderDetection::Absent
+        }
     }
 
     fn scope(&self, repo_root: &Path) -> BuildProviderScope {
@@ -151,6 +162,8 @@ impl BuildConfigProvider for PackageJsonProvider {
 
     fn ingest(&self, repo_root: &Path) -> Result<BuildIngestResult, String> {
         let files = discover_build_files(repo_root);
+        let mut bounds = BuildBoundsCollector::default();
+
         let mut manifest_files = files.package_jsons.clone();
         manifest_files.extend(files.pnpm_workspaces.clone());
         manifest_files.sort();
@@ -281,17 +294,24 @@ impl BuildConfigProvider for PackageJsonProvider {
                     metadata: None,
                 });
             }
-            res.edges.push(BuildEdge {
-                stable_id: format!("edge:defines:{}:{}", fnode, ws_stable_id),
-                from_node: fnode,
-                to_node: ws_stable_id.clone(),
-                kind: EdgeKind::Defines,
-                provider: "build_native".to_string(),
-                provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                provider_fingerprint: global_fingerprint.clone(),
-                strength: EvidenceStrength::Structural,
-                metadata: None,
-            });
+            bounds.push_bounded_edge(
+                &mut res.edges,
+                &mut res.uncertainties,
+                BuildEdge {
+                    stable_id: format!("edge:defines:{}:{}", fnode, ws_stable_id),
+                    from_node: fnode,
+                    to_node: ws_stable_id.clone(),
+                    kind: EdgeKind::Defines,
+                    provider: "build_native".to_string(),
+                    provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
+                    provider_fingerprint: global_fingerprint.clone(),
+                    strength: EvidenceStrength::Structural,
+                    metadata: None,
+                },
+                MAX_DISCOVERED_EDGES,
+                PACKAGE_JSON_PROVIDER_ID,
+                UncertaintyScope::Workspace(ws_stable_id.clone()),
+            );
         }
 
         // Parse individual packages
@@ -397,17 +417,6 @@ impl BuildConfigProvider for PackageJsonProvider {
             let mut script_target_ids = Vec::new();
             if let Some(scripts) = val.get("scripts").and_then(|s| s.as_object()) {
                 for (script_name, script_cmd_val) in scripts {
-                    if res.targets.len() >= MAX_DISCOVERED_TARGETS {
-                        res.uncertainties.push(BuildUncertainty::new(
-                            "build_limit_reached",
-                            UncertaintyScope::Repository,
-                            PACKAGE_JSON_PROVIDER_ID,
-                            format!("Target limit {} reached", MAX_DISCOVERED_TARGETS),
-                            AssuranceLevel::Degraded,
-                            true,
-                        ));
-                        break;
-                    }
                     let cmd_str = script_cmd_val.as_str().map(String::from);
                     let target_id = format!("build:{}:script:{}", pkg_stable_id, script_name);
                     script_target_ids.push(target_id.clone());
@@ -417,16 +426,23 @@ impl BuildConfigProvider for PackageJsonProvider {
                         _ => BuildTargetKind::Script,
                     };
 
-                    res.targets.push(BuildTarget {
-                        stable_id: target_id.clone(),
-                        package_id: pkg_stable_id.clone(),
-                        name: script_name.clone(),
-                        target_kind,
-                        command_or_path: cmd_str,
-                        reads_configs: Vec::new(),
-                        generates_artifacts: Vec::new(),
-                        depends_on_targets: Vec::new(),
-                    });
+                    bounds.push_bounded_target(
+                        &mut res.targets,
+                        &mut res.uncertainties,
+                        BuildTarget {
+                            stable_id: target_id.clone(),
+                            package_id: pkg_stable_id.clone(),
+                            name: script_name.clone(),
+                            target_kind,
+                            command_or_path: cmd_str,
+                            reads_configs: Vec::new(),
+                            generates_artifacts: Vec::new(),
+                            depends_on_targets: Vec::new(),
+                        },
+                        MAX_DISCOVERED_TARGETS,
+                        PACKAGE_JSON_PROVIDER_ID,
+                        UncertaintyScope::Package(dir_str.clone()),
+                    );
 
                     res.nodes.push(BuildNode {
                         stable_id: target_id.clone(),
@@ -442,17 +458,24 @@ impl BuildConfigProvider for PackageJsonProvider {
                     });
 
                     // Target BELONGS_TO package
-                    res.edges.push(BuildEdge {
-                        stable_id: format!("edge:belongs_to:{}:{}", target_id, pkg_stable_id),
-                        from_node: target_id,
-                        to_node: pkg_stable_id.clone(),
-                        kind: EdgeKind::BelongsTo,
-                        provider: "build_native".to_string(),
-                        provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                        provider_fingerprint: scope_fp.clone(),
-                        strength: EvidenceStrength::Structural,
-                        metadata: None,
-                    });
+                    bounds.push_bounded_edge(
+                        &mut res.edges,
+                        &mut res.uncertainties,
+                        BuildEdge {
+                            stable_id: format!("edge:belongs_to:{}:{}", target_id, pkg_stable_id),
+                            from_node: target_id,
+                            to_node: pkg_stable_id.clone(),
+                            kind: EdgeKind::BelongsTo,
+                            provider: "build_native".to_string(),
+                            provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
+                            provider_fingerprint: scope_fp.clone(),
+                            strength: EvidenceStrength::Structural,
+                            metadata: None,
+                        },
+                        MAX_DISCOVERED_EDGES,
+                        PACKAGE_JSON_PROVIDER_ID,
+                        UncertaintyScope::Package(dir_str.clone()),
+                    );
                 }
             }
 
@@ -466,17 +489,24 @@ impl BuildConfigProvider for PackageJsonProvider {
             });
 
             // Edge from manifest to package
-            res.edges.push(BuildEdge {
-                stable_id: format!("edge:defines:{}:{}", manifest_node_id, pkg_stable_id),
-                from_node: manifest_node_id,
-                to_node: pkg_stable_id.clone(),
-                kind: EdgeKind::Defines,
-                provider: "build_native".to_string(),
-                provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                provider_fingerprint: scope_fp.clone(),
-                strength: EvidenceStrength::Structural,
-                metadata: None,
-            });
+            bounds.push_bounded_edge(
+                &mut res.edges,
+                &mut res.uncertainties,
+                BuildEdge {
+                    stable_id: format!("edge:defines:{}:{}", manifest_node_id, pkg_stable_id),
+                    from_node: manifest_node_id,
+                    to_node: pkg_stable_id.clone(),
+                    kind: EdgeKind::Defines,
+                    provider: "build_native".to_string(),
+                    provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
+                    provider_fingerprint: scope_fp.clone(),
+                    strength: EvidenceStrength::Structural,
+                    metadata: None,
+                },
+                MAX_DISCOVERED_EDGES,
+                PACKAGE_JSON_PROVIDER_ID,
+                UncertaintyScope::Package(dir_str.clone()),
+            );
 
             // Node for package
             res.nodes.push(BuildNode {
@@ -494,7 +524,7 @@ impl BuildConfigProvider for PackageJsonProvider {
                 ),
             });
 
-            // Workspace membership check (Blocker 8)
+            // Workspace membership check
             let is_member = if !is_monorepo {
                 true
             } else {
@@ -516,32 +546,35 @@ impl BuildConfigProvider for PackageJsonProvider {
 
             if is_member {
                 if let Some(ws) = res.workspaces.first_mut() {
-                    if ws.members.len() < MAX_WORKSPACE_MEMBERS {
-                        ws.members.push(pkg_stable_id.clone());
-                    } else {
-                        res.uncertainties.push(BuildUncertainty::new(
-                            "build_limit_reached",
-                            UncertaintyScope::Repository,
-                            PACKAGE_JSON_PROVIDER_ID,
-                            format!("Workspace members limit {} reached", MAX_WORKSPACE_MEMBERS),
-                            AssuranceLevel::Degraded,
-                            true,
-                        ));
-                    }
+                    bounds.push_bounded_workspace_member(
+                        &mut ws.members,
+                        &mut res.uncertainties,
+                        pkg_stable_id.clone(),
+                        MAX_WORKSPACE_MEMBERS,
+                        PACKAGE_JSON_PROVIDER_ID,
+                        UncertaintyScope::Workspace(ws_stable_id.clone()),
+                    );
                 }
 
                 // Edge from workspace CONTAINS package
-                res.edges.push(BuildEdge {
-                    stable_id: format!("edge:contains:{}:{}", ws_stable_id, pkg_stable_id),
-                    from_node: ws_stable_id.clone(),
-                    to_node: pkg_stable_id.clone(),
-                    kind: EdgeKind::Contains,
-                    provider: "build_native".to_string(),
-                    provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
-                    provider_fingerprint: scope_fp.clone(),
-                    strength: EvidenceStrength::Structural,
-                    metadata: None,
-                });
+                bounds.push_bounded_edge(
+                    &mut res.edges,
+                    &mut res.uncertainties,
+                    BuildEdge {
+                        stable_id: format!("edge:contains:{}:{}", ws_stable_id, pkg_stable_id),
+                        from_node: ws_stable_id.clone(),
+                        to_node: pkg_stable_id.clone(),
+                        kind: EdgeKind::Contains,
+                        provider: "build_native".to_string(),
+                        provider_id: PACKAGE_JSON_PROVIDER_ID.to_string(),
+                        provider_fingerprint: scope_fp.clone(),
+                        strength: EvidenceStrength::Structural,
+                        metadata: None,
+                    },
+                    MAX_DISCOVERED_EDGES,
+                    PACKAGE_JSON_PROVIDER_ID,
+                    UncertaintyScope::Workspace(ws_stable_id.clone()),
+                );
             }
 
             parsed_packages.push(Package {
@@ -557,7 +590,7 @@ impl BuildConfigProvider for PackageJsonProvider {
             });
         }
 
-        // Ordinary source file ownership (Blocker 3)
+        // Ordinary source file ownership
         let owned_files_map = find_package_owned_files(repo_root, &package_dirs);
         for (pkg_dir, files_list) in owned_files_map {
             let pkg_id = format!("pkg:npm:{}", pkg_dir);
@@ -579,8 +612,10 @@ impl BuildConfigProvider for PackageJsonProvider {
 
                 let edge_id = format!("edge:contains:{}:{}", pkg_id, file_node_id);
                 if !res.edges.iter().any(|e| e.stable_id == edge_id) {
-                    if res.edges.len() < MAX_DISCOVERED_EDGES {
-                        res.edges.push(BuildEdge {
+                    bounds.push_bounded_edge(
+                        &mut res.edges,
+                        &mut res.uncertainties,
+                        BuildEdge {
                             stable_id: edge_id,
                             from_node: pkg_id.clone(),
                             to_node: file_node_id,
@@ -590,18 +625,11 @@ impl BuildConfigProvider for PackageJsonProvider {
                             provider_fingerprint: scope_fp.clone(),
                             strength: EvidenceStrength::Structural,
                             metadata: None,
-                        });
-                    } else {
-                        res.uncertainties.push(BuildUncertainty::new(
-                            "build_limit_reached",
-                            UncertaintyScope::Repository,
-                            PACKAGE_JSON_PROVIDER_ID,
-                            format!("Edge limit {} reached", MAX_DISCOVERED_EDGES),
-                            AssuranceLevel::Degraded,
-                            true,
-                        ));
-                        break;
-                    }
+                        },
+                        MAX_DISCOVERED_EDGES,
+                        PACKAGE_JSON_PROVIDER_ID,
+                        UncertaintyScope::Package(pkg_dir.clone()),
+                    );
                 }
             }
         }
@@ -620,8 +648,10 @@ impl BuildConfigProvider for PackageJsonProvider {
 
                     // Package A DEPENDS_ON Package B
                     let edge_id = format!("edge:depends_on:{}:{}", pkg.stable_id, target_pkg_id);
-                    if res.edges.len() < MAX_DISCOVERED_EDGES {
-                        res.edges.push(BuildEdge {
+                    bounds.push_bounded_edge(
+                        &mut res.edges,
+                        &mut res.uncertainties,
+                        BuildEdge {
                             stable_id: edge_id,
                             from_node: pkg.stable_id.clone(),
                             to_node: target_pkg_id.clone(),
@@ -631,8 +661,11 @@ impl BuildConfigProvider for PackageJsonProvider {
                             provider_fingerprint: scope_fp.clone(),
                             strength: EvidenceStrength::Structural,
                             metadata: None,
-                        });
-                    }
+                        },
+                        MAX_DISCOVERED_EDGES,
+                        PACKAGE_JSON_PROVIDER_ID,
+                        UncertaintyScope::Package(pkg.directory.clone()),
+                    );
                 } else {
                     // External dependency
                     let ext_id = format!("ext:npm:{}", dep.name);
@@ -663,8 +696,10 @@ impl BuildConfigProvider for PackageJsonProvider {
 
                     // Package USES ExternalDependency
                     let edge_id = format!("edge:uses:{}:{}", pkg.stable_id, ext_id);
-                    if res.edges.len() < MAX_DISCOVERED_EDGES {
-                        res.edges.push(BuildEdge {
+                    bounds.push_bounded_edge(
+                        &mut res.edges,
+                        &mut res.uncertainties,
+                        BuildEdge {
                             stable_id: edge_id,
                             from_node: pkg.stable_id.clone(),
                             to_node: ext_id,
@@ -674,8 +709,11 @@ impl BuildConfigProvider for PackageJsonProvider {
                             provider_fingerprint: scope_fp.clone(),
                             strength: EvidenceStrength::Structural,
                             metadata: None,
-                        });
-                    }
+                        },
+                        MAX_DISCOVERED_EDGES,
+                        PACKAGE_JSON_PROVIDER_ID,
+                        UncertaintyScope::Package(pkg.directory.clone()),
+                    );
                 }
             }
             res.packages.push(pkg);
