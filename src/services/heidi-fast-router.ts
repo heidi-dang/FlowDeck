@@ -113,22 +113,21 @@ const DEBUG_PATTERNS: RegExp[] = [
 ]
 
 const UI_PATTERNS: RegExp[] = [
-  /\bui\b.*(component|screen|page|layout|design)/i,
-  /frontend.*(build|create|add|fix|update|component)/i,
+  /\b(build|create|implement|add|fix|update|make|design)\b.*\b(ui|user interface|frontend|front-end|page|screen|component|layout|form|dashboard|view)\b/i,
+  /\b(ui|user interface|frontend|front-end|page|screen|component|layout|form|dashboard|view)\b.*\b(build|create|implement|add|fix|update|make|design)\b/i,
   /react component/i,
   /vue component/i,
   /svelte component/i,
   /css.*(layout|styling|responsive|animation)/i,
   /landing page/i,
-  /dashboard (ui|layout|design)/i,
   /design system/i,
   /tailwind/i,
   /shadcn/i,
   /responsive design/i,
+  /\bui\b.*(component|screen|page|layout|design)/i,
+  /frontend.*(build|create|add|fix|update|component)/i,
   /user interface/i,
   /app screen/i,
-  /\b(react|vue|svelte|angular|next|nuxt)\b.{0,40}\b(ui|frontend|interface|component|screen)\b/i,
-  /^\s*(build|create|implement|add|fix|update)\s+(the\s+)?(react|vue|svelte)\s+(ui|frontend)/i,
 ]
 
 const BACKEND_PATTERNS: RegExp[] = [
@@ -336,7 +335,7 @@ export function classifyTask(
   const isParallel = matchesAny(text, PARALLEL_SIGNALS)
   if (isParallel) {
     const domains: SpecialistDomain[] = []
-    const hasUI = matchesAny(text, UI_PATTERNS) || /\bfrontend\b/i.test(text)
+    const hasUI = matchesAny(text, UI_PATTERNS) || /(frontend|front-end|ui)/i.test(text);
     const hasBackend = matchesAny(text, BACKEND_PATTERNS) || /\bbackend\b/i.test(text) || /\bapi\b/i.test(text) && (lc.includes("build") || lc.includes("implement") || lc.includes("create") || lc.includes("add"))
     if (hasUI) domains.push("UI")
     if (hasBackend && !domains.includes("BACKEND")) domains.push("BACKEND")
