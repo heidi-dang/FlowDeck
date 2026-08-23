@@ -221,8 +221,16 @@ fn test_tsconfig_stale_scope_isolation_against_control() {
     assert_eq!(test_res.assurance, AssuranceLevel::Degraded);
 
     // Verify proj-b impact target, depth, and strength match control exactly
-    let test_b_tgt = test_res.impacted.iter().find(|t| t.target.contains("proj-b")).expect("proj-b must be impacted in test");
-    let ctrl_b_tgt = ctrl_res.impacted.iter().find(|t| t.target.contains("proj-b")).expect("proj-b must be impacted in ctrl");
+    let test_b_tgt = test_res
+        .impacted
+        .iter()
+        .find(|t| t.target.contains("proj-b"))
+        .expect("proj-b must be impacted in test");
+    let ctrl_b_tgt = ctrl_res
+        .impacted
+        .iter()
+        .find(|t| t.target.contains("proj-b"))
+        .expect("proj-b must be impacted in ctrl");
     assert_eq!(test_b_tgt.depth, ctrl_b_tgt.depth);
     assert_eq!(test_b_tgt.strength, ctrl_b_tgt.strength);
     assert_eq!(test_b_tgt.target_kind, ctrl_b_tgt.target_kind);
@@ -322,8 +330,16 @@ edition = "2021"
     assert_eq!(test_res.assurance, AssuranceLevel::Degraded);
 
     // Verify crate-b impact target, depth, and strength match control exactly
-    let test_b_tgt = test_res.impacted.iter().find(|t| t.target.contains("crate-b")).expect("crate-b must be impacted in test");
-    let ctrl_b_tgt = ctrl_res.impacted.iter().find(|t| t.target.contains("crate-b")).expect("crate-b must be impacted in ctrl");
+    let test_b_tgt = test_res
+        .impacted
+        .iter()
+        .find(|t| t.target.contains("crate-b"))
+        .expect("crate-b must be impacted in test");
+    let ctrl_b_tgt = ctrl_res
+        .impacted
+        .iter()
+        .find(|t| t.target.contains("crate-b"))
+        .expect("crate-b must be impacted in ctrl");
     assert_eq!(test_b_tgt.depth, ctrl_b_tgt.depth);
     assert_eq!(test_b_tgt.strength, ctrl_b_tgt.strength);
     assert_eq!(test_b_tgt.target_kind, ctrl_b_tgt.target_kind);

@@ -470,6 +470,23 @@ enum Commands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+
+    /// Deterministic test and verification check planner (Milestone 6)
+    ///
+    /// Example: fdx plan --base HEAD~1 --format json
+    Plan {
+        /// Base Git ref (e.g. HEAD, HEAD~1, main)
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Head Git ref (defaults to working tree)
+        #[arg(long)]
+        head: Option<String>,
+
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 fn main() {
@@ -1490,6 +1507,38 @@ fn main() {
                 },
                 Err(e) => {
                     eprintln!("Error explaining target: {}", e);
+                    process::exit(1);
+                }
+            }
+        }
+
+        Commands::Plan { base, head, format } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+            let format = parse_format(&format);
+
+            match fdx::intelligence::testplan::planner::plan_verification(
+                &repo_root,
+                base.as_deref(),
+                head.as_deref(),
+                None,
+            ) {
+                Ok(plan) => match format {
+                    OutputFormat::Json => {
+                        if let Ok(json_str) = serde_json::to_string_pretty(&plan) {
+                            println!("{}", json_str);
+                        }
+                    }
+                    OutputFormat::Text => {
+                        let text =
+                            fdx::intelligence::testplan::explain::format_verification_plan_text(
+                                &plan,
+                            );
+                        print!("{}", text);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error creating verification plan: {}", e);
                     process::exit(1);
                 }
             }

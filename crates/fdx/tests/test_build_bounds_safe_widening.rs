@@ -1,6 +1,8 @@
 //! Milestone 5 Trust Proof: Determinstic Bound Tests & Conservative Widening.
 
-use fdx::intelligence::build::bounds::{with_test_build_limits, with_test_walker_error, BuildLimits};
+use fdx::intelligence::build::bounds::{
+    with_test_build_limits, with_test_walker_error, BuildLimits,
+};
 use fdx::intelligence::build::snapshot::CurrentBuildSnapshot;
 use fdx::intelligence::change::traverse::analyze_impact_v2;
 use fdx::protocol::{AssuranceLevel, EdgeKind, NodeKind};
@@ -120,8 +122,8 @@ fn test_omitted_edge_conservative_widening_adversarial() {
 
     // Step 2: Refresh build providers with edge bound
     with_test_build_limits(low_edge_limits, || {
-        let _ =
-            fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false).unwrap();
+        let _ = fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false)
+            .unwrap();
     });
 
     // Step 3: Modify ONLY pkg-d/src/index.ts
@@ -137,13 +139,25 @@ fn test_omitted_edge_conservative_widening_adversarial() {
     });
 
     // Verify D directly impacted
-    assert!(res.impacted.iter().any(|t| t.target.contains("packages/pkg-d")));
+    assert!(res
+        .impacted
+        .iter()
+        .any(|t| t.target.contains("packages/pkg-d")));
     // Verify C and B impacted
-    assert!(res.impacted.iter().any(|t| t.target.contains("packages/pkg-c")));
-    assert!(res.impacted.iter().any(|t| t.target.contains("packages/pkg-b")));
+    assert!(res
+        .impacted
+        .iter()
+        .any(|t| t.target.contains("packages/pkg-c")));
+    assert!(res
+        .impacted
+        .iter()
+        .any(|t| t.target.contains("packages/pkg-b")));
 
     // CRITICAL: Verify A is also safely included through conservative widening despite omitted edge
-    let pkg_a = res.impacted.iter().find(|t| t.target.contains("packages/pkg-a"));
+    let pkg_a = res
+        .impacted
+        .iter()
+        .find(|t| t.target.contains("packages/pkg-a"));
     assert!(
         pkg_a.is_some(),
         "pkg-a must be safely included in impacted set via conservative widening"
@@ -204,18 +218,23 @@ fn test_workspace_member_bound_safe_widening() {
     with_test_build_limits(low_ws_limits, || {
         let snapshot = CurrentBuildSnapshot::build(repo_root);
         assert_eq!(snapshot.package_to_owning_workspace.len(), 2);
-        assert!(!snapshot.package_to_owning_workspace.contains_key("pkg:npm:packages/pkg-c"));
-        
-        let ws_contains_c_edge = format!("edge:contains:workspace:npm:.:pkg:npm:packages/pkg-c");
+        assert!(!snapshot
+            .package_to_owning_workspace
+            .contains_key("pkg:npm:packages/pkg-c"));
+
+        let ws_contains_c_edge = "edge:contains:workspace:npm:.:pkg:npm:packages/pkg-c".to_string();
         assert!(
-            !snapshot.edges.iter().any(|e| e.stable_id == ws_contains_c_edge),
+            !snapshot
+                .edges
+                .iter()
+                .any(|e| e.stable_id == ws_contains_c_edge),
             "Workspace CONTAINS pkg-c edge must NOT be published when member is omitted by bound"
         );
     });
 
     with_test_build_limits(low_ws_limits, || {
-        let _ =
-            fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false).unwrap();
+        let _ = fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false)
+            .unwrap();
     });
 
     // Modify root package.json
@@ -236,7 +255,9 @@ fn test_workspace_member_bound_safe_widening() {
 
     // pkg-c must still be conservatively covered by safe fallback widening
     assert!(
-        res.impacted.iter().any(|t| t.target.contains("packages/pkg-c")),
+        res.impacted
+            .iter()
+            .any(|t| t.target.contains("packages/pkg-c")),
         "pkg-c must be covered by safe widening when workspace member limit is reached"
     );
     assert!(res
@@ -288,8 +309,8 @@ fn test_config_bound_safe_widening_tsconfig_only() {
     });
 
     with_test_build_limits(low_cfg_limits, || {
-        let _ =
-            fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false).unwrap();
+        let _ = fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false)
+            .unwrap();
     });
 
     // Modify proj-c tsconfig
@@ -368,8 +389,8 @@ fn test_target_bound_safe_widening() {
     });
 
     with_test_build_limits(low_tgt_limits, || {
-        let _ =
-            fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false).unwrap();
+        let _ = fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false)
+            .unwrap();
     });
 
     // Modify script in package.json
@@ -392,7 +413,10 @@ fn test_target_bound_safe_widening() {
         analyze_impact_v2(repo_root, Some("HEAD"), None, Some(3)).unwrap()
     });
 
-    assert!(res.impacted.iter().any(|t| t.target.contains("packages/pkg-a")));
+    assert!(res
+        .impacted
+        .iter()
+        .any(|t| t.target.contains("packages/pkg-a")));
     assert!(res
         .uncertainty
         .iter()
@@ -427,13 +451,16 @@ fn test_artifact_bound_safe_widening() {
 
     with_test_build_limits(low_art_limits, || {
         let snapshot = CurrentBuildSnapshot::build(repo_root);
-        assert!(!snapshot.nodes.values().any(|n| n.kind == NodeKind::GeneratedArtifact));
+        assert!(!snapshot
+            .nodes
+            .values()
+            .any(|n| n.kind == NodeKind::GeneratedArtifact));
         assert!(!snapshot.edges.iter().any(|e| e.kind == EdgeKind::Generates));
     });
 
     with_test_build_limits(low_art_limits, || {
-        let _ =
-            fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false).unwrap();
+        let _ = fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false)
+            .unwrap();
     });
 
     fs::write(pdir.join("src/index.ts"), "export const a = 2;").unwrap();
@@ -473,8 +500,8 @@ fn test_incomplete_fallback_inventory_fails_closed_unverified() {
     };
 
     with_test_build_limits(low_both_limits, || {
-        let _ =
-            fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false).unwrap();
+        let _ = fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false)
+            .unwrap();
     });
 
     fs::write(
@@ -493,7 +520,10 @@ fn test_incomplete_fallback_inventory_fails_closed_unverified() {
         AssuranceLevel::Unverified,
         "Assurance must fail closed as UNVERIFIED when exact topology and fallback inventory are both incomplete"
     );
-    assert!(res.uncertainty.iter().any(|u| u.code() == "graph_unavailable"));
+    assert!(res
+        .uncertainty
+        .iter()
+        .any(|u| u.code() == "graph_unavailable"));
 }
 
 #[test]
@@ -519,8 +549,8 @@ fn test_fallback_inventory_walker_error_fails_closed_unverified() {
     };
 
     with_test_build_limits(low_edge_limits, || {
-        let _ =
-            fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false).unwrap();
+        let _ = fdx::intelligence::build::ingest::refresh_all_build_providers(repo_root, false)
+            .unwrap();
     });
 
     fs::write(pdir.join("src/index.ts"), "export const x = 2;").unwrap();

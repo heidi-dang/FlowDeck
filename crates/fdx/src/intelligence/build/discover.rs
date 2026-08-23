@@ -1,6 +1,8 @@
 //! Static read-only workspace and configuration discovery.
 
-use crate::intelligence::build::bounds::{get_active_build_limits, get_test_walker_error, BuildLimits};
+use crate::intelligence::build::bounds::{
+    get_active_build_limits, get_test_walker_error, BuildLimits,
+};
 use crate::protocol::canonicalize_repo_path;
 use ignore::WalkBuilder;
 use std::path::Path;
@@ -174,7 +176,8 @@ pub fn discover_fallback_build_inventory_with_limits(
                         .unwrap_or(".");
                     let dir_str = if dir.is_empty() { "." } else { dir }.to_string();
                     if !inventory.package_dirs.contains(&dir_str) {
-                        let total_entries = inventory.package_dirs.len() + inventory.config_paths.len();
+                        let total_entries =
+                            inventory.package_dirs.len() + inventory.config_paths.len();
                         if total_entries < limits.fallback_inventory_entries {
                             inventory.package_dirs.push(dir_str);
                         } else {

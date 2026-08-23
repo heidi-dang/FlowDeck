@@ -1396,12 +1396,19 @@ pub fn analyze_impact_v2(
                     }
                 }
                 UncertaintyScope::Config(cfg_path) => {
-                    let is_affected = affected_identities
-                        .iter()
-                        .any(|id| id == cfg_path || id.contains(cfg_path) || id.starts_with("config:"));
+                    let is_affected = affected_identities.iter().any(|id| {
+                        id == cfg_path || id.contains(cfg_path) || id.starts_with("config:")
+                    });
                     if is_affected {
-                        let parent_dir = Path::new(cfg_path).parent().and_then(|p| p.to_str()).unwrap_or("");
-                        let parent_dir_str = if parent_dir.is_empty() { ".".to_string() } else { parent_dir.to_string() };
+                        let parent_dir = Path::new(cfg_path)
+                            .parent()
+                            .and_then(|p| p.to_str())
+                            .unwrap_or("");
+                        let parent_dir_str = if parent_dir.is_empty() {
+                            ".".to_string()
+                        } else {
+                            parent_dir.to_string()
+                        };
                         if !impacted_map.contains_key(&parent_dir_str) {
                             impacted_map.insert(
                                 parent_dir_str.clone(),
