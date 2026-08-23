@@ -15,7 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-test-planner.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "3a530035b08db7d0767a95df88063e910c37fb94";
+const EXPECTED_FUNCTIONAL_SHA = "300a622ddfe7e36e4f522705268cd389101d4b30";
 
 function getReleaseBinaryPath() {
   if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
@@ -133,7 +133,11 @@ function initFdxDb(dir, _binaryPath) {
       failure_reason TEXT,
       semantic_generation INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      last_attempt_fingerprint TEXT,
+      last_attempt_at INTEGER,
+      last_attempt_health TEXT,
+      last_attempt_failure_reason TEXT
     );
   `);
   return db;
@@ -191,6 +195,169 @@ async function runBenchmark() {
   }
 
   const binaryPath = getReleaseBinaryPath();
+
+  // === Provider Coverage & Scope Correctness Semantic Preflights ===
+  console.log("-> Running M6 provider coverage and scope preflights...");
+
+  // Preflight 1: wrong_language_provider_does_not_narrow
+  {
+    const benchDir = join(tmpdir(), `fdx-preflight-wrong-lang-${Date.now()}`);
+    mkdirSync(benchDir, { recursive: true });
+    initGitRepo(benchDir);
+    const pkg = join(benchDir, "packages", "web");
+    mkdirSync(join(pkg, "src"), { recursive: true });
+    mkdirSync(join(pkg, "tests"), { recursive: true });
+    writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@my/web", scripts: { test: "vitest" } }));
+    writeFileSync(join(pkg, "src", "a.ts"), "export function fnA() { return 1; }\nexport function fnOther() { return 2; }\n");
+    writeFileSync(join(pkg, "tests", "a.test.ts"), "test('a', () => {});");
+    writeFileSync(join(pkg, "tests", "other.test.ts"), "test('other', () => {});");
+    gitCommitAll(benchDir, "init");
+
+    const db = initFdxDb(benchDir, binaryPath);
+    db.exec(`
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/web/tests/a.test.ts', 'h1', 50, 100);
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/web/src/a.ts', 'h2', 50, 100);
+      INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/web/tests/a.test.ts', 'file', 'packages/web/tests/a.test.ts', 'pkg:npm:packages/web');
+      INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/web/src/a.ts:fnA', 'symbol', 'packages/web/src/a.ts', 'fnA', 'pkg:npm:packages/web');
+      INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+        VALUES ('scip-rust', 'scip', '1.0', 'scip-rust', '0.1', '["rust"]', '.', 'packages/web', 'cfg_rust', 'in_rust', 'available', 'fresh', 1, 100, 100);
+      INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:a_test', 'file:packages/web/tests/a.test.ts', 'sym:packages/web/src/a.ts:fnA', 'references', 'scip_rust', 'fp_rust', 4, 'packages/web/tests/a.test.ts', 'h1', 1, 1, 0, 'scip-rust');
+    `);
+    db.close();
+
+    writeFileSync(join(pkg, "src", "a.ts"), "export function fnA() { return 42; }\nexport function fnOther() { return 2; }\n");
+    const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], { cwd: benchDir, encoding: "utf8" });
+    const plan = JSON.parse(planRaw);
+    if (!plan.selected_checks.some((c) => c.check_id.includes("other.test.ts") || c.check_id.includes("packages/web:test"))) {
+      throw new Error("wrong_language_provider_does_not_narrow failed: fresh Rust provider must not satisfy TypeScript package mapping");
+    }
+    rmSync(benchDir, { recursive: true, force: true });
+  }
+
+  // Preflight 2: provider_scope_prefix_collision
+  {
+    const benchDir = join(tmpdir(), `fdx-preflight-prefix-collision-${Date.now()}`);
+    mkdirSync(benchDir, { recursive: true });
+    initGitRepo(benchDir);
+    const pa = join(benchDir, "packages", "a");
+    const pab = join(benchDir, "packages", "ab");
+    mkdirSync(join(pa, "src"), { recursive: true });
+    mkdirSync(join(pab, "src"), { recursive: true });
+    mkdirSync(join(pab, "tests"), { recursive: true });
+    writeFileSync(join(pa, "package.json"), JSON.stringify({ name: "@my/a", scripts: { test: "vitest" } }));
+    writeFileSync(join(pab, "package.json"), JSON.stringify({ name: "@my/ab", scripts: { test: "vitest" } }));
+    writeFileSync(join(pa, "src", "a.ts"), "export function fnA() { return 1; }");
+    writeFileSync(join(pab, "src", "b.ts"), "export function fnB() { return 1; }");
+    writeFileSync(join(pab, "tests", "b.test.ts"), "test('b', () => {});");
+    writeFileSync(join(pab, "tests", "b_other.test.ts"), "test('b_other', () => {});");
+    gitCommitAll(benchDir, "init");
+
+    const db = initFdxDb(benchDir, binaryPath);
+    db.exec(`
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/ab/tests/b.test.ts', 'h1', 50, 100);
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/ab/src/b.ts', 'h2', 50, 100);
+      INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/ab/tests/b.test.ts', 'file', 'packages/ab/tests/b.test.ts', 'pkg:npm:packages/ab');
+      INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/ab/src/b.ts:fnB', 'symbol', 'packages/ab/src/b.ts', 'fnB', 'pkg:npm:packages/ab');
+      INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+        VALUES ('scip-a', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', 'packages/a', NULL, 'fp_b', 'in_a', 'available', 'fresh', 1, 100, 100);
+      INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:b_test', 'file:packages/ab/tests/b.test.ts', 'sym:packages/ab/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/ab/tests/b.test.ts', 'h1', 1, 1, 0, 'scip-a');
+    `);
+    db.close();
+
+    writeFileSync(join(pab, "src", "b.ts"), "export function fnB() { return 2; }");
+    const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], { cwd: benchDir, encoding: "utf8" });
+    const plan = JSON.parse(planRaw);
+    if (!plan.selected_checks.some((c) => c.check_id.includes("b_other.test.ts"))) {
+      throw new Error("provider_scope_prefix_collision failed: provider rooted at packages/a must not cover packages/ab");
+    }
+    rmSync(benchDir, { recursive: true, force: true });
+  }
+
+  // Preflight 3: provider_fingerprint_mismatch_widens
+  {
+    const benchDir = join(tmpdir(), `fdx-preflight-fp-mismatch-${Date.now()}`);
+    mkdirSync(benchDir, { recursive: true });
+    initGitRepo(benchDir);
+    const pa = join(benchDir, "packages", "pa");
+    mkdirSync(join(pa, "src"), { recursive: true });
+    mkdirSync(join(pa, "tests"), { recursive: true });
+    writeFileSync(join(pa, "package.json"), JSON.stringify({ name: "@my/pa", scripts: { test: "vitest" } }));
+    writeFileSync(join(pa, "src", "a.ts"), "export function fnA() { return 1; }");
+    writeFileSync(join(pa, "tests", "a.test.ts"), "test('a', () => {});");
+    writeFileSync(join(pa, "tests", "other.test.ts"), "test('other', () => {});");
+    gitCommitAll(benchDir, "init");
+
+    const db = initFdxDb(benchDir, binaryPath);
+    db.exec(`
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pa/tests/a.test.ts', 'h1', 50, 100);
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pa/src/a.ts', 'h2', 50, 100);
+      INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/pa/tests/a.test.ts', 'file', 'packages/pa/tests/a.test.ts', 'pkg:npm:packages/pa');
+      INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pa/src/a.ts:fnA', 'symbol', 'packages/pa/src/a.ts', 'fnA', 'pkg:npm:packages/pa');
+      INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+        VALUES ('scip-ts', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pa', 'cfg_fp_current', 'fp_current_digest', 'available', 'fresh', 1, 100, 100);
+      INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:a_test', 'file:packages/pa/tests/a.test.ts', 'sym:packages/pa/src/a.ts:fnA', 'references', 'scip_ts', 'fp_old_mismatch', 4, 'packages/pa/tests/a.test.ts', 'h1', 1, 1, 0, 'scip-ts');
+    `);
+    db.close();
+
+    writeFileSync(join(pa, "src", "a.ts"), "export function fnA() { return 2; }");
+    const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], { cwd: benchDir, encoding: "utf8" });
+    const plan = JSON.parse(planRaw);
+    if (!plan.selected_checks.some((c) => c.check_id.includes("other.test.ts"))) {
+      throw new Error("provider_fingerprint_mismatch_widens failed: fingerprint mismatch must widen package");
+    }
+    rmSync(benchDir, { recursive: true, force: true });
+  }
+
+  // Preflight 4: scoped_dynamic_config_isolation
+  {
+    const benchDir = join(tmpdir(), `fdx-preflight-dyn-config-${Date.now()}`);
+    mkdirSync(benchDir, { recursive: true });
+    initGitRepo(benchDir);
+    const pa = join(benchDir, "packages", "pa");
+    const pb = join(benchDir, "packages", "pb");
+    mkdirSync(join(pa, "src"), { recursive: true });
+    mkdirSync(join(pa, "tests"), { recursive: true });
+    mkdirSync(join(pb, "src"), { recursive: true });
+    mkdirSync(join(pb, "tests"), { recursive: true });
+    writeFileSync(join(pa, "package.json"), JSON.stringify({ name: "@my/pa", scripts: { test: "vitest" } }));
+    writeFileSync(join(pb, "package.json"), JSON.stringify({ name: "@my/pb", scripts: { test: "vitest" } }));
+    writeFileSync(join(pa, "vitest.config.ts"), "export default defineConfig(() => ({ test: { include: process.env.X ? [] : [] } }));");
+    writeFileSync(join(pa, "src", "a.ts"), "export function fnA() { return 1; }");
+    writeFileSync(join(pa, "tests", "a.test.ts"), "test('a', () => {});");
+    writeFileSync(join(pa, "tests", "a_other.test.ts"), "test('a_other', () => {});");
+    writeFileSync(join(pb, "src", "b.ts"), "export function fnB() { return 1; }");
+    writeFileSync(join(pb, "tests", "b.test.ts"), "test('b', () => {});");
+    writeFileSync(join(pb, "tests", "b_other.test.ts"), "test('b_other', () => {});");
+    gitCommitAll(benchDir, "init");
+
+    const db = initFdxDb(benchDir, binaryPath);
+    db.exec(`
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pb/tests/b.test.ts', 'h3', 50, 100);
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pb/src/b.ts', 'h4', 50, 100);
+      INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/pb/tests/b.test.ts', 'file', 'packages/pb/tests/b.test.ts', 'pkg:npm:packages/pb');
+      INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pb/src/b.ts:fnB', 'symbol', 'packages/pb/src/b.ts', 'fnB', 'pkg:npm:packages/pb');
+      INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'fp_b', 'in_pb', 'available', 'fresh', 1, 100, 100);
+      INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb');
+    `);
+    db.close();
+
+    writeFileSync(join(pa, "src", "a.ts"), "export function fnA() { return 2; }");
+    writeFileSync(join(pb, "src", "b.ts"), "export function fnB() { return 2; }");
+    const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], { cwd: benchDir, encoding: "utf8" });
+    const plan = JSON.parse(planRaw);
+    if (plan.selected_checks.some((c) => c.check_id.includes("packages/pb/tests/b_other.test.ts"))) {
+      throw new Error("scoped_dynamic_config_isolation failed: package B must not be widened by package A dynamic config");
+    }
+    if (!plan.selected_checks.some((c) => c.check_id.includes("packages/pa/tests/a_other.test.ts") || c.check_id.includes("check:pkg:npm:packages/pa:test"))) {
+      throw new Error("scoped_dynamic_config_isolation failed: package A must be widened by its dynamic config");
+    }
+    rmSync(benchDir, { recursive: true, force: true });
+  }
   const warmup = 3;
   const iterations = 10;
   const results = {};
@@ -235,7 +402,7 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/api/tests/user.test.ts', 'file', 'packages/api/tests/user.test.ts', 'pkg:npm:packages/api');
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/api/src/user.ts:createUser', 'symbol', 'packages/api/src/user.ts', 'createUser', 'pkg:npm:packages/api');
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-api', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/api', 'cfg_api', 'in_api', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-typescript', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/api', 'fp_scip_m6', 'in_api', 'available', 'fresh', 1, 100, 100);
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:user_test_refs_createUser', 'file:packages/api/tests/user.test.ts', 'sym:packages/api/src/user.ts:createUser', 'references', 'scip_ts', 'fp_scip_m6', 4, 'packages/api/tests/user.test.ts', 'hash_test', 1, 1, 0, 'scip-typescript');
     `);
@@ -334,7 +501,7 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
         VALUES ('scip-core', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/core', 'cfg_core', 'in_core', 'available', 'fresh', 1, 100, 100);
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
-        VALUES ('edge:core_test', 'file:packages/core/tests/core.test.ts', 'sym:packages/core/src/index.ts:coreFn', 'references', 'scip_ts', 'fp_core', 4, 'packages/core/tests/core.test.ts', 'h1', 1, 1, 0, 'scip-typescript');
+        VALUES ('edge:core_test', 'file:packages/core/tests/core.test.ts', 'sym:packages/core/src/index.ts:coreFn', 'references', 'scip_ts', 'cfg_core', 4, 'packages/core/tests/core.test.ts', 'h1', 1, 1, 0, 'scip-core');
     `);
     db.close();
 
@@ -388,7 +555,7 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
         VALUES ('scip-root', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', '.', 'cfg_root', 'in_root', 'available', 'fresh', 1, 100, 100);
       INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
-        VALUES ('edge:mod_test_refs_oldFn', 'file:tests/mod.test.ts', 'sym:src/mod.ts:oldFn', 'references', 'scip_ts', 'fp_old_union', 4, 'tests/mod.test.ts', 'h1', 1, 1, 0, 'scip-typescript');
+        VALUES ('edge:mod_test_refs_oldFn', 'file:tests/mod.test.ts', 'sym:src/mod.ts:oldFn', 'references', 'scip_ts', 'cfg_root', 4, 'tests/mod.test.ts', 'h1', 1, 1, 0, 'scip-root');
     `);
     db.close();
 
@@ -453,7 +620,7 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/feat/tests/a.test.ts', 'file', 'packages/feat/tests/a.test.ts', 'pkg:npm:packages/feat');
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/feat/src/a.ts:fnA', 'symbol', 'packages/feat/src/a.ts', 'fnA', 'pkg:npm:packages/feat');
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-feat', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/feat', 'cfg_feat', 'in_feat', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-typescript', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/feat', 'fp_stale', 'in_feat', 'available', 'fresh', 1, 100, 100);
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:a_fresh_edge', 'file:packages/feat/tests/a.test.ts', 'sym:packages/feat/src/a.ts:fnA', 'references', 'scip_ts', 'fp_stale', 4, 'packages/feat/tests/a.test.ts', 'h1', 1, 1, 0, 'scip-typescript');
     `);
@@ -777,9 +944,9 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/pb/tests/b.test.ts', 'file', 'packages/pb/tests/b.test.ts', 'pkg:npm:packages/pb');
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pb/src/b.ts:fnB', 'symbol', 'packages/pb/src/b.ts', 'fnB', 'pkg:npm:packages/pb');
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'cfg_pb', 'in_pb', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'fp_b', 'in_pb', 'available', 'fresh', 1, 100, 100);
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
-        VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-typescript');
+        VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb');
     `);
     dbControl.close();
 
@@ -821,12 +988,12 @@ async function runBenchmark() {
       INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pb/src/b.ts:fnB', 'symbol', 'packages/pb/src/b.ts', 'fnB', 'pkg:npm:packages/pb');
 
       INSERT OR REPLACE INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
-        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'cfg_pb', 'in_pb', 'available', 'fresh', 1, 100, 100);
+        VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'fp_b', 'in_pb', 'available', 'fresh', 1, 100, 100);
 
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
         VALUES ('edge:stale_a', 'file:packages/pa/tests/a.test.ts', 'sym:packages/pa/src/a.ts:fnA', 'references', 'scip_ts', 'fp_a', 4, 'packages/pa/tests/a.test.ts', 'h1', 1, 1, 1, 'scip-typescript');
       INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
-        VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-typescript');
+        VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb');
     `);
     dbTest.close();
 
