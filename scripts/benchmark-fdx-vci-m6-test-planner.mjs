@@ -285,6 +285,10 @@ async function runBenchmark() {
     results["precise_semantic_test_mapping"] = computeStats(samples);
     rmSync(benchDir, { recursive: true, force: true });
   }
+
+  // 2. build_transitive_test_mapping
+  {
+    console.log("-> Running build_transitive_test_mapping scenario...");
     const benchDir = join(tmpdir(), `fdx-bench-m6-transitive-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
     initGitRepo(benchDir);
