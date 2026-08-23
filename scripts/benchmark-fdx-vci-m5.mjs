@@ -14,7 +14,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m5-build-config.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m5-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "229fd40cf7c33791d6d75b9a991aed9e92b3cee6";
+const EXPECTED_FUNCTIONAL_SHA = "6265ffa8c05ccb7cc03c199cce4a276307ea1044";
 
 function getReleaseBinaryPath() {
   if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
@@ -276,25 +276,61 @@ async function runBenchmark() {
     gitCommitAll(benchDir, "init test");
     execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
 
-    // Modify pkg-a manifest (stale for A) and pkg-b source
+    // Control repository: clean pkg-b only
+    const ctrlDir = join(tmpdir(), `fdx-bench-m5-stale-ctrl-${Date.now()}`);
+    mkdirSync(ctrlDir, { recursive: true });
+    initGitRepo(ctrlDir);
+    writeFileSync(
+      join(ctrlDir, "package.json"),
+      JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }, null, 2)
+    );
+    const ctrlPdir = join(ctrlDir, "packages", "pkg-b", "src");
+    mkdirSync(ctrlPdir, { recursive: true });
+    writeFileSync(join(ctrlPdir, "index.ts"), "export const x = 1;");
+    writeFileSync(
+      join(ctrlDir, "packages", "pkg-b", "package.json"),
+      JSON.stringify({ name: "@app/pkg-b", version: "1.0.0" }, null, 2)
+    );
+    gitCommitAll(ctrlDir, "init ctrl");
+    execFileSync(binaryPath, ["build", "refresh"], { cwd: ctrlDir });
+
+    // Modify pkg-a manifest (stale for A) and pkg-b source in test repo
     writeFileSync(
       join(benchDir, "packages", "pkg-a", "package.json"),
       JSON.stringify({ name: "@app/pkg-a", version: "1.0.1", description: "stale" }, null, 2)
     );
     writeFileSync(join(benchDir, "packages", "pkg-b", "src", "index.ts"), "export const x = 2;");
 
-    // Semantic qualification assertion: pkg-b query is unaffected by pkg-a stale state
-    const verifyRaw = execFileSync(
+    // Modify pkg-b source in control repo
+    writeFileSync(join(ctrlPdir, "index.ts"), "export const x = 2;");
+
+    // Semantic qualification assertion: pkg-b query assurance & paths match control
+    const verifyTestRaw = execFileSync(
       binaryPath,
       ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"],
       { cwd: benchDir, encoding: "utf8" }
     );
-    const verifyImpact = JSON.parse(verifyRaw);
+    const verifyCtrlRaw = execFileSync(
+      binaryPath,
+      ["impact-v2", "--base", "HEAD", "--depth", "3", "--format", "json"],
+      { cwd: ctrlDir, encoding: "utf8" }
+    );
+    const verifyTestImpact = JSON.parse(verifyTestRaw);
+    const verifyCtrlImpact = JSON.parse(verifyCtrlRaw);
 
-    const hasPkgB = verifyImpact.impacted.some((t) => t.target.includes("packages/pkg-b"));
-    if (!hasPkgB) {
-      throw new Error("stale_scope_isolation semantic assertion failed: pkg-b not impacted");
+    if (verifyTestImpact.assurance !== verifyCtrlImpact.assurance) {
+      throw new Error(`stale_scope_isolation semantic assertion failed: test assurance ${verifyTestImpact.assurance} != ctrl assurance ${verifyCtrlImpact.assurance}`);
     }
+
+    const testB = verifyTestImpact.impacted.find((t) => t.target.includes("packages/pkg-b"));
+    const ctrlB = verifyCtrlImpact.impacted.find((t) => t.target.includes("packages/pkg-b"));
+    if (!testB || !ctrlB) {
+      throw new Error("stale_scope_isolation semantic assertion failed: pkg-b missing in test or control");
+    }
+    if (testB.strength !== ctrlB.strength) {
+      throw new Error(`stale_scope_isolation semantic assertion failed: strength mismatch (${testB.strength} vs ${ctrlB.strength})`);
+    }
+    rmSync(ctrlDir, { recursive: true, force: true });
 
     const samples = [];
     for (let r = 0; r < warmup + iterations; r++) {
@@ -371,19 +407,19 @@ async function runBenchmark() {
       join(benchDir, "package.json"),
       JSON.stringify({ name: "root", private: true, workspaces: ["packages/*"] }, null, 2)
     );
-    for (let i = 0; i < 5; i++) {
-      const pdir = join(benchDir, "packages", `pkg-${i}`, "src");
+    for (let i = 0; i < 501; i++) {
+      const pdir = join(benchDir, "packages", `pkg_${String(i).padStart(4, "0")}`, "src");
       mkdirSync(pdir, { recursive: true });
       writeFileSync(join(pdir, "index.ts"), "export const x = 1;");
       writeFileSync(
-        join(benchDir, "packages", `pkg-${i}`, "package.json"),
-        JSON.stringify({ name: `@app/pkg-${i}`, version: "1.0.0" }, null, 2)
+        join(benchDir, "packages", `pkg_${String(i).padStart(4, "0")}`, "package.json"),
+        JSON.stringify({ name: `@app/pkg_${String(i).padStart(4, "0")}`, version: "1.0.0" }, null, 2)
       );
     }
     gitCommitAll(benchDir, "init");
     execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
 
-    writeFileSync(join(benchDir, "packages", "pkg-4", "src", "index.ts"), "export const x = 2;");
+    writeFileSync(join(benchDir, "packages", "pkg_0000", "src", "index.ts"), "export const x = 2;");
 
     // Semantic qualification assertions
     const verifyRaw = execFileSync(
@@ -392,8 +428,14 @@ async function runBenchmark() {
       { cwd: benchDir, encoding: "utf8" }
     );
     const verifyImpact = JSON.parse(verifyRaw);
-    if (!verifyImpact.impacted.some((t) => t.target.includes("packages/pkg-4"))) {
-      throw new Error("bound_safe_widening semantic assertion failed: pkg-4 not included in impacted targets");
+    if (!verifyImpact.uncertainty.some((u) => u.kind === "build_limit_reached")) {
+      throw new Error("bound_safe_widening semantic assertion failed: build_limit_reached missing");
+    }
+    if (!verifyImpact.impacted.some((t) => t.target.includes("packages/pkg_0000"))) {
+      throw new Error("bound_safe_widening semantic assertion failed: pkg_0000 not included in impacted targets");
+    }
+    if (verifyImpact.assurance === "exact") {
+      throw new Error("bound_safe_widening semantic assertion failed: assurance must be degraded on bound truncation");
     }
 
     const samples = [];
@@ -458,12 +500,27 @@ async function runBenchmark() {
     execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
 
     // Verify evidence exists before testing
-    const statusOutput = execFileSync(binaryPath, ["build", "status"], {
+    const statusBefore = execFileSync(binaryPath, ["build", "status"], {
       cwd: benchDir,
       encoding: "utf8",
     });
-    if (!statusOutput.includes("builtin-package-json")) {
+    if (!statusBefore.includes("builtin-package-json")) {
       throw new Error("provider_detection_failure_preserves_evidence assertion failed: provider missing in status");
+    }
+
+    // Corrupt the manifest to induce provider failure on refresh
+    writeFileSync(join(benchDir, "package.json"), '{"name": "root", UNCLOSED');
+    try {
+      execFileSync(binaryPath, ["build", "refresh"], { cwd: benchDir });
+    } catch {}
+
+    // Verify evidence is preserved despite failure
+    const statusAfter = execFileSync(binaryPath, ["build", "status"], {
+      cwd: benchDir,
+      encoding: "utf8",
+    });
+    if (!statusAfter.includes("builtin-package-json")) {
+      throw new Error("provider_detection_failure_preserves_evidence assertion failed: provider was wrongfully retired on failure");
     }
 
     const samples = [];
