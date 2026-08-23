@@ -5,7 +5,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, existsSync, rmSync, chmodSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
@@ -64,7 +64,7 @@ function gitCommitAll(dir, msg) {
 function initFdxDb(dir, _binaryPath) {
   const fdxDir = join(dir, ".fdx");
   mkdirSync(fdxDir, { recursive: true });
-  const dbPath = join(fdxDir, "intelligence.db");
+  const dbPath = join(fdxDir, "index.sqlite");
   const db = new DatabaseSync(dbPath);
   db.exec(`
     PRAGMA user_version = 5;
@@ -210,28 +210,41 @@ async function runBenchmark() {
       join(pkgDir, "package.json"),
       JSON.stringify({ name: "@my/api", scripts: { test: "vitest", typecheck: "tsc" } }, null, 2)
     );
-    writeFileSync(join(pkgDir, "src", "user.ts"), "export function getUser() { return 1; }");
+    writeFileSync(join(pkgDir, "src", "user.ts"), "export function createUser() { return 1; }\nexport function deleteUser() { return 2; }\n");
     writeFileSync(join(pkgDir, "tests", "user.test.ts"), "test('user', () => {});");
     writeFileSync(join(pkgDir, "tests", "unrelated.test.ts"), "test('unrelated', () => {});");
+
+    const mockBin = join(benchDir, "mock-scip-ts");
+    writeFileSync(mockBin, "#!/bin/sh\nexit 0\n");
+    chmodSync(mockBin, 0o755);
+
     gitCommitAll(benchDir, "init");
 
-    // Initialize FDX SQLite database and seed precise SCIP reference edge
+    // Ingest build graph
+    execFileSync(binaryPath, ["build", "refresh"], {
+      cwd: benchDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBin },
+      stdio: "ignore",
+    });
+
+    // Seed precise SCIP reference edge in SQLite
     const db = initFdxDb(benchDir, binaryPath);
     db.exec(`
-      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/api/tests/user.test.ts', 'hash_test', 50, 100);
-      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/api/src/user.ts', 'hash_src', 50, 100);
-      INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/api/tests/user.test.ts', 'file', 'packages/api/tests/user.test.ts', 'pkg:npm:packages/api');
-      INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/api/src/user.ts:getUser', 'symbol', 'packages/api/src/user.ts', 'getUser', 'pkg:npm:packages/api');
-      INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
-        VALUES ('edge:user_test_refs_getUser', 'file:packages/api/tests/user.test.ts', 'sym:packages/api/src/user.ts:getUser', 'references', 'scip_ts', 'fp_scip_m6', 4, 'packages/api/tests/user.test.ts', 'hash_test', 1, 1, 0, 'scip-typescript');
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/api/tests/user.test.ts', 'hash_test', 50, 100);
+      INSERT OR REPLACE INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/api/src/user.ts', 'hash_src', 50, 100);
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/api/tests/user.test.ts', 'file', 'packages/api/tests/user.test.ts', 'pkg:npm:packages/api');
+      INSERT OR REPLACE INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/api/src/user.ts:createUser', 'symbol', 'packages/api/src/user.ts', 'createUser', 'pkg:npm:packages/api');
+      INSERT OR REPLACE INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:user_test_refs_createUser', 'file:packages/api/tests/user.test.ts', 'sym:packages/api/src/user.ts:createUser', 'references', 'scip_ts', 'fp_scip_m6', 4, 'packages/api/tests/user.test.ts', 'hash_test', 1, 1, 0, 'scip-typescript');
     `);
     db.close();
 
-    writeFileSync(join(pkgDir, "src", "user.ts"), "export function getUser() { return 2; }");
+    writeFileSync(join(pkgDir, "src", "user.ts"), "export function createUser() { return 42; }\nexport function deleteUser() { return 2; }\n");
 
     // Semantic qualification assertions
     const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
       cwd: benchDir,
+      env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBin },
       encoding: "utf8",
     });
     const plan = JSON.parse(planRaw);
@@ -264,6 +277,7 @@ async function runBenchmark() {
       const t0 = performance.now();
       execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
         cwd: benchDir,
+        env: { ...process.env, SCIP_TYPESCRIPT_BIN: mockBin },
       });
       const t1 = performance.now();
       if (r >= warmup) samples.push(t1 - t0);
@@ -271,10 +285,6 @@ async function runBenchmark() {
     results["precise_semantic_test_mapping"] = computeStats(samples);
     rmSync(benchDir, { recursive: true, force: true });
   }
-
-  // 2. build_transitive_test_mapping
-  {
-    console.log("-> Running build_transitive_test_mapping scenario...");
     const benchDir = join(tmpdir(), `fdx-bench-m6-transitive-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
     initGitRepo(benchDir);
