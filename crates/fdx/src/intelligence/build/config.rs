@@ -318,7 +318,7 @@ impl BuildConfigProvider for TsConfigProvider {
                 let artifact_dir = parent_dir.join(out_dir);
                 if let Ok(canon_artifact) = canonicalize_repo_path(&artifact_dir, Path::new("")) {
                     let artifact_id = format!("artifact:{}", canon_artifact);
-                    bounds.push_bounded_artifact(
+                    let artifact_admitted = bounds.push_bounded_artifact(
                         &mut res.artifacts,
                         &mut res.uncertainties,
                         GeneratedArtifact {
@@ -331,34 +331,36 @@ impl BuildConfigProvider for TsConfigProvider {
                         UncertaintyScope::Config(config_path.clone()),
                     );
 
-                    res.nodes.push(BuildNode {
-                        stable_id: artifact_id.clone(),
-                        kind: NodeKind::GeneratedArtifact,
-                        canonical_path: Some(canon_artifact),
-                        metadata: None,
-                    });
-                    // Config / target GENERATES artifact
-                    bounds.push_bounded_edge(
-                        &mut res.edges,
-                        &mut res.uncertainties,
-                        BuildEdge {
-                            stable_id: format!(
-                                "edge:generates:{}:{}",
-                                config_stable_id, artifact_id
-                            ),
-                            from_node: config_stable_id.clone(),
-                            to_node: artifact_id,
-                            kind: EdgeKind::Generates,
-                            provider: "build_native".to_string(),
-                            provider_id: TSCONFIG_PROVIDER_ID.to_string(),
-                            provider_fingerprint: scope_fp.clone(),
-                            strength: EvidenceStrength::Structural,
+                    if artifact_admitted {
+                        res.nodes.push(BuildNode {
+                            stable_id: artifact_id.clone(),
+                            kind: NodeKind::GeneratedArtifact,
+                            canonical_path: Some(canon_artifact),
                             metadata: None,
-                        },
-                        limits.edges,
-                        TSCONFIG_PROVIDER_ID,
-                        UncertaintyScope::Config(config_path.clone()),
-                    );
+                        });
+                        // Config / target GENERATES artifact
+                        bounds.push_bounded_edge(
+                            &mut res.edges,
+                            &mut res.uncertainties,
+                            BuildEdge {
+                                stable_id: format!(
+                                    "edge:generates:{}:{}",
+                                    config_stable_id, artifact_id
+                                ),
+                                from_node: config_stable_id.clone(),
+                                to_node: artifact_id,
+                                kind: EdgeKind::Generates,
+                                provider: "build_native".to_string(),
+                                provider_id: TSCONFIG_PROVIDER_ID.to_string(),
+                                provider_fingerprint: scope_fp.clone(),
+                                strength: EvidenceStrength::Structural,
+                                metadata: None,
+                            },
+                            limits.edges,
+                            TSCONFIG_PROVIDER_ID,
+                            UncertaintyScope::Config(config_path.clone()),
+                        );
+                    }
                 }
             }
 
