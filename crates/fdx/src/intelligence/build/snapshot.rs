@@ -5,7 +5,10 @@
 
 use crate::intelligence::build::freshness::get_build_providers;
 use crate::intelligence::build::model::*;
+use crate::intelligence::build::provider::ProviderDetection;
+use crate::intelligence::build::scope::UncertaintyScope;
 use crate::intelligence::build::uncertainty::BuildUncertainty;
+use crate::protocol::AssuranceLevel;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -32,92 +35,117 @@ impl CurrentBuildSnapshot {
         let providers = get_build_providers();
 
         for prov in providers {
-            if !prov.detect(repo_root) {
-                continue;
+            match prov.detect_state(repo_root) {
+                ProviderDetection::Absent => continue,
+                ProviderDetection::Indeterminate(err) => {
+                    snapshot.uncertainties.push(BuildUncertainty::new(
+                        "provider_detection_failed",
+                        UncertaintyScope::Repository,
+                        prov.id(),
+                        format!("Provider {} detection error: {}", prov.id(), err),
+                        AssuranceLevel::Degraded,
+                        true,
+                    ));
+                    continue;
+                }
+                ProviderDetection::Present => {}
             }
-            if let Ok(ingest_res) = prov.ingest(repo_root) {
-                snapshot.uncertainties.extend(ingest_res.uncertainties);
 
-                for node in ingest_res.nodes {
-                    snapshot.nodes.insert(node.stable_id.clone(), node);
-                }
+            match prov.ingest(repo_root) {
+                Ok(ingest_res) => {
+                    snapshot.uncertainties.extend(ingest_res.uncertainties);
 
-                for ws in ingest_res.workspaces {
-                    for member in ws.members {
-                        snapshot
-                            .package_to_owning_workspace
-                            .insert(member, ws.stable_id.clone());
+                    for node in ingest_res.nodes {
+                        snapshot.nodes.insert(node.stable_id.clone(), node);
                     }
-                }
 
-                for edge in ingest_res.edges {
-                    match edge.kind {
-                        crate::protocol::EdgeKind::Contains => {
-                            if edge.to_node.starts_with("file:") {
-                                // Package CONTAINS file
-                                let file_path =
-                                    edge.to_node.strip_prefix("file:").unwrap_or(&edge.to_node);
+                    for ws in ingest_res.workspaces {
+                        for member in ws.members {
+                            snapshot
+                                .package_to_owning_workspace
+                                .insert(member, ws.stable_id.clone());
+                        }
+                    }
+
+                    for edge in ingest_res.edges {
+                        match edge.kind {
+                            crate::protocol::EdgeKind::Contains => {
+                                if edge.to_node.starts_with("file:") {
+                                    // Package CONTAINS file
+                                    let file_path =
+                                        edge.to_node.strip_prefix("file:").unwrap_or(&edge.to_node);
+                                    snapshot
+                                        .contains_file_to_packages
+                                        .entry(file_path.to_string())
+                                        .or_default()
+                                        .push(edge.from_node.clone());
+                                    snapshot
+                                        .contains_package_to_files
+                                        .entry(edge.from_node.clone())
+                                        .or_default()
+                                        .push(file_path.to_string());
+                                }
+                            }
+                            crate::protocol::EdgeKind::DependsOn => {
+                                // A DEPENDS_ON B -> changing B impacts A (reverse)
                                 snapshot
-                                    .contains_file_to_packages
-                                    .entry(file_path.to_string())
+                                    .depends_on_reverse
+                                    .entry(edge.to_node.clone())
                                     .or_default()
                                     .push(edge.from_node.clone());
+                            }
+                            crate::protocol::EdgeKind::Extends => {
                                 snapshot
-                                    .contains_package_to_files
+                                    .extends_reverse
+                                    .entry(edge.to_node.clone())
+                                    .or_default()
+                                    .push(edge.from_node.clone());
+                            }
+                            crate::protocol::EdgeKind::References => {
+                                snapshot
+                                    .references_reverse
+                                    .entry(edge.to_node.clone())
+                                    .or_default()
+                                    .push(edge.from_node.clone());
+                            }
+                            crate::protocol::EdgeKind::Configures => {
+                                // Config CONFIGURES Package -> changing Config impacts Package (forward)
+                                snapshot
+                                    .configures_reverse
                                     .entry(edge.from_node.clone())
                                     .or_default()
-                                    .push(file_path.to_string());
+                                    .push(edge.to_node.clone());
                             }
+                            crate::protocol::EdgeKind::BelongsTo => {
+                                // Target BELONGS_TO Package
+                                snapshot
+                                    .belongs_to_reverse
+                                    .entry(edge.to_node.clone())
+                                    .or_default()
+                                    .push(edge.from_node.clone());
+                            }
+                            crate::protocol::EdgeKind::Defines => {
+                                // File DEFINES Package/Config/Workspace
+                                snapshot
+                                    .defines_reverse
+                                    .entry(edge.from_node.clone())
+                                    .or_default()
+                                    .push(edge.to_node.clone());
+                            }
+                            _ => {}
                         }
-                        crate::protocol::EdgeKind::DependsOn => {
-                            // A DEPENDS_ON B -> changing B impacts A (reverse)
-                            snapshot
-                                .depends_on_reverse
-                                .entry(edge.to_node.clone())
-                                .or_default()
-                                .push(edge.from_node.clone());
-                        }
-                        crate::protocol::EdgeKind::Extends => {
-                            snapshot
-                                .extends_reverse
-                                .entry(edge.to_node.clone())
-                                .or_default()
-                                .push(edge.from_node.clone());
-                        }
-                        crate::protocol::EdgeKind::References => {
-                            snapshot
-                                .references_reverse
-                                .entry(edge.to_node.clone())
-                                .or_default()
-                                .push(edge.from_node.clone());
-                        }
-                        crate::protocol::EdgeKind::Configures => {
-                            // Config CONFIGURES Package -> changing Config impacts Package (forward)
-                            snapshot
-                                .configures_reverse
-                                .entry(edge.from_node.clone())
-                                .or_default()
-                                .push(edge.to_node.clone());
-                        }
-                        crate::protocol::EdgeKind::BelongsTo => {
-                            // Target BELONGS_TO Package
-                            snapshot
-                                .belongs_to_reverse
-                                .entry(edge.to_node.clone())
-                                .or_default()
-                                .push(edge.from_node.clone());
-                        }
-                        crate::protocol::EdgeKind::Defines => {
-                            // File DEFINES Package/Config/Workspace
-                            snapshot
-                                .defines_reverse
-                                .entry(edge.from_node.clone())
-                                .or_default()
-                                .push(edge.to_node.clone());
-                        }
-                        _ => {}
+                        snapshot.edges.push(edge);
                     }
-                    snapshot.edges.push(edge);
+                }
+                Err(err) => {
+                    snapshot.uncertainties.push(BuildUncertainty::new(
+                        "provider_ingest_failed",
+                        UncertaintyScope::Repository,
+                        prov.id(),
+                        format!("Provider {} ingest failed: {}", prov.id(), err),
+                        AssuranceLevel::Degraded,
+                        true,
+                    ));
                 }
             }
         }

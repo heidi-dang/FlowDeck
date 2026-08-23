@@ -2,13 +2,16 @@
 
 use crate::intelligence::build::config::TsConfigProvider;
 use crate::intelligence::build::package::PackageJsonProvider;
-use crate::intelligence::build::provider::{BuildConfigProvider, BuildProviderState};
+use crate::intelligence::build::provider::{
+    BuildConfigProvider, BuildProviderState, ProviderDetection,
+};
+use crate::intelligence::build::scope::UncertaintyScope;
 use crate::intelligence::build::target::CargoProvider;
+use crate::intelligence::build::uncertainty::BuildUncertainty;
 use crate::intelligence::db::{DatabaseError, DatabaseOpenMode, EvidenceDatabase};
 use crate::intelligence::semantic::health::{ProviderFreshness, ProviderHealth};
+use crate::protocol::AssuranceLevel;
 use std::path::Path;
-
-use crate::intelligence::build::uncertainty::BuildUncertainty;
 
 pub fn get_build_providers() -> Vec<Box<dyn BuildConfigProvider>> {
     vec![
@@ -22,9 +25,35 @@ pub fn get_build_providers() -> Vec<Box<dyn BuildConfigProvider>> {
 pub fn collect_build_uncertainties(repo_root: &Path) -> Vec<BuildUncertainty> {
     let mut uncertainties = Vec::new();
     for prov in get_build_providers() {
-        if prov.detect(repo_root) {
-            if let Ok(res) = prov.ingest(repo_root) {
+        match prov.detect_state(repo_root) {
+            ProviderDetection::Absent => continue,
+            ProviderDetection::Indeterminate(err) => {
+                uncertainties.push(BuildUncertainty::new(
+                    "provider_detection_failed",
+                    UncertaintyScope::Repository,
+                    prov.id(),
+                    format!("Provider {} detection error: {}", prov.id(), err),
+                    AssuranceLevel::Degraded,
+                    true,
+                ));
+                continue;
+            }
+            ProviderDetection::Present => {}
+        }
+
+        match prov.ingest(repo_root) {
+            Ok(res) => {
                 uncertainties.extend(res.uncertainties);
+            }
+            Err(err) => {
+                uncertainties.push(BuildUncertainty::new(
+                    "provider_ingest_failed",
+                    UncertaintyScope::Repository,
+                    prov.id(),
+                    format!("Provider {} ingest failed: {}", prov.id(), err),
+                    AssuranceLevel::Degraded,
+                    true,
+                ));
             }
         }
     }

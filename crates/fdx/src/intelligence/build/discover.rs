@@ -101,3 +101,39 @@ pub fn discover_build_files(repo_root: &Path) -> DiscoveredFiles {
 
     files
 }
+
+/// Bounded-safe fallback inventory for conservative widening when exact topology or discovery is incomplete.
+/// Scans the repository for all candidate package, config, and build boundary directories.
+pub fn discover_fallback_build_inventory(repo_root: &Path) -> Vec<String> {
+    let mut packages = Vec::new();
+    let walker = WalkBuilder::new(repo_root)
+        .hidden(true)
+        .git_ignore(true)
+        .require_git(false)
+        .build();
+
+    for res in walker {
+        let Ok(entry) = res else { continue };
+        if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let path = entry.path();
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        if file_name == "package.json" || file_name == "Cargo.toml" {
+            if let Ok(canon) = canonicalize_repo_path(path, repo_root) {
+                let dir = Path::new(&canon)
+                    .parent()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or(".");
+                let dir_str = if dir.is_empty() { "." } else { dir }.to_string();
+                if !packages.contains(&dir_str) {
+                    packages.push(dir_str);
+                }
+            }
+        }
+    }
+
+    packages.sort();
+    packages
+}

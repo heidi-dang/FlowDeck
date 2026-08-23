@@ -7,6 +7,13 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderDetection {
+    Present,
+    Absent,
+    Indeterminate(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuildProviderScope {
     pub workspace_root: String,
     pub manifest_files: Vec<String>,
@@ -42,7 +49,10 @@ pub struct BuildIngestResult {
 
 pub trait BuildConfigProvider: Send + Sync {
     fn id(&self) -> &'static str;
-    fn detect(&self, repo_root: &Path) -> bool;
+    fn detect(&self, repo_root: &Path) -> bool {
+        matches!(self.detect_state(repo_root), ProviderDetection::Present)
+    }
+    fn detect_state(&self, repo_root: &Path) -> ProviderDetection;
     fn scope(&self, repo_root: &Path) -> BuildProviderScope;
     fn passive_fingerprint(&self, repo_root: &Path) -> Result<String, String>;
     fn ingest(&self, repo_root: &Path) -> Result<BuildIngestResult, String>;

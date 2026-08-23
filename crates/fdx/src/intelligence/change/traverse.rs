@@ -690,19 +690,15 @@ pub fn analyze_impact_v2(
                 .unwrap_or_default();
         for bst in &build_states {
             build_states_map.insert(bst.provider_id.clone(), bst.clone());
-            if bst.freshness != ProviderFreshness::Fresh {
-                uncertainties.push(UncertaintyReason::BuildProviderStale(format!(
-                    "Build provider {} is effectively stale",
-                    bst.provider_id
-                )));
-            } else if bst.health == ProviderHealth::Failed {
+            if bst.health == ProviderHealth::Failed {
+                let reason = bst.failure_reason.as_deref().unwrap_or("failure");
                 uncertainties.push(UncertaintyReason::BuildProviderFailed(format!(
-                    "Build provider {} failed",
-                    bst.provider_id
+                    "repository: Build provider {} failed ({})",
+                    bst.provider_id, reason
                 )));
             } else if bst.health == ProviderHealth::Misconfigured {
                 uncertainties.push(UncertaintyReason::BuildProviderMissing(format!(
-                    "Build provider {} is misconfigured",
+                    "repository: Build provider {} is misconfigured",
                     bst.provider_id
                 )));
             }
@@ -944,7 +940,31 @@ pub fn analyze_impact_v2(
                             ));
                             node_needs_widening = true;
                         } else {
-                            // Check if edge fingerprint matches either current global or current scope fingerprint
+                            // Scope-aware fingerprint check
+                            let edge_scope_id = if edge.from_node.starts_with("pkg:npm:") {
+                                edge.from_node
+                                    .strip_prefix("pkg:npm:")
+                                    .unwrap_or(&edge.from_node)
+                            } else if edge.from_node.starts_with("pkg:cargo:") {
+                                edge.from_node
+                                    .strip_prefix("pkg:cargo:")
+                                    .unwrap_or(&edge.from_node)
+                            } else if edge.from_node.starts_with("config:") {
+                                edge.from_node
+                                    .strip_prefix("config:")
+                                    .unwrap_or(&edge.from_node)
+                            } else if edge.to_node.starts_with("pkg:npm:") {
+                                edge.to_node
+                                    .strip_prefix("pkg:npm:")
+                                    .unwrap_or(&edge.to_node)
+                            } else if edge.to_node.starts_with("pkg:cargo:") {
+                                edge.to_node
+                                    .strip_prefix("pkg:cargo:")
+                                    .unwrap_or(&edge.to_node)
+                            } else {
+                                &edge.from_node
+                            };
+
                             let current_snapshot_edges =
                                 current_build_snapshot.find_incoming_edges(&item.current_node_id);
                             let matching_current = current_snapshot_edges.iter().find(|e| {
@@ -959,9 +979,9 @@ pub fn analyze_impact_v2(
                                 } else {
                                     uncertainties.push(UncertaintyReason::BuildProviderStale(
                                         format!(
-                                            "Build provider {} scope fingerprint mismatch on edge",
-                                            pid
-                                        ),
+                                        "{}: Build provider {} scope fingerprint mismatch on edge",
+                                        edge_scope_id, pid
+                                    ),
                                     ));
                                     node_needs_widening = true;
                                 }
@@ -971,22 +991,22 @@ pub fn analyze_impact_v2(
                                 is_edge_fresh = true;
                             } else {
                                 uncertainties.push(UncertaintyReason::BuildProviderStale(format!(
-                                    "Build provider {} is effectively stale",
-                                    pid
+                                    "{}: Build provider {} is effectively stale",
+                                    edge_scope_id, pid
                                 )));
                                 node_needs_widening = true;
                             }
                         }
                     } else {
                         uncertainties.push(UncertaintyReason::BuildProviderMissing(format!(
-                            "Build provider {} not found in registry",
+                            "repository: Build provider {} not found in registry",
                             pid
                         )));
                         node_needs_widening = true;
                     }
                 } else {
                     uncertainties.push(UncertaintyReason::BuildProviderMissing(format!(
-                        "Build edge {}->{} has unknown provider ownership",
+                        "repository: Build edge {}->{} has unknown provider ownership",
                         edge.from_node, edge.to_node
                     )));
                     node_needs_widening = true;
@@ -1011,7 +1031,7 @@ pub fn analyze_impact_v2(
             }
         }
 
-        // Ephemeral current snapshot incoming edges (Blocker 1: safe conservative union)
+        // Ephemeral current snapshot incoming edges (safe conservative union)
         let snapshot_incoming = current_build_snapshot.find_incoming_edges(&item.current_node_id);
         for s_edge in snapshot_incoming {
             if !current_edges.iter().any(|e| {
@@ -1023,7 +1043,6 @@ pub fn analyze_impact_v2(
                     && e.to_node == s_edge.to_node
                     && e.kind == s_edge.kind
             }) {
-                // Check if this provider is currently stale in persisted DB
                 let is_prov_stale = build_states_map
                     .get(&s_edge.provider_id)
                     .map(|st| st.freshness != ProviderFreshness::Fresh)
@@ -1034,6 +1053,42 @@ pub fn analyze_impact_v2(
                 } else {
                     s_edge.strength
                 };
+
+                let edge_scope_id = if s_edge.from_node.starts_with("pkg:npm:") {
+                    s_edge
+                        .from_node
+                        .strip_prefix("pkg:npm:")
+                        .unwrap_or(&s_edge.from_node)
+                } else if s_edge.from_node.starts_with("pkg:cargo:") {
+                    s_edge
+                        .from_node
+                        .strip_prefix("pkg:cargo:")
+                        .unwrap_or(&s_edge.from_node)
+                } else if s_edge.from_node.starts_with("config:") {
+                    s_edge
+                        .from_node
+                        .strip_prefix("config:")
+                        .unwrap_or(&s_edge.from_node)
+                } else if s_edge.to_node.starts_with("pkg:npm:") {
+                    s_edge
+                        .to_node
+                        .strip_prefix("pkg:npm:")
+                        .unwrap_or(&s_edge.to_node)
+                } else if s_edge.to_node.starts_with("pkg:cargo:") {
+                    s_edge
+                        .to_node
+                        .strip_prefix("pkg:cargo:")
+                        .unwrap_or(&s_edge.to_node)
+                } else {
+                    &s_edge.from_node
+                };
+
+                if is_prov_stale {
+                    uncertainties.push(UncertaintyReason::BuildProviderStale(format!(
+                        "{}: Build provider {} ephemeral snapshot edge used",
+                        edge_scope_id, s_edge.provider_id
+                    )));
+                }
 
                 current_edges.push(DbEdgeRow {
                     from_node: s_edge.from_node,
@@ -1232,7 +1287,7 @@ pub fn analyze_impact_v2(
         }
     }
 
-    // Blocker 3: Scoped uncertainty widening execution
+    // Scoped uncertainty widening execution
     // When a scoped uncertainty requires widening (should_widen = true), widen the affected scope.
     for unc in &scoped_build_uncertainties {
         if unc.should_widen {
@@ -1249,6 +1304,11 @@ pub fn analyze_impact_v2(
                         if let Some(files) = current_build_snapshot
                             .contains_package_to_files
                             .get(&pkg_node_npm)
+                            .or_else(|| {
+                                current_build_snapshot
+                                    .contains_package_to_files
+                                    .get(&pkg_node_cargo)
+                            })
                         {
                             for f in files {
                                 if !impacted_map.contains_key(f) {
@@ -1275,7 +1335,7 @@ pub fn analyze_impact_v2(
                         .iter()
                         .any(|id| id == ws_id || id.starts_with("workspace:"));
                     if is_affected {
-                        // Widen to all known workspace members
+                        // Widen to all known workspace members from snapshot AND fallback inventory
                         for (member, owning_ws) in
                             &current_build_snapshot.package_to_owning_workspace
                         {
@@ -1301,10 +1361,31 @@ pub fn analyze_impact_v2(
                                 }
                             }
                         }
+                        for fallback_pkg in
+                            crate::intelligence::build::discover::discover_fallback_build_inventory(
+                                repo_root,
+                            )
+                        {
+                            if !impacted_map.contains_key(&fallback_pkg) {
+                                impacted_map.insert(
+                                    fallback_pkg.clone(),
+                                    ImpactedTarget {
+                                        target: fallback_pkg,
+                                        target_kind: NodeKind::Package,
+                                        depth: 1,
+                                        strength: EvidenceStrength::Heuristic,
+                                        primary_path: None,
+                                        alternate_paths: Vec::new(),
+                                        alternate_path_count: 0,
+                                        widening_reason: Some(unc.code.clone()),
+                                    },
+                                );
+                            }
+                        }
                     }
                 }
                 UncertaintyScope::Repository => {
-                    // Widen to all known packages in snapshot when repository bound is reached
+                    // Widen to all known packages in snapshot AND fallback inventory
                     for node in current_build_snapshot.nodes.values() {
                         if node.kind == NodeKind::Package {
                             if let Some(ref cpath) = node.canonical_path {
@@ -1324,6 +1405,27 @@ pub fn analyze_impact_v2(
                                     );
                                 }
                             }
+                        }
+                    }
+                    for fallback_pkg in
+                        crate::intelligence::build::discover::discover_fallback_build_inventory(
+                            repo_root,
+                        )
+                    {
+                        if !impacted_map.contains_key(&fallback_pkg) {
+                            impacted_map.insert(
+                                fallback_pkg.clone(),
+                                ImpactedTarget {
+                                    target: fallback_pkg,
+                                    target_kind: NodeKind::Package,
+                                    depth: 1,
+                                    strength: EvidenceStrength::Heuristic,
+                                    primary_path: None,
+                                    alternate_paths: Vec::new(),
+                                    alternate_path_count: 0,
+                                    widening_reason: Some(unc.code.clone()),
+                                },
+                            );
                         }
                     }
                 }
@@ -1363,17 +1465,20 @@ pub fn analyze_impact_v2(
     });
     uncertainties.dedup();
 
-    // Blocker 2: Scoped uncertainty preservation
     // Filter uncertainties relevant to result assurance:
     // Only uncertainties whose scope affects the seeds or impacted targets closure degrade assurance.
     let relevant_uncertainties: Vec<UncertaintyReason> = uncertainties
         .iter()
         .filter(|u| {
             match u {
-                UncertaintyReason::MalformedConfig(details)
+                UncertaintyReason::BuildProviderStale(details)
+                | UncertaintyReason::BuildProviderMissing(details)
+                | UncertaintyReason::BuildProviderFailed(details)
+                | UncertaintyReason::MalformedConfig(details)
                 | UncertaintyReason::ConfigCycleDetected(details)
                 | UncertaintyReason::DynamicConfigExpression(details)
-                | UncertaintyReason::BuildProviderFailed(details) => {
+                | UncertaintyReason::BuildLimitReached(details)
+                | UncertaintyReason::UnknownWorkspaceMembership(details) => {
                     // Check if this uncertainty originates from a scoped build uncertainty
                     for s_unc in &scoped_build_uncertainties {
                         let is_match = match &s_unc.scope {
