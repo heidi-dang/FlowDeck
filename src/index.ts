@@ -8,11 +8,11 @@ import { buildFlowDeckMcpsWithMeta } from "./mcp/index"
 
 import type { ProductionOrchestrationRuntime } from "./orchestration/composition"
 import {
-  getOrCreateProjectRuntime,
+  acquireProjectRuntime,
+  releaseProjectRuntime,
   getProjectRuntime,
-  disposeProjectRuntime,
 } from "./runtime/project-registry"
-import { clearRouteDecision } from "./services/heidi-route-state"
+import { clearRouteDecision, getRouteDecision } from "./services/heidi-route-state"
 import { clearTaskState } from "./services/heidi-task-state"
 import { doctorTool } from "./tools/doctor"
 import { fdxValidateTool } from "./tools/fdx-validate"
@@ -55,14 +55,20 @@ export type { FlowDeckRuntimeIdentity } from "./services/runtime-identity"
 
 /**
  * Cleans up ephemeral in-memory state for a session while preserving durable database history.
+ * Resolves route state first to clear the actual taskId from HeidiTaskState.
  */
 export function cleanupSessionState(sessionID: string): void {
-  clearRouteDecision(sessionID);
+  const route = getRouteDecision(sessionID);
+  if (route && route.taskId) {
+    clearTaskState(route.taskId);
+  }
   clearTaskState(sessionID);
+  clearRouteDecision(sessionID);
 }
 
 /**
  * Returns session execution diagnostics backed by authoritative database rows.
+ * Strictly read-only: does NOT create runtime, databases, or directories if missing.
  */
 export function getSessionMetricsDiagnostics(sessionID: string, directory?: string): {
   sessionID: string;
@@ -74,13 +80,7 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
   completedAt?: string | null;
   errorMessage?: string | null;
 } {
-  let projectCtx = directory ? getProjectRuntime(directory) : null;
-  if (!projectCtx) {
-    // If directory not explicitly passed, check first available runtime for tests
-    const defaultCtx = getOrCreateProjectRuntime(process.cwd());
-    projectCtx = defaultCtx;
-  }
-
+  const projectCtx = directory ? getProjectRuntime(directory) : null;
   if (!projectCtx || !projectCtx.runtime) {
     return { sessionID, toolCalls: 0, delegations: 0 };
   }
@@ -103,16 +103,18 @@ export function getSessionMetricsDiagnostics(sessionID: string, directory?: stri
 }
 
 /**
- * Get active ProductionOrchestrationRuntime for a directory, or cwd by default.
+ * Get active ProductionOrchestrationRuntime for a directory if one exists.
+ * Strictly read-only: does NOT create runtime if missing.
  */
 export function getOrchestrationRuntime(directory?: string): ProductionOrchestrationRuntime | null {
-  const ctx = getProjectRuntime(directory ?? process.cwd());
+  if (!directory) return null;
+  const ctx = getProjectRuntime(directory);
   return ctx ? ctx.runtime : null;
 }
 
 const plugin: Plugin = async ({ directory, client: _client }) => {
   setActiveProjectDir(directory)
-  const projectContext = getOrCreateProjectRuntime(directory);
+  const projectContext = acquireProjectRuntime(directory);
   const lifecycleAdapter = projectContext.adapter;
 
   let currentConfig: any = {};
@@ -144,14 +146,28 @@ const plugin: Plugin = async ({ directory, client: _client }) => {
     },
 
     permission: async (ctx: any) => {
+      // 1. Evaluate non-bypassable FlowDeck correctness & governance invariants FIRST
+      if (ctx.tool) {
+        const check = evaluateGovernanceToolCheck({
+          directory,
+          sessionID: ctx.sessionID,
+          tool: ctx.tool,
+          args: ctx.args,
+          agent: ctx.agent?.name ?? "heidi",
+        });
+
+        // Structural blocks can NEVER be bypassed by user approval settings
+        if (check.action === "block") {
+          return { status: "deny", message: check.reason };
+        }
+      }
+
+      // 2. User permission policy: globalAlwaysApprove suppresses user prompts for valid operations
       const isHeidiSession = ctx.agent?.name === "heidi" || ctx.agent?.name?.startsWith("heidi-");
       if (isHeidiSession && currentConfig?.heidi?.globalAlwaysApprove === true) {
-        return { status: "allow" }
+        return { status: "allow" };
       }
-      if (ctx.tool) {
-        const check = evaluateGovernanceToolCheck({ directory, sessionID: ctx.sessionID, tool: ctx.tool, args: ctx.args, agent: ctx.agent?.name ?? "heidi" });
-        if (check.action === "block") return { status: "deny", message: check.reason };
-      }
+
       return undefined;
     },
 
@@ -194,7 +210,7 @@ const plugin: Plugin = async ({ directory, client: _client }) => {
     },
 
     dispose: async () => {
-      await disposeProjectRuntime(directory);
+      await releaseProjectRuntime(directory);
       configureFdxNextRuntime()
     },
   }

@@ -6,6 +6,7 @@
  */
 
 import type { RouterDecision } from "./heidi-fast-router"
+import { getTaskState } from "./heidi-task-state"
 
 export interface SessionRouteState {
   sessionID: string
@@ -65,27 +66,40 @@ export function noteInternalContinuation(sessionID: string): void {
 }
 
 /**
- * Decide whether a manual user message is a continuation of the existing
- * unresolved task (preserve state) or a genuinely new task (reclassify).
- *
- * Preserves when:
- * 1. The message hash matches the active turn (exact duplicate / replay).
- * 2. An active in-flight task exists in route cache and is marked active.
+ * Decide whether a manual user message is an exact duplicate or replay.
  */
-export function shouldPreserveRoute(
-  sessionID: string,
-  messageHash: string,
-): { preserve: boolean; taskId?: string } {
+export function isDuplicateMessage(sessionID: string, messageHash: string): boolean {
   const entry = _registry.get(sessionID)
-  if (!entry) return { preserve: false }
-  if (entry.lastUserMessageHash === messageHash) {
-    // Duplicate of the exact message we already classified — never reclassify.
-    return { preserve: true, taskId: entry.taskId }
+  if (!entry) return false
+  return entry.lastUserMessageHash === messageHash
+}
+
+/**
+ * Helper for facade consumers:
+ * Only preserves route when active AND not completed/terminal.
+ * FAST_DIRECT routes are turn-scoped and never preserved for non-duplicate messages.
+ */
+export function shouldPreserveRoute(sessionID: string, messageHash: string): {
+  preserve: boolean
+  reason?: string
+} {
+  const entry = _registry.get(sessionID)
+  if (!entry || !entry.active) {
+    return { preserve: false, reason: "NO_ACTIVE_ROUTE" }
   }
-  if (entry.active) {
-    return { preserve: true, taskId: entry.taskId }
+
+  // FAST_DIRECT is turn-scoped and never preserved for different messages
+  if (entry.decision.executionClass === "FAST_DIRECT" && entry.lastUserMessageHash !== messageHash) {
+    return { preserve: false, reason: "FAST_DIRECT_TURN_COMPLETE" }
   }
-  return { preserve: false }
+
+  // If task state exists and is already completed, do not preserve
+  const taskState = getTaskState(entry.taskId)
+  if (taskState && (taskState.snapshot().currentPhase === "complete" || taskState.snapshot().verificationState === "passed")) {
+    return { preserve: false, reason: "TASK_ALREADY_COMPLETE" }
+  }
+
+  return { preserve: true, reason: "ACTIVE_TASK_CONTINUATION" }
 }
 
 /** Mark a session route as inactive / completed. */

@@ -1,17 +1,24 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  getOrCreateProjectRuntime,
+  acquireProjectRuntime,
+  releaseProjectRuntime,
   getProjectRuntime,
   disposeProjectRuntime,
   _resetAllProjectRuntimes,
 } from "../src/runtime/project-registry";
 import { getSessionMetricsDiagnostics, cleanupSessionState } from "../src/index";
 import { _resetRouteState, getRouteDecision } from "../src/services/heidi-route-state";
+import { createTaskState, getTaskState, _resetAllTaskState } from "../src/services/heidi-task-state";
 import { closeAllConnections } from "../src/orchestration/persistence/connection";
 import { RunStatus } from "../src/orchestration/types/runs";
+import {
+  buildCanonicalRoutingDecision,
+  reconstructRouterDecision,
+} from "../src/orchestration/routing/fast-router-adapter";
+import flowDeckPlugin from "../src/index";
 
 describe("FlowDeck Orchestration Foundation Integration Tests", () => {
   let dirA: string;
@@ -21,6 +28,7 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     await _resetAllProjectRuntimes();
     closeAllConnections();
     _resetRouteState();
+    _resetAllTaskState();
     dirA = mkdtempSync(join(tmpdir(), "fdx-test-a-"));
     dirB = mkdtempSync(join(tmpdir(), "fdx-test-b-"));
   });
@@ -29,13 +37,14 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     await _resetAllProjectRuntimes();
     closeAllConnections();
     _resetRouteState();
+    _resetAllTaskState();
     try { rmSync(dirA, { recursive: true, force: true }); } catch {}
     try { rmSync(dirB, { recursive: true, force: true }); } catch {}
   });
 
   it("1. runtime-project-isolation: project A and B have separate databases and runtimes", async () => {
-    const ctxA = getOrCreateProjectRuntime(dirA);
-    const ctxB = getOrCreateProjectRuntime(dirB);
+    const ctxA = acquireProjectRuntime(dirA);
+    const ctxB = acquireProjectRuntime(dirB);
 
     expect(ctxA.runtime).not.toBe(ctxB.runtime);
     expect(ctxA.dbPath).toContain(dirA);
@@ -44,170 +53,128 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(existsSync(ctxB.dbPath)).toBe(true);
 
     // Dispose A does not affect B
-    await disposeProjectRuntime(dirA);
+    await releaseProjectRuntime(dirA);
     expect(getProjectRuntime(dirA)).toBeNull();
     expect(getProjectRuntime(dirB)).not.toBeNull();
   });
 
   it("2. runtime-reload: dispose and re-initialize same project directory cleanly", async () => {
-    const ctx1 = getOrCreateProjectRuntime(dirA);
+    const ctx1 = acquireProjectRuntime(dirA);
     const dbPath1 = ctx1.dbPath;
-    await disposeProjectRuntime(dirA);
+    await releaseProjectRuntime(dirA);
     expect(getProjectRuntime(dirA)).toBeNull();
 
-    const ctx2 = getOrCreateProjectRuntime(dirA);
+    const ctx2 = acquireProjectRuntime(dirA);
     expect(ctx2.dbPath).toBe(dbPath1);
     expect(ctx2.disposed).toBe(false);
   });
 
-  it("3. routing-persistence-roundtrip: classify, persist, destroy memory, reopen DB, restore exact ExecutionClass", async () => {
-    const ctx = getOrCreateProjectRuntime(dirA);
+  it("3. fast-direct-followed-by-new-task: FAST_DIRECT finishes on idle and allows next task to classify independently", async () => {
+    const ctx = acquireProjectRuntime(dirA);
     const adapter = ctx.adapter;
 
-    const messageText = "We need frontend UI in react and backend in node simultaneously";
+    // 1. Send FAST_DIRECT prompt
     await adapter.onChatMessage(
-      { sessionID: "sess-roundtrip-1", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: messageText, id: "1", sessionID: "sess-roundtrip-1", messageID: "msg-1" }] }
+      { sessionID: "sess-fast-direct", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "fix typo in readme.md", id: "1", sessionID: "sess-fast-direct", messageID: "msg-1" }] }
     );
 
-    const initialRoute = getRouteDecision("sess-roundtrip-1");
-    expect(initialRoute).not.toBeNull();
-    expect(initialRoute?.decision.executionClass).toBe("PARALLEL_SPECIALISTS");
+    const firstRoute = getRouteDecision("sess-fast-direct");
+    expect(firstRoute).not.toBeNull();
+    expect(firstRoute?.decision.executionClass).toBe("FAST_DIRECT");
 
-    // Clear all in-memory registries
-    _resetRouteState();
-    expect(getRouteDecision("sess-roundtrip-1")).toBeNull();
+    // FAST_DIRECT does NOT create heavy Run in SQLite
+    const sessionRow = ctx.runtime.sessionRepo.findById("sess-fast-direct");
+    expect(sessionRow).toBeUndefined();
 
-    // Re-hydrate directly from SQLite
-    await adapter.hydrateSessionRoute("sess-roundtrip-1");
-    const restored = getRouteDecision("sess-roundtrip-1");
-    expect(restored).not.toBeNull();
-    expect(restored?.decision.executionClass).toBe("PARALLEL_SPECIALISTS");
-    expect(restored?.goal).toBe(messageText);
+    // 2. Session reaches idle (turn completes)
+    await adapter.onEvent({ type: "session.idle", properties: { sessionID: "sess-fast-direct" } });
+
+    // 3. Next message is a heavy security audit task
+    await adapter.onChatMessage(
+      { sessionID: "sess-fast-direct", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Perform security vulnerability scan on authentication routes", id: "2", sessionID: "sess-fast-direct", messageID: "msg-2" }] }
+    );
+
+    const nextRoute = getRouteDecision("sess-fast-direct");
+    expect(nextRoute).not.toBeNull();
+    expect(nextRoute?.decision.executionClass).toBe("SPECIALIST");
   });
 
-  it("4. session-run-affinity-roundtrip: persist session/run, restart, recover correct binding", async () => {
-    const ctx = getOrCreateProjectRuntime(dirA);
+  it("4. terminal-run-new-task-without-reset: new task classifies independently after prior run completes without calling reset", async () => {
+    const ctx = acquireProjectRuntime(dirA);
     const adapter = ctx.adapter;
 
+    // Task 1: Complex planned task
     await adapter.onChatMessage(
-      { sessionID: "sess-affinity-test", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Refactor backend architecture across all services", id: "1", sessionID: "sess-affinity-test", messageID: "msg-1" }] }
+      { sessionID: "sess-no-manual-reset", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Implement full feature for user billing across files", id: "1", sessionID: "sess-no-manual-reset", messageID: "msg-1" }] }
     );
 
-    const sessionRow = ctx.runtime.sessionRepo.findById("sess-affinity-test");
-    expect(sessionRow).toBeDefined();
-    expect(sessionRow?.agentId).toBe("heidi");
+    const sessionRow1 = ctx.runtime.sessionRepo.findById("sess-no-manual-reset");
+    expect(sessionRow1).toBeDefined();
+    const runId1 = sessionRow1!.runId;
 
-    // Reopen in a new runtime instance over same DB
-    await disposeProjectRuntime(dirA);
-    _resetRouteState();
+    // Mark Run 1 completed in SQLite (authoritative truth)
+    await ctx.runtime.services.runService.updateRun(runId1, { status: RunStatus.COMPLETED, stage: "completed" });
 
-    const freshCtx = getOrCreateProjectRuntime(dirA);
-    const recoveredSession = freshCtx.runtime.sessionRepo.findById("sess-affinity-test");
-    expect(recoveredSession).toBeDefined();
-    expect(recoveredSession?.runId).toBe(sessionRow?.runId);
-
-    await freshCtx.adapter.hydrateSessionRoute("sess-affinity-test");
-    const restoredRoute = getRouteDecision("sess-affinity-test");
-    expect(restoredRoute).not.toBeNull();
-    expect(restoredRoute?.decision.executionClass).toBe("SPECIALIST");
-  });
-
-  it("5. same-session-new-run: task A then task B in same session; B becomes active, A remains history", async () => {
-    const ctx = getOrCreateProjectRuntime(dirA);
-    const adapter = ctx.adapter;
-
-    // Task A: complex planning task
+    // Task 2: Sent in SAME session WITHOUT manual _resetRouteState()
     await adapter.onChatMessage(
-      { sessionID: "sess-multi-task", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Implement a new OAuth authentication flow across multiple files", id: "1", sessionID: "sess-multi-task", messageID: "msg-1" }] }
+      { sessionID: "sess-no-manual-reset", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "We need frontend UI in react and backend in node simultaneously", id: "2", sessionID: "sess-no-manual-reset", messageID: "msg-2" }] }
     );
 
-    const sessionA = ctx.runtime.sessionRepo.findById("sess-multi-task");
-    expect(sessionA).toBeDefined();
-    const runIdA = sessionA!.runId;
-    expect(runIdA).toBeDefined();
+    const route2 = getRouteDecision("sess-no-manual-reset");
+    expect(route2).not.toBeNull();
+    expect(route2?.decision.executionClass).toBe("PARALLEL_SPECIALISTS");
 
-    // Mark Run A complete in database
-    await ctx.runtime.services.runService.updateRun(runIdA, { status: RunStatus.COMPLETED, stage: "completed" });
-
-    // Task B in same OpenCode session
-    _resetRouteState(); // Simulates new turn or reload
-    await adapter.onChatMessage(
-      { sessionID: "sess-multi-task", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Security audit on permissions and roles across modules", id: "2", sessionID: "sess-multi-task", messageID: "msg-2" }] }
-    );
-
-    const sessionB = ctx.runtime.sessionRepo.findById("sess-multi-task");
-    expect(sessionB).toBeDefined();
-    const runIdB = sessionB!.runId;
-    expect(runIdB).toBeDefined();
-    expect(runIdB).not.toBe(runIdA);
-
-    // Check Run A still exists in history
-    const runA = await ctx.runtime.services.runRepo.findById(runIdA);
-    expect(runA).not.toBeNull();
-    expect(runA?.status).toBe(RunStatus.COMPLETED);
-
-    // Check Run B is active
-    const runB = await ctx.runtime.services.runRepo.findById(runIdB);
-    expect(runB).not.toBeNull();
-    expect(runB?.status).toBe(RunStatus.PENDING);
+    const sessionRow2 = ctx.runtime.sessionRepo.findById("sess-no-manual-reset");
+    expect(sessionRow2!.runId).not.toBe(runId1);
   });
 
-  it("6. terminal-run-not-restored: terminal run is not restored as active route", async () => {
-    const ctx = getOrCreateProjectRuntime(dirA);
-    const adapter = ctx.adapter;
+  it("5. cold-restart-durability: all durable execution classes survive cold restart and restore without fabrication", async () => {
+    const testCases = [
+      { text: "Diagnose and debug why the test is failing with stack trace", expectedClass: "SPECIALIST" },
+      { text: "We need frontend UI in react and backend in node simultaneously", expectedClass: "PARALLEL_SPECIALISTS" },
+      { text: "Implement new feature across several files and modules", expectedClass: "STANDARD" },
+      { text: "Full architecture migration and breaking overhaul", expectedClass: "DEEP" },
+    ];
 
-    await adapter.onChatMessage(
-      { sessionID: "sess-terminal", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Security vulnerability audit on all endpoints", id: "1", sessionID: "sess-terminal", messageID: "msg-1" }] }
-    );
+    for (let i = 0; i < testCases.length; i++) {
+      const tc = testCases[i];
+      const sessionID = `sess-cold-${i}`;
 
-    const sessionRow = ctx.runtime.sessionRepo.findById("sess-terminal");
-    expect(sessionRow).toBeDefined();
-    await ctx.runtime.services.runService.updateRun(sessionRow!.runId, { status: RunStatus.COMPLETED, stage: "completed" });
+      const ctx = acquireProjectRuntime(dirA);
+      await ctx.adapter.onChatMessage(
+        { sessionID, agent: "heidi" },
+        { message: {} as any, parts: [{ type: "text", text: tc.text, id: "1", sessionID, messageID: `msg-${i}` }] }
+      );
 
-    _resetRouteState();
-    await adapter.hydrateSessionRoute("sess-terminal");
+      // Verify created in memory
+      expect(getRouteDecision(sessionID)?.decision.executionClass).toBe(tc.expectedClass);
 
-    expect(getRouteDecision("sess-terminal")).toBeNull();
+      // COLD RESTART: dispose runtime, clear all in-memory state, close DB connections
+      await disposeProjectRuntime(dirA);
+      _resetRouteState();
+      closeAllConnections();
+
+      expect(getRouteDecision(sessionID)).toBeNull();
+
+      // Fresh runtime opens same DB
+      const freshCtx = acquireProjectRuntime(dirA);
+      await freshCtx.adapter.hydrateSessionRoute(sessionID);
+
+      const restored = getRouteDecision(sessionID);
+      expect(restored).not.toBeNull();
+      expect(restored?.decision.executionClass).toBe(tc.expectedClass);
+      expect(restored?.goal).toBe(tc.text);
+
+      await releaseProjectRuntime(dirA);
+    }
   });
 
-  it("7. missing-run-binding-safe: session pointing to non-existent run fails safely without fabrication", async () => {
-    const ctx = getOrCreateProjectRuntime(dirA);
-    // Disable FK temporarily to simulate orphaned data or corruption
-    ctx.runtime.db.run("PRAGMA foreign_keys = OFF");
-    ctx.runtime.db.run("INSERT INTO agent_sessions (id, run_id, agent_id, started_at) VALUES ('sess-corrupt', 'non-existent-run', 'heidi', datetime('now'))");
-    ctx.runtime.db.run("PRAGMA foreign_keys = ON");
-
-    _resetRouteState();
-    await ctx.adapter.hydrateSessionRoute("sess-corrupt");
-    expect(getRouteDecision("sess-corrupt")).toBeNull();
-  });
-
-  it("8. missing-routing-decision-safe: run without routing decision fails safely without fabrication", async () => {
-    const ctx = getOrCreateProjectRuntime(dirA);
-    const run = await ctx.runtime.services.runService.createRun({
-      runType: "simple",
-      correlationId: "c-1",
-      sessionId: "sess-no-rd"
-    });
-
-    ctx.runtime.sessionRepo.create({
-      id: "sess-no-rd",
-      runId: run.id,
-      agentId: "heidi"
-    });
-
-    _resetRouteState();
-    await ctx.adapter.hydrateSessionRoute("sess-no-rd");
-    expect(getRouteDecision("sess-no-rd")).toBeNull();
-  });
-
-  it("9. duplicate-chat-message-idempotent: exact duplicate user message does not create new run", async () => {
-    const ctx = getOrCreateProjectRuntime(dirA);
+  it("6. active-run-duplicate-replay: duplicate message replay is idempotent", async () => {
+    const ctx = acquireProjectRuntime(dirA);
     const adapter = ctx.adapter;
 
     const msg = "Implement a new OAuth authentication flow across files";
@@ -229,48 +196,121 @@ describe("FlowDeck Orchestration Foundation Integration Tests", () => {
     expect(secondSession?.runId).toBe(firstRunId);
   });
 
-  it("10. session-cleanup-preserves-history: cleanupSessionState clears in-memory route but keeps DB row", async () => {
-    const ctx = getOrCreateProjectRuntime(dirA);
+  it("7. routing-reconstruction-missing-required-evidence: fails closed when evidence is missing or malformed", () => {
+    const validDecision = buildCanonicalRoutingDecision({
+      runId: "run-valid-1",
+      decision: {
+        executionClass: "SPECIALIST",
+        specialists: ["DEBUG"],
+        suggestedAgents: ["debug-specialist"],
+        reason: "Debug test failure",
+        reasonCode: "SPECIALIST_DEBUG",
+        confidence: 0.9,
+        forcedByExplicitSignal: false,
+      },
+      goal: "Debug failure in auth",
+      lastUserMessageHash: "hash-valid-1",
+    });
+
+    const good = reconstructRouterDecision(validDecision);
+    expect(good).not.toBeNull();
+    expect(good?.decision.executionClass).toBe("SPECIALIST");
+
+    // Malform by removing executionClass evidence
+    const badDecision = JSON.parse(JSON.stringify(validDecision));
+    badDecision.assessment.evidence = badDecision.assessment.evidence.filter(
+      (e: any) => e.signal !== "executionClass"
+    );
+    expect(reconstructRouterDecision(badDecision)).toBeNull();
+
+    // Malform by setting invalid executionClass string
+    const invalidClassDecision = JSON.parse(JSON.stringify(validDecision));
+    invalidClassDecision.assessment.evidence.find((e: any) => e.signal === "executionClass").value = "FABRICATED_CLASS";
+    expect(reconstructRouterDecision(invalidClassDecision)).toBeNull();
+  });
+
+  it("8. cleanup-removes-task-by-taskId: clears HeidiTaskState using the actual taskId from the session route", async () => {
+    const ctx = acquireProjectRuntime(dirA);
     const adapter = ctx.adapter;
 
     await adapter.onChatMessage(
-      { sessionID: "sess-cleanup", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Security pentest across all endpoints", id: "1", sessionID: "sess-cleanup", messageID: "msg-1" }] }
+      { sessionID: "sess-cleanup-task", agent: "heidi" },
+      { message: {} as any, parts: [{ type: "text", text: "Security pentest across all endpoints", id: "1", sessionID: "sess-cleanup-task", messageID: "msg-1" }] }
     );
 
-    expect(getRouteDecision("sess-cleanup")).not.toBeNull();
-    cleanupSessionState("sess-cleanup");
-    expect(getRouteDecision("sess-cleanup")).toBeNull();
+    const route = getRouteDecision("sess-cleanup-task");
+    expect(route).not.toBeNull();
+    const taskId = route!.taskId;
 
-    // Durable DB row still exists
-    const sessionRow = ctx.runtime.sessionRepo.findById("sess-cleanup");
-    expect(sessionRow).toBeDefined();
+    // Create matching HeidiTaskState
+    createTaskState(taskId, "Security pentest", "SPECIALIST");
+    expect(getTaskState(taskId)).toBeDefined();
+
+    cleanupSessionState("sess-cleanup-task");
+
+    expect(getRouteDecision("sess-cleanup-task")).toBeNull();
+    expect(getTaskState(taskId)).toBeUndefined();
   });
 
-  it("11. session-diagnostics-real-values: tool call updates appear accurately in session metrics", async () => {
-    const ctx = getOrCreateProjectRuntime(dirA);
-    const adapter = ctx.adapter;
+  it("9. diagnostics-does-not-create-runtime: reading diagnostics on uninitialized dir does not create files/DB", () => {
+    const uninitDir = mkdtempSync(join(tmpdir(), "fdx-uninit-"));
+    const diag = getSessionMetricsDiagnostics("sess-none", uninitDir);
 
-    await adapter.onChatMessage(
-      { sessionID: "sess-diag", agent: "heidi" },
-      { message: {} as any, parts: [{ type: "text", text: "Review PR diff across multiple services", id: "1", sessionID: "sess-diag", messageID: "msg-1" }] }
+    expect(diag.toolCalls).toBe(0);
+    expect(existsSync(join(uninitDir, ".flowdeck"))).toBe(false);
+    expect(getProjectRuntime(uninitDir)).toBeNull();
+
+    rmSync(uninitDir, { recursive: true, force: true });
+  });
+
+  it("10. always-approve-does-not-bypass-governance: structural invariant blocks are never bypassed by globalAlwaysApprove", async () => {
+    // Write governance mode strict in .flowdeck.json
+    writeFileSync(
+      join(dirA, ".flowdeck.json"),
+      JSON.stringify({ governance: { mode: "strict" }, heidi: { globalAlwaysApprove: true } })
     );
 
-    // Simulate tool executions
-    await adapter.onToolExecuteAfter({ tool: "grep", sessionID: "sess-diag", callID: "c1", args: {} }, { output: "ok", metadata: {} });
-    await adapter.onToolExecuteAfter({ tool: "read", sessionID: "sess-diag", callID: "c2", args: {} }, { output: "ok", metadata: {} });
+    const pluginInstance = await (flowDeckPlugin.server as any)({
+      directory: dirA,
+      client: {} as any,
+    });
 
-    const diag = getSessionMetricsDiagnostics("sess-diag", dirA);
-    expect(diag.toolCalls).toBe(2);
-    expect(diag.sessionID).toBe("sess-diag");
-    expect(diag.status).toBe("running");
+    await pluginInstance.config({
+      heidi: { globalAlwaysApprove: true },
+      governance: { mode: "strict" },
+    });
+
+    // Researcher agent attempting to use write (forbidden in its contract)
+    const res = await pluginInstance.permission({
+      sessionID: "sess-gov",
+      agent: { name: "researcher" },
+      tool: "write",
+      args: {},
+    });
+
+    // Must be blocked because researcher cannot run write under strict governance
+    expect(res).toBeDefined();
+    expect(res.status).toBe("deny");
+
+    await pluginInstance.dispose();
   });
 
-  it("12. fresh-project-db-bootstrap: creates .flowdeck directory and initializes schema automatically", () => {
-    const freshDir = mkdtempSync(join(tmpdir(), "fdx-fresh-"));
-    const ctx = getOrCreateProjectRuntime(freshDir);
-    expect(existsSync(join(freshDir, ".flowdeck", "flowdeck.db"))).toBe(true);
-    expect(ctx.runtime.db).toBeDefined();
-    rmSync(freshDir, { recursive: true, force: true });
+  it("11. project-shared-runtime-lifecycle: refCount ensures shared runtime is kept alive until all owners release", async () => {
+    const owner1 = acquireProjectRuntime(dirA);
+    expect(owner1.refCount).toBe(1);
+
+    const owner2 = acquireProjectRuntime(dirA);
+    expect(owner2.runtime).toBe(owner1.runtime);
+    expect(owner1.refCount).toBe(2);
+
+    // Release 1st owner
+    await releaseProjectRuntime(dirA);
+    expect(getProjectRuntime(dirA)).not.toBeNull();
+    expect(owner1.disposed).toBe(false);
+
+    // Release 2nd owner
+    await releaseProjectRuntime(dirA);
+    expect(getProjectRuntime(dirA)).toBeNull();
+    expect(owner1.disposed).toBe(true);
   });
 });

@@ -1,7 +1,15 @@
 /**
- * Agent Validator
- * Validates agent behavior against capability contracts.
- * Returns a decision (allow/warn/block/escalate).
+ * Agent Capability Contract Validator
+ *
+ * Validates agent execution context against its registered contract.
+ * Returns structured validation results with actionable error messages.
+ *
+ * Checks:
+ * 1. Task type is in allowedTaskTypes
+ * 2. Required inputs are present
+ * 3. Tool being invoked is in allowedTools
+ * 4. Output contains all expectedOutputFields (post-execution)
+ * 5. No forbidden actions are being attempted
  */
 
 import { getContract } from "./agent-contract-registry"
@@ -10,10 +18,20 @@ import { loadFlowDeckConfig } from "../config"
 export type ValidatorMode = "off" | "advisory" | "strict"
 export type ValidatorAction = "allow" | "warn" | "block" | "escalate"
 
+export interface AgentExecutionContext {
+  agent: string
+  taskType?: string
+  toolUsed?: string
+  providedInputs?: Record<string, unknown>
+  missingInputs?: string[]
+  output?: Record<string, unknown>
+  actionDescription?: string
+}
+
 export interface ValidationViolation {
   rule: string
   detail: string
-  severity: "info" | "warn" | "block"
+  severity: "warn" | "block" | "info"
 }
 
 export interface ValidationResult {
@@ -24,33 +42,15 @@ export interface ValidationResult {
   message?: string
 }
 
-export interface AgentExecutionContext {
-  /** Agent being validated */
-  agent: string
-  /** Tool the agent is about to call (for pre-call checks) */
-  toolUsed?: string
-  /** Task type assigned to this agent */
-  taskType?: string
-  /** Current workflow stage */
-  currentStage?: string
-  /** Whether required inputs are all present */
-  prerequisitesMet?: boolean
-  /** Specific inputs that are missing */
-  missingInputs?: string[]
-  /** Whether an approval gate applies */
-  approvalRequired?: boolean
-  /** Whether approval has been granted */
-  approvalGranted?: boolean
-  /** For telemetry correlation */
-  run_id?: string
-  session_id?: string
-}
-
 export function resolveValidatorMode(directory: string): ValidatorMode {
   try {
     const config = loadFlowDeckConfig(directory)
-    return (config as Record<string, unknown> & { governance?: { validator?: { mode?: ValidatorMode } } })
-      ?.governance?.validator?.mode ?? "advisory"
+    const mode = config.governance?.mode ?? (config as Record<string, unknown> & { governance?: { validator?: { mode?: ValidatorMode } } })
+      ?.governance?.validator?.mode
+    if (mode === "off" || mode === "advisory" || mode === "strict") {
+      return mode
+    }
+    return "advisory"
   } catch {
     return "advisory"
   }
@@ -92,7 +92,7 @@ export function validateAgent(
         violations.push({
           rule: "tool-not-in-contract",
           detail: `Agent "${ctx.agent}" called tool "${ctx.toolUsed}" not in allowedTools: [${contract.allowedTools.join(", ")}]`,
-          severity: toolForbidden ? "block" : "warn",
+          severity: toolForbidden ? "block" : (mode === "strict" ? "block" : "warn"),
         })
       }
     }
@@ -115,53 +115,62 @@ export function validateAgent(
       })
     }
 
-    // Prerequisites not met
-    if (ctx.prerequisitesMet === false) {
-      violations.push({
-        rule: "prerequisites-not-met",
-        detail: `Agent "${ctx.agent}" attempting execution before prerequisites are complete`,
-        severity: "block",
-      })
+    // Forbidden action check
+    if (ctx.actionDescription) {
+      for (const forbidden of contract.forbiddenActions) {
+        if (ctx.actionDescription.toLowerCase().includes(forbidden.toLowerCase())) {
+          violations.push({
+            rule: "forbidden-action",
+            detail: `Agent "${ctx.agent}" attempted forbidden action: "${forbidden}"`,
+            severity: "block",
+          })
+        }
+      }
     }
 
-    // Approval gate bypassed
-    if (ctx.approvalRequired && !ctx.approvalGranted) {
-      violations.push({
-        rule: "approval-gate-bypassed",
-        detail: `Agent "${ctx.agent}" requires approval before proceeding but none was granted`,
-        severity: "block",
-      })
+    // Output schema check
+    if (ctx.output) {
+      for (const expectedField of contract.expectedOutputFields) {
+        if (!(expectedField in ctx.output)) {
+          violations.push({
+            rule: "missing-output-field",
+            detail: `Agent "${ctx.agent}" output missing expected field: "${expectedField}"`,
+            severity: "warn",
+          })
+        }
+      }
     }
   }
 
-  const hasBlock = violations.some(v => v.severity === "block")
-  const hasWarn = violations.some(v => v.severity === "warn")
-  let action: ValidatorAction
-  if (!hasBlock && !hasWarn) {
-    // Only info-level violations — don't change execution
-    action = "allow"
-  } else if (mode === "strict") {
-    // In strict mode, any contract violation is blocked
-    action = "block"
-  } else if (hasBlock) {
-    action = "warn"
-  } else {
-    action = "warn"
+  const hasBlocks = violations.some(v => v.severity === "block")
+  const hasWarns = violations.some(v => v.severity === "warn")
+
+  if (hasBlocks) {
+    const action = mode === "strict" ? "block" : "warn"
+    return {
+      agent: ctx.agent,
+      valid: false,
+      action,
+      violations,
+      message: violations.map(v => `[${v.rule}] ${v.detail}`).join("; "),
+    }
   }
 
-  return {
-    agent: ctx.agent,
-    valid: violations.length === 0,
-    action,
-    violations,
-    message: violations.length > 0
-      ? violations.map(v => `[${v.rule}] ${v.detail}`).join("; ")
-      : undefined,
+  if (hasWarns) {
+    return {
+      agent: ctx.agent,
+      valid: true,
+      action: "warn",
+      violations,
+      message: violations.map(v => `[${v.rule}] ${v.detail}`).join("; "),
+    }
   }
+
+  return { agent: ctx.agent, valid: true, action: "allow", violations: [] }
 }
 
 /**
- * Convenience check: is this tool call allowed for this agent?
+ * Quick-check helper: validate tool access for an agent.
  */
 export function validateToolAccess(
   directory: string,

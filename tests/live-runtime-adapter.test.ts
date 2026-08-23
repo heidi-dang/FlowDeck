@@ -103,6 +103,8 @@ describe("FlowDeckLifecycleAdapter", () => {
               { id: "ev-execution-class", kind: "classification", signal: "executionClass", value: "PARALLEL_SPECIALISTS", weight: 100 },
               { id: "ev-user-goal", kind: "goal", signal: "goal", value: "hydrated goal", weight: 100 },
               { id: "ev-message-hash", kind: "hash", signal: "lastUserMessageHash", value: "hash123", weight: 100 },
+              { id: "ev-reason-code", kind: "classification", signal: "reasonCode", value: "PARALLEL_DOMAIN_OVERLAP", weight: 100 },
+              { id: "ev-confidence", kind: "classification", signal: "confidence", value: "0.95", weight: 100 },
             ],
             classifierVersion: "2.0.0",
             policyVersion: "2.0.0",

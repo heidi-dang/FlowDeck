@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { ProductionOrchestrationRuntime } from "../orchestration/composition";
 import {
-  shouldPreserveRoute,
   setRouteDecision,
   clearRouteDecision,
   noteInternalContinuation,
   getRouteDecision,
+  isDuplicateMessage,
+  markRouteInactive,
 } from "../services/heidi-route-state";
 import { classifyTask, type RouterDecision, stableHash } from "../services/heidi-fast-router";
 import type { Event, UserMessage, Part, TextPart } from "@opencode-ai/sdk";
@@ -18,6 +19,7 @@ import {
 
 export class FlowDeckLifecycleAdapter {
   private disposed = false;
+  private pendingFastDirectTurnSessions = new Set<string>();
 
   constructor(
     private readonly directory: string,
@@ -39,47 +41,82 @@ export class FlowDeckLifecycleAdapter {
 
       const msgHash = stableHash(text);
 
-      // Hydrate authoritative session route from SQLite if not currently in memory
-      await this.hydrateSessionRoute(input.sessionID);
-
-      const { preserve } = shouldPreserveRoute(input.sessionID, msgHash);
-      if (!preserve) {
-        // Genuine new user instruction
-        const decision = classifyTask(text, { hasExplicitDomainSignal: false });
-        const correlationId = input.messageID || randomUUID();
-        const taskId = "task-" + randomUUID();
-        setRouteDecision(input.sessionID, taskId, decision, text, msgHash);
-        await this.syncOrchestrationRun(taskId, input.sessionID, input.agent ?? "heidi", decision, text, msgHash, correlationId);
-      } else {
+      // 1. Check if this is an exact duplicate replay of the previous turn
+      if (isDuplicateMessage(input.sessionID, msgHash)) {
         noteInternalContinuation(input.sessionID);
+        return;
+      }
+
+      // 2. Hydrate/inspect authoritative durable state from SQLite
+      const activeRun = await this.resolveActiveRunForSession(input.sessionID);
+
+      if (activeRun) {
+        // There is an active, non-terminal Run in SQLite.
+        // User message during active non-terminal work is preserved as a continuation.
+        noteInternalContinuation(input.sessionID);
+        return;
+      }
+
+      // 3. No active non-terminal Run exists (either terminal, FAST_DIRECT completed, or first turn).
+      // Genuine new user instruction → Classify independently.
+      const decision = classifyTask(text, { hasExplicitDomainSignal: false });
+      const correlationId = input.messageID || randomUUID();
+      const taskId = "task-" + randomUUID();
+
+      setRouteDecision(input.sessionID, taskId, decision, text, msgHash);
+
+      if (decision.executionClass === "FAST_DIRECT") {
+        // Mark ephemeral FAST_DIRECT turn active for this session
+        this.pendingFastDirectTurnSessions.add(input.sessionID);
+      } else {
+        await this.syncOrchestrationRun(taskId, input.sessionID, input.agent ?? "heidi", decision, text, msgHash, correlationId);
       }
     }
+  }
+
+  /**
+   * Resolves whether the session has an active non-terminal Run in SQLite.
+   * Also hydrates route state if found.
+   */
+  async resolveActiveRunForSession(sessionID: string) {
+    const sessionRow = this.runtime.sessionRepo.findById(sessionID);
+    if (!sessionRow) {
+      // Ephemeral FAST_DIRECT check: if completed turn boundary passed, it's not active
+      if (this.pendingFastDirectTurnSessions.has(sessionID)) {
+        return null;
+      }
+      return null;
+    }
+
+    const run = await this.runtime.services.runRepo.findById(sessionRow.runId);
+    if (!run || isTerminalRunStatus(run.status)) {
+      markRouteInactive(sessionID);
+      return null;
+    }
+
+    // Hydrate route decision into memory if missing
+    if (!getRouteDecision(sessionID)) {
+      const routingDecision = this.runtime.routingDecisionRepository.getLatestDecisionForRun(run.id);
+      if (routingDecision) {
+        const reconstructed = reconstructRouterDecision(routingDecision);
+        if (reconstructed) {
+          setRouteDecision(sessionID, run.id, reconstructed.decision, reconstructed.goal, reconstructed.lastUserMessageHash);
+        }
+      }
+    }
+
+    return run;
   }
 
   /**
    * Hydrates route state from authoritative SQLite persistence after a process restart or session resume.
    */
   async hydrateSessionRoute(sessionID: string): Promise<void> {
-    if (getRouteDecision(sessionID)) return; // Already present in route projection cache
-
-    const sessionRow = this.runtime.sessionRepo.findById(sessionID);
-    if (!sessionRow) return;
-
-    const run = await this.runtime.services.runRepo.findById(sessionRow.runId);
-    if (!run || isTerminalRunStatus(run.status)) return;
-
-    const routingDecision = this.runtime.routingDecisionRepository.getLatestDecisionForRun(run.id);
-    if (!routingDecision) {
-      // Diagnostic: run exists but has no authoritative routing decision persisted
-      return;
-    }
-
-    const { decision, goal, lastUserMessageHash } = reconstructRouterDecision(routingDecision);
-    setRouteDecision(sessionID, run.id, decision, goal, lastUserMessageHash);
+    await this.resolveActiveRunForSession(sessionID);
   }
 
   /**
-   * Persists Run, canonical RoutingDecision, and binds session affinity.
+   * Persists Run, canonical RoutingDecision with real assessment, and binds session affinity.
    */
   private async syncOrchestrationRun(
     taskId: string,
@@ -90,7 +127,6 @@ export class FlowDeckLifecycleAdapter {
     msgHash: string,
     correlationId: string,
   ): Promise<void> {
-    // FAST_DIRECT bypasses heavy persistence overhead for minimal latency
     if (decision.executionClass === "FAST_DIRECT") return;
 
     try {
@@ -103,12 +139,13 @@ export class FlowDeckLifecycleAdapter {
         metadata: { taskId, goal, lastUserMessageHash: msgHash }
       });
 
-      // Authoritative routing persistence
+      // Authoritative routing persistence using real repository assessment
       const canonicalRouting = buildCanonicalRoutingDecision({
         runId: run.id,
         decision,
         goal,
         lastUserMessageHash: msgHash,
+        directory: this.directory,
       });
       this.runtime.routingDecisionRepository.saveDecision(canonicalRouting);
 
@@ -128,7 +165,6 @@ export class FlowDeckLifecycleAdapter {
     _input: { tool: string; sessionID: string; callID: string; args?: any }
   ) {
     if (this.disposed) return;
-    // Captures raw execution before tool runs
   }
 
   async onToolExecuteAfter(
@@ -136,7 +172,6 @@ export class FlowDeckLifecycleAdapter {
     _output: { output: string; metadata: any }
   ) {
     if (this.disposed) return;
-    // Track session tool metrics authoritatively
     if (input.sessionID) {
       try {
         this.runtime.sessionRepo.incrementMetrics(input.sessionID, 1, 0);
@@ -158,8 +193,12 @@ export class FlowDeckLifecycleAdapter {
     }
   }
 
-  async onSessionIdle(_sessionID: string) {
-    // Continuation Policy evaluation (handled in future phase)
+  async onSessionIdle(sessionID: string) {
+    // When session goes idle, any ephemeral FAST_DIRECT turn is completed
+    if (sessionID && this.pendingFastDirectTurnSessions.has(sessionID)) {
+      this.pendingFastDirectTurnSessions.delete(sessionID);
+      markRouteInactive(sessionID);
+    }
   }
 
   async onSessionError(_sessionID: string, _error: any) {
@@ -167,10 +206,12 @@ export class FlowDeckLifecycleAdapter {
   }
 
   async onSessionDeleted(sessionID: string) {
+    this.pendingFastDirectTurnSessions.delete(sessionID);
     clearRouteDecision(sessionID);
   }
 
   dispose(): void {
     this.disposed = true;
+    this.pendingFastDirectTurnSessions.clear();
   }
 }

@@ -3,8 +3,8 @@
  *
  * Ensures:
  * - 1:1 binding between canonical project path and ProductionOrchestrationRuntime
- * - Thread-safe idempotent creation and disposal
- * - Clean shutdown of background outbox workers and SQLite database handles
+ * - Reference-counted owner model: multiple plugin instances/acquisitions for the same project share one runtime
+ * - Clean shutdown of background outbox workers and SQLite database handles only when last owner releases
  * - Isolation between multiple concurrent or sequential project contexts
  */
 
@@ -20,18 +20,21 @@ export interface ProjectRuntimeContext {
   dbPath: string;
   runtime: ProductionOrchestrationRuntime;
   adapter: FlowDeckLifecycleAdapter;
+  refCount: number;
   disposed: boolean;
 }
 
 const _registry = new Map<string, ProjectRuntimeContext>();
 
 /**
- * Get or create the production orchestration runtime for a given project directory.
+ * Acquire or create the production orchestration runtime for a given project directory.
+ * Increments reference count for safe multi-owner lifecycle.
  */
-export function getOrCreateProjectRuntime(directory: string): ProjectRuntimeContext {
+export function acquireProjectRuntime(directory: string): ProjectRuntimeContext {
   const canonicalDir = resolve(directory);
   const existing = _registry.get(canonicalDir);
   if (existing && !existing.disposed) {
+    existing.refCount += 1;
     return existing;
   }
 
@@ -52,6 +55,7 @@ export function getOrCreateProjectRuntime(directory: string): ProjectRuntimeCont
     dbPath,
     runtime,
     adapter,
+    refCount: 1,
     disposed: false,
   };
 
@@ -60,22 +64,17 @@ export function getOrCreateProjectRuntime(directory: string): ProjectRuntimeCont
 }
 
 /**
- * Get the active project runtime context if it exists.
+ * Release an acquired project runtime. Disposes database and workers only when refCount reaches 0.
  */
-export function getProjectRuntime(directory: string): ProjectRuntimeContext | null {
-  const canonicalDir = resolve(directory);
-  const context = _registry.get(canonicalDir);
-  if (!context || context.disposed) return null;
-  return context;
-}
-
-/**
- * Dispose of the project runtime and release all resources (SQLite handles, outbox workers).
- */
-export async function disposeProjectRuntime(directory: string): Promise<void> {
+export async function releaseProjectRuntime(directory: string): Promise<void> {
   const canonicalDir = resolve(directory);
   const context = _registry.get(canonicalDir);
   if (!context || context.disposed) return;
+
+  context.refCount -= 1;
+  if (context.refCount > 0) {
+    return; // Other owners still active
+  }
 
   context.disposed = true;
   _registry.delete(canonicalDir);
@@ -102,6 +101,34 @@ export async function disposeProjectRuntime(directory: string): Promise<void> {
   } catch {
     // Ignore teardown error
   }
+}
+
+/**
+ * Get the active project runtime context if it exists. Does NOT create one.
+ */
+export function getProjectRuntime(directory: string): ProjectRuntimeContext | null {
+  const canonicalDir = resolve(directory);
+  const context = _registry.get(canonicalDir);
+  if (!context || context.disposed) return null;
+  return context;
+}
+
+/**
+ * Compatibility alias for acquireProjectRuntime.
+ */
+export function getOrCreateProjectRuntime(directory: string): ProjectRuntimeContext {
+  return acquireProjectRuntime(directory);
+}
+
+/**
+ * Force disposal of project runtime regardless of refCount.
+ */
+export async function disposeProjectRuntime(directory: string): Promise<void> {
+  const canonicalDir = resolve(directory);
+  const context = _registry.get(canonicalDir);
+  if (!context) return;
+  context.refCount = 1;
+  await releaseProjectRuntime(directory);
 }
 
 /**
