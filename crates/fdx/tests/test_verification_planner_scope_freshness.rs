@@ -150,7 +150,7 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
         // Fresh edge in package B
         db.conn
             .execute(
-                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'fp_b', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-typescript')",
+                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'cfg_pb', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb')",
                 [],
             )
             .unwrap();
@@ -197,5 +197,130 @@ fn test_simultaneous_stale_a_and_fresh_b_isolates_widening_to_a() {
     assert!(
         b_other_test.is_none(),
         "b_other.test.ts must NOT be selected because fresh package B is not widened"
+    );
+}
+
+#[test]
+fn test_scoped_dynamic_config_in_package_a_does_not_widen_fresh_package_b() {
+    let tmp = tempdir().unwrap();
+    let repo = tmp.path();
+    init_git_repo(repo);
+
+    let pa = repo.join("packages/pa");
+    let pb = repo.join("packages/pb");
+    fs::create_dir_all(pa.join("src")).unwrap();
+    fs::create_dir_all(pa.join("tests")).unwrap();
+    fs::create_dir_all(pb.join("src")).unwrap();
+    fs::create_dir_all(pb.join("tests")).unwrap();
+
+    fs::write(
+        pa.join("package.json"),
+        r#"{ "name": "@my/pa", "scripts": { "test": "vitest" } }"#,
+    )
+    .unwrap();
+    fs::write(
+        pb.join("package.json"),
+        r#"{ "name": "@my/pb", "scripts": { "test": "vitest" } }"#,
+    )
+    .unwrap();
+
+    // Dynamic config in package A
+    fs::write(
+        pa.join("vitest.config.ts"),
+        "export default defineConfig(() => ({ test: { include: process.env.X ? [] : [] } }));",
+    )
+    .unwrap();
+
+    fs::write(pa.join("src/a.ts"), "export const a = 1;").unwrap();
+    fs::write(pa.join("tests/a.test.ts"), "test('a', () => {});").unwrap();
+    fs::write(
+        pa.join("tests/a_other.test.ts"),
+        "test('a_other', () => {});",
+    )
+    .unwrap();
+
+    fs::write(pb.join("src/b.ts"), "export function fnB() { return 1; }").unwrap();
+    fs::write(pb.join("tests/b.test.ts"), "test('b', () => {});").unwrap();
+    fs::write(
+        pb.join("tests/b_other.test.ts"),
+        "test('b_other', () => {});",
+    )
+    .unwrap();
+
+    // Persist fresh provider for package B
+    {
+        let db = EvidenceDatabase::open(repo, DatabaseOpenMode::ReadWrite).unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pb/tests/b.test.ts', 'h3', 50, 100)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/pb/src/b.ts', 'h4', 50, 100)",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/pb/tests/b.test.ts', 'file', 'packages/pb/tests/b.test.ts', 'pkg:npm:packages/pb')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/pb/src/b.ts:fnB', 'symbol', 'packages/pb/src/b.ts', 'fnB', 'pkg:npm:packages/pb')",
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                r#"INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+                   VALUES ('scip-pb', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/pb', 'cfg_pb', 'in_pb', 'available', 'fresh', 1, 100, 100)"#,
+                [],
+            )
+            .unwrap();
+        db.conn
+            .execute(
+                "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:fresh_b', 'file:packages/pb/tests/b.test.ts', 'sym:packages/pb/src/b.ts:fnB', 'references', 'scip_ts', 'in_pb', 4, 'packages/pb/tests/b.test.ts', 'h3', 1, 1, 0, 'scip-pb')",
+                [],
+            )
+            .unwrap();
+    }
+
+    git_commit_all(repo, "initial");
+
+    // Modify BOTH package A and package B
+    fs::write(pa.join("src/a.ts"), "export const a = 2;").unwrap();
+    fs::write(pb.join("src/b.ts"), "export function fnB() { return 2; }").unwrap();
+
+    let plan = plan_verification(repo, Some("HEAD"), None, None).expect("plan verification");
+
+    // 1. Package A must be widened due to dynamic config
+    let a_other_test = plan.selected_checks.iter().find(|c| {
+        c.check_id.contains("packages/pa/tests/a_other.test.ts")
+            || c.check_id.contains("check:pkg:npm:packages/pa:test")
+    });
+    assert!(
+        a_other_test.is_some(),
+        "Package A must widen due to dynamic config"
+    );
+
+    // 2. Package B must NOT be widened by package A's dynamic config
+    let b_test = plan
+        .selected_checks
+        .iter()
+        .find(|c| c.check_id.contains("packages/pb/tests/b.test.ts"));
+    assert!(b_test.is_some(), "b.test.ts must be selected");
+    assert_eq!(b_test.unwrap().selection, SelectionReason::Evidence);
+
+    let b_other_test = plan
+        .selected_checks
+        .iter()
+        .find(|c| c.check_id.contains("packages/pb/tests/b_other.test.ts"));
+    assert!(
+        b_other_test.is_none(),
+        "Package B must NOT be widened because dynamic config in package A is scoped"
     );
 }

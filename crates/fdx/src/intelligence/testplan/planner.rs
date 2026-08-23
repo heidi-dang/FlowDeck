@@ -12,7 +12,9 @@ use crate::intelligence::change::traverse::{analyze_impact_v2, TraverseError};
 use crate::intelligence::change::uncertainty::{compute_result_assurance, UncertaintyReason};
 use crate::intelligence::db::{DatabaseOpenMode, EvidenceDatabase};
 use crate::intelligence::semantic::health::{ProviderFreshness, ProviderHealth};
+use crate::intelligence::semantic::provider::{ProviderState, ProviderType};
 use crate::intelligence::semantic::state::load_provider_states;
+use crate::intelligence::semantic::LanguageId;
 use crate::intelligence::testplan::bounds::get_active_test_plan_limits;
 use crate::intelligence::testplan::discover::{
     discover_tests_and_checks, fallback_scope_ids_for_dir,
@@ -21,7 +23,7 @@ use crate::intelligence::testplan::mapping::resolve_test_mappings;
 use crate::intelligence::testplan::model::*;
 use crate::intelligence::testplan::policy::VerificationPolicy;
 use crate::protocol::{AssuranceLevel, EvidenceStrength};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,6 +33,187 @@ pub enum MappingScopeState {
     Missing(String),
     Failed(String),
     Truncated,
+}
+
+/// Check if a provider scope root path contains a candidate package/directory path with strict path boundary semantics.
+pub fn scope_contains_path(scope_root: &str, candidate_path: &str) -> bool {
+    let s_norm = scope_root.trim().trim_matches('/');
+    if s_norm.is_empty() || s_norm == "." || s_norm == "workspace:root" {
+        return true;
+    }
+    let c_norm = candidate_path.trim().trim_matches('/');
+    if c_norm.is_empty() || c_norm == "." {
+        return false;
+    }
+    c_norm == s_norm || c_norm.starts_with(&format!("{}/", s_norm))
+}
+
+/// Check if a ProviderState covers a package scope with path-boundary correctness.
+pub fn provider_covers_package(provider: &ProviderState, package_scope: &str) -> bool {
+    let pkg_clean = package_scope
+        .strip_prefix("pkg:npm:")
+        .or_else(|| package_scope.strip_prefix("pkg:cargo:"))
+        .unwrap_or(package_scope);
+
+    if let Some(ref p_pkg) = provider.scope.package {
+        let p_pkg_clean = p_pkg
+            .strip_prefix("pkg:npm:")
+            .or_else(|| p_pkg.strip_prefix("pkg:cargo:"))
+            .unwrap_or(p_pkg);
+        p_pkg == package_scope || p_pkg_clean == pkg_clean || p_pkg == pkg_clean
+    } else {
+        scope_contains_path(&provider.scope.workspace_root, pkg_clean)
+    }
+}
+
+/// Derive the set of relevant languages for an impacted package scope.
+pub fn derive_relevant_languages_for_package(
+    package_scope: &str,
+    inventory: &TestInventory,
+    impacted_files: &HashSet<String>,
+    build_snapshot: &CurrentBuildSnapshot,
+) -> BTreeSet<LanguageId> {
+    let mut langs = BTreeSet::new();
+
+    // 1. Inspect tests belonging to this package
+    for test in &inventory.tests {
+        if test.owning_package_id.as_deref() == Some(package_scope) {
+            let p = &test.canonical_path;
+            if p.ends_with(".ts")
+                || p.ends_with(".tsx")
+                || p.ends_with(".mts")
+                || p.ends_with(".cts")
+            {
+                langs.insert(LanguageId::TypeScript);
+            } else if p.ends_with(".js")
+                || p.ends_with(".jsx")
+                || p.ends_with(".mjs")
+                || p.ends_with(".cjs")
+            {
+                langs.insert(LanguageId::JavaScript);
+            } else if p.ends_with(".rs") {
+                langs.insert(LanguageId::Rust);
+            }
+        }
+    }
+
+    // 2. Inspect impacted files belonging to this package
+    let pkg_clean = package_scope
+        .strip_prefix("pkg:npm:")
+        .or_else(|| package_scope.strip_prefix("pkg:cargo:"))
+        .unwrap_or(package_scope);
+
+    for file in impacted_files {
+        let belongs = if let Some(pkgs) = build_snapshot.contains_file_to_packages.get(file) {
+            pkgs.contains(&package_scope.to_string()) || pkgs.contains(&pkg_clean.to_string())
+        } else {
+            scope_contains_path(pkg_clean, file)
+        };
+
+        if belongs {
+            if file.ends_with(".ts")
+                || file.ends_with(".tsx")
+                || file.ends_with(".mts")
+                || file.ends_with(".cts")
+            {
+                langs.insert(LanguageId::TypeScript);
+            } else if file.ends_with(".js")
+                || file.ends_with(".jsx")
+                || file.ends_with(".mjs")
+                || file.ends_with(".cjs")
+            {
+                langs.insert(LanguageId::JavaScript);
+            } else if file.ends_with(".rs") {
+                langs.insert(LanguageId::Rust);
+            }
+        }
+    }
+
+    // 3. Fallback defaults by package manager identity if no files found
+    if langs.is_empty() {
+        if package_scope.starts_with("pkg:cargo:") {
+            langs.insert(LanguageId::Rust);
+        } else if package_scope.starts_with("pkg:npm:") {
+            langs.insert(LanguageId::TypeScript);
+        }
+    }
+
+    langs
+}
+
+/// Deterministically evaluate MappingScopeState for a package across its required language domains.
+pub fn evaluate_mapping_scope(
+    package_scope: &str,
+    relevant_languages: &BTreeSet<LanguageId>,
+    providers: &[ProviderState],
+) -> MappingScopeState {
+    if relevant_languages.is_empty() {
+        return MappingScopeState::Missing(format!(
+            "cannot determine language domain for scope {}",
+            package_scope
+        ));
+    }
+
+    let mut lang_failures: Vec<String> = Vec::new();
+    let mut lang_stales: Vec<String> = Vec::new();
+    let mut lang_missings: Vec<String> = Vec::new();
+
+    for lang in relevant_languages {
+        let mut candidates: Vec<&ProviderState> = providers
+            .iter()
+            .filter(|p| {
+                p.identity.provider_type == ProviderType::Scip
+                    && provider_covers_package(p, package_scope)
+                    && p.scope.languages.contains(lang)
+            })
+            .collect();
+
+        // Sort deterministically to prevent insertion-order sensitivity
+        candidates.sort_by_key(|p| p.provider_id());
+
+        if candidates.is_empty() {
+            lang_missings.push(format!(
+                "no provider covers {:?} in {}",
+                lang, package_scope
+            ));
+            continue;
+        }
+
+        let has_fresh_available = candidates.iter().any(|p| {
+            p.health == ProviderHealth::Available && p.freshness == ProviderFreshness::Fresh
+        });
+
+        if has_fresh_available {
+            // Language domain is satisfied fresh
+            continue;
+        }
+
+        let all_failed = candidates
+            .iter()
+            .all(|p| p.health != ProviderHealth::Available);
+
+        if all_failed {
+            lang_failures.push(format!(
+                "provider for {:?} in {} failed ({:?})",
+                lang, package_scope, candidates[0].health
+            ));
+        } else {
+            lang_stales.push(format!(
+                "provider for {:?} in {} is stale ({:?})",
+                lang, package_scope, candidates[0].freshness
+            ));
+        }
+    }
+
+    if let Some(fail) = lang_failures.first() {
+        MappingScopeState::Failed(fail.clone())
+    } else if let Some(stale) = lang_stales.first() {
+        MappingScopeState::Stale(stale.clone())
+    } else if let Some(missing) = lang_missings.first() {
+        MappingScopeState::Missing(missing.clone())
+    } else {
+        MappingScopeState::FreshComplete
+    }
 }
 
 /// Generate an explainable, deterministic verification plan given git base/head refs and verification policy.
@@ -63,6 +246,13 @@ pub fn plan_verification(
         ));
     }
 
+    let build_snapshot = CurrentBuildSnapshot::build(repo_root);
+    let fallback_build_inv = discover_fallback_build_inventory(repo_root);
+
+    // Track path-scoped discovery/config issues vs global issues
+    let mut path_scoped_widening_packages: HashMap<String, String> = HashMap::new();
+    let mut global_discovery_issue = false;
+
     if let DiscoveryState::Incomplete { ref issues } | DiscoveryState::Failed { ref issues } =
         inventory.state
     {
@@ -76,6 +266,41 @@ pub fn plan_verification(
                     "Test discovery {}: {}",
                     issue.kind, issue.message
                 )));
+            }
+
+            if let Some(ref p) = issue.path {
+                let matching_scopes =
+                    if let Some(pkgs) = build_snapshot.contains_file_to_packages.get(p) {
+                        pkgs.clone()
+                    } else {
+                        let mut scs = Vec::new();
+                        for pkg_dir in &fallback_build_inv.package_dirs {
+                            if scope_contains_path(pkg_dir, p) {
+                                scs.extend(fallback_scope_ids_for_dir(repo_root, pkg_dir));
+                            }
+                        }
+                        if scs.is_empty() {
+                            if let Some(parent) = Path::new(p).parent() {
+                                let p_str = parent.to_string_lossy();
+                                if !p_str.is_empty() {
+                                    scs.extend(fallback_scope_ids_for_dir(repo_root, &p_str));
+                                }
+                            }
+                        }
+                        scs
+                    };
+
+                for sc in matching_scopes {
+                    path_scoped_widening_packages.insert(
+                        sc,
+                        format!(
+                            "path_scoped_discovery_issue ({}: {})",
+                            issue.kind, issue.message
+                        ),
+                    );
+                }
+            } else {
+                global_discovery_issue = true;
             }
         }
     }
@@ -91,9 +316,6 @@ pub fn plan_verification(
         .as_ref()
         .and_then(|d| load_provider_states(d).ok())
         .unwrap_or_default();
-
-    let build_snapshot = CurrentBuildSnapshot::build(repo_root);
-    let fallback_build_inv = discover_fallback_build_inventory(repo_root);
 
     let mapping_resolution = resolve_test_mappings(
         db_opt.as_ref().map(|d| &d.conn),
@@ -153,7 +375,7 @@ pub fn plan_verification(
                 }
             } else {
                 for pkg_dir in &fallback_build_inv.package_dirs {
-                    if imp.target.starts_with(pkg_dir) {
+                    if scope_contains_path(pkg_dir, &imp.target) {
                         for scope_id in fallback_scope_ids_for_dir(repo_root, pkg_dir) {
                             impacted_packages.insert(scope_id.clone());
                             if let Some(ref path) = imp.primary_path {
@@ -174,7 +396,7 @@ pub fn plan_verification(
             }
         } else {
             for pkg_dir in &fallback_build_inv.package_dirs {
-                if ch.file.starts_with(pkg_dir) {
+                if scope_contains_path(pkg_dir, &ch.file) {
                     for scope_id in fallback_scope_ids_for_dir(repo_root, pkg_dir) {
                         impacted_packages.insert(scope_id);
                     }
@@ -266,7 +488,7 @@ pub fn plan_verification(
     let mut direct_tests_selected_per_package: HashMap<String, usize> = HashMap::new();
     let mut package_stale_mapping: HashMap<String, String> = HashMap::new();
 
-    // 4. Direct symbol & file test mappings across affected targets
+    // 4. Direct symbol & file test mappings across affected targets with evidence compatibility validation
     for target_key in &affected_target_keys {
         if let Some(edges) = target_to_test_edges.get(target_key.as_str()) {
             for edge in edges {
@@ -288,19 +510,113 @@ pub fn plan_verification(
                     .and_then(|t| t.owning_package_id.clone())
                     .unwrap_or_else(|| "repo".to_string());
 
-                if edge.stale {
-                    package_stale_mapping.insert(
-                        owning_scope.clone(),
-                        format!(
-                            "Test mapping edge {} for {} is stale",
-                            edge.provider_id, target_key
-                        ),
-                    );
-                    uncertainties.push(UncertaintyReason::ProviderStale(format!(
-                        "Test mapping edge {} for {} in scope {} is stale",
-                        edge.provider_id, target_key, owning_scope
-                    )));
-                }
+                // Validate evidence edge compatibility with persisted provider state
+                let matching_provider = persisted_providers.iter().find(|p| {
+                    p.provider_id() == edge.provider_id
+                        || p.identity.provider_id == edge.provider_id
+                });
+
+                let is_edge_compatible = match matching_provider {
+                    Some(p) => {
+                        let mut ok = true;
+                        if p.health != ProviderHealth::Available {
+                            package_stale_mapping.insert(
+                                owning_scope.clone(),
+                                format!(
+                                    "Provider {} for edge in scope {} is {:?}",
+                                    p.provider_id(),
+                                    owning_scope,
+                                    p.health
+                                ),
+                            );
+                            uncertainties.push(UncertaintyReason::ProviderFailed(format!(
+                                "Provider {} for edge in scope {} failed",
+                                p.provider_id(),
+                                owning_scope
+                            )));
+                            ok = false;
+                        } else if p.freshness != ProviderFreshness::Fresh {
+                            package_stale_mapping.insert(
+                                owning_scope.clone(),
+                                format!(
+                                    "Provider {} for edge in scope {} is {:?}",
+                                    p.provider_id(),
+                                    owning_scope,
+                                    p.freshness
+                                ),
+                            );
+                            uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                                "Provider {} for edge in scope {} is stale",
+                                p.provider_id(),
+                                owning_scope
+                            )));
+                            ok = false;
+                        } else if !provider_covers_package(p, &owning_scope) {
+                            package_stale_mapping.insert(
+                                owning_scope.clone(),
+                                format!(
+                                    "Provider {} scope does not cover {}",
+                                    p.provider_id(),
+                                    owning_scope
+                                ),
+                            );
+                            uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                                "Provider {} scope does not cover {}",
+                                p.provider_id(),
+                                owning_scope
+                            )));
+                            ok = false;
+                        } else if edge.stale {
+                            package_stale_mapping.insert(
+                                owning_scope.clone(),
+                                format!(
+                                    "Test mapping edge {} for {} is stale",
+                                    edge.provider_id, target_key
+                                ),
+                            );
+                            uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                                "Test mapping edge {} for {} in scope {} is stale",
+                                edge.provider_id, target_key, owning_scope
+                            )));
+                            ok = false;
+                        } else {
+                            // Fingerprint compatibility check against M3 digest/config/input
+                            let fp_opt = edge.provider_fingerprint.as_deref();
+                            let fp_match = fp_opt == Some(p.fingerprint.digest.as_str())
+                                || fp_opt == Some(p.fingerprint.config_fingerprint.as_str())
+                                || fp_opt == Some(p.fingerprint.executable_identity.as_str())
+                                || fp_opt == Some(p.identity.provider_id.as_str())
+                                || fp_opt == Some(p.identity.executable_identity.as_str())
+                                || fp_opt == Some(p.fingerprint.provider_version.as_str());
+                            if !fp_match {
+                                package_stale_mapping.insert(
+                                    owning_scope.clone(),
+                                    format!(
+                                        "Fingerprint mismatch on edge {} (edge fp: {:?}, provider fp: {})",
+                                        edge.provider_id, edge.provider_fingerprint, p.fingerprint.digest
+                                    ),
+                                );
+                                uncertainties.push(UncertaintyReason::ProviderStale(format!(
+                                    "Provider {} fingerprint mismatch on edge in scope {}",
+                                    edge.provider_id, owning_scope
+                                )));
+                                ok = false;
+                            }
+                        }
+                        ok
+                    }
+                    None => {
+                        package_stale_mapping.insert(
+                            owning_scope.clone(),
+                            format!("Missing provider state for edge {}", edge.provider_id),
+                        );
+                        uncertainties.push(UncertaintyReason::ProviderMissing(format!(
+                            "Provider {} not found in state for edge in scope {}",
+                            edge.provider_id, owning_scope
+                        )));
+                        false
+                    }
+                };
 
                 let kind = if test_file.contains("/tests/") || test_file.contains("tests/") {
                     VerificationCheckKind::IntegrationTest
@@ -339,7 +655,7 @@ pub fn plan_verification(
                     provider_fingerprint: edge.provider_fingerprint.clone(),
                     source_identity: edge.source_identity.clone(),
                     strength: edge.strength,
-                    stale: edge.stale,
+                    stale: !is_edge_compatible || edge.stale,
                 };
 
                 let check = PlannedCheck {
@@ -357,9 +673,11 @@ pub fn plan_verification(
                 };
 
                 direct_tests_selected.insert(check_id.clone());
-                *direct_tests_selected_per_package
-                    .entry(owning_scope)
-                    .or_default() += 1;
+                if is_edge_compatible {
+                    *direct_tests_selected_per_package
+                        .entry(owning_scope)
+                        .or_default() += 1;
+                }
                 selected_checks_map.insert(check_id, check);
             }
         }
@@ -426,48 +744,24 @@ pub fn plan_verification(
         }
     }
 
-    // 6. Compute per-scope MappingScopeState
+    // 6. Compute per-scope MappingScopeState deterministically with language coverage
     let mut package_scope_states: HashMap<String, MappingScopeState> = HashMap::new();
     for pkg_scope in &impacted_packages {
-        let pkg_clean = pkg_scope
-            .strip_prefix("pkg:npm:")
-            .or_else(|| pkg_scope.strip_prefix("pkg:cargo:"))
-            .unwrap_or(pkg_scope);
-
         if let Some(reason) = package_stale_mapping.get(pkg_scope) {
             package_scope_states
                 .insert(pkg_scope.clone(), MappingScopeState::Stale(reason.clone()));
             continue;
         }
 
-        let covering_provider = persisted_providers.iter().find(|p| {
-            if let Some(ref p_pkg) = p.scope.package {
-                p_pkg == pkg_clean || p_pkg == pkg_scope
-            } else if p.scope.workspace_root == "." || p.scope.workspace_root.is_empty() {
-                true
-            } else {
-                pkg_clean.starts_with(&p.scope.workspace_root)
-            }
-        });
+        let relevant_languages = derive_relevant_languages_for_package(
+            pkg_scope,
+            &inventory,
+            &impacted_files,
+            &build_snapshot,
+        );
 
-        let scope_state = match covering_provider {
-            Some(p) => {
-                if p.health != ProviderHealth::Available {
-                    MappingScopeState::Failed(format!(
-                        "provider {} is {:?}",
-                        p.identity.provider_id, p.health
-                    ))
-                } else if p.freshness != ProviderFreshness::Fresh {
-                    MappingScopeState::Stale(format!(
-                        "provider {} is {:?}",
-                        p.identity.provider_id, p.freshness
-                    ))
-                } else {
-                    MappingScopeState::FreshComplete
-                }
-            }
-            None => MappingScopeState::Missing(format!("no provider covers scope {}", pkg_scope)),
-        };
+        let scope_state =
+            evaluate_mapping_scope(pkg_scope, &relevant_languages, &persisted_providers);
 
         package_scope_states.insert(pkg_scope.clone(), scope_state);
     }
@@ -478,16 +772,11 @@ pub fn plan_verification(
         || inventory.fallback.truncated
         || mapping_resolution.truncated
         || !mapping_resolution.errors.is_empty()
-        || matches!(
-            inventory.state,
-            DiscoveryState::Incomplete { .. } | DiscoveryState::Failed { .. }
-        )
+        || global_discovery_issue
         || uncertainties.iter().any(|u| {
             matches!(
                 u,
-                UncertaintyReason::BuildLimitReached(_)
-                    | UncertaintyReason::GraphCorrupt(_)
-                    | UncertaintyReason::DynamicConfigExpression(_)
+                UncertaintyReason::BuildLimitReached(_) | UncertaintyReason::GraphCorrupt(_)
             )
         });
 
@@ -498,6 +787,8 @@ pub fn plan_verification(
                 pkg_scope.clone(),
                 "global_failure_or_root_change".to_string(),
             );
+        } else if let Some(scoped_issue) = path_scoped_widening_packages.get(pkg_scope) {
+            packages_requiring_widening.insert(pkg_scope.clone(), scoped_issue.clone());
         } else {
             let state = package_scope_states
                 .get(pkg_scope)
@@ -660,7 +951,7 @@ pub fn plan_verification(
                     } else {
                         let mut scs = Vec::new();
                         for pkg_dir in &fallback_build_inv.package_dirs {
-                            if p.starts_with(pkg_dir) {
+                            if scope_contains_path(pkg_dir, p) {
                                 scs.extend(fallback_scope_ids_for_dir(repo_root, pkg_dir));
                             }
                         }

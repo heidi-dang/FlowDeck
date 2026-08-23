@@ -88,6 +88,14 @@ fn test_persisted_scip_edge_provenance_preserved_in_planned_check() {
 
         db.conn
             .execute(
+                r#"INSERT INTO semantic_providers (provider_id, provider_type, provider_version, executable_identity, scip_schema_version, languages, workspace_root, package, config_fingerprint, input_fingerprint, health, freshness, semantic_generation, created_at, updated_at)
+                   VALUES ('scip-typescript', 'scip', '1.0', 'scip-ts', '0.1', '["typescript"]', '.', 'packages/prov', 'fp_calc_99', 'in_calc', 'available', 'fresh', 1, 100, 100)"#,
+                [],
+            )
+            .unwrap();
+
+        db.conn
+            .execute(
                 "INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id) VALUES ('edge:calc_test_to_add', 'file:packages/prov/tests/calc.test.ts', 'sym:packages/prov/src/calc.ts:add', 'references', 'scip_ts', 'fp_calc_99', 4, 'packages/prov/tests/calc.test.ts', 'hash_test', 1, 1, 0, 'scip-typescript')",
                 [],
             )
