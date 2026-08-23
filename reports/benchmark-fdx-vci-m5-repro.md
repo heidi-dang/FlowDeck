@@ -3,25 +3,23 @@
 ## Provenance
 
 - **Benchmark Name**: `benchmark-fdx-vci-m5-build-config`
-- **Timestamp**: `2026-08-23T00:48:18.124Z`
-- **Functional Source SHA**: `c60e666eb14c96ca9ebbbe77c4846e56edb108c6`
-- **Binary Source SHA**: `c60e666eb14c96ca9ebbbe77c4846e56edb108c6`
-- **Benchmark Harness SHA**: `378cfd93af97a7d4c34182544221a414cb18e043`
+- **Timestamp**: `2026-08-23T01:18:18.532Z`
+- **Functional Source SHA**: `229fd40cf7c33791d6d75b9a991aed9e92b3cee6`
+- **Binary Source SHA**: `229fd40cf7c33791d6d75b9a991aed9e92b3cee6`
+- **Benchmark Harness SHA**: `2c0a153586d2438c4af5440e1fbb03f5da45a84d`
 - **Platform**: `linux (x64)`
 
 ## Performance Results
 
 | Benchmark Scenario | Samples | Median (ms) | P95 (ms) | Min (ms) | Max (ms) | Mean (ms) |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `package_json_workspace_discovery` | 5 | 10.22 | 10.31 | 10.04 | 10.31 | 10.17 |
-| `100_package_workspace_graph` | 5 | 27.79 | 28.31 | 27.66 | 28.31 | 27.91 |
-| `1000_package_dependency_edges` | 5 | 44.49 | 44.86 | 44.05 | 44.86 | 44.49 |
-| `tsconfig_extends_chain` | 5 | 9.79 | 9.98 | 9.65 | 9.98 | 9.81 |
-| `tsconfig_reference_fanout` | 5 | 11.38 | 11.7 | 11.06 | 11.7 | 11.38 |
-| `cargo_workspace_discovery` | 5 | 13.86 | 14.31 | 13.56 | 14.31 | 13.9 |
-| `cargo_path_dependency_fanout` | 5 | 14.72 | 14.89 | 14.64 | 14.89 | 14.75 |
-| `fresh_build_config_aware_impact` | 5 | 151.44 | 151.54 | 132.29 | 151.54 | 145.1 |
-| `stale_scoped_config_widening` | 5 | 52.73 | 53.36 | 52.66 | 53.36 | 52.86 |
-| `malformed_package_local_config` | 5 | 59.48 | 61.04 | 58.75 | 61.04 | 59.78 |
-| `workspace_root_uncertainty` | 5 | 52.98 | 53.39 | 38.41 | 53.39 | 49.31 |
-| `why_explanation_through_build_path` | 5 | 65.05 | 68.62 | 64.66 | 68.62 | 65.67 |
+| `fresh_build_config_aware_impact` | 5 | 102.98 | 150.98 | 102.58 | 150.98 | 117.13 |
+| `stale_new_dependency_snapshot_union` | 5 | 47.3 | 75.56 | 25.43 | 75.56 | 46.88 |
+| `stale_scope_isolation` | 5 | 69.23 | 69.59 | 68.93 | 69.59 | 69.27 |
+| `workspace_root_membership_change` | 5 | 38.68 | 39.11 | 38.44 | 39.11 | 38.75 |
+| `bound_safe_widening` | 5 | 96.76 | 97.79 | 96.13 | 97.79 | 96.8 |
+| `provider_disappearance` | 5 | 8.5 | 8.64 | 8.42 | 8.64 | 8.52 |
+| `provider_detection_failure_preserves_evidence` | 5 | 15.68 | 15.99 | 15.59 | 15.99 | 15.76 |
+| `malformed_snapshot_provider_failure` | 5 | 50.62 | 51.9 | 15.13 | 51.9 | 41.26 |
+| `malformed_package_local_control` | 5 | 49.31 | 57.42 | 49.08 | 57.42 | 50.9 |
+| `why_typed_build_path` | 5 | 64.84 | 65.65 | 64.8 | 65.65 | 65.01 |
