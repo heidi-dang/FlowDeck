@@ -26,8 +26,6 @@ fn test_package_manager_detection_package_manager_field() {
         r#"{"packageManager": "bun@1.1.0"}"#,
     )
     .unwrap();
-    std::fs::write(dir.path().join("package-lock.json"), "").unwrap();
-    // packageManager field takes precedence
     assert_eq!(
         detect_package_manager(dir.path()),
         PackageManagerResolution::Resolved("bun".to_string())

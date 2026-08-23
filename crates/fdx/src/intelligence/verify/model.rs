@@ -56,6 +56,10 @@ pub struct CheckExecutionResult {
     pub kind: VerificationCheckKind,
     /// Final execution status.
     pub status: CheckExecutionStatus,
+    /// Underlying process execution identity.
+    pub execution_id: String,
+    /// Whether this check reused the results of an earlier identical execution invocation.
+    pub reused_execution: bool,
     /// Authoritative argv command vector executed (never shell-interpolated string).
     pub command: Vec<String>,
     /// Relative or canonical execution working directory strictly contained within repo.

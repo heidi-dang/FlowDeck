@@ -11,7 +11,8 @@ fn test_verification_determinism_and_deduplication() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "determ-pkg", "scripts": {"test_a": "node -e 'process.exit(0)'", "test_b": "node -e 'process.exit(0)'"}}"#,
+        r#"{"name": "determ-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"test_a": "node -e 'process.exit(0)'", "test_b": "node -e 'process.exit(0)'"}}"#,
     )
     .unwrap();
 

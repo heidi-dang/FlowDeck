@@ -3,6 +3,7 @@
 //! Direct Command execution only: no shell invocation, no string interpolation.
 //! Process group management ensures all subprocesses and descendants are reaped on timeout or output bounds.
 
+use crate::intelligence::verify::identity::generate_execution_id;
 use crate::intelligence::verify::model::CheckExecutionStatus;
 use crate::intelligence::verify::redact::redact_secrets;
 use std::io::Read;
@@ -34,6 +35,7 @@ impl Default for ProcessBounds {
 /// Raw execution result from a bounded process invocation.
 #[derive(Debug, Clone)]
 pub struct RawProcessOutcome {
+    pub execution_id: String,
     pub status: CheckExecutionStatus,
     pub exit_code: Option<i32>,
     pub signal: Option<String>,
@@ -76,7 +78,7 @@ fn append_bounded_tail(tail: &mut Vec<u8>, new_bytes: &[u8], tail_limit: usize) 
     tail.extend_from_slice(new_bytes);
 }
 
-/// Kill the child process and its entire process tree.
+/// Kill the child process and its process group (Unix).
 fn kill_child_group(child: &mut std::process::Child) {
     #[cfg(unix)]
     {
@@ -106,6 +108,30 @@ pub fn execute_bounded_command(
         .unwrap_or_default()
         .as_millis() as u64;
 
+    let execution_id = generate_execution_id(program, started_at_ms);
+
+    #[cfg(windows)]
+    {
+        // On Windows platforms without dedicated Job Object runtime qualification, fail closed
+        return RawProcessOutcome {
+            execution_id,
+            status: CheckExecutionStatus::Unsupported,
+            exit_code: None,
+            signal: None,
+            duration_ms: 0,
+            stdout_digest: None,
+            stderr_digest: None,
+            stdout_excerpt: None,
+            stderr_excerpt: None,
+            stdout_captured_bytes: 0,
+            stderr_captured_bytes: 0,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            started_at_ms,
+            reason: Some("process group containment unsupported on Windows platform".to_string()),
+        };
+    }
+
     let mut cmd = Command::new(program);
     cmd.args(argv)
         .current_dir(cwd)
@@ -126,6 +152,7 @@ pub fn execute_bounded_command(
         Ok(c) => c,
         Err(e) => {
             return RawProcessOutcome {
+                execution_id,
                 status: CheckExecutionStatus::SpawnFailed,
                 exit_code: None,
                 signal: None,
@@ -237,6 +264,7 @@ pub fn execute_bounded_command(
             Err(e) => {
                 kill_child_group(&mut child);
                 return RawProcessOutcome {
+                    execution_id,
                     status: CheckExecutionStatus::SpawnFailed,
                     exit_code: None,
                     signal: None,
@@ -330,6 +358,7 @@ pub fn execute_bounded_command(
     };
 
     RawProcessOutcome {
+        execution_id,
         status,
         exit_code,
         signal,

@@ -1,7 +1,7 @@
 use fdx::intelligence::testplan::model::{
     PlannedCheck, SelectionReason, VerificationCheckKind, VerificationPlan,
 };
-// imports
+use fdx::intelligence::verify::model::VerificationOutcome;
 use fdx::intelligence::verify::{execute_verification_plan, VerificationExecutorOptions};
 use fdx::protocol::{AssuranceLevel, EvidenceStrength};
 use tempfile::tempdir;
@@ -10,10 +10,10 @@ use tempfile::tempdir;
 fn test_unknown_runner_does_not_falsely_pass_individual_test_file() {
     let dir = tempdir().unwrap();
     let pkg_json = dir.path().join("package.json");
-    // Package script is arbitrary exit(0) without known vitest/jest semantics
+    // Package script is arbitrary exit(0) without proven runner capability
     std::fs::write(
         &pkg_json,
-        r#"{"name": "custom-runner-pkg", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
+        r#"{"name": "custom-runner-pkg", "packageManager": "npm@10.0.0", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
     )
     .unwrap();
 
@@ -44,6 +44,7 @@ fn test_unknown_runner_does_not_falsely_pass_individual_test_file() {
     };
 
     let run = execute_verification_plan(dir.path(), &plan, &options).unwrap();
+    assert_eq!(run.outcome, VerificationOutcome::Passed);
     assert_eq!(run.checks.len(), 1);
     let check_res = &run.checks[0];
     // Must NOT execute as "npm run test -- tests/unit.test.ts"
@@ -57,7 +58,7 @@ fn test_known_vitest_runner_targets_individual_file() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "vitest-pkg", "scripts": {"test": "vitest run"}}"#,
+        r#"{"name": "vitest-pkg", "packageManager": "npm@10.0.0", "scripts": {"test": "vitest run"}}"#,
     )
     .unwrap();
 

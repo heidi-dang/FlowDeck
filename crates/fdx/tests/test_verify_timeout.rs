@@ -14,7 +14,8 @@ fn test_verification_timeout_kills_child_and_marks_incomplete() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "sleep-pkg", "scripts": {"test": "node -e 'setTimeout(() => {}, 10000)'"}}"#,
+        r#"{"name": "sleep-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"test": "node -e 'setTimeout(() => {}, 10000)'"}}"#,
     )
     .unwrap();
 

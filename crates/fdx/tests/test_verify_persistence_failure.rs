@@ -14,7 +14,7 @@ fn test_persistence_failure_marks_run_incomplete_and_unverified() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "pass-pkg", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
+        r#"{"name": "pass-pkg", "packageManager": "npm@10.0.0", "scripts": {"test": "node -e 'process.exit(0)'"}}"#,
     )
     .unwrap();
 

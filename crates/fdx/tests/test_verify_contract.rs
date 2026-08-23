@@ -36,7 +36,8 @@ fn test_verification_contract_lifecycle_and_model() {
     let pkg_json = dir.path().join("package.json");
     std::fs::write(
         &pkg_json,
-        r#"{"name": "test-pkg", "scripts": {"test": "echo 'ok'"}}"#,
+        r#"{"name": "test-pkg",
+        "packageManager": "npm@10.0.0", "scripts": {"test": "echo 'ok'"}}"#,
     )
     .unwrap();
 
