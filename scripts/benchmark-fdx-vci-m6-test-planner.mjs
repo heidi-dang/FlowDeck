@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * benchmark-fdx-vci-m6-test-planner.mjs — Milestone 6 Test Mapping & Verification Planner Benchmarks
- * Qualified benchmark suite asserting semantic invariants before timing across all 10 scenarios.
+ * Hardened H10 benchmark suite asserting complete semantic invariants before timing across all 10 scenarios.
  */
 
 import { execFileSync } from "node:child_process";
@@ -9,12 +9,13 @@ import { mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { tmpdir } from "node:os";
+import { DatabaseSync } from "node:sqlite";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-test-planner.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m6-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "8b6ebba9b01b1d452229019c9a04f3ab18216049";
+const EXPECTED_FUNCTIONAL_SHA = "95a0f143fdc4bdb573f401fd063be9ba55004935";
 
 function getReleaseBinaryPath() {
   if (process.env.FDX_BINARY_PATH && existsSync(process.env.FDX_BINARY_PATH)) {
@@ -60,14 +61,35 @@ function gitCommitAll(dir, msg) {
   execFileSync("git", ["commit", "-m", msg, "--allow-empty"], { cwd: dir });
 }
 
+function initFdxDb(dir, binaryPath) {
+  // Run status to initialize .fdx directory and DB
+  try {
+    execFileSync(binaryPath, ["status"], { cwd: dir, stdio: "ignore" });
+  } catch {}
+  const dbPath = join(dir, ".fdx", "intelligence.db");
+  return new DatabaseSync(dbPath);
+}
+
 async function runBenchmark() {
-  console.log("=== Running FDX VCI Milestone 6 Test Mapping & Verification Planner Benchmark ===");
+  console.log("=== Running FDX VCI Milestone 6 Test Mapping & Verification Planner Benchmark (H10) ===");
 
   const declaredFunctionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA || EXPECTED_FUNCTIONAL_SHA;
   if (declaredFunctionalSha !== EXPECTED_FUNCTIONAL_SHA) {
     throw new Error(
       `Declared functional SHA ${declaredFunctionalSha} does not match expected functional SHA ${EXPECTED_FUNCTIONAL_SHA}`
     );
+  }
+
+  // Strict working-tree and staged diff checks on harness file
+  try {
+    execFileSync("git", ["diff", "--quiet", "--", "scripts/benchmark-fdx-vci-m6-test-planner.mjs"], { cwd: ROOT });
+  } catch {
+    throw new Error("Harness working-tree diff must be empty before benchmark run.");
+  }
+  try {
+    execFileSync("git", ["diff", "--cached", "--quiet", "--", "scripts/benchmark-fdx-vci-m6-test-planner.mjs"], { cwd: ROOT });
+  } catch {
+    throw new Error("Harness staged diff must be empty before benchmark run.");
   }
 
   // Verify functional SHA exists in git object DB
@@ -104,7 +126,7 @@ async function runBenchmark() {
   const iterations = 10;
   const results = {};
 
-  // 1. precise_semantic_test_mapping
+  // 1. precise_semantic_test_mapping (persisted precise SCIP evidence fixture)
   {
     console.log("-> Running precise_semantic_test_mapping scenario...");
     const benchDir = join(tmpdir(), `fdx-bench-m6-precise-${Date.now()}`);
@@ -119,14 +141,26 @@ async function runBenchmark() {
       join(pkgDir, "package.json"),
       JSON.stringify({ name: "@my/api", scripts: { test: "vitest", typecheck: "tsc" } }, null, 2)
     );
-    writeFileSync(join(pkgDir, "src", "user.ts"), "export const user = 1;");
+    writeFileSync(join(pkgDir, "src", "user.ts"), "export function getUser() { return 1; }");
     writeFileSync(join(pkgDir, "tests", "user.test.ts"), "test('user', () => {});");
     writeFileSync(join(pkgDir, "tests", "unrelated.test.ts"), "test('unrelated', () => {});");
     gitCommitAll(benchDir, "init");
 
-    writeFileSync(join(pkgDir, "src", "user.ts"), "export const user = 2;");
+    // Initialize FDX SQLite database and seed precise SCIP reference edge
+    const db = initFdxDb(benchDir, binaryPath);
+    db.exec(`
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/api/tests/user.test.ts', 'hash_test', 50, 100);
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/api/src/user.ts', 'hash_src', 50, 100);
+      INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/api/tests/user.test.ts', 'file', 'packages/api/tests/user.test.ts', 'pkg:npm:packages/api');
+      INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/api/src/user.ts:getUser', 'symbol', 'packages/api/src/user.ts', 'getUser', 'pkg:npm:packages/api');
+      INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:user_test_refs_getUser', 'file:packages/api/tests/user.test.ts', 'sym:packages/api/src/user.ts:getUser', 'references', 'scip_ts', 'fp_scip_m6', 4, 'packages/api/tests/user.test.ts', 'hash_test', 1, 1, 0, 'scip-typescript');
+    `);
+    db.close();
 
-    // Semantic qualification assertion
+    writeFileSync(join(pkgDir, "src", "user.ts"), "export function getUser() { return 2; }");
+
+    // Semantic qualification assertions
     const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
       cwd: benchDir,
       encoding: "utf8",
@@ -135,6 +169,25 @@ async function runBenchmark() {
     const userTest = plan.selected_checks.find((c) => c.check_id.includes("user.test.ts"));
     if (!userTest) {
       throw new Error("precise_semantic_test_mapping failed: user.test.ts not selected");
+    }
+    if (userTest.selection !== "evidence") {
+      throw new Error("precise_semantic_test_mapping failed: user.test.ts selection is not evidence");
+    }
+    if (userTest.strength !== "precise") {
+      throw new Error("precise_semantic_test_mapping failed: user.test.ts strength is not precise");
+    }
+    if (!userTest.evidence_path) {
+      throw new Error("precise_semantic_test_mapping failed: user.test.ts missing evidence_path");
+    }
+    if (!userTest.evidence_refs || userTest.evidence_refs.length === 0) {
+      throw new Error("precise_semantic_test_mapping failed: user.test.ts missing evidence_refs");
+    }
+    const evRef = userTest.evidence_refs[0];
+    if (evRef.provider_id !== "scip-typescript" || evRef.provider_fingerprint !== "fp_scip_m6") {
+      throw new Error("precise_semantic_test_mapping failed: evidence_refs provider_id or fingerprint mismatch");
+    }
+    if (plan.selected_checks.some((c) => c.check_id.includes("unrelated.test.ts"))) {
+      throw new Error("precise_semantic_test_mapping failed: unrelated.test.ts must NOT be selected under precise SCIP");
     }
 
     const samples = [];
@@ -198,7 +251,7 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 3. deleted_symbol_old_current_union
+  // 3. deleted_symbol_old_current_union (persisted before-state mapping preserved on symbol deletion)
   {
     console.log("-> Running deleted_symbol_old_current_union scenario...");
     const benchDir = join(tmpdir(), `fdx-bench-m6-deleted-sym-${Date.now()}`);
@@ -212,6 +265,19 @@ async function runBenchmark() {
     writeFileSync(join(benchDir, "tests", "mod.test.ts"), "import { oldFn } from '../src/mod'; test('m', () => oldFn());");
     gitCommitAll(benchDir, "init");
 
+    // Persist real before-state mapping in DB
+    const db = initFdxDb(benchDir, binaryPath);
+    db.exec(`
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('tests/mod.test.ts', 'h1', 50, 100);
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('src/mod.ts', 'h2', 50, 100);
+      INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:tests/mod.test.ts', 'file', 'tests/mod.test.ts', 'pkg:npm:.');
+      INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:src/mod.ts:oldFn', 'symbol', 'src/mod.ts', 'oldFn', 'pkg:npm:.');
+      INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:mod_test_refs_oldFn', 'file:tests/mod.test.ts', 'sym:src/mod.ts:oldFn', 'references', 'scip_ts', 'fp_old_union', 4, 'tests/mod.test.ts', 'h1', 1, 1, 0, 'scip-typescript');
+    `);
+    db.close();
+
+    // Delete symbol in src/mod.ts
     writeFileSync(join(benchDir, "src", "mod.ts"), "// oldFn deleted");
 
     const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
@@ -219,7 +285,8 @@ async function runBenchmark() {
       encoding: "utf8",
     });
     const plan = JSON.parse(planRaw);
-    if (!plan.selected_checks.some((c) => c.check_id.includes("mod.test.ts"))) {
+    const modTest = plan.selected_checks.find((c) => c.check_id.includes("mod.test.ts"));
+    if (!modTest) {
       throw new Error("deleted_symbol_old_current_union failed: mod.test.ts was not retained on symbol deletion");
     }
 
@@ -236,7 +303,7 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 4. stale_semantic_package_widening
+  // 4. stale_semantic_package_widening (persisted stale SCIP evidence fixture)
   {
     console.log("-> Running stale_semantic_package_widening scenario...");
     const benchDir = join(tmpdir(), `fdx-bench-m6-stale-widening-${Date.now()}`);
@@ -251,6 +318,17 @@ async function runBenchmark() {
     writeFileSync(join(pkgDir, "tests", "a.test.ts"), "test('a', () => {});");
     writeFileSync(join(pkgDir, "tests", "b.test.ts"), "test('b', () => {});");
     gitCommitAll(benchDir, "init");
+
+    // Persist stale edge (stale = 1)
+    const db = initFdxDb(benchDir, binaryPath);
+    db.exec(`
+      INSERT INTO files (canonical_path, content_hash, size, indexed_at) VALUES ('packages/feat/tests/a.test.ts', 'h1', 50, 100);
+      INSERT INTO nodes (stable_id, kind, canonical_path, package_identity) VALUES ('file:packages/feat/tests/a.test.ts', 'file', 'packages/feat/tests/a.test.ts', 'pkg:npm:packages/feat');
+      INSERT INTO nodes (stable_id, kind, canonical_path, symbol_identity, package_identity) VALUES ('sym:packages/feat/src/a.ts:a', 'symbol', 'packages/feat/src/a.ts', 'a', 'pkg:npm:packages/feat');
+      INSERT INTO edges (stable_id, from_node, to_node, kind, provider, provider_fingerprint, strength, source_identity, source_hash, created_revision, updated_revision, stale, provider_id)
+        VALUES ('edge:a_stale_edge', 'file:packages/feat/tests/a.test.ts', 'sym:packages/feat/src/a.ts:a', 'references', 'scip_ts', 'fp_stale', 4, 'packages/feat/tests/a.test.ts', 'h1', 1, 1, 1, 'scip-typescript');
+    `);
+    db.close();
 
     writeFileSync(join(pkgDir, "src", "a.ts"), "export const a = 2;");
 
@@ -360,9 +438,9 @@ async function runBenchmark() {
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 7. mapping_bound_safe_widening
+  // 7. selected_check_bound_safe_rollup (crosses production max_selected_checks = 2000 bound with safe rollup)
   {
-    console.log("-> Running mapping_bound_safe_widening scenario...");
+    console.log("-> Running selected_check_bound_safe_rollup scenario (>2000 checks bound crossing)...");
     const benchDir = join(tmpdir(), `fdx-bench-m6-bounds-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
     initGitRepo(benchDir);
@@ -372,7 +450,9 @@ async function runBenchmark() {
     mkdirSync(join(pkgDir, "tests"), { recursive: true });
     writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "@my/bounded", scripts: { test: "vitest" } }));
     writeFileSync(join(pkgDir, "src", "a.ts"), "export const a = 1;");
-    for (let i = 0; i < 5; i++) {
+
+    // Generate 2100 test files crossing max_selected_checks = 2000
+    for (let i = 0; i < 2100; i++) {
       writeFileSync(join(pkgDir, "tests", `test_${i}.test.ts`), "test('t', () => {});");
     }
     gitCommitAll(benchDir, "init");
@@ -384,8 +464,17 @@ async function runBenchmark() {
       encoding: "utf8",
     });
     const plan = JSON.parse(planRaw);
-    if (plan.selected_checks.length === 0) {
-      throw new Error("mapping_bound_safe_widening failed: checks must be selected");
+
+    // Assert safe rollup to package suite check under output bound
+    const hasRollupCheck = plan.selected_checks.some((c) => c.check_id === "check:pkg:npm:packages/bounded:test");
+    if (!hasRollupCheck) {
+      throw new Error("selected_check_bound_safe_rollup failed: package suite rollup check missing when >2000 tests selected");
+    }
+    if (plan.selected_checks.length > 2000) {
+      throw new Error("selected_check_bound_safe_rollup failed: selected_checks length must be <= 2000");
+    }
+    if (!plan.uncertainty.some((u) => JSON.stringify(u).toLowerCase().includes("limit"))) {
+      throw new Error("selected_check_bound_safe_rollup failed: limit uncertainty must be emitted on output bound rollup");
     }
 
     const samples = [];
@@ -397,33 +486,42 @@ async function runBenchmark() {
       const t1 = performance.now();
       if (r >= warmup) samples.push(t1 - t0);
     }
-    results["mapping_bound_safe_widening"] = computeStats(samples);
+    results["selected_check_bound_safe_rollup"] = computeStats(samples);
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 8. mapping_failure_preserves_last_good
+  // 8. mapping_failure_widens_safely (induces mapping query failure and verifies safe fail-closed package widening)
   {
-    console.log("-> Running mapping_failure_preserves_last_good scenario...");
-    const benchDir = join(tmpdir(), `fdx-bench-m6-preserves-${Date.now()}`);
+    console.log("-> Running mapping_failure_widens_safely scenario...");
+    const benchDir = join(tmpdir(), `fdx-bench-m6-mapping-fail-${Date.now()}`);
     mkdirSync(benchDir, { recursive: true });
     initGitRepo(benchDir);
 
-    mkdirSync(join(benchDir, "src"), { recursive: true });
-    mkdirSync(join(benchDir, "tests"), { recursive: true });
-    writeFileSync(join(benchDir, "package.json"), JSON.stringify({ name: "pkg", scripts: { test: "vitest" } }));
-    writeFileSync(join(benchDir, "src", "f.ts"), "export const f = 1;");
-    writeFileSync(join(benchDir, "tests", "f.test.ts"), "test('f', () => {});");
+    const pkgDir = join(benchDir, "packages", "failpkg");
+    mkdirSync(join(pkgDir, "src"), { recursive: true });
+    mkdirSync(join(pkgDir, "tests"), { recursive: true });
+    writeFileSync(join(pkgDir, "package.json"), JSON.stringify({ name: "@my/failpkg", scripts: { test: "vitest" } }));
+    writeFileSync(join(pkgDir, "src", "f.ts"), "export const f = 1;");
+    writeFileSync(join(pkgDir, "tests", "f.test.ts"), "test('f', () => {});");
     gitCommitAll(benchDir, "init");
 
-    writeFileSync(join(benchDir, "src", "f.ts"), "export const f = 2;");
+    // Initialize DB and alter edges schema to induce mapping query failure
+    const db = initFdxDb(benchDir, binaryPath);
+    db.exec("DROP TABLE IF EXISTS edges; CREATE TABLE edges (corrupted_column INTEGER);");
+    db.close();
+
+    writeFileSync(join(pkgDir, "src", "f.ts"), "export const f = 2;");
 
     const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
       cwd: benchDir,
       encoding: "utf8",
     });
     const plan = JSON.parse(planRaw);
-    if (!plan.selected_checks.some((c) => c.check_id.includes("f.test.ts"))) {
-      throw new Error("mapping_failure_preserves_last_good failed: test check missing");
+    if (!plan.uncertainty.some((u) => JSON.stringify(u).includes("GraphCorrupt") || JSON.stringify(u).includes("mapping"))) {
+      throw new Error("mapping_failure_widens_safely failed: GraphCorrupt / mapping error uncertainty not emitted");
+    }
+    if (plan.selected_checks.length === 0) {
+      throw new Error("mapping_failure_widens_safely failed: mapping failure must widen safely to package checks");
     }
 
     const samples = [];
@@ -435,19 +533,33 @@ async function runBenchmark() {
       const t1 = performance.now();
       if (r >= warmup) samples.push(t1 - t0);
     }
-    results["mapping_failure_preserves_last_good"] = computeStats(samples);
+    results["mapping_failure_widens_safely"] = computeStats(samples);
     rmSync(benchDir, { recursive: true, force: true });
   }
 
-  // 9. disconnected_scope_isolation
+  // 9. disconnected_scope_isolation (verified against clean control repo)
   {
-    console.log("-> Running disconnected_scope_isolation scenario...");
-    const benchDir = join(tmpdir(), `fdx-bench-m6-isolation-${Date.now()}`);
-    mkdirSync(benchDir, { recursive: true });
-    initGitRepo(benchDir);
+    console.log("-> Running disconnected_scope_isolation scenario (control vs test isolation)...");
+    const controlDir = join(tmpdir(), `fdx-bench-m6-control-${Date.now()}`);
+    const testDir = join(tmpdir(), `fdx-bench-m6-isolation-${Date.now()}`);
+    mkdirSync(controlDir, { recursive: true });
+    mkdirSync(testDir, { recursive: true });
+    initGitRepo(controlDir);
+    initGitRepo(testDir);
 
-    const pa = join(benchDir, "packages", "pa");
-    const pb = join(benchDir, "packages", "pb");
+    // Control: only package B
+    const controlPb = join(controlDir, "packages", "pb");
+    mkdirSync(join(controlPb, "src"), { recursive: true });
+    mkdirSync(join(controlPb, "tests"), { recursive: true });
+    writeFileSync(join(controlPb, "package.json"), JSON.stringify({ name: "@my/pb", scripts: { test: "vitest" } }));
+    writeFileSync(join(controlPb, "src", "b.ts"), "export const b = 1;");
+    writeFileSync(join(controlPb, "tests", "b.test.ts"), "test('b', () => {});");
+    gitCommitAll(controlDir, "init");
+    writeFileSync(join(controlPb, "src", "b.ts"), "export const b = 2;");
+
+    // Test: package A + package B (only B modified)
+    const pa = join(testDir, "packages", "pa");
+    const pb = join(testDir, "packages", "pb");
     mkdirSync(join(pa, "src"), { recursive: true });
     mkdirSync(join(pa, "tests"), { recursive: true });
     mkdirSync(join(pb, "src"), { recursive: true });
@@ -458,35 +570,44 @@ async function runBenchmark() {
     writeFileSync(join(pa, "tests", "a.test.ts"), "test('a', () => {});");
     writeFileSync(join(pb, "src", "b.ts"), "export const b = 1;");
     writeFileSync(join(pb, "tests", "b.test.ts"), "test('b', () => {});");
-    gitCommitAll(benchDir, "init");
-
+    gitCommitAll(testDir, "init");
     writeFileSync(join(pb, "src", "b.ts"), "export const b = 2;");
 
-    const planRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
-      cwd: benchDir,
+    const controlPlanRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
+      cwd: controlDir,
       encoding: "utf8",
     });
-    const plan = JSON.parse(planRaw);
-    const selectsA = plan.selected_checks.some((c) => c.check_id.includes("packages/pa"));
-    const selectsB = plan.selected_checks.some((c) => c.check_id.includes("packages/pb"));
+    const testPlanRaw = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
+      cwd: testDir,
+      encoding: "utf8",
+    });
+    const controlPlan = JSON.parse(controlPlanRaw);
+    const testPlan = JSON.parse(testPlanRaw);
+
+    const selectsA = testPlan.selected_checks.some((c) => c.check_id.includes("packages/pa"));
+    const selectsB = testPlan.selected_checks.some((c) => c.check_id.includes("packages/pb"));
     if (!selectsB || selectsA) {
       throw new Error("disconnected_scope_isolation failed: changed package B must be selected, isolated A must not");
+    }
+    if (testPlan.assurance !== controlPlan.assurance) {
+      throw new Error("disconnected_scope_isolation failed: isolated package presence must not alter assurance");
     }
 
     const samples = [];
     for (let r = 0; r < warmup + iterations; r++) {
       const t0 = performance.now();
       execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
-        cwd: benchDir,
+        cwd: testDir,
       });
       const t1 = performance.now();
       if (r >= warmup) samples.push(t1 - t0);
     }
     results["disconnected_scope_isolation"] = computeStats(samples);
-    rmSync(benchDir, { recursive: true, force: true });
+    rmSync(controlDir, { recursive: true, force: true });
+    rmSync(testDir, { recursive: true, force: true });
   }
 
-  // 10. planner_why_explanation
+  // 10. planner_why_explanation (asserts JSON evidence contracts and text output)
   {
     console.log("-> Running planner_why_explanation scenario...");
     const benchDir = join(tmpdir(), `fdx-bench-m6-explain-${Date.now()}`);
@@ -501,6 +622,29 @@ async function runBenchmark() {
     gitCommitAll(benchDir, "init");
 
     writeFileSync(join(benchDir, "src", "exp.ts"), "export const exp = 2;");
+
+    const jsonOutput = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "json"], {
+      cwd: benchDir,
+      encoding: "utf8",
+    });
+    const plan = JSON.parse(jsonOutput);
+
+    // Assert JSON semantic contracts for every selected check
+    for (const check of plan.selected_checks) {
+      if (check.selection === "evidence") {
+        if (!check.evidence_path || !check.evidence_refs || check.evidence_refs.length === 0) {
+          throw new Error(`planner_why_explanation contract failed on ${check.check_id}: evidence check must have evidence_path and non-empty evidence_refs`);
+        }
+      } else if (check.selection === "policy_widening") {
+        if (!check.widening_reason) {
+          throw new Error(`planner_why_explanation contract failed on ${check.check_id}: policy_widening check must have widening_reason`);
+        }
+      } else if (check.selection === "mandatory_check") {
+        if (!check.mandatory || !check.reason) {
+          throw new Error(`planner_why_explanation contract failed on ${check.check_id}: mandatory_check must have mandatory=true and named reason`);
+        }
+      }
+    }
 
     const textOutput = execFileSync(binaryPath, ["plan", "--base", "HEAD", "--format", "text"], {
       cwd: benchDir,
