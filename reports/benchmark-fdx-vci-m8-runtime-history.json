@@ -1,0 +1,57 @@
+{
+  "milestone": "M8",
+  "title": "Runtime Evidence & Historical Verification Intelligence",
+  "commit_functional": "56e986b72421d8b4e5186f65cf3a3f31d67b42cf",
+  "timestamp": "2026-08-24T03:17:09.539Z",
+  "system": {
+    "platform": "linux",
+    "arch": "x64",
+    "node_version": "v24.19.0"
+  },
+  "invariants": {
+    "schema_version": 6,
+    "atomic_ingestion_verified": true,
+    "idempotent_reingest_verified": true,
+    "conflict_detection_verified": true,
+    "execution_deduplication_verified": true,
+    "crash_reconciliation_verified": true,
+    "symlink_escape_rejection_verified": true,
+    "flake_signal_and_transitions_verified": true,
+    "failure_and_incomplete_separation_verified": true,
+    "planner_invariance_verified": true
+  },
+  "metrics": {
+    "single_run_verify_and_ingest_ms": {
+      "count": 15,
+      "min": 135.2,
+      "max": 148.68,
+      "mean": 137.01,
+      "median": 135.84,
+      "p95": 148.68
+    },
+    "history_runs_query_50_ms": {
+      "count": 20,
+      "min": 5.36,
+      "max": 5.98,
+      "mean": 5.62,
+      "median": 5.63,
+      "p95": 5.98
+    },
+    "history_stats_query_ms": {
+      "count": 20,
+      "min": 4.64,
+      "max": 4.98,
+      "mean": 4.75,
+      "median": 4.75,
+      "p95": 4.98
+    },
+    "history_reconcile_50_artifacts_ms": {
+      "count": 15,
+      "min": 38.98,
+      "max": 40.59,
+      "mean": 39.51,
+      "median": 39.45,
+      "p95": 40.59
+    }
+  }
+}
