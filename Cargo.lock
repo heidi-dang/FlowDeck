@@ -284,6 +284,7 @@ dependencies = [
  "once_cell",
  "regex",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
