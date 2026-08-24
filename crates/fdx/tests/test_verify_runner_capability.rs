@@ -1,5 +1,5 @@
 use fdx::intelligence::testplan::model::{PlannedCheck, SelectionReason, VerificationCheckKind};
-use fdx::intelligence::verify::action::{ExecutionAction, KnownJsTestRunner};
+use fdx::intelligence::verify::action::{ExecutionAction, IndividualTestCapability};
 use fdx::intelligence::verify::resolve::{
     detect_individual_target_capability, resolve_check_action,
 };
@@ -10,7 +10,6 @@ use tempfile::tempdir;
 fn test_dependency_only_vitest_fails_individual_capability() {
     let dir = tempdir().unwrap();
     let pkg_json = dir.path().join("package.json");
-    // devDependencies has vitest, but scripts.test runs custom script ignoring argv
     std::fs::write(
         &pkg_json,
         r#"{
@@ -44,54 +43,127 @@ fn test_config_only_vitest_fails_individual_capability() {
 }
 
 #[test]
-fn test_scripts_test_substring_echo_vitest_fails_capability() {
+fn test_fake_path_executables_fail_capability() {
     let dir = tempdir().unwrap();
     let pkg_json = dir.path().join("package.json");
-    std::fs::write(
-        &pkg_json,
-        r#"{
-            "name": "echo-vitest",
-            "scripts": { "test": "echo vitest" }
-        }"#,
-    )
-    .unwrap();
+    let fake_paths = [
+        "./vitest",
+        "./vitest.js",
+        "./tools/vitest",
+        "./jest",
+        "./jest.js",
+        "./tools/jest",
+        "node ./vitest",
+        "node ./jest",
+    ];
 
-    let cap = detect_individual_target_capability(dir.path());
-    assert_eq!(cap, None);
+    for fake in fake_paths {
+        std::fs::write(
+            &pkg_json,
+            format!(
+                r#"{{"name": "fake-exe", "scripts": {{"test": "{}"}}}}"#,
+                fake
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            detect_individual_target_capability(dir.path()),
+            None,
+            "failed rejection for fake path executable: {}",
+            fake
+        );
+    }
 }
 
 #[test]
-fn test_scripts_test_vitest_run_qualifies_capability() {
+fn test_non_test_runner_modes_fail_capability() {
     let dir = tempdir().unwrap();
     let pkg_json = dir.path().join("package.json");
-    std::fs::write(
-        &pkg_json,
-        r#"{
-            "name": "real-vitest",
-            "scripts": { "test": "vitest run" }
-        }"#,
-    )
-    .unwrap();
+    let non_test_modes = [
+        "vitest --help",
+        "vitest -h",
+        "vitest --version",
+        "vitest -v",
+        "vitest list",
+        "vitest related",
+        "jest --help",
+        "jest -h",
+        "jest --version",
+        "jest -v",
+        "jest --listTests",
+        "jest --showConfig",
+    ];
 
-    let cap = detect_individual_target_capability(dir.path());
-    assert_eq!(cap, Some(KnownJsTestRunner::Vitest));
+    for mode in non_test_modes {
+        std::fs::write(
+            &pkg_json,
+            format!(
+                r#"{{"name": "non-test", "scripts": {{"test": "{}"}}}}"#,
+                mode
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            detect_individual_target_capability(dir.path()),
+            None,
+            "failed rejection for non-test mode: {}",
+            mode
+        );
+    }
 }
 
 #[test]
-fn test_scripts_test_jest_run_in_band_qualifies_capability() {
+fn test_accepted_runner_grammar_qualifies() {
     let dir = tempdir().unwrap();
     let pkg_json = dir.path().join("package.json");
+
+    // Vitest bare
     std::fs::write(
         &pkg_json,
-        r#"{
-            "name": "real-jest",
-            "scripts": { "test": "jest --runInBand" }
-        }"#,
+        r#"{"name": "vitest-pkg", "scripts": {"test": "vitest"}}"#,
     )
     .unwrap();
+    assert_eq!(
+        detect_individual_target_capability(dir.path()),
+        Some(IndividualTestCapability::Vitest { fixed_args: vec![] })
+    );
 
-    let cap = detect_individual_target_capability(dir.path());
-    assert_eq!(cap, Some(KnownJsTestRunner::Jest));
+    // Vitest run
+    std::fs::write(
+        &pkg_json,
+        r#"{"name": "vitest-pkg", "scripts": {"test": "vitest run"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        detect_individual_target_capability(dir.path()),
+        Some(IndividualTestCapability::Vitest {
+            fixed_args: vec!["run".to_string()]
+        })
+    );
+
+    // Jest bare
+    std::fs::write(
+        &pkg_json,
+        r#"{"name": "jest-pkg", "scripts": {"test": "jest"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        detect_individual_target_capability(dir.path()),
+        Some(IndividualTestCapability::Jest { fixed_args: vec![] })
+    );
+
+    // Jest runInBand
+    std::fs::write(
+        &pkg_json,
+        r#"{"name": "jest-pkg", "scripts": {"test": "jest --runInBand"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        detect_individual_target_capability(dir.path()),
+        Some(IndividualTestCapability::Jest {
+            fixed_args: vec!["--runInBand".to_string()]
+        })
+    );
 }
 
 #[test]

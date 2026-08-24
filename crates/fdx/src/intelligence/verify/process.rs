@@ -1,7 +1,7 @@
 //! Bounded, safe child process runner for verification actions.
 //!
 //! Direct Command execution only: no shell invocation, no string interpolation.
-//! Process group management ensures all subprocesses and descendants are reaped on timeout or output bounds.
+//! Process group management ensures processes remaining in the spawned Unix process group are reaped on timeout or output bounds.
 
 use crate::intelligence::verify::identity::generate_execution_id;
 use crate::intelligence::verify::model::CheckExecutionStatus;
