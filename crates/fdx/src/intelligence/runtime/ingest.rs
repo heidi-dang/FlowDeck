@@ -4,7 +4,7 @@ use crate::intelligence::runtime::digest::{
     compute_argv_digest, compute_plan_digest, sha256_bytes,
 };
 use crate::intelligence::runtime::model::{RuntimeIngestResult, INGESTION_CONTRACT_VERSION_V2};
-use crate::intelligence::verify::model::{CheckExecutionStatus, VerificationRun};
+use crate::intelligence::verify::model::{CheckExecutionResult, CheckExecutionStatus, VerificationRun};
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -110,116 +110,143 @@ pub fn ingest_verification_artifact(
             .push(check);
     }
 
-    // 7. Validate shared execution evidence consistency and reuse patterns
+    // 7. Validate shared execution evidence consistency, physicality uniformity, and reuse patterns
+    struct ValidatedExecutionGroup<'a> {
+        has_physical_execution: bool,
+        canonical_check: &'a CheckExecutionResult,
+    }
+
+    let mut validated_groups: HashMap<&str, ValidatedExecutionGroup> = HashMap::new();
+
     for (exec_id, group) in &exec_groups {
         let first = group[0];
-        let has_physical = is_physical_process_execution(&first.status);
+        let first_physical = is_physical_process_execution(&first.status);
 
-        if has_physical {
-            // Count primary vs reused
-            let primary_count = group.iter().filter(|c| !c.reused_execution).count();
-            if primary_count != 1 {
+        // Verify group physicality is uniform across ALL members (ordering-independent)
+        for other in &group[1..] {
+            let other_physical = is_physical_process_execution(&other.status);
+            if other_physical != first_physical {
                 return Ok(RuntimeIngestResult::Failed {
                     run_id: Some(run_id.clone()),
                     reason: format!(
-                        "execution_id '{}' has invalid reuse pattern: {} non-reused obligations (expected exactly 1)",
-                        exec_id, primary_count
+                        "execution_id '{}' mixes physical and non-physical observations ('{:?}' vs '{:?}')",
+                        exec_id, first.status, other.status
                     ),
                 });
             }
+        }
 
-            // Verify all members in the group share identical physical process evidence
-            for other in &group[1..] {
-                if other.command != first.command {
-                    return Ok(RuntimeIngestResult::Failed {
-                        run_id: Some(run_id.clone()),
-                        reason: format!(
-                            "execution_id '{}' has conflicting commands: '{:?}' vs '{:?}'",
-                            exec_id, first.command, other.command
-                        ),
-                    });
-                }
-                if other.cwd != first.cwd {
-                    return Ok(RuntimeIngestResult::Failed {
-                        run_id: Some(run_id.clone()),
-                        reason: format!(
-                            "execution_id '{}' has conflicting cwd: '{}' vs '{}'",
-                            exec_id, first.cwd, other.cwd
-                        ),
-                    });
-                }
-                if other.status != first.status {
-                    return Ok(RuntimeIngestResult::Failed {
-                        run_id: Some(run_id.clone()),
-                        reason: format!(
-                            "execution_id '{}' has conflicting status: '{:?}' vs '{:?}'",
-                            exec_id, first.status, other.status
-                        ),
-                    });
-                }
-                if other.exit_code != first.exit_code {
-                    return Ok(RuntimeIngestResult::Failed {
-                        run_id: Some(run_id.clone()),
-                        reason: format!(
-                            "execution_id '{}' has conflicting exit_code: '{:?}' vs '{:?}'",
-                            exec_id, first.exit_code, other.exit_code
-                        ),
-                    });
-                }
-                if other.signal != first.signal {
-                    return Ok(RuntimeIngestResult::Failed {
-                        run_id: Some(run_id.clone()),
-                        reason: format!(
-                            "execution_id '{}' has conflicting signal: '{:?}' vs '{:?}'",
-                            exec_id, first.signal, other.signal
-                        ),
-                    });
-                }
-                if other.duration_ms != first.duration_ms {
-                    return Ok(RuntimeIngestResult::Failed {
-                        run_id: Some(run_id.clone()),
-                        reason: format!(
-                            "execution_id '{}' has conflicting duration_ms: {} vs {}",
-                            exec_id, first.duration_ms, other.duration_ms
-                        ),
-                    });
-                }
-                if other.stdout_digest != first.stdout_digest {
-                    return Ok(RuntimeIngestResult::Failed {
-                        run_id: Some(run_id.clone()),
-                        reason: format!("execution_id '{}' has conflicting stdout_digest", exec_id),
-                    });
-                }
-                if other.stderr_digest != first.stderr_digest {
-                    return Ok(RuntimeIngestResult::Failed {
-                        run_id: Some(run_id.clone()),
-                        reason: format!("execution_id '{}' has conflicting stderr_digest", exec_id),
-                    });
-                }
-                if other.stdout_captured_bytes != first.stdout_captured_bytes
-                    || other.stderr_captured_bytes != first.stderr_captured_bytes
-                    || other.stdout_truncated != first.stdout_truncated
-                    || other.stderr_truncated != first.stderr_truncated
-                {
-                    return Ok(RuntimeIngestResult::Failed {
-                        run_id: Some(run_id.clone()),
-                        reason: format!(
-                            "execution_id '{}' has conflicting stream capture metadata",
-                            exec_id
-                        ),
-                    });
-                }
-                if other.started_at_ms != first.started_at_ms {
-                    return Ok(RuntimeIngestResult::Failed {
-                        run_id: Some(run_id.clone()),
-                        reason: format!(
-                            "execution_id '{}' has conflicting started_at_ms: {} vs {}",
-                            exec_id, first.started_at_ms, other.started_at_ms
-                        ),
-                    });
-                }
+        // Count primary vs reused for EVERY group (physical and non-physical)
+        let primary_count = group.iter().filter(|c| !c.reused_execution).count();
+        if primary_count != 1 {
+            return Ok(RuntimeIngestResult::Failed {
+                run_id: Some(run_id.clone()),
+                reason: format!(
+                    "execution_id '{}' has invalid reuse pattern: {} non-reused obligations (expected exactly 1)",
+                    exec_id, primary_count
+                ),
+            });
+        }
+
+        // Verify all members in the group share identical evidence regardless of physical status
+        for other in &group[1..] {
+            if other.status != first.status {
+                return Ok(RuntimeIngestResult::Failed {
+                    run_id: Some(run_id.clone()),
+                    reason: format!(
+                        "execution_id '{}' has conflicting status: '{:?}' vs '{:?}'",
+                        exec_id, first.status, other.status
+                    ),
+                });
+            }
+            if other.command != first.command {
+                return Ok(RuntimeIngestResult::Failed {
+                    run_id: Some(run_id.clone()),
+                    reason: format!(
+                        "execution_id '{}' has conflicting commands: '{:?}' vs '{:?}'",
+                        exec_id, first.command, other.command
+                    ),
+                });
+            }
+            if other.cwd != first.cwd {
+                return Ok(RuntimeIngestResult::Failed {
+                    run_id: Some(run_id.clone()),
+                    reason: format!(
+                        "execution_id '{}' has conflicting cwd: '{}' vs '{}'",
+                        exec_id, first.cwd, other.cwd
+                    ),
+                });
+            }
+            if other.exit_code != first.exit_code {
+                return Ok(RuntimeIngestResult::Failed {
+                    run_id: Some(run_id.clone()),
+                    reason: format!(
+                        "execution_id '{}' has conflicting exit_code: '{:?}' vs '{:?}'",
+                        exec_id, first.exit_code, other.exit_code
+                    ),
+                });
+            }
+            if other.signal != first.signal {
+                return Ok(RuntimeIngestResult::Failed {
+                    run_id: Some(run_id.clone()),
+                    reason: format!(
+                        "execution_id '{}' has conflicting signal: '{:?}' vs '{:?}'",
+                        exec_id, first.signal, other.signal
+                    ),
+                });
+            }
+            if other.duration_ms != first.duration_ms {
+                return Ok(RuntimeIngestResult::Failed {
+                    run_id: Some(run_id.clone()),
+                    reason: format!(
+                        "execution_id '{}' has conflicting duration_ms: {} vs {}",
+                        exec_id, first.duration_ms, other.duration_ms
+                    ),
+                });
+            }
+            if other.stdout_digest != first.stdout_digest {
+                return Ok(RuntimeIngestResult::Failed {
+                    run_id: Some(run_id.clone()),
+                    reason: format!("execution_id '{}' has conflicting stdout_digest", exec_id),
+                });
+            }
+            if other.stderr_digest != first.stderr_digest {
+                return Ok(RuntimeIngestResult::Failed {
+                    run_id: Some(run_id.clone()),
+                    reason: format!("execution_id '{}' has conflicting stderr_digest", exec_id),
+                });
+            }
+            if other.stdout_captured_bytes != first.stdout_captured_bytes
+                || other.stderr_captured_bytes != first.stderr_captured_bytes
+                || other.stdout_truncated != first.stdout_truncated
+                || other.stderr_truncated != first.stderr_truncated
+            {
+                return Ok(RuntimeIngestResult::Failed {
+                    run_id: Some(run_id.clone()),
+                    reason: format!(
+                        "execution_id '{}' has conflicting stream capture metadata",
+                        exec_id
+                    ),
+                });
+            }
+            if other.started_at_ms != first.started_at_ms {
+                return Ok(RuntimeIngestResult::Failed {
+                    run_id: Some(run_id.clone()),
+                    reason: format!(
+                        "execution_id '{}' has conflicting started_at_ms: {} vs {}",
+                        exec_id, first.started_at_ms, other.started_at_ms
+                    ),
+                });
             }
         }
+
+        validated_groups.insert(
+            *exec_id,
+            ValidatedExecutionGroup {
+                has_physical_execution: first_physical,
+                canonical_check: first,
+            },
+        );
     }
 
     // 8. Atomic transaction with BEGIN IMMEDIATE to arbitrate identity safely under concurrency
@@ -301,10 +328,10 @@ pub fn ingest_verification_artifact(
     )
     .map_err(|e| format!("failed to insert runtime_runs row: {}", e))?;
 
-    // Insert physical process executions ONLY (no synthetic/unsupported/skipped rows!)
-    for (exec_id, group) in &exec_groups {
-        let first = group[0];
-        if is_physical_process_execution(&first.status) {
+    // Insert physical process executions ONLY from validated physical groups
+    for (exec_id, group_info) in &validated_groups {
+        if group_info.has_physical_execution {
+            let first = group_info.canonical_check;
             let argv_digest = compute_argv_digest(&first.command);
             let status_str = serde_json::to_string(&first.status)
                 .unwrap_or_default()
@@ -358,9 +385,12 @@ pub fn ingest_verification_artifact(
         let mandatory = planned_checks_map
             .get(check.check_id.as_str())
             .copied()
-            .unwrap_or(true);
+            .unwrap_or(false);
 
-        let has_physical = is_physical_process_execution(&check.status);
+        let has_physical = validated_groups
+            .get(check.execution_id.as_str())
+            .map(|g| g.has_physical_execution)
+            .unwrap_or(false);
 
         tx.execute(
             r#"
@@ -381,6 +411,52 @@ pub fn ingest_verification_artifact(
             ],
         )
         .map_err(|e| format!("failed to insert runtime_check_observations row: {}", e))?;
+    }
+
+    // Assert referential integrity invariant across check observations and executions
+    let orphan_physical_checks: i64 = tx
+        .query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM runtime_check_observations c
+            LEFT JOIN runtime_executions e
+              ON e.run_id = c.run_id AND e.execution_id = c.execution_id
+            WHERE c.run_id = ?1
+              AND c.has_physical_execution = 1
+              AND e.execution_id IS NULL
+            "#,
+            params![&run_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("referential check query error: {}", e))?;
+
+    if orphan_physical_checks != 0 {
+        return Err(format!(
+            "invariant violation: {} physical check observations lack runtime_executions rows",
+            orphan_physical_checks
+        ));
+    }
+
+    let illegitimate_physical_execs: i64 = tx
+        .query_row(
+            r#"
+            SELECT COUNT(*)
+            FROM runtime_check_observations c
+            JOIN runtime_executions e
+              ON e.run_id = c.run_id AND e.execution_id = c.execution_id
+            WHERE c.run_id = ?1
+              AND c.has_physical_execution = 0
+            "#,
+            params![&run_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| format!("referential check query error: {}", e))?;
+
+    if illegitimate_physical_execs != 0 {
+        return Err(format!(
+            "invariant violation: {} non-physical check observations have runtime_executions rows",
+            illegitimate_physical_execs
+        ));
     }
 
     // Insert changed entity co-occurrence observations
