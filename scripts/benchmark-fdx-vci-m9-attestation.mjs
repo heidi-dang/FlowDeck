@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * benchmark-fdx-vci-m9-attestation.mjs — Milestone 9 Verification Attestation Benchmarks
- * Hardened H27 benchmark suite asserting non-vacuous attestation invariants, handle boundaries, RFC 8785 (JCS) compliance, evidence binding, and performance.
+ * Hardened H28 benchmark suite asserting non-vacuous attestation invariants, descriptor-relative handle boundaries, RFC 8785 (JCS) compliance, evidence binding, and performance.
  */
 
 import { execFileSync } from "node:child_process";
@@ -15,7 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m9-attestation.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m9-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "441d9af2725c051771c8d684c6b26fc560f2e32c";
+const EXPECTED_FUNCTIONAL_SHA = "75db2931195c2c6dc1496237ca569511c6859dc4";
 
 function computeSha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -640,6 +640,30 @@ async function runPreflights(bin) {
     rmSync(repo, { recursive: true, force: true });
   }
 
+  // 41. managed_directory_swap_during_acquisition_rejected
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_handle_boundary", "test_managed_directory_swap_during_acquisition"], { cwd: ROOT, stdio: "ignore" });
+    pass("managed_directory_swap_during_acquisition_rejected");
+  }
+
+  // 42. fdx_directory_swap_during_acquisition_rejected
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_handle_boundary", "test_fdx_directory_swap_during_acquisition"], { cwd: ROOT, stdio: "ignore" });
+    pass("fdx_directory_swap_during_acquisition_rejected");
+  }
+
+  // 43. external_same_byte_symlink_substitution_rejected
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_external_handle", "test_external_same_byte_symlink_substitution"], { cwd: ROOT, stdio: "ignore" });
+    pass("external_same_byte_symlink_substitution_rejected");
+  }
+
+  // 44. external_different_file_substitution_rejected
+  {
+    execFileSync("cargo", ["test", "-p", "fdx", "--test", "test_attestation_external_handle", "test_external_different_file_substitution"], { cwd: ROOT, stdio: "ignore" });
+    pass("external_different_file_substitution_rejected");
+  }
+
   console.log(`-> All ${preflights.length} hardened M9 non-vacuous preflights passed successfully!`);
   return preflights;
 }
@@ -729,7 +753,7 @@ async function runBenchmarks(bin) {
 }
 
 async function main() {
-  console.log("=== FlowDeck M9 Verification Attestation Qualification & Benchmark (H27) ===");
+  console.log("=== FlowDeck M9 Verification Attestation Qualification & Benchmark (H28) ===");
 
   const functionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA;
   if (!functionalSha) {
@@ -818,6 +842,8 @@ async function main() {
       symlink_escape_protection_verified: true,
       bounded_read_size_enforced: true,
       filesystem_toctou_handle_safety_verified: true,
+      descriptor_relative_handle_acquisition_verified: true,
+      external_single_open_nofollow_verified: true,
     },
     preflights: preflightResults,
     metrics,
@@ -827,12 +853,12 @@ async function main() {
   console.log(`-> Saved benchmark report: ${REPORT_JSON_PATH}`);
 
   const mdContent = [
-    "# Milestone 9: Verification Attestation Qualification Report (R27)",
+    "# Milestone 9: Verification Attestation Qualification Report (R28)",
     "",
     `**Milestone:** M9  `,
-    `**Functional Baseline (F24):** \`${functionalSha}\`  `,
+    `**Functional Baseline (F25):** \`${functionalSha}\`  `,
     `**Binary SHA-256:** \`${binarySha256}\`  `,
-    `**Benchmark Harness (H27):** \`${harnessSha}\`  `,
+    `**Benchmark Harness (H28):** \`${harnessSha}\`  `,
     `**Executed At:** ${report.timestamp}  `,
     `**Platform:** ${report.platform} (${report.arch})  `,
     `**Node Version:** ${report.node_version}  `,
