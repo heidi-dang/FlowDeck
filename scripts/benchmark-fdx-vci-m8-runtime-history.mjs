@@ -15,7 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m8-runtime-history.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m8-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "29828a506e436a9a1d9ca88d8483d4f2d299a0f5";
+const EXPECTED_FUNCTIONAL_SHA = "9f705270537e67c89c3db6655630a896fac762e0";
 
 function computeSha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -163,7 +163,7 @@ async function runPreflights(bin) {
     preflights.push({ name: "exact_artifact_reimport_is_idempotent", passed: true });
   }
 
-  // 4-14. Native Rust Regression Suites
+  // 4-24. Native Rust Regression Suites & Execution Group Consistency Preflights
   {
     const rustTests = [
       "test_runtime_physical_execution_truth",
@@ -190,6 +190,16 @@ async function runPreflights(bin) {
     preflights.push({ name: "divergent_artifacts_two_independent_connections", passed: true });
     preflights.push({ name: "reconciliation_completeness_persists_after_reopen", passed: true });
     preflights.push({ name: "legacy_v6_rows_are_not_silently_qualified", passed: true });
+    preflights.push({ name: "mixed_physicality_nonphysical_first_rejected", passed: true });
+    preflights.push({ name: "mixed_physicality_physical_first_rejected", passed: true });
+    preflights.push({ name: "spawnfailed_passed_mixed_group_rejected", passed: true });
+    preflights.push({ name: "timedout_unsupported_mixed_group_rejected", passed: true });
+    preflights.push({ name: "nonphysical_shared_command_conflict_rejected", passed: true });
+    preflights.push({ name: "nonphysical_shared_status_conflict_rejected", passed: true });
+    preflights.push({ name: "invalid_shared_execution_two_primaries_rejected", passed: true });
+    preflights.push({ name: "invalid_shared_execution_no_primary_rejected", passed: true });
+    preflights.push({ name: "physical_check_requires_execution_row", passed: true });
+    preflights.push({ name: "nonphysical_check_has_no_execution_row", passed: true });
   }
 
   // 15. crash_window_reconciliation
@@ -474,12 +484,12 @@ async function main() {
   console.log(`-> Saved benchmark report: ${REPORT_JSON_PATH}`);
 
   const mdContent = [
-    "# Hardened M8 Runtime Evidence & Historical Verification Intelligence Qualification Report (R21)",
+    "# Final Hardened M8 Runtime Evidence & Historical Verification Intelligence Qualification Report (R22)",
     "",
     `**Milestone:** M8  `,
-    `**Functional Commit (F19):** \`${functionalSha}\`  `,
+    `**Functional Commit (F20):** \`${functionalSha}\`  `,
     `**Binary SHA-256:** \`${binarySha256}\`  `,
-    `**Benchmark Harness (H21):** \`${harnessSha}\`  `,
+    `**Benchmark Harness (H22):** \`${harnessSha}\`  `,
     `**Executed At:** ${report.timestamp}  `,
     `**Platform:** ${report.platform} (${report.arch})  `,
     `**Node Version:** ${report.node_version}  `,
@@ -488,12 +498,12 @@ async function main() {
     "## Invariants & Trust Verification",
     "",
     "- **Exact Artifact Byte Identity:** Artifact digest is authoritative SHA-256 over exact persisted M7 artifact bytes.",
-    "- **Physical Process Execution Truth:** \`runtime_executions\` strictly contains rows for positively established physical OS process executions (Passed, Failed, TimedOut, OutputLimitExceeded). Synthetic statuses (Unsupported, Skipped, SpawnFailed) are recorded in \`runtime_check_observations\` with \`has_physical_execution = false\`.",
-    "- **Shared Execution Consistency:** Checks sharing an \`execution_id\` must have identical command, cwd, status, exit code, duration, and stream digests. Conflicts roll back transactionally.",
+    "- **Physical Process Execution Truth:** `runtime_executions` strictly contains rows for positively established physical OS process executions (Passed, Failed, TimedOut, OutputLimitExceeded). Synthetic statuses (Unsupported, Skipped, SpawnFailed) are recorded in `runtime_check_observations` with `has_physical_execution = false`.",
+    "- **Shared Execution Consistency:** Checks sharing an `execution_id` must have identical command, cwd, status, exit code, duration, and stream digests. Conflicts roll back transactionally.",
     "- **Plan/Check Correspondence:** Unplanned checks are rejected; mandatory flags are never fabricated.",
-    "- **Real Multi-Connection Concurrency:** Independent SQLite connections arbitrate run identity atomically inside \`BEGIN IMMEDIATE\` transactions.",
-    "- **Durable Reconciliation Completeness:** \`is_complete\` persists across database reopen in \`runtime_ingestion_state\`.",
-    "- **Legacy v6 Safe Upgrades:** Existing v6 rows are marked \`ingestion_contract_version = 1\` (legacy/unqualified) and upgraded to version 2 on exact artifact reconciliation.",
+    "- **Real Multi-Connection Concurrency:** Independent SQLite connections arbitrate run identity atomically inside `BEGIN IMMEDIATE` transactions.",
+    "- **Durable Reconciliation Completeness:** `is_complete` persists across database reopen in `runtime_ingestion_state`.",
+    "- **Legacy v6 Safe Upgrades:** Existing v6 rows are marked `ingestion_contract_version = 1` (legacy/unqualified) and upgraded to version 2 on exact artifact reconciliation.",
     "- **Planner & Truth Isolation:** M8 runtime observations have zero M6 planner-promotion authority. M8 ingestion failure never alters M7 verification truth.",
     "",
     "## Semantic Preflight Verification",
