@@ -119,6 +119,7 @@ pub fn diff_against(
     // Build git diff command
     let mut cmd = Command::new("git");
     cmd.arg("diff")
+        .arg("--no-color")
         .arg("--unified=3")
         .current_dir(&options.root);
 
