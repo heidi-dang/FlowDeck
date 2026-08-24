@@ -69,6 +69,10 @@ pub fn migrate_schema(
                 // Migrate v8 -> v9: qualified M10 evidence and execution grouping.
                 tx.execute_batch(crate::intelligence::calibration::schema::MIGRATE_V8_TO_V9_SQL)?;
             }
+            9 => {
+                // Migrate v9 -> v10: additive M11 learned-policy persistence.
+                tx.execute_batch(crate::intelligence::policy::schema::MIGRATE_V9_TO_V10_SQL)?;
+            }
             _ => {
                 return Err(MigrationError::Unsupported(version, target_version));
             }

@@ -48,7 +48,7 @@ fn test_v8_calibration_rows_remain_legacy_and_excluded_from_qualified_aggregates
         .conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 9);
+    assert_eq!(version, 10);
 
     let (contract_version, record_digest): (i64, Option<String>) = db
         .conn

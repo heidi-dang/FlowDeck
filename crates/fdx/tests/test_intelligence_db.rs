@@ -17,7 +17,7 @@ fn test_database_creation_and_schema() {
 
     // Check schema version
     let version = db.get_schema_version().unwrap();
-    assert_eq!(version.version, 9);
+    assert_eq!(version.version, 10);
 
     // Reopen preserves state
     drop(db);
@@ -27,7 +27,7 @@ fn test_database_creation_and_schema() {
     )
     .expect("Failed to reopen database");
     let version2 = db2.get_schema_version().unwrap();
-    assert_eq!(version2.version, 9);
+    assert_eq!(version2.version, 10);
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn test_corruption_recovery() {
         fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
     )
     .expect("Failed to open and recover corrupt database");
-    assert_eq!(db.get_schema_version().unwrap().version, 9);
+    assert_eq!(db.get_schema_version().unwrap().version, 10);
 
     // Check that corrupt DB was moved
     let entries = std::fs::read_dir(repo_root.join(".fdx")).unwrap();

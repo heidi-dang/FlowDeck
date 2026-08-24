@@ -3,8 +3,8 @@ use fdx::intelligence::schema::CURRENT_SCHEMA_VERSION;
 use tempfile::tempdir;
 
 #[test]
-fn test_runtime_schema_tables_survive_the_additive_v9_target() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+fn test_runtime_schema_tables_survive_the_additive_v10_target() {
+    assert_eq!(CURRENT_SCHEMA_VERSION, 10);
 
     let dir = tempdir().unwrap();
     let db = EvidenceDatabase::open(dir.path(), DatabaseOpenMode::ReadWrite).unwrap();

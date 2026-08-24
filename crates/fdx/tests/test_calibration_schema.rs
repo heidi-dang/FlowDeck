@@ -5,7 +5,7 @@ use tempfile::tempdir;
 
 #[test]
 fn test_calibration_schema_tables_and_columns_exist() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 10);
 
     let dir = tempdir().unwrap();
     let db = EvidenceDatabase::open(dir.path(), DatabaseOpenMode::ReadWrite).unwrap();
@@ -55,7 +55,7 @@ fn test_v7_to_v9_migration_preserves_data() {
         .unwrap();
     }
 
-    // 2. Open via EvidenceDatabase to trigger the additive v8 and v9 migrations
+    // 2. Open via EvidenceDatabase to trigger the additive v8–v10 migrations
     {
         let db = EvidenceDatabase::open(dir.path(), DatabaseOpenMode::ReadWrite).unwrap();
 
@@ -63,7 +63,7 @@ fn test_v7_to_v9_migration_preserves_data() {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
 
         // Check runtime_runs row is intact
         let run_count: i64 = db
