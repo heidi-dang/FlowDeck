@@ -118,30 +118,58 @@ fn test_managed_filename_integrity_anchor() {
 }
 
 #[test]
-fn test_external_file_integrity_anchor_contract() {
-    let (tmp, run) = setup_test_run("run-external-anchor");
+fn test_managed_attestation_symlink_file_rejected() {
+    let (tmp, run) = setup_test_run("run-managed-symlink-file");
+    let repo_root = tmp.path();
+    let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly).unwrap();
+    let attestation = build_verification_attestation(repo_root, &run.run_id, &db.conn).unwrap();
+
+    let (path, _att_sha) = persist_attestation(repo_root, &attestation).unwrap();
+
+    // Move file to outside repo and make .fdx/attestations/run.sha.json a symlink to it
+    let tmp_outside = tempdir().unwrap();
+    let outside_file = tmp_outside.path().join("outside.json");
+    std::fs::rename(&path, &outside_file).unwrap();
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside_file, &path).unwrap();
+
+        // Even though bytes match the filename SHA, managed symlink files must be rejected
+        let load_res = load_attestation_from_path(repo_root, &path, None);
+        assert!(load_res.is_err(), "Managed symlink file must be rejected");
+        let err_msg = load_res.unwrap_err();
+        assert!(err_msg.contains("symlink") || err_msg.contains("regular file"));
+    }
+}
+
+#[test]
+fn test_external_content_address_lookalike_rejected_without_expected_sha() {
+    let (tmp, run) = setup_test_run("run-ext-lookalike");
     let repo_root = tmp.path();
     let db = EvidenceDatabase::open(repo_root, DatabaseOpenMode::ReadOnly).unwrap();
     let attestation = build_verification_attestation(repo_root, &run.run_id, &db.conn).unwrap();
 
     let (path, att_sha) = persist_attestation(repo_root, &attestation).unwrap();
-    let external_path = repo_root.join("external_statement.json");
-    std::fs::copy(&path, &external_path).unwrap();
 
-    // 1. Loading external non-content-addressed file without expected SHA fails closed
-    let load_err = load_attestation_from_path(repo_root, &external_path, None);
-    assert!(load_err.is_err());
+    // Create external directory and copy with the EXACT content-addressed filename
+    let tmp_outside = tempdir().unwrap();
+    let external_lookalike = tmp_outside
+        .path()
+        .join(format!("{}.{}.json", run.run_id, att_sha));
+    std::fs::copy(&path, &external_lookalike).unwrap();
+
+    // 1. Loading without --expected-sha256 must FAIL closed because it is outside canonical repo/.fdx/attestations
+    let load_err = load_attestation_from_path(repo_root, &external_lookalike, None);
+    assert!(
+        load_err.is_err(),
+        "External lookalike without --expected-sha256 must be rejected"
+    );
     assert!(load_err.unwrap_err().contains("requires --expected-sha256"));
 
-    // 2. Loading with wrong expected SHA fails
-    let wrong_sha = "0000000000000000000000000000000000000000000000000000000000000000";
-    let load_wrong = load_attestation_from_path(repo_root, &external_path, Some(wrong_sha));
-    assert!(load_wrong.is_err());
-    assert!(load_wrong.unwrap_err().contains("Expected digest mismatch"));
-
-    // 3. Loading with correct expected SHA succeeds and verifies
+    // 2. Loading with correct expected SHA succeeds
     let (loaded_att, raw_bytes, _) =
-        load_attestation_from_path(repo_root, &external_path, Some(&att_sha)).unwrap();
+        load_attestation_from_path(repo_root, &external_lookalike, Some(&att_sha)).unwrap();
     let verify_res = verify_attestation(
         repo_root,
         &loaded_att,
@@ -150,4 +178,10 @@ fn test_external_file_integrity_anchor_contract() {
         &db.conn,
     );
     assert!(verify_res.is_ok());
+
+    // 3. Loading with wrong expected SHA fails
+    let wrong_sha = "0000000000000000000000000000000000000000000000000000000000000000";
+    let load_wrong = load_attestation_from_path(repo_root, &external_lookalike, Some(wrong_sha));
+    assert!(load_wrong.is_err());
+    assert!(load_wrong.unwrap_err().contains("Expected digest mismatch"));
 }
