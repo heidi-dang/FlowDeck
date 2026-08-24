@@ -32,6 +32,7 @@ import { dirname, join } from "node:path"
 import { existsSync } from "node:fs"
 import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
+import { resolveRustToolchain } from "./rust-toolchain.mjs"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
@@ -528,9 +529,9 @@ export function getDiffCheckTasks(ranges) {
 // ── Parallel runner ───────────────────────────────────────────────────────────
 
 /** Run a process, streaming output, resolve with name and exit code. */
-function runProcess(name, executable, args) {
+function runProcess(name, executable, args, env = process.env) {
   return new Promise((resolve) => {
-    const proc = spawn(executable, args, { shell: false, cwd: root, stdio: "inherit" })
+    const proc = spawn(executable, args, { shell: false, cwd: root, env, stdio: "inherit" })
     proc.on("close", (code) => resolve({ name, cmd: `${executable} ${args.join(" ")}`, code: code ?? 1 }))
     proc.on("error", () => resolve({ name, cmd: `${executable} ${args.join(" ")}`, code: 1 }))
   })
@@ -576,17 +577,20 @@ if (isMain) {
     console.log("\n── Full mode: complete production verification ──")
     const rustChanged = detectRustChanges(stdinContent, root)
 
-    let hasCargo = false
+    let toolchain = null
     try {
-      execSync("cargo --version", { stdio: "ignore" })
-      hasCargo = true
-    } catch {
-      // No cargo
+      toolchain = resolveRustToolchain()
+      console.log(`Rust toolchain: ${toolchain.cargoVersion}; ${toolchain.rustcVersion}`)
+    } catch (error) {
+      if (rustChanged) {
+        console.error(`\n✗ ${error.message}`)
+        process.exit(1)
+      }
     }
 
     let steps = []
     try {
-      steps = getFullModeSteps(rustChanged, hasCargo)
+      steps = getFullModeSteps(rustChanged, toolchain !== null)
     } catch (err) {
       console.error(`\n✗ ${err.message}`)
       process.exit(1)
@@ -597,7 +601,7 @@ if (isMain) {
     for (const { name, cmd } of steps) {
       console.log(`\n── ${name} ──`)
       try {
-        execSync(cmd, { cwd: root, stdio: "inherit" })
+        execSync(cmd, { cwd: root, env: toolchain?.env ?? process.env, stdio: "inherit" })
       } catch {
         console.error(`\n✗ ${name} failed. Push blocked.`)
         process.exit(1)
@@ -670,8 +674,21 @@ if (isMain) {
       tasks.push(() => runProcess("Test", bunBin, ["test", ...testPaths]))
     }
 
+    const needsRustToolchain = fastTasks.some((task) => task.executable === "cargo")
+    let fastToolchain = null
+    if (needsRustToolchain) {
+      try {
+        fastToolchain = resolveRustToolchain()
+      } catch (error) {
+        console.error(`\n✗ ${error.message}`)
+        process.exit(1)
+      }
+    }
+
     for (const task of fastTasks) {
-      tasks.push(() => runProcess(task.name, task.executable, task.args))
+      const executable = task.executable === "cargo" ? fastToolchain.cargo : task.executable
+      const env = task.executable === "cargo" ? fastToolchain.env : process.env
+      tasks.push(() => runProcess(task.name, executable, task.args, env))
     }
 
     const results = await runConcurrent(tasks, 3)

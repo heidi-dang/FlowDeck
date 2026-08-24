@@ -27,6 +27,7 @@ function safeExecFileSync(file, args, opts = {}) {
 
 import { existsSync } from "node:fs"
 import { join, resolve } from "node:path"
+import { resolveRustToolchain } from "./rust-toolchain.mjs"
 
 const ROOT = resolve(import.meta.dirname, "..")
 const MANIFEST_PATH = join(ROOT, "crates", "fdx", "Cargo.toml")
@@ -45,12 +46,14 @@ function check(label, ok, detail = "") {
 
 console.log("\n=== FlowDeck FDX Cross-Runtime Parity Gate ===\n")
 
-// ── 1. Require Cargo ──────────────────────────────────────────────────
+// ── 1. Resolve one Cargo/Rustc pair ─────────────────────────────────────
+let toolchain
 try {
-  const cargoVer = safeExecFileSync("cargo", ["--version"], { timeout: 10000 }).trim()
-  console.log(`  Cargo: ${cargoVer}`)
-} catch {
-  console.error("ERROR: Cargo is required but not found in PATH.")
+  toolchain = resolveRustToolchain()
+  console.log(`  Cargo: ${toolchain.cargoVersion}`)
+  console.log(`  Rustc: ${toolchain.rustcVersion}`)
+} catch (error) {
+  console.error(`ERROR: ${error.message}`)
   console.error("  Install Rust via https://rustup.rs and try again.")
   process.exit(1)
 }
@@ -58,7 +61,7 @@ try {
 // ── 2. Build FDX binary ──────────────────────────────────────────────
 console.log("\n  Building FDX native binary from current branch source...")
 try {
-  safeExecFileSync("cargo", ["build", "--manifest-path", MANIFEST_PATH], { stdio: "inherit", timeout: 300000 })
+  safeExecFileSync(toolchain.cargo, ["build", "--manifest-path", MANIFEST_PATH], { env: toolchain.env, stdio: "inherit", timeout: 300000 })
 } catch (e) {
   console.error(`ERROR: FDX build failed: ${e.message}`)
   process.exit(1)
