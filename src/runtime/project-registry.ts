@@ -63,6 +63,13 @@ export function acquireProjectRuntime(directory: string, client?: any): ProjectR
   };
 
   _registry.set(canonicalDir, context);
+
+  if (client) {
+    adapter.initialize(client).catch(err => {
+      console.warn("[ProjectRuntimeRegistry] adapter.initialize threw:", err);
+    });
+  }
+
   return context;
 }
 
