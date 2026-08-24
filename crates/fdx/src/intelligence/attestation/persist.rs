@@ -3,13 +3,35 @@
 use crate::intelligence::attestation::canonical::canonicalize_to_vec;
 use crate::intelligence::attestation::model::VerificationAttestation;
 use crate::intelligence::runtime::sha256_bytes;
+use rustix::fd::AsFd;
+use rustix::fs::{fstat, linkat, openat, unlinkat, AtFlags, FileType, Mode, OFlags};
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Maximum permitted size for an attestation artifact file (16 MiB).
 pub const MAX_ATTESTATION_ARTIFACT_BYTES: u64 = 16 * 1024 * 1024;
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    pub static TEST_BEFORE_PUBLISH_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+    pub static TEST_INJECT_LINK_FAILURE: std::cell::Cell<Option<std::io::ErrorKind>> = const { std::cell::Cell::new(None) };
+}
+
+pub fn set_test_before_publish_hook<F: Fn() + 'static>(hook: F) {
+    TEST_BEFORE_PUBLISH_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
+pub fn clear_test_before_publish_hook() {
+    TEST_BEFORE_PUBLISH_HOOK.with(|h| *h.borrow_mut() = None);
+}
+
+pub fn set_test_inject_link_failure(kind: Option<std::io::ErrorKind>) {
+    TEST_INJECT_LINK_FAILURE.with(|f| f.set(kind));
+}
 
 /// Directory where verification attestations are persisted.
 pub fn attestations_dir(repo_root: &Path) -> PathBuf {
@@ -38,20 +60,78 @@ fn validate_identifier(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Read up to `max_bytes` from an already-opened file handle with hard cap and size checks.
+pub fn read_bounded_file(file: &mut File, max_bytes: u64) -> Result<Vec<u8>, String> {
+    let stat = fstat(file.as_fd()).map_err(|e| format!("failed to fstat file handle: {}", e))?;
+    let file_type = FileType::from_raw_mode(stat.st_mode);
+
+    if file_type == FileType::Symlink {
+        return Err("file handle is a symlink (symlinks are rejected)".to_string());
+    }
+    if file_type != FileType::RegularFile {
+        return Err("file handle is not a regular file".to_string());
+    }
+    if (stat.st_size as u64) > max_bytes {
+        return Err(format!(
+            "file exceeds maximum allowed size ({} bytes > {} max)",
+            stat.st_size, max_bytes
+        ));
+    }
+
+    let mut take_reader = Read::take(file, max_bytes + 1);
+    let mut bytes = Vec::with_capacity(std::cmp::min(stat.st_size as usize, 64 * 1024));
+    take_reader
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("failed to read file content: {}", e))?;
+
+    if (bytes.len() as u64) > max_bytes {
+        return Err(format!(
+            "file grew beyond maximum allowed size during read (exceeded {} bytes)",
+            max_bytes
+        ));
+    }
+    Ok(bytes)
+}
+
 /// Validated canonical managed attestation directory context.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ManagedAttestationDir {
     pub repo_root: PathBuf,
     pub fdx_dir: PathBuf,
     pub attestations_dir: PathBuf,
+    pub dir_file: File,
+}
+
+impl Clone for ManagedAttestationDir {
+    fn clone(&self) -> Self {
+        Self {
+            repo_root: self.repo_root.clone(),
+            fdx_dir: self.fdx_dir.clone(),
+            attestations_dir: self.attestations_dir.clone(),
+            dir_file: self
+                .dir_file
+                .try_clone()
+                .expect("failed to clone dir handle"),
+        }
+    }
 }
 
 impl ManagedAttestationDir {
-    /// Validate that repo_root, .fdx, and .fdx/attestations form a strict, non-symlink containment jail.
+    /// Validate that repo_root, .fdx, and .fdx/attestations form a strict, non-symlink containment jail,
+    /// and return the opened directory handle for race-free relative operations.
     pub fn ensure(repo_root: &Path) -> Result<Self, String> {
         let canonical_repo = repo_root
             .canonicalize()
             .map_err(|e| format!("cannot canonicalize repository root {:?}: {}", repo_root, e))?;
+
+        let repo_meta = fs::symlink_metadata(&canonical_repo)
+            .map_err(|e| format!("failed to inspect repository root {:?}: {}", repo_root, e))?;
+        if repo_meta.file_type().is_symlink() || !repo_meta.is_dir() {
+            return Err(format!(
+                "repository root {:?} is not a directory",
+                repo_root
+            ));
+        }
 
         let fdx_dir = repo_root.join(".fdx");
         if fdx_dir.exists() || fdx_dir.is_symlink() {
@@ -124,10 +204,29 @@ impl ManagedAttestationDir {
             })?;
         }
 
+        // Open directory handle safely
+        let dir_file = File::open(&attestations_dir).map_err(|e| {
+            format!(
+                "failed to open managed attestations directory handle {:?}: {}",
+                attestations_dir, e
+            )
+        })?;
+
+        // Verify open handle stat is directory
+        let stat = fstat(dir_file.as_fd())
+            .map_err(|e| format!("failed to fstat managed attestations directory: {}", e))?;
+        if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
+            return Err(format!(
+                "managed attestations handle is not a directory: {:?}",
+                attestations_dir
+            ));
+        }
+
         Ok(Self {
             repo_root: canonical_repo,
             fdx_dir,
             attestations_dir,
+            dir_file,
         })
     }
 }
@@ -145,6 +244,18 @@ pub enum AttestationSource {
     },
 }
 
+/// Check if a path syntactically targets the managed .fdx namespace.
+pub fn is_managed_path_syntax(repo_root: &Path, file_path: &Path) -> bool {
+    if file_path.starts_with(".fdx") {
+        return true;
+    }
+    let fdx_full = repo_root.join(".fdx");
+    if file_path.starts_with(&fdx_full) {
+        return true;
+    }
+    file_path.components().any(|c| c.as_os_str() == ".fdx")
+}
+
 /// Classify an attestation source based on canonical repository containment and symlink safety.
 pub fn classify_attestation_source(
     repo_root: &Path,
@@ -157,41 +268,17 @@ pub fn classify_attestation_source(
         repo_root.join(file_path)
     };
 
-    let meta = fs::symlink_metadata(&resolved_path).map_err(|e| {
-        format!(
-            "attestation file {:?} metadata cannot be read: {}",
-            resolved_path, e
-        )
-    })?;
+    let is_managed_syntax = is_managed_path_syntax(repo_root, file_path)
+        || is_managed_path_syntax(repo_root, &resolved_path);
 
-    if meta.file_type().is_symlink() {
-        return Err(format!(
-            "attestation file {:?} is a symlink (symlinks are rejected)",
-            resolved_path
-        ));
-    }
+    if is_managed_syntax {
+        let managed_jail = ManagedAttestationDir::ensure(repo_root).map_err(|e| {
+            format!(
+                "Managed attestation directory safety violation for {:?}: {}",
+                resolved_path, e
+            )
+        })?;
 
-    if !meta.is_file() {
-        return Err(format!(
-            "attestation path {:?} is not a regular file",
-            resolved_path
-        ));
-    }
-
-    if meta.len() > MAX_ATTESTATION_ARTIFACT_BYTES {
-        return Err(format!(
-            "attestation file {:?} exceeds maximum allowed size ({} bytes > {} max)",
-            resolved_path,
-            meta.len(),
-            MAX_ATTESTATION_ARTIFACT_BYTES
-        ));
-    }
-
-    let is_managed = (|| -> Result<Option<String>, String> {
-        let managed_jail = match ManagedAttestationDir::ensure(repo_root) {
-            Ok(j) => j,
-            Err(_) => return Ok(None),
-        };
         let canonical_att_dir = managed_jail.attestations_dir.canonicalize().map_err(|e| {
             format!(
                 "failed to canonicalize managed attestations dir {:?}: {}",
@@ -206,26 +293,31 @@ pub fn classify_attestation_source(
             )
         })?;
 
-        let parent = match canonical_file.parent() {
-            Some(p) => p,
-            None => return Ok(None),
-        };
+        let parent = canonical_file
+            .parent()
+            .ok_or_else(|| format!("cannot determine parent directory of {:?}", canonical_file))?;
 
         if parent == canonical_att_dir {
             if let Some(fn_sha) = extract_filename_digest(&resolved_path) {
-                return Ok(Some(fn_sha));
+                return Ok(AttestationSource::Managed {
+                    path: resolved_path,
+                    filename_sha256: fn_sha,
+                });
+            } else {
+                return Err(format!(
+                    "Managed attestation file {:?} has invalid content-address filename format (<run_id>.<sha256>.json)",
+                    resolved_path
+                ));
             }
+        } else {
+            return Err(format!(
+                "Attestation path {:?} targets .fdx namespace but is outside .fdx/attestations directory",
+                resolved_path
+            ));
         }
-        Ok(None)
-    })();
+    }
 
-    let is_managed_res = is_managed.unwrap_or(None);
-    if let Some(fn_sha) = is_managed_res {
-        Ok(AttestationSource::Managed {
-            path: resolved_path,
-            filename_sha256: fn_sha,
-        })
-    } else if let Some(exp_sha) = expected_sha256 {
+    if let Some(exp_sha) = expected_sha256 {
         Ok(AttestationSource::External {
             path: resolved_path,
             expected_sha256: exp_sha.to_ascii_lowercase(),
@@ -251,83 +343,170 @@ pub fn persist_attestation(
 
     let managed_jail = ManagedAttestationDir::ensure(repo_root)?;
     let dir = managed_jail.attestations_dir;
-    let target_path = dir.join(format!("{}.{}.json", run_id, attestation_sha256));
+    let target_filename = format!("{}.{}.json", run_id, attestation_sha256);
+    let target_path = dir.join(&target_filename);
 
-    if target_path.exists() || target_path.is_symlink() {
-        let meta = fs::symlink_metadata(&target_path).map_err(|e| {
-            format!(
-                "failed to read metadata of existing attestation {:?}: {}",
-                target_path, e
-            )
-        })?;
-        if meta.file_type().is_symlink() {
-            return Err(format!(
-                "Attestation target {:?} is a symlink (refusing to overwrite)",
-                target_path
-            ));
-        }
-        let existing_bytes = fs::read(&target_path).map_err(|e| {
-            format!(
-                "failed to read existing attestation {:?}: {}",
-                target_path, e
-            )
-        })?;
-        if existing_bytes == canonical_bytes {
-            return Ok((target_path, attestation_sha256));
-        } else {
-            return Err(format!(
-                "Attestation collision: file {:?} already exists with conflicting contents",
-                target_path
-            ));
-        }
-    }
-
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let pid = std::process::id();
     let prefix = if attestation_sha256.len() >= 8 {
         &attestation_sha256[..8]
     } else {
         &attestation_sha256
     };
-    let temp_path = dir.join(format!(".{}.{}.tmp-{}", run_id, prefix, nonce));
 
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create_new(true);
+    // Open unique temp file relative to dir_file with create-new retry loop
+    let mut temp_filename = String::new();
+    let mut temp_fd_opt = None;
+
+    for _ in 0..5 {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let name = format!(".{}.{}.tmp-{}-{}-{}", run_id, prefix, pid, nonce, counter);
+
+        match openat(
+            &managed_jail.dir_file,
+            &name,
+            OFlags::CREATE | OFlags::EXCL | OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::from_bits_truncate(0o644),
+        ) {
+            Ok(fd) => {
+                temp_filename = name;
+                temp_fd_opt = Some(fd);
+                break;
+            }
+            Err(rustix::io::Errno::EXIST) => continue,
+            Err(e) => {
+                return Err(format!(
+                    "failed to create temporary attestation file {:?} safely: {}",
+                    name, e
+                ));
+            }
+        }
+    }
+
+    let temp_fd = temp_fd_opt.ok_or_else(|| {
+        format!(
+            "failed to allocate unique temporary filename for run_id {}",
+            run_id
+        )
+    })?;
+
     let write_res = (|| -> std::io::Result<()> {
-        let mut file = options.open(&temp_path)?;
+        let mut file = File::from(temp_fd);
         file.write_all(&canonical_bytes)?;
         file.sync_all()?;
         Ok(())
     })();
 
     if let Err(e) = write_res {
-        let _ = fs::remove_file(&temp_path);
+        let _ = unlinkat(&managed_jail.dir_file, &temp_filename, AtFlags::empty());
         return Err(format!(
             "failed to write temporary attestation {:?}: {}",
-            temp_path, e
+            temp_filename, e
         ));
     }
 
-    let link_res = fs::hard_link(&temp_path, &target_path);
-    let _ = fs::remove_file(&temp_path);
+    TEST_BEFORE_PUBLISH_HOOK.with(|h| {
+        if let Some(ref hook) = *h.borrow() {
+            hook();
+        }
+    });
+
+    let link_res = {
+        let injected = TEST_INJECT_LINK_FAILURE.with(|f| f.get());
+        if let Some(kind) = injected {
+            Err(match kind {
+                std::io::ErrorKind::AlreadyExists => rustix::io::Errno::EXIST,
+                std::io::ErrorKind::Unsupported => rustix::io::Errno::NOTSUP,
+                _ => rustix::io::Errno::IO,
+            })
+        } else {
+            linkat(
+                &managed_jail.dir_file,
+                &temp_filename,
+                &managed_jail.dir_file,
+                &target_filename,
+                AtFlags::empty(),
+            )
+        }
+    };
+
+    let _ = unlinkat(&managed_jail.dir_file, &temp_filename, AtFlags::empty());
 
     match link_res {
         Ok(_) => {
             // Best-effort directory sync for crash durability
-            if let Ok(d) = File::open(&dir) {
-                let _ = d.sync_all();
-            }
-            Ok((target_path, attestation_sha256))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            let existing_bytes = fs::read(&target_path).map_err(|re| {
+            let _ = managed_jail.dir_file.sync_all();
+
+            // Postcondition verification through safe open handle
+            let verify_fd = openat(
+                &managed_jail.dir_file,
+                &target_filename,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            )
+            .map_err(|e| {
                 format!(
-                    "failed to read conflicting attestation {:?}: {}",
-                    target_path, re
+                    "Post-publication verification failed: could not open target {:?}: {}",
+                    target_filename, e
                 )
             })?;
+
+            let mut verify_file = File::from(verify_fd);
+            let final_bytes = read_bounded_file(&mut verify_file, MAX_ATTESTATION_ARTIFACT_BYTES)
+                .map_err(|e| {
+                    format!(
+                        "Post-publication verification failed on target {:?}: {}",
+                        target_filename, e
+                    )
+                })?;
+
+            if final_bytes != canonical_bytes {
+                return Err(format!(
+                    "Post-publication verification failed: target {:?} bytes do not match canonical bytes",
+                    target_filename
+                ));
+            }
+
+            Ok((target_path, attestation_sha256))
+        }
+        Err(rustix::io::Errno::EXIST) => {
+            // Final already exists. Open existing entry relative to SAME directory handle.
+            // NOFOLLOW ensures we refuse symlinks/reparse points.
+            let existing_fd = match openat(
+                &managed_jail.dir_file,
+                &target_filename,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+                Mode::empty(),
+            ) {
+                Ok(fd) => fd,
+                Err(rustix::io::Errno::LOOP) => {
+                    return Err(format!(
+                        "Attestation target {:?} is a symlink (refusing to overwrite)",
+                        target_path
+                    ));
+                }
+                Err(e) => {
+                    return Err(format!(
+                        "failed to open conflicting attestation {:?}: {}",
+                        target_path, e
+                    ));
+                }
+            };
+
+            let mut existing_file = File::from(existing_fd);
+            let existing_bytes =
+                read_bounded_file(&mut existing_file, MAX_ATTESTATION_ARTIFACT_BYTES).map_err(
+                    |e| {
+                        format!(
+                            "failed to read conflicting attestation {:?}: {}",
+                            target_path, e
+                        )
+                    },
+                )?;
+
             if existing_bytes == canonical_bytes {
                 Ok((target_path, attestation_sha256))
             } else {
@@ -339,7 +518,7 @@ pub fn persist_attestation(
         }
         Err(e) => Err(format!(
             "Atomic hard-link publication failed for {:?} -> {:?}: {}. Refusing non-atomic fallback.",
-            temp_path, target_path, e
+            temp_filename, target_filename, e
         )),
     }
 }
@@ -374,8 +553,52 @@ pub fn load_attestation_from_path(
         } => (path, expected_sha256, false),
     };
 
-    let bytes = fs::read(&resolved_path)
-        .map_err(|e| format!("failed to read attestation file {:?}: {}", resolved_path, e))?;
+    let bytes = if is_managed {
+        let managed_jail = ManagedAttestationDir::ensure(repo_root)?;
+        let file_name = resolved_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or_else(|| format!("invalid filename for {:?}", resolved_path))?;
+
+        let fd = openat(
+            &managed_jail.dir_file,
+            file_name,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|e| {
+            format!(
+                "failed to open managed attestation file {:?} safely (symlinks rejected): {}",
+                resolved_path, e
+            )
+        })?;
+
+        let mut file = File::from(fd);
+        read_bounded_file(&mut file, MAX_ATTESTATION_ARTIFACT_BYTES)?
+    } else {
+        let meta = fs::symlink_metadata(&resolved_path).map_err(|e| {
+            format!(
+                "attestation file {:?} metadata cannot be read: {}",
+                resolved_path, e
+            )
+        })?;
+        if meta.file_type().is_symlink() {
+            return Err(format!(
+                "attestation file {:?} is a symlink (symlinks are rejected)",
+                resolved_path
+            ));
+        }
+        if !meta.is_file() {
+            return Err(format!(
+                "attestation path {:?} is not a regular file",
+                resolved_path
+            ));
+        }
+
+        let mut file = File::open(&resolved_path)
+            .map_err(|e| format!("failed to open attestation file {:?}: {}", resolved_path, e))?;
+        read_bounded_file(&mut file, MAX_ATTESTATION_ARTIFACT_BYTES)?
+    };
 
     let sha256 = sha256_bytes(&bytes);
 
