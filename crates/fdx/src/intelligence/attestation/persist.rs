@@ -4,8 +4,8 @@ use crate::intelligence::attestation::canonical::canonicalize_to_vec;
 use crate::intelligence::attestation::model::VerificationAttestation;
 use crate::intelligence::runtime::sha256_bytes;
 use rustix::fd::AsFd;
-use rustix::fs::{fstat, linkat, openat, unlinkat, AtFlags, FileType, Mode, OFlags};
-use std::fs::{self, File};
+use rustix::fs::{fstat, linkat, mkdirat, open, openat, unlinkat, AtFlags, FileType, Mode, OFlags};
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -18,6 +18,9 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 thread_local! {
     pub static TEST_BEFORE_PUBLISH_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+    pub static TEST_BEFORE_ACQUIRE_FDX_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+    pub static TEST_BEFORE_ACQUIRE_ATTESTATIONS_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
+    pub static TEST_BEFORE_OPEN_EXTERNAL_HOOK: std::cell::RefCell<Option<Box<dyn Fn()>>> = const { std::cell::RefCell::new(None) };
     pub static TEST_INJECT_LINK_FAILURE: std::cell::Cell<Option<std::io::ErrorKind>> = const { std::cell::Cell::new(None) };
 }
 
@@ -27,6 +30,30 @@ pub fn set_test_before_publish_hook<F: Fn() + 'static>(hook: F) {
 
 pub fn clear_test_before_publish_hook() {
     TEST_BEFORE_PUBLISH_HOOK.with(|h| *h.borrow_mut() = None);
+}
+
+pub fn set_test_before_acquire_fdx_hook<F: Fn() + 'static>(hook: F) {
+    TEST_BEFORE_ACQUIRE_FDX_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
+pub fn clear_test_before_acquire_fdx_hook() {
+    TEST_BEFORE_ACQUIRE_FDX_HOOK.with(|h| *h.borrow_mut() = None);
+}
+
+pub fn set_test_before_acquire_attestations_hook<F: Fn() + 'static>(hook: F) {
+    TEST_BEFORE_ACQUIRE_ATTESTATIONS_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
+pub fn clear_test_before_acquire_attestations_hook() {
+    TEST_BEFORE_ACQUIRE_ATTESTATIONS_HOOK.with(|h| *h.borrow_mut() = None);
+}
+
+pub fn set_test_before_open_external_hook<F: Fn() + 'static>(hook: F) {
+    TEST_BEFORE_OPEN_EXTERNAL_HOOK.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+}
+
+pub fn clear_test_before_open_external_hook() {
+    TEST_BEFORE_OPEN_EXTERNAL_HOOK.with(|h| *h.borrow_mut() = None);
 }
 
 pub fn set_test_inject_link_failure(kind: Option<std::io::ErrorKind>) {
@@ -60,7 +87,7 @@ fn validate_identifier(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Read up to `max_bytes` from an already-opened file handle with hard cap and size checks.
+/// Read up to max_bytes from an already-opened file handle with hard cap and size checks.
 pub fn read_bounded_file(file: &mut File, max_bytes: u64) -> Result<Vec<u8>, String> {
     let stat = fstat(file.as_fd()).map_err(|e| format!("failed to fstat file handle: {}", e))?;
     let file_type = FileType::from_raw_mode(stat.st_mode);
@@ -119,108 +146,193 @@ impl Clone for ManagedAttestationDir {
 impl ManagedAttestationDir {
     /// Validate that repo_root, .fdx, and .fdx/attestations form a strict, non-symlink containment jail,
     /// and return the opened directory handle for race-free relative operations.
+    ///
+    /// Security Contract:
+    /// 1. The canonical repository root is opened once to establish the initial trusted root directory handle.
+    /// 2. All subsequent path descent (.fdx, attestations) is performed descriptor-relative via openat/mkdirat
+    ///    with strict NOFOLLOW | DIRECTORY flags from held directory handles.
+    /// 3. At no point is a path validated and then reopened by pathname lookup; all operations use the held descriptors.
     pub fn ensure(repo_root: &Path) -> Result<Self, String> {
         let canonical_repo = repo_root
             .canonicalize()
             .map_err(|e| format!("cannot canonicalize repository root {:?}: {}", repo_root, e))?;
 
-        let repo_meta = fs::symlink_metadata(&canonical_repo)
-            .map_err(|e| format!("failed to inspect repository root {:?}: {}", repo_root, e))?;
-        if repo_meta.file_type().is_symlink() || !repo_meta.is_dir() {
-            return Err(format!(
-                "repository root {:?} is not a directory",
-                repo_root
-            ));
-        }
-
-        let fdx_dir = repo_root.join(".fdx");
-        if fdx_dir.exists() || fdx_dir.is_symlink() {
-            let meta = fs::symlink_metadata(&fdx_dir)
-                .map_err(|e| format!("failed to read .fdx metadata {:?}: {}", fdx_dir, e))?;
-            if meta.file_type().is_symlink() {
-                return Err(format!(
-                    ".fdx directory cannot be a symlink (escape detected): {:?}",
-                    fdx_dir
-                ));
-            }
-            if !meta.is_dir() {
-                return Err(format!(".fdx exists but is not a directory: {:?}", fdx_dir));
-            }
-            let canonical_fdx = fdx_dir
-                .canonicalize()
-                .map_err(|e| format!("cannot canonicalize .fdx directory {:?}: {}", fdx_dir, e))?;
-            if !canonical_fdx.starts_with(&canonical_repo) {
-                return Err(format!(
-                    ".fdx directory points outside repository jail: {:?}",
-                    fdx_dir
-                ));
-            }
-        } else {
-            fs::create_dir_all(&fdx_dir)
-                .map_err(|e| format!("failed to create .fdx directory {:?}: {}", fdx_dir, e))?;
-        }
-
-        let attestations_dir = fdx_dir.join("attestations");
-        if attestations_dir.exists() || attestations_dir.is_symlink() {
-            let meta = fs::symlink_metadata(&attestations_dir).map_err(|e| {
-                format!(
-                    "failed to read attestations directory metadata {:?}: {}",
-                    attestations_dir, e
-                )
-            })?;
-            if meta.file_type().is_symlink() {
-                return Err(format!(
-                    "attestations directory cannot be a symlink (escape detected): {:?}",
-                    attestations_dir
-                ));
-            }
-            if !meta.is_dir() {
-                return Err(format!(
-                    "attestations path exists but is not a directory: {:?}",
-                    attestations_dir
-                ));
-            }
-            let canonical_att = attestations_dir.canonicalize().map_err(|e| {
-                format!(
-                    "cannot canonicalize attestations directory {:?}: {}",
-                    attestations_dir, e
-                )
-            })?;
-            let canonical_fdx = fdx_dir
-                .canonicalize()
-                .map_err(|e| format!("cannot canonicalize .fdx directory {:?}: {}", fdx_dir, e))?;
-            if !canonical_att.starts_with(&canonical_fdx) {
-                return Err(format!(
-                    "attestations directory points outside .fdx directory jail: {:?}",
-                    attestations_dir
-                ));
-            }
-        } else {
-            fs::create_dir_all(&attestations_dir).map_err(|e| {
-                format!(
-                    "failed to create attestations directory {:?}: {}",
-                    attestations_dir, e
-                )
-            })?;
-        }
-
-        // Open directory handle safely
-        let dir_file = File::open(&attestations_dir).map_err(|e| {
+        let repo_fd = open(
+            &canonical_repo,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| {
             format!(
-                "failed to open managed attestations directory handle {:?}: {}",
-                attestations_dir, e
+                "failed to open repository root directory {:?}: {}",
+                canonical_repo, e
             )
         })?;
 
-        // Verify open handle stat is directory
+        let repo_file = File::from(repo_fd);
+        let repo_stat = fstat(repo_file.as_fd())
+            .map_err(|e| format!("failed to fstat repository root handle: {}", e))?;
+        if FileType::from_raw_mode(repo_stat.st_mode) != FileType::Directory {
+            return Err(format!(
+                "repository root {:?} is not a directory",
+                canonical_repo
+            ));
+        }
+
+        // Test hook before opening .fdx
+        TEST_BEFORE_ACQUIRE_FDX_HOOK.with(|h| {
+            if let Some(ref hook) = *h.borrow() {
+                hook();
+            }
+        });
+
+        // Open or create .fdx relative to repo_file handle with NOFOLLOW | DIRECTORY
+        let fdx_fd = match openat(
+            &repo_file,
+            ".fdx",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::NOENT) => {
+                match mkdirat(&repo_file, ".fdx", Mode::from_bits_truncate(0o755)) {
+                    Ok(()) => {}
+                    Err(rustix::io::Errno::EXIST) => {}
+                    Err(e) => {
+                        return Err(format!(
+                            "failed to create .fdx directory relative to repository root: {}",
+                            e
+                        ));
+                    }
+                }
+                openat(
+                    &repo_file,
+                    ".fdx",
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|e| {
+                    if e == rustix::io::Errno::LOOP {
+                        format!(
+                            ".fdx directory cannot be a symlink (escape detected): {:?}",
+                            canonical_repo.join(".fdx")
+                        )
+                    } else {
+                        format!(
+                            "failed to open created .fdx directory relative to repository root: {}",
+                            e
+                        )
+                    }
+                })?
+            }
+            Err(rustix::io::Errno::LOOP) => {
+                return Err(format!(
+                    ".fdx directory cannot be a symlink (escape detected): {:?}",
+                    canonical_repo.join(".fdx")
+                ));
+            }
+            Err(rustix::io::Errno::NOTDIR) => {
+                return Err(format!(
+                    ".fdx is not a directory or is a symlink (escape detected): {:?}",
+                    canonical_repo.join(".fdx")
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "failed to open .fdx directory relative to repository root: {}",
+                    e
+                ));
+            }
+        };
+
+        let fdx_file = File::from(fdx_fd);
+        let fdx_stat = fstat(fdx_file.as_fd())
+            .map_err(|e| format!("failed to fstat .fdx directory handle: {}", e))?;
+        if FileType::from_raw_mode(fdx_stat.st_mode) != FileType::Directory {
+            return Err(format!(
+                ".fdx handle is not a directory: {:?}",
+                canonical_repo.join(".fdx")
+            ));
+        }
+
+        // Test hook before opening attestations
+        TEST_BEFORE_ACQUIRE_ATTESTATIONS_HOOK.with(|h| {
+            if let Some(ref hook) = *h.borrow() {
+                hook();
+            }
+        });
+
+        // Open or create attestations relative to fdx_file handle with NOFOLLOW | DIRECTORY
+        let att_fd = match openat(
+            &fdx_file,
+            "attestations",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        ) {
+            Ok(fd) => fd,
+            Err(rustix::io::Errno::NOENT) => {
+                match mkdirat(&fdx_file, "attestations", Mode::from_bits_truncate(0o755)) {
+                    Ok(()) => {}
+                    Err(rustix::io::Errno::EXIST) => {}
+                    Err(e) => {
+                        return Err(format!(
+                            "failed to create attestations directory relative to .fdx handle: {}",
+                            e
+                        ));
+                    }
+                }
+                openat(
+                    &fdx_file,
+                    "attestations",
+                    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )
+                .map_err(|e| {
+                    if e == rustix::io::Errno::LOOP {
+                        format!(
+                            "attestations directory cannot be a symlink (escape detected): {:?}",
+                            canonical_repo.join(".fdx").join("attestations")
+                        )
+                    } else {
+                        format!(
+                            "failed to open created attestations directory relative to .fdx handle: {}",
+                            e
+                        )
+                    }
+                })?
+            }
+            Err(rustix::io::Errno::LOOP) => {
+                return Err(format!(
+                    "attestations directory cannot be a symlink (escape detected): {:?}",
+                    canonical_repo.join(".fdx").join("attestations")
+                ));
+            }
+            Err(rustix::io::Errno::NOTDIR) => {
+                return Err(format!(
+                    "attestations is not a directory or is a symlink (escape detected): {:?}",
+                    canonical_repo.join(".fdx").join("attestations")
+                ));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "failed to open attestations directory relative to .fdx handle: {}",
+                    e
+                ));
+            }
+        };
+
+        let dir_file = File::from(att_fd);
         let stat = fstat(dir_file.as_fd())
             .map_err(|e| format!("failed to fstat managed attestations directory: {}", e))?;
         if FileType::from_raw_mode(stat.st_mode) != FileType::Directory {
             return Err(format!(
                 "managed attestations handle is not a directory: {:?}",
-                attestations_dir
+                canonical_repo.join(".fdx").join("attestations")
             ));
         }
+
+        let fdx_dir = canonical_repo.join(".fdx");
+        let attestations_dir = fdx_dir.join("attestations");
 
         Ok(Self {
             repo_root: canonical_repo,
@@ -279,25 +391,16 @@ pub fn classify_attestation_source(
             )
         })?;
 
-        let canonical_att_dir = managed_jail.attestations_dir.canonicalize().map_err(|e| {
-            format!(
-                "failed to canonicalize managed attestations dir {:?}: {}",
-                managed_jail.attestations_dir, e
-            )
-        })?;
+        let parent = resolved_path.parent();
+        let in_att_dir = match parent {
+            Some(p) => {
+                p == managed_jail.attestations_dir
+                    || p.canonicalize().ok().as_ref() == Some(&managed_jail.attestations_dir)
+            }
+            None => false,
+        };
 
-        let canonical_file = resolved_path.canonicalize().map_err(|e| {
-            format!(
-                "failed to canonicalize attestation file {:?}: {}",
-                resolved_path, e
-            )
-        })?;
-
-        let parent = canonical_file
-            .parent()
-            .ok_or_else(|| format!("cannot determine parent directory of {:?}", canonical_file))?;
-
-        if parent == canonical_att_dir {
+        if in_att_dir {
             if let Some(fn_sha) = extract_filename_digest(&resolved_path) {
                 return Ok(AttestationSource::Managed {
                     path: resolved_path,
@@ -330,7 +433,7 @@ pub fn classify_attestation_source(
     }
 }
 
-/// Persist an attestation artifact atomically and no-clobber to `.fdx/attestations/<run_id>.<attestation_sha256>.json`.
+/// Persist an attestation artifact atomically and no-clobber to .fdx/attestations/<run_id>.<attestation_sha256>.json.
 pub fn persist_attestation(
     repo_root: &Path,
     attestation: &VerificationAttestation,
@@ -567,36 +670,47 @@ pub fn load_attestation_from_path(
             Mode::empty(),
         )
         .map_err(|e| {
-            format!(
-                "failed to open managed attestation file {:?} safely (symlinks rejected): {}",
-                resolved_path, e
-            )
+            if e == rustix::io::Errno::LOOP {
+                format!(
+                    "attestation file {:?} is a symlink (symlinks are rejected)",
+                    resolved_path
+                )
+            } else {
+                format!(
+                    "failed to open managed attestation file {:?} safely (symlinks rejected): {}",
+                    resolved_path, e
+                )
+            }
         })?;
 
         let mut file = File::from(fd);
         read_bounded_file(&mut file, MAX_ATTESTATION_ARTIFACT_BYTES)?
     } else {
-        let meta = fs::symlink_metadata(&resolved_path).map_err(|e| {
-            format!(
-                "attestation file {:?} metadata cannot be read: {}",
-                resolved_path, e
-            )
-        })?;
-        if meta.file_type().is_symlink() {
-            return Err(format!(
-                "attestation file {:?} is a symlink (symlinks are rejected)",
-                resolved_path
-            ));
-        }
-        if !meta.is_file() {
-            return Err(format!(
-                "attestation path {:?} is not a regular file",
-                resolved_path
-            ));
-        }
+        // Test hook before opening external file
+        TEST_BEFORE_OPEN_EXTERNAL_HOOK.with(|h| {
+            if let Some(ref hook) = *h.borrow() {
+                hook();
+            }
+        });
 
-        let mut file = File::open(&resolved_path)
-            .map_err(|e| format!("failed to open attestation file {:?}: {}", resolved_path, e))?;
+        // Open external file ONCE with NOFOLLOW
+        let fd = open(
+            &resolved_path,
+            OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|e| {
+            if e == rustix::io::Errno::LOOP {
+                format!(
+                    "attestation file {:?} is a symlink (symlinks are rejected)",
+                    resolved_path
+                )
+            } else {
+                format!("failed to open attestation file {:?}: {}", resolved_path, e)
+            }
+        })?;
+
+        let mut file = File::from(fd);
         read_bounded_file(&mut file, MAX_ATTESTATION_ARTIFACT_BYTES)?
     };
 
