@@ -15,7 +15,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const REPORT_JSON_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m10-shadow-calibration.json");
 const REPORT_MD_PATH = join(ROOT, "reports", "benchmark-fdx-vci-m10-repro.md");
 
-const EXPECTED_FUNCTIONAL_SHA = "5f0f5f8733e87a6aeb31fd241b3e40f7cfc9875c";
+const EXPECTED_FUNCTIONAL_SHA = "f7461acb366fb584a8927668f752e4f7bf8c9dbb";
 
 function computeSha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -90,7 +90,7 @@ function createSampleRepo(prefix, scripts = { test: "node -e 'process.exit(0)'" 
   return repo;
 }
 
-async function runPreflights(bin) {
+async function runPreflights(_bin) {
   console.log("-> Running non-vacuous hardened M10 shadow calibration preflights (H29)...");
   const preflights = [];
 
@@ -329,7 +329,7 @@ async function runBenchmarks(bin) {
 }
 
 async function main() {
-  console.log("=== FlowDeck M10 Shadow Calibration Qualification & Benchmark (H29) ===");
+  console.log("=== FlowDeck M10 Hardened Shadow Calibration Qualification & Benchmark (H31) ===");
 
   const functionalSha = process.env.FDX_BENCHMARK_FUNCTIONAL_SHA;
   if (!functionalSha) {
@@ -402,7 +402,7 @@ async function main() {
     platform: process.platform,
     arch: process.arch,
     node_version: process.version,
-    schema_version: 8,
+    schema_version: 9,
     invariants: {
       schema_v8_migration_complete: true,
       deterministic_calibration_id_binding: true,
@@ -427,16 +427,16 @@ async function main() {
   console.log("-> Saved benchmark report: " + REPORT_JSON_PATH);
 
   const mdLines = [
-    "# Milestone 10: Shadow Calibration Qualification Report (R29)",
+    "# Milestone 10: Hardened Shadow Calibration Qualification Report (R31)",
     "",
     "**Milestone:** M10  ",
-    "**Functional Baseline (F26):** `" + functionalSha + "`  ",
+    "**Functional Baseline (F29):** `" + functionalSha + "`  ",
     "**Binary SHA-256:** `" + binarySha256 + "`  ",
-    "**Benchmark Harness (H29):** `" + harnessSha + "`  ",
+    "**Benchmark Harness (H31):** `" + harnessSha + "`  ",
     "**Executed At:** " + report.timestamp + "  ",
     "**Platform:** " + report.platform + " (" + report.arch + ")  ",
     "**Node Version:** " + report.node_version + "  ",
-    "**Evidence Graph Schema Version:** `8`  ",
+    "**Evidence Graph Schema Version:** `9`  ",
     "",
     "## Invariants & Calibration Guarantees",
     "",
