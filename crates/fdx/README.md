@@ -143,7 +143,7 @@ fdx history runs --limit 5
 fdx attest create --run <run-id>
 
 # 8. Verify the attestation offline
-fdx attest verify .fdx/attestations/<digest>.json
+fdx attest verify .fdx/attestations/<run_id>.<attestation_sha256>.json
 ```
 
 ## Command Reference
@@ -198,7 +198,7 @@ Selected checks are executed in isolated, bounded sub-processes. FDX enforces pe
 Every execution is ingested into SQLite with exact artifact byte digests. FDX tracks check stability, duration trends, and flake signals across runs without allowing historical success to override future verification obligations.
 
 ### Verification Attestations
-A completed verification run can be converted into a standalone, content-addressed in-toto Statement v1 attestation file stored in `.fdx/attestations/<digest>.json`.
+A completed verification run can be converted into a standalone, content-addressed in-toto Statement v1 attestation file stored in `.fdx/attestations/<run_id>.<attestation_sha256>.json`.
 
 ## Important Distinctions
 
@@ -235,18 +235,18 @@ fdx history reconcile
 fdx attest create --run 019184a2-7b3e-7b3c-9452-19e491c1d810
 
 # Output:
-# Attestation created: .fdx/attestations/38a9d1c...8f.json
-# Subject: .fdx/runs/019184a2-7b3e-7b3c-9452-19e491c1d810.json
+# Attestation created: .fdx/attestations/019184a2-7b3e-7b3c-9452-19e491c1d810.38a9d1c...8f.json
+# Subject: fdx-verification-run:019184a2-7b3e-7b3c-9452-19e491c1d810
 # SHA-256: 38a9d1c...8f
 
 # Verify an attestation stored in .fdx/attestations/
-fdx attest verify .fdx/attestations/38a9d1c...8f.json
+fdx attest verify .fdx/attestations/019184a2-7b3e-7b3c-9452-19e491c1d810.38a9d1c...8f.json
 
 # Verify an external attestation with expected digest
 fdx attest verify /tmp/external-attestation.json --expected-sha256 38a9d1c...8f
 
 # Inspect attestation contents
-fdx attest show .fdx/attestations/38a9d1c...8f.json
+fdx attest show .fdx/attestations/019184a2-7b3e-7b3c-9452-19e491c1d810.38a9d1c...8f.json
 
 # List all managed attestations
 fdx attest list
@@ -255,9 +255,9 @@ fdx attest list
 ### Attestation Specifications
 
 - **Envelope:** [in-toto Statement v1](https://in-toto.io/Statement/v1) (`_type: "https://in-toto.io/Statement/v1"`)
-- **Predicate:** FlowDeck Verification Predicate v1 (`predicateType: "https://flowdeck.dev/attestations/verification/v1"`)
+- **Predicate:** FlowDeck Verification Predicate v1 (`predicateType: "https://flowdeck.dev/attestation/vci/verification/v1"`)
 - **Canonicalization:** RFC 8785 JSON Canonicalization Scheme (JCS)
-- **Subject Identity:** SHA-256 digest computed over exact persisted M7 run artifact bytes
+- **Subject Identity:** Subject named `fdx-verification-run:<run_id>` with `digest.sha256` computed over exact raw persisted M7 run artifact (`.fdx/runs/<run_id>.json`) bytes
 - **Offline:** 100% self-contained offline verification; no network access required
 
 *FDX attestations currently provide evidence integrity and binding. They do not provide signer identity, non-repudiation, PKI, Sigstore, or transparency-log inclusion.*
@@ -282,13 +282,13 @@ The following benchmarks are measured using dedicated qualification harnesses on
 | **History Query** | 50 historical runs query | 3.18 ms | M8 Benchmark |
 | **History Stats Query** | Flake / duration aggregation | 3.05 ms | M8 Benchmark |
 | **History Reconcile** | 50 run artifacts sync | 7.12 ms | M8 Benchmark |
-| **Attestation Create** | Single qualified run | 5.66 ms | M9 Benchmark |
-| **Attestation Verify** | Single qualified attestation | 5.48 ms | M9 Benchmark |
+| **Attestation Create** | Single qualified run | 5.49 ms | M9 Benchmark (R28) |
+| **Attestation Verify** | Single qualified attestation | 4.99 ms | M9 Benchmark (R28) |
 
 ### Bulk Throughput (M9 Qualified)
 
-- **100 Attestation Creates:** 536.61 ms total (~5.37 ms / run)
-- **100 Attestation Verifies:** 540.78 ms total (~5.41 ms / run)
+- **100 Attestation Creates:** 554.21 ms total (~5.54 ms / run)
+- **100 Attestation Verifies:** 605.48 ms total (~6.05 ms / run)
 
 *These are benchmark measurements from the qualification environment, not universal performance guarantees. Repository size, storage, platform, selected checks, process startup, and toolchain behavior affect real-world results.*
 
@@ -388,7 +388,7 @@ npm run verify:fast
 
 - **Evidence DB:** SQLite stores symbol outlines, file hashes, build provider graphs, and ingested runtime executions.
 - **Artifact Store:** Persisted `.fdx/runs/<run_id>.json` files act as durable source-of-truth evidence artifacts independent of database state.
-- **Attestation Store:** `.fdx/attestations/<digest>.json` holds immutable, content-addressed verification statements.
+- **Attestation Store:** `.fdx/attestations/<run_id>.<attestation_sha256>.json` holds immutable, content-addressed verification statements.
 
 ## Limitations
 
