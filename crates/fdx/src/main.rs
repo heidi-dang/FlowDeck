@@ -101,6 +101,54 @@ pub enum AttestAction {
 }
 
 #[derive(Subcommand)]
+pub enum CalibrateAction {
+    /// Run shadow calibration for a verification run
+    Run {
+        /// Verification run identifier
+        #[arg(long)]
+        run: String,
+        /// Maximum shadow checks to execute (default: 50)
+        #[arg(long, default_value = "50")]
+        max_checks: usize,
+        /// Maximum total duration in milliseconds (default: 60000)
+        #[arg(long, default_value = "60000")]
+        max_duration_ms: u64,
+        /// Per-check timeout in milliseconds (default: 10000)
+        #[arg(long, default_value = "10000")]
+        per_check_timeout_ms: u64,
+        /// Reference scope policy: affected or workspace (default: affected)
+        #[arg(long, default_value = "affected")]
+        scope: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show details for a specific calibration run
+    Show {
+        /// Calibration identifier
+        calibration_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// List historical calibration runs
+    List {
+        /// Maximum number of runs to return (default: 50)
+        #[arg(long, default_value = "50")]
+        limit: usize,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show calibration statistics across historical runs
+    Stats {
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum BuildAction {
     /// Show build provider status / freshness / topology stats
     Status,
@@ -608,6 +656,14 @@ enum Commands {
     Attest {
         #[command(subcommand)]
         action: AttestAction,
+    },
+
+    /// Shadow calibration and verification planner accuracy measurement (Milestone 10)
+    ///
+    /// Example: fdx calibrate run --run run-123
+    Calibrate {
+        #[command(subcommand)]
+        action: CalibrateAction,
     },
 }
 
@@ -2210,6 +2266,302 @@ fn main() {
                         },
                         Err(e) => {
                             eprintln!("Error listing attestations: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::Calibrate { action } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+
+            match action {
+                CalibrateAction::Run {
+                    run,
+                    max_checks,
+                    max_duration_ms,
+                    per_check_timeout_ms,
+                    scope,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let artifact_path = repo_root
+                        .join(".fdx")
+                        .join("runs")
+                        .join(format!("{}.json", run));
+                    if !artifact_path.exists() {
+                        eprintln!(
+                            "Error: verification run artifact not found: {:?}",
+                            artifact_path
+                        );
+                        process::exit(1);
+                    }
+
+                    let raw_bytes = match std::fs::read(&artifact_path) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            eprintln!("Error reading verification run artifact: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    let source_run: fdx::intelligence::verify::VerificationRun =
+                        match serde_json::from_slice(&raw_bytes) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                eprintln!("Error parsing verification run artifact: {}", e);
+                                process::exit(1);
+                            }
+                        };
+
+                    let reference_scope = match scope.as_str() {
+                        "workspace" => fdx::intelligence::calibration::ReferenceScope::Workspace,
+                        _ => fdx::intelligence::calibration::ReferenceScope::AffectedPackage,
+                    };
+
+                    let policy = fdx::intelligence::calibration::CalibrationPolicy {
+                        scope: reference_scope,
+                        max_shadow_checks: max_checks,
+                        max_total_duration_ms: max_duration_ms,
+                        per_check_timeout_ms,
+                        max_output_bytes: 16 * 1024 * 1024,
+                    };
+
+                    let cal_run = match fdx::intelligence::calibration::run_calibration(
+                        &repo_root,
+                        &source_run,
+                        &policy,
+                    ) {
+                        Ok(c) => c,
+                        Err(e) => {
+                            eprintln!("Error executing shadow calibration: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    // Ingest source verification run (if needed) and calibration run into SQLite database in ReadWrite mode
+                    if let Ok(mut db) = fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    ) {
+                        let _ = fdx::intelligence::runtime::ingest_verification_artifact(
+                            &mut db.conn,
+                            &raw_bytes,
+                        );
+                        if let Err(e) = fdx::intelligence::calibration::persist_calibration_run(
+                            &mut db.conn,
+                            &cal_run,
+                        ) {
+                            eprintln!(
+                                "Warning: could not persist calibration run to database: {}",
+                                e
+                            );
+                        }
+                    }
+
+                    match format {
+                        OutputFormat::Json => {
+                            if let Ok(s) = serde_json::to_string_pretty(&cal_run) {
+                                println!("{}", s);
+                            }
+                        }
+                        OutputFormat::Text => {
+                            print!(
+                                "{}",
+                                fdx::intelligence::calibration::format_calibration_run_text(
+                                    &cal_run
+                                )
+                            );
+                        }
+                    }
+                }
+                CalibrateAction::Show {
+                    calibration_id,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    match fdx::intelligence::calibration::get_calibration_run(
+                        &db.conn,
+                        &calibration_id,
+                    ) {
+                        Ok(Some((summary, metrics, checks, executions))) => match format {
+                            OutputFormat::Json => {
+                                let obj = serde_json::json!({
+                                    "summary": summary,
+                                    "metrics": metrics,
+                                    "checks": checks,
+                                    "executions": executions,
+                                });
+                                if let Ok(s) = serde_json::to_string_pretty(&obj) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!("Shadow Calibration Run: {}", summary.calibration_id);
+                                println!("  Source Run ID: {}", summary.source_run_id);
+                                println!("  Status: {:?}", summary.status);
+                                println!("  Reference Scope: {}", summary.reference_scope);
+                                println!(
+                                    "  Candidate Plan Digest: {}",
+                                    summary.candidate_plan_digest
+                                );
+                                println!("  Policy Digest: {}", summary.policy_digest);
+                                println!("  Duration: {}ms", summary.duration_ms);
+                                println!(
+                                    "
+Metrics:"
+                                );
+                                println!(
+                                    "  Candidate Selected: {}",
+                                    metrics.candidate_selected_count
+                                );
+                                println!("  Shadow Reference: {}", metrics.shadow_reference_count);
+                                println!("  Shadow Executed: {}", metrics.shadow_executed_count);
+                                println!(
+                                    "  Selected Failing Signals: {}",
+                                    metrics.selected_failure_count
+                                );
+                                println!(
+                                    "  Observed Shadow Misses: {}",
+                                    metrics.observed_shadow_miss_count
+                                );
+                                println!(
+                                    "  Shadow Incomplete: {}",
+                                    metrics.shadow_incomplete_count
+                                );
+                                if let Some(sr) = metrics.selection_ratio {
+                                    println!("  Selection Ratio: {:.4}", sr);
+                                }
+                                if let Some(cr) = metrics.runtime_cost_ratio {
+                                    println!("  Runtime Cost Ratio: {:.4}", cr);
+                                }
+                                if let Some(rc) = metrics.signal_recall {
+                                    println!("  Signal Recall: {:.2}%", rc * 100.0);
+                                } else {
+                                    println!("  Signal Recall: N/A");
+                                }
+                                println!(
+                                    "
+Checks ({}):",
+                                    checks.len()
+                                );
+                                for c in &checks {
+                                    let tag = if c.candidate_selected {
+                                        "[SELECTED]"
+                                    } else {
+                                        "[SHADOW]  "
+                                    };
+                                    let miss_tag = if c.is_observed_shadow_miss {
+                                        " ** OBSERVED MISS **"
+                                    } else {
+                                        ""
+                                    };
+                                    println!(
+                                        "  {} {} -> {:?} ({}ms, signal: {:?}){}",
+                                        tag,
+                                        c.check_id,
+                                        c.execution_status,
+                                        c.duration_ms,
+                                        c.signal_class,
+                                        miss_tag
+                                    );
+                                }
+                            }
+                        },
+                        Ok(None) => {
+                            eprintln!("Error: calibration run '{}' not found", calibration_id);
+                            process::exit(1);
+                        }
+                        Err(e) => {
+                            eprintln!("Error querying calibration run: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                CalibrateAction::List { limit, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    match fdx::intelligence::calibration::list_calibration_runs(&db.conn, limit) {
+                        Ok(runs) => match format {
+                            OutputFormat::Json => {
+                                if let Ok(s) = serde_json::to_string_pretty(&runs) {
+                                    println!("{}", s);
+                                }
+                            }
+                            OutputFormat::Text => {
+                                println!(
+                                    "Historical Shadow Calibration Runs (showing up to {}):",
+                                    limit
+                                );
+                                for r in &runs {
+                                    let recall_str = r
+                                        .signal_recall
+                                        .map(|rc| format!("{:.2}%", rc * 100.0))
+                                        .unwrap_or_else(|| "N/A".to_string());
+                                    println!(
+                                        "- Cal: {} | Run: {} | Status: {:?} | Scope: {} | Misses: {} | Recall: {} | Dur: {}ms",
+                                        r.calibration_id, r.source_run_id, r.status, r.reference_scope, r.observed_shadow_miss_count, recall_str, r.duration_ms
+                                    );
+                                }
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("Error listing calibration runs: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                CalibrateAction::Stats { format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            eprintln!("Error opening history database: {}", e);
+                            process::exit(1);
+                        }
+                    };
+
+                    match fdx::intelligence::calibration::get_calibration_stats(&db.conn) {
+                        Ok(stats) => {
+                            match format {
+                                OutputFormat::Json => {
+                                    if let Ok(s) = serde_json::to_string_pretty(&stats) {
+                                        println!("{}", s);
+                                    }
+                                }
+                                OutputFormat::Text => {
+                                    print!("{}", fdx::intelligence::calibration::format_calibration_stats_text(&stats));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Error querying calibration statistics: {}", e);
                             process::exit(1);
                         }
                     }

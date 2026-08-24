@@ -61,6 +61,10 @@ pub fn migrate_schema(
                 // Migrate v6 -> v7: Milestone 8 runtime verification history hardening (exact-byte digest, physical execution flag)
                 tx.execute_batch(crate::intelligence::runtime::schema::MIGRATE_V6_TO_V7_SQL)?;
             }
+            7 => {
+                // Migrate v7 -> v8: Milestone 10 Shadow Calibration tables
+                tx.execute_batch(crate::intelligence::calibration::schema::MIGRATE_V7_TO_V8_SQL)?;
+            }
             _ => {
                 return Err(MigrationError::Unsupported(version, target_version));
             }

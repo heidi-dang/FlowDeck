@@ -15,9 +15,9 @@ fn test_database_creation_and_schema() {
     .expect("Failed to open database");
     assert!(db_path.exists(), "Database file should be created");
 
-    // Check schema version (v5: edge provider_id ownership)
+    // Check schema version
     let version = db.get_schema_version().unwrap();
-    assert_eq!(version.version, 7);
+    assert_eq!(version.version, 8);
 
     // Reopen preserves state
     drop(db);
@@ -27,7 +27,7 @@ fn test_database_creation_and_schema() {
     )
     .expect("Failed to reopen database");
     let version2 = db2.get_schema_version().unwrap();
-    assert_eq!(version2.version, 7);
+    assert_eq!(version2.version, 8);
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn test_corruption_recovery() {
         fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
     )
     .expect("Failed to open and recover corrupt database");
-    assert_eq!(db.get_schema_version().unwrap().version, 7);
+    assert_eq!(db.get_schema_version().unwrap().version, 8);
 
     // Check that corrupt DB was moved
     let entries = std::fs::read_dir(repo_root.join(".fdx")).unwrap();
