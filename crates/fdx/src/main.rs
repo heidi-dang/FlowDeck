@@ -149,6 +149,33 @@ pub enum CalibrateAction {
 }
 
 #[derive(Subcommand)]
+pub enum PolicyCommand {
+    /// Generate descriptive candidates from qualified M10 evidence only.
+    GenerateCandidates {
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// List persisted descriptive candidates; this has no planner authority.
+    ListCandidates {
+        /// Maximum number of candidates to return (default: 50)
+        #[arg(long, default_value = "50")]
+        limit: u32,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Show one persisted policy candidate.
+    ShowCandidate {
+        /// Candidate identifier
+        candidate_id: String,
+        /// Output format: text or json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum BuildAction {
     /// Show build provider status / freshness / topology stats
     Status,
@@ -664,6 +691,14 @@ enum Commands {
     Calibrate {
         #[command(subcommand)]
         action: CalibrateAction,
+    },
+
+    /// Additive-only learned verification policy (Milestone 11)
+    ///
+    /// Candidate operations remain separate from frozen M10 calibration behavior.
+    Policy {
+        #[command(subcommand)]
+        action: PolicyCommand,
     },
 }
 
@@ -2627,6 +2662,144 @@ Checks ({}):",
                         }
                         Err(e) => {
                             eprintln!("Error querying calibration statistics: {}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+            }
+        }
+
+        Commands::Policy { action } => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let repo_root = fdx::paths::find_repository_root(&cwd).unwrap_or(cwd);
+            match action {
+                PolicyCommand::GenerateCandidates { format } => {
+                    let format = parse_format(&format);
+                    let mut db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadWrite,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    let now_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    match fdx::intelligence::policy::generate_candidates(
+                        &mut db.conn,
+                        &fdx::intelligence::policy::PromotionPolicy::default(),
+                        now_ms,
+                    ) {
+                        Ok(candidates) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::to_string_pretty(&candidates)
+                                    .unwrap_or_else(|_| "[]".to_string())
+                            ),
+                            OutputFormat::Text => {
+                                println!(
+                                    "Generated {} descriptive M11 policy candidate(s).",
+                                    candidates.len()
+                                );
+                                for candidate in candidates {
+                                    println!(
+                                        "- {} | scope={} | check={} | support={} | state={}",
+                                        candidate.candidate_id,
+                                        candidate.trigger.scope,
+                                        candidate.check_id,
+                                        candidate.support_count,
+                                        candidate.state.as_str(),
+                                    );
+                                }
+                            }
+                        },
+                        Err(error) => {
+                            eprintln!("Error generating policy candidates: {error}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                PolicyCommand::ListCandidates { limit, format } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::policy::list_candidates(&db.conn, limit) {
+                        Ok(candidates) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::to_string_pretty(&candidates)
+                                    .unwrap_or_else(|_| "[]".to_string())
+                            ),
+                            OutputFormat::Text => {
+                                println!("Policy candidates (showing up to {limit}):");
+                                for candidate in candidates {
+                                    println!(
+                                        "- {} | scope={} | check={} | support={} | state={}",
+                                        candidate.candidate_id,
+                                        candidate.trigger.scope,
+                                        candidate.check_id,
+                                        candidate.support_count,
+                                        candidate.state.as_str(),
+                                    );
+                                }
+                            }
+                        },
+                        Err(error) => {
+                            eprintln!("Error listing policy candidates: {error}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                PolicyCommand::ShowCandidate {
+                    candidate_id,
+                    format,
+                } => {
+                    let format = parse_format(&format);
+                    let db = match fdx::intelligence::db::EvidenceDatabase::open(
+                        &repo_root,
+                        fdx::intelligence::db::DatabaseOpenMode::ReadOnly,
+                    ) {
+                        Ok(db) => db,
+                        Err(error) => {
+                            eprintln!("Error opening policy evidence database: {error}");
+                            process::exit(1);
+                        }
+                    };
+                    match fdx::intelligence::policy::get_candidate(&db.conn, &candidate_id) {
+                        Ok(Some(candidate)) => match format {
+                            OutputFormat::Json => println!(
+                                "{}",
+                                serde_json::to_string_pretty(&candidate)
+                                    .unwrap_or_else(|_| "{}".to_string())
+                            ),
+                            OutputFormat::Text => println!(
+                                "{}\nscope: {}\ncheck: {}\nsupport: {}\nstate: {}\ndigest: {}",
+                                candidate.candidate_id,
+                                candidate.trigger.scope,
+                                candidate.check_id,
+                                candidate.support_count,
+                                candidate.state.as_str(),
+                                candidate.candidate_digest,
+                            ),
+                        },
+                        Ok(None) => {
+                            eprintln!("Error: policy candidate '{}' not found", candidate_id);
+                            process::exit(1);
+                        }
+                        Err(error) => {
+                            eprintln!("Error reading policy candidate: {error}");
                             process::exit(1);
                         }
                     }

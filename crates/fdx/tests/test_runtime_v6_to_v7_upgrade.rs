@@ -5,7 +5,7 @@ use tempfile::tempdir;
 
 #[test]
 fn test_v6_to_v7_migration_and_legacy_unqualified_rows() {
-    assert_eq!(CURRENT_SCHEMA_VERSION, 9);
+    assert_eq!(CURRENT_SCHEMA_VERSION, 10);
 
     let dir = tempdir().unwrap();
     let db_path = dir.path().join(".fdx").join("index.sqlite");
@@ -52,7 +52,7 @@ fn test_v6_to_v7_migration_and_legacy_unqualified_rows() {
             .conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 9);
+        assert_eq!(version, 10);
 
         // Check that legacy_run_1 has ingestion_contract_version = 1 (legacy / unqualified)
         let contract_version: i64 = db
